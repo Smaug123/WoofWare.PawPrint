@@ -215,7 +215,7 @@ module internal UnaryConstIlOp =
             // Spec III.3.5: beq is identical to ceq followed by brtrue.
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isEq = EvalStackValueComparisons.ceq value1 value2
+            let isEq = EvalStackValueComparisons.ceq state.PointerHashState value1 value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -278,7 +278,7 @@ module internal UnaryConstIlOp =
             // Spec III.3.5: beq is identical to ceq followed by brtrue.
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isEq = EvalStackValueComparisons.ceq value1 value2
+            let isEq = EvalStackValueComparisons.ceq state.PointerHashState value1 value2
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -341,7 +341,9 @@ module internal UnaryConstIlOp =
             // Spec III.3.5: bne.un is identical to ceq followed by brfalse.
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isNotEqual = not (EvalStackValueComparisons.ceq value1 value2)
+
+            let isNotEqual =
+                not (EvalStackValueComparisons.ceq state.PointerHashState value1 value2)
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -402,7 +404,9 @@ module internal UnaryConstIlOp =
             // Spec III.3.5: bne.un is identical to ceq followed by brfalse.
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isNotEqual = not (EvalStackValueComparisons.ceq value1 value2)
+
+            let isNotEqual =
+                not (EvalStackValueComparisons.ceq state.PointerHashState value1 value2)
 
             state
             |> IlMachineState.advanceProgramCounter currentThread

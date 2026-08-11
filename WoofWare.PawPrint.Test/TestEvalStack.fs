@@ -184,71 +184,117 @@ module TestEvalStack =
         let byrefRuntimeTypeHandle =
             EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed byrefHandle))
 
-        if not (EvalStackValueComparisons.ceq methodTable sameMethodTable) then
+        if not (EvalStackValueComparisons.ceq PointerHashState.empty methodTable sameMethodTable) then
             failwith "Expected matching MethodTablePtr values to compare equal"
 
-        if EvalStackValueComparisons.ceq methodTable otherMethodTable then
+        if EvalStackValueComparisons.ceq PointerHashState.empty methodTable otherMethodTable then
             failwith "Expected different MethodTablePtr values to compare unequal"
 
         // CoreCLR patterns like RuntimeHelpers.GetMethodTable(obj) == TypeHandleOf<T>().AsMethodTable()
         // require these two encodings to compare equal when they reference the same concrete type.
-        if not (EvalStackValueComparisons.ceq methodTable sameRuntimeTypeHandle) then
+        if not (EvalStackValueComparisons.ceq PointerHashState.empty methodTable sameRuntimeTypeHandle) then
             failwith
                 "Expected MethodTablePtr to compare equal to TypeHandlePtr(Closed) wrapping the same concrete handle"
 
-        if not (EvalStackValueComparisons.ceq sameRuntimeTypeHandle methodTable) then
+        if not (EvalStackValueComparisons.ceq PointerHashState.empty sameRuntimeTypeHandle methodTable) then
             failwith "Expected MethodTablePtr/TypeHandlePtr equality to be symmetric"
 
-        if EvalStackValueComparisons.ceq methodTable otherRuntimeTypeHandle then
+        if EvalStackValueComparisons.ceq PointerHashState.empty methodTable otherRuntimeTypeHandle then
             failwith
                 "Expected MethodTablePtr to compare unequal to TypeHandlePtr(Closed) of a different concrete handle"
 
         // Open generic type definitions don't have a closed MethodTable, so MethodTablePtr never aliases them.
-        if EvalStackValueComparisons.ceq methodTable openGenericRuntimeTypeHandle then
+        if EvalStackValueComparisons.ceq PointerHashState.empty methodTable openGenericRuntimeTypeHandle then
             failwith "Expected MethodTablePtr to remain distinct from TypeHandlePtr(OpenGenericTypeDefinition)"
 
         // Array MethodTables are real in CoreCLR, so the cross-arm must alias them.
-        if not (EvalStackValueComparisons.ceq arrayMethodTable arrayRuntimeTypeHandle) then
+        if not (EvalStackValueComparisons.ceq PointerHashState.empty arrayMethodTable arrayRuntimeTypeHandle) then
             failwith "Expected MethodTablePtr to alias TypeHandlePtr(Closed) for array handles"
 
         // Pointer/Byref/FunctionPointer are TypeDesc-only; aliasing would let TypeDesc handles
         // take the MethodTable branch in cast/equality patterns.
-        if EvalStackValueComparisons.ceq pointerMethodTable pointerRuntimeTypeHandle then
+        if EvalStackValueComparisons.ceq PointerHashState.empty pointerMethodTable pointerRuntimeTypeHandle then
             failwith "Expected TypeDesc Pointer handles to remain distinct from MethodTablePtr"
 
-        if EvalStackValueComparisons.ceq byrefMethodTable byrefRuntimeTypeHandle then
+        if EvalStackValueComparisons.ceq PointerHashState.empty byrefMethodTable byrefRuntimeTypeHandle then
             failwith "Expected TypeDesc Byref handles to remain distinct from MethodTablePtr"
 
     [<Test>]
-    let ``ceq of WidenedNativeInt vs OpaqueHashBits fails loudly rather than returning silently wrong`` () : unit =
+    let ``ceq of WidenedNativeInt vs OpaqueHashBits answers from the assigned address`` () : unit =
         // Under the counter-based pointer-hash scheme, an identity bit op such as `x ^ 0UL`
-        // materialises the WidenedNativeInt's bits into OpaqueHashBits. A subsequent
-        // `x == y` would then ask: do `WidenedNativeInt x`'s materialised bits equal `b`?
-        // Answering that requires the PointerHashState map which ceq does not currently
-        // thread; the silent-false answer that prior versions returned is wrong under
-        // identity ops, so this case fails loudly until ceq is taught to look it up.
-        let widened =
-            EvalStackValue.Int64 (
-                Int64Source.WidenedNativeInt (
-                    NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 42)),
-                    true
-                )
-            )
+        // materialises the WidenedNativeInt's bits into an OpaqueHashBits carrier, so `x == y`
+        // asks: are those bits this pointer's synthesised address? `ceq` reads the assignment
+        // out of `PointerHashState` — by lookup, never by assigning — and can therefore answer
+        // exactly, where a fixed `false` would have been wrong under exactly the identity ops
+        // that make the pairing arise.
+        let handle =
+            NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 42))
 
-        let hashBits = EvalStackValue.Int64 (Int64Source.OpaqueHashBits 4L)
+        let other =
+            NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 43))
 
-        let ex =
-            Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.ceq widened hashBits |> ignore)
+        let widened = EvalStackValue.Int64 (Int64Source.widenedNativeInt handle true)
 
-        ex.Message |> shouldContainText "WidenedNativeInt"
-        ex.Message |> shouldContainText "OpaqueHashBits"
-        ex.Message |> shouldContainText "PointerHashState"
+        let bits, counters =
+            PointerHashSynthesis.materialiseHashBits "oracle" handle PointerHashState.empty
 
-        // And symmetrically the other direction.
-        let exSym =
-            Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.ceq hashBits widened |> ignore)
+        let otherBits, counters =
+            PointerHashSynthesis.materialiseHashBits "oracle" other counters
 
-        exSym.Message |> shouldContainText "PointerHashState"
+        let hashBits = EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits)
+        let otherHashBits = EvalStackValue.Int64 (Int64Source.OpaqueHashBits otherBits)
+
+        EvalStackValueComparisons.ceq counters widened hashBits |> shouldEqual true
+        EvalStackValueComparisons.ceq counters hashBits widened |> shouldEqual true
+
+        // A different handle's address is not this one's, and the two assigned values are
+        // distinct by construction.
+        EvalStackValueComparisons.ceq counters widened otherHashBits
+        |> shouldEqual false
+
+        EvalStackValueComparisons.ceq counters otherHashBits widened
+        |> shouldEqual false
+
+        // With nothing assigned, no bit pattern can be this handle's address, so the answer
+        // is `false` rather than a crash. This is the arm that a mutation to `true` breaks,
+        // and it needs a controlled map: under a real run the BCL's own cast-cache traffic
+        // may already have materialised the handle.
+        EvalStackValueComparisons.ceq PointerHashState.empty widened hashBits
+        |> shouldEqual false
+
+    [<Test>]
+    let ``ceq of a tagged handle view against its hash bits keeps the tag`` () : unit =
+        // A `TypeDescPtr` is the same base address as the `TypeHandlePtr` it was masked from,
+        // differing in exactly the tag bit, so the two must not answer to each other's bits.
+        // This is what pins that the lookup ORs the tag on rather than comparing bare
+        // assigned bits.
+        let target =
+            RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer (ConcreteTypeHandle.Concrete 7))
+
+        let tagged = NativeIntSource.TypeHandlePtr target
+        let untagged = NativeIntSource.TypeDescPtr target
+
+        let taggedBits, counters =
+            PointerHashSynthesis.materialiseHashBits "oracle" tagged PointerHashState.empty
+
+        let untaggedBits, counters =
+            PointerHashSynthesis.materialiseHashBits "oracle" untagged counters
+
+        taggedBits |> shouldNotEqual untaggedBits
+
+        let asEsv (src : NativeIntSource) = EvalStackValue.NativeInt src
+
+        EvalStackValueComparisons.ceq counters (asEsv (NativeIntSource.OpaqueHashBits taggedBits)) (asEsv tagged)
+        |> shouldEqual true
+
+        EvalStackValueComparisons.ceq counters (asEsv (NativeIntSource.OpaqueHashBits untaggedBits)) (asEsv untagged)
+        |> shouldEqual true
+
+        EvalStackValueComparisons.ceq counters (asEsv (NativeIntSource.OpaqueHashBits taggedBits)) (asEsv untagged)
+        |> shouldEqual false
+
+        EvalStackValueComparisons.ceq counters (asEsv (NativeIntSource.OpaqueHashBits untaggedBits)) (asEsv tagged)
+        |> shouldEqual false
 
     [<Test>]
     let ``ceq of SyntheticCrossArrayOffset vs OpaqueHashBits returns false (cross-shape)`` () : unit =
@@ -266,10 +312,10 @@ module TestEvalStack =
         let offsetEsv = EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset offset)
         let hashBits = EvalStackValue.Int64 (Int64Source.OpaqueHashBits 12L)
 
-        if EvalStackValueComparisons.ceq offsetEsv hashBits then
+        if EvalStackValueComparisons.ceq PointerHashState.empty offsetEsv hashBits then
             failwith "Expected ceq(SyntheticCrossArrayOffset, OpaqueHashBits) to be false"
 
-        if EvalStackValueComparisons.ceq hashBits offsetEsv then
+        if EvalStackValueComparisons.ceq PointerHashState.empty hashBits offsetEsv then
             failwith "Expected ceq(OpaqueHashBits, SyntheticCrossArrayOffset) to be false (symmetric)"
 
     [<Test>]
@@ -282,22 +328,22 @@ module TestEvalStack =
         let nativeZero = EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
         let managedNull = EvalStackValue.ManagedPointer ManagedPointerSource.Null
 
-        if not (EvalStackValueComparisons.ceq managedPtr nativePtr) then
+        if not (EvalStackValueComparisons.ceq PointerHashState.empty managedPtr nativePtr) then
             failwith "Expected a managed pointer to compare equal to the native-int form of the same pointer"
 
-        if not (EvalStackValueComparisons.ceq nativePtr managedPtr) then
+        if not (EvalStackValueComparisons.ceq PointerHashState.empty nativePtr managedPtr) then
             failwith "Expected native-int pointer comparison to be symmetric"
 
-        if EvalStackValueComparisons.ceq managedPtr nativeZero then
+        if EvalStackValueComparisons.ceq PointerHashState.empty managedPtr nativeZero then
             failwith "Expected a non-null managed pointer to compare unequal to native zero"
 
-        if EvalStackValueComparisons.ceq nativeZero managedPtr then
+        if EvalStackValueComparisons.ceq PointerHashState.empty nativeZero managedPtr then
             failwith "Expected native zero to compare unequal to a non-null managed pointer"
 
-        if not (EvalStackValueComparisons.ceq managedNull nativeZero) then
+        if not (EvalStackValueComparisons.ceq PointerHashState.empty managedNull nativeZero) then
             failwith "Expected a null managed pointer to compare equal to native zero"
 
-        if not (EvalStackValueComparisons.ceq nativeZero managedNull) then
+        if not (EvalStackValueComparisons.ceq PointerHashState.empty nativeZero managedNull) then
             failwith "Expected native zero to compare equal to a null managed pointer"
 
     [<Test>]
