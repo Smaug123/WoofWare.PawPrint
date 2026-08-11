@@ -93,12 +93,55 @@ module TestFabricatedVtableLayout =
         defineVirtual multiple "FallbackGamma" false
         multiple.CreateType () |> ignore
 
+        // Two methods whose signature *blobs* differ -- `!0` and `string` -- but which become
+        // indistinguishable once the type is closed at `T = string`. CoreCLR lays slots out on the
+        // generic definition, where they are plainly two methods, so both get slots of their own.
+        //
+        // This is what makes the search window load-bearing rather than defensive. Placing `M(T)`
+        // appends it; `M(string)` is then compared against the window, and `candidateFillsSlot`
+        // works on *concretised* signatures, so it would match the slot just appended and replace it
+        // -- one slot short, disagreeing with the host. Capping the search at the parent's slots is
+        // what stops that, and this type is the reason the cap cannot simply be dropped.
+        let conflation =
+            moduleBuilder.DefineType (
+                "GenericConflation`1",
+                TypeAttributes.Public ||| TypeAttributes.Class,
+                typeof<obj>
+            )
+
+        let typeParameter = (conflation.DefineGenericParameters [| "T" |]).[0]
+
+        let defineOverload (parameterType : Type) (isNewSlot : bool) : unit =
+            let attributes =
+                if isNewSlot then
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Virtual
+                    ||| MethodAttributes.NewSlot
+                else
+                    MethodAttributes.Public ||| MethodAttributes.Virtual
+
+            let method =
+                conflation.DefineMethod ("Conflated", attributes, typeof<int>, [| parameterType |])
+
+            let il = method.GetILGenerator ()
+            il.Emit (OpCodes.Ldc_I4, 0)
+            il.Emit OpCodes.Ret
+
+        defineOverload (typeParameter :> Type) true
+        defineOverload typeof<string> false
+        conflation.CreateType () |> ignore
+
         use stream = new MemoryStream ()
         assemblyBuilder.Save stream
         stream.ToArray ()
 
-    /// The host CLR's copy. `Assembly.Load` of a byte array lands in the default load context, which
-    /// is what makes `RuntimeMethodHandle.GetSlot` answer about a fully built MethodTable.
+    /// The host CLR's copy, loaded so that `RuntimeMethodHandle.GetSlot` answers about a MethodTable
+    /// the real builder produced.
+    ///
+    /// `Assembly.Load` of a byte array puts it in a fresh `IndividualAssemblyLoadContext`
+    /// (Assembly.cs:267), not the default one, which is what keeps it from colliding with anything
+    /// else in the suite: it is invisible to default-context name resolution, and these type names
+    /// are deliberately plain enough to be worth saying so.
     let private hostAssembly : Assembly = Assembly.Load image
 
     // Undisposed on purpose, as in TestVirtualMethodSlots: the DumpedAssembly's logger closes over
@@ -127,7 +170,13 @@ module TestFabricatedVtableLayout =
             _LoadedAssemblies = loaded
         }
 
-    let private vtableOf (name : string) : NativeRuntimeTypeHelpers.VtableSlot list =
+    /// The vtable of a fabricated type, closed at the given corelib type arguments (none, for the
+    /// non-generic ones).
+    let private vtableOfClosedAt
+        (name : string)
+        (typeArguments : (string * string) list)
+        : NativeRuntimeTypeHelpers.VtableSlot list
+        =
         let state = state ()
 
         let typeInfo =
@@ -135,6 +184,30 @@ module TestFabricatedVtableLayout =
             | None -> failwith $"fabricated assembly has no type %s{name}"
             | Some typeInfo -> typeInfo
 
+        let state, argumentHandles =
+            ((state, []), typeArguments)
+            ||> List.fold (fun (state, acc) (argumentNamespace, argumentName) ->
+                let argumentTypeInfo =
+                    match corelib.TryGetTopLevelTypeDef argumentNamespace argumentName with
+                    | None -> failwith $"%s{argumentNamespace}.%s{argumentName} not found in corelib"
+                    | Some typeInfo -> typeInfo
+
+                let state, handle =
+                    DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies argumentTypeInfo
+                    |> IlMachineState.concretizeType
+                        loggerFactory
+                        bct
+                        state
+                        corelib.Name
+                        ImmutableArray.Empty
+                        ImmutableArray.Empty
+
+                state, handle :: acc
+            )
+
+        // As in TestVirtualMethodSlots: `typeInfoToTypeDefn'` already yields the instantiation shape
+        // `T`n<!0, ..>`, so close it by supplying the arguments as the type-generic context rather
+        // than by wrapping it again.
         let state, handle =
             DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
             |> IlMachineState.concretizeType
@@ -142,11 +215,13 @@ module TestFabricatedVtableLayout =
                 bct
                 state
                 fabricated.Name
-                ImmutableArray.Empty
+                (ImmutableArray.CreateRange (List.rev argumentHandles))
                 ImmutableArray.Empty
 
         NativeRuntimeTypeHelpers.vtableOfClosed loggerFactory bct "test" state handle
         |> snd
+
+    let private vtableOf (name : string) : NativeRuntimeTypeHelpers.VtableSlot list = vtableOfClosedAt name []
 
     let private hostSlotOf : MethodInfo -> int =
         let impl =
@@ -277,3 +352,43 @@ module TestFabricatedVtableLayout =
             // Everything past the inherited prefix is declared by the fabricated type itself.
             for slot in List.skip (List.length objectLayout) slots do
                 slot.DeclaredBy.Assembly.FullName |> shouldEqual fabricated.Name.FullName
+
+    /// Why the override search is capped at the parent's slot count rather than ranging over the
+    /// list as it grows.
+    ///
+    /// `GenericConflation`1` declares `Conflated(!0)` as NewSlot and then `Conflated(string)`
+    /// without it. The signature blobs differ, so this is a legal type -- ECMA-335 II.22.26 only
+    /// forbids two rows sharing a name *and* signature -- but at `T = string` the two become
+    /// indistinguishable to a matcher that compares concretised signatures, which is what
+    /// `candidateFillsSlot` does by design (it is how an ordinary override of a generic base matches
+    /// at all).
+    ///
+    /// CoreCLR lays slots out on the generic definition, where the two are plainly distinct, and
+    /// gives each its own. Without the cap, `Conflated(string)` would find the slot `Conflated(!0)`
+    /// had just been appended to and replace it, yielding a vtable one slot short. So the cap is
+    /// load-bearing on a legal image, not defensive insurance against a hypothetical matcher bug.
+    [<Test>]
+    let ``a later virtual cannot land on a slot this type just appended`` () : unit =
+        let closed =
+            match hostAssembly.GetType ("GenericConflation`1", false) with
+            | null -> failwith "host CLR could not load fabricated type GenericConflation`1"
+            | t -> t.MakeGenericType typeof<string>
+
+        let expected =
+            closed.GetMethods (BindingFlags.Instance ||| BindingFlags.Public ||| BindingFlags.NonPublic)
+            |> Array.filter _.IsVirtual
+            |> Array.map (fun method -> hostSlotOf method, method.MetadataToken)
+            |> Array.sortBy fst
+            |> Array.map snd
+            |> List.ofArray
+
+        // Guard against the type going uninteresting: the whole point is that both overloads get
+        // slots of their own, so `Object`'s four must be joined by exactly two more.
+        expected |> List.length |> shouldEqual 6
+
+        let actual =
+            pawPrintLayout (vtableOfClosedAt "GenericConflation`1" [ "System", "String" ])
+
+        if actual <> expected then
+            failwith
+                $"GenericConflation`1[String]: PawPrint layout %A{actual} disagrees with the host CLR's %A{expected}"

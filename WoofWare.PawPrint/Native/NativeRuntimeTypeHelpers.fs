@@ -1032,15 +1032,15 @@ module NativeRuntimeTypeHelpers =
             // placed. A slot appended by an earlier method of *this* type is therefore not something
             // a later one can land on.
             //
-            // No test can kill this cap, and the reason is worth stating rather than leaving for
-            // someone to rediscover: reaching past `baseSlotCount` needs a later method whose name
-            // and signature match one this same type already appended, and two MethodDef rows of one
-            // type may not share a name and signature (ECMA-335 II.22.26), so no legal image
-            // contains the shape. It is kept because it stops being a no-op exactly when
-            // `candidateFillsSlot` conflates two signatures that are really distinct -- the failure
-            // mode #939 found and refused for arrays. With the cap, a conflation appends both, which
-            // is CoreCLR's answer; without it, the second silently swallows the first's slot and the
-            // vtable comes out a slot short.
+            // That cap is load-bearing on legal metadata, not defensive insurance. ECMA-335 II.22.26
+            // stops a type repeating a method blob-for-blob, but `candidateFillsSlot` compares
+            // *concretised* signatures -- which is what lets an ordinary override of a generic base
+            // match at all -- and that conflates blobs which genuinely differ. The worked example is
+            // `GenericConflation`1` in TestFabricatedVtableLayout: it declares `Conflated(!0)` as
+            // NewSlot and `Conflated(string)` without it, and closing it at `T = string` makes the
+            // second match the slot the first was just appended to. CoreCLR lays slots out on the
+            // generic definition, where the two are distinct, and gives each its own; uncapped, the
+            // second replaces the first and the vtable comes out a slot short.
             let baseSlotCount = List.length baseSlots
 
             let state, slots =

@@ -361,12 +361,23 @@ module TestVirtualMethodSlots =
             let expected = hostSlotLayout host
 
             if actual <> expected then
+                // Truncate *both* to the common prefix: a walk that drops a slot makes `actual`
+                // the shorter list, and zipping a short list against a long one throws, which
+                // would replace the diagnostic with an ArgumentException and lose the rest of the
+                // corpus's results along with it.
+                let common = min (List.length actual) (List.length expected)
+
                 let firstDivergence =
-                    List.zip (List.truncate (List.length expected) actual) expected
+                    List.zip (List.truncate common actual) (List.truncate common expected)
                     |> List.tryFindIndex (fun ((a : int), (b : int)) -> a <> b)
 
+                let divergence =
+                    match firstDivergence with
+                    | Some i -> $"first differing slot %i{i}"
+                    | None -> "identical up to the shorter length; only the lengths differ"
+
                 failures <-
-                    $"%s{label}: PawPrint %i{List.length actual} slots, host %i{List.length expected}, first differing slot %A{firstDivergence}"
+                    $"%s{label}: PawPrint %i{List.length actual} slots, host %i{List.length expected}, %s{divergence}"
                     :: failures
 
             exercised <- exercised + 1
