@@ -181,7 +181,12 @@ module TestScheduleFork =
         | Program.PrefixOutcome.ForkedAt snapshot -> snapshot
         | other -> failwith $"%s{sourceName} was expected to reach a fork point, but: %A{other}"
 
-    /// Guests that reach a fork point, each chosen for a distinct shape of prefix.
+    /// Guests that reach a fork point, each chosen for a distinct shape of prefix — plus the
+    /// whole `sourcesConcurrencyBugs` corpus, because `TestConcurrencyBugs` and `TestRaces` now
+    /// fan their seed sweeps out from a fork snapshot rather than re-running the guest per seed.
+    /// Those sweeps cannot check the fanout themselves: they assert only that *some* seed finds
+    /// the bug, which a resume exploring a subtly different schedule space would still satisfy.
+    /// So the commuting square has to be pinned here, over exactly the guests they sweep.
     let private forkingGuests : string list =
         [
             // Two threads racing on a shared int: the plainest fork there is.
@@ -194,16 +199,36 @@ module TestScheduleFork =
             // Sleeps while single-threaded, so the prefix contains a jump-to-deadline inside a
             // tick preamble — the phase a fork detector probing the inter-tick state would miss.
             "ForkAfterSoloSleep.cs"
+
+            // The `TestConcurrencyBugs` corpus. These bring the only endings other than "exit n"
+            // that this fixture sees: `SimultaneousCounter` throws under some of the seeds below
+            // and `InvertedMonitorDeadlock` wedges under seed 17, so between them they pin that a
+            // resumed run reproduces an *ending*, not merely a matching exit code. Which seed
+            // produces which ending was measured, not assumed — see the comment on `seeds`.
+            "LostUpdate.cs"
+            "JustABoolNotAMutex.cs"
+            "TwoCountersSeparated.cs"
+            "SimultaneousCounter.cs"
+            "InvertedMonitorDeadlock.cs"
+            "QueueIsNotThreadSafe.cs"
         ]
 
     /// Fixed rather than randomly generated, so a failure is reproducible without a shrink
     /// report, but drawn from across the whole `uint64` range rather than from 0..n: the RNG is
     /// splitmix64 over a 64-bit state, and small seeds exercise only one corner of it.
+    ///
+    /// 17 is the exception, and is here for a measured reason rather than for spread. Without it
+    /// every guest in the corpus ends every one of these runs in `exit n` or a thrown exception,
+    /// so `traceFrom`'s deadlock arm — and with it the claim that a resumed run reproduces a
+    /// *wedge* identically, which `TestConcurrencyBugs`' `BadOutcome.Deadlock` scenario rests on —
+    /// would never execute. 17 is the lowest seed under which `InvertedMonitorDeadlock.cs`
+    /// actually deadlocks (found by scanning 0..200; 131 and 137 also do).
     let private seeds : uint64 list =
         [
             0UL
             1UL
             7UL
+            17UL
             0xC0FFEEUL
             0xDEADBEEFCAFEBABEUL
             0xFFFFFFFFFFFFFFFFUL
