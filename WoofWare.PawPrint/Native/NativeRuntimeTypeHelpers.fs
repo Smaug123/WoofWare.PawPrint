@@ -1248,6 +1248,22 @@ module NativeRuntimeTypeHelpers =
                 | None -> None
                 | Some facts -> Some (method, facts)
             )
+            // A COM vtable-gap marker is a MethodDef row that names empty slots in the *COM*
+            // interface vtable rather than declaring a method. `EnumerateClassMethods` recognises it
+            // by `IsMdRTSpecialName` plus a `_VtblGap` name prefix (methodtablebuilder.cpp:2749,
+            // corhdr.h:265-270) and `continue`s before it ever reaches `rgDeclaredMethods`
+            // (:2852-2921), recording the run length in a `SparseVTableMap` that only
+            // `FEATURE_COMINTEROP` reads. So it consumes no slot in the method table and is not a
+            // declared method at all -- dropping it here is what agrees with upstream, both for the
+            // validation below (which would otherwise see a runtime-special-named method that is
+            // not a constructor, and wrongly report that CoreCLR rejects the type) and for the
+            // placement (which would otherwise shift every later method by one).
+            |> List.filter (fun (method, facts) ->
+                not (
+                    facts.MethodAttributes.HasFlag MethodAttributes.RTSpecialName
+                    && method.Name.StartsWith ("_VtblGap", System.StringComparison.Ordinal)
+                )
+            )
 
         // `PlaceVirtualMethods` places exactly the declared *instance* virtuals, so everything else
         // is still unplaced when `PlaceNonVirtualMethods` runs. A `static virtual` -- an interface
@@ -1276,9 +1292,19 @@ module NativeRuntimeTypeHelpers =
         let isRuntimeSpecialName (facts : MetadataMethodFacts) : bool =
             facts.MethodAttributes.HasFlag MethodAttributes.RTSpecialName
 
+        // "The signature carries `IMAGE_CEE_CS_CALLCONV_GENERIC`", which is the bit
+        // `EnumerateClassMethods` reads to decide `hasGenericMethodArgs`
+        // (methodtablebuilder.cpp:2794) -- *not* "the encoded generic arity is positive". ECMA-335
+        // requires that arity to be at least 1 when the bit is set, so the two agree on every valid
+        // image and no test here distinguishes them; on an invalid-but-loadable one with the bit set
+        // and a count of zero, CoreCLR goes by the bit, and the method's pass below would differ.
+        // Spelled the faithful way because it costs nothing, not because anything has measured it.
+        let isGenericSignature (method : MethodInfo<_, _, _>) : bool =
+            method.Signature.Header.Get.Attributes.HasFlag System.Reflection.Metadata.SignatureAttributes.Generic
+
         let hasNullaryVoidSignature (method : MethodInfo<_, _, _>) : bool =
             method.Signature.ParameterTypes.IsEmpty
-            && method.Signature.GenericParameterCount = 0
+            && not (isGenericSignature method)
             && method.Signature.Header.Get.CallingConvention = System.Reflection.Metadata.SignatureCallingConvention.Default
             && method.Signature.ReturnType = MethodReturnType.Void
 
@@ -1289,6 +1315,15 @@ module NativeRuntimeTypeHelpers =
         // derived from it would then describe a type that cannot exist -- the same reason
         // `vtableOfClosed` refuses a non-newslot virtual that matches a `final` parent slot.
         for method, facts in declared do
+            // A `static virtual` is legal only on an interface, and must be abstract there
+            // (`ValidateMethods`, methodtablebuilder.cpp:5124-5131). On a class or value type
+            // CoreCLR throws `IDS_CLASSLOAD_STATICVIRTUAL`. Without this the method would simply
+            // be placed past the vtable, since `PlaceVirtualMethods` skips it for being static --
+            // handing out a layout for a type the real runtime will not build one for.
+            if method.IsStatic && method.IsVirtual && not typeInfo.IsInterface then
+                failwith
+                    $"%s{operation}: method %s{method.Name} on %O{concreteTypeInfo} is both static and virtual, which is legal only on an interface; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5124-5131) rather than laying out a method table for it"
+
             if isRuntimeSpecialName facts then
                 if method.IsVirtual then
                     failwith
@@ -1356,7 +1391,7 @@ module NativeRuntimeTypeHelpers =
             concreteTypeInfo.Generics.IsEmpty && not typeInfo.IsInterface
 
         let needsRealSlot ((method, _) : MethodInfo<_, _, _> * MetadataMethodFacts) : bool =
-            not canHaveNonVtableSlots || method.Signature.GenericParameterCount > 0
+            not canHaveNonVtableSlots || isGenericSignature method
 
         let realSlots, rest = stillUnplaced |> List.partition needsRealSlot
 

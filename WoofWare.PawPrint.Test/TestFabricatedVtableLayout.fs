@@ -33,6 +33,49 @@ open WoofWare.PawPrint
 [<TestFixture>]
 module TestFabricatedVtableLayout =
 
+    /// Sets `MethodAttributes.Virtual` on the named MethodDef row, in the emitted bytes.
+    ///
+    /// `Reflection.Emit` validates the attribute mask and refuses `static` together with `virtual`,
+    /// so the one shape `ValidateMethods` rejects for that reason cannot be built through the
+    /// builder API. Patching the row afterwards is the only way to produce it -- and the row layout
+    /// is fixed by ECMA-335 II.22.26 (RVA:4, ImplFlags:2, Flags:2, ...), while `MetadataReader`
+    /// hands over the table's offset and row size, so this needs no guesswork about heap widths.
+    let private withVirtualBitSet (methodName : string) (image : byte array) : byte array =
+        use peStream = new MemoryStream (image)
+        use peReader = new System.Reflection.PortableExecutable.PEReader (peStream)
+
+        let reader : System.Reflection.Metadata.MetadataReader =
+            System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader peReader
+
+        let handle =
+            reader.MethodDefinitions
+            |> Seq.filter (fun handle -> reader.GetString ((reader.GetMethodDefinition handle).Name) = methodName)
+            |> Seq.exactlyOne
+
+        let rowNumber =
+            System.Reflection.Metadata.Ecma335.MetadataTokens.GetRowNumber (
+                System.Reflection.Metadata.MethodDefinitionHandle.op_Implicit handle
+                : System.Reflection.Metadata.EntityHandle
+            )
+
+        let flagsOffset =
+            peReader.PEHeaders.MetadataStartOffset
+            + reader.GetTableMetadataOffset System.Reflection.Metadata.Ecma335.TableIndex.MethodDef
+            + (rowNumber - 1)
+              * reader.GetTableRowSize System.Reflection.Metadata.Ecma335.TableIndex.MethodDef
+            + 4 // RVA
+            + 2 // ImplFlags
+
+        let patched = Array.copy image
+
+        let current =
+            uint16 patched.[flagsOffset] ||| (uint16 patched.[flagsOffset + 1] <<< 8)
+
+        let updated = current ||| uint16 MethodAttributes.Virtual
+        patched.[flagsOffset] <- byte (updated &&& 0xFFus)
+        patched.[flagsOffset + 1] <- byte (updated >>> 8)
+        patched
+
     /// The fabricated image, as bytes, so that the host CLR and PawPrint read *the same* assembly
     /// rather than two separately-built ones that might differ.
     ///
@@ -225,9 +268,44 @@ module TestFabricatedVtableLayout =
         // A constructor returning non-void: rejected by the explicit return-type check (:5028-5037).
         defineMalformed "MalformedCtorReturn" ".ctor" runtimeSpecial typeof<int>
 
+        // A `static virtual` on a *class*: legal only on an interface, rejected with
+        // `IDS_CLASSLOAD_STATICVIRTUAL` (:5124-5131). Worth having because the shape is otherwise
+        // indistinguishable from an interface's static abstract, which this walk must place past
+        // the vtable -- the difference is the declaring type's kind and nothing else.
+        //
+        // Emitted `static` only; `Reflection.Emit` refuses the combination outright ("Method cannot
+        // be both static and virtual"), so the `Virtual` bit is patched into the MethodDef row after
+        // the image is written. See `withVirtualBitSet` below.
+        defineMalformed
+            "MalformedStaticVirtual"
+            "StaticVirtual"
+            (MethodAttributes.Public ||| MethodAttributes.Static)
+            typeof<Void>
+
+        // A COM vtable-gap marker: `RTSpecialName` with a `_VtblGap` name, which is *not* a
+        // malformed type -- CoreCLR drops the row from the declared-method list and loads the type
+        // happily. It sits here beside the malformed ones precisely because it looks like one to a
+        // naive reading of the RTSpecialName rules, and must not be treated as such.
+        let vtblGap =
+            moduleBuilder.DefineType ("HasVtableGap", TypeAttributes.Public ||| TypeAttributes.Class, typeof<obj>)
+
+        let gapMethod =
+            vtblGap.DefineMethod (
+                "_VtblGap1_3",
+                MethodAttributes.Public
+                ||| MethodAttributes.SpecialName
+                ||| MethodAttributes.RTSpecialName,
+                typeof<Void>,
+                Type.EmptyTypes
+            )
+
+        (gapMethod.GetILGenerator ()).Emit OpCodes.Ret
+        definePlain vtblGap "AfterTheGap"
+        vtblGap.CreateType () |> ignore
+
         use stream = new MemoryStream ()
         assemblyBuilder.Save stream
-        stream.ToArray ()
+        stream.ToArray () |> withVirtualBitSet "StaticVirtual"
 
     /// The host CLR's copy, loaded so that `RuntimeMethodHandle.GetSlot` answers about a MethodTable
     /// the real builder produced.
@@ -477,6 +555,7 @@ module TestFabricatedVtableLayout =
     [<TestCase "MalformedCctorReturn">]
     [<TestCase "MalformedSpecialName">]
     [<TestCase "MalformedCtorReturn">]
+    [<TestCase "MalformedStaticVirtual">]
     let ``a type CoreCLR refuses to load is refused here too`` (typeName : string) : unit =
         // `Assembly.Load` is lazy, so the type load -- and its failure -- happens here.
         let hostFailure =
@@ -491,6 +570,36 @@ module TestFabricatedVtableLayout =
         // has to show the refusal came from the rule under test.
         pawPrintFailure.Message
         |> shouldContainText "CoreCLR rejects the type at load time"
+
+    /// The counterpart to the refusals above: a COM vtable-gap marker looks like a runtime-special
+    /// method that is not a constructor, but CoreCLR loads the type and simply drops the row.
+    /// PawPrint must do the same -- refusing would reject an ordinary interop assembly, and placing
+    /// the row would shift every method after it.
+    [<Test>]
+    let ``a vtable-gap marker is dropped, not placed and not refused`` () : unit =
+        // The host loads it, which is what makes "CoreCLR tolerates this" a measurement rather than
+        // a reading of the C++. `GetType` with `throwOnError` would raise here otherwise, as it does
+        // for each of the malformed types above.
+        hostAssembly.GetType ("HasVtableGap", true) |> shouldNotEqual null
+
+        // The row really is in the image, so this test is not vacuous. Asked of the metadata rather
+        // than of host reflection: `Type.GetMethods` enumerates the *method table*, which is exactly
+        // what a gap row is absent from, so the host cannot witness its presence.
+        match fabricated.TryGetTopLevelTypeDef "" "HasVtableGap" with
+        | None -> failwith "fabricated assembly has no type HasVtableGap"
+        | Some typeInfo ->
+            typeInfo.Methods
+            |> List.map _.Name
+            |> List.contains "_VtblGap1_3"
+            |> shouldEqual true
+
+        let table = slotTableOf "HasVtableGap"
+
+        // `AfterTheGap` and the compiler-supplied default constructor, and no third entry: the gap
+        // row is absent rather than occupying a slot of its own.
+        table.BeyondVtable
+        |> List.map _.Method.Name
+        |> shouldEqual [ ".ctor" ; "AfterTheGap" ]
 
     /// Guards the whole fixture against going vacuous. Every assertion below is about a non-NewSlot
     /// virtual that matches nothing; if `PersistedAssemblyBuilder` ever started setting NewSlot for
