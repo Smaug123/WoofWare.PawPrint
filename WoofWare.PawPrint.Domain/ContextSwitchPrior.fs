@@ -88,10 +88,10 @@ module ContextSwitchPrior =
         | NullaryIlOp.LdcI4_8
         | NullaryIlOp.LdcI4_m1
         | NullaryIlOp.LdNull
-        // Comparisons *read* `PointerHashState` — that is how `ceq` decides whether
-        // synthesised hash bits are a given handle's address — but they never assign, so
-        // they still cannot mutate it, which is what this banding depends on.
-        | NullaryIlOp.Ceq
+        // Ordering comparisons. Unlike `Ceq` (banded below), these never consult
+        // `PointerHashState`: the synthesised-bits-versus-handle pairing has no answer by
+        // lookup — an unassigned key has no *order* — so they still fail loudly on it rather
+        // than reading anything a sibling thread can change.
         | NullaryIlOp.Cgt
         | NullaryIlOp.Cgt_un
         | NullaryIlOp.Clt
@@ -136,6 +136,15 @@ module ContextSwitchPrior =
         // indirect channel. In typical numeric code these operands aren't
         // `WidenedNativeInt`, so most executions don't even mutate the
         // counter.
+        //
+        // `Ceq` is the *reading* end of that same channel, and so is banded with it rather
+        // than as pure eval-stack manipulation: it asks whether some synthesised bits are a
+        // given handle's assigned address, and the answer flips from `false` to `true` if a
+        // sibling thread materialises that handle first. It cannot itself assign — the
+        // lookup returns no state — but a read whose result a sibling can change is a
+        // scheduling-visible dependence, and banding it `Never` would give PCT no chance to
+        // switch at the one point where the difference is observable.
+        | NullaryIlOp.Ceq
         | NullaryIlOp.Add
         | NullaryIlOp.Sub
         | NullaryIlOp.Mul
@@ -298,8 +307,6 @@ module ContextSwitchPrior =
         | UnaryConstIlOp.Brfalse_s _
         | UnaryConstIlOp.Brtrue _
         | UnaryConstIlOp.Brtrue_s _
-        | UnaryConstIlOp.Beq _
-        | UnaryConstIlOp.Beq_s _
         | UnaryConstIlOp.Blt _
         | UnaryConstIlOp.Blt_s _
         | UnaryConstIlOp.Ble _
@@ -308,8 +315,6 @@ module ContextSwitchPrior =
         | UnaryConstIlOp.Bgt_s _
         | UnaryConstIlOp.Bge _
         | UnaryConstIlOp.Bge_s _
-        | UnaryConstIlOp.Bne_un _
-        | UnaryConstIlOp.Bne_un_s _
         | UnaryConstIlOp.Bge_un _
         | UnaryConstIlOp.Bge_un_s _
         | UnaryConstIlOp.Bgt_un _
@@ -322,6 +327,17 @@ module ContextSwitchPrior =
         | UnaryConstIlOp.Leave_s _
         // Prefix: the next op (a load/store) carries any effect.
         | UnaryConstIlOp.Unaligned _ -> ContextSwitchPrior.Never
+
+        // ---- InterpreterOnly: reads `PointerHashState` ----
+        // The equality branches route through the same `EvalStackValueComparisons.ceq` as
+        // the nullary `Ceq`, so they read whether a handle has been assigned an address and
+        // can answer differently depending on whether a sibling thread materialised it
+        // first. Banded with `Ceq` for that reason; the *ordering* branches do not consult
+        // the state at all and stay above.
+        | UnaryConstIlOp.Beq _
+        | UnaryConstIlOp.Beq_s _
+        | UnaryConstIlOp.Bne_un _
+        | UnaryConstIlOp.Bne_un_s _ -> ContextSwitchPrior.InterpreterOnly
 
         // Local-variable / argument access. As for the nullary
         // `Ldloc_*`/`Stloc_*`/`LdArg*` group: frame-private unless the
