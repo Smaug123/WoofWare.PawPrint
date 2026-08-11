@@ -867,11 +867,12 @@ module internal UnaryMetadataObjectOps =
                 match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
                 | true, v -> Some v
                 | false, _ ->
-                    match state.ManagedHeap.Arrays.TryGetValue addr with
                     // An array is never a boxed value type, so per the CLR this is an ordinary
                     // type mismatch rather than an interpreter abort.
-                    | true, _ -> None
-                    | false, _ -> failwith $"%s{opName}: could not find managed object with address {addr}"
+                    if ManagedHeap.isArray addr state.ManagedHeap then
+                        None
+                    else
+                        failwith $"%s{opName}: could not find managed object with address {addr}"
 
             match boxedOpt with
             | None -> state, UnboxTypeTest.WrongType
@@ -1001,10 +1002,11 @@ module internal UnaryMetadataObjectOps =
                     match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
                     | true, v -> Some v
                     | false, _ ->
-                        match state.ManagedHeap.Arrays.TryGetValue addr with
                         // An array can never be a boxed T for any T that Nullable admits.
-                        | true, _ -> None
-                        | false, _ -> failwith $"Unbox_Any: could not find managed object with address {addr}"
+                        if ManagedHeap.isArray addr state.ManagedHeap then
+                            None
+                        else
+                            failwith $"Unbox_Any: could not find managed object with address {addr}"
 
                 match boxedOpt with
                 | Some boxed when boxed.ConcreteType = underlyingHandle ->

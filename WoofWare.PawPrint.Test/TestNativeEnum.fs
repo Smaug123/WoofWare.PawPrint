@@ -341,7 +341,7 @@ public static class Entry
 
         let array = state.ManagedHeap.Arrays.[arrayAddr]
 
-        array.ConcreteType
+        array.Shape.ConcreteType
         |> shouldEqual (ConcreteTypeHandle.OneDimArrayZero expectedElementHandle)
 
         array.Elements |> Seq.toList |> shouldEqual expectedElements

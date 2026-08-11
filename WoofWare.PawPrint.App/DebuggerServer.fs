@@ -809,8 +809,8 @@ module DebuggerServer =
             match state.ManagedHeap.Arrays |> Map.tryFind address with
             | Some array ->
                 writer.WriteString ("kind", "array")
-                writer.WriteString ("concreteType", string array.ConcreteType)
-                writer.WriteNumber ("length", array.Length)
+                writer.WriteString ("concreteType", string array.Shape.ConcreteType)
+                writer.WriteNumber ("length", array.Shape.Length)
                 writeValueArray writer "elements" array.Elements writeCliType
                 // Arrays carry an object header exactly like any other heap object, so a
                 // `lock (array)` is visible here too.

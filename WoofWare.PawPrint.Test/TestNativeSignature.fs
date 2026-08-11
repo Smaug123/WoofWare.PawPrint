@@ -698,7 +698,7 @@ public sealed class MethodSignatureHost
             | false, _ -> failwith $"_arguments pointed at %O{arrayAddr}, which is not an array"
 
         [
-            for index in 0 .. array.Length - 1 do
+            for index in 0 .. array.Shape.Length - 1 do
                 match IlMachineState.getArrayValue arrayAddr index state with
                 | CliType.ObjectRef (Some addr) ->
                     NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef

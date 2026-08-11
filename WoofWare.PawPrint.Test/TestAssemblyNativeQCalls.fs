@@ -1013,7 +1013,7 @@ public static class StreamVersionLibrary
         let byteHandle =
             AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
 
-        array.ConcreteType
+        array.Shape.ConcreteType
         |> shouldEqual (ConcreteTypeHandle.OneDimArrayZero byteHandle)
 
         let actual =

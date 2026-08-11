@@ -117,9 +117,9 @@ module internal UnaryMetadataCallOps =
         | Some arrAddr ->
 
         let arrObj =
-            match state.ManagedHeap.Arrays.TryGetValue arrAddr with
-            | true, v -> v
-            | false, _ -> failwith $"multi-dim array Set: array allocation not found at %O{arrAddr}"
+            match ManagedHeap.tryGetArrayShape arrAddr state.ManagedHeap with
+            | Some v -> v
+            | None -> failwith $"multi-dim array Set: array allocation not found at %O{arrAddr}"
 
         if arrObj.Lengths.Length <> rank then
             failwith
@@ -213,9 +213,9 @@ module internal UnaryMetadataCallOps =
         | Some arrAddr ->
 
         let arrObj =
-            match state.ManagedHeap.Arrays.TryGetValue arrAddr with
-            | true, v -> v
-            | false, _ -> failwith $"multi-dim array Get: array allocation not found at %O{arrAddr}"
+            match ManagedHeap.tryGetArrayShape arrAddr state.ManagedHeap with
+            | Some v -> v
+            | None -> failwith $"multi-dim array Get: array allocation not found at %O{arrAddr}"
 
         if arrObj.Lengths.Length <> rank then
             failwith
@@ -234,7 +234,7 @@ module internal UnaryMetadataCallOps =
 
         let state =
             state
-            |> IlMachineState.pushToEvalStack arrObj.Elements.[flat] thread
+            |> IlMachineState.pushToEvalStack (IlMachineState.getArrayValue arrAddr flat state) thread
             |> IlMachineState.advanceProgramCounter thread
 
         state, WhatWeDid.Executed
@@ -317,9 +317,9 @@ module internal UnaryMetadataCallOps =
         | Some arrAddr ->
 
         let arrObj =
-            match state.ManagedHeap.Arrays.TryGetValue arrAddr with
-            | true, v -> v
-            | false, _ -> failwith $"multi-dim array Address: array allocation not found at %O{arrAddr}"
+            match ManagedHeap.tryGetArrayShape arrAddr state.ManagedHeap with
+            | Some v -> v
+            | None -> failwith $"multi-dim array Address: array allocation not found at %O{arrAddr}"
 
         if arrObj.Lengths.Length <> rank then
             failwith

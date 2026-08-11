@@ -595,9 +595,12 @@ module IlMachineThreadState =
 
         let o : AllocatedArray =
             {
-                ConcreteType = arrayType
-                Length = len
-                Lengths = ImmutableArray.Create len
+                Shape =
+                    {
+                        ConcreteType = arrayType
+                        Length = len
+                        Lengths = ImmutableArray.Create len
+                    }
                 Elements = initialisation
             }
 
@@ -663,9 +666,12 @@ module IlMachineThreadState =
 
         let o : AllocatedArray =
             {
-                ConcreteType = arrayType
-                Length = totalLength
-                Lengths = dimensionLengths
+                Shape =
+                    {
+                        ConcreteType = arrayType
+                        Length = totalLength
+                        Lengths = dimensionLengths
+                    }
                 Elements = initialisation
             }
 
@@ -743,7 +749,7 @@ module IlMachineThreadState =
 
         // `Array.Clone`'s managed body is `MemberwiseClone()`, so arrays are in scope even though
         // PawPrint intercepts `Array.Clone` itself and nothing can derive from `System.Array`.
-        match state.ManagedHeap.Arrays.ContainsKey source with
+        match ManagedHeap.isArray source state.ManagedHeap with
         | true -> cloneArray source state
         | false ->
             failwith $"cloneObject: address %O{source} is not allocated on the managed heap, so has nothing to clone"
