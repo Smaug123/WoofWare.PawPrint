@@ -117,6 +117,7 @@ module TestFSharpPureCases =
             "AbstractDispatch"
             "ByrefDispatch"
             "SprintfBasic"
+            "UnionVirtualSlots"
             "UnionReflection"
         ]
 
@@ -127,22 +128,27 @@ module TestFSharpPureCases =
     /// before recording that a case is blocked on a named primitive, un-park it and observe the
     /// failure: parking it is what stops the claim being checked.
     ///
-    /// `UnionReflection` is parked on the `RuntimeMethodHandle::GetSlot` InternalCall.
-    /// `Associates.AssignAssociates` now runs to completion, so `RuntimeType.PopulateProperties`
-    /// reaches its *next* step: suppressing properties whose accessor occupies a vtable slot already
-    /// claimed by a more derived one (`RuntimeType.CoreCLR.cs:1345-1368`), which asks each accessor
-    /// for its slot number. That is a question about the method table rather than about metadata,
-    /// which is why it is a separate feature from everything before it on this path.
+    /// `UnionReflection` is parked on `RuntimeMethodHandle::GetSlot` being asked about a method that
+    /// occupies no vtable slot at all. A union's case fields are read through property accessors,
+    /// and those are not virtual; CoreCLR numbers a non-virtual method in the *non-vtable* region
+    /// past `GetNumVirtuals`, which PawPrint's slot walk does not model -- it lays out the vtable
+    /// proper and nothing beyond it. How the method table is numbered past its virtual prefix is a
+    /// separate question from how the vtable itself is laid out, which is what the commit this
+    /// comment sits in implements.
     ///
     /// Observed by un-parking it and running: the real runtime exits 0, PawPrint reports
-    /// "Unimplemented native method (InternalCall): System.RuntimeMethodHandle::GetSlot".
+    /// "TODO: RuntimeMethodHandle.GetSlot: method get_width occupies no slot in the vtable of its
+    /// declaring type 362; CoreCLR would answer with a slot in the non-vtable region beyond
+    /// GetNumVirtuals, which PawPrint does not model."
     ///
-    /// Nine earlier blockers are already gone: decoding each case's
+    /// Ten earlier blockers are already gone: decoding each case's
     /// `CompilationMappingAttribute(SourceConstructFlags, ...)`, whose argument is an enum;
     /// enumerating the union's nested case types; `MetadataImport::GetSigOfFieldDef`; the raw-blob
     /// path of `Signature_Init`; `MetadataImport::GetDefaultValue`; `MetadataImport::GetName`;
-    /// property enumeration; `MetadataImport::GetPropertyProps`; and the associates branch of
-    /// `MetadataImport::Enum`, which the commit this comment sits in implements.
+    /// property enumeration; `MetadataImport::GetPropertyProps`; the associates branch of
+    /// `MetadataImport::Enum`; and the fresh-slot rule for an unmatched non-NewSlot virtual, which
+    /// every F# union needs for its compiler-generated `CompareTo`/`Equals`/`GetHashCode` and which
+    /// `UnionVirtualSlots` now covers end to end.
     let unimplemented : Set<string> = Set.ofList [ "UnionReflection" ]
 
     // F# test cases that legitimately throw under both runtimes. Without this set, a test
