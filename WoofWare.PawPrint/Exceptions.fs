@@ -33,22 +33,6 @@ type CliException<'typeGen, 'methodGen, 'methodVar when 'typeGen : comparison an
         ExceptionObject : ManagedHeapAddress
         /// Stack trace built during unwinding
         StackTrace : ExceptionStackFrame<'typeGen, 'methodGen, 'methodVar> list
-        /// Whether a foreign-raise flag pending on this thread is still *this* raise's to consume
-        /// — see `ExceptionDispatching.consumeForeignExceptionRaise`. True from the moment a raise
-        /// begins until it appends its first frame; false thereafter, and false for a flag set
-        /// after this raise was already under way.
-        ///
-        /// It lives on the raise rather than being passed down the dispatch functions because a
-        /// raise is *suspended* across guest cleanup code — a `finally` body, a filter — and has to
-        /// come back with the same answer it left with. Both of PawPrint's suspension points
-        /// already carry a `CliException` (`ExceptionContinuation.PropagatingException` and
-        /// `ExceptionFilterContinuation`), so putting it here makes it survive them for free; a
-        /// parameter at the resume sites cannot tell a flag that predates the cleanup from one the
-        /// cleanup set, and gets one of the two wrong whichever constant it picks.
-        ///
-        /// Meaningless on a `CliException` parked in `MethodState.CatchExceptions`: that raise has
-        /// concluded. A `rethrow` reading one back is starting a *new* raise and sets this afresh.
-        MayConsumeForeignRaise : bool
     }
 
 type ExceptionFilterRegion =
@@ -57,20 +41,94 @@ type ExceptionFilterRegion =
         HandlerOffset : ExceptionOffset
     }
 
+/// How a first-pass handler search concluded. Every case but `NoHandler` names the frame the
+/// second pass unwinds *to*; the frame itself stays live until the second pass reaches it.
+///
+/// The payload is deliberately no more than a `FrameId` plus, where a frame has several clauses,
+/// which one won. Everything else the second pass needs — the wrap flags on the frame's
+/// `ReturnState`, the parked filter continuation, the caller to advance to — is still readable
+/// from the live frame when the second pass arrives, so copying it here could only introduce a
+/// second version of the truth.
+type ExceptionSearchOutcome =
+    /// A `catch` or `filter` clause of this frame accepted the exception. For a `Filter`, its
+    /// body has *already* run — in the first pass, with the inner frames still live — so the
+    /// second pass enters `HandlerOffset` directly rather than evaluating anything.
+    | CaughtAt of frame : FrameId * handler : ExceptionRegion
+    /// This frame is evaluating an exception filter which this exception escaped. The CLR
+    /// catches such an exception at the filter boundary and reports the filter as false, so the
+    /// second pass runs the cleanup between the throw point and the boundary, discards the
+    /// exception, and resumes the search parked on that filter's continuation.
+    | AbandonedAtFilter of frame : FrameId
+    /// Leaving this frame interposes a synthesised wrapper — a `TypeInitializationException`
+    /// around a throwing `.cctor`, a `TargetInvocationException` around an
+    /// `Activator.CreateInstance<T>()` ctor, or both. The search cannot continue past it,
+    /// because the wrap changes the exception's *type* and every outer frame must be searched
+    /// against the wrapper instead. The second pass unwinds to here, wraps, and starts a fresh
+    /// first pass at the caller.
+    | WrappedAt of frame : FrameId
+    /// No frame on the thread has a handler. The second pass still runs — measured on .NET 10,
+    /// an unhandled exception unwinds and runs every `finally` after the runtime has reported
+    /// it — and terminates the thread when it reaches the outermost frame.
+    | NoHandler
+
+/// The state of a first-pass handler search: a walk outward along the `ReturnState.JumpTo`
+/// chain that pops nothing, appending a stack-trace frame per frame boundary crossed and
+/// running any filter it meets in place.
+type ExceptionSearchState<'typeGen, 'methodGen, 'methodVar
+    when 'typeGen : comparison and 'typeGen :> IComparable<'typeGen>> =
+    {
+        /// The exception being dispatched, carrying the trace accumulated by the walk so far.
+        Exception : CliException<'typeGen, 'methodGen, 'methodVar>
+        /// Carried rather than re-read from the heap so that the walk works on a state whose
+        /// exception object is not a real heap object, as low-level dispatch tests use.
+        ExceptionType : 'typeGen
+        /// The frame the raise began in, and the IL offset within it from which the second pass
+        /// must start looking for cleanup. Not recoverable afterwards: the first pass runs
+        /// filters in place, so it may leave the thread's active frame at some outer frame.
+        StartFrame : FrameId
+        StartPC : int
+        /// Where the walk currently is.
+        Frame : FrameId
+        SearchPC : int
+        /// Filters of `Frame` that have already run and rejected this exception. Cleared
+        /// whenever the walk advances to a caller.
+        SkippedFilters : ExceptionFilterRegion list
+    }
+
+/// The state of a second-pass unwind: a walk from the throw point to the frame that `Target`
+/// names, running each `finally`/`fault` clause in between.
+type ExceptionUnwindState<'typeGen, 'methodGen, 'methodVar
+    when 'typeGen : comparison and 'typeGen :> IComparable<'typeGen>> =
+    {
+        /// The exception, carrying the trace the first pass completed. By the time any clause
+        /// this unwind runs can observe it, it has already been projected onto the exception
+        /// object, which is the whole point of separating the passes.
+        Exception : CliException<'typeGen, 'methodGen, 'methodVar>
+        ExceptionType : 'typeGen
+        /// Where the unwind currently is. `PC` is only ever the *entry* PC of a frame: once a
+        /// cleanup clause has been entered, the frame's own live `IlOpIndex` — by then inside
+        /// the handler body — is what the resume re-searches from, which is what stops a
+        /// tower of nested clauses from re-entering the one that just ran.
+        Frame : FrameId
+        PC : int
+        Target : ExceptionSearchOutcome
+    }
+
+/// A first-pass search suspended in the middle of evaluating one `filter` clause.
 type ExceptionFilterContinuation<'typeGen, 'methodGen, 'methodVar
     when 'typeGen : comparison and 'typeGen :> IComparable<'typeGen>> =
     {
         CurrentFilter : ExceptionFilterRegion
-        SkippedFilters : ExceptionFilterRegion list
-        SearchPC : int
-        CliException : CliException<'typeGen, 'methodGen, 'methodVar>
+        /// The first-pass search that suspended to evaluate `CurrentFilter`. Its
+        /// `SkippedFilters` does *not* yet include `CurrentFilter`; rejection adds it.
+        Search : ExceptionSearchState<'typeGen, 'methodGen, 'methodVar>
     }
 
 /// Represents what to do after executing a finally/filter block
 type ExceptionContinuation<'typeGen, 'methodGen, 'methodVar
     when 'typeGen : comparison and 'typeGen :> IComparable<'typeGen>> =
     | ResumeAfterFinally of targetPC : int
-    | PropagatingException of exn : CliException<'typeGen, 'methodGen, 'methodVar>
+    | PropagatingException of unwind : ExceptionUnwindState<'typeGen, 'methodGen, 'methodVar>
     | ResumeAfterFilter of continuation : ExceptionFilterContinuation<'typeGen, 'methodGen, 'methodVar>
 
 type ExceptionContinuationScope =
@@ -153,13 +211,21 @@ module ExceptionHandling =
             )
             |> Seq.toList
 
-    /// Every `finally` that must run when control leaves `currentPC` for `targetPC`,
-    /// ordered innermost first — the order ECMA-335 III.3.55 requires `leave` to run them in.
-    ///
-    /// Takes a bare region table rather than a method: this is the whole of the decision —
-    /// which handlers, in which order — while `findFinallyBlocksToRun` below only fetches the
-    /// table. Tests can then exercise the rule against hand-built towers of regions without
-    /// standing up a method.
+    /// The `ExceptionOffset` of any exception region, whatever its clause kind.
+    let regionOffset (region : ExceptionRegion) : ExceptionOffset =
+        match region with
+        | ExceptionRegion.Catch (_, offset)
+        | ExceptionRegion.Filter (_, offset)
+        | ExceptionRegion.Finally offset
+        | ExceptionRegion.Fault offset -> offset
+
+    /// True iff `offset`'s *protected* region — its `try`, not its handler — contains `pc`.
+    let private tryRegionCovers (pc : int) (offset : ExceptionOffset) : bool =
+        pc >= offset.TryOffset && pc < offset.TryOffset + offset.TryLength
+
+    /// The regions accepted by `isWanted` whose `try` covers `currentPC` but not `boundary`,
+    /// ordered innermost first. `None` for `boundary` means nothing in this method is the
+    /// destination, so every covering region qualifies.
     ///
     /// The ordering key is `(-TryOffset, TryLength)`. Sorting on `-TryOffset` alone is not
     /// total: a `try` may begin at the same IL offset as the `try` enclosing it, and then only
@@ -168,30 +234,95 @@ module ExceptionHandling =
     /// the offset alone happens to work today — but that leaves correctness resting on both
     /// the producer's clause order and `Seq.sortBy`'s stability, neither of which is stated
     /// where a reader of this function would look.
-    let finallyBlocksBetween (regions : ExceptionRegion seq) (currentPC : int) (targetPC : int) : ExceptionOffset list =
+    let private regionsBetween
+        (regions : ExceptionRegion seq)
+        (isWanted : ExceptionRegion -> bool)
+        (currentPC : int)
+        (boundary : int option)
+        : ExceptionRegion list
+        =
         regions
-        |> Seq.choose (fun region ->
-            match region with
-            | ExceptionRegion.Finally offset ->
-                // We're leaving if we're in the try block and target is outside
-                if
-                    currentPC >= offset.TryOffset
-                    && currentPC < offset.TryOffset + offset.TryLength
-                    && (targetPC < offset.TryOffset || targetPC >= offset.TryOffset + offset.TryLength)
-                then
-                    Some offset
-                else
-                    None
-            | ExceptionRegion.Filter _
-            | ExceptionRegion.Catch _
-            | ExceptionRegion.Fault _ -> None
+        |> Seq.filter (fun region ->
+            if not (isWanted region) then
+                false
+            else
+
+            let offset = regionOffset region
+
+            tryRegionCovers currentPC offset
+            && (
+                match boundary with
+                | None -> true
+                | Some boundary -> not (tryRegionCovers boundary offset)
+            )
         )
-        |> Seq.sortBy (fun offset ->
+        |> Seq.sortBy (fun region ->
             // Inner to outer: later-starting first, and among regions that start together,
             // the shorter one is the nested one.
+            let offset = regionOffset region
             -offset.TryOffset, offset.TryLength
         )
         |> Seq.toList
+
+    /// Every `finally` that must run when control leaves `currentPC` for `targetPC`,
+    /// ordered innermost first — the order ECMA-335 III.3.55 requires `leave` to run them in.
+    ///
+    /// Takes a bare region table rather than a method: this is the whole of the decision —
+    /// which handlers, in which order — while `findFinallyBlocksToRun` below only fetches the
+    /// table. Tests can then exercise the rule against hand-built towers of regions without
+    /// standing up a method.
+    ///
+    /// `fault` clauses are deliberately absent: `leave` is a *non-exceptional* transfer of
+    /// control, and ECMA-335 III.3.55 runs only `finally` handlers for it. The exceptional
+    /// counterpart, which does run both kinds, is `cleanupRegionsBetween` below.
+    let finallyBlocksBetween (regions : ExceptionRegion seq) (currentPC : int) (targetPC : int) : ExceptionOffset list =
+        regionsBetween
+            regions
+            (fun region ->
+                match region with
+                | ExceptionRegion.Finally _ -> true
+                | ExceptionRegion.Catch _
+                | ExceptionRegion.Filter _
+                | ExceptionRegion.Fault _ -> false
+            )
+            currentPC
+            (Some targetPC)
+        |> List.map regionOffset
+
+    /// Every exceptional-cleanup clause — `finally` *and* `fault` — that an exception leaving
+    /// `currentPC` must run in this method, ordered innermost first. This is the second pass of
+    /// CoreCLR's two-pass dispatch, restricted to one frame.
+    ///
+    /// `boundary` is the IL offset at which unwinding stops *inside this method*: the entry
+    /// offset of the clause that is going to receive the exception — a `catch`/`filter`
+    /// handler's `HandlerOffset`, or a filter's `FilterOffset` when the exception dies at the
+    /// filter boundary. `None` means the exception is leaving the method altogether, so every
+    /// covering clause runs.
+    ///
+    /// The boundary is load-bearing, not a refinement. A cleanup clause whose `try` also covers
+    /// the destination *encloses* the handler rather than lying between the throw point and it,
+    /// so it must not run now; it runs later, when control eventually leaves it by `leave`.
+    /// Without the exclusion this would run the `finally` of a plain C# `try/catch/finally`
+    /// before its own `catch`, and then again on the way out: Roslyn lowers that construct to
+    /// `try { try { … } catch { … } } finally { … }`, so the outer `finally`'s `try` covers the
+    /// throw point *and* the catch handler. `sourcesPure/ComplexTryCatch.cs` is that shape.
+    let cleanupRegionsBetween
+        (regions : ExceptionRegion seq)
+        (currentPC : int)
+        (boundary : int option)
+        : ExceptionRegion list
+        =
+        regionsBetween
+            regions
+            (fun region ->
+                match region with
+                | ExceptionRegion.Finally _
+                | ExceptionRegion.Fault _ -> true
+                | ExceptionRegion.Catch _
+                | ExceptionRegion.Filter _ -> false
+            )
+            currentPC
+            boundary
 
     let findFinallyBlocksToRun
         (currentPC : int)

@@ -8,12 +8,13 @@ using System.Runtime.ExceptionServices;
 // The sibling establishes that a flag-consuming rethrow marks the boundary on the exception's
 // *current* trace — the one the nested `ExceptionDispatchInfo.Throw()` left behind — rather than
 // on the snapshot the enclosing handler was entered with. This file adds the one thing that can
-// destroy that trace between the rethrow and the frame that consumes the flag: entering a handler
-// in the same method. Handler entry records the in-flight `CliException.StackTrace` onto the
-// exception object, and for a rethrow that has not yet unwound anything, that list is precisely
-// the stale snapshot. Writing it back would overwrite the nested throw's newer trace, and the
-// consume — which happens later, at the first appended frame — would then read the stale one and
-// lose the nested boundary.
+// destroy that trace between the rethrow and the frame that consumes the flag: cleanup in the same
+// method, entered while the raise is still in flight. Any write of the in-flight
+// `CliException.StackTrace` back onto the exception object at that moment would be writing the
+// stale snapshot, since a rethrow that has not yet unwound anything is still carrying it — and the
+// consume, which happens later at the first appended frame, would then read the stale list and
+// lose the nested boundary. The dispatcher projects at a search's conclusion rather than on the
+// way into a clause, so no such write happens; this file is what says so.
 //
 // Measured on .NET 10 before being written: 2 boundaries, exactly as without the `finally`.
 class ForeignRaiseTokenSurvivesLocalCleanup

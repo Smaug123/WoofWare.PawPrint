@@ -464,6 +464,50 @@ catch (Exception e) { Console.WriteLine(e.StackTrace); }
 substrings and counts precisely because of this: trace text is not comparable across the two
 runtimes, but the presence, count and ordering of the boundary annotation is.
 
+## An unhandled exception is reported after its cleanup runs, not before
+
+**CoreCLR**: when the first pass of exception dispatch finds no handler on the thread, the runtime
+reports the exception *immediately* — the `Unhandled exception.` banner and the complete stack
+trace go to stderr — and only then does the second pass unwind, running every `finally` and
+`fault` clause between the throw point and the base of the stack. Measured on .NET 10: the banner
+appears first, then each cleanup clause in innermost-first order, then the process aborts (exit
+134). A clause that calls `Environment.Exit` during that unwind wins, and the process exits with
+its code rather than aborting.
+
+**PawPrint**: the same cleanup runs, in the same order, with the same complete trace visible to it
+— but nothing is reported until the unwind has finished, because the report *is* the terminating
+`ExceptionUnhandled` outcome the second pass returns when it reaches the outermost frame. So a
+guest that writes to stderr from such a `finally` sees its output ordered before the report rather
+than after it.
+
+**Spec status**: Outside ECMA-335, which specifies neither the report nor its timing.
+
+**Why we chose this**: PawPrint has no equivalent of CoreCLR's out-of-band report. Termination is
+a value returned up the interpreter loop, and the host decides what to print; emitting a report
+mid-unwind would mean either giving the dispatcher a side channel to stderr — the one thing the
+`ExecutionResult` design exists to avoid — or returning a terminating outcome while guest code is
+still to run, which no caller could act on. The facts a guest can *observe* are unaffected: the
+trace it reads inside the clause is the completed one either way, and the exit code agrees.
+
+**Observable example**:
+
+```csharp
+static void Cleaner()
+{
+    try { throw new NotSupportedException(); }
+    finally { Console.Error.WriteLine("cleanup"); }
+}
+
+// CoreCLR:  Unhandled exception. System.NotSupportedException ... then "cleanup"
+// PawPrint: "cleanup", then the host's report
+```
+
+**Where this lives in code**: `ExceptionDispatching.secondPass`, whose `NoHandler` arm returns
+`ExceptionDispatchResult.ExceptionUnhandled` once it reaches a frame with no caller.
+`sourcesPure/UnhandledExceptionRunsFinally.cs` pins the parts both runtimes agree on: that the
+clause runs at all, that the trace it reads names every frame including `Main`'s, and that an
+`Environment.Exit` from inside it decides the exit code.
+
 ## `GC.AllocateUninitializedArray` returns a zeroed array
 
 **CoreCLR**: `GC.AllocateUninitializedArray<T>(int, bool)` passes `GC_ALLOC_ZEROING_OPTIONAL` to

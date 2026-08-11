@@ -272,6 +272,8 @@ module IlMachineState =
 
     let isConcreteTypeAssignableTo = IlMachineRuntimeMetadata.isConcreteTypeAssignableTo
 
+    let isNullableForType = IlMachineRuntimeMetadata.isNullableForType
+
     let isRuntimeTypeHandleTargetAssignableTo =
         IlMachineRuntimeMetadata.isRuntimeTypeHandleTargetAssignableTo
 
