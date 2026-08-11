@@ -103,10 +103,9 @@ module GuestLocation =
     /// <paramref name="method" />, if that method's assembly came with debug information.
     /// </summary>
     /// <remarks>
-    /// The <c>MethodDefinitionHandle</c> is a row index scoped to the assembly it came from, so it
-    /// must be resolved against the *declaring type's* assembly and no other; pairing it with any
-    /// other loaded assembly would silently name a different method's lines. A synthesised method
-    /// (a marshalling or delegate stub) has no row at all and so is legitimately unattributable.
+    /// Resolution is <c>DumpedAssembly.TryResolveMethodSource</c>'s job, including its rule that a
+    /// synthesised method has no source; all this adds is finding the one assembly that may be
+    /// asked, which is the one the method's declaring type came from and no other.
     /// </remarks>
     let trySourceOf
         (state : IlMachineState)
@@ -114,11 +113,8 @@ module GuestLocation =
         (ilOffset : int)
         : SourceLocation option
         =
-        match method.TryMetadata with
-        | None -> None
-        | Some facts ->
-            state.LoadedAssembly method.DeclaringType.Assembly
-            |> Option.bind (fun assy -> assy.TryResolveSourceLocation facts.Handle ilOffset)
+        state.LoadedAssembly method.DeclaringType.Assembly
+        |> Option.bind (fun assy -> assy.TryResolveMethodSource method ilOffset)
 
     /// <summary>
     /// The offset of the instruction immediately before <paramref name="ilOffset" /> in
@@ -234,9 +230,22 @@ module GuestLocation =
         walk 1 active
 
     /// <summary>
-    /// Where every thread that has not terminated is. Terminated threads are omitted: they are
-    /// not why the guest is stuck, and a long-running guest accumulates many of them.
+    /// The IL offset at which <paramref name="thread" />'s *active* frame should be attributed to
+    /// source: its program counter, stepped back onto the blocking call if the thread parked past
+    /// one.
     /// </summary>
+    /// <remarks>
+    /// The same answer <c>attributionOffsets</c> gives for that one frame, without building a map
+    /// over the whole stack. Callers that want only the active frame — the thread summaries on
+    /// every state-bearing response — should use this: they are hit once per step, and a guest
+    /// recursing deeply would otherwise make single-stepping cost time quadratic in stack depth.
+    ///
+    /// Requires <paramref name="thread" /> to have a live frame, exactly as
+    /// <c>ThreadState.MethodState</c> does; guard with <c>ThreadStatus.hasNoActiveFrame</c>.
+    /// </remarks>
+    let activeAttributionOffset (thread : ThreadState) : int =
+        reportableOffset thread.Status thread.MethodState
+
     /// <summary>
     /// The IL offset at which each of <paramref name="thread" />'s live frames should be
     /// attributed to source, keyed by frame.
@@ -260,23 +269,6 @@ module GuestLocation =
     /// than raise.
     /// </para>
     /// </remarks>
-    /// <summary>
-    /// The IL offset at which <paramref name="thread" />'s *active* frame should be attributed to
-    /// source: its program counter, stepped back onto the blocking call if the thread parked past
-    /// one.
-    /// </summary>
-    /// <remarks>
-    /// The same answer <c>attributionOffsets</c> gives for that one frame, without building a map
-    /// over the whole stack. Callers that want only the active frame — the thread summaries on
-    /// every state-bearing response — should use this: they are hit once per step, and a guest
-    /// recursing deeply would otherwise make single-stepping cost time quadratic in stack depth.
-    ///
-    /// Requires <paramref name="thread" /> to have a live frame, exactly as
-    /// <c>ThreadState.MethodState</c> does; guard with <c>ThreadStatus.hasNoActiveFrame</c>.
-    /// </remarks>
-    let activeAttributionOffset (thread : ThreadState) : int =
-        reportableOffset thread.Status thread.MethodState
-
     let attributionOffsets (thread : ThreadState) : Map<FrameId, int> =
         let callSites =
             thread.MethodStates
@@ -297,6 +289,10 @@ module GuestLocation =
                 | None -> frame.IlOpIndex
         )
 
+    /// <summary>
+    /// Where every thread that has not terminated is. Terminated threads are omitted: they are
+    /// not why the guest is stuck, and a long-running guest accumulates many of them.
+    /// </summary>
     let ofState (state : IlMachineState) : GuestThreadLocation list =
         state.ThreadState
         |> Map.toList
@@ -309,13 +305,6 @@ module GuestLocation =
             }
         )
 
-    let private renderSource (source : SourceLocation) : string =
-        // The document path exactly as the PDB records it, unshortened: it names the machine
-        // that built the guest, which is information, and two `Program.cs` in different
-        // directories are otherwise indistinguishable. Only the start line is rendered — the
-        // span's end is rarely what a reader wants and doubles the length of every frame.
-        $"%s{source.DocumentPath}:%d{source.StartLine}"
-
     let private renderFrame (frame : GuestFrame) : string =
         $"%s{frame.Method} at IL offset %d{frame.IlOffset}"
 
@@ -326,8 +315,7 @@ module GuestLocation =
         match location.Position with
         | GuestThreadPosition.NoFrame -> prefix
         | GuestThreadPosition.Unattributed frame -> $"%s{prefix} in %s{renderFrame frame}"
-        | GuestThreadPosition.AtSource (frame, source) ->
-            $"%s{prefix} in %s{renderFrame frame} (%s{renderSource source})"
+        | GuestThreadPosition.AtSource (frame, source) -> $"%s{prefix} in %s{renderFrame frame} (%O{source})"
         | GuestThreadPosition.CalledFrom (frame, framesOut, ancestor, ancestorSource) ->
             let from =
                 if framesOut = 1 then
@@ -338,7 +326,7 @@ module GuestLocation =
                     // into this" and "this is buried deep in framework code".
                     $"called %d{framesOut} frames out from"
 
-            $"%s{prefix} in %s{renderFrame frame}, %s{from} %s{renderFrame ancestor} (%s{renderSource ancestorSource})"
+            $"%s{prefix} in %s{renderFrame frame}, %s{from} %s{renderFrame ancestor} (%O{ancestorSource})"
 
     /// <summary>
     /// One line per non-terminated thread, joined by <c>"; "</c>.

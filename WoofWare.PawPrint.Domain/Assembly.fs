@@ -4,6 +4,7 @@ open System
 open System.Collections.Concurrent
 open System.Collections.Generic
 open System.Collections.Immutable
+open System.Diagnostics
 open System.IO
 open System.Reflection
 open System.Reflection.Metadata
@@ -766,6 +767,35 @@ type DumpedAssembly =
         match this.SequencePoints.TryGetValue (ComparableMethodDefinitionHandle.Make method) with
         | false, _ -> None
         | true, points -> MethodSequencePoints.resolve ilOffset points
+
+    /// <summary>
+    /// The source span the compiler attributed to <paramref name="ilOffset" /> within
+    /// <paramref name="method" />, which must be a method this assembly declares.
+    /// </summary>
+    /// <remarks>
+    /// <c>None</c> for a method the runtime synthesised, which is the honest answer rather than a
+    /// missing feature: a synthesised method has no declaration, so there is no source for a
+    /// compiler to have attributed anything to. <c>MethodInfo.TryMetadata</c> is shaped to force
+    /// that question to be answered rather than forgotten.
+    /// </remarks>
+    member this.TryResolveMethodSource
+        (method : MethodInfo<'typeGen, 'methodGen, 'methodVars>)
+        (ilOffset : int)
+        : SourceLocation option
+        =
+        // A MethodDefinitionHandle means nothing outside the assembly that declares it, and this
+        // one indexes `this.SequencePoints`. Passing a foreign method would not fail — it would
+        // quietly report some unrelated method's source. Callers resolve the assembly *from the
+        // method's declaring type*, which makes the mismatch unreachable; assert it rather than
+        // trusting it, at no cost in release.
+        Debug.Assert (
+            method.DeclaringType.Assembly.FullName = this.Name.FullName,
+            $"TryResolveMethodSource: {method.Name} is declared by {method.DeclaringType.Assembly.FullName}, not {this.Name.FullName}"
+        )
+
+        match method.TryMetadata with
+        | None -> None
+        | Some metadata -> this.TryResolveSourceLocation metadata.Handle ilOffset
 
     interface IDisposable with
         member this.Dispose () =
