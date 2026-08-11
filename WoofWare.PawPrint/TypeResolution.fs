@@ -244,6 +244,71 @@ module TypeResolution =
         failwith
             $"TypeResolution: generic environment is cyclic. Expanding generic parameter %O{param} requires expanding %O{param} again (already expanding: %s{chain}); its argument is %O{arg}. A generic environment must be well-founded: an argument may not mention, whether directly or through the other arguments, the parameter it is bound to. Callers should be passing closed generic arguments."
 
+    /// <summary>
+    /// What <c>substituteGenericsInTypeDefn</c> is being asked, within one fixed generic
+    /// environment: a type to substitute into, and the expansion chain in flight while doing it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>Ty</c> is compared and hashed <i>by reference</i>, not structurally. That is a soundness
+    /// concession in the safe direction — reference equality implies structural equality, so the
+    /// memo can only miss, never lie — and it is the whole point of the key: a <c>TypeDefn</c> is
+    /// a DAG, and structural hashing of one costs its size <i>as a tree</i>. For the shape this
+    /// memo exists to make tractable (<c>nest(d) := Dictionary&lt;nest(d-1), nest(d-1)&gt;</c>,
+    /// which is <c>d</c> nodes as a DAG and 2^<c>d</c> as a tree), hashing the key structurally
+    /// would cost as much as the traversal it is trying to avoid. Reference keying is O(1) and
+    /// hits exactly on the sharing that makes the DAG small in the first place.
+    /// </para>
+    /// <para>
+    /// <c>Expanding</c> is part of the key because it decides whether a parameter is a cycle or an
+    /// ordinary expansion: the same type under a different expansion chain is a different
+    /// question. It is compared structurally, which is cheap — it holds one entry per parameter
+    /// expansion currently in flight.
+    /// </para>
+    /// </remarks>
+    [<Struct ; CustomEquality ; NoComparison>]
+    type private SubstitutionKey =
+        {
+            Ty : TypeDefn
+            Expanding : Set<ExpandingParam>
+        }
+
+        override this.Equals (other : obj) : bool =
+            match other with
+            | :? SubstitutionKey as other -> (this :> System.IEquatable<SubstitutionKey>).Equals other
+            | _ -> false
+
+        override this.GetHashCode () : int =
+            (System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode this.Ty * 397)
+            ^^^ hash this.Expanding
+
+        interface System.IEquatable<SubstitutionKey> with
+            member this.Equals (other : SubstitutionKey) : bool =
+                System.Object.ReferenceEquals (this.Ty, other.Ty)
+                && this.Expanding = other.Expanding
+
+    /// <summary>
+    /// Memoised answers of <c>substituteGenericsInTypeDefn</c> for one generic environment.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A table is valid only for the environment (<c>typeGenericArgs</c>, <c>methodGenericArgs</c>)
+    /// and the defining assembly it was created against, which is why the environment is not part
+    /// of <c>SubstitutionKey</c>: a fresh table is made at the one place the environment changes,
+    /// namely the head resolution of a <c>GenericInstantiation</c> in
+    /// <c>resolveTypeFromDefnUnprimed</c>. Everywhere else the environment is threaded unchanged,
+    /// so the table travels with it.
+    /// </para>
+    /// <para>
+    /// Substitution also has the side effect of loading assemblies, and a memo hit skips it. That
+    /// is sound because a table never outlives one top-level <c>resolveTypeFromDefn</c> call, and
+    /// within one such call the <c>LoadedAssemblies</c> is threaded strictly forward: whatever a
+    /// cached answer loaded when it was computed is, by construction, already loaded in every
+    /// <c>LoadedAssemblies</c> the hit can be serving.
+    /// </para>
+    /// </remarks>
+    type private SubstitutionMemo = System.Collections.Generic.Dictionary<SubstitutionKey, TypeDefn>
+
     /// Substitute generic parameters in a TypeDefn while preserving the structure of
     /// constructed types (arrays, pointers, byrefs). For "leaf" types (FromReference,
     /// FromDefinition, PrimitiveType), falls through to resolveTypeFromDefn and converts
@@ -252,7 +317,8 @@ module TypeResolution =
     /// preserved rather than being collapsed to System.Array.
     ///
     /// <c>expanding</c> is the chain of parameter expansions currently in flight; see
-    /// <c>ExpandingParam</c>.
+    /// <c>ExpandingParam</c>. <c>memo</c> must have been created for this environment; see
+    /// <c>SubstitutionMemo</c>.
     let rec private substituteGenericsInTypeDefn
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -261,6 +327,47 @@ module TypeResolution =
         (typeGenericArgs : ImmutableArray<TypeDefn>)
         (methodGenericArgs : ImmutableArray<TypeDefn>)
         (expanding : Set<ExpandingParam>)
+        (memo : SubstitutionMemo)
+        (assy : DumpedAssembly)
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * TypeDefn
+        =
+        let key =
+            {
+                SubstitutionKey.Ty = ty
+                SubstitutionKey.Expanding = expanding
+            }
+
+        match memo.TryGetValue key with
+        | true, cached -> assemblies, cached
+        | false, _ ->
+            let assemblies, substituted =
+                substituteGenericsInTypeDefnUncached
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    baseClassTypes
+                    ty
+                    typeGenericArgs
+                    methodGenericArgs
+                    expanding
+                    memo
+                    assy
+                    assemblies
+
+            memo.[key] <- substituted
+            assemblies, substituted
+
+    /// The body of <c>substituteGenericsInTypeDefn</c>, without the memo consulted or populated.
+    /// Only <c>substituteGenericsInTypeDefn</c> may call this.
+    and private substituteGenericsInTypeDefnUncached
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (ty : TypeDefn)
+        (typeGenericArgs : ImmutableArray<TypeDefn>)
+        (methodGenericArgs : ImmutableArray<TypeDefn>)
+        (expanding : Set<ExpandingParam>)
+        (memo : SubstitutionMemo)
         (assy : DumpedAssembly)
         (assemblies : LoadedAssemblies)
         : LoadedAssemblies * TypeDefn
@@ -280,6 +387,7 @@ module TypeResolution =
                 typeGenericArgs
                 methodGenericArgs
                 (Set.add link expanding)
+                memo
                 assy
                 assemblies
         | TypeDefn.GenericMethodParameter idx ->
@@ -296,6 +404,7 @@ module TypeResolution =
                 typeGenericArgs
                 methodGenericArgs
                 (Set.add link expanding)
+                memo
                 assy
                 assemblies
         | TypeDefn.OneDimensionalArrayLowerBoundZero elementType ->
@@ -308,6 +417,7 @@ module TypeResolution =
                     typeGenericArgs
                     methodGenericArgs
                     expanding
+                    memo
                     assy
                     assemblies
 
@@ -322,6 +432,7 @@ module TypeResolution =
                     typeGenericArgs
                     methodGenericArgs
                     expanding
+                    memo
                     assy
                     assemblies
 
@@ -336,6 +447,7 @@ module TypeResolution =
                     typeGenericArgs
                     methodGenericArgs
                     expanding
+                    memo
                     assy
                     assemblies
 
@@ -350,17 +462,28 @@ module TypeResolution =
                     typeGenericArgs
                     methodGenericArgs
                     expanding
+                    memo
                     assy
                     assemblies
 
             assemblies, TypeDefn.Byref resolved
         | TypeDefn.GenericInstantiation (generic, args) ->
-            // Substitute generics in the args, then delegate the whole GenericInstantiation
-            // to resolveTypeFromDefn + typeInfoToTypeDefn. This ensures proper assembly
-            // resolution for the generic def while preserving constructed types in the args.
-            // The re-entry into resolveTypeFromDefn's GenericInstantiation case will call
-            // substituteGenericsInTypeDefn on the already-substituted args, which will
-            // go through the leaf cases (no-op for concrete types).
+            // Substitute the arguments, then resolve the head *under those arguments* and convert
+            // back with typeInfoToTypeDefn. Resolving the head is what canonicalises it (a TypeRef
+            // becomes the TypeDef it binds to, in the assembly it actually binds to) and loads
+            // whatever assembly that names; the structural recursion above is what keeps arrays,
+            // pointers and byrefs in the arguments intact rather than collapsing them.
+            //
+            // Note we resolve `generic` directly rather than re-entering resolveTypeFromDefn on the
+            // reassembled `GenericInstantiation (generic, args')`. Re-entering would reach the very
+            // same call one step later, having first substituted `args'` a second time — and that
+            // second pass cannot change the answer: substitution is idempotent on its own output,
+            // and `args'` is closed whenever the environment is well-founded, which is this
+            // function's stated precondition. It is emphatically not free, though. It re-traverses
+            // and *re-allocates* the whole argument subtree, so it doubles the work at every level
+            // of nesting; worse, because the second pass builds fresh nodes, no reference-keyed
+            // memo can ever hit on them, which would leave the blowup exponential however much we
+            // cached.
             let builder = ImmutableArray.CreateBuilder args.Length
 
             let assemblies =
@@ -375,6 +498,7 @@ module TypeResolution =
                             typeGenericArgs
                             methodGenericArgs
                             expanding
+                            memo
                             assy
                             assemblies
 
@@ -382,17 +506,20 @@ module TypeResolution =
                     assemblies
                 )
 
-            let substituted = TypeDefn.GenericInstantiation (generic, builder.ToImmutable ())
+            let args' = builder.ToImmutable ()
 
+            // `args'` replaces `typeGenericArgs` as the environment the head is resolved in, so the
+            // memo — which is only valid for one environment — must not travel with it.
             let assemblies, _assy, resolvedInfo =
                 resolveTypeFromDefnTracked
                     loggerFactory
                     dotnetRuntimeDirs
                     baseClassTypes
-                    substituted
-                    typeGenericArgs
+                    generic
+                    args'
                     methodGenericArgs
                     expanding
+                    (SubstitutionMemo ())
                     assy
                     assemblies
 
@@ -415,6 +542,7 @@ module TypeResolution =
                     typeGenericArgs
                     methodGenericArgs
                     expanding
+                    memo
                     assy
                     assemblies
 
@@ -433,6 +561,7 @@ module TypeResolution =
                     typeGenericArgs
                     methodGenericArgs
                     expanding
+                    memo
                     assy
                     assemblies
 
@@ -453,6 +582,7 @@ module TypeResolution =
         (typeGenericArgs : ImmutableArray<TypeDefn>)
         (methodGenericArgs : ImmutableArray<TypeDefn>)
         (expanding : Set<ExpandingParam>)
+        (memo : SubstitutionMemo)
         (assy : DumpedAssembly)
         (assemblies : LoadedAssemblies)
         : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
@@ -466,6 +596,7 @@ module TypeResolution =
                 typeGenericArgs
                 methodGenericArgs
                 expanding
+                memo
                 assy
                 assemblies
 
@@ -481,6 +612,7 @@ module TypeResolution =
         (typeGenericArgs : ImmutableArray<TypeDefn>)
         (methodGenericArgs : ImmutableArray<TypeDefn>)
         (expanding : Set<ExpandingParam>)
+        (memo : SubstitutionMemo)
         (assy : DumpedAssembly)
         (assemblies : LoadedAssemblies)
         : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
@@ -501,6 +633,7 @@ module TypeResolution =
                             typeGenericArgs
                             methodGenericArgs
                             expanding
+                            memo
                             assy
                             assemblies
 
@@ -520,6 +653,10 @@ module TypeResolution =
             // one whose environment is cyclic in any case. Staying conservative is the honest
             // choice for a guard whose false positives would be far harder to diagnose than its
             // false negatives.
+            //
+            // The memo, by contrast, must *not* be carried: it is keyed on the type alone, and is
+            // therefore only meaningful for the environment it was built against, which we have
+            // just left.
             resolveTypeFromDefnTracked
                 loggerFactory
                 dotnetRuntimeDirs
@@ -528,6 +665,7 @@ module TypeResolution =
                 args'
                 methodGenericArgs
                 expanding
+                (SubstitutionMemo ())
                 assy
                 assemblies
         | TypeDefn.FromDefinition (identity, _typeKind) ->
@@ -582,6 +720,7 @@ module TypeResolution =
                 typeGenericArgs
                 methodGenericArgs
                 (Set.add link expanding)
+                memo
                 assy
                 assemblies
         | TypeDefn.GenericMethodParameter param ->
@@ -600,6 +739,7 @@ module TypeResolution =
                 typeGenericArgs
                 methodGenericArgs
                 (Set.add link expanding)
+                memo
                 assy
                 assemblies
         | TypeDefn.OneDimensionalArrayLowerBoundZero _
@@ -636,6 +776,15 @@ module TypeResolution =
     /// <c>concreteHandleToTypeDefn</c> produces — satisfies this trivially. A cyclic environment
     /// is diagnosed and raised on rather than recursed into; see <c>ExpandingParam</c>.
     /// </para>
+    /// <para>
+    /// The cost is the size of <paramref name="ty" /> as a <i>DAG</i>, not as a tree: a subterm
+    /// physically shared between several argument positions is substituted once and the answer
+    /// reused, and the answer shares in the same way. That distinction is not academic — a type
+    /// like <c>nest(d) := Dictionary&lt;nest(d-1), nest(d-1)&gt;</c> is <c>d</c> nodes shared and
+    /// 2^<c>d</c> unshared — so callers that build types by repeated instantiation should hand the
+    /// same object to each position that wants the same type, rather than an equal copy. Doing
+    /// otherwise costs more but cannot change the answer; see <c>SubstitutionMemo</c>.
+    /// </para>
     /// </remarks>
     let resolveTypeFromDefn
         (loggerFactory : ILoggerFactory)
@@ -656,6 +805,7 @@ module TypeResolution =
             typeGenericArgs
             methodGenericArgs
             Set.empty
+            (SubstitutionMemo ())
             assy
             assemblies
 
