@@ -276,7 +276,7 @@ module internal IntrinsicHelpers =
                 let arrElementSize =
                     let arrObj = state.ManagedHeap.Arrays.[arr]
 
-                    if arrObj.Length = 0 then
+                    if arrObj.Shape.Length = 0 then
                         tSize
                     else
                         CliType.sizeOf arrObj.Elements.[0]
@@ -326,7 +326,7 @@ module internal IntrinsicHelpers =
                     let baseSrc = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)
 
                     let normalisationElementSize =
-                        let obj = state.ManagedHeap.Arrays.[arr]
+                        let obj = ManagedHeap.getArrayShape arr state.ManagedHeap
 
                         if obj.Length = 0 then 0 else arrElementSize
 

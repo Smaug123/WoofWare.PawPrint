@@ -48,7 +48,7 @@ module NullaryIlOp =
                 let arrObj = state.ManagedHeap.Arrays.[arr]
 
                 let elementSize =
-                    if arrObj.Length = 0 then
+                    if arrObj.Shape.Length = 0 then
                         // Array.Empty<T>() has no representative element from
                         // which to read the byte stride. The only stable address
                         // we can derive without the element type is index zero.
@@ -1511,7 +1511,7 @@ module NullaryIlOp =
             | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
             | _ -> failwith $"Invalid array: %O{arr}"
 
-        let arr = state.ManagedHeap.Arrays.[arrAddr]
+        let arr = ManagedHeap.getArrayShape arrAddr state.ManagedHeap
 
         if index < 0 || index >= arr.Length then
             failwith "TODO: throw IndexOutOfRangeException"
@@ -1537,7 +1537,7 @@ module NullaryIlOp =
         // the same handle either way today; deriving it from the current state keeps that a
         // property we rely on locally rather than one a reader has to go and confirm.)
         let elementHandle =
-            match state.ManagedHeap.Arrays.[arrAddr].ConcreteType with
+            match (ManagedHeap.getArrayShape arrAddr state.ManagedHeap).ConcreteType with
             | ConcreteTypeHandle.OneDimArrayZero element -> element
             | other ->
                 failwith
@@ -2470,7 +2470,7 @@ module NullaryIlOp =
                 | EvalStackValue.ObjectRef addr -> addr
                 | _ -> failwith $"can't get len of {popped}"
 
-            let popped = state.ManagedHeap.Arrays.[popped]
+            let popped = ManagedHeap.getArrayShape popped state.ManagedHeap
 
             IlMachineState.pushToEvalStack'
                 (EvalStackValue.Int32 (Int32Source.Verbatim popped.Length))

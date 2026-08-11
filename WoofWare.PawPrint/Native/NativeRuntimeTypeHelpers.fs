@@ -2613,9 +2613,9 @@ module NativeRuntimeTypeHelpers =
         | CliType.ObjectRef None -> None
         | CliType.ObjectRef (Some arrayAddr) ->
             let array =
-                match state.ManagedHeap.Arrays.TryGetValue arrayAddr with
-                | true, array -> array
-                | false, _ ->
+                match ManagedHeap.tryGetArrayShape arrayAddr state.ManagedHeap with
+                | Some array -> array
+                | None ->
                     failwith
                         $"%s{operation}: %s{argName} points at %O{arrayAddr}, which is not an array on the managed heap"
 

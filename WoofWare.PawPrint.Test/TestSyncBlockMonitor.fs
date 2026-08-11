@@ -101,9 +101,12 @@ module TestSyncBlockMonitor =
     let private allocateHeapArray (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
         let stub : AllocatedArray =
             {
-                ConcreteType = ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 0)
-                Length = 0
-                Lengths = ImmutableArray.Create 0
+                Shape =
+                    {
+                        ConcreteType = ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 0)
+                        Length = 0
+                        Lengths = ImmutableArray.Create 0
+                    }
                 Elements = ImmutableArray.Empty
             }
 

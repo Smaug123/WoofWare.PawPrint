@@ -67,9 +67,12 @@ module TestBinaryArithmetic =
             |> ImmutableArray.CreateRange
 
         {
-            ConcreteType = ConcreteTypeHandle.OneDimArrayZero int32Handle
-            Length = values.Length
-            Lengths = ImmutableArray.Create values.Length
+            Shape =
+                {
+                    ConcreteType = ConcreteTypeHandle.OneDimArrayZero int32Handle
+                    Length = values.Length
+                    Lengths = ImmutableArray.Create values.Length
+                }
             Elements = elements
         }
 

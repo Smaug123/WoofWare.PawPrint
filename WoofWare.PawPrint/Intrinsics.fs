@@ -2034,10 +2034,14 @@ module Intrinsics =
                 )
             | Some rvaData ->
 
+            // Keeps the whole allocation: the RVA-decoding fold below reads element `i` as a
+            // *template* for `readPeByteRangeBytesAs`, which is a type query rather than a
+            // guest-visible cell read. Splitting that out is left to the follow-up that
+            // introduces a dedicated accessor for cell-type witnesses.
             let arr = state.ManagedHeap.Arrays.[arrayAddr]
 
             let elementHandle : ConcreteTypeHandle =
-                match arr.ConcreteType with
+                match arr.Shape.ConcreteType with
                 | ConcreteTypeHandle.OneDimArrayZero element -> element
                 | ConcreteTypeHandle.Array (element, _) -> element
                 | other ->
@@ -2120,7 +2124,7 @@ module Intrinsics =
                 IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementHandle
 
             let elementStride : int = CliType.sizeOf elementZero
-            let totalSize : int64 = int64 elementStride * int64 arr.Length
+            let totalSize : int64 = int64 elementStride * int64 arr.Shape.Length
 
             // `// make certain you don't go off the end of the rva static
             //  if (totalSize > size) throw new ArgumentException(SR.Argument_BadFieldForInitializeArray);`
@@ -2146,7 +2150,7 @@ module Intrinsics =
             // arrays are stored flat in row-major order, matching the CLR's own layout, so the
             // same flat walk serves them.
             let state =
-                (state, seq { 0 .. arr.Length - 1 })
+                (state, seq { 0 .. arr.Shape.Length - 1 })
                 ||> Seq.fold (fun (state : IlMachineState) (i : int) ->
                     let decoded =
                         IlMachineState.readPeByteRangeBytesAs state rvaData (i * elementStride) arr.Elements.[i]
@@ -2689,7 +2693,7 @@ module Intrinsics =
                     let elementSize =
                         let obj = state.ManagedHeap.Arrays.[arr]
 
-                        if obj.Length = 0 then
+                        if obj.Shape.Length = 0 then
                             0
                         else
                             CliType.sizeOf obj.Elements.[0]
@@ -2718,7 +2722,7 @@ module Intrinsics =
                         | ByrefRoot.ArrayElement (arr, i), [] ->
                             let arrObj = state.ManagedHeap.Arrays.[arr]
 
-                            if arrObj.Length = 0 then
+                            if arrObj.Shape.Length = 0 then
                                 None
                             else
                                 let elementSize = CliType.sizeOf arrObj.Elements.[0]
@@ -2840,7 +2844,7 @@ module Intrinsics =
                     let arrObj = state.ManagedHeap.Arrays.[arr]
 
                     let elementSize =
-                        if arrObj.Length = 0 then
+                        if arrObj.Shape.Length = 0 then
                             tSize
                         else
                             CliType.sizeOf arrObj.Elements.[0]
@@ -3090,7 +3094,7 @@ module Intrinsics =
             | EvalStackValue.Float _ -> failwith "expected reference"
             | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
             | EvalStackValue.ObjectRef addr ->
-                if not (state.ManagedHeap.Arrays.ContainsKey addr) then
+                if not (ManagedHeap.isArray addr state.ManagedHeap) then
                     failwith "array not found"
 
                 let toPush =
@@ -3194,9 +3198,9 @@ module Intrinsics =
             match receiver with
             | EvalStackValue.ObjectRef addr ->
                 let arr =
-                    match state.ManagedHeap.Arrays.TryGetValue addr with
-                    | true, arr -> arr
-                    | false, _ -> failwith $"Array.%s{boundKind}: no array allocated at %O{addr}"
+                    match ManagedHeap.tryGetArrayShape addr state.ManagedHeap with
+                    | Some arr -> arr
+                    | None -> failwith $"Array.%s{boundKind}: no array allocated at %O{addr}"
 
                 // The stored shape and the receiver's concrete type must agree on rank. Both are
                 // written together by `allocateArray` / `allocateMultiDimArray`, so this cannot

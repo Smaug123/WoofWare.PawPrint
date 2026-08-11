@@ -47,7 +47,7 @@ module internal RawArrayDataProjection =
             let arr = arrayOrFail addr state
 
             match field.Name with
-            | "Length" -> Some (uint32Field (uint32 arr.Length))
+            | "Length" -> Some (uint32Field (uint32 arr.Shape.Length))
             | "Data" ->
                 failwith
                     $"TODO: RawArrayData::Data value load for array object %O{addr}; this is the shape emitted by reading Unsafe.As<RawArrayData>(array).Data, but only ldflda address projection is implemented"

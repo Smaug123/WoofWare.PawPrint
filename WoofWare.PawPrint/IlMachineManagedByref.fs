@@ -647,7 +647,7 @@ module IlMachineManagedByref =
         let targetSize = CliType.sizeOf targetTemplate
         let arrObj = state.ManagedHeap.Arrays.[arr]
 
-        if arrObj.Length = 0 then
+        if arrObj.Shape.Length = 0 then
             failwith $"TODO: byte-view read from empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
         // Compute cell size with `CliType.sizeOf` (not `byteAddressableCellSize`)
@@ -666,9 +666,9 @@ module IlMachineManagedByref =
             if inCellStart = 0 && targetSize = firstCellSize then
                 let targetCell = index + cellAdvance
 
-                if targetCell < 0 || targetCell >= arrObj.Length then
+                if targetCell < 0 || targetCell >= arrObj.Shape.Length then
                     failwith
-                        $"TODO: byte-view read past array bounds at cell %d{targetCell} of length %d{arrObj.Length}"
+                        $"TODO: byte-view read past array bounds at cell %d{targetCell} of length %d{arrObj.Shape.Length}"
 
                 let cellValue = arrObj.Elements.[targetCell]
 
@@ -701,7 +701,7 @@ module IlMachineManagedByref =
 
             let targetCell = index + cellAdvance
 
-            if targetCell < 0 || targetCell >= arrObj.Length then
+            if targetCell < 0 || targetCell >= arrObj.Shape.Length then
                 ValueNone
             else
 
@@ -721,9 +721,9 @@ module IlMachineManagedByref =
             let mutable inCellOffset = inCellStart
 
             while filled < targetSize do
-                if cell < 0 || cell >= arrObj.Length then
+                if cell < 0 || cell >= arrObj.Shape.Length then
                     failwith
-                        $"TODO: byte-view read past array bounds at cell %d{cell} of length %d{arrObj.Length} while gathering %d{targetSize} bytes"
+                        $"TODO: byte-view read past array bounds at cell %d{cell} of length %d{arrObj.Shape.Length} while gathering %d{targetSize} bytes"
 
                 let cellSize =
                     byteAddressableCellSize $"array %O{arr} element %d{cell}" arrObj.Elements.[cell]
@@ -1625,7 +1625,7 @@ module IlMachineManagedByref =
         =
         let arrObj = state.ManagedHeap.Arrays.[arr]
 
-        if arrObj.Length = 0 then
+        if arrObj.Shape.Length = 0 then
             failwith $"TODO: byte-view write to empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
         // Use `CliType.sizeOf` (not `byteAddressableCellSize`) for the stride.
@@ -1644,8 +1644,8 @@ module IlMachineManagedByref =
         let mutable inCellOffset = inCellStart
 
         while filled < bytes.Length do
-            if cell < 0 || cell >= arrObj.Length then
-                failwith $"TODO: byte-view write past array bounds at cell %d{cell} of length %d{arrObj.Length}"
+            if cell < 0 || cell >= arrObj.Shape.Length then
+                failwith $"TODO: byte-view write past array bounds at cell %d{cell} of length %d{arrObj.Shape.Length}"
 
             let existing = state.ManagedHeap.Arrays.[arr].Elements.[cell]
 
@@ -2006,7 +2006,7 @@ module IlMachineManagedByref =
 
         let arrObj = state.ManagedHeap.Arrays.[arr]
 
-        if index < 0 || index >= arrObj.Length then
+        if index < 0 || index >= arrObj.Shape.Length then
             None
         else
 
@@ -2237,7 +2237,7 @@ module IlMachineManagedByref =
                 | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
                     let arrObj = state.ManagedHeap.Arrays.[arr]
 
-                    if arrObj.Length = 0 then
+                    if arrObj.Shape.Length = 0 then
                         None
                     else
                         let cellSize = CliType.sizeOf arrObj.Elements.[0]
@@ -2251,7 +2251,7 @@ module IlMachineManagedByref =
                         then
                             let targetCell = index + cellAdvance
 
-                            if targetCell < 0 || targetCell >= arrObj.Length then
+                            if targetCell < 0 || targetCell >= arrObj.Shape.Length then
                                 None
                             else
                                 Some (IlMachineThreadState.setArrayValue arr newValue targetCell state)
@@ -3003,7 +3003,7 @@ module IlMachineManagedByref =
                 // renderable provenance.
                 let arrObj = state.ManagedHeap.Arrays.[arr]
 
-                if arrObj.Length = 0 then
+                if arrObj.Shape.Length = 0 then
                     failwith
                         $"TODO: byte-view typed store into empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
@@ -3018,9 +3018,9 @@ module IlMachineManagedByref =
                 then
                     let targetCell = index + cellAdvance
 
-                    if targetCell < 0 || targetCell >= arrObj.Length then
+                    if targetCell < 0 || targetCell >= arrObj.Shape.Length then
                         failwith
-                            $"TODO: byte-view typed store past array bounds at cell %d{targetCell} of length %d{arrObj.Length}"
+                            $"TODO: byte-view typed store past array bounds at cell %d{targetCell} of length %d{arrObj.Shape.Length}"
 
                     IlMachineThreadState.setArrayValue arr newValue targetCell state
                 else
@@ -3173,7 +3173,7 @@ module IlMachineManagedByref =
                     let arrObj = state.ManagedHeap.Arrays.[arr]
 
                     let typedCellOverride =
-                        if arrObj.Length = 0 then
+                        if arrObj.Shape.Length = 0 then
                             ValueNone
                         else
                             let cellSize = CliType.sizeOf arrObj.Elements.[0]
@@ -3182,7 +3182,7 @@ module IlMachineManagedByref =
                             if inCellStart = 0 && CliType.sizeOf newValue = cellSize then
                                 let targetCell = index + cellAdvance
 
-                                if targetCell >= 0 && targetCell < arrObj.Length then
+                                if targetCell >= 0 && targetCell < arrObj.Shape.Length then
                                     // Same destination-side test as the non-array arm below: the
                                     // *routing* question is about the cell, so both sites must
                                     // ask it the same way. (What the two do once routed still

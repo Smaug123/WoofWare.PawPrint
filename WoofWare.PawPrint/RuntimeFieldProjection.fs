@@ -123,7 +123,7 @@ module internal RuntimeFieldProjection =
     let private requireHeapObject (addr : ManagedHeapAddress) (state : IlMachineState) : unit =
         let exists =
             state.ManagedHeap.NonArrayObjects.ContainsKey addr
-            || state.ManagedHeap.Arrays.ContainsKey addr
+            || ManagedHeap.isArray addr state.ManagedHeap
 
         if not exists then
             failwith $"RawData::Data projection expected heap object at %O{addr}, but no such object exists"
@@ -150,8 +150,8 @@ module internal RuntimeFieldProjection =
 
                 let byteView = ByrefProjection.ReinterpretAs (byteConcreteType baseClassTypes state)
 
-                match state.ManagedHeap.Arrays.TryGetValue addr with
-                | true, arr ->
+                match ManagedHeap.tryGetArrayShape addr state.ManagedHeap with
+                | Some arr ->
                     // CoreCLR's `Unsafe.As<RawData>(arr).Data` is a byref to the array's
                     // length-and-padding header, `sizeof(nint)` bytes before the first
                     // element on SZ arrays. We model that "before-element-0" position by
@@ -185,7 +185,7 @@ module internal RuntimeFieldProjection =
                     | other ->
                         failwith
                             $"RawData::Data projection encountered array at %O{addr} whose ConcreteType is not an array handle: %O{other}"
-                | false, _ ->
+                | None ->
                     // Non-array heap object: byref to the start of instance data.
                     // Payload byte-view safety, including object-reference and layout
                     // checks, is enforced when the byref is read or written.
