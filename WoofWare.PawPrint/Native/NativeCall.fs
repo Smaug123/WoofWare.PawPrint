@@ -239,7 +239,7 @@ module NativeCall =
         : char
         =
         let ptr =
-            ManagedPointerByteView.addByteOffset baseClassTypes state charConcreteType (charIndex * 2) ptr
+            ManagedPointerByteView.addByteOffset state charConcreteType (charIndex * 2) ptr
 
         match IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.ofChar (char 0)) with
         | CliType.Char (high, low) -> char (int high * 256 + int low)
@@ -341,8 +341,7 @@ module NativeCall =
         (byteIndex : int)
         : byte
         =
-        let ptr =
-            ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType byteIndex ptr
+        let ptr = ManagedPointerByteView.addByteOffset state byteConcreteType byteIndex ptr
 
         match
             IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.Numeric (CliNumericType.UInt8 0uy))

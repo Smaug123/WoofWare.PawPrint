@@ -44,6 +44,7 @@
     <Compile Include="FieldHandleRegistry.fs" />
     <Compile Include="MethodHandleRegistry.fs" />
     <Compile Include="ManagedHeap.fs" />
+    <Compile Include="ArrayElementType.fs" />
     <Compile Include="TypeInitialisation.fs" />
     <Compile Include="Exceptions.fs" />
     <Compile Include="EvalStack.fs" />
@@ -60,7 +61,6 @@
     <Compile Include="HostConfig.fs" />
     <Compile Include="IlMachineStateModel.fs" />
     <Compile Include="GuestLocation.fs" />
-    <Compile Include="ArrayElementStride.fs" />
     <Compile Include="IlMachineTypeResolution.fs" />
     <Compile Include="SzArrayAllocation.fs" />
     <Compile Include="IlMachineThreadState.fs" />

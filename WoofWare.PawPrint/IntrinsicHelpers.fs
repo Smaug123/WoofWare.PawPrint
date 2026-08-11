@@ -279,7 +279,7 @@ module internal IntrinsicHelpers =
                     if arrObj.Shape.Length = 0 then
                         tSize
                     else
-                        ArrayElementStride.ofShape baseClassTypes state arrObj.Shape
+                        arrObj.Shape.ElementStride
 
                 // Choose between cell-index and byte-cursor walks:
                 //   - If the byref already carries a `ByteOffset` tail, we
@@ -755,11 +755,9 @@ module internal IntrinsicHelpers =
                 let mutable i = 0
 
                 while equal && i < byteCount do
-                    let left =
-                        ManagedPointerByteView.addByteOffset baseClassTypes state byteType i leftPtr
+                    let left = ManagedPointerByteView.addByteOffset state byteType i leftPtr
 
-                    let right =
-                        ManagedPointerByteView.addByteOffset baseClassTypes state byteType i rightPtr
+                    let right = ManagedPointerByteView.addByteOffset state byteType i rightPtr
 
                     equal <-
                         readSpanHelpersSequenceEqualByte baseClassTypes operation state left = readSpanHelpersSequenceEqualByte

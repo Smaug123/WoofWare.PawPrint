@@ -149,8 +149,7 @@ module internal CellAwareMemOps =
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index) as root, projs) ->
             tryProjectionByteOffset baseClassTypes state root projs
             |> Option.map (fun byteOffset ->
-                ByteStorageIdentity.Array arr,
-                ManagedPointerByteView.arrayBytePosition baseClassTypes state arr index byteOffset
+                ByteStorageIdentity.Array arr, ManagedPointerByteView.arrayBytePosition state arr index byteOffset
             )
         | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex) as root, projs) ->
             tryProjectionByteOffset baseClassTypes state root projs
@@ -738,8 +737,7 @@ module internal CellAwareMemOps =
         let mutable i = 0
 
         while i < byteCount do
-            let destAtI =
-                ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType i dest
+            let destAtI = ManagedPointerByteView.addByteOffset state byteConcreteType i dest
 
             match tryWholeCellZeroAt baseClassTypes state destAtI (byteCount - i) with
             | Some (newState, cellSize) ->
@@ -787,11 +785,9 @@ module internal CellAwareMemOps =
             let mutable i = byteCount - 1
 
             while i >= 0 do
-                let srcAtI =
-                    ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType i src
+                let srcAtI = ManagedPointerByteView.addByteOffset state byteConcreteType i src
 
-                let destAtI =
-                    ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType i dest
+                let destAtI = ManagedPointerByteView.addByteOffset state byteConcreteType i dest
 
                 // For a backward step we are at byte `i`, which must be the
                 // *last* byte of its cell (intra-cell offset `cellSize - 1`)
@@ -810,11 +806,9 @@ module internal CellAwareMemOps =
             let mutable i = 0
 
             while i < byteCount do
-                let srcAtI =
-                    ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType i src
+                let srcAtI = ManagedPointerByteView.addByteOffset state byteConcreteType i src
 
-                let destAtI =
-                    ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType i dest
+                let destAtI = ManagedPointerByteView.addByteOffset state byteConcreteType i dest
 
                 match tryStructuralMoveAt baseClassTypes state srcAtI destAtI (byteCount - i) false with
                 | Some (newState, cellSize) ->

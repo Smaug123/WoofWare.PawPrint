@@ -622,7 +622,7 @@ module StructMarshalStub =
         /// The address of byte `nativeOffset` of the destination, as a byte-view byref — the same
         /// shape the guest's own pointer arithmetic produces before a `stind`.
         let addressOf (nativeOffset : int) (state : IlMachineState) : ManagedPointerSource =
-            ManagedPointerByteView.addByteOffset baseClassTypes state byteView nativeOffset destination
+            ManagedPointerByteView.addByteOffset state byteView nativeOffset destination
 
         let writeAt (nativeOffset : int) (value : CliType) (state : IlMachineState) : IlMachineState =
             IlMachineState.writeManagedByrefWithBase baseClassTypes state (addressOf nativeOffset state) value

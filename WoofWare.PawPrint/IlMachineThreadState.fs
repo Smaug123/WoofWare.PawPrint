@@ -593,6 +593,9 @@ module IlMachineThreadState =
         let initialisation =
             (fun _ -> zeroOfType ()) |> Seq.init len |> ImmutableArray.CreateRange
 
+        // The element zero is the stride's definition, so it is taken from the factory
+        // rather than measured off a cell: an empty array has no cell to measure and still
+        // has a stride. One extra factory call, against `len` for the backing store.
         let o : AllocatedArray =
             {
                 Shape =
@@ -600,6 +603,7 @@ module IlMachineThreadState =
                         ConcreteType = arrayType
                         Length = len
                         Lengths = ImmutableArray.Create len
+                        ElementStride = CliType.sizeOf (zeroOfType ())
                     }
                 Elements = initialisation
             }
@@ -671,6 +675,7 @@ module IlMachineThreadState =
                         ConcreteType = arrayType
                         Length = totalLength
                         Lengths = dimensionLengths
+                        ElementStride = CliType.sizeOf (zeroOfType ())
                     }
                 Elements = initialisation
             }

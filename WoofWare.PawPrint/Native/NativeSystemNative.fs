@@ -182,8 +182,7 @@ module NativeSystemNative =
         let mutable state = state
 
         for i = 0 to bytes.Length - 1 do
-            let dest =
-                ManagedPointerByteView.addByteOffset ctx.BaseClassTypes state byteConcreteType i buffer
+            let dest = ManagedPointerByteView.addByteOffset state byteConcreteType i buffer
 
             state <-
                 IlMachineState.writeManagedByrefBytesOrTypedCell
@@ -348,8 +347,7 @@ module NativeSystemNative =
             // against this struct's own extent, so a too-large width could in principle write
             // into adjacent memory within the same block rather than failing loudly.
             for i = 0 to 23 do
-                let dest =
-                    ManagedPointerByteView.addByteOffset ctx.BaseClassTypes state byteConcreteType i ptr
+                let dest = ManagedPointerByteView.addByteOffset state byteConcreteType i ptr
 
                 state <-
                     IlMachineState.writeManagedByrefBytesOrTypedCell
@@ -902,8 +900,7 @@ module NativeSystemNative =
                 let builder = ImmutableArray.CreateBuilder<byte> bufferSize
 
                 for i = 0 to bufferSize - 1 do
-                    let src =
-                        ManagedPointerByteView.addByteOffset ctx.BaseClassTypes state byteConcreteType i buffer
+                    let src = ManagedPointerByteView.addByteOffset state byteConcreteType i buffer
 
                     let cell =
                         IlMachineState.readManagedByrefBytesAs

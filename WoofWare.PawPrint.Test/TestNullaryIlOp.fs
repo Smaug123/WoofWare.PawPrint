@@ -1890,3 +1890,103 @@ module TestNullaryIlOp =
 
         runLdindOverCell NullaryIlOp.Ldind_i8 hashCell
         |> shouldEqual (EvalStackValue.Int64 (Int64Source.OpaqueHashBits 0x40L))
+
+    // ---------------------------------------------------------------------
+    // `And` over an array-element byref.
+    //
+    // The offset of element `i` is `i * stride`, and the stride now comes from
+    // the array's recorded `ElementStride` rather than from measuring cell 0.
+    // That is what lets these questions be answered for `Array.Empty<T>()`,
+    // which has no cell to measure: previously every index but zero was
+    // refused outright. `MemoryMarshal.GetArrayDataReference` hands out a
+    // byref to index 0 of an empty array without a bounds check, and
+    // `Unsafe.Add` walks it, so such a byref is reachable from legal IL.
+    // ---------------------------------------------------------------------
+
+    /// `And` whose operands must be built against an already-populated heap, and so cannot
+    /// be handed to `stateWithNullary` up front.
+    let private runAndAgainstHeap
+        (build : IlMachineState -> IlMachineState * EvalStackValue * EvalStackValue)
+        : EvalStackValue
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let op = NullaryIlOp.And
+
+        let state, thread =
+            stateWithNullary loggerFactory op (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+        // Drop the seed value `stateWithNullary` pushed; this test supplies both operands.
+        let _, state = IlMachineState.popEvalStack thread state
+        let state, first, second = build state
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' first thread
+            |> IlMachineState.pushToEvalStack' second thread
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread op with
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
+            | [ actual ] -> actual
+            | other -> failwith $"Expected And to leave one stack value, got %O{other}"
+        | other -> failwith $"Expected And to step, got %O{other}"
+
+    /// The byte offset `And` computes for element `index` of a fresh `elementType[len]`,
+    /// recovered by masking with -1 (which preserves every bit).
+    let private elementByteOffset
+        (elementType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (len : int)
+        (index : int)
+        : int64
+        =
+        let result =
+            runAndAgainstHeap (fun state ->
+                let handle = AllConcreteTypes.getRequiredNonGenericHandle concreteTypes elementType
+                let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes handle
+
+                let arr, state =
+                    IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero handle) (fun () -> zero) len state
+
+                let ptr =
+                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
+                    |> EvalStackValue.ManagedPointer
+
+                state, ptr, nativeConst -1L
+            )
+
+        match result with
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim bits) -> bits
+        | other -> failwith $"expected And to yield verbatim bits, got %O{other}"
+
+    [<Test>]
+    let ``And scales an array-element index by the element's stride`` () : unit =
+        elementByteOffset baseClassTypes.Int32 4 2
+        |> shouldEqual (2L * int64 sizeof<int32>)
+
+        elementByteOffset baseClassTypes.Int64 4 3
+        |> shouldEqual (3L * int64 sizeof<int64>)
+
+        elementByteOffset baseClassTypes.Byte 4 3
+        |> shouldEqual (3L * int64 sizeof<byte>)
+
+    [<Test>]
+    let ``And answers for an empty array, at every index rather than only zero`` () : unit =
+        // Index 0 was always answerable. The rest were refused, because the stride was read
+        // off cell 0 and an empty array has none — so the answer depended on the array's
+        // contents rather than on its type.
+        elementByteOffset baseClassTypes.Int32 0 0 |> shouldEqual 0L
+
+        elementByteOffset baseClassTypes.Int32 0 2
+        |> shouldEqual (2L * int64 sizeof<int32>)
+
+        elementByteOffset baseClassTypes.Int64 0 3
+        |> shouldEqual (3L * int64 sizeof<int64>)
+
+        // The empty array must agree with the populated one of the same element type: the
+        // offset is a fact about the element type, not about how many cells exist.
+        elementByteOffset baseClassTypes.Int32 0 2
+        |> shouldEqual (elementByteOffset baseClassTypes.Int32 8 2)

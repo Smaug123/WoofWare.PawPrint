@@ -106,6 +106,7 @@ module TestSyncBlockMonitor =
                         ConcreteType = ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 0)
                         Length = 0
                         Lengths = ImmutableArray.Create 0
+                        ElementStride = sizeof<int32>
                     }
                 Elements = ImmutableArray.Empty
             }

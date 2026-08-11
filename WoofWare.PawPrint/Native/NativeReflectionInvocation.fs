@@ -154,11 +154,7 @@ module internal NativeReflectionInvocation =
         if index = 0 then
             buffer
         else
-            ManagedPointerByteView.addByteOffsetToByteView
-                baseClassTypes
-                state
-                (index * NativeRuntimeTypeHelpers.nativeIntSize)
-                buffer
+            ManagedPointerByteView.addByteOffsetToByteView state (index * NativeRuntimeTypeHelpers.nativeIntSize) buffer
 
     /// Read the value the caller placed behind `args[index]`, as the *signature's* parameter type.
     ///
