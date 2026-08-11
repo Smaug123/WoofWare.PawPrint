@@ -260,6 +260,23 @@ module GuestLocation =
     /// than raise.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// The IL offset at which <paramref name="thread" />'s *active* frame should be attributed to
+    /// source: its program counter, stepped back onto the blocking call if the thread parked past
+    /// one.
+    /// </summary>
+    /// <remarks>
+    /// The same answer <c>attributionOffsets</c> gives for that one frame, without building a map
+    /// over the whole stack. Callers that want only the active frame — the thread summaries on
+    /// every state-bearing response — should use this: they are hit once per step, and a guest
+    /// recursing deeply would otherwise make single-stepping cost time quadratic in stack depth.
+    ///
+    /// Requires <paramref name="thread" /> to have a live frame, exactly as
+    /// <c>ThreadState.MethodState</c> does; guard with <c>ThreadStatus.hasNoActiveFrame</c>.
+    /// </remarks>
+    let activeAttributionOffset (thread : ThreadState) : int =
+        reportableOffset thread.Status thread.MethodState
+
     let attributionOffsets (thread : ThreadState) : Map<FrameId, int> =
         let callSites =
             thread.MethodStates

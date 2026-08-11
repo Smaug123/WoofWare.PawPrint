@@ -257,12 +257,13 @@ module DebuggerServer =
             writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
             writer.WritePropertyName "activeFrameSummary"
 
-            let offsets = GuestLocation.attributionOffsets threadState
-
+            // Only the active frame is rendered here, so ask for only its offset. `/state` is
+            // emitted on every step, and building the whole stack's map each time would make
+            // single-stepping a deeply recursive guest cost time quadratic in its depth.
             writeFrameSummary
                 writer
                 state
-                (Map.find threadState.ActiveMethodState offsets)
+                (GuestLocation.activeAttributionOffset threadState)
                 threadState.ActiveMethodState
                 threadState.ActiveMethodState
                 threadState.MethodState
