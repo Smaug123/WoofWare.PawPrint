@@ -147,6 +147,11 @@ module Corelib =
         // Internal to the corelib, so it is only reachable via the dispatch carve-out.
         let szArrayHelper = findCorelibType corelib "System" "SZArrayHelper"
 
+        // Consulted by the object-cast slow path to refuse a cast CoreCLR would resolve by
+        // calling back into managed code. See the field's doc comment on `BaseClassTypes`.
+        let iDynamicInterfaceCastable =
+            findCorelibType corelib "System.Runtime.InteropServices" "IDynamicInterfaceCastable"
+
         {
             Corelib = corelib
             String = stringType
@@ -209,6 +214,7 @@ module Corelib =
             IReadOnlyListGeneric = iReadOnlyListGeneric
             IReadOnlyCollectionGeneric = iReadOnlyCollectionGeneric
             SZArrayHelper = szArrayHelper
+            IDynamicInterfaceCastable = iDynamicInterfaceCastable
         }
 
     let concretizeAll

@@ -675,13 +675,24 @@ module NativeIntSource =
             | (RuntimeTypeHandleTarget.Closed _ | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _),
               RuntimeTypeHandleTarget.OpenConstructed _ -> false
             | RuntimeTypeHandleTarget.GenericParameter _, _
-            | RuntimeTypeHandleTarget.MethodGenericParameter _, _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _, _ ->
+                // The *MethodTablePtr* side cannot legitimately name a generic parameter:
+                // there is no MethodTable to have taken the address of. Checked ahead of the
+                // TypeHandlePtr-side arm below so that a violation here is reported even when
+                // both sides are generic parameters.
+                failwith
+                    $"CEQ: MethodTablePtr with generic-parameter target has no MethodTable identity: %O{t1} vs %O{t2}"
             | _, RuntimeTypeHandleTarget.GenericParameter _
             | _, RuntimeTypeHandleTarget.MethodGenericParameter _ ->
-                // A bare generic parameter has no MethodTable; this combination should
-                // not arise from any legitimate construction.
-                failwith
-                    $"CEQ: MethodTablePtr/TypeHandlePtr with generic-parameter target has no MethodTable identity: %O{t1} vs %O{t2}"
+                // A bare generic parameter is a TypeVarTypeDesc, so the same rule as the
+                // Byref/Pointer/FunctionPointer arm above applies: it is a tagged TypeDesc
+                // pointer and can never equal a MethodTable address. This is a legitimate
+                // construction, not a contract violation — `CastHelpers.IsInstanceOfAny`
+                // opens with `RuntimeHelpers.GetMethodTable(obj) != toTypeHnd` against a raw
+                // `void*` TypeHandle that the caller is free to have obtained from
+                // `typeof(List<>).GetGenericArguments()[0]`, and CoreCLR simply compares the
+                // two pointers and finds them unequal.
+                false
         | NativeIntSource.ManagedPointer f1, NativeIntSource.ManagedPointer f2 ->
             // Match the `EvalStackValue.ManagedPointer` vs `ManagedPointer`
             // arm below: trailing `ReinterpretAs` projections are address-
