@@ -588,15 +588,14 @@ module internal NativeReflectionInvocation =
                 match commitment with
                 | IlMachineStateExecution.CallCommitment.Committed ->
                     NativeHandlerResult.pushedManagedCallee state |> Some
-                | IlMachineStateExecution.CallCommitment.SuspendedForClassInit
                 | IlMachineStateExecution.CallCommitment.Raised ->
-                    // Both arms leave this frame re-enterable with the marker pushed but no callee
-                    // frame beneath it, which the resumption branch would misread as "the target
-                    // returned". They are reachable only for an `[Intrinsic]` target serviced
-                    // inside `callMethodWithCommitment` (IlMachineStateExecution.fs:1909, :1961);
-                    // fail loudly rather than silently answering with the marker.
+                    // Leaves this frame re-enterable with the marker pushed but no callee frame
+                    // beneath it, which the resumption branch would misread as "the target
+                    // returned". Reachable only for an `[Intrinsic]` target serviced inside
+                    // `callMethodWithCommitment`; fail loudly rather than silently answering with
+                    // the marker.
                     failwith
-                        $"TODO: %s{operation} on %s{target.Method.DeclaringType.Namespace}.%s{target.Method.DeclaringType.Name}::%s{target.Method.Name}: the call did not commit (%O{commitment}), which the re-entry protocol cannot represent"
+                        $"TODO: %s{operation} on %s{target.Method.DeclaringType.Namespace}.%s{target.Method.DeclaringType.Name}::%s{target.Method.Name}: the call raised instead of committing, which the re-entry protocol cannot represent"
 
             // The re-entry protocol. This native frame's eval stack *is* the state machine, and its
             // four shapes are told apart by depth, plus — where two shapes share a depth — by the

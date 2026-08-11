@@ -1491,14 +1491,11 @@ module IlMachineStateExecution =
 
     /// What `callMethodWithCommitment` actually did, for callers that must distinguish the cases.
     ///
-    /// Most callers do not care: a `call`/`callvirt`/`newobj` names its callee in a metadata
-    /// token, so if the call is to be retried the instruction simply re-executes and re-derives
-    /// everything. `calli` is different — its callee comes off the evaluation stack, and the
-    /// pointer must be popped before the arguments can be, so a retry only works if the caller
-    /// puts it back. That caller needs to know which of these happened, and it cannot reliably
-    /// infer it: `SuspendedForClassInit` and `Raised` both leave the calling program counter
-    /// unadvanced, the first so the instruction re-runs and the second so exception dispatch
-    /// sees the faulting offset.
+    /// A call used to be able to *not happen*, when the callee's declaring type needed
+    /// initialising first: the initialiser became the active frame and the calling instruction
+    /// re-executed once it returned. That is gone — initialisation is now the callee's own
+    /// prologue, which runs after this function has pushed its frame — so every call commits, and
+    /// the only question left is whether it committed by running or by raising.
     [<RequireQualifiedAccess>]
     type CallCommitment =
         /// The call happened: a frame was pushed for the callee, or an intrinsic serviced it
@@ -1506,15 +1503,8 @@ module IlMachineStateExecution =
         ///
         /// This says the *call* took effect, not that the calling instruction is finished.
         /// Whether that instruction re-executes is the caller's own choice, made through
-        /// `advanceProgramCounterOfCaller` — `ensureTypeInitialised` passes `false` when kicking
-        /// off a `.cctor` precisely so the instruction runs again afterwards, and that call still
-        /// commits. For a caller that passes `true`, as `calli` does, `Committed` does mean the
-        /// instruction is done.
+        /// `advanceProgramCounterOfCaller`.
         | Committed
-        /// A class initialiser had to run first and is now the active frame. The calling
-        /// instruction's program counter is deliberately unadvanced: it will re-execute once the
-        /// initialiser returns, and must find the evaluation stack as it left it.
-        | SuspendedForClassInit
         /// The callee raised instead of running: an exception constructor is now the active frame
         /// and dispatch follows. The calling instruction will not re-execute, and its arguments
         /// have already been consumed.
@@ -1812,140 +1802,68 @@ module IlMachineStateExecution =
                 // CoreCLR's `CreateInstanceOfT` catches *every* exception escaping the
                 // cache.CallRefConstructor path — including a `TypeInitializationException`
                 // raised by T's `.cctor` — and rethrows it wrapped in `TargetInvocationException`.
-                // We mirror that on three sub-paths:
+                // Setting `wrapExceptionInTargetInvocation` on T's ctor frame below is the whole
+                // of that: T's initialisation happens in that frame's prologue, so a `.cctor`
+                // failure — running for the first time or cached from an earlier one — unwinds
+                // through the ctor frame and meets the wrap on its way out, and so does anything
+                // the ctor body itself throws.
                 //
-                //   (a) T's cctor was previously cached as Failed. We synthesise a fresh
-                //       `TargetInvocationException` whose `_innerException` is the cached TIE
-                //       and dispatch it ourselves. Per CoreCLR the cctor is NOT re-run, but a
-                //       fresh wrap is produced each time (verified against .NET 10).
-                //   (b) T's cctor is about to run for the first time. We let `ensureTypeInitialised`
-                //       push the cctor frame, then flip its `WrapExceptionInTargetInvocation`
-                //       flag so that if the cctor unwinds with a TIE (after the existing
-                //       `WasInitialisingType` wrap), the dispatcher additionally wraps it in
-                //       `TargetInvocationException` on the way out of the cctor frame.
-                //   (c) T's cctor has already run successfully; we just call the instance ctor
-                //       with the wrap flag set on the ctor's frame.
-                match TypeInitTable.tryGet tHandle state.TypeInitTable with
-                | Some (TypeInitState.Failed (cachedTieAddr, _cachedTieType)) ->
-                    // Nothing is projected onto the cached TIE before wrapping it, because there
-                    // are no frames to project: this path synthesises a throw rather than
-                    // unwinding one, so unlike the wrap sites in `ExceptionDispatching` there is
-                    // no in-flight `CliException` to take a frame list from.
-                    //
-                    // The cached TIE therefore keeps the trace it was given when it was first
-                    // raised, wherever in the program that was. Real .NET rebuilds it: measured on
-                    // .NET 10, reaching a failed initialisation from two call sites in one method
-                    // reports each site in turn, on what `loadClass`'s `Failed` branch documents
-                    // as the same cached instance. That branch matches, because it re-raises the
-                    // instance through `throwExceptionObject` and so re-seeds it; this path wraps
-                    // it in place instead and cannot. Distinct from the seeding of freshly
-                    // synthesised wrappers, which `ExceptionDispatching.applyFrameWraps` does.
-                    let tieAddr, tieType, state =
-                        IlMachineState.synthesizeTargetInvocationException
-                            loggerFactory
-                            baseClassTypes
-                            cachedTieAddr
-                            state
-
-                    match
-                        ExceptionDispatching.throwExceptionObject
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            thread
-                            tieAddr
-                            tieType
-                    with
-                    | ExceptionDispatchResult.Dispatched state -> Some (state, CallCommitment.Raised)
-                    | ExceptionDispatchResult.ExceptionUnhandled _ ->
-                        failwith
-                            "Unhandled TargetInvocationException wrapping a cached TypeInitializationException during Activator.CreateInstance<T>(); should have been caught by a handler"
-                | _ ->
-
-                let state, init =
-                    ensureTypeInitialised loggerFactory baseClassTypes thread tHandle state
-
-                match init with
-                | WhatWeDid.Executed ->
-                    let state, concretizedCtor, declaringTypeHandle =
-                        ExecutionConcretization.concretizeMethodWithAllGenerics
-                            loggerFactory
-                            baseClassTypes
-                            ct.Generics
-                            ctor
-                            ImmutableArray.Empty
-                            state
-
-                    let state, allFields =
-                        IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state declaringTypeHandle
-
-                    let fields =
-                        CliValueType.OfFields
-                            baseClassTypes
-                            state.ConcreteTypes
-                            declaringTypeHandle
-                            typeDef.Layout
-                            (CharSetMetadata.ofTypeAttributes typeDef.TypeAttributes)
-                            allFields
-
-                    let allocatedAddr, state =
-                        IlMachineState.allocateManagedObject declaringTypeHandle fields state
-
-                    let state =
-                        state
-                        |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocatedAddr)) thread
-
-                    let threadState = state.ThreadState.[thread]
-
-                    callMethod
+                // This used to be three sub-paths keyed on `TypeInitTable`, because the check ran
+                // before the ctor frame existed and each state had to arrange the wrap for itself:
+                // a cached failure was wrapped in place, a first run had the flag flipped onto the
+                // `.cctor` frame, and an already-initialised type went straight to the ctor. The
+                // prologue collapses all three, and takes two defects with them — a cached TIE
+                // wrapped in place kept a stale trace where the real runtime rebuilds it against
+                // the current call site, and cross-thread blocking here was an unimplemented
+                // `failwith` rather than the ordinary parking every other call site gets.
+                let state, concretizedCtor, declaringTypeHandle =
+                    ExecutionConcretization.concretizeMethodWithAllGenerics
                         loggerFactory
                         baseClassTypes
-                        None
-                        (ConstructionState.Constructing allocatedAddr)
-                        false
-                        false
-                        advanceProgramCounterOfCaller
-                        concretizedCtor.Generics
-                        concretizedCtor
-                        thread
-                        threadState
-                        None
-                        ConstructedObjectDisposition.PushToCaller
-                        true // wrapExceptionInTargetInvocation: mirror CreateInstanceOfT
+                        ct.Generics
+                        ctor
+                        ImmutableArray.Empty
                         state
-                    // T's ctor frame is pushed; the activator call itself is done.
-                    |> fun state -> Some (state, CallCommitment.Committed)
-                | WhatWeDid.SuspendedForClassInit ->
-                    // T's cctor was kicked off and is now running on top of the current frame.
-                    // We need the activator call to be retried after the cctor returns. The
-                    // simplest signal to the engine for that today is: leave the state with the
-                    // cctor frame pushed, but the activator caller's PC must not have advanced,
-                    // because when control returns to it, we want it to re-execute the call
-                    // opcode and re-enter Activator.CreateInstance<T>().
-                    //
-                    // Caller-PC advancement happens later in `callMethod` (line ~961); by short-
-                    // circuiting here we never reach it, so the caller's PC stays put. Good.
-                    //
-                    // The cctor frame is now the active frame on this thread. Mark it so that if
-                    // the cctor throws, the resulting TIE is rewrapped in TargetInvocationException
-                    // when the cctor frame unwinds — see comment block (a)/(b)/(c) above.
-                    let state = IlMachineState.markActiveFrameWrapInTargetInvocation thread state
 
-                    Some (state, CallCommitment.SuspendedForClassInit)
-                | WhatWeDid.BlockedOnClassInit _ ->
-                    failwith
-                        "TODO: cross-thread class init blocking inside Activator.CreateInstance<T>() is not yet handled"
-                | WhatWeDid.SuspendedForManagedCall ->
-                    failwith
-                        "logic error: ensureTypeInitialised inside Activator.CreateInstance<T>() cannot suspend for an arbitrary managed call"
-                | WhatWeDid.ThrowingTypeInitializationException ->
-                    // Unreachable: the only way `ensureTypeInitialised` returns this is via the
-                    // `TypeInitState.Failed` cached-cctor path, which we pre-handle above.
-                    failwith
-                        "logic error: ensureTypeInitialised should not reach the cached-failure path inside Activator.CreateInstance<T>() (handled separately above)"
-                | WhatWeDid.VoluntaryYield _ ->
-                    failwith
-                        "logic error: ensureTypeInitialised inside Activator.CreateInstance<T>() cannot produce a VoluntaryYield (cctor execution has no path to a yield primitive)"
+                let state, allFields =
+                    IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state declaringTypeHandle
+
+                let fields =
+                    CliValueType.OfFields
+                        baseClassTypes
+                        state.ConcreteTypes
+                        declaringTypeHandle
+                        typeDef.Layout
+                        (CharSetMetadata.ofTypeAttributes typeDef.TypeAttributes)
+                        allFields
+
+                let allocatedAddr, state =
+                    IlMachineState.allocateManagedObject declaringTypeHandle fields state
+
+                let state =
+                    state
+                    |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocatedAddr)) thread
+
+                let threadState = state.ThreadState.[thread]
+
+                callMethod
+                    loggerFactory
+                    baseClassTypes
+                    None
+                    (ConstructionState.Constructing allocatedAddr)
+                    false
+                    false
+                    advanceProgramCounterOfCaller
+                    concretizedCtor.Generics
+                    concretizedCtor
+                    thread
+                    threadState
+                    None
+                    ConstructedObjectDisposition.PushToCaller
+                    true // wrapExceptionInTargetInvocation: mirror CreateInstanceOfT
+                    state
+                // T's ctor frame is pushed; the activator call itself is done.
+                |> fun state -> Some (state, CallCommitment.Committed)
             else
                 None
 
@@ -2134,6 +2052,69 @@ module IlMachineStateExecution =
                 createNewFrame state'
 
         let state, newFrame = createNewFrame state
+
+        // The callee's prologue. Recorded on the frame rather than run here, and asked *after*
+        // virtual resolution, so it names the type whose method actually runs: measured on
+        // .NET 10, `callvirt IFace::M` resolving to `Impl.M` never runs `IFace`'s own
+        // initialiser. A `.cctor` reached from here therefore unwinds through this frame and its
+        // `TypeInitializationException` names this method, which is what the CLR reports.
+        //
+        // Only the calls ECMA-335 II.10.5.3.1 names as triggers arm one: a static method, an
+        // instance constructor, or any instance method of a value type. An instance method call on
+        // a reference-type object that already exists is not a trigger, and the difference is
+        // observable — measured on .NET 10, an instance published by a `.cctor` that then threw
+        // still answers a virtual call, while constructing another of the same type throws
+        // `TypeInitializationException`. Arming every metadata method fails the first;
+        // arming only statics and constructors fails the value-type clause.
+        //
+        // A `.cctor` frame is exempt too: it *is* the initialisation, and asking again would see
+        // its own type in progress. `loadClass` answers `NothingToDo` for that, so this is an
+        // optimisation rather than a correctness guard — but it keeps the invariant "a frame with
+        // a pending init has not started" true of every frame that has one.
+        let newFrame =
+            if wasClassConstructor then
+                newFrame
+            else
+
+            let handle =
+                match
+                    AllConcreteTypes.findExistingConcreteType
+                        state.ConcreteTypes
+                        methodToCall.DeclaringType.Identity
+                        methodToCall.DeclaringType.Generics
+                with
+                | Some handle -> handle
+                | None ->
+                    failwith
+                        $"calling %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name}: the resolved method's declaring type is not registered in AllConcreteTypes, so its initialiser cannot be scheduled"
+
+            let initialises =
+                match methodToCall with
+                | MethodInfo.Synthesised (_, kind) -> SynthesisedMethod.initialisesDeclaringType kind
+                | MethodInfo.Metadata _ ->
+
+                if methodToCall.IsStatic then
+                    true
+                elif methodToCall.Name = ".ctor" then
+                    // Identified by name, as elsewhere in the codebase. `wasConstructing` would be
+                    // the wrong question: a derived constructor chaining to `base..ctor()` is not
+                    // constructing a fresh object and yet does trigger the base type's
+                    // initialiser — measured on .NET 10, `new Derived()` runs `Derived..cctor` and
+                    // then `Base..cctor`, the latter from that chained call's own prologue.
+                    true
+                else
+                    // An instance method of a *value type* is a trigger in its own right, and the
+                    // only instance-method shape where that is observable: a class instance
+                    // implies its constructor chain ran, and construction is itself a trigger,
+                    // whereas `default(S)` runs nothing.
+                    // `DelegateToValueTypeInstanceMethodRunsCctor.cs` is the case.
+                    AllConcreteTypes.tryIsValueType baseClassTypes state._LoadedAssemblies state.ConcreteTypes handle
+                    |> Option.defaultValue false
+
+            if initialises then
+                newFrame |> MethodState.withPendingTypeInit handle
+            else
+                newFrame
 
         let oldFrame =
             if wasClassConstructor || not advanceProgramCounterOfCaller then
@@ -2477,7 +2458,7 @@ module IlMachineStateExecution =
         //    begins, handler lookup and the stack-trace frame must see the faulting
         //    instruction's PC, not the next instruction.  (Same class of bug as call-site
         //    vs resumed-PC for cross-frame unwinding, which CallSiteIlOpIndex solves.)
-        let state, concretizedCtor, _declaringTypeHandle =
+        let state, concretizedCtor, ctorDeclaringTypeHandle =
             ExecutionConcretization.concretizeMethodForExecution
                 loggerFactory
                 baseClassTypes
@@ -2489,23 +2470,52 @@ module IlMachineStateExecution =
 
         let threadState = state.ThreadState.[currentThread]
 
-        callMethod
-            loggerFactory
-            baseClassTypes
-            None
-            (ConstructionState.Constructing addr) // weAreConstructingObj
-            false // no interface resolution
-            false // wasClassConstructor
-            false // do NOT advance caller PC — dispatch needs the faulting instruction's offset
-            concretizedCtor.Generics
-            concretizedCtor
-            currentThread
-            threadState
-            None
-            (ConstructedObjectDisposition.DispatchAsException message)
-            false // wrapExceptionInTargetInvocation
-            state,
-        WhatWeDid.Executed
+        let state =
+            callMethod
+                loggerFactory
+                baseClassTypes
+                None
+                (ConstructionState.Constructing addr) // weAreConstructingObj
+                false // no interface resolution
+                false // wasClassConstructor
+                false // do NOT advance caller PC — dispatch needs the faulting instruction's offset
+                concretizedCtor.Generics
+                concretizedCtor
+                currentThread
+                threadState
+                None
+                (ConstructedObjectDisposition.DispatchAsException message)
+                false // wrapExceptionInTargetInvocation
+                state
+
+        // 5. Discharge the ctor frame's prologue without running it, holding step 1's bypass.
+        //    `callMethod` arms a type-initialisation check on every metadata callee it pushes,
+        //    which for this one would run the exception type's own `.cctor` — guest code, in the
+        //    middle of manufacturing a runtime exception, able to replace it with a
+        //    `TypeInitializationException`. Clearing it here rather than teaching `callMethod` to
+        //    be told keeps the policy beside the allocation it belongs to, and off the fourteen
+        //    call sites that would otherwise gain a positional boolean they all answer the same
+        //    way.
+        //
+        //    Latent as it stands: no exception type this path manufactures has a `.cctor` in the
+        //    CoreLib we resolve. Whether the bypass is *right* is a separate and older question —
+        //    CoreCLR reaches these through `EEException::CreateThrowable` rather than through a
+        //    JIT'd prologue — and this only keeps the existing answer from changing by accident.
+        //
+        //    Checked rather than assumed, because clearing the flag off the wrong frame would
+        //    silently let a `.cctor` run somewhere else instead: the frame `callMethod` just
+        //    pushed must be active, and must be awaiting this very exception type.
+        let threadState = state.ThreadState.[currentThread]
+        let ctorFrameId = threadState.ActiveMethodState
+
+        match threadState.MethodState.PendingTypeInit with
+        | Some pending when pending = ctorDeclaringTypeHandle ->
+            state
+            |> IlMachineState.mapFrame currentThread ctorFrameId MethodState.clearPendingTypeInit,
+            WhatWeDid.Executed
+        | other ->
+            failwith
+                $"logic error: manufacturing %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name} pushed a constructor frame whose pending type initialisation is %O{other}, not the exception's own type %O{ctorDeclaringTypeHandle}; the class-initialisation bypass cannot be applied to it"
 
     /// `raiseRuntimeExceptionWithMessage` with no message override, i.e. the exception is
     /// constructed exactly as `new SomeException()` would construct it. This is the right

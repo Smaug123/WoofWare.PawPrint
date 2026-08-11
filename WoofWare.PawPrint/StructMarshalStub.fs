@@ -765,24 +765,13 @@ module StructMarshalStub =
             let state, convertToNative, convertToNativeDeclaringType =
                 dateConvertToNative operation loggerFactory baseClassTypes state
 
-            // Run the helper's class initialiser first, exactly as every other call site does.
-            // `callMethodWithCommitment` cannot do it for us: its `SuspendedForClassInit` outcome
-            // comes only from the `Activator.CreateInstance<T>()` intrinsic, so a plain static
-            // CoreLib method would otherwise be entered with its statics uninitialised, and the
-            // cross-thread `Blocked` protocol would be bypassed. `DateMarshaler` has no `.cctor`
-            // today, which is why this is latent; a future conversion helper's might.
-            //
-            // Nothing has been pushed yet, and we do not return the frame on any of these
-            // outcomes, so we are simply re-entered and re-derive everything.
-            match
-                IlMachineStateExecution.loadClass loggerFactory baseClassTypes convertToNativeDeclaringType thread state
-            with
-            | FirstLoadThis state -> ExecutionResult.stepped (state, WhatWeDid.SuspendedForClassInit)
-            | ThrowingTypeInitializationException state ->
-                ExecutionResult.stepped (state, WhatWeDid.ThrowingTypeInitializationException)
-            | Blocked (state, blockedBy) -> ExecutionResult.stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
-            | NothingToDo state ->
-
+            // The helper's class initialiser is no longer run here. `callMethodWithCommitment` now
+            // arms it on the callee's frame and the dispatch loop runs it as that frame's
+            // prologue, which covers a plain static CoreLib method — the case this site existed
+            // for, since the old `SuspendedForClassInit` outcome came only from the
+            // `Activator.CreateInstance<T>()` intrinsic and left everything else to be entered
+            // with its statics uninitialised. `DateMarshaler` has no `.cctor` today, so this was
+            // latent either way; a future conversion helper's is now handled by construction.
             let state = IlMachineState.pushToEvalStack next.Value thread state
             let threadState = state.ThreadState.[thread]
 
@@ -810,14 +799,6 @@ module StructMarshalStub =
                 // Either a callee frame or an exception constructor is now on top of us; in both
                 // cases our frame stays put and the dispatch loop takes it from here.
                 ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
-            | IlMachineStateExecution.CallCommitment.SuspendedForClassInit ->
-                // Unreachable: `loadClass` above has already run the callee's initialiser, and the
-                // only other producer of this outcome is the `Activator.CreateInstance<T>()`
-                // intrinsic, which no conversion helper is. If it ever fires, the argument we just
-                // pushed is stranded on our evaluation stack where `completedConversions` expects
-                // only results, so say so rather than silently resuming into a corrupt frame.
-                failwith
-                    $"%s{operation}: conversion callee %O{convertToNative} suspended for class initialisation after loadClass reported nothing to do"
         else
 
         // Every conversion has completed. Only now do we touch the destination with real values,
