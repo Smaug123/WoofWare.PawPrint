@@ -1,7 +1,8 @@
 # Plan: share the machine state up to the first fork point
 
-Status: **PR 1 implemented** (§3.5's "draws iff contended", in `Scheduler.fs`). PRs 2 and 3 are
-still to do. §3.7 records the two places where implementation contradicted the plan.
+Status: **all three PRs implemented.** §3.7 and §5.7 record where implementation contradicted the
+plan. The remaining work is stage 4 — rewiring `TestConcurrencyBugs` / `TestRaces` to fan out from
+a shared fork point — which this plan describes but does not yet cover in detail.
 
 Goal: when sweeping many PCT seeds over one guest, compute the single-threaded prefix *once* and
 fan every seed out from it.
@@ -416,6 +417,33 @@ later `tryForkHere : PreparedProgram -> Snapshot option` built on the same probe
 `resume` is unchanged. Record now, build later: a mid-run snapshot's *cross-process* identity is
 the decision trace that produced it, never the state.
 
+### 5.7 What stage 3 shipped, and where it departed from §5.1–§5.3
+
+* **No `ScheduleFork` module.** §5.1 wanted one inside `Program.fs`, to reach `Startup`'s private
+  representation. A sibling module cannot see another module's `private` bindings, and the fork
+  runner needs `advanceToDecision` and `stepDecided`, so the API lives directly in `Program`
+  alongside `PreparedProgram`, `Startup` and `ProgramStartResult` — which is where the file's
+  existing conventions put this kind of type anyway. Names: `Program.ForkSnapshot`,
+  `Program.PrefixOutcome`, `runToFirstFork`, `runToNextFork`, `resumeFork`.
+* **`isContended` became `tryContenders : IlMachineState -> ThreadId list option`.** PR 1's
+  boolean forced the fork runner to derive the contending-thread list separately in order to
+  record it, which is a second derivation of the predicate — exactly what §4.2 argues against.
+  Returning the witness from the same evaluation removes the possibility of disagreement.
+* **A startup fork is refused, not snapshotted.** §5.2 wanted `ForkSnapshot` to hold a mid-startup
+  `Startup` from day one. It is detected — `runToFirstFork` probes startup with the same predicate
+  — but reported as `PrefixOutcome.ForkedDuringStartup` rather than snapshotted, because resuming
+  one means `resumeFork` returning a two-shape value and every caller driving both phases, for a
+  case no guest in this repository exercises. Refusing loudly is correct-by-detection and the
+  extension point is one DU arm. `ForkInCctor.cs` pins the refusal.
+* `NeverForked`'s state carries the `RoundRobin` the prefix ran under, so its `Scheduling` differs
+  from a from-scratch seeded run's. Nothing guest-visible depends on it; the DU case documents it.
+* **A snapshot's `Contenders` are Runnable at the decision point, not necessarily in its `State`.**
+  Fable caught the first draft of `ForkSnapshot`'s docstring claiming otherwise — falsified by
+  this very PR's constructed preamble test, where a contender is `BlockedOnSleep` in the snapshot
+  and woken by the tick's preamble. Organic first forks never show the shape, because there the
+  second thread arrives via `Thread.Start`; `runToNextFork` from mid-run does. The docstring now
+  says so, and the organic-versus-constructed distinction is asserted in both directions.
+
 ## 6. What has to be proved, and how
 
 **P1 — the commuting square (load-bearing).** For each guest in a corpus and each seed, the
@@ -458,6 +486,39 @@ Per the project's mutation habit: break the implementation once per claimed mode
 the solo branch; snapshot one tick late; skip the pipeline on resume; report `NeverForked`
 unconditionally — and record in the PR which property killed which mutant.
 
+### 6.1 The mutation that survived, and what it exposed
+
+Stage 3's mutants: snapshot one tick late (killed by P1 on all four guests), resume with
+`ofSeed (s + 1)` (killed by P1), drop the startup probe (killed by P6's `ForkInCctor` case) — and
+**probe the inter-tick state instead of the post-preamble one, which survived the whole suite.**
+
+It survived for a reason worth writing down. For a *first* fork the second Runnable thread always
+arrives via the guest's own `Thread.Start`, which is a retired instruction and therefore already
+visible on the inter-tick state; so the two probe points agree on every guest one can write.
+The preamble can only create the first contention through the kernel's signal dispatcher, which
+is the one thread that becomes Runnable without a guest instruction. Mid-run, a deadline expiry
+does it easily — which is exactly what `runToNextFork` will meet once a schedule-tree search
+exists.
+
+So the guest corpus cannot kill it, and the plan's instinct to reach for a guest ("a guest that
+sleeps solo") was wrong: `ForkAfterSoloSleep.cs` exercises the deadline *jump*, but with only one
+thread alive, so the wake it produces is not contended. The test that kills it is constructed
+instead — take a real fork point, park one of its two contenders on an already-expired sleep, and
+require `runToNextFork` to report the fork at the very next tick, with no instruction retired in
+between. That is the value of running the mutants rather than assuming coverage: the gap was in
+the corpus, not in the code.
+
+A second review pass (Fable, on the implementation this time) found a further pair of survivors:
+garbling either `DeadlockedBeforeFork` arm, in the main phase or in startup. Neither was covered,
+because a whole-program `Program.run` turns deadlock into a host `failwith` and so cannot reach
+the case at all. Two guests that wedge while single-threaded — one in `Main`, one in a `.cctor`,
+since `runToFirstFork` drives the two phases through different loops — now kill both.
+
+One mutant survives deliberately: deleting the `checkYieldDidNotStraddle` calls. The hazard it
+guards (§4.3) is unreachable today, so no test can distinguish the guard's presence. It is kept
+as correct-by-detection for a future change to the wake paths, and its exhaustive `match` over
+`WhatWeDid` is what will make a new outcome variant a compile error rather than a silent hole.
+
 ### The one test that encodes the old contract and must be inverted
 
 `TestSchedulerYieldDebt.fs`, ``Pct burns exactly one draw per yield, regardless of the Runnable
@@ -494,8 +555,11 @@ Fable proposed two PRs, I proposed four; the difference was mostly the now-dropp
    beyond the mechanical `HostConfig` re-shaping. Worth splitting the `HostConfig` re-shaping into
    its own commit *within* the PR: it touches 37 call sites and would otherwise bury the new
    logic.
-3. **Rewire the sweeps.** `TestConcurrencyBugs` and `TestRaces` fan out from a shared fork point;
-   report the measured speedup against §1.
+3. **`ForkSnapshot` + the fork runner — done.** §5.2, §5.7 and properties P1, P4, P5, P6, plus the
+   constructed preamble-contention test of §6.1.
+4. **Rewire the sweeps.** `TestConcurrencyBugs` and `TestRaces` fan out from a shared fork point;
+   report the measured speedup against §1. Still to do, and the only stage with a user-visible
+   payoff — everything before it is the machinery that makes the payoff correct.
 
 PR 1 is the one to review hardest.
 
