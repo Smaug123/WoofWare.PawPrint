@@ -681,8 +681,15 @@ module Program =
     /// The state described is the one the tick *started* from. The failure happened partway
     /// through, so there is no consistent later state to report.
     /// </para>
+    /// <para>
+    /// <c>inline</c> with <c>InlineIfLambda</c> because <c>stepPrepared</c> is per-tick: taking
+    /// the body as a first-class function would allocate an <c>FSharpFunc</c> capturing the
+    /// logger and the program state on every interpreted instruction — some 20 million of them
+    /// in a bounded run — purely to serve a path that normally never fires. Inlined, the caller
+    /// keeps the exception region and nothing else.
+    /// </para>
     /// </remarks>
-    let private annotating (state : IlMachineState) (tick : unit -> 'a) : 'a =
+    let inline private annotating (state : IlMachineState) ([<InlineIfLambda>] tick : unit -> 'a) : 'a =
         try
             tick ()
         with
@@ -690,8 +697,10 @@ module Program =
         // level, and the outermost frame's guest position is the least specific of them.
         | :? GuestFailureException -> reraise ()
         | e ->
-            match GuestLocation.tryOfState state with
-            | Some guest -> raise (GuestFailureException (e, guest))
+            // `TryCreate` is total over both the lookup *and* the message construction, so a
+            // failure to annotate reraises the original rather than replacing it.
+            match GuestFailureException.TryCreate (e, state) with
+            | Some annotated -> raise annotated
             | None -> reraise ()
 
     /// Advance the machine by one scheduler tick.

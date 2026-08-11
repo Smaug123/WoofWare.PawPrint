@@ -293,22 +293,6 @@ module GuestLocation =
     let describe (state : IlMachineState) : string = ofState state |> renderThreads
 
     /// <summary>
-    /// As <c>ofState</c>, but <c>None</c> rather than raising if the position cannot be
-    /// determined.
-    /// </summary>
-    /// <remarks>
-    /// For callers annotating an exception that is already propagating. A failure there would
-    /// replace the diagnostic PawPrint is trying to deliver with one about the diagnostic
-    /// machinery — the single worst outcome available. <c>ofState</c> is written to be total for
-    /// exactly this reason; this is the belt to its braces.
-    /// </remarks>
-    let tryOfState (state : IlMachineState) : GuestThreadLocation list option =
-        try
-            Some (ofState state)
-        with _ ->
-            None
-
-    /// <summary>
     /// <paramref name="message" /> with the guest's position appended.
     /// </summary>
     let annotate (message : string) (locations : GuestThreadLocation list) : string =
@@ -347,3 +331,23 @@ type GuestFailureException (inner : exn, guest : GuestThreadLocation list) =
     /// Where each live guest thread was when the failure was raised.
     /// </summary>
     member _.Guest : GuestThreadLocation list = guest
+
+    /// <summary>
+    /// Annotate <paramref name="inner" /> with the guest's position at
+    /// <paramref name="state" />, or <c>None</c> if that cannot be done.
+    /// </summary>
+    /// <remarks>
+    /// Total, and deliberately covers the *construction* as well as the lookup. Callers run this
+    /// while an exception is already propagating, so anything that throws here would replace the
+    /// diagnostic PawPrint is trying to deliver with one about the diagnostic machinery — the
+    /// single worst outcome available. Building the message walks every live thread and formats
+    /// each one, so it allocates; when the failure being reported is itself
+    /// <c>OutOfMemoryException</c>, that is exactly the allocation most likely to fail. The
+    /// caller reraises the original on <c>None</c>, so the guarantee is that annotation can cost
+    /// the annotation and nothing else.
+    /// </remarks>
+    static member TryCreate (inner : exn, state : IlMachineState) : GuestFailureException option =
+        try
+            Some (GuestFailureException (inner, GuestLocation.ofState state))
+        with _ ->
+            None
