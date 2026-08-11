@@ -1659,7 +1659,7 @@ module NullaryIlOp =
                 match
                     ExceptionDispatching.throwExceptionObject loggerFactory corelib state currentThread exnAddr exnType
                 with
-                | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
+                | ExceptionDispatchResult.Dispatched state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
                 | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
                     ExecutionResult.UnhandledException (state, currentThread, exn)
         | LdcI4_0 ->
@@ -2502,57 +2502,34 @@ module NullaryIlOp =
                     failwith
                         $"Endfilter continuation scope %O{currentFilter} did not match continuation %O{continuation.CurrentFilter}"
 
-                if filterAccepted then
-                    let threadState =
-                        ThreadState.setFrame threadState.ActiveMethodState methodStateWithoutFilter threadState
+                // The filter's own scratch stack is gone either way; what remains of the frame is
+                // the same whether it accepted or not, and the first pass decides the rest.
+                let newMethodState = methodStateWithoutFilter |> MethodState.clearEvalStack
 
-                    let state =
-                        { state with
-                            ThreadState = state.ThreadState |> Map.add currentThread threadState
-                        }
+                let newThreadState =
+                    ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
 
-                    ExceptionDispatching.enterCatchHandler
-                        currentThread
-                        methodStateWithoutFilter
-                        threadState
+                let state =
+                    { state with
+                        ThreadState = state.ThreadState |> Map.add currentThread newThreadState
+                    }
+
+                // Accepting does *not* enter the handler here. The filter ran in the first pass,
+                // with every frame inner to it still live, so acceptance only settles where the
+                // exception is going; the second pass still has to unwind to this frame, running
+                // the cleanup in between, before the handler body can start.
+                match
+                    ExceptionDispatching.resumeSearchAfterFilter
+                        loggerFactory
+                        corelib
                         state
-                        continuation.CurrentFilter.HandlerOffset
-                        continuation.CliException
-                    |> Tuple.withRight WhatWeDid.Executed
-                    |> ExecutionResult.stepped
-                else
-                    let newMethodState = methodStateWithoutFilter |> MethodState.clearEvalStack
-
-                    let newThreadState =
-                        ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
-
-                    let state =
-                        { state with
-                            ThreadState = state.ThreadState |> Map.add currentThread newThreadState
-                        }
-
-                    let exceptionType =
-                        ExceptionDispatching.exceptionObjectType state continuation.CliException.ExceptionObject
-
-                    let skippedFilters = continuation.CurrentFilter :: continuation.SkippedFilters
-
-                    // As at the `endfinally` resume: `continuation.CliException` carries the
-                    // raise's own foreign-raise eligibility across the filter that just ran.
-                    match
-                        ExceptionDispatching.dispatchExceptionFromSearchPC
-                            loggerFactory
-                            corelib
-                            state
-                            currentThread
-                            continuation.CliException
-                            exceptionType
-                            continuation.SearchPC
-                            skippedFilters
-                    with
-                    | ExceptionDispatchResult.HandlerFound state ->
-                        (state, WhatWeDid.Executed) |> ExecutionResult.stepped
-                    | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
-                        ExecutionResult.UnhandledException (state, currentThread, exn)
+                        currentThread
+                        continuation
+                        filterAccepted
+                with
+                | ExceptionDispatchResult.Dispatched state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
+                | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
+                    ExecutionResult.UnhandledException (state, currentThread, exn)
             | Some frame, _ ->
                 failwith
                     $"Endfilter encountered outside an exception filter; current continuation was scope %O{frame.Scope} with continuation %O{frame.Continuation}"
@@ -2614,16 +2591,10 @@ module NullaryIlOp =
                 |> ExecutionResult.stepped
             | Some {
                        Scope = scope
-                       Continuation = ExceptionContinuation.PropagatingException exn
+                       Continuation = ExceptionContinuation.PropagatingException unwind
                    },
               methodStateWithoutContinuation when endsWithEndfinally scope ->
-                // Continue exception propagation after finally block.
-                // Get exception type from heap object.
-                let heapObject =
-                    match state.ManagedHeap.NonArrayObjects |> Map.tryFind exn.ExceptionObject with
-                    | Some obj -> obj
-                    | None -> failwith "Exception object not found in heap during endfinally propagation"
-
+                // The cleanup clause is done; hand the second pass back the unwind it parked here.
                 let threadState =
                     ThreadState.setFrame threadState.ActiveMethodState methodStateWithoutContinuation threadState
 
@@ -2632,20 +2603,14 @@ module NullaryIlOp =
                         ThreadState = state.ThreadState |> Map.add currentThread threadState
                     }
 
-                // `exn` is passed through unchanged, foreign-raise eligibility included. That is
-                // the whole point of the field living on the raise: this resume cannot tell a flag
-                // the `finally` just set from one that was already pending when the raise began,
-                // but it does not have to — the raise itself remembers.
+                // Nothing about the foreign-raise flag happens on this path, and nothing needs to:
+                // the raise being resumed appended every frame it will ever append back in the
+                // first pass, before this clause began, so a flag the clause itself set belongs to
+                // whatever raises next.
                 match
-                    ExceptionDispatching.dispatchException
-                        loggerFactory
-                        corelib
-                        state
-                        currentThread
-                        exn
-                        heapObject.ConcreteType
+                    ExceptionDispatching.resumeUnwindAfterCleanup loggerFactory corelib state currentThread unwind
                 with
-                | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
+                | ExceptionDispatchResult.Dispatched state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
                 | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
                     ExecutionResult.UnhandledException (state, currentThread, exn)
             | Some {
@@ -2674,25 +2639,22 @@ module NullaryIlOp =
                 // still *consume* a flag someone else left pending, but CoreCLR's read-and-reset
                 // lives in `StackTraceInfo::AppendElement` (excep.cpp:3016), which fires when a
                 // frame is appended rather than when a raise begins — so that belongs at
-                // `ExceptionDispatching`'s append site, where it now is, and a rethrow whose
-                // handler lives in this same method leaves the flag pending because it appends
-                // nothing at all. See `sourcesPure/ForeignRaiseFlagSurvivesFramelessRethrow.cs`.
+                // `ExceptionDispatching`'s append site, where it is, and a rethrow whose handler
+                // lives in this same method leaves the flag pending because it appends nothing at
+                // all. See `sourcesPure/ForeignRaiseFlagSurvivesFramelessRethrow.cs`.
                 //
-                // This *is* a raise initiation, though, so the new raise records what was pending
-                // on the thread at this instant — that, and only that, is its to consume at its
-                // first appended frame, however many cleanup clauses it passes through on the way.
-                // Reading the flag *now* rather than at the append is the whole point: a `finally`
-                // this raise runs on its way out may set a flag of its own, and that one belongs to
-                // the next raise, not this one. The `CliException` here came out of
-                // `CatchExceptions`, where the field is stale, so this is a set, not a carry-over.
+                // The raise needs no record of what was pending at this instant either, now that
+                // the first pass appends every frame before any cleanup clause runs: a `finally`
+                // this raise executes on its way out cannot get between the raise and its own
+                // appends, so there is no window in which a flag could be mistaken for this
+                // raise's to spend.
                 //
-                // Its `StackTrace` out of `CatchExceptions` is stale in the same way, and for the
-                // same reason: it is the snapshot this catch handler was entered with. The trace a
-                // rethrow inherits is the exception's own, whatever `_stackTrace` holds now.
+                // Its `StackTrace` out of `CatchExceptions` *is* stale: that is the snapshot this
+                // catch handler was entered with. The trace a rethrow inherits is the exception's
+                // own, whatever `_stackTrace` holds now.
                 let cliException =
                     { cliException with
                         StackTrace = IlMachineState.frozenStackTraceFrames corelib cliException.ExceptionObject state
-                        MayConsumeForeignRaise = threadState.IsRaisingForeignException
                     }
 
                 match
@@ -2704,7 +2666,7 @@ module NullaryIlOp =
                         cliException
                         exceptionType
                 with
-                | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
+                | ExceptionDispatchResult.Dispatched state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
                 | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
                     ExecutionResult.UnhandledException (state, currentThread, exn)
         | Throw ->
@@ -2744,7 +2706,7 @@ module NullaryIlOp =
                     addr
                     heapObject.ConcreteType
             with
-            | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
+            | ExceptionDispatchResult.Dispatched state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
             | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
                 ExecutionResult.UnhandledException (state, currentThread, exn)
 

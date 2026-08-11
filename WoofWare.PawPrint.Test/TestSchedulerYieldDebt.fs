@@ -516,11 +516,10 @@ module TestSchedulerYieldDebt =
 
         let guestException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
             {
-                ExceptionObject = ManagedHeapAddress 1
-                StackTrace = []
                 // Inert: this exception is only ever a payload in an `ExecutionResult` the
                 // scheduler is asked to classify, never a raise anything dispatches.
-                MayConsumeForeignRaise = false
+                ExceptionObject = ManagedHeapAddress 1
+                StackTrace = []
             }
 
         let variants : ExecutionResult list =

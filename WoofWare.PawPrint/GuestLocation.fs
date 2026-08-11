@@ -281,8 +281,73 @@ module GuestLocation =
             $"%s{prefix} in %s{renderFrame frame}, %s{from} %s{renderFrame ancestor} (%s{renderSource ancestorSource})"
 
     /// <summary>
+    /// One line per non-terminated thread, joined by <c>"; "</c>.
+    /// </summary>
+    let renderThreads (locations : GuestThreadLocation list) : string =
+        locations |> List.map renderThread |> String.concat "; "
+
+    /// <summary>
     /// One line per non-terminated thread, joined by <c>"; "</c>: the summary PawPrint prints
     /// when it gives up on a guest.
     /// </summary>
-    let describe (state : IlMachineState) : string =
-        ofState state |> List.map renderThread |> String.concat "; "
+    let describe (state : IlMachineState) : string = ofState state |> renderThreads
+
+    /// <summary>
+    /// <paramref name="message" /> with the guest's position appended.
+    /// </summary>
+    let annotate (message : string) (locations : GuestThreadLocation list) : string =
+        // On its own line, and after the original message rather than before it: the first line
+        // of an exception message is what most log lines and test runners show, and "what went
+        // wrong" outranks "where the guest was" for that slot.
+        $"%s{message}%s{System.Environment.NewLine}  Guest was: %s{renderThreads locations}"
+
+/// <summary>
+/// A host-side failure raised while interpreting guest code, annotated with where the guest was
+/// when it happened.
+/// </summary>
+/// <remarks>
+/// <para>
+/// PawPrint fails by <c>failwith</c> in some 2,400 places, and almost none of them can name the
+/// guest: the most context-free messages of all come from pure helpers deep in the opcode
+/// implementations, which have no <c>IlMachineState</c> to consult and are much better off
+/// without one. So the annotation is applied once, at the boundary in
+/// <c>AbstractMachine.executeOneStep</c>, rather than at the sites.
+/// </para>
+/// <para>
+/// The original exception is kept as <c>InnerException</c>, not flattened into text: it carries
+/// the *host* stack trace, which says where in PawPrint's own source the failure was raised.
+/// A reader debugging PawPrint needs that as much as the guest location, and the two answer
+/// different questions.
+/// </para>
+/// <para>
+/// <see cref="Guest" /> is the structured position rather than only the rendered string, because
+/// the App, the debugger server and the test harness each want to present it differently.
+/// </para>
+/// </remarks>
+type GuestFailureException (inner : exn, guest : GuestThreadLocation list) =
+    inherit System.Exception (GuestLocation.annotate inner.Message guest, inner)
+
+    /// <summary>
+    /// Where each live guest thread was when the failure was raised.
+    /// </summary>
+    member _.Guest : GuestThreadLocation list = guest
+
+    /// <summary>
+    /// Annotate <paramref name="inner" /> with the guest's position at
+    /// <paramref name="state" />, or <c>None</c> if that cannot be done.
+    /// </summary>
+    /// <remarks>
+    /// Total, and deliberately covers the *construction* as well as the lookup. Callers run this
+    /// while an exception is already propagating, so anything that throws here would replace the
+    /// diagnostic PawPrint is trying to deliver with one about the diagnostic machinery — the
+    /// single worst outcome available. Building the message walks every live thread and formats
+    /// each one, so it allocates; when the failure being reported is itself
+    /// <c>OutOfMemoryException</c>, that is exactly the allocation most likely to fail. The
+    /// caller reraises the original on <c>None</c>, so the guarantee is that annotation can cost
+    /// the annotation and nothing else.
+    /// </remarks>
+    static member TryCreate (inner : exn, state : IlMachineState) : GuestFailureException option =
+        try
+            Some (GuestFailureException (inner, GuestLocation.ofState state))
+        with _ ->
+            None

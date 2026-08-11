@@ -34,11 +34,6 @@ module IlMachineRuntimeMetadata =
             | CliType.ObjectRef (Some target) -> target
             | _ -> failwith $"Unexpectedly not constructing a managed object: {constructing}"
 
-        let heapObj =
-            match state.ManagedHeap.NonArrayObjects.TryGetValue constructing with
-            | true, obj -> obj
-            | false, _ -> failwith $"Delegate object {constructing} not found on heap"
-
         let delegateTypeHandle =
             AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.DelegateType
 
@@ -50,15 +45,10 @@ module IlMachineRuntimeMetadata =
             FieldIdentity.requiredOwnInstanceField baseClassTypes.DelegateType "_methodPtr"
             |> FieldIdentity.fieldId delegateTypeHandle
 
-        let updatedObj =
-            heapObj
-            |> AllocatedNonArrayObject.SetFieldById targetField (CliType.ObjectRef targetObj)
-            |> AllocatedNonArrayObject.SetFieldById methodPtrField methodPtr
-
         let updatedHeap =
-            { state.ManagedHeap with
-                NonArrayObjects = state.ManagedHeap.NonArrayObjects |> Map.add constructing updatedObj
-            }
+            state.ManagedHeap
+            |> ManagedHeap.setFieldById constructing targetField (CliType.ObjectRef targetObj)
+            |> ManagedHeap.setFieldById constructing methodPtrField methodPtr
 
         { state with
             ManagedHeap = updatedHeap
