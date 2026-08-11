@@ -49,8 +49,9 @@ module TestPrologueExceptionScope =
             HandlerLength = 1
         }
 
-    let private methodWithCatchAll
+    let private methodWithRegion
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (region : ExceptionRegion)
         (state : IlMachineState)
         : IlMachineState * WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         =
@@ -81,18 +82,13 @@ module TestPrologueExceptionScope =
                 IlOp.Nullary NullaryIlOp.Ret, 11
             ]
 
-        let regions =
-            [
-                ExceptionRegion.Catch (MetadataToken.TypeDefinition bct.Object.TypeDefHandle, catchAllOffset)
-            ]
-
         let instructions : MethodInstructions<ConcreteTypeHandle> =
             {
                 Instructions = ops
                 Locations = ops |> List.map (fun (op, offset) -> offset, op) |> Map.ofList
                 LocalsInit = false
                 LocalVars = None
-                ExceptionRegions = regions |> ImmutableArray.CreateRange
+                ExceptionRegions = ImmutableArray.Create region
             }
 
         let method =
@@ -103,10 +99,11 @@ module TestPrologueExceptionScope =
 
         state, method
 
-    /// Two frames of the catch-all method, the callee returning into the caller at offset 0 — so
-    /// the caller's try covers its call site and its handler is a genuine candidate.
+    /// Two frames of the given method, the callee returning into the caller at offset 0 — so the
+    /// caller's try covers its call site and its handler is a genuine candidate.
     let private twoFrames
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (region : ExceptionRegion)
         : IlMachineState * ThreadId * FrameId * FrameId
         =
         let state =
@@ -114,7 +111,7 @@ module TestPrologueExceptionScope =
                 ConcreteTypes = concreteTypes
             }
 
-        let state, method = methodWithCatchAll loggerFactory state
+        let state, method = methodWithRegion loggerFactory region state
 
         let methodState =
             match
@@ -187,10 +184,13 @@ module TestPrologueExceptionScope =
         | ExceptionDispatchResult.Dispatched state -> state
         | other -> failwith $"Expected the exception to be delivered to a handler, got %O{other}"
 
+    let private catchAll : ExceptionRegion =
+        ExceptionRegion.Catch (MetadataToken.TypeDefinition bct.Object.TypeDefHandle, catchAllOffset)
+
     [<Test>]
     let ``a frame awaiting its prologue does not catch`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
-        let state, thread, callerFrameId, calleeFrameId = twoFrames loggerFactory
+        let state, thread, callerFrameId, calleeFrameId = twoFrames loggerFactory catchAll
 
         // The callee has not run its type-initialisation check, so it has not started.
         let state =
@@ -211,9 +211,72 @@ module TestPrologueExceptionScope =
         // selected, so that test is measuring the gate rather than some unrelated reason the
         // callee could never have caught anything.
         let _, loggerFactory = LoggerFactory.makeTest ()
-        let state, thread, _callerFrameId, calleeFrameId = twoFrames loggerFactory
+        let state, thread, _callerFrameId, calleeFrameId = twoFrames loggerFactory catchAll
 
         let state = dispatchAtCallee loggerFactory state thread
+
+        let threadState = state.ThreadState.[thread]
+        threadState.ActiveMethodState |> shouldEqual calleeFrameId
+        threadState.LiveFrameCount |> shouldEqual 2
+        threadState.MethodState.IlOpIndex |> shouldEqual catchAllOffset.HandlerOffset
+
+    [<Test>]
+    let ``a frame awaiting its prologue runs no cleanup`` () : unit =
+        // The second pass obeys the same scope rule as the first. A frame that never began has no
+        // `finally` to run, so the unwind must pass straight through it — otherwise cleanup for a
+        // method whose first instruction never executed would run against uninitialised locals.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread, callerFrameId, calleeFrameId =
+            twoFrames loggerFactory (ExceptionRegion.Finally catchAllOffset)
+
+        let state =
+            state
+            |> IlMachineState.mapFrame thread calleeFrameId (MethodState.withPendingTypeInit (objectHandle ()))
+
+        let cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
+            {
+                ExceptionObject = ManagedHeapAddress 42
+                StackTrace = []
+            }
+
+        // Both frames run the same method, so both carry the same `finally`; the *caller's* is
+        // legitimate and does run. What distinguishes the two is which frame the machine ends up
+        // in — the callee's cleanup would be entered first, with the callee still live.
+        let state =
+            match
+                ExceptionDispatching.dispatchException loggerFactory bct state thread cliException (objectHandle ())
+            with
+            | ExceptionDispatchResult.Dispatched state -> state
+            | other -> failwith $"Expected the caller's finally to be entered, got %O{other}"
+
+        let threadState = state.ThreadState.[thread]
+        threadState.MethodState.IlOpIndex |> shouldEqual catchAllOffset.HandlerOffset
+        threadState.ActiveMethodState |> shouldEqual callerFrameId
+        threadState.LiveFrameCount |> shouldEqual 1
+
+    [<Test>]
+    let ``a frame that has started does run its cleanup`` () : unit =
+        // The control for the test above: the same two frames and the same `finally`, differing
+        // only in whether the callee's prologue is outstanding. Here the callee's own cleanup is
+        // entered, with the callee still live — which is what the assertion above rules out.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread, _callerFrameId, calleeFrameId =
+            twoFrames loggerFactory (ExceptionRegion.Finally catchAllOffset)
+
+        let cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
+            {
+                ExceptionObject = ManagedHeapAddress 42
+                StackTrace = []
+            }
+
+        let state =
+            match
+                ExceptionDispatching.dispatchException loggerFactory bct state thread cliException (objectHandle ())
+            with
+            | ExceptionDispatchResult.Dispatched state -> state
+            | other -> failwith $"Expected the callee's finally to be entered, got %O{other}"
 
         let threadState = state.ThreadState.[thread]
         threadState.ActiveMethodState |> shouldEqual calleeFrameId
