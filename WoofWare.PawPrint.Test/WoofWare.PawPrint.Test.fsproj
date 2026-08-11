@@ -18,6 +18,7 @@
     <Compile Include="TestAttributeFormatting.fs" />
     <Compile Include="TestIlDumpRendering.fs" />
     <Compile Include="TestTypeDefnRendering.fs" />
+    <Compile Include="TestArrayShapeGuard.fs" />
     <Compile Include="TestFriendAssemblies.fs" />
     <Compile Include="TestAccessCheck.fs" />
     <Compile Include="RealRuntime.fs" />

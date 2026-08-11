@@ -203,7 +203,12 @@ module PrimitiveType =
 type TypeDefn =
     | PrimitiveType of PrimitiveType
     /// A general (potentially multi-dimensional) array. Rank distinguishes e.g. int[,] from int[,,].
-    /// TODO: sizes and lower bounds from ArrayShape are not yet preserved.
+    /// Sizes and lower bounds from `ArrayShape` are not preserved: rather than silently conflating
+    /// shapes that differ only in those, the signature decoder (`typeProvider`) refuses a
+    /// non-default shape outright, so every `Array` reaching the rest of the system is known to have
+    /// no explicit sizes and an all-zero lower bound. Consumers may therefore treat rank as the
+    /// whole of the shape. Whoever lifts that restriction must carry the bounds through
+    /// `ConcreteTypeHandle.Array` too, which is what signature comparison actually comes down to.
     | Array of elt : TypeDefn * rank : int
     | Pinned of TypeDefn
     | Pointer of TypeDefn
@@ -400,6 +405,37 @@ module TypeDefn =
     let typeProvider (a : AssemblyName) : ISignatureTypeProvider<TypeDefn, unit> =
         { new ISignatureTypeProvider<TypeDefn, unit> with
             member this.GetArrayType (elementType : TypeDefn, shape : ArrayShape) : TypeDefn =
+                // `TypeDefn.Array` records only the rank, so a shape carrying explicit sizes or a
+                // non-zero lower bound would decode to the same `TypeDefn` -- and thence to the same
+                // `ConcreteTypeHandle` -- as the unadorned array of that rank. Handle equality is
+                // load-bearing well beyond type identity: `NativeRuntimeTypeHelpers` matches vtable
+                // slots by comparing concretised signatures, and CoreCLR's `CompareElementType` does
+                // compare sizes and bounds, so silently conflating the two would bind an override to
+                // the wrong slot. Refuse at the point of loss rather than answer wrongly downstream.
+                //
+                // Note that this cannot be a check for "bounds were encoded at all": ECMA-335
+                // II.23.2.13 makes both counts optional, and `ArrayShape` synthesises a zero per
+                // dimension when `numLoBounds` is 0, so an ordinary `int[,]` arrives here with
+                // `LowerBounds = [0; 0]`. Only a *non-default* shape is rejected. An explicitly
+                // encoded all-zero lower bound is indistinguishable from an omitted one at this
+                // layer, and denotes the same type; that is the same encoding-level insensitivity
+                // that `TypeDefn` already has elsewhere, and it errs towards accepting.
+                //
+                // Measured across the whole linux-x64 runtime pack: every one of the 20 MD-array
+                // signatures is default-shaped, so this rejects nothing the framework contains.
+                // C# and F# cannot emit a non-default shape at all; `Array.CreateInstance` produces
+                // such arrays at runtime without ever writing one into a signature.
+                if
+                    not shape.Sizes.IsEmpty
+                    || shape.LowerBounds |> Seq.exists (fun bound -> bound <> 0)
+                then
+                    failwithf
+                        "TODO: multidimensional array signature in %s with a non-default ArrayShape (rank %i, sizes %A, lower bounds %A); TypeDefn.Array records only the rank, so accepting this would make it compare equal to the plain array of that rank"
+                        a.FullName
+                        shape.Rank
+                        (List.ofSeq shape.Sizes)
+                        (List.ofSeq shape.LowerBounds)
+
                 TypeDefn.Array (elementType, shape.Rank)
 
             member this.GetByReferenceType (elementType : TypeDefn) : TypeDefn = TypeDefn.Byref elementType

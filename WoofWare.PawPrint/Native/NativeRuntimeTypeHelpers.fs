@@ -958,6 +958,15 @@ module NativeRuntimeTypeHelpers =
     /// (`MethodTableBuilder::SetVirtualMethodImpl` changes the Impl and not the Decl), so it
     /// belongs to slot *content* -- dispatch, and one day `GetMethodAt` -- rather than to slot
     /// identity.
+    ///
+    /// This is recomputed on every `GetSlot`/`GetNumVirtuals` query, and `PopulateMethods` issues
+    /// one query per virtual method: the walk is not memoised, so populating a type is quadratic in
+    /// its virtual count before counting the concretisation each signature comparison performs.
+    /// That is affordable at this interpreter's speed and has not been measured as a bottleneck. If
+    /// it ever is, note that the cache key must be the `ConcreteTypeHandle` and not the underlying
+    /// type definition: `List&lt;int&gt;` and `List&lt;string&gt;` share a definition, and the whole
+    /// point of this walk is that it compares *substituted* signatures, so a definition-keyed cache
+    /// would serve one instantiation's layout for another.
     let rec vtableOfClosed
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1060,9 +1069,15 @@ module NativeRuntimeTypeHelpers =
                     //
                     // The two are separable. A tie can only be an artifact if some generic
                     // substitution actually happened, so when several slots match and any type
-                    // involved is generic, fail rather than guess. A single match is always safe:
-                    // the definition-level match is still among the candidates, so if only one slot
-                    // matches at all, it is that one.
+                    // involved is generic, fail rather than guess. A single match is safe *whenever
+                    // the method overrides at all*: the definition-level match is then still among
+                    // the candidates, so if only one slot matches, it is that one. That proviso is
+                    // load-bearing rather than pedantic -- substitution can manufacture a lone match
+                    // for a method that overrides nothing, which is the first limitation recorded
+                    // above (non-newslot `C<T>.M(T)` over `A.M(string)`: one closed match, zero
+                    // definition-level matches, and CoreCLR allocates a fresh slot). Detecting that
+                    // needs the generic-definition layout this walk does not have, so it is refused
+                    // there rather than answered here.
                     if List.length matched > 1 then
                         let matchedSlots = matched |> List.map (fun i -> List.item i slots)
 
