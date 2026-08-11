@@ -17,10 +17,13 @@ module internal RawArrayDataProjection =
         && field.DeclaringType.Name = "RawArrayData"
         && field.DeclaringType.Generics.IsEmpty
 
-    let private arrayOrFail (addr : ManagedHeapAddress) (state : IlMachineState) : AllocatedArray =
-        match state.ManagedHeap.Arrays.TryGetValue addr with
-        | true, arr -> arr
-        | false, _ -> failwith $"RawArrayData projection expected array object at %O{addr}"
+    /// Both callers want only the dimensions — one reads `Length`, the other merely
+    /// asserts that the address really is an array — so this hands back a shape, from
+    /// which no cell is reachable.
+    let private arrayOrFail (addr : ManagedHeapAddress) (state : IlMachineState) : ArrayShape =
+        match ManagedHeap.tryGetArrayShape addr state.ManagedHeap with
+        | Some arr -> arr
+        | None -> failwith $"RawArrayData projection expected array object at %O{addr}"
 
     let private byteConcreteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -47,7 +50,7 @@ module internal RawArrayDataProjection =
             let arr = arrayOrFail addr state
 
             match field.Name with
-            | "Length" -> Some (uint32Field (uint32 arr.Shape.Length))
+            | "Length" -> Some (uint32Field (uint32 arr.Length))
             | "Data" ->
                 failwith
                     $"TODO: RawArrayData::Data value load for array object %O{addr}; this is the shape emitted by reading Unsafe.As<RawArrayData>(array).Data, but only ldflda address projection is implemented"
