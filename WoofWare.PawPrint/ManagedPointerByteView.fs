@@ -2,7 +2,7 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module ManagedPointerByteView =
-    let private arrayElementHandle (arrObj : AllocatedArray) : ConcreteTypeHandle =
+    let private arrayElementHandle (arrObj : ArrayShape) : ConcreteTypeHandle =
         match arrObj.ConcreteType with
         | ConcreteTypeHandle.OneDimArrayZero element -> element
         | ConcreteTypeHandle.Array (element, _) -> element
@@ -20,7 +20,7 @@ module ManagedPointerByteView =
         =
         let obj = state.ManagedHeap.Arrays.[arr]
 
-        if obj.Length > 0 then
+        if obj.Shape.Length > 0 then
             CliType.sizeOf obj.Elements.[0]
         else
             // Deliberately the non-loading walk: this returns a bare `int`, with nowhere to put
@@ -33,7 +33,7 @@ module ManagedPointerByteView =
                     state.ConcreteTypes
                     state._LoadedAssemblies
                     baseClassTypes
-                    (arrayElementHandle obj)
+                    (arrayElementHandle obj.Shape)
 
             CliType.sizeOf zero
 
@@ -47,8 +47,8 @@ module ManagedPointerByteView =
         (arr : ManagedHeapAddress)
         : ConcreteType<ConcreteTypeHandle> option
         =
-        let obj = state.ManagedHeap.Arrays.[arr]
-        let handle = arrayElementHandle obj
+        let handle = arrayElementHandle (ManagedHeap.getArrayShape arr state.ManagedHeap)
+
         AllConcreteTypes.lookup handle state.ConcreteTypes
 
     let arrayBytePosition
@@ -175,8 +175,7 @@ module ManagedPointerByteView =
 
         match ptr with
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, _), []) ->
-            let arrObj = state.ManagedHeap.Arrays.[arr]
-            let handle = arrayElementHandle arrObj
+            let handle = arrayElementHandle (ManagedHeap.getArrayShape arr state.ManagedHeap)
 
             match handle with
             | ConcreteTypeHandle.Concrete _ ->

@@ -43,25 +43,34 @@ module TestManagedHeap =
 
         let intArray : AllocatedArray =
             {
-                ConcreteType = intArrayHandle
-                Length = 0
-                Lengths = ImmutableArray.Create 0
+                Shape =
+                    {
+                        ConcreteType = intArrayHandle
+                        Length = 0
+                        Lengths = ImmutableArray.Create 0
+                    }
                 Elements = ImmutableArray.Empty
             }
 
         let stringArray : AllocatedArray =
             {
-                ConcreteType = stringArrayHandle
-                Length = 0
-                Lengths = ImmutableArray.Create 0
+                Shape =
+                    {
+                        ConcreteType = stringArrayHandle
+                        Length = 0
+                        Lengths = ImmutableArray.Create 0
+                    }
                 Elements = ImmutableArray.Empty
             }
 
         let intArrayAddr, heap = ManagedHeap.allocateArray intArray ManagedHeap.empty
         let stringArrayAddr, heap = ManagedHeap.allocateArray stringArray heap
 
-        heap.Arrays.[intArrayAddr].ConcreteType |> shouldEqual intArrayHandle
-        heap.Arrays.[stringArrayAddr].ConcreteType |> shouldEqual stringArrayHandle
+        (ManagedHeap.getArrayShape intArrayAddr heap).ConcreteType
+        |> shouldEqual intArrayHandle
+
+        (ManagedHeap.getArrayShape stringArrayAddr heap).ConcreteType
+        |> shouldEqual stringArrayHandle
 
     [<Test>]
     let ``getObjectConcreteType returns concrete array type`` () : unit =
@@ -70,9 +79,12 @@ module TestManagedHeap =
 
         let array : AllocatedArray =
             {
-                ConcreteType = arrayHandle
-                Length = 0
-                Lengths = ImmutableArray.Create 0
+                Shape =
+                    {
+                        ConcreteType = arrayHandle
+                        Length = 0
+                        Lengths = ImmutableArray.Create 0
+                    }
                 Elements = ImmutableArray.Empty
             }
 
@@ -230,9 +242,9 @@ module TestManagedHeap =
             IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
 
         let array = state.ManagedHeap.Arrays.[addr]
-        array.ConcreteType |> shouldEqual arrayHandle
-        array.Length |> shouldEqual 12
-        array.Lengths |> shouldEqual lengths
+        array.Shape.ConcreteType |> shouldEqual arrayHandle
+        array.Shape.Length |> shouldEqual 12
+        array.Shape.Lengths |> shouldEqual lengths
         array.Elements.Length |> shouldEqual 12
 
         for i = 0 to 11 do
@@ -252,8 +264,8 @@ module TestManagedHeap =
             IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
 
         let array = state.ManagedHeap.Arrays.[addr]
-        array.Length |> shouldEqual 0
-        array.Lengths |> shouldEqual lengths
+        array.Shape.Length |> shouldEqual 0
+        array.Shape.Lengths |> shouldEqual lengths
         array.Elements.Length |> shouldEqual 0
 
     [<Test>]
@@ -295,8 +307,8 @@ module TestManagedHeap =
             IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
 
         let array = state.ManagedHeap.Arrays.[addr]
-        array.Length |> shouldEqual 0
-        array.Lengths |> shouldEqual lengths
+        array.Shape.Length |> shouldEqual 0
+        array.Shape.Lengths |> shouldEqual lengths
         array.Elements.Length |> shouldEqual 0
 
     [<Test>]
@@ -373,9 +385,12 @@ module TestManagedHeap =
 
     let private stubArray (length : int) : AllocatedArray =
         {
-            ConcreteType = ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 1)
-            Length = length
-            Lengths = ImmutableArray.Create length
+            Shape =
+                {
+                    ConcreteType = ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 1)
+                    Length = length
+                    Lengths = ImmutableArray.Create length
+                }
             Elements =
                 Seq.replicate length (CliType.Numeric (CliNumericType.Int32 0))
                 |> ImmutableArray.CreateRange
@@ -524,6 +539,111 @@ module TestManagedHeap =
             && live.Count = ops.Length
             && live
                |> Set.forall (fun addr -> ManagedHeap.getSyncBlock addr heap = SyncBlock.Empty)
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 200,
+            Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary) property
+        )
+
+    // ---------------------------------------------------------------------
+    // Array shape.
+    //
+    // `ArrayShape` is everything about an array *except* its contents: the
+    // identity and dimensions fixed at allocation. It deliberately has no
+    // `Elements`, so a caller that only wants the rank or the length cannot
+    // reach a cell — reading a cell is a guest-visible memory access and has
+    // to go through `getArrayValue`.
+    // ---------------------------------------------------------------------
+
+    [<Test>]
+    let ``getArrayShape reports the allocation's dimensions and type`` () : unit =
+        let elementHandle = ConcreteTypeHandle.Concrete 1
+        let arrayHandle = ConcreteTypeHandle.Array (elementHandle, 2)
+        let lengths = ImmutableArray.CreateRange [ 3 ; 4 ]
+
+        let allocation : AllocatedArray =
+            {
+                Shape =
+                    {
+                        ConcreteType = arrayHandle
+                        Length = 12
+                        Lengths = lengths
+                    }
+                Elements =
+                    Seq.replicate 12 (CliType.Numeric (CliNumericType.Int32 0))
+                    |> ImmutableArray.CreateRange
+            }
+
+        let addr, heap = ManagedHeap.allocateArray allocation ManagedHeap.empty
+        let shape = ManagedHeap.getArrayShape addr heap
+
+        shape.ConcreteType |> shouldEqual arrayHandle
+        shape.Length |> shouldEqual 12
+        shape.Lengths |> shouldEqual lengths
+
+    [<Test>]
+    let ``getArrayShape fails loudly, and distinguishably, for a non-array object`` () : unit =
+        // Same discrimination as `setFieldById`, for the same reason: a non-array address
+        // means the caller misjudged the type of the reference it holds, whereas an
+        // unallocated address means the reference itself is bogus.
+        let objAddr, heap = ManagedHeap.allocateNonArray stubNonArray ManagedHeap.empty
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> ManagedHeap.getArrayShape objAddr heap |> ignore)
+
+        exn.Message |> shouldContainText "is not an array"
+
+    [<Test>]
+    let ``getArrayShape fails loudly for an address that was never allocated`` () : unit =
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                ManagedHeap.getArrayShape (ManagedHeapAddress 42) ManagedHeap.empty |> ignore
+            )
+
+        exn.Message |> shouldContainText "not a live managed heap allocation"
+
+    [<Test>]
+    let ``tryGetArrayShape and isArray answer only for arrays`` () : unit =
+        let arrAddr, heap = ManagedHeap.allocateArray (stubArray 3) ManagedHeap.empty
+        let objAddr, heap = ManagedHeap.allocateNonArray stubNonArray heap
+        let danglingAddr = ManagedHeapAddress 99
+
+        ManagedHeap.isArray arrAddr heap |> shouldEqual true
+        ManagedHeap.isArray objAddr heap |> shouldEqual false
+        ManagedHeap.isArray danglingAddr heap |> shouldEqual false
+
+        (ManagedHeap.tryGetArrayShape arrAddr heap).IsSome |> shouldEqual true
+        ManagedHeap.tryGetArrayShape objAddr heap |> shouldEqual None
+        ManagedHeap.tryGetArrayShape danglingAddr heap |> shouldEqual None
+
+    [<Test>]
+    let ``array shape is exactly the allocation minus its elements`` () : unit =
+        // The oracle is the allocation record itself: `getArrayShape` must project it
+        // field-for-field, never derive or normalise. `Length` in particular is stored,
+        // not recomputed from `Lengths`, and the projection must not start recomputing it.
+        let property (lengths : int list) : bool =
+            let lengths = lengths |> List.map (fun n -> (abs n) % 5)
+            let total = lengths |> List.fold (*) 1
+
+            let allocation : AllocatedArray =
+                {
+                    Shape =
+                        {
+                            ConcreteType = ConcreteTypeHandle.Array (ConcreteTypeHandle.Concrete 1, lengths.Length)
+                            Length = total
+                            Lengths = ImmutableArray.CreateRange lengths
+                        }
+                    Elements =
+                        Seq.replicate total (CliType.Numeric (CliNumericType.Int32 0))
+                        |> ImmutableArray.CreateRange
+                }
+
+            let addr, heap = ManagedHeap.allocateArray allocation ManagedHeap.empty
+            let shape = ManagedHeap.getArrayShape addr heap
+
+            shape.ConcreteType = allocation.Shape.ConcreteType
+            && shape.Length = allocation.Shape.Length
+            && shape.Lengths = allocation.Shape.Lengths
 
         Check.One (
             Config.QuickThrowOnFailure.WithMaxTest 200,

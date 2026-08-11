@@ -84,15 +84,30 @@ type AllocatedNonArrayObject =
             Contents = CliValueType.WithFieldSetById field v f.Contents
         }
 
-type AllocatedArray =
+/// Everything about an array except its contents: the element type, the total element
+/// count, and the per-dimension lengths. All three are fixed when the array is allocated
+/// and never change afterwards, so reading them is not a guest-visible memory access —
+/// unlike reading a cell, which is.
+///
+/// The absence of an `Elements` field is the point. A caller that needs only the rank or
+/// the length holds a value from which no cell can be reached, so a shape query cannot
+/// silently become a data read as the code around it changes. Cell reads go through
+/// `ManagedHeap.getArrayValue`.
+type ArrayShape =
     {
         ConcreteType : ConcreteTypeHandle
-        /// Total element count, equal to the product of `Lengths`. For szarrays this is just
-        /// the array length; for multi-dim arrays it is the size of the flat backing store.
+        /// Total element count, equal to the product of `Lengths`.
         Length : int
-        /// Per-dimension lengths in row-major order. Length is 1 for szarrays, equal to the
-        /// rank for multi-dim arrays. Multiplying these produces `Length`.
+        /// Per-dimension lengths in row-major order; length 1 for szarrays, else the rank.
         Lengths : ImmutableArray<int>
+    }
+
+type AllocatedArray =
+    {
+        /// Identity and dimensions, fixed at allocation. Held as a nested record rather
+        /// than inlined so that a caller wanting only the shape can be handed a value
+        /// from which no cell is reachable; see `ArrayShape`.
+        Shape : ArrayShape
         /// Backing store in row-major order. For multi-dim arrays the element at
         /// `(i_0, ..., i_{n-1})` lives at flat offset
         /// `((((i_0)*d_1)+i_1)*d_2 + i_2)*...*d_{n-1} + i_{n-1}`, where `d_k = Lengths.[k]`.
@@ -183,7 +198,7 @@ module ManagedHeap =
         | true, obj -> Some obj.ConcreteType
         | false, _ ->
             match heap.Arrays.TryGetValue alloc with
-            | true, arr -> Some arr.ConcreteType
+            | true, arr -> Some arr.Shape.ConcreteType
             | false, _ -> None
 
     let getObjectConcreteType (alloc : ManagedHeapAddress) (heap : ManagedHeap) : ConcreteTypeHandle =
@@ -328,6 +343,32 @@ module ManagedHeap =
                 failwith
                     $"stringsEqual: one or both addresses %O{a1}, %O{a2} are not registered strings; cannot compare contents"
 
+    /// Whether `addr` is a live array. False for a live non-array object and for an
+    /// address that was never allocated; use `tryGetObjectConcreteType` to tell those apart.
+    let isArray (addr : ManagedHeapAddress) (heap : ManagedHeap) : bool = heap.Arrays.ContainsKey addr
+
+    /// The dimensions and element type of the array at `addr`, or `None` if `addr` is not
+    /// a live array. Carries no cells: see `ArrayShape`.
+    let tryGetArrayShape (addr : ManagedHeapAddress) (heap : ManagedHeap) : ArrayShape option =
+        match heap.Arrays.TryGetValue addr with
+        | true, arr -> Some arr.Shape
+        | false, _ -> None
+
+    /// The dimensions and element type of the array at `addr`. Carries no cells: see
+    /// `ArrayShape`.
+    ///
+    /// The two rejection cases are reported differently because they are different bugs:
+    /// a non-array address means the caller misjudged the type of the reference it was
+    /// handed, whereas an unallocated address means the reference itself is bogus.
+    let getArrayShape (addr : ManagedHeapAddress) (heap : ManagedHeap) : ArrayShape =
+        match tryGetArrayShape addr heap with
+        | Some shape -> shape
+        | None ->
+            if heap.NonArrayObjects.ContainsKey addr then
+                failwith $"getArrayShape: %O{addr} is not an array, so has no array shape"
+            else
+                failwith $"getArrayShape: %O{addr} is not a live managed heap allocation, so has no array shape"
+
     let getArrayValue (alloc : ManagedHeapAddress) (offset : int) (heap : ManagedHeap) : CliType =
         match heap.Arrays.TryGetValue alloc with
         | false, _ -> failwith $"TODO: array not on heap (no array registered at %O{alloc})"
@@ -335,10 +376,10 @@ module ManagedHeap =
 
         if offset < 0 then
             failwith
-                $"TODO: raise IndexOutOfRangeException: negative array index %d{offset} on array at %O{alloc} (length %d{arr.Length}). A negative index here typically means a byref obtained via `RawData::Data` on an array was read without first applying the canonical `+sizeof(nint)` skip past the length-header region; if you intended to read the length, use `RawArrayData::Length` instead."
-        elif offset >= arr.Length then
+                $"TODO: raise IndexOutOfRangeException: negative array index %d{offset} on array at %O{alloc} (length %d{arr.Shape.Length}). A negative index here typically means a byref obtained via `RawData::Data` on an array was read without first applying the canonical `+sizeof(nint)` skip past the length-header region; if you intended to read the length, use `RawArrayData::Length` instead."
+        elif offset >= arr.Shape.Length then
             failwith
-                $"TODO: raise IndexOutOfRangeException: array index %d{offset} >= length %d{arr.Length} on array at %O{alloc}"
+                $"TODO: raise IndexOutOfRangeException: array index %d{offset} >= length %d{arr.Shape.Length} on array at %O{alloc}"
 
         arr.Elements.[offset]
 

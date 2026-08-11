@@ -2551,9 +2551,9 @@ module IlMachineStateExecution =
         : ArrayStoreVarianceCheck
         =
         let arrayObj =
-            match state.ManagedHeap.Arrays.TryGetValue arrayAddress with
-            | true, v -> v
-            | false, _ ->
+            match ManagedHeap.tryGetArrayShape arrayAddress state.ManagedHeap with
+            | Some v -> v
+            | None ->
                 failwith
                     $"checkArrayStoreVariance: no array allocation at %O{arrayAddress}; helper called with a non-array heap address"
 
