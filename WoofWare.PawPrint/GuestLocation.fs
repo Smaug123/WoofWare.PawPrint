@@ -121,6 +121,50 @@ module GuestLocation =
             |> Option.bind (fun assy -> assy.TryResolveSourceLocation facts.Handle ilOffset)
 
     /// <summary>
+    /// The offset of the instruction immediately before <paramref name="ilOffset" /> in
+    /// <paramref name="method" />, when that instruction is a call. <c>None</c> otherwise.
+    /// </summary>
+    /// <remarks>
+    /// The cross-check that keeps <c>ThreadStatus.parksPastTheBlockingCall</c> honest. That
+    /// classifier knows how a status is reached but not what the frame actually contains, so
+    /// stepping back on its word alone would move the report onto whatever happened to precede
+    /// the PC. Requiring a call there means a misclassified status costs the step-back — which
+    /// is where we started — instead of naming an unrelated instruction.
+    /// </remarks>
+    let private precedingCallOffset
+        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (ilOffset : int)
+        : int option
+        =
+        match MethodInfo.tryIlBody method with
+        | None -> None
+        | Some instructions ->
+
+        let candidate =
+            instructions.Locations
+            |> Map.toSeq
+            |> Seq.filter (fun (offset, _) -> offset < ilOffset)
+            |> Seq.tryLast
+
+        match candidate with
+        | Some (offset, IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, _))
+        | Some (offset, IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Calli, _))
+        | Some (offset, IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Callvirt, _)) -> Some offset
+        | Some _
+        | None -> None
+
+    /// <summary>
+    /// The offset in <paramref name="frame" /> that a diagnostic should name: normally the
+    /// program counter, but the blocking call site for a thread parked past one.
+    /// </summary>
+    let private reportableOffset (status : ThreadStatus) (frame : MethodState) : int =
+        if ThreadStatus.parksPastTheBlockingCall status then
+            precedingCallOffset frame.ExecutingMethod frame.IlOpIndex
+            |> Option.defaultValue frame.IlOpIndex
+        else
+            frame.IlOpIndex
+
+    /// <summary>
     /// Where <paramref name="thread" /> is: its active frame, and — when that frame has no source
     /// attribution — the innermost frame enclosing it that has.
     /// </summary>
@@ -135,9 +179,16 @@ module GuestLocation =
         else
 
         let active = thread.MethodState
-        let activeFrame = describeFrame active active.IlOpIndex
 
-        match trySourceOf state active.ExecutingMethod active.IlOpIndex with
+        // Not `active.IlOpIndex`: a thread parked inside a blocking QCall has already advanced
+        // past the call that blocked it, so the raw PC names the statement *after* the one the
+        // guest is stuck on. A frame further out is attributed at its `CallSiteIlOpIndex` for
+        // exactly the same reason; this is that rule applied to the frame whose callee has
+        // already been popped.
+        let activeOffset = reportableOffset thread.Status active
+        let activeFrame = describeFrame active activeOffset
+
+        match trySourceOf state active.ExecutingMethod activeOffset with
         | Some source -> GuestThreadPosition.AtSource (activeFrame, source)
         | None ->
 

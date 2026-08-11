@@ -115,17 +115,26 @@ module TestGuestLocation =
         | many ->
             failwith $"guest source has %d{many.Length} lines matching %s{marker}, so the expected line is ambiguous"
 
+    [<RequireQualifiedAccess>]
+    type private Guest =
+        | WithSymbols
+        | WithoutSymbols
+        /// Optimized, so that a program counter parked one instruction past a call resolves to
+        /// the *next* statement. Unoptimized C# hides that behind the `nop` it emits after every
+        /// call statement.
+        | OptimizedWithSymbols
+
     /// Run a guest that never terminates, and return the diagnostic the harness gave up with.
     ///
     /// `name` identifies the run in the message; it is *not* the document name a resolved source
     /// location carries. `Roslyn.compileCore` parses each source as `File{index}.cs`, so that is
     /// what the compiler records in the PDB and what the assertions below look for.
-    let private runWedged (withSymbols : bool) (maxSteps : int64) (name : string) (source : string) : string =
+    let private runWedgedAs (guest : Guest) (maxSteps : int64) (name : string) (source : string) : string =
         let image =
-            if withSymbols then
-                Roslyn.compileWithSymbols [ source ]
-            else
-                Roslyn.compile [ source ]
+            match guest with
+            | Guest.WithSymbols -> Roslyn.compileWithSymbols [ source ]
+            | Guest.WithoutSymbols -> Roslyn.compile [ source ]
+            | Guest.OptimizedWithSymbols -> Roslyn.compileOptimizedWithSymbols [ source ]
 
         let _messages, loggerFactory =
             LoggerFactory.makeTestWithProperties [ "source_file", name ]
@@ -161,7 +170,7 @@ class SpinsInGuestCode
 }
 """
 
-        let message = runWedged true 50_000L "SpinsInGuestCode.cs" source
+        let message = runWedgedAs Guest.WithSymbols 50_000L "SpinsInGuestCode.cs" source
         let expected = lineContaining "// WEDGE" source
 
         message |> shouldContainText "Threads: "
@@ -184,7 +193,7 @@ class SpinsUnattributed
 }
 """
 
-        let message = runWedged false 50_000L "SpinsUnattributed.cs" source
+        let message = runWedgedAs Guest.WithoutSymbols 50_000L "SpinsUnattributed.cs" source
 
         message |> shouldContainText "Threads: "
         message |> shouldContainText "Main at IL offset"
@@ -212,7 +221,7 @@ class BlocksInBcl
 }
 """
 
-        let message = runWedged true 20_000_000L "BlocksInBcl.cs" source
+        let message = runWedgedAs Guest.WithSymbols 20_000_000L "BlocksInBcl.cs" source
         let expected = lineContaining "// WEDGE" source
 
         message |> shouldContainText "Threads: "
@@ -247,13 +256,63 @@ class HoldsAnUnstartedThread
 }
 """
 
-        let message = runWedged true 200_000L "HoldsAnUnstartedThread.cs" source
+        let message =
+            runWedgedAs Guest.WithSymbols 200_000L "HoldsAnUnstartedThread.cs" source
+
         let expected = lineContaining "// WEDGE" source
 
         // Asserted, not merely survived: without this the test passes for a `GuestLocation` that
         // never met a frameless thread at all, and the guard it is meant to cover goes untested.
         message |> shouldContainText "thread 1 (NotStarted)"
         message |> shouldContainText $"File0.cs:%d{expected}"
+
+    /// A guest that blocks by calling a native handler *directly*, so its own frame is the active
+    /// one when the thread parks.
+    ///
+    /// Every blocking QCall advances the caller's program counter past the call site before
+    /// parking, and `dispatchNative` then pops the native frame — so the raw PC names the
+    /// statement after the one that blocked. Nothing further out can correct for it here: `Main`
+    /// is the outermost guest frame, so if the active frame is misattributed the diagnostic is
+    /// simply wrong.
+    ///
+    /// Optimized deliberately. Unoptimized C# emits a `nop` after the call which carries the
+    /// call's own sequence point, so the wrong offset resolves to the right line by accident and
+    /// this test would pass against the bug it exists to catch.
+    [<Test>]
+    let ``a guest blocked in a direct native call is located at the call, not the next statement`` () : unit =
+        let source =
+            """
+using System.Runtime.InteropServices;
+
+class BlocksInDirectNativeCall
+{
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_LowLevelMonitor_Create")]
+    private static extern nint Create();
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_LowLevelMonitor_Acquire")]
+    private static extern void Acquire(nint monitor);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_LowLevelMonitor_Wait")]
+    private static extern void Wait(nint monitor);
+
+    static int Main()
+    {
+        nint monitor = Create();
+        Acquire(monitor);
+        Wait(monitor); // WEDGE
+        return 42; // NEXT STATEMENT
+    }
+}
+"""
+
+        let message =
+            runWedgedAs Guest.OptimizedWithSymbols 20_000_000L "BlocksInDirectNativeCall.cs" source
+
+        let wedge = lineContaining "// WEDGE" source
+        let next = lineContaining "// NEXT STATEMENT" source
+
+        message |> shouldContainText $"File0.cs:%d{wedge}"
+        message |> shouldNotContainText $"File0.cs:%d{next}"
 
     /// The rich summary must appear once, not twice. Before unification the harness printed the
     /// library's thread description under `Stuck:` and its own under `Threads:`, which said the
@@ -274,7 +333,8 @@ class DeadlocksImmediately
 }
 """
 
-        let message = runWedged true 20_000_000L "DeadlocksImmediately.cs" source
+        let message =
+            runWedgedAs Guest.WithSymbols 20_000_000L "DeadlocksImmediately.cs" source
 
         let occurrences =
             message.Split ([| "thread 0 (" |], StringSplitOptions.None) |> Array.length
