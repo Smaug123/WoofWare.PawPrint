@@ -8,9 +8,10 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// `NativeRuntimeTypeHelpers.vtableOfClosed` is the single definition of "which vtable slot" in
-/// PawPrint: `RuntimeMethodHandle.GetSlot` is an index into it and `RuntimeTypeHandle.GetNumVirtuals`
-/// is its length. The end-to-end coverage is `sourcesPure/ReflectionVirtualMethodSlots.cs`, which
+/// `NativeRuntimeTypeHelpers.slotTableOfClosed` is the single definition of "which slot" in
+/// PawPrint: `RuntimeMethodHandle.GetSlot` is an index into it, and `RuntimeTypeHandle.GetNumVirtuals`
+/// is the length of its `Vtable` half alone. The end-to-end coverage is
+/// `sourcesPure/ReflectionVirtualMethodSlots.cs`, which
 /// pins the shapes a hand-written matcher gets wrong (overloads where only one is overridden,
 /// covariant returns, `new virtual` shadows, reabstraction, generic substitution). What that file
 /// cannot do is range over a large corpus, because its expectations have to be written out by hand.
@@ -172,6 +173,24 @@ module TestVirtualMethodSlots =
             "Dictionary`2",
             [ "System", "Int32" ; "System", "Int32" ],
             typeof<System.Collections.Generic.Dictionary<int, int>>
+            // A generic type declaring *both* constructors, with lower-numbered rows before them:
+            // `Lazy`1` has its `.cctor` at a higher row than its default ctor, and ordinary methods
+            // below both. On a generic type every other method is placed in the first of the two
+            // passes past the vtable, so without this entry a walk that gave the constructors their
+            // priority only on non-generic types would agree with the host everywhere in the corpus.
+            "System", "Lazy`1", [ "System", "Int32" ], typeof<System.Lazy<int>>
+            // An interface, and specifically one carrying `static abstract` members. Those are
+            // `virtual` *and* static, so CoreCLR places them outside the vtable -- 43 of them here,
+            // at slots 1..43. Nothing else in either corpus is an interface at all, so a placement
+            // filter written as "not virtual" rather than "not an instance virtual" would drop every
+            // one of them and no other entry would notice.
+            // Named through reflection rather than `typeof<INumberBase<int>>`: F# rejects spelling an
+            // interface with static abstract members outside a constraint position (FS3536), and
+            // suppressing that warning to write a type name would be the wrong trade.
+            "System.Numerics",
+            "INumberBase`1",
+            [ "System", "Int32" ],
+            (hostType "System.Numerics" "INumberBase`1").MakeGenericType [| typeof<int> |]
         ]
 
     /// The two corpora as one list of (label, concretiser, host type), so every check below ranges
@@ -203,7 +222,7 @@ module TestVirtualMethodSlots =
     /// internal, so this is the one place the oracle reaches past the public surface -- and it is
     /// worth it: without it the oracle can only compare vtable *lengths*, and a walk that appended a
     /// spurious slot while dropping a real one has the right length and the wrong layout.
-    let private hostSlotOf : MethodInfo -> int =
+    let private hostSlotOf : MethodBase -> int =
         let impl =
             typeof<RuntimeMethodHandle>.GetMethods (BindingFlags.NonPublic ||| BindingFlags.Static)
             |> Array.filter (fun candidate ->
@@ -212,7 +231,42 @@ module TestVirtualMethodSlots =
             )
             |> Array.exactlyOne
 
-        fun (method : MethodInfo) -> impl.Invoke ((null : obj), [| box method |]) :?> int
+        fun (method : MethodBase) -> impl.Invoke ((null : obj), [| box method |]) :?> int
+
+    /// Every MethodDef the type declares, which is what `DeclaredMethodIterator` ranges over.
+    /// `GetMethods` alone is not that: it never returns constructors, so the instance constructors
+    /// and the class constructor have to be fetched separately -- and they are exactly the methods
+    /// the placement rule gives priority to, so omitting them would leave the interesting case
+    /// untested.
+    let private hostDeclaredMethods (t : Type) : MethodBase list =
+        let flags =
+            BindingFlags.DeclaredOnly
+            ||| BindingFlags.Instance
+            ||| BindingFlags.Static
+            ||| BindingFlags.Public
+            ||| BindingFlags.NonPublic
+
+        [
+            yield! (t.GetMethods flags |> Seq.cast<MethodBase>)
+            yield! (t.GetConstructors flags |> Seq.cast<MethodBase>)
+            match t.TypeInitializer with
+            | null -> ()
+            | cctor -> yield (cctor :> MethodBase)
+        ]
+        // `GetConstructors` with `Static` in the flags also yields the class constructor, so the
+        // explicit `TypeInitializer` above can duplicate it.
+        |> List.distinctBy _.MetadataToken
+
+    /// The identity `slotIndexInTable` looks a method up by. Every corpus type is corelib's, so the
+    /// declaring assembly is corelib's; the row number comes straight from the host's metadata
+    /// token, which is the same number PawPrint read out of the same image.
+    let private identityOf
+        (method : MethodBase)
+        : string * (System.Reflection.Metadata.MethodDefinitionHandle option * SynthesisedMethod option)
+        =
+        let row = method.MetadataToken &&& 0xFFFFFF
+
+        corelib.Name.FullName, (Some (MetadataTokens.MethodDefinitionHandle row), None)
 
     /// The host's vtable as a list of MethodDef tokens, slot 0 upwards: `GetSlot` gives the index and
     /// `MetadataToken` names the occupant. This is the *layout*, not merely its size.
@@ -389,6 +443,71 @@ module TestVirtualMethodSlots =
             )
 
         exercised |> shouldEqual (List.length allCorpus)
+
+    /// The strongest form of the oracle, and the only one that pins what `RuntimeMethodHandle.GetSlot`
+    /// actually computes: for **every method a corpus type declares**, virtual or not, PawPrint's
+    /// slot number must equal the host CLR's.
+    ///
+    /// Deliberately compares numbers rather than two lists laid side by side. A list comparison of
+    /// the region past the vtable checks its *order* but never its *origin*, so an implementation
+    /// that forgot to add `numVirtuals` -- the one piece of arithmetic in the whole change -- would
+    /// pass it. Asking for the number instead puts `slotIndexInTable` itself under the oracle.
+    ///
+    /// It has to be a unit test rather than an end-to-end one. Of the five `GetSlot` call sites in
+    /// the pinned corelib, four guard on `Virtual` first and the fifth (`PopulateProperties`) only
+    /// ever compares the answer with `numVirtuals`. So no guest can observe the numbering past the
+    /// vtable at all: stubbing it to `numVirtuals + 999` gets every end-to-end case in the suite
+    /// through, measured. The host CLR is the only oracle available, and it is a thorough one.
+    [<Test>]
+    let ``every declared method's slot agrees with the host CLR`` () : unit =
+        let mutable failures = []
+        let mutable virtualsChecked = 0
+        let mutable beyondChecked = 0
+
+        for label, concretiseType, host in allCorpus do
+            let state, handle = concretiseType (state ())
+
+            let _, table =
+                NativeRuntimeTypeHelpers.slotTableOfClosed loggerFactory bct "test" state handle
+
+            let numVirtuals = List.length table.Vtable
+
+            for method in hostDeclaredMethods host do
+                let expected = hostSlotOf method
+                let actual = NativeRuntimeTypeHelpers.slotIndexInTable (identityOf method) table
+
+                match actual with
+                | None ->
+                    failures <-
+                        $"%s{label}: %s{method.Name} (row %i{method.MetadataToken &&& 0xFFFFFF}) has no slot in PawPrint's table, host says %i{expected}"
+                        :: failures
+                | Some actual ->
+                    if actual <> expected then
+                        failures <-
+                            $"%s{label}: %s{method.Name} (row %i{method.MetadataToken &&& 0xFFFFFF}) PawPrint slot %i{actual}, host %i{expected}"
+                            :: failures
+
+                if expected < numVirtuals then
+                    virtualsChecked <- virtualsChecked + 1
+                else
+                    beyondChecked <- beyondChecked + 1
+
+        if not (List.isEmpty failures) then
+            // Report every divergence at once: one wrong rule usually breaks a family of methods,
+            // and seeing the family is what identifies the rule. Truncated, because a rule that
+            // misplaces the whole region past the vtable produces thousands.
+            let shown = failures |> List.rev |> List.truncate 40
+
+            failwith (
+                $"%i{List.length failures} method slots disagree with the host CLR (first %i{List.length shown}):\n"
+                + String.Join ("\n", shown)
+            )
+
+        // Guard against the check going vacuous in either half. A corpus that stopped yielding
+        // methods past the vtable would leave the new rule untested while every assertion above
+        // still passed; the floors are well below the ~1500 and ~200 the corpus actually produces.
+        beyondChecked |> shouldBeGreaterThan 500
+        virtualsChecked |> shouldBeGreaterThan 100
 
     [<Test>]
     let ``GetNumVirtuals is exactly the vtable length`` () : unit =

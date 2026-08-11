@@ -1193,6 +1193,253 @@ module NativeRuntimeTypeHelpers =
 
             state, slots
 
+    /// The occupants of the region of a type's method table that follows its vtable, in slot order,
+    /// so that the method at index `i` holds slot `numVirtuals + i`.
+    ///
+    /// This is `MethodTableBuilder::PlaceNonVirtualMethods` (methodtablebuilder.cpp:5255-5359).
+    /// Slot numbers come from one monotonic counter shared with the vtable
+    /// (`AddNonVirtualMethod` sets the index to `pSlotTable->GetSlotCount()`,
+    /// methodtablebuilder.h:1532-1541), and only the parent's *virtual* slots are inherited --
+    /// `CopyParentVtable` (methodtablebuilder.cpp:1143) stops at the parent's `GetNumVirtuals()` --
+    /// so this region begins at exactly the type's own `GetNumVirtuals()`, however many slots its
+    /// base had beyond its vtable. Upstream machine-checks that premise: `PlaceNonVirtualMethods`
+    /// opens with `INDEBUG(bmtVT->SealVirtualSlotSection())` and every subsequent add re-seals, so
+    /// a debug build asserts that nothing appends to the vtable once this has begun.
+    ///
+    /// Nothing renumbers a declared method afterwards. `PlaceInterfaceMethods` runs later but adds
+    /// no slots -- it only fills in `bmtInterfaceSlotImpl` and the dispatch map. Do not be misled by
+    /// the comment above its call site (methodtablebuilder.cpp:1676), which still describes
+    /// creating "duplicate slots ... starting at dwCurrentDuplicateVtableSlot": that variable no
+    /// longer exists anywhere in the file. The one later addition, `AddUnboxedMethod` for a value
+    /// type's unboxed entrypoints (:7178), appends after everything placed from metadata.
+    ///
+    /// Two assumptions about what the metadata contains, both currently true and neither checked
+    /// here. Runtime-async (`g_pConfig->RuntimeAsync()`, off by default) makes
+    /// `EnumerateClassMethods` synthesise a second `bmtMDMethod` per Task-returning method, and
+    /// those consume slots alongside the declared ones; and EnC adds MethodDescs entirely outside
+    /// this file, which PawPrint may ignore because it does not support dynamic code at all (#853).
+    ///
+    /// The order is emphatically *not* MethodDef row order, and every step below is observable.
+    /// Verified against the host CLR's own `RuntimeMethodHandle.GetSlot` for every method reflection
+    /// can reach: 31064 methods over 2336 corelib types, 5499 over 1153 FSharp.Core types, and 352
+    /// over closed generic instantiations, with no disagreement.
+    let private slotsBeyondVtableOfClosed
+        (operation : string)
+        (concreteTypeInfo : ConcreteType<ConcreteTypeHandle>)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : VtableSlot list
+        =
+        // `DeclaredMethodIterator` ranges over the type's MethodDef rows, so a *synthesised* method
+        // is not a candidate for a slot at all. `vtableOfClosed` excludes them only incidentally
+        // (a synthesised method is never `IsVirtual`); here the exclusion must be deliberate,
+        // because a synthesised method *is* non-virtual and would otherwise be placed -- shifting
+        // every genuine method after it by one, and so making every slot number this function hands
+        // out wrong rather than merely adding one spurious entry.
+        //
+        // No test covers this, and none can: nothing today puts a synthesised method into a
+        // `TypeInfo` (the two construction sites, in `Program.buildStartupFrame` and
+        // `StructMarshalStub`, both build one for immediate execution), so the filter is a no-op on
+        // every image that exists. It is kept because `TypeInfo.Methods` is typed to hold either
+        // kind, so the day one is inserted is the day every slot number silently moves.
+        let declared =
+            typeInfo.Methods
+            |> List.choose (fun method ->
+                match method.TryMetadata with
+                | None -> None
+                | Some facts -> Some (method, facts)
+            )
+
+        // `PlaceVirtualMethods` places exactly the declared *instance* virtuals, so everything else
+        // is still unplaced when `PlaceNonVirtualMethods` runs. A `static virtual` -- an interface
+        // static abstract -- is therefore placed here, which is what upstream's
+        // `AddNonVirtualMethod` assertion `!IsMdVirtual(...) || IsMdStatic(...)` asserts. Writing
+        // this filter as "not virtual" would silently drop all 43 of `INumberBase<T>`'s static
+        // members, which is why that interface is in the layout corpus.
+        let unplaced =
+            declared
+            |> List.filter (fun (method, _) -> not (method.IsVirtual && not method.IsStatic))
+
+        // CoreCLR recognises the two constructors by `IsMdRTSpecialName` *plus* an `ExactlyEqual`
+        // match -- name and raw signature blob both -- against hard-coded `static void .cctor()` and
+        // `instance void .ctor()` signatures, and `ValidateMethods` (methodtablebuilder.cpp:4995-5044)
+        // rejects the type at load time if a runtime-special-named method is anything else.
+        //
+        // The flag is load-bearing and not implied by the name: a method merely *named* `.ctor`
+        // without it skips that block entirely and is placed in the ordinary pass below.
+        // `FakeCtorSecond` in TestFabricatedVtableLayout pins that against the host CLR. ECMA-335
+        // II.10.5.1 requires constructors to carry `rtspecialname`, so such an image is invalid --
+        // but CoreCLR loads it anyway, and CoreCLR is what this emulates.
+        //
+        // Matching the blob means the calling convention and generic arity are part of the test, not
+        // just the arity: a vararg or (illegal-but-loadable) generic `.ctor()` is not the default
+        // constructor and does not get the priority slot.
+        let isRuntimeSpecialName (facts : MetadataMethodFacts) : bool =
+            facts.MethodAttributes.HasFlag MethodAttributes.RTSpecialName
+
+        let hasNullaryVoidSignature (method : MethodInfo<_, _, _>) : bool =
+            method.Signature.ParameterTypes.IsEmpty
+            && method.Signature.GenericParameterCount = 0
+            && method.Signature.Header.Get.CallingConvention = System.Reflection.Metadata.SignatureCallingConvention.Default
+            && method.Signature.ReturnType = MethodReturnType.Void
+
+        // The rejections above are not optional colour. This function classifies *on* the
+        // RTSpecialName flag, and that classification is only unambiguous because CoreCLR refuses
+        // to load the shapes that would make it ambiguous. Skipping them would hand out a slot
+        // layout for a type the real runtime declines to build a MethodTable for, and every number
+        // derived from it would then describe a type that cannot exist -- the same reason
+        // `vtableOfClosed` refuses a non-newslot virtual that matches a `final` parent slot.
+        for method, facts in declared do
+            if isRuntimeSpecialName facts then
+                if method.IsVirtual then
+                    failwith
+                        $"%s{operation}: method %s{method.Name} on %O{concreteTypeInfo} is marked RTSpecialName and virtual; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5001-5004) rather than laying out a method table for it"
+
+                if method.IsStatic then
+                    if method.Name <> ".cctor" || not (hasNullaryVoidSignature method) then
+                        failwith
+                            $"%s{operation}: static method %s{method.Name} on %O{concreteTypeInfo} is marked RTSpecialName but is not exactly `static void .cctor()`; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5011-5019) rather than laying out a method table for it"
+                else if method.Name <> ".ctor" then
+                    failwith
+                        $"%s{operation}: instance method %s{method.Name} on %O{concreteTypeInfo} is marked RTSpecialName but is not named `.ctor`; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5023-5026) rather than laying out a method table for it"
+                elif method.Signature.ReturnType <> MethodReturnType.Void then
+                    failwith
+                        $"%s{operation}: constructor on %O{concreteTypeInfo} does not return void; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5028-5037) rather than laying out a method table for it"
+
+        let isClassConstructor ((method, facts) : MethodInfo<_, _, _> * MetadataMethodFacts) : bool =
+            isRuntimeSpecialName facts
+            && method.IsStatic
+            && method.Name = ".cctor"
+            && hasNullaryVoidSignature method
+
+        let isDefaultConstructor ((method, facts) : MethodInfo<_, _, _> * MetadataMethodFacts) : bool =
+            isRuntimeSpecialName facts
+            && not method.IsStatic
+            && method.Name = ".ctor"
+            && hasNullaryVoidSignature method
+
+        // Steps 1 and 2: the class constructor, then the parameterless instance constructor, ahead
+        // of everything else whatever their MethodDef rows say. Upstream places them first because
+        // `MethodTable::GetCCtorSlot` and `GetDefaultCtorSlot` are *defined* as those two positions.
+        // `System.Type` is the corpus witness for both halves at once: it declares its `.cctor` at
+        // row 2639, its default ctor at row 2438, and other methods from row 2431, so it
+        // discriminates cctor-before-ctor *and* ctor-before-row-order. `Lazy`1` is the witness that
+        // the rule still holds on a generic type, where every other method is placed in the first
+        // pass below and could otherwise have swallowed the ctors with it.
+        let placedFirst =
+            (unplaced |> List.filter isClassConstructor)
+            @ (unplaced |> List.filter isDefaultConstructor)
+
+        let stillUnplaced =
+            unplaced
+            |> List.filter (fun candidate -> not (isClassConstructor candidate || isDefaultConstructor candidate))
+
+        // Steps 3 and 4: two passes, each in row order. Upstream's vocabulary for them is worth
+        // knowing, because it cuts across the name of this function: the first pass places methods
+        // that need a *real vtable slot* and freezes `bmtVT->cVtableSlots` after itself, so only
+        // pass-2 methods are what CoreCLR calls "non-vtable slots". Both regions are past
+        // `GetNumVirtuals` and both are returned here. The boundary between them is deliberately
+        // not exposed -- nothing PawPrint models reads `cVtableSlots` -- and the split is modelled
+        // only because it decides the numbering.
+        //
+        // `fCanHaveNonVtableSlots` is false for a generic type and for an interface, so both place
+        // everything in the first pass and leave the second empty. `mcInstantiated` is exactly "the
+        // signature carries `IMAGE_CEE_CS_CALLCONV_GENERIC`" (methodtablebuilder.cpp:2794, 3235-3238):
+        // the delegate and P/Invoke arms are tried first, but a generic method reaching one of them
+        // is rejected outright by the `BFA_GENERIC_METHODS_INST` guard at :3273, so on a loadable
+        // image the two coincide. `GenericParameterCount` is read from the same signature blob
+        // rather than from the GenericParam rows, so this is that predicate and not a proxy for it.
+        //
+        // So on a non-generic class a generic method is numbered *ahead* of a non-generic one
+        // declared earlier: `System.Version` puts its four generic methods at slots 12-15 and starts
+        // everything else at 16, though its lowest-numbered row is among the latter.
+        let canHaveNonVtableSlots =
+            concreteTypeInfo.Generics.IsEmpty && not typeInfo.IsInterface
+
+        let needsRealSlot ((method, _) : MethodInfo<_, _, _> * MetadataMethodFacts) : bool =
+            not canHaveNonVtableSlots || method.Signature.GenericParameterCount > 0
+
+        let realSlots, rest = stillUnplaced |> List.partition needsRealSlot
+
+        placedFirst @ realSlots @ rest
+        |> List.map (fun (method, _) ->
+            {
+                VtableSlot.Method = method
+                // Slots beyond the vtable are never inherited, so the declaring type is always this
+                // one -- unlike a vtable slot, which routinely still holds a base type's method.
+                VtableSlot.DeclaredBy = concreteTypeInfo
+            }
+        )
+
+    /// A closed type's whole method table, as CoreCLR's `bmtVT->pSlotTable`: the vtable proper,
+    /// followed by the region `PlaceNonVirtualMethods` fills. Slot numbers run across the two
+    /// without a break, and `cVirtualSlots` -- `MethodTable::GetNumVirtuals()` -- is the length of
+    /// the first.
+    ///
+    /// Kept as two lists rather than one, with `slotIndexInTable` owning the arithmetic that joins
+    /// them, because the two halves answer different questions and the BCL asks both: `GetSlot`
+    /// indexes the concatenation while `GetNumVirtuals` is the prefix length, and
+    /// `PopulateProperties` *compares* the two to decide whether an accessor is virtual. A single
+    /// flat list would lose the boundary the comparison is about; making the caller add an offset
+    /// would put the one piece of arithmetic in this change at the call site.
+    ///
+    /// The second field is named for the boundary rather than for virtualness on purpose: it holds
+    /// every `static virtual` the type declares, those being placed outside the vtable, so calling
+    /// it "non-virtual" would be false of its contents.
+    type MethodSlotTable =
+        {
+            /// Slots `0 .. Vtable.Length - 1`. This length is `MethodTable::GetNumVirtuals()`.
+            Vtable : VtableSlot list
+            /// Slots `Vtable.Length` upwards.
+            BeyondVtable : VtableSlot list
+        }
+
+    let slotTableOfClosed
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (concreteType : ConcreteTypeHandle)
+        : IlMachineState * MethodSlotTable
+        =
+        // Only the vtable walk recurses through the base chain; the region beyond it is this type's
+        // alone, so it is computed once here rather than once per ancestor and discarded.
+        let state, virtualSlots =
+            vtableOfClosed loggerFactory baseClassTypes operation state concreteType
+
+        match concreteType with
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            // TypeDescs with no MethodTable, so genuinely no slots of either kind -- the same
+            // reason `vtableOfClosed` gives them an empty vtable.
+            state,
+            {
+                MethodSlotTable.Vtable = virtualSlots
+                MethodSlotTable.BeyondVtable = []
+            }
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            // A synthesised array MethodTable really does carry slots beyond its vtable, for the
+            // intrinsic Get/Set/Address and the ctor, and PawPrint models none of them --
+            // `introducedMethodsOfClosed` refuses the same question for the same reason. Answering
+            // "none" would be a wrong answer rather than an absent one, so refuse. Unreachable from
+            // `GetSlot` today: a method handle always resolves to a `Concrete` declaring type, there
+            // being no way to mint one naming an array intrinsic.
+            failwith
+                $"TODO: %s{operation} for synthesised array handle %O{concreteType}; the array intrinsic methods (Get/Set/Address/.ctor) occupy slots beyond the vtable that PawPrint does not model"
+        | ConcreteTypeHandle.Concrete _ ->
+            let concreteTypeInfo, typeInfo =
+                IlMachineState.tryGetConcreteTypeInfo state concreteType
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: concrete type handle was not registered: %O{concreteType}"
+                )
+
+            state,
+            {
+                MethodSlotTable.Vtable = virtualSlots
+                MethodSlotTable.BeyondVtable = slotsBeyondVtableOfClosed operation concreteTypeInfo typeInfo
+            }
+
     /// What identifies a vtable slot's occupant well enough to find it again: the full name of the
     /// assembly that declares the method, paired with the method's within-assembly identity.
     ///
@@ -1214,6 +1461,26 @@ module NativeRuntimeTypeHelpers =
         : int option
         =
         slotIdentities |> List.tryFindIndex (fun identity -> identity = target)
+
+    /// The slot CoreCLR assigns a method in its declaring type's method table -- `MethodDesc::GetSlot`
+    /// -- or `None` if the method holds no slot there at all.
+    ///
+    /// The one place the two halves of a `MethodSlotTable` are joined into a single numbering, which
+    /// is the point of routing every query through here rather than letting callers add the offset.
+    ///
+    /// `None` is not "not virtual": every method a type declares in metadata occupies a slot, in one
+    /// half or the other. It means the method is not this type's at all -- a synthesised method,
+    /// which has no MethodDef row and so is never placed, or a lookup against the wrong type.
+    let slotIndexInTable
+        (target : string * (System.Reflection.Metadata.MethodDefinitionHandle option * SynthesisedMethod option))
+        (table : MethodSlotTable)
+        : int option
+        =
+        match slotIndexOfIdentity target (table.Vtable |> List.map slotIdentity) with
+        | Some index -> Some index
+        | None ->
+            slotIndexOfIdentity target (table.BeyondVtable |> List.map slotIdentity)
+            |> Option.map (fun index -> List.length table.Vtable + index)
 
     /// The size of the instance vtable for a closed type, matching CoreCLR's
     /// `MethodTable::GetNumVirtuals()`. This is the length of `vtableOfClosed` by definition rather
