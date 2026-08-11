@@ -79,12 +79,39 @@ Endpoint summary:
 - `GET /state`: session status, step count, loaded assemblies, thread summaries, heap counts.
 - `POST /step?count=N`: execute up to `N` scheduler steps and return each event plus the new summary.
 - `POST /run?maxSteps=N`: execute at most `N` steps and return recent events. Use this to move forward safely, not to prove termination. If `/stop` cancels an active run, the response includes `cancelled: true`.
-- `GET /thread/{id}`: full frame list for a thread, including active frame, IL offset, current instruction, eval stack, args, and locals.
+- `GET /thread/{id}`: full frame list for a thread, including active frame, IL offset, current instruction, source location, eval stack, args, and locals.
 - `GET /thread/{id}/stack-summary`: compact stack summary for deep stacks. Optional query parameters: `edgeFrames` (default 12, max 100) and `topMethods` (default 8, max 100).
 - `GET /thread/{id}/active-method/il`: IL for the thread's active frame, including resolved metadata-token text and the active instruction. Optional query parameter: `context` instructions before/after the active offset (omitted means full method, max 500).
 - `GET /heap/{address}`: inspect an object or array at a managed heap address. Use structured `objectAddress` fields from stack, argument, local, and array-element values when available.
 - `POST /reset`: recreate the debugger session from the original DLL and arguments.
 - `POST /stop`: stop the server cleanly.
+
+### Source locations
+
+Every frame carries a `sourceLocation`, which is `null` or an object:
+
+```json
+"sourceLocation": {
+  "ilOffset": 13, "documentPath": "/src/Program.cs",
+  "startLine": 8, "startColumn": 28, "endLine": 8, "endColumn": 29
+}
+```
+
+Two things to know before relying on it.
+
+**`null` is ordinary, not a bug.** It means "no source is known for this frame", which is the
+case for the entire shared framework (it ships without PDBs), for synthesised stubs, and for
+IL the compiler marked as having no source. Only assemblies built with debug information
+resolve. Do not report a null here as a defect.
+
+**`ilOffset` inside the location is not always the frame's `ilOffset`.** For the active frame
+they agree. For any *caller*, the frame's own `ilOffset` is where it will resume — the
+instruction after the call — so the location is instead resolved at the call site, and says
+which offset it used. Read the source line from `sourceLocation`, not by looking up the
+frame's `ilOffset` yourself, or every caller will appear one statement further on than it is.
+
+`documentPath` is recorded exactly as the compiler saw it, so it names paths on whichever
+machine built the assembly. It may well not exist on this one.
 
 The sandbox may block localhost HTTP calls. If `curl` fails with `Operation not permitted`, rerun the exact same command with escalated permissions; do not request a persisted broad `curl` prefix rule.
 
@@ -111,8 +138,8 @@ jq '{
   frameCount:(.frames|length),
   active:(.frames[]|select(.active)),
   topMethods:(.frames|group_by(.method)|map({method:.[0].method,count:length})|sort_by(-.count)[:8]),
-  firstFrames:(.frames[:12]|map({id,method,ilOffset,instruction})),
-  lastFrames:(.frames[-12:]|map({id,method,ilOffset,instruction}))
+  firstFrames:(.frames[:12]|map({id,method,ilOffset,instruction,source:(.sourceLocation|if . then "\(.documentPath):\(.startLine)" else null end)})),
+  lastFrames:(.frames[-12:]|map({id,method,ilOffset,instruction,source:(.sourceLocation|if . then "\(.documentPath):\(.startLine)" else null end)}))
 }' /tmp/pawprint-thread.json
 ```
 

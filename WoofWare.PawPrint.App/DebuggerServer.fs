@@ -162,8 +162,43 @@ module DebuggerServer =
         | ThreadStatus.Terminated -> writer.WriteStringValue "terminated"
         | ThreadStatus.Parked -> writer.WriteStringValue "parked"
 
+    /// The source span the compiler attributed to `sourceIlOffset` in `frame`, or `null`.
+    ///
+    /// `null` is ordinary rather than exceptional: the whole shared framework ships without
+    /// PDBs, a synthesised stub has no metadata row to key one by, and a compiler may mark a
+    /// range as having no source at all. A consumer must treat its absence as "not known here",
+    /// never as a defect.
+    ///
+    /// The span carries the offset it was resolved at, which for anything but the active frame
+    /// is deliberately *not* the frame's `ilOffset`: see `GuestLocation.attributionOffsets`.
+    /// Emitting it makes the two impossible to confuse.
+    let private writeSourceLocation
+        (writer : Utf8JsonWriter)
+        (state : IlMachineState)
+        (sourceIlOffset : int)
+        (frame : MethodState)
+        : unit
+        =
+        writer.WritePropertyName "sourceLocation"
+
+        match GuestLocation.trySourceOf state frame.ExecutingMethod sourceIlOffset with
+        | None -> writer.WriteNullValue ()
+        | Some location ->
+            writer.WriteStartObject ()
+            writer.WriteNumber ("ilOffset", sourceIlOffset)
+            // Exactly as the PDB records it — an absolute path on whichever machine built the
+            // assembly. Deliberately not resolved against this filesystem; see `SourceLocation`.
+            writer.WriteString ("documentPath", location.DocumentPath)
+            writer.WriteNumber ("startLine", location.StartLine)
+            writer.WriteNumber ("startColumn", location.StartColumn)
+            writer.WriteNumber ("endLine", location.EndLine)
+            writer.WriteNumber ("endColumn", location.EndColumn)
+            writer.WriteEndObject ()
+
     let private writeFrameProperties
         (writer : Utf8JsonWriter)
+        (state : IlMachineState)
+        (sourceIlOffset : int)
         (includeActive : bool)
         (activeFrame : FrameId)
         (frameId : FrameId)
@@ -178,22 +213,31 @@ module DebuggerServer =
         writer.WriteString ("method", string frame.ExecutingMethod)
         writer.WriteNumber ("ilOffset", frame.IlOpIndex)
         writeOptionalString writer "instruction" (currentInstruction frame)
+        writeSourceLocation writer state sourceIlOffset frame
         writer.WriteNumber ("evalStackDepth", frame.EvaluationStack.Values.Length)
         writer.WriteNumber ("argumentCount", frame.Arguments.Length)
         writer.WriteNumber ("localCount", frame.LocalVariables.Length)
 
     let private writeFrameSummary
         (writer : Utf8JsonWriter)
+        (state : IlMachineState)
+        (sourceIlOffset : int)
         (activeFrame : FrameId)
         (frameId : FrameId)
         (frame : MethodState)
         : unit
         =
         writer.WriteStartObject ()
-        writeFrameProperties writer false activeFrame frameId frame
+        writeFrameProperties writer state sourceIlOffset false activeFrame frameId frame
         writer.WriteEndObject ()
 
-    let private writeThreadSummary (writer : Utf8JsonWriter) (threadId : ThreadId) (threadState : ThreadState) : unit =
+    let private writeThreadSummary
+        (writer : Utf8JsonWriter)
+        (state : IlMachineState)
+        (threadId : ThreadId)
+        (threadState : ThreadState)
+        : unit
+        =
         writer.WriteStartObject ()
         writer.WriteNumber ("id", threadIdValue threadId)
         writer.WritePropertyName "status"
@@ -212,7 +256,16 @@ module DebuggerServer =
             writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
             writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
             writer.WritePropertyName "activeFrameSummary"
-            writeFrameSummary writer threadState.ActiveMethodState threadState.ActiveMethodState threadState.MethodState
+
+            let offsets = GuestLocation.attributionOffsets threadState
+
+            writeFrameSummary
+                writer
+                state
+                (Map.find threadState.ActiveMethodState offsets)
+                threadState.ActiveMethodState
+                threadState.ActiveMethodState
+                threadState.MethodState
 
         writer.WriteEndObject ()
 
@@ -263,13 +316,15 @@ module DebuggerServer =
 
     let private writeFrameDetails
         (writer : Utf8JsonWriter)
+        (state : IlMachineState)
+        (sourceIlOffset : int)
         (activeFrame : FrameId)
         (frameId : FrameId)
         (frame : MethodState)
         : unit
         =
         writer.WriteStartObject ()
-        writeFrameProperties writer true activeFrame frameId frame
+        writeFrameProperties writer state sourceIlOffset true activeFrame frameId frame
         writeValueArray writer "evalStack" frame.EvaluationStack.Values writeEvalStackValue
         writeValueArray writer "arguments" frame.Arguments writeCliType
         writeValueArray writer "locals" frame.LocalVariables writeCliType
@@ -512,7 +567,7 @@ module DebuggerServer =
             writer
             "threads"
             (state.ThreadState |> Map.toSeq)
-            (fun writer (threadId, threadState) -> writeThreadSummary writer threadId threadState)
+            (fun writer (threadId, threadState) -> writeThreadSummary writer state threadId threadState)
 
         writer.WriteEndObject ()
 
@@ -542,11 +597,21 @@ module DebuggerServer =
                 writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
                 writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
 
+            let offsets = GuestLocation.attributionOffsets threadState
+
             writeValueArray
                 writer
                 "frames"
                 (threadState.MethodStates |> Map.toSeq)
-                (fun writer (frameId, frame) -> writeFrameDetails writer threadState.ActiveMethodState frameId frame)
+                (fun writer (frameId, frame) ->
+                    writeFrameDetails
+                        writer
+                        state
+                        (Map.find frameId offsets)
+                        threadState.ActiveMethodState
+                        frameId
+                        frame
+                )
 
             writer.WriteEndObject ()
 
@@ -610,6 +675,7 @@ module DebuggerServer =
             let firstFrames = frames |> Array.truncate edgeFrames
             let lastFrames = frames |> Array.skip (frames.Length - edgeFrames)
             let methodCounts = methodCounts frames topMethods
+            let offsets = GuestLocation.attributionOffsets threadState
 
             writer.WriteStartObject ()
             writer.WriteNumber ("id", threadIdValue threadId)
@@ -629,6 +695,8 @@ module DebuggerServer =
 
                 writeFrameSummary
                     writer
+                    state
+                    (Map.find threadState.ActiveMethodState offsets)
                     threadState.ActiveMethodState
                     threadState.ActiveMethodState
                     threadState.MethodState
@@ -639,13 +707,29 @@ module DebuggerServer =
                 writer
                 "firstFrames"
                 firstFrames
-                (fun writer (frameId, frame) -> writeFrameSummary writer threadState.ActiveMethodState frameId frame)
+                (fun writer (frameId, frame) ->
+                    writeFrameSummary
+                        writer
+                        state
+                        (Map.find frameId offsets)
+                        threadState.ActiveMethodState
+                        frameId
+                        frame
+                )
 
             writeValueArray
                 writer
                 "lastFrames"
                 lastFrames
-                (fun writer (frameId, frame) -> writeFrameSummary writer threadState.ActiveMethodState frameId frame)
+                (fun writer (frameId, frame) ->
+                    writeFrameSummary
+                        writer
+                        state
+                        (Map.find frameId offsets)
+                        threadState.ActiveMethodState
+                        frameId
+                        frame
+                )
 
             writer.WriteEndObject ()
 
