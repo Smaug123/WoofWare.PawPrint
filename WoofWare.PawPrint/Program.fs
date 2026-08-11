@@ -919,12 +919,17 @@ module Program =
                     loggerFactory
                     baseTypes
                     ImmutableArray.Empty // No type generics for main method's declaring type
-                    (rawMainMethod
-                     |> MethodInfo.mapCore (fun core ->
-                         { core with
-                             Body = MethodBody.Il (MethodInstructions.onlyRet ())
-                         }
-                     ))
+                    // Synthesised, not the entry point with its body swapped: the substituted
+                    // body is not what `Main`'s MethodDef row describes, so carrying that row's
+                    // identity would let anything keyed by it — debug information above all —
+                    // describe this frame as though `Main` were running. It is not; `Main` has
+                    // not been installed yet.
+                    (MethodInfo.Synthesised (
+                        { rawMainMethod.Core with
+                            Body = MethodBody.Il (MethodInstructions.onlyRet ())
+                        },
+                        SynthesisedMethod.EntryPointPlaceholder
+                    ))
                     None
                     dumped.Name
                     ImmutableArray.Empty
