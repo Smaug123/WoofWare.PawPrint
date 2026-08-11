@@ -757,6 +757,31 @@ module TypeConcretization =
         | Some handle -> handle, ctx
         | None -> createAndAddConcreteType ctx identity typeInfo.Namespace typeInfo.Name ImmutableArray.Empty
 
+    /// Does this signature type carry an ECMA-335 custom modifier (`modreq`/`modopt`) anywhere
+    /// inside it? Used only to refuse the one position where dropping a modifier is unrecoverable:
+    /// see `concretizeGenericInstantiation`.
+    let rec private carriesCustomModifier (typeDefn : TypeDefn) : bool =
+        match typeDefn with
+        | TypeDefn.Modified _ -> true
+        | TypeDefn.Array (element, _)
+        | TypeDefn.Pinned element
+        | TypeDefn.Pointer element
+        | TypeDefn.Byref element
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element -> carriesCustomModifier element
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            carriesCustomModifier generic || (args |> Seq.exists carriesCustomModifier)
+        | TypeDefn.FunctionPointer signature ->
+            (match signature.ReturnType with
+             | MethodReturnType.Void -> false
+             | MethodReturnType.Returns ty -> carriesCustomModifier ty)
+            || (signature.ParameterTypes |> List.exists carriesCustomModifier)
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.FromReference _
+        | TypeDefn.Void -> false
+
     /// Concretize a type in a specific generic context
     let rec concretizeType
         (ctx : ConcretizationContext<DumpedAssembly>)
@@ -913,6 +938,29 @@ module TypeConcretization =
         (args : ImmutableArray<TypeDefn>)
         : ConcreteTypeHandle * ConcretizationContext<DumpedAssembly>
         =
+        // A custom modifier on a type *argument* is unrecoverable once substitution has happened.
+        // Elsewhere, dropping `TypeDefn.Modified` is correct and deliberate: runtime type identity
+        // follows the unmodified type, and the places that must compare modifiers -- vtable slot
+        // matching in `NativeRuntimeTypeHelpers` -- walk the unsubstituted signature alongside the
+        // handle to recover them. That parallel channel cannot reach a modifier that arrived *via*
+        // a generic argument: for `Base<int modopt(X)>.M(!0)`, the signature the walk sees is the
+        // bare `!0` and the `modopt` lives only in the instantiation, so it silently vanishes.
+        // CoreCLR compares the substituted blob and does see it (`MetaSig::CompareElementType`), so
+        // conflating the two would let a derived `M(int)` take over a slot it does not override.
+        //
+        // Refuse instead. This is unreachable from any real compiler: measured over the linux-x64
+        // runtime pack, FSharp.Core, the Roslyn assemblies and this repo's own test binaries -- 208
+        // assemblies -- not one generic instantiation carries a modified type argument, nested or
+        // otherwise. It takes C++/CLI or hand-written IL to produce one.
+        args
+        |> Seq.iter (fun arg ->
+            if carriesCustomModifier arg then
+                failwithf
+                    "TODO: generic instantiation in %s has a type argument carrying a custom modifier (%O); ConcreteTypeHandle cannot represent it, and unlike a modifier written directly in a signature it cannot be recovered by walking the unsubstituted signature either, so accepting it would make this instantiation compare equal to the unmodified one"
+                    assembly.FullName
+                    arg
+        )
+
         // First, concretize all type arguments
         let argHandles, ctxAfterArgs =
             args

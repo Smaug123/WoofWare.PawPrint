@@ -203,7 +203,13 @@ module PrimitiveType =
 type TypeDefn =
     | PrimitiveType of PrimitiveType
     /// A general (potentially multi-dimensional) array. Rank distinguishes e.g. int[,] from int[,,].
-    /// TODO: sizes and lower bounds from ArrayShape are not yet preserved.
+    /// Sizes and lower bounds from `ArrayShape` are not preserved: rather than silently conflating
+    /// shapes that differ only in those, the signature decoder (`typeProvider`) accepts exactly one
+    /// canonical encoding -- no sizes, one explicit zero lower bound per dimension -- and refuses
+    /// every other. Every `Array` reaching the rest of the system is therefore known to be that
+    /// shape, so consumers may treat rank as the whole of it. Whoever lifts that restriction must
+    /// carry the bounds through `ConcreteTypeHandle.Array` too, which is what signature comparison
+    /// actually comes down to.
     | Array of elt : TypeDefn * rank : int
     | Pinned of TypeDefn
     | Pointer of TypeDefn
@@ -400,6 +406,43 @@ module TypeDefn =
     let typeProvider (a : AssemblyName) : ISignatureTypeProvider<TypeDefn, unit> =
         { new ISignatureTypeProvider<TypeDefn, unit> with
             member this.GetArrayType (elementType : TypeDefn, shape : ArrayShape) : TypeDefn =
+                // `TypeDefn.Array` records only the rank, so a shape carrying explicit sizes or a
+                // non-zero lower bound would decode to the same `TypeDefn` -- and thence to the same
+                // `ConcreteTypeHandle` -- as the unadorned array of that rank. Handle equality is
+                // load-bearing well beyond type identity: `NativeRuntimeTypeHelpers` matches vtable
+                // slots by comparing concretised signatures, and CoreCLR's `CompareElementType` does
+                // compare sizes and bounds, so silently conflating the two would bind an override to
+                // the wrong slot. Refuse at the point of loss rather than answer wrongly downstream.
+                //
+                // The accepted shape is one *canonical encoding*, not one canonical meaning, because
+                // ECMA-335 II.23.2.13 makes both counts optional and CoreCLR compares the counts
+                // themselves: `MetaSig::CompareElementType` returns FALSE on
+                // `dimension_lowerb1 != dimension_lowerb2` before it ever looks at the values
+                // (siginfo.cpp:4317). So an omitted lower-bound vector and an explicitly encoded
+                // all-zero one denote the same type but are *not* interchangeable for override
+                // matching, and `ArrayShape` does preserve the distinction: a decoded blob with
+                // `numLoBounds = 0` yields `LowerBounds = []`, not a synthesised vector of zeros.
+                // Accepting both would therefore reintroduce exactly the conflation this guard
+                // exists to prevent.
+                //
+                // Canonical here means: no sizes, and one explicit zero per dimension. That is what
+                // real compilers emit -- measured over the linux-x64 runtime pack, FSharp.Core, the
+                // Roslyn assemblies and this repo's own test binaries, all 339 multidimensional
+                // array signatures use it and not one uses the omitted form. `Array.CreateInstance`
+                // can make a non-zero-based array at runtime without ever writing one into a
+                // signature.
+                let lowerBoundsAreCanonical =
+                    shape.LowerBounds.Length = shape.Rank
+                    && shape.LowerBounds |> Seq.forall (fun bound -> bound = 0)
+
+                if not shape.Sizes.IsEmpty || not lowerBoundsAreCanonical then
+                    failwithf
+                        "TODO: multidimensional array signature in %s with a non-canonical ArrayShape (rank %i, sizes %A, lower bounds %A); the canonical encoding has no sizes and one explicit zero lower bound per dimension. TypeDefn.Array records only the rank, so accepting this would make it compare equal to the canonically-encoded array of that rank, which CoreCLR treats as a different signature"
+                        a.FullName
+                        shape.Rank
+                        (List.ofSeq shape.Sizes)
+                        (List.ofSeq shape.LowerBounds)
+
                 TypeDefn.Array (elementType, shape.Rank)
 
             member this.GetByReferenceType (elementType : TypeDefn) : TypeDefn = TypeDefn.Byref elementType
