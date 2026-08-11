@@ -1025,27 +1025,34 @@ module NativeRuntimeTypeHelpers =
             // before an unmatched non-NewSlot one: the host CLR gives the NewSlot method the lower
             // slot, and a NewSlot-grouped layout gets it backwards (TestFabricatedVtableLayout).
             //
-            // Only the *parent's* slots are candidates for a match, which is why the search is capped
-            // at `baseSlotCount` rather than ranging over the list as it grows: upstream searches
+            // Only the *parent's* slots are candidates for a match: upstream searches
             // `bmtParent->pParentMethodHash`, built once from the parent MethodTable
             // (methodtablebuilder.cpp:174-193) and never extended as this type's own methods are
             // placed. A slot appended by an earlier method of *this* type is therefore not something
             // a later one can land on.
             //
-            // That cap is load-bearing on legal metadata, not defensive insurance. ECMA-335 II.22.26
-            // stops a type repeating a method blob-for-blob, but `candidateFillsSlot` compares
-            // *concretised* signatures -- which is what lets an ordinary override of a generic base
-            // match at all -- and that conflates blobs which genuinely differ. The worked example is
-            // `GenericConflation`1` in TestFabricatedVtableLayout: it declares `Conflated(!0)` as
-            // NewSlot and `Conflated(string)` without it, and closing it at `T = string` makes the
-            // second match the slot the first was just appended to. CoreCLR lays slots out on the
-            // generic definition, where the two are distinct, and gives each its own; uncapped, the
-            // second replaces the first and the vtable comes out a slot short.
-            let baseSlotCount = List.length baseSlots
-
-            let state, slots =
-                ((state, baseSlots), instanceVirtuals)
-                ||> List.fold (fun (state, slots) method ->
+            // That is why the fold below carries the inherited slots and the fresh ones as two
+            // values rather than one growing list. `inherited` only ever has entries *replaced*, so
+            // it stays exactly the parent's vtable and the search cannot reach a fresh slot however
+            // the search is written. Threading one list and capping the search at the parent's length
+            // would compute the same answer, but this way the invariant is a property of the shape
+            // rather than of remembering to cap; it also keeps appending O(1) rather than copying the
+            // accumulated vtable per method, which for an interface -- where every member appends --
+            // is the difference between a linear layout and a quadratic one.
+            //
+            // The restriction is load-bearing on legal metadata, not defensive insurance. ECMA-335
+            // II.22.26 stops a type repeating a method blob-for-blob, but `candidateFillsSlot`
+            // compares *concretised* signatures -- which is what lets an ordinary override of a
+            // generic base match at all -- and that conflates blobs which genuinely differ. The
+            // worked example is `GenericConflation`1` in TestFabricatedVtableLayout: it declares
+            // `Conflated(!0)` as NewSlot and `Conflated(string)` without it, and closing it at
+            // `T = string` makes the second match the slot the first was just appended to. CoreCLR
+            // lays slots out on the generic definition, where the two are distinct, and gives each
+            // its own; a search that could see fresh slots would have the second replace the first
+            // and the vtable would come out a slot short.
+            let state, inherited, freshReversed =
+                ((state, baseSlots, []), instanceVirtuals)
+                ||> List.fold (fun (state, slots, fresh) method ->
                     let candidate =
                         {
                             VtableSlot.Method = method
@@ -1058,7 +1065,7 @@ module NativeRuntimeTypeHelpers =
                             // the parent" -- it is asking for a slot of its own by construction.
                             state, []
                         else
-                            // An interface reaches here with `baseSlotCount = 0`, so the search is
+                            // An interface reaches here with no inherited slots, so the search is
                             // empty and every method it declares appends -- which is exactly what
                             // upstream's `IsInterface` arm does, an interface having no parent whose
                             // slots it could reuse. That arm needs no special case here, but it does
@@ -1066,7 +1073,7 @@ module NativeRuntimeTypeHelpers =
                             // `INumberBase<T>` declares `System.IUtf8SpanFormattable.TryFormat` as
                             // `Private, Final, Virtual, HideBySig` with no NewSlot -- measured, the
                             // only such method in corelib -- and it takes this path.
-                            ((state, []), List.indexed slots |> List.truncate baseSlotCount)
+                            ((state, []), List.indexed slots)
                             ||> List.fold (fun (state, acc) (i, slot) ->
                                 let state, fills =
                                     candidateFillsSlot loggerFactory baseClassTypes operation state candidate slot
@@ -1152,7 +1159,7 @@ module NativeRuntimeTypeHelpers =
                             failwith
                                 $"%s{operation}: virtual method %s{method.Name} on %O{concreteTypeInfo} is not marked newslot and matches vtable slot %i{mostDerived}, which is occupied by the final method %s{occupant.Method.Name} declared by %O{occupant.DeclaredBy}; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
 
-                        state, slots |> List.mapi (fun j slot -> if j = mostDerived then candidate else slot)
+                        state, (slots |> List.mapi (fun j slot -> if j = mostDerived then candidate else slot)), fresh
                     | [] ->
                         // "Else, place the method in the next available empty vtable slot"
                         // (methodtablebuilder.cpp:5401). Both kinds of method arrive here: one
@@ -1177,8 +1184,12 @@ module NativeRuntimeTypeHelpers =
                         // -- a check on the layout rather than merely on its length, because a walk
                         // that appends one slot too many while dropping a real one has the right
                         // length.
-                        state, slots @ [ candidate ]
+                        state, slots, candidate :: fresh
                 )
+
+            // The fresh slots were accumulated head-first, so undo that once here rather than
+            // copying the accumulated vtable on every append.
+            let slots = inherited @ List.rev freshReversed
 
             state, slots
 
