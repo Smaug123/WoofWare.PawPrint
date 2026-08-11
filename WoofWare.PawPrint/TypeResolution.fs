@@ -265,12 +265,21 @@ module TypeResolution =
     /// question. It is compared structurally, which is cheap — it holds one entry per parameter
     /// expansion currently in flight.
     /// </para>
+    /// <para>
+    /// <c>DefinedIn</c> is the assembly a <c>FromReference</c> is resolved relative to, so it too
+    /// changes the answer. Every path in this recursive group happens to thread one unchanged for
+    /// as long as a table lives, which would make carrying it redundant — but "happens to" is not
+    /// a property anyone editing this later can see, and getting it wrong would hand back a type
+    /// resolved against the wrong assembly rather than fail. It is compared by reference, so at
+    /// worst it costs a miss.
+    /// </para>
     /// </remarks>
     [<Struct ; CustomEquality ; NoComparison>]
     type private SubstitutionKey =
         {
             Ty : TypeDefn
             Expanding : Set<ExpandingParam>
+            DefinedIn : DumpedAssembly
         }
 
         override this.Equals (other : obj) : bool =
@@ -279,12 +288,17 @@ module TypeResolution =
             | _ -> false
 
         override this.GetHashCode () : int =
+            // Both by reference: `DumpedAssembly` is a record, so structural hashing would walk a
+            // whole parsed assembly, and `TypeDefn` is a DAG whose structural hash costs its size
+            // as a tree — the very traversal this table exists to avoid.
             (System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode this.Ty * 397)
+            ^^^ (System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode this.DefinedIn * 31)
             ^^^ hash this.Expanding
 
         interface System.IEquatable<SubstitutionKey> with
             member this.Equals (other : SubstitutionKey) : bool =
                 System.Object.ReferenceEquals (this.Ty, other.Ty)
+                && System.Object.ReferenceEquals (this.DefinedIn, other.DefinedIn)
                 && this.Expanding = other.Expanding
 
     /// <summary>
@@ -292,12 +306,13 @@ module TypeResolution =
     /// </summary>
     /// <remarks>
     /// <para>
-    /// A table is valid only for the environment (<c>typeGenericArgs</c>, <c>methodGenericArgs</c>)
-    /// and the defining assembly it was created against, which is why the environment is not part
+    /// A table is valid only for the environment (<c>typeGenericArgs</c>,
+    /// <c>methodGenericArgs</c>) it was created against, which is why the environment is not part
     /// of <c>SubstitutionKey</c>: a fresh table is made at the one place the environment changes,
     /// namely the head resolution of a <c>GenericInstantiation</c> in
     /// <c>resolveTypeFromDefnUnprimed</c>. Everywhere else the environment is threaded unchanged,
-    /// so the table travels with it.
+    /// so the table travels with it. Nothing checks that, which is why nothing else about the
+    /// question is left out of the key; see <c>SubstitutionKey</c>.
     /// </para>
     /// <para>
     /// Substitution also has the side effect of loading assemblies, and a memo hit skips it. That
@@ -336,6 +351,7 @@ module TypeResolution =
             {
                 SubstitutionKey.Ty = ty
                 SubstitutionKey.Expanding = expanding
+                SubstitutionKey.DefinedIn = assy
             }
 
         match memo.TryGetValue key with
@@ -549,7 +565,50 @@ module TypeResolution =
             let preserved =
                 DumpedAssembly.typeInfoToTypeDefn baseClassTypes assemblies resolvedInfo
 
-            assemblies, preserved
+            match preserved with
+            | TypeDefn.GenericInstantiation (head, injected) ->
+                // `ty` named a type *definition*, and that definition turned out to be generic —
+                // a shape no signature can spell, and which the resolver reads as "this
+                // definition, instantiated at the ambient environment". So resolution has just
+                // put arguments into our answer that it took straight out of `typeGenericArgs`
+                // by sequence number, and substitution has not been applied to any of them.
+                //
+                // The environment is only required to be well-founded, not closed, so those raw
+                // entries can perfectly well mention parameters: under `!0 := !1`, `!1 := int`
+                // this is the difference between answering `List<int>` and answering `List<!1>`,
+                // an open type that then cannot be resolved again on its own. Expanding parameter
+                // `k` under this environment is exactly what substituting `GenericTypeParameter k`
+                // does — cycle guard, memo and all — so ask for that rather than reimplementing
+                // it, and the answer is closed.
+                //
+                // The instantiation case above needs no such fix-up, and must not be given one:
+                // the environment it resolves its head under is `args'`, which is this function's
+                // own output and so already closed by the same induction. Substituting it again
+                // is precisely the redundant second pass, and it is exponential.
+                let builder = ImmutableArray.CreateBuilder injected.Length
+
+                let assemblies =
+                    (assemblies, Seq.init injected.Length id)
+                    ||> Seq.fold (fun assemblies k ->
+                        let assemblies, substituted =
+                            substituteGenericsInTypeDefn
+                                loggerFactory
+                                dotnetRuntimeDirs
+                                baseClassTypes
+                                (TypeDefn.GenericTypeParameter k)
+                                typeGenericArgs
+                                methodGenericArgs
+                                expanding
+                                memo
+                                assy
+                                assemblies
+
+                        builder.Add substituted
+                        assemblies
+                    )
+
+                assemblies, TypeDefn.GenericInstantiation (head, builder.ToImmutable ())
+            | preserved -> assemblies, preserved
         | other ->
             // For any other TypeDefn variant, resolve and convert back.
             let assemblies, _assy, resolvedInfo =
