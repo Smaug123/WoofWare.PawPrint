@@ -19,7 +19,7 @@ module AbstractMachine =
     let private logger (loggerFactory : ILoggerFactory) : ILogger =
         loggerCache.GetValue (loggerFactory, fun f -> f.CreateLogger typeof<Dummy>.DeclaringType)
 
-    let private executeOneStepCore
+    let executeOneStep
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -349,53 +349,3 @@ module AbstractMachine =
         | IlOp.UnaryStringToken (unaryStringTokenIlOp, stringHandle) ->
             UnaryStringTokenIlOp.execute loggerFactory baseClassTypes unaryStringTokenIlOp stringHandle state thread
             |> ExecutionResult.stepped
-
-    /// <summary>
-    /// Where each live guest thread is, or <c>None</c> if that cannot be determined.
-    /// </summary>
-    /// <remarks>
-    /// Total by construction. This runs only while an exception is already propagating, so a
-    /// failure here would replace the diagnostic PawPrint is trying to deliver with one about the
-    /// diagnostic machinery — the single worst outcome available. <c>GuestLocation</c> is written
-    /// to be total for exactly this reason; the guard is the belt to its braces.
-    /// </remarks>
-    let private tryDescribeGuest (state : IlMachineState) : GuestThreadLocation list option =
-        try
-            Some (GuestLocation.ofState state)
-        with _ ->
-            None
-
-    /// <summary>
-    /// Interpret one IL instruction on <paramref name="thread" />.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Any host failure escaping the interpreter is annotated with where the guest was, as a
-    /// <c>GuestFailureException</c>. Doing it here rather than at the ~2,400 individual
-    /// <c>failwith</c> sites is what makes the annotation universal: the least informative
-    /// messages of all come from pure helpers inside the opcode implementations, which have no
-    /// <c>IlMachineState</c> to consult and should not grow one just to describe a failure.
-    /// </para>
-    /// <para>
-    /// The state described is the one this step *started* from. The failure happened partway
-    /// through, so there is no consistent later state to report — and the instruction about to
-    /// execute is what a reader wants to know anyway.
-    /// </para>
-    /// </remarks>
-    let executeOneStep
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (thread : ThreadId)
-        : ExecutionResult
-        =
-        try
-            executeOneStepCore loggerFactory baseClassTypes state thread
-        with
-        // Already annotated: a nested step would otherwise repeat the thread summary once per
-        // level, and the outermost frame's guest position is the least specific of them.
-        | :? GuestFailureException -> reraise ()
-        | e ->
-            match tryDescribeGuest state with
-            | Some guest -> raise (GuestFailureException (e, guest))
-            | None -> reraise ()

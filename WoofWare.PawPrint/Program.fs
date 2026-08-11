@@ -545,7 +545,7 @@ module Program =
     /// fold the outcome back into the thread states. `prepared` must already have been through
     /// `advanceToDecision`; running this against an inter-tick value would consult the policy
     /// about a Runnable set that a deadline or a spurious wake was about to change.
-    let private stepDecided
+    let private stepDecidedCore
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
         (prepared : PreparedProgram)
@@ -649,6 +649,46 @@ module Program =
                     whatWeDid,
                     effect
                 )
+
+    /// <summary>
+    /// One tick, with any host failure annotated by where the guest was when it happened.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// PawPrint fails by <c>failwith</c> in some 2,400 places, and almost none of them can name
+    /// the guest: the least informative messages of all come from pure helpers inside the opcode
+    /// implementations, which have no <c>IlMachineState</c> to consult and should not grow one
+    /// just to describe a failure. Annotating once here covers all of them.
+    /// </para>
+    /// <para>
+    /// The whole tick is covered, not merely <c>AbstractMachine.executeOneStep</c>. Scheduler
+    /// bookkeeping runs on either side of the instruction — <c>chooseNext</c> before it,
+    /// <c>dischargeYieldDebts</c>, <c>onStepOutcome</c> and <c>onThreadTerminated</c> after —
+    /// and those failures are just as guest-provoked. `onThreadTerminated` refusing a thread
+    /// that exited still holding a monitor is a diagnostic *about the guest*, and would be far
+    /// less useful without knowing which guest code let go of it.
+    /// </para>
+    /// <para>
+    /// The state described is the one the tick *started* from. The failure happened partway
+    /// through, so there is no consistent later state to report.
+    /// </para>
+    /// </remarks>
+    let private stepDecided
+        (loggerFactory : ILoggerFactory)
+        (logger : ILogger)
+        (prepared : PreparedProgram)
+        : ProgramStepOutcome
+        =
+        try
+            stepDecidedCore loggerFactory logger prepared
+        with
+        // Already annotated: a nested tick would otherwise repeat the thread summary once per
+        // level, and the outermost frame's guest position is the least specific of them.
+        | :? GuestFailureException -> reraise ()
+        | e ->
+            match GuestLocation.tryOfState prepared.State with
+            | Some guest -> raise (GuestFailureException (e, guest))
+            | None -> reraise ()
 
     /// Advance the machine by one scheduler tick.
     ///

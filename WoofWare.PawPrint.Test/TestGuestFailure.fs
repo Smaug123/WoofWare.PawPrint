@@ -10,12 +10,12 @@ open WoofWare.PawPrint
 
 /// PawPrint has ~2,400 `failwith` sites and almost none of them can say where the guest was:
 /// the most context-free of all live in pure helpers (`convOvfI4Un`, `divUnValues`) that have no
-/// `IlMachineState` to consult. Rather than thread state into all of them, `executeOneStep`
-/// annotates whatever escapes it — so every one of those sites gains a guest location at once.
+/// `IlMachineState` to consult. Rather than thread state into all of them, `Program.stepDecided`
+/// annotates whatever escapes a tick — so every one of those sites gains a guest location at once.
 ///
-/// These tests pin the three properties that make the annotation safe to apply that broadly: it
-/// must add information without destroying any, it must not fire twice, and it must never
-/// replace the failure it is describing.
+/// These tests pin the properties that make the annotation safe to apply that broadly: it must
+/// add information without destroying any, it must not fire twice, it must cover the whole tick
+/// rather than only the instruction, and it must never replace the failure it is describing.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestGuestFailure =
@@ -116,8 +116,8 @@ class CallsMissingNative
             failure.InnerException.StackTrace |> shouldContainText "WoofWare.PawPrint"
         | other -> failwith $"expected a GuestFailureException, got %s{other.GetType().FullName}"
 
-    /// `executeOneStep` must not annotate an already-annotated failure. Without the guard, a
-    /// re-entrant step would nest wrappers and repeat the thread summary once per level.
+    /// A tick must not annotate an already-annotated failure. Without the guard, a nested tick
+    /// would nest wrappers and repeat the thread summary once per level.
     [<Test>]
     let ``the annotation is applied exactly once`` () : unit =
         let exn = runToFailure "CallsMissingNative.cs" callsMissingNative
@@ -130,6 +130,42 @@ class CallsMissingNative
                 exn.Message.Split ([| "Guest was:" |], StringSplitOptions.None) |> Array.length
 
             occurrences |> shouldEqual 2
+        | other -> failwith $"expected a GuestFailureException, got %s{other.GetType().FullName}"
+
+    /// Not every guest-provoked failure comes from executing an instruction. Scheduler
+    /// bookkeeping runs on either side of one — `chooseNext` before, `dischargeYieldDebts`,
+    /// `onStepOutcome` and `onThreadTerminated` after — and `onThreadTerminated` refusing a
+    /// worker that exited still holding a SyncBlock is as much a statement about the guest as
+    /// any opcode failure. Annotating only `executeOneStep` would miss all of these, which is
+    /// why the boundary is the whole tick.
+    [<Test>]
+    let ``a failure in post-step scheduler bookkeeping is annotated too`` () : unit =
+        let source =
+            """
+using System.Threading;
+
+class AbandonsALock
+{
+    static readonly object Gate = new object();
+
+    static int Main()
+    {
+        var t = new Thread(() => { Monitor.Enter(Gate); }); // ABANDONS
+        t.Start();
+        t.Join();
+        return 0;
+    }
+}
+"""
+
+        let exn = runToFailure "AbandonsALock.cs" source
+
+        // The failure is raised by `Scheduler.onThreadTerminated`, after `executeOneStep` has
+        // returned the worker's final `Ret` perfectly happily.
+        exn.Message |> shouldContainText "terminated while still holding"
+
+        match exn with
+        | :? GuestFailureException as failure -> failure.Guest |> shouldNotEqual []
         | other -> failwith $"expected a GuestFailureException, got %s{other.GetType().FullName}"
 
     /// The structured location is the reason this is an exception type rather than a string

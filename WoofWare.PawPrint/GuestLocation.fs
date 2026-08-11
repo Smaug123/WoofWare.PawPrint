@@ -293,6 +293,22 @@ module GuestLocation =
     let describe (state : IlMachineState) : string = ofState state |> renderThreads
 
     /// <summary>
+    /// As <c>ofState</c>, but <c>None</c> rather than raising if the position cannot be
+    /// determined.
+    /// </summary>
+    /// <remarks>
+    /// For callers annotating an exception that is already propagating. A failure there would
+    /// replace the diagnostic PawPrint is trying to deliver with one about the diagnostic
+    /// machinery — the single worst outcome available. <c>ofState</c> is written to be total for
+    /// exactly this reason; this is the belt to its braces.
+    /// </remarks>
+    let tryOfState (state : IlMachineState) : GuestThreadLocation list option =
+        try
+            Some (ofState state)
+        with _ ->
+            None
+
+    /// <summary>
     /// <paramref name="message" /> with the guest's position appended.
     /// </summary>
     let annotate (message : string) (locations : GuestThreadLocation list) : string =
