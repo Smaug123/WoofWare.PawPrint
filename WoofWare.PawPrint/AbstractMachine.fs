@@ -338,22 +338,62 @@ module AbstractMachine =
         // map, and the parameterised `LogTrace` overload boxes each argument into an `obj[]`
         // before any provider gets to decide whether it wants the message.
         if logger.IsEnabled LogLevel.Trace then
+            // One lookup serves both the type name and the source location. The assembly is
+            // resolved from the executing method's *declaring type*, which is what makes it the
+            // assembly whose metadata handles that method's `TryResolveMethodSource` indexes.
+            let declaringAssembly =
+                state.LoadedAssembly instruction.ExecutingMethod.DeclaringType.Assembly
+
             let executingInType =
-                match state.LoadedAssembly instruction.ExecutingMethod.DeclaringType.Assembly with
+                match declaringAssembly with
                 | None -> "<unloaded assembly>"
                 | Some assy ->
                     match assy.TypeDefs.TryGetValue instruction.ExecutingMethod.DeclaringType.Definition.Get with
                     | true, v -> v.Name
                     | false, _ -> "<unrecognised type>"
 
-            logger.LogTrace (
-                "Executing one step (index {ExecutingIlOpIndex}, max {MaxIlOpIndex}, in method {ExecutingMethodType}.{ExecutingMethodName}): {ExecutingIlOp}",
-                instruction.IlOpIndex,
-                (Map.maxKeyValue instructions.Locations |> fst),
-                executingInType,
-                instruction.ExecutingMethod.Name,
-                executingInstruction
-            )
+            let maxIlOpIndex = Map.maxKeyValue instructions.Locations |> fst
+
+            // The raw program counter, with none of the stepping-back `GuestLocation` does. That
+            // exists because a *stuck* thread has already advanced past the call it is parked in;
+            // here the instruction is the one about to run, so the offset is exactly the one to
+            // attribute.
+            let source =
+                declaringAssembly
+                |> Option.bind (fun assy ->
+                    assy.TryResolveMethodSource instruction.ExecutingMethod instruction.IlOpIndex
+                )
+
+            // Two templates rather than one carrying a "no source" sentinel. Absence is then the
+            // absence of the fields, which a structured consumer can filter on without knowing a
+            // magic string, and `SourceLine` stays a number rather than text to be parsed back out
+            // of `path:line`. It also keeps the rendered message clean in the overwhelmingly
+            // common case: the framework assemblies ship no symbols, so most instructions have no
+            // source and would otherwise all carry a dangling `at <no source>`.
+            //
+            // Unlike the `<unloaded assembly>` sentinel above, which fills a field that must always
+            // name *something*, there is nothing here that a reader needs in place of the location.
+            match source with
+            | None ->
+                logger.LogTrace (
+                    "Executing one step (index {ExecutingIlOpIndex}, max {MaxIlOpIndex}, in method {ExecutingMethodType}.{ExecutingMethodName}): {ExecutingIlOp}",
+                    instruction.IlOpIndex,
+                    maxIlOpIndex,
+                    executingInType,
+                    instruction.ExecutingMethod.Name,
+                    executingInstruction
+                )
+            | Some source ->
+                logger.LogTrace (
+                    "Executing one step (index {ExecutingIlOpIndex}, max {MaxIlOpIndex}, in method {ExecutingMethodType}.{ExecutingMethodName} at {SourceFile}:{SourceLine}): {ExecutingIlOp}",
+                    instruction.IlOpIndex,
+                    maxIlOpIndex,
+                    executingInType,
+                    instruction.ExecutingMethod.Name,
+                    source.DocumentPath,
+                    source.StartLine,
+                    executingInstruction
+                )
 
         // `executingInstruction` is the value `TryGetValue` above already produced for this
         // index; re-indexing `Locations` would be a second lookup for the same key.

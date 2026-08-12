@@ -1091,36 +1091,29 @@ module NativeRuntimeMethodHandle =
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when generics.IsEmpty ->
             // CoreCLR (runtimehandles.cpp:1352): asserts non-null and returns
             // (INT32)pMethod->GetSlot(), which is a bare read of the MethodDesc's slot number as
-            // assigned once by MethodTableBuilder::PlaceVirtualMethods. PawPrint has no persisted
-            // slot number, so the layout is recomputed from the declaring type's chain; see
-            // `NativeRuntimeTypeHelpers.vtableOfClosed` for the rule and for why MethodImpls are
+            // assigned once during method-table building. PawPrint has no persisted slot number, so
+            // the layout is recomputed from the declaring type's chain; see
+            // `NativeRuntimeTypeHelpers.slotTableOfClosed` for the rule and for why MethodImpls are
             // not consulted.
             //
-            // Every caller that can reach this today asks only about a method whose metadata carries
-            // MethodAttributes.Virtual (`PopulateMethods`, RuntimeType.CoreCLR.cs:683), and on a
-            // class or value type such a method always occupies an instance vtable slot: CoreCLR
-            // rejects static+virtual outside interfaces with a TypeLoadException, and
-            // `PopulateMethods` routes interfaces down a branch that never reaches here.
+            // The number spans both halves of the method table, so this asks the slot table rather
+            // than the vtable alone. `PopulateMethods` (RuntimeType.CoreCLR.cs:683) only ever asks
+            // about a method carrying MethodAttributes.Virtual, which on a class or value type
+            // always occupies an instance vtable slot -- CoreCLR rejects static+virtual outside
+            // interfaces with a TypeLoadException, and `PopulateMethods` routes interfaces down a
+            // branch that never reaches here. But `PopulateProperties` (RuntimeType.CoreCLR.cs:1358)
+            // calls this on a property's accessor with *no* Virtual guard, testing
+            // `slot < numVirtuals` afterwards, so an ordinary non-virtual getter reaches it and
+            // CoreCLR answers with a slot in the region past the vtable.
             //
-            // Two shapes land outside the vtable. Both are recorded because they are the answer to
-            // "what would CoreCLR have returned":
-            //
-            //  - `PopulateProperties` (RuntimeType.CoreCLR.cs:1358) calls this on a property's
-            //    accessor with *no* Virtual guard, testing `slot < numVirtuals` afterwards, so an
-            //    ordinary non-virtual getter reaches it and CoreCLR answers with a non-vtable slot.
-            //    This one is **live**: it is what the parked `UnionReflection` F# case now dies on,
-            //    reporting "method get_width occupies no slot in the vtable of its declaring type".
-            //    The chain that used to block it is gone -- Property token enumeration (#921, #926),
-            //    `Associates.AssignAssociates` (#934), and most recently the vtable layout rule for
-            //    an unmatched non-NewSlot virtual, without which a union's vtable could not be built
-            //    at all. Implementing the non-vtable region is what un-parks that case; see the
-            //    parking comment in TestFSharpPureCases for the observed failure.
-            //
-            //  - For a value type, the MethodTable builder duplicates every virtual, leaving the
-            //    unboxing stub in the vtable slot and giving the unboxed copy a slot beyond
-            //    GetNumVirtuals. Those duplicates are MethodDesc-level artifacts living in the
-            //    MethodDescChunks; PawPrint enumerates metadata MethodDefs once, so it never sees
-            //    them.
+            // One shape still lands outside anything modelled here, and is recorded because it is
+            // the answer to "what would CoreCLR have returned": for a value type the MethodTable
+            // builder duplicates every virtual, leaving the unboxing stub in the vtable slot and
+            // giving the unboxed copy a slot of its own beyond the rest (`AddUnboxedMethod`,
+            // methodtablebuilder.cpp:7178). Those duplicates are MethodDesc-level artifacts living
+            // in the MethodDescChunks, and they take their numbers *after* everything placed from
+            // metadata, so they shift nothing. PawPrint enumerates metadata MethodDefs once and so
+            // never sees them; nor can a guest name one, since reflection surfaces the original.
             let operation = "RuntimeMethodHandle.GetSlot"
 
             let identity =
@@ -1130,8 +1123,8 @@ module NativeRuntimeMethodHandle =
 
             let declaringType = identity.GetDeclaringType ()
 
-            let state, vtable =
-                NativeRuntimeTypeHelpers.vtableOfClosed
+            let state, slotTable =
+                NativeRuntimeTypeHelpers.slotTableOfClosed
                     ctx.LoggerFactory
                     ctx.BaseClassTypes
                     operation
@@ -1139,15 +1132,15 @@ module NativeRuntimeMethodHandle =
                     declaringType
 
             let slot =
-                vtable
-                |> List.map NativeRuntimeTypeHelpers.slotIdentity
-                |> NativeRuntimeTypeHelpers.slotIndexOfIdentity (
-                    identity.GetAssemblyFullName (),
-                    methodInfo.IdentityKey
-                )
+                slotTable
+                |> NativeRuntimeTypeHelpers.slotIndexInTable (identity.GetAssemblyFullName (), methodInfo.IdentityKey)
                 |> Option.defaultWith (fun () ->
+                    // Every method a type declares in metadata is placed in one half or the other,
+                    // so reaching here means the method is not the declaring type's to place: a
+                    // synthesised method, which has no MethodDef row for `DeclaredMethodIterator` to
+                    // find, or an identity naming a type that does not declare it.
                     failwith
-                        $"TODO: %s{operation}: method %s{methodInfo.Name} occupies no slot in the vtable of its declaring type %O{declaringType}; CoreCLR would answer with a slot in the non-vtable region beyond GetNumVirtuals, which PawPrint does not model. If you have arrived here from property enumeration, that is the expected next step: see the comment above this handler"
+                        $"%s{operation}: method %s{methodInfo.Name} occupies no slot in the method table of its declaring type %O{declaringType}; every metadata-declared method is placed either in the vtable or in the region beyond it, so this is a method the declaring type does not declare (a runtime-synthesised method has no MethodDef row and is never placed)"
                 )
 
             let state =

@@ -147,6 +147,7 @@
     <Compile Include="TestInlineArrayLayout.fs" />
     <Compile Include="TestReinterpretCellAccess.fs" />
     <Compile Include="TestBulkMoveCellAccess.fs" />
+    <Compile Include="TestTraceSourceLocations.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestFSharpPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />

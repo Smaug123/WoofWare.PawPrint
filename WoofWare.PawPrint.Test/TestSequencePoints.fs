@@ -110,6 +110,45 @@ module TestSequencePoints =
         assy.Methods
         |> Seq.pick (fun kvp -> if kvp.Value.Name = "Triple" then Some kvp.Key else None)
 
+    let private tripleMethod
+        (assy : DumpedAssembly)
+        : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+        =
+        assy.Methods
+        |> Seq.pick (fun kvp -> if kvp.Value.Name = "Triple" then Some kvp.Value else None)
+
+    /// The rendering prose diagnostics use — `GuestLocation`'s thread summaries. Column
+    /// information is deliberately dropped: the line wants to be greppable and to paste into an
+    /// editor, and `path:line` is what does that.
+    [<Test>]
+    let ``a source location renders as path and line`` () : unit =
+        let location =
+            {
+                DocumentPath = "/src/Foo.cs"
+                StartLine = 17
+                StartColumn = 5
+                EndLine = 19
+                EndColumn = 30
+            }
+
+        string location |> shouldEqual "/src/Foo.cs:17"
+
+    [<Test>]
+    let ``TryResolveMethodSource resolves a metadata-backed method`` () : unit =
+        let assy = readImage (Roslyn.compileWithSymbols [ source ])
+
+        match assy.TryResolveMethodSource (tripleMethod assy) 0 with
+        | None -> failwith "expected a source location for Triple's first instruction"
+        | Some location ->
+            location.DocumentPath |> shouldEqual "File0.cs"
+            location.StartLine |> shouldEqual 4
+
+    [<Test>]
+    let ``TryResolveMethodSource has nothing to say without symbols`` () : unit =
+        let assy = readImage (Roslyn.compile [ source ])
+
+        assy.TryResolveMethodSource (tripleMethod assy) 0 |> shouldEqual None
+
     [<Test>]
     let ``an image compiled with symbols exposes its sequence points`` () : unit =
         let assy = readImage (Roslyn.compileWithSymbols [ source ])
