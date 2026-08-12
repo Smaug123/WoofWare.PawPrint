@@ -930,7 +930,7 @@ module internal IntrinsicHelpers =
             match wasConstructing with
             | ConstructionState.NotConstructing -> state
             | ConstructionState.Constructing constructing ->
-                let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
+                let constructed = ManagedHeap.get constructing state.ManagedHeap
 
                 state
                 |> IlMachineState.pushToEvalStack (CliType.ValueType constructed.Contents) currentThread

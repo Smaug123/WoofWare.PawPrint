@@ -384,6 +384,16 @@ module ManagedHeap =
     /// address that was never allocated; use `tryGetObjectConcreteType` to tell those apart.
     let isArray (addr : ManagedHeapAddress) (heap : ManagedHeap) : bool = heap.Arrays.ContainsKey addr
 
+    /// Whether `addr` is a live heap allocation of either kind.
+    ///
+    /// Asked by callers that only need to know a reference points at *something* — the
+    /// object's kind and payload are then somebody else's question. Deliberately derived
+    /// from the two payload maps rather than from `SyncBlocks`, whose key set is documented
+    /// to be their union: that invariant is asserted elsewhere, and an accessor that assumed
+    /// it would turn a broken invariant into a wrong answer instead of a caught one.
+    let isLive (addr : ManagedHeapAddress) (heap : ManagedHeap) : bool =
+        heap.NonArrayObjects.ContainsKey addr || heap.Arrays.ContainsKey addr
+
     /// The dimensions and element type of the array at `addr`, or `None` if `addr` is not
     /// a live array. Carries no cells: see `ArrayShape`.
     let tryGetArrayShape (addr : ManagedHeapAddress) (heap : ManagedHeap) : ArrayShape option =
@@ -425,9 +435,27 @@ module ManagedHeap =
 
         arr.Elements.[offset]
 
+    /// The non-array object at `addr`, or `None` if there is no live non-array object there.
+    /// `None` for a live *array* too — an array has no `AllocatedNonArrayObject` payload;
+    /// `isArray` and `tryGetArrayShape` answer for those.
+    let tryGet (alloc : ManagedHeapAddress) (heap : ManagedHeap) : AllocatedNonArrayObject option =
+        match heap.NonArrayObjects.TryGetValue alloc with
+        | true, v -> Some v
+        | false, _ -> None
+
+    /// The non-array object at `addr`.
+    ///
+    /// The two rejection cases are reported differently for the same reason `getArrayShape`
+    /// separates them: an array address means the caller misjudged the kind of the reference
+    /// it was handed, whereas an unallocated address means the reference itself is bogus.
     let get (alloc : ManagedHeapAddress) (heap : ManagedHeap) : AllocatedNonArrayObject =
-        // TODO: arrays too
-        heap.NonArrayObjects.[alloc]
+        match tryGet alloc heap with
+        | Some v -> v
+        | None ->
+            if heap.Arrays.ContainsKey alloc then
+                failwith $"get: %O{alloc} is an array, so has no non-array object payload"
+            else
+                failwith $"get: %O{alloc} is not a live managed heap allocation"
 
     /// Replace the entire payload of the non-array object at `alloc`. Rejects an address
     /// that is not already a live non-array object rather than conjuring one there:

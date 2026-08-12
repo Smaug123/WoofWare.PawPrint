@@ -60,7 +60,7 @@ module NativeThreading =
         |> Map.toSeq
         |> Seq.tryPick (fun (tid, addr) -> if addr = threadAddr then Some tid else None)
         |> Option.defaultWith (fun () ->
-            match state.ManagedHeap.NonArrayObjects |> Map.tryFind threadAddr with
+            match ManagedHeap.tryGet threadAddr state.ManagedHeap with
             | Some _ ->
                 failwith
                     $"%s{operation}: Thread object at {threadAddr} was never Start()ed. The real CLR raises ThreadStateException here; PawPrint doesn't synthesise that yet, so this is a guest bug we can't currently report structurally."
