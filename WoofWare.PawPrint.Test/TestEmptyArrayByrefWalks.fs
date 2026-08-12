@@ -121,3 +121,60 @@ module TestEmptyArrayByrefWalks =
         match snd populated with
         | [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset 2 ] -> ()
         | other -> failwith $"expected a trailing 2-byte cursor, got %O{other}"
+
+    /// An array whose element stride is `stride`, with no cells. `allocateArray`'s
+    /// stride-versus-cell-0 check is skipped when there are no cells, which is what lets a
+    /// test mint an odd stride without a matching 3-byte element type in corelib.
+    let private emptyArrayWithStride (stride : int) (heap : ManagedHeap) : ManagedHeapAddress * ManagedHeap =
+        let allocation : AllocatedArray =
+            {
+                Shape =
+                    {
+                        ConcreteType = ConcreteTypeHandle.OneDimArrayZero (handleFor baseClassTypes.Byte)
+                        Length = 0
+                        Lengths = ImmutableArray.Create 0
+                        ElementStride = stride
+                    }
+                Elements = ImmutableArray.Empty
+            }
+
+        ManagedHeap.allocateArray allocation heap
+
+    [<Test>]
+    let ``a byte cursor at the int32 floor normalises without overflowing`` () : unit =
+        // `Int32.MinValue` bytes into an array whose stride does not divide it. Folding used
+        // to recover the residual as `n - cellAdvance * cellSize`, whose product is
+        // -2147483649 here: outside int32, and `ManagedPointerSource` is `Checked`, so it
+        // raised `OverflowException` over an intermediate even though the residual it was
+        // computing is 1.
+        //
+        // Reachable only now that an empty array supplies a real stride to normalisation;
+        // before, a zero stride meant the fold was skipped entirely.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        let state = state loggerFactory
+
+        let arr, heap = emptyArrayWithStride 3 state.ManagedHeap
+
+        let state =
+            { state with
+                ManagedHeap = heap
+            }
+
+        let src =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (arr, 0),
+                [ ByrefProjection.ReinterpretAs (concreteTypeFor baseClassTypes.Byte) ]
+            )
+
+        let result =
+            ManagedPointerByteView.addByteOffsetToByteView state System.Int32.MinValue src
+
+        // -2147483648 = 3 * -715827883 + 1, with the residual in [0, 3) as floor division
+        // requires.
+        match result with
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (_, index),
+                                      [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset residual ]) ->
+            index |> shouldEqual -715827883
+            residual |> shouldEqual 1
+        | other -> failwith $"expected a folded array-element byref with a 1-byte residual, got %O{other}"

@@ -2735,10 +2735,12 @@ module Intrinsics =
                             // represent, as `IntrinsicHelpers.offsetManagedPointerByElements`
                             // already does for the same arithmetic.
                             //
-                            // Declining the shortcut instead would not help: the byte-view
-                            // fallback normalises the resulting cursor back into the cell index
-                            // through `normaliseTrailingByteOffset`, whose `advanceRoot` does
-                            // the same unchecked addition.
+                            // Declining the shortcut instead would not give a right answer
+                            // either: the byte-view fallback normalises the resulting cursor
+                            // back into the cell index through `normaliseTrailingByteOffset`,
+                            // which performs the same addition. That file is `Checked`, so it
+                            // raises `OverflowException` rather than wrapping — a crash, but
+                            // one naming neither the byref nor the walk that produced it.
                             let folded = int64<int> i + int64<int> (offset / elementSize)
 
                             if
