@@ -303,7 +303,9 @@ new DynamicMethod("f", typeof(int), Type.EmptyTypes, typeof(C));
 // PawPrint: PlatformNotSupportedException, from AssemblyBuilder.EnsureDynamicCodeSupported.
 ```
 
-**Where this lives in code**: `AppContextProperties.runtimeBaseline` and `withRuntimeBaseline` in `RuntimeConfig.fs`; applied in `Program.prepare` immediately before `AppContextSeed.prepareCall`. Pinned by `TestDynamicCodeSupport.fs` and by `sourcesImpure/DynamicCodeUnsupportedByDefault.cs` (the default) and `sourcesImpure/DynamicCodeSupportedOverride.cs` (the precedence). If Reflection.Emit is ever implemented — see the `DynamicMethod*` cases parked in `TestPureCases.unimplemented` — this entry and that baseline should be revisited together.
+**Where this lives in code**: `AppContextProperties.runtimeBaseline` and `withRuntimeBaseline` in `RuntimeConfig.fs`; applied in `Program.prepare` immediately before `AppContextSeed.prepareCall`. Pinned by `TestDynamicCodeSupport.fs` and by `sourcesImpure/DynamicCodeUnsupportedByDefault.cs` (the default) and `sourcesImpure/DynamicCodeSupportedOverride.cs` (the precedence).
+
+Reflection.Emit support has since begun, which sharpens rather than changes the entry above. `ModuleHandle_GetDynamicMethod` — the QCall behind `DynamicMethod.GetMethodDescriptor()` — is implemented (`NativeModuleHandle.fs`, pinned by `TestNativeGetDynamicMethod.fs` and `sourcesImpure/DynamicMethodStubFromModule.cs`), so a guest that overrides the switch to true can now *mint* a dynamic method and get back a `RuntimeMethodInfoStub` naming it. It still cannot execute one: the IL lives in the `DynamicResolver` and nothing reads it back, so `CreateDelegate` stops at the next primitive (`RuntimeTypeHandle_InternalAlloc`, measured). The baseline therefore stays `false`, and stays truthful — "can this runtime produce code at runtime?" is still "no". Revisit this entry and the baseline together when a dynamic method can actually run.
 
 ## `Activator.CreateInstance` rejection messages
 

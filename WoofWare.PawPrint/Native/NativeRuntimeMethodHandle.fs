@@ -97,13 +97,13 @@ module NativeRuntimeMethodHandle =
     /// it instead recovers the `DynamicMethod` from the handle's `Resolver`. Every other reflection
     /// native in this file assumes the metadata branch was taken.
     ///
-    /// PawPrint has no `Reflection.Emit`, so every handle its registry can mint is metadata-backed
-    /// and this is `false` throughout. That is a fact about the *representation*, not a policy
-    /// choice: `MethodHandle` has no case that could denote a no-metadata method. When one is
-    /// added, this match stops compiling.
+    /// PawPrint mints a no-metadata handle in exactly one place -- `ModuleHandle_GetDynamicMethod`,
+    /// the QCall behind `DynamicMethod.GetMethodDescriptor()` -- so this is `true` for precisely
+    /// those and `false` for everything read out of metadata.
     let isDynamicMethod (handle : MethodHandle) : bool =
         match handle with
         | MethodHandle.FromMetadata _ -> false
+        | MethodHandle.FromDynamic _ -> true
 
     /// The `MethodTable*` CoreCLR's `RuntimeMethodHandle::GetMethodTable` FCall
     /// (runtimehandles.cpp:1344) returns: `pMethod->GetMethodTable()`, i.e. the MethodTable of the
@@ -432,8 +432,13 @@ module NativeRuntimeMethodHandle =
     /// Resolve a `RuntimeMethodHandleInternal` argument to the metadata identity it denotes.
     /// Every native that reads a MethodDef token, a declaring assembly, or a method instantiation
     /// needs one of these, and none of them has an answer for a no-metadata (`DynamicMethod`)
-    /// handle -- so when that case lands, this match is one of the sites that must decide what to
-    /// do rather than silently reading a token that does not exist.
+    /// handle: there is no token to read.
+    ///
+    /// Several of the operations funnelled through here are perfectly legal on a dynamic method in
+    /// CoreCLR -- `GetMethodTable`/`GetDeclaringType` answer with the `DynamicMethodTable`'s
+    /// synthetic type, which is how `Signature`'s constructor (RuntimeHandles.cs:2051) works on an
+    /// LCG method -- so this is a "not implemented yet" boundary rather than a caller bug, and it
+    /// says so. It is where the next increment of `Reflection.Emit` support will start.
     let resolveMetadataIdentityFromArg
         (operation : string)
         (state : IlMachineState)
@@ -442,6 +447,14 @@ module NativeRuntimeMethodHandle =
         =
         match resolveMethodHandleFromArg operation state arg with
         | MethodHandle.FromMetadata identity -> identity
+        | MethodHandle.FromDynamic dynamicHandle ->
+            let name =
+                MethodHandleRegistry.resolveDynamicMethod dynamicHandle state.MethodHandles
+                |> Option.map (fun definition -> definition.GetName ())
+                |> Option.defaultValue "<unregistered>"
+
+            failwith
+                $"TODO: %s{operation} was given %O{dynamicHandle} (%s{name}), a Reflection.Emit method with no MethodDef token to read; PawPrint mints these in ModuleHandle_GetDynamicMethod but cannot yet answer metadata queries about them"
 
     let private resolveMethodInfoFromHandleArg
         (operation : string)

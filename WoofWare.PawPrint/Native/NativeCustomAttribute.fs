@@ -334,6 +334,9 @@ module NativeCustomAttribute =
                 let identity =
                     match MethodHandleRegistry.resolveMethodFromId methodRegistryId state.MethodHandles with
                     | Some (MethodHandle.FromMetadata identity) -> identity
+                    | Some (MethodHandle.FromDynamic dynamicHandle) ->
+                        failwith
+                            $"%s{operation}: RuntimeMethodHandleInternal id %d{methodRegistryId} (from stub at %O{ctorStubAddr}) names %O{dynamicHandle}, a Reflection.Emit method; an attribute constructor is named by a token in the blob being decoded, so this is a bug in whatever produced the stub"
                     | None ->
                         failwith
                             $"%s{operation}: RuntimeMethodHandleInternal id %d{methodRegistryId} (from stub at %O{ctorStubAddr}) did not resolve to a registered MethodHandle"
