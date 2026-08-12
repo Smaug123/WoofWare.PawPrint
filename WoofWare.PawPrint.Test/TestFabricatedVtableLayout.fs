@@ -247,7 +247,7 @@ module TestFabricatedVtableLayout =
                 il.Emit (OpCodes.Ldc_I4, 0)
                 il.Emit OpCodes.Ret
 
-            typeBuilder.CreateType () |> ignore
+            typeBuilder.CreateType () |> ignore<Type>
 
         let runtimeSpecial =
             MethodAttributes.Public
@@ -262,8 +262,35 @@ module TestFabricatedVtableLayout =
         // which is the shape a signature-blind classifier would mistake for the class constructor.
         defineMalformed "MalformedCctorReturn" ".cctor" (runtimeSpecial ||| MethodAttributes.Static) typeof<int>
 
-        // An instance runtime-special method not named `.ctor`: rejected by the name check (:5023-5026).
-        defineMalformed "MalformedSpecialName" "NotACtor" runtimeSpecial typeof<Void>
+        // An instance runtime-special method not named `.ctor`: rejected by the name check
+        // (:5023-5026). Built out longhand rather than through `defineMalformed`, because the
+        // created `Type` is needed as a base class below.
+        let malformedSpecialNameBuilder =
+            moduleBuilder.DefineType (
+                "MalformedSpecialName",
+                TypeAttributes.Public ||| TypeAttributes.Class,
+                typeof<obj>
+            )
+
+        let notACtor =
+            malformedSpecialNameBuilder.DefineMethod ("NotACtor", runtimeSpecial, typeof<Void>, Type.EmptyTypes)
+
+        (notACtor.GetILGenerator ()).Emit OpCodes.Ret
+        let malformedSpecialName = malformedSpecialNameBuilder.CreateType ()
+
+        // A perfectly well-formed type -- whose *base* is the one above. Building a MethodTable
+        // starts by building the parent's, so CoreCLR cannot load this either. Nothing in its own
+        // metadata says so, which is the point: a walk that validated only the type it was asked
+        // about would lay this one out happily and answer `GetSlot` for a type that cannot exist.
+        let derivedFromMalformed =
+            moduleBuilder.DefineType (
+                "DerivedFromMalformed",
+                TypeAttributes.Public ||| TypeAttributes.Class,
+                malformedSpecialName
+            )
+
+        definePlain derivedFromMalformed "PerfectlyOrdinary"
+        derivedFromMalformed.CreateType () |> ignore
 
         // A constructor returning non-void: rejected by the explicit return-type check (:5028-5037).
         defineMalformed "MalformedCtorReturn" ".ctor" runtimeSpecial typeof<int>
@@ -645,6 +672,10 @@ module TestFabricatedVtableLayout =
     [<TestCase "MalformedCtorReturn">]
     [<TestCase "MalformedStaticVirtual">]
     [<TestCase "MalformedGapName">]
+    // Nothing in this one's own metadata is wrong; its *base* is `MalformedSpecialName`. Building a
+    // MethodTable begins by building the parent's, so CoreCLR cannot load it either -- and a walk
+    // that validated only the type it was asked about would answer `GetSlot` for it happily.
+    [<TestCase "DerivedFromMalformed">]
     let ``a type CoreCLR refuses to load is refused here too`` (typeName : string) : unit =
         // `Assembly.Load` is lazy, so the type load -- and its failure -- happens here.
         let hostFailure =

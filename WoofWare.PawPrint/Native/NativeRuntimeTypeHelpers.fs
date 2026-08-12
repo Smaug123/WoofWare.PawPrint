@@ -980,6 +980,28 @@ module NativeRuntimeTypeHelpers =
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : (MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> * MetadataMethodFacts) list
         =
+        // Exactly `void`, no custom modifier: a *blob* comparison, matching `ExactlyEqual`.
+        let hasNullaryVoidSignature (method : MethodInfo<_, _, _>) : bool =
+            method.Signature.ParameterTypes.IsEmpty
+            && not (
+                method.Signature.Header.Get.Attributes.HasFlag System.Reflection.Metadata.SignatureAttributes.Generic
+            )
+            && method.Signature.Header.Get.CallingConvention = System.Reflection.Metadata.SignatureCallingConvention.Default
+            && method.Signature.ReturnType = MethodReturnType.Void
+
+        // `void` once custom modifiers are looked through, which is the other question CoreCLR asks;
+        // see `slotsBeyondVtableOfClosed` for why the two must stay separate.
+        let returnsVoidThroughModifiers (method : MethodInfo<_, _, _>) : bool =
+            match method.Signature.ReturnType with
+            | MethodReturnType.Void -> true
+            | MethodReturnType.Returns ty ->
+                let rec unwrap (ty : TypeDefn) : TypeDefn =
+                    match ty with
+                    | TypeDefn.Modified modified -> unwrap modified.Unmodified
+                    | ty -> ty
+
+                unwrap ty = TypeDefn.Void
+
         // `_VtblGap`, then the optional-number/count grammar upstream parses.
         let isWellFormedGapName (name : string) : bool =
             let suffix = name.Substring "_VtblGap".Length
@@ -1009,7 +1031,48 @@ module NativeRuntimeTypeHelpers =
 
                     None
                 else
-                    Some (method, facts)
+
+                // The load-time rejections. They live here, rather than beside the placement that
+                // needs them, so that they run for *every* type this walk touches -- including each
+                // ancestor, since `vtableOfClosed` recurses through the base chain and asks each one
+                // for its declared methods. A type whose base CoreCLR refuses to load cannot itself
+                // be loaded, because building a MethodTable begins by building the parent's, so
+                // validating only the leaf would let `GetSlot` answer for a derived type that cannot
+                // exist.
+                //
+                // They are not optional colour either: the classification below keys *on* the
+                // RTSpecialName flag, and that is only unambiguous because CoreCLR refuses to load
+                // the shapes that would make it ambiguous. Same reason `vtableOfClosed` refuses a
+                // non-newslot virtual that matches a `final` parent slot.
+
+                // A `static virtual` is legal only on an interface: on a class or value type
+                // `ValidateMethods` throws `IDS_CLASSLOAD_STATICVIRTUAL`
+                // (methodtablebuilder.cpp:5124-5131). Only the `!IsInterface()` half is enforced
+                // there -- upstream's comment beside it also says such methods "must be abstract",
+                // but nothing checks that, and static virtuals with bodies have been legal since
+                // .NET 7. Without this the method would simply be placed past the vtable, since
+                // `PlaceVirtualMethods` skips it for being static.
+                if method.IsStatic && method.IsVirtual && not typeInfo.IsInterface then
+                    failwith
+                        $"%s{operation}: method %s{method.Name} on %O{concreteTypeInfo} is both static and virtual, which is legal only on an interface; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5124-5131) rather than laying out a method table for it"
+
+                if facts.MethodAttributes.HasFlag MethodAttributes.RTSpecialName then
+                    if method.IsVirtual then
+                        failwith
+                            $"%s{operation}: method %s{method.Name} on %O{concreteTypeInfo} is marked RTSpecialName and virtual; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5001-5004) rather than laying out a method table for it"
+
+                    if method.IsStatic then
+                        if method.Name <> ".cctor" || not (hasNullaryVoidSignature method) then
+                            failwith
+                                $"%s{operation}: static method %s{method.Name} on %O{concreteTypeInfo} is marked RTSpecialName but is not exactly `static void .cctor()`; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5011-5019) rather than laying out a method table for it"
+                    else if method.Name <> ".ctor" then
+                        failwith
+                            $"%s{operation}: instance method %s{method.Name} on %O{concreteTypeInfo} is marked RTSpecialName but is not named `.ctor`; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5023-5026) rather than laying out a method table for it"
+                    elif not (returnsVoidThroughModifiers method) then
+                        failwith
+                            $"%s{operation}: constructor on %O{concreteTypeInfo} does not return void; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5028-5037) rather than laying out a method table for it"
+
+                Some (method, facts)
         )
 
     /// The instance vtable of a closed type, base-first: index `i` is the method that currently
@@ -1319,18 +1382,14 @@ module NativeRuntimeTypeHelpers =
 
         // CoreCLR recognises the two constructors by `IsMdRTSpecialName` *plus* an `ExactlyEqual`
         // match -- name and raw signature blob both -- against hard-coded `static void .cctor()` and
-        // `instance void .ctor()` signatures, and `ValidateMethods` (methodtablebuilder.cpp:4995-5044)
-        // rejects the type at load time if a runtime-special-named method is anything else.
+        // `instance void .ctor()` signatures. `declaredMethodsOf` has already refused any
+        // runtime-special-named method that is neither, since CoreCLR refuses to load such a type.
         //
         // The flag is load-bearing and not implied by the name: a method merely *named* `.ctor`
         // without it skips that block entirely and is placed in the ordinary pass below.
         // `FakeCtorSecond` in TestFabricatedVtableLayout pins that against the host CLR. ECMA-335
         // II.10.5.1 requires constructors to carry `rtspecialname`, so such an image is invalid --
         // but CoreCLR loads it anyway, and CoreCLR is what this emulates.
-        //
-        // Matching the blob means the calling convention and generic arity are part of the test, not
-        // just the arity: a vararg or (illegal-but-loadable) generic `.ctor()` is not the default
-        // constructor and does not get the priority slot.
         let isRuntimeSpecialName (facts : MetadataMethodFacts) : bool =
             facts.MethodAttributes.HasFlag MethodAttributes.RTSpecialName
 
@@ -1348,63 +1407,22 @@ module NativeRuntimeTypeHelpers =
         // come apart on exactly one shape. `ValidateMethods` rejects a ctor whose return is not void
         // using `MetaSig::GetReturnType()`, which reaches `SigParser::PeekElemTypeClosed` and calls
         // `SkipCustomModifiers()` first (sigparser.h:225) -- so `modopt(X) void` *is* void there, and
-        // such a type loads happily; measured on the host, which instantiates one. But
-        // `pDefaultCtor` is set by `ExactlyEqual` against the hard-coded `instance void ()`, a raw
-        // *blob* comparison, in which a modifier makes the signature different -- so the same ctor
-        // does not get the priority slot.
+        // such a type loads happily; measured on the host, which instantiates one. That question is
+        // `declaredMethodsOf`'s, since it decides whether the type loads at all.
         //
-        // Hence two predicates. `ModoptVoidCtor` in TestFabricatedVtableLayout is the type that
-        // needs both, and collapsing either into the other kills it.
-        let returnsVoidThroughModifiers (method : MethodInfo<_, _, _>) : bool =
-            match method.Signature.ReturnType with
-            | MethodReturnType.Void -> true
-            | MethodReturnType.Returns ty ->
-                let rec unwrap (ty : TypeDefn) : TypeDefn =
-                    match ty with
-                    | TypeDefn.Modified modified -> unwrap modified.Unmodified
-                    | ty -> ty
-
-                unwrap ty = TypeDefn.Void
-
+        // This one is the other: `pDefaultCtor` is set by `ExactlyEqual` against the hard-coded
+        // `instance void ()`, a raw *blob* comparison, in which a modifier makes the signature
+        // different -- so the same constructor does not get the priority slot. `ModoptVoidCtor` in
+        // TestFabricatedVtableLayout needs both, and collapsing either into the other kills it.
+        //
+        // Matching the blob also means the calling convention and generic arity are part of the
+        // test, not just the arity: a vararg or (illegal-but-loadable) generic `.ctor()` is not the
+        // default constructor either.
         let hasNullaryVoidSignature (method : MethodInfo<_, _, _>) : bool =
             method.Signature.ParameterTypes.IsEmpty
             && not (isGenericSignature method)
             && method.Signature.Header.Get.CallingConvention = System.Reflection.Metadata.SignatureCallingConvention.Default
             && method.Signature.ReturnType = MethodReturnType.Void
-
-        // The rejections above are not optional colour. This function classifies *on* the
-        // RTSpecialName flag, and that classification is only unambiguous because CoreCLR refuses
-        // to load the shapes that would make it ambiguous. Skipping them would hand out a slot
-        // layout for a type the real runtime declines to build a MethodTable for, and every number
-        // derived from it would then describe a type that cannot exist -- the same reason
-        // `vtableOfClosed` refuses a non-newslot virtual that matches a `final` parent slot.
-        for method, facts in declared do
-            // A `static virtual` is legal only on an interface: on a class or value type
-            // `ValidateMethods` throws `IDS_CLASSLOAD_STATICVIRTUAL` (methodtablebuilder.cpp:5124-5131).
-            // Only the `!IsInterface()` half is enforced there -- upstream's comment beside it also
-            // says such methods "must be abstract", but nothing checks that, and static virtuals
-            // with default bodies have been legal since .NET 7. Without this check the method would
-            // simply be placed past the vtable, since `PlaceVirtualMethods` skips it for being
-            // static -- handing out a layout for a type the real runtime will not build one for.
-            if method.IsStatic && method.IsVirtual && not typeInfo.IsInterface then
-                failwith
-                    $"%s{operation}: method %s{method.Name} on %O{concreteTypeInfo} is both static and virtual, which is legal only on an interface; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5124-5131) rather than laying out a method table for it"
-
-            if isRuntimeSpecialName facts then
-                if method.IsVirtual then
-                    failwith
-                        $"%s{operation}: method %s{method.Name} on %O{concreteTypeInfo} is marked RTSpecialName and virtual; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5001-5004) rather than laying out a method table for it"
-
-                if method.IsStatic then
-                    if method.Name <> ".cctor" || not (hasNullaryVoidSignature method) then
-                        failwith
-                            $"%s{operation}: static method %s{method.Name} on %O{concreteTypeInfo} is marked RTSpecialName but is not exactly `static void .cctor()`; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5011-5019) rather than laying out a method table for it"
-                else if method.Name <> ".ctor" then
-                    failwith
-                        $"%s{operation}: instance method %s{method.Name} on %O{concreteTypeInfo} is marked RTSpecialName but is not named `.ctor`; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5023-5026) rather than laying out a method table for it"
-                elif not (returnsVoidThroughModifiers method) then
-                    failwith
-                        $"%s{operation}: constructor on %O{concreteTypeInfo} does not return void; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5028-5037) rather than laying out a method table for it"
 
         let isClassConstructor ((method, facts) : MethodInfo<_, _, _> * MetadataMethodFacts) : bool =
             isRuntimeSpecialName facts
