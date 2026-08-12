@@ -1040,6 +1040,18 @@ module NativeRuntimeTypeHelpers =
                 // validating only the leaf would let `GetSlot` answer for a derived type that cannot
                 // exist.
                 //
+                // The type and its base chain is exactly the scope, and deliberately not more.
+                // Those are the declarations that *contribute slots to the layout being computed*,
+                // so a rejection anywhere in them means the numbers this function returns describe a
+                // MethodTable that cannot exist. An implemented interface is a different matter:
+                // CoreCLR does load one while building the type (`ResolveInterfaces`) and would
+                // refuse the implementor if the interface were malformed, but no interface method
+                // enters this slot table, so nothing computed here depends on it. Chasing that
+                // dependency has no natural stopping point short of the whole type-load closure --
+                // field types, generic constraints, and so on -- which is a different feature from
+                // laying out a method table. A guest that asks about the malformed interface itself
+                // is still refused, because this same function is what answers for it.
+                //
                 // They are not optional colour either: the classification below keys *on* the
                 // RTSpecialName flag, and that is only unambiguous because CoreCLR refuses to load
                 // the shapes that would make it ambiguous. Same reason `vtableOfClosed` refuses a
