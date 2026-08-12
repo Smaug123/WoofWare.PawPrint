@@ -359,14 +359,7 @@ module internal UnaryMetadataArrayOps =
             | Some addr -> addr
             | None -> failwith "expected heap allocation for array, got null"
 
-        let toPush =
-            match state.ManagedHeap.Arrays.TryGetValue arr with
-            | false, _ -> failwith $"unexpectedly failed to find array allocation {arr} in Ldelem"
-            | true, v ->
-                if 0 <= index && index < v.Elements.Length then
-                    v.Elements.[index]
-                else
-                    failwith "TODO: raise an out of bounds"
+        let toPush = ManagedHeap.getArrayValue arr index state.ManagedHeap
 
         IlMachineState.pushToEvalStack toPush thread state
         |> IlMachineState.advanceProgramCounter thread
