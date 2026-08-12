@@ -180,10 +180,13 @@ module TestVirtualMethodSlots =
             // priority only on non-generic types would agree with the host everywhere in the corpus.
             "System", "Lazy`1", [ "System", "Int32" ], typeof<System.Lazy<int>>
             // An interface, and specifically one carrying `static abstract` members. Those are
-            // `virtual` *and* static, so CoreCLR places them outside the vtable -- 43 of them here,
-            // at slots 1..43. Nothing else in either corpus is an interface at all, so a placement
-            // filter written as "not virtual" rather than "not an instance virtual" would drop every
-            // one of them and no other entry would notice.
+            // `virtual` *and* static, so CoreCLR places them outside the vtable. Measured here:
+            // slot 0 is an ordinary *instance* virtual (the default implementation of
+            // `IUtf8SpanFormattable.TryFormat`), slots 1-41 are the static virtuals, and slots 42-43
+            // are static but *not* virtual (`IUtf8SpanParsable<TSelf>.Parse`/`TryParse`). Nothing
+            // else in either corpus is an interface at all, so a placement filter written as "not
+            // virtual" rather than "not an instance virtual" would drop those 41 and no other entry
+            // would notice.
             // Named through reflection rather than `typeof<INumberBase<int>>`: F# rejects spelling an
             // interface with static abstract members outside a constraint position (FS3536), and
             // suppressing that warning to write a type name would be the wrong trade.

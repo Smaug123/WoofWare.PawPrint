@@ -275,12 +275,60 @@ module TestFabricatedVtableLayout =
         //
         // Emitted `static` only; `Reflection.Emit` refuses the combination outright ("Method cannot
         // be both static and virtual"), so the `Virtual` bit is patched into the MethodDef row after
-        // the image is written. See `withVirtualBitSet` below.
+        // the image is written. See `withVirtualBitSet` above.
         defineMalformed
             "MalformedStaticVirtual"
             "StaticVirtual"
             (MethodAttributes.Public ||| MethodAttributes.Static)
             typeof<Void>
+
+        // A constructor whose return is `modopt(IsConst) void`. Also *not* malformed: CoreCLR's
+        // return-type check is `MetaSig::GetReturnType()`, which reaches `PeekElemTypeClosed` and
+        // skips custom modifiers (sigparser.h:225), so the type loads and can be instantiated. But
+        // the signature *blob* is not `ExactlyEqual` to the hard-coded `instance void ()`, so this
+        // does not become `pDefaultCtor` and gets no priority slot.
+        //
+        // That is the one place the two questions PawPrint asks about a ctor's return come apart,
+        // and it is why they are two predicates rather than one.
+        let modoptCtor =
+            moduleBuilder.DefineType ("ModoptVoidCtor", TypeAttributes.Public ||| TypeAttributes.Class, typeof<obj>)
+
+        // Declared first, so if it were wrongly promoted to the default constructor it would take
+        // the slot `Plain` must otherwise hold, and the ordering assertion below would notice.
+        definePlain modoptCtor "Plain"
+
+        let modoptCtorBuilder =
+            modoptCtor.DefineMethod (
+                ".ctor",
+                MethodAttributes.Public
+                ||| MethodAttributes.SpecialName
+                ||| MethodAttributes.RTSpecialName,
+                CallingConventions.Standard ||| CallingConventions.HasThis,
+                typeof<Void>,
+                null,
+                [| typeof<System.Runtime.CompilerServices.IsConst> |],
+                Type.EmptyTypes,
+                null,
+                null
+            )
+
+        let modoptIl = modoptCtorBuilder.GetILGenerator ()
+        modoptIl.Emit OpCodes.Ldarg_0
+        modoptIl.Emit (OpCodes.Call, typeof<obj>.GetConstructor Type.EmptyTypes)
+        modoptIl.Emit OpCodes.Ret
+
+        // A real constructor, taking an argument. Its purpose is to stop `CreateType` synthesising a
+        // parameterless one: that would be a genuine default constructor, would take the priority
+        // slot legitimately, and the assertion below could no longer tell a promoted modopt ctor
+        // from it. `DefineMethod(".ctor", ...)` above does not count as defining a constructor.
+        let modoptOtherCtor =
+            modoptCtor.DefineConstructor (MethodAttributes.Public, CallingConventions.Standard, [| typeof<int> |])
+
+        let modoptOtherIl = modoptOtherCtor.GetILGenerator ()
+        modoptOtherIl.Emit OpCodes.Ldarg_0
+        modoptOtherIl.Emit (OpCodes.Call, typeof<obj>.GetConstructor Type.EmptyTypes)
+        modoptOtherIl.Emit OpCodes.Ret
+        modoptCtor.CreateType () |> ignore
 
         // A COM vtable-gap marker: `RTSpecialName` with a `_VtblGap` name, which is *not* a
         // malformed type -- CoreCLR drops the row from the declared-method list and loads the type
@@ -611,6 +659,46 @@ module TestFabricatedVtableLayout =
         // has to show the refusal came from the rule under test.
         pawPrintFailure.Message
         |> shouldContainText "CoreCLR rejects the type at load time"
+
+    /// A `.ctor` returning `modopt(IsConst) void` loads on CoreCLR -- the return-type check skips
+    /// custom modifiers -- but is not `ExactlyEqual` to the hard-coded default-constructor
+    /// signature, so it gets no priority slot. Refusing it, which a bare `ReturnType = Void` test
+    /// does, would reject a type the real runtime instantiates happily.
+    [<Test>]
+    let ``a constructor returning modopt void is accepted but not promoted`` () : unit =
+        // The host loads *and instantiates* it, so "CoreCLR accepts this" is measured rather than
+        // read out of the C++. `GetType` with `throwOnError` would raise otherwise, as it does for
+        // each of the malformed types above.
+        let host = hostAssembly.GetType ("ModoptVoidCtor", true)
+        Activator.CreateInstance (host, [| box 1 |]) |> shouldNotEqual null
+
+        // Vacuity guard: the modifier really is on the return type in the emitted metadata. Without
+        // it the ctor is `ExactlyEqual` to the hard-coded default-constructor signature, gets the
+        // priority slot legitimately, and the ordering below would be testing nothing.
+        match fabricated.TryGetTopLevelTypeDef "" "ModoptVoidCtor" with
+        | None -> failwith "fabricated assembly has no type ModoptVoidCtor"
+        | Some typeInfo ->
+            typeInfo.Methods
+            |> List.filter (fun method -> method.Name = ".ctor" && method.Signature.ParameterTypes.IsEmpty)
+            |> List.map (fun method ->
+                match method.Signature.ReturnType with
+                | MethodReturnType.Returns (TypeDefn.Modified _) -> "modified"
+                | other -> string<MethodReturnType<TypeDefn>> other
+            )
+            |> shouldEqual [ "modified" ]
+
+        let table = slotTableOf "ModoptVoidCtor"
+
+        // Declaration order, with nothing promoted: `Plain`, the modified ctor, the real one. A
+        // `hasNullaryVoidSignature` that looked through modifiers would treat the modified ctor as
+        // the default constructor and hoist it to the front.
+        table.BeyondVtable
+        |> List.map (fun slot -> $"%s{slot.Method.Name}/%i{slot.Method.Signature.ParameterTypes.Length}")
+        |> shouldEqual [ "Plain/0" ; ".ctor/0" ; ".ctor/1" ]
+
+        // And the host agrees about that order, so it is not merely PawPrint being self-consistent.
+        hostBeyondVtableNames "ModoptVoidCtor"
+        |> shouldEqual [ "Plain/0" ; ".ctor/0" ; ".ctor/1" ]
 
     /// The counterpart to the refusals above: a COM vtable-gap marker looks like a runtime-special
     /// method that is not a constructor, but CoreCLR loads the type and simply drops the row.
