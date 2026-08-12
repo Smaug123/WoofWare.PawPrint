@@ -1,11 +1,19 @@
 # WoofWare.PawPrint
 
-*Slop status: original architecture is by me, with only reference assistance from LLMs. Then in 2026 I drove GPT-5.5 and Claude Opus 4.6/4.7 hard to get this to a usable state. Architecture is still mine, and I've read all the incoming non-test code, but have perhaps been a bit sloppy about some of it.*
+## Slop status
+
+Original architecture is by me, with only reference assistance from LLMs.
+Then in early 2026 I drove GPT-5.5 and Claude Opus 4.6/4.7 hard to get this to a usable state, resulting in release 0.1.1; I did review all the code during that time.
+
+Since then, as I wanted to use this to debug some real life flaky tests, I drove GPT-5.6 Sol and Claude Opus 4.8/5 and Fable 5 much harder, and gradually stopped reading the code.
+As of August 2026, it would probably qualify as fully vibe-coded, although it *is* (astonishingly) a powerful and working tool which has actually debugged three real flaky tests in extremely nontrivial projects.
+
+## Description
 
 This is an *unfinished* deterministic implementation of a .NET runtime (specifically .NET 10).
 You give it a DLL, and it executes the entry point therein on an emulated runtime which controls all sources of nondeterminism.
 
-## Current status
+## Current project status
 
 Even incomplete as it is, PawPrint is currently capable of automatically detecting and reproducing a number of textbook [race conditions](WoofWare.PawPrint.Test/sourcesConcurrencyBugs/), by running the input program with many different seeds for its source of randomness.
 
