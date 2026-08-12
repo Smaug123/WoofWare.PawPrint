@@ -2723,15 +2723,32 @@ module Intrinsics =
                             // the element type, which an empty array has just like any other.
                             let elementSize = (ManagedHeap.getArrayShape arr state.ManagedHeap).ElementStride
 
-                            if offset % elementSize = 0 then
-                                Some (
-                                    ManagedPointerSource.Byref (
-                                        ByrefRoot.ArrayElement (arr, i + offset / elementSize),
-                                        []
-                                    )
-                                )
-                            else
+                            if offset % elementSize <> 0 then
                                 None
+                            else
+
+                            // `ArrayElement` stores an int32 cell index, so a fold that does
+                            // not fit in one cannot be represented — and wrapping would not
+                            // merely lose precision, it would put the byref on the *wrong side*
+                            // of its own root, so `Unsafe.ByteOffset` would report
+                            // -8589934592 bytes instead of +8589934592. Refuse what we cannot
+                            // represent, as `IntrinsicHelpers.offsetManagedPointerByElements`
+                            // already does for the same arithmetic.
+                            //
+                            // Declining the shortcut instead would not help: the byte-view
+                            // fallback normalises the resulting cursor back into the cell index
+                            // through `normaliseTrailingByteOffset`, whose `advanceRoot` does
+                            // the same unchecked addition.
+                            let folded = int64<int> i + int64<int> (offset / elementSize)
+
+                            if
+                                folded < int64<int> System.Int32.MinValue
+                                || folded > int64<int> System.Int32.MaxValue
+                            then
+                                failwith
+                                    $"TODO: Unsafe.AddByteOffset: advancing the byref at cell %d{i} of array %O{arr} by %d{offset} bytes reaches cell %d{folded}, which does not fit in the int32 PawPrint stores for a cell index; a byref this far from its root is not modelled"
+
+                            Some (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, int32<int64> folded), []))
                         | _ -> None
                 | _ -> None
 
