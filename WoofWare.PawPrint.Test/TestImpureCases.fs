@@ -291,6 +291,26 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // `ModuleHandle_GetDynamicMethod`, the QCall behind
+                // `DynamicMethod.GetMethodDescriptor()`. Registered with the switch overridden to
+                // true, which is the only way to ask PawPrint to exercise a dynamic-code path --
+                // exactly the escape hatch `DynamicCodeSupportedOverride.cs` pins the existence of.
+                // The guest's comment explains why the QCall's effect is observable without
+                // executing the dynamic method, and what each non-zero exit code means.
+                FileName = "DynamicMethodStubFromModule.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `SystemNative_GetCwd` must classify its error returns before
                 // resolving the caller's buffer to storage, because the C
                 // decides them without dereferencing it. Impure because the

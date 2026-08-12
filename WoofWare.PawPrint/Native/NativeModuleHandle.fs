@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
 open System.Reflection.PortableExecutable
 
 /// <summary>
@@ -14,10 +15,10 @@ type PEKindAndMachine =
     }
 
 /// <summary>
-/// QCalls on <c>System.ModuleHandle</c> that answer questions about the module's image
-/// rather than resolving anything out of it. The <c>ModuleHandle_Resolve*</c> entry points
-/// live in <c>NativeRuntimeTypeQCall</c> instead, next to the type-resolution machinery
-/// they share.
+/// QCalls on <c>System.ModuleHandle</c> that do not resolve a metadata token out of the
+/// module: two that answer questions about its image, and one that mints a method scoped to
+/// it. The <c>ModuleHandle_Resolve*</c> entry points live in <c>NativeRuntimeTypeQCall</c>
+/// instead, next to the type-resolution machinery they share.
 /// </summary>
 [<RequireQualifiedAccess>]
 module NativeModuleHandle =
@@ -220,6 +221,118 @@ module NativeModuleHandle =
                 state
                 |> writeOut 1 "peKind" kindAndMachine.PEKind
                 |> writeOut 2 "machine" kindAndMachine.Machine
+
+            NativeHandlerResult.completed state |> Some
+        | "ModuleHandle_GetDynamicMethod",
+          "System.Private.CoreLib",
+          "System",
+          "ModuleHandle",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallModule",
+                                              qCallModuleGenerics)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              resolverHandleGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              resultHandleGenerics) ],
+          MethodReturnType.Void when
+            qCallModuleGenerics.IsEmpty
+            && resolverHandleGenerics.IsEmpty
+            && resultHandleGenerics.IsEmpty
+            ->
+            // `ModuleHandle_GetDynamicMethod` (coreclr/vm/runtimehandles.cpp:2388), the QCall
+            // behind `DynamicMethod.GetMethodDescriptor()`. CoreCLR copies the name and signature
+            // onto the loader heap, asks the module's `DynamicMethodTable` for a fresh
+            // `DynamicMethodDesc`, attaches the managed `DynamicResolver` to its
+            // `LCGMethodResolver`, and writes back `pNewMD->AllocateStubMethodInfo()`.
+            //
+            // This mints the method and hands back the stub. It does *not* make the method
+            // executable: the IL lives in the resolver, and nothing yet reads it back. A guest
+            // that goes on to bind or invoke the result therefore stops at the next primitive,
+            // loudly and by name, rather than running the wrong code.
+            let operation = "ModuleHandle_GetDynamicMethod"
+
+            if instruction.Arguments.Length <> 6 then
+                failwith $"%s{operation}: expected six native arguments, got %d{instruction.Arguments.Length}"
+
+            let scopeAssemblyFullName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            // CoreCLR copies the name with `strlen`/`memcpy`, so a name containing an interior NUL
+            // is truncated there. Reading to the terminator reproduces that exactly; do not
+            // "fix" it into a counted read, which would be a divergence rather than a repair.
+            let name =
+                NativeCall.managedPointerOfPointerArgument operation "name" instruction.Arguments.[1]
+                |> NativeCall.readNullTerminatedUtf8 operation ctx.BaseClassTypes state
+
+            let signatureLength = NativeCall.int32Argument operation instruction.Arguments.[3]
+
+            // CoreCLR's `DynamicMethodTable::GetDynamicMethod` carries
+            // `PRECONDITION(sigSize > 0)` (dynamicmethod.cpp:229), which is debug-only there but
+            // is a real invariant: `SignatureHelper` always emits at least a calling-convention
+            // byte, so no managed caller can produce an empty one. Refuse rather than record a
+            // signature-less method that nothing downstream could interpret.
+            if signatureLength <= 0 then
+                failwith
+                    $"%s{operation}: signature length %d{signatureLength} is not positive; every method signature blob has at least a calling-convention byte"
+
+            // Counted, not terminated: a method signature blob is arbitrary bytes and routinely
+            // contains a zero (ELEMENT_TYPE_END, and every `void` return), so scanning for a
+            // terminator would truncate almost every signature at its first `void`.
+            let signature =
+                NativeCall.managedPointerOfPointerArgument operation "sig" instruction.Arguments.[2]
+                |> fun ptr -> NativeCall.readCountedUtf8Bytes operation ctx.BaseClassTypes state ptr signatureLength
+                |> ImmutableArray.CreateRange
+
+            let resolver =
+                NativeCall.objectHandleOnStackTarget operation state "resolver" instruction.Arguments.[4]
+                |> IlMachineState.readManagedByref ctx.BaseClassTypes state
+                |> fun value ->
+                    match CliType.unwrapPrimitiveLikeDeep value with
+                    | CliType.ObjectRef target -> target
+                    | other -> failwith $"%s{operation}: expected resolver to be an object reference, got %O{other}"
+
+            let result =
+                NativeCall.objectHandleOnStackTarget operation state "result" instruction.Arguments.[5]
+
+            let runtimeMethodInfoStubType =
+                AllConcreteTypes.getRequiredNonGenericHandle
+                    state.ConcreteTypes
+                    ctx.BaseClassTypes.RuntimeMethodInfoStub
+
+            let stubAddress, registry, state =
+                MethodHandleRegistry.mintDynamicMethod
+                    ctx.BaseClassTypes
+                    state.ConcreteTypes
+                    state
+                    (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
+                    name
+                    signature
+                    scopeAssemblyFullName
+                    resolver
+                    state.MethodHandles
+
+            let state =
+                { state with
+                    MethodHandles = registry
+                }
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    result
+                    (CliType.ObjectRef (Some stubAddress))
 
             NativeHandlerResult.completed state |> Some
         | _ -> None
