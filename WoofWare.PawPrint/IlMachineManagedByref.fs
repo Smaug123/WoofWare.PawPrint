@@ -1463,19 +1463,40 @@ module IlMachineManagedByref =
 
         let cell = readProjectedValue (readRootValue state root) structuralPrefix
 
-        match cell, targetTemplate with
-        | CliType.ObjectRef _, CliType.ObjectRef _ ->
-            // A whole-cell view of a reference is the reference; a *mid-cell* one has no defined
-            // meaning, so only offset 0 elides here.
-            if byteOffset = 0 then Some cell else None
-        | CliType.ValueType _, _ ->
+        match CliType.ByteAddressability cell with
+        | CliByteAddressability.ByteAddressable ->
+            // Bytes are the general mechanism and this cell has them, so leave the access where it
+            // has always gone. Naming would only ever agree, and refusing here keeps that agreement
+            // something this code does not have to rely on — the same gate
+            // `tryNameCellForByrefAccessCoercible` applies to composites.
+            None
+        | CliByteAddressability.Rejected _ ->
+
+        match cell with
+        | CliType.ValueType _ ->
             // The byte range picked out is exactly one cell of the storage, so the byref addresses
             // precisely that cell and we can hand it back. Storage where the range merely
             // *straddles* a cell, or is aliased by a sibling, names nothing and still routes
             // bytewise, where it fails loudly rather than silently dropping the rest of the struct.
             tryNameCellForByrefAccessCoercible byteOffset cell targetTemplate
             |> Option.map (fun path -> coerceToCellShape targetTemplate (CliType.getCellAtPath path cell))
-        | _ -> None
+        | _ ->
+            // A cell that is not a composite has nothing to name *inside* it, so the access either
+            // is the whole cell or is a fragment of one, and only the former has an answer. A
+            // mid-cell view of a reference or a tagged pointer has no defined meaning.
+            //
+            // This leg matters because a primitive-like wrapper is read through a cell holding what
+            // it wraps: `ldobj System.IntPtr` over a slot storing a bare provenance-tagged native
+            // int, or `ldobj System.ByReference` over a `ref byte` field. Both are byte-imageless,
+            // so without it they reach a byte reader that cannot represent them.
+            if
+                byteOffset = 0
+                && CliType.sizeOf cell = CliType.sizeOf targetTemplate
+                && isCellCoercionCompatible cell targetTemplate
+            then
+                Some (coerceToCellShape targetTemplate cell)
+            else
+                None
 
     let readManagedByref
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

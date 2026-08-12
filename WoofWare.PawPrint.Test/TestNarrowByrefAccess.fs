@@ -276,8 +276,16 @@ module TestNarrowByrefAccess =
                 | other -> failwith $"wrapper field held %O{other}"
             | other -> failwith $"read gave %O{other}"
 
+        // A byref that already names one pointer cell, rather than the buffer containing it. There
+        // is nothing to name *inside* such a cell, so the access either is the whole cell or has no
+        // answer — and it has to be the former, because a `System.ByReference` is read out of
+        // exactly this: a slot declared `ref byte`, holding what the wrapper wraps.
+        let namedCell =
+            ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [ ByrefProjection.Field (FieldId.named "_arg1") ])
+
         readPointer bare |> shouldEqual first
         readPointer cursor |> shouldEqual second
+        readPointer namedCell |> shouldEqual second
 
     /// The narrow route must not swallow the whole-slot one. A same-size store through a bare byref
     /// replaces the slot outright, including its declared type — `stobj IntPtr` over a bare
