@@ -1,14 +1,26 @@
 using System;
 using System.Reflection;
 
-// `MethodBase.Invoke` on targets taking more than one argument. The single-argument shapes live in
-// `sourcesPure/ReflectionInvokeMethod.cs`; this file exists separately because everything here is
+// `MethodBase.Invoke` on a target taking more than one argument. The single-argument shapes live in
+// `sourcesPure/ReflectionInvokeMethod.cs`; this file exists separately because everything here was
 // blocked on a write-path gap that has nothing to do with reflection, and parking the two together
-// would hide the coverage that does pass.
+// would have hidden the coverage that did pass.
+//
+// That gap: `InvokeDirectByRefWithFewArgs` fills a `StackAllocatedByRefs` local — an
+// `[InlineArray(4)]` of `ref byte` — with `*(ByReference*)(pByRefFixedStorage + i) = ...`. A
+// `ByReference` wraps a managed pointer and so has no byte image, and the buffer is four of them, so
+// this is the one shape where a store's width cannot be recovered from the bytes: index 0 arrives as
+// a bare byref (`p + 0` is `p`) and used to replace the whole 32-byte local with an 8-byte value,
+// and index 1 then found only 8 bytes to write into. Both halves of that are the width rule, and
+// `TestNarrowByrefAccess.fs` pins them cell by cell.
 //
 // As in the sibling file, every distinct MethodInfo is invoked exactly once: after the first
 // invocation `MethodInvokerCommon.DetermineStrategy_*` switches to a Reflection.Emit delegate and
 // stops exercising the `RuntimeMethodHandle_InvokeMethod` QCall at all.
+//
+// Targets taking more than four arguments take a structurally different route through
+// `InvokeWithManyArgs`, and live in `ReflectionInvokeMethodManyArguments.cs`, which is parked on an
+// unrelated missing primitive.
 public class Program
 {
     // Two arguments, one of each kind: a value-type parameter (whose byref addresses a box payload)
@@ -18,13 +30,13 @@ public class Program
         return a + s.Length;
     }
 
-    // More than `MethodBaseInvoker.MaxStackAllocArgCount` (4) arguments, so the call routes through
-    // `InvokeWithManyArgs`, whose byref buffer is a `stackalloc IntPtr[3 * argCount]` block offset
-    // by `argCount` pointers rather than the address of a struct local. That is a structurally
-    // different pointer shape for the QCall to stride.
-    private static int SumSix (int a, int b, int c, int d, int e, int f)
+    // Four arguments: `MethodBaseInvoker.MaxStackAllocArgCount` exactly, so every one of the
+    // `StackAllocatedByRefs` inline array's slots is written and read. Three of the four are reached
+    // by a byte cursor whose view type is `System.Byte` while the store itself is eight bytes wide,
+    // which is the case a store that took its width from the pointer could not serve.
+    private static int SumFour (int a, int b, int c, int d)
     {
-        return a + b + c + d + e + f;
+        return a + b + c + d;
     }
 
     private static MethodInfo Get (string name)
@@ -46,9 +58,9 @@ public class Program
         if (!(sum is int sumValue) || sumValue != 13)
             return 1;
 
-        object six = Get ("SumSix").Invoke (null, new object[] { 1, 2, 3, 4, 5, 6 });
+        object four = Get ("SumFour").Invoke (null, new object[] { 1, 2, 3, 4 });
 
-        if (!(six is int sixValue) || sixValue != 21)
+        if (!(four is int fourValue) || fourValue != 10)
             return 2;
 
         return 0;

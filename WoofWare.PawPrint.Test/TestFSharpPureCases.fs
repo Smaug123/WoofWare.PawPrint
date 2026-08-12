@@ -128,29 +128,20 @@ module TestFSharpPureCases =
     /// before recording that a case is blocked on a named primitive, un-park it and observe the
     /// failure: parking it is what stops the claim being checked.
     ///
-    /// `UnionReflection` is parked on writing through a `ReinterpretAs`-as-`System.Byte` view of
-    /// `System.ByReference`, a value type whose one field holds a runtime pointer and which is
-    /// therefore byte-unaddressable: there is no byte image to write into. It is reached from
-    /// `MethodBaseInvoker.InvokeDirectByRefWithFewArgs`, three frames out from FSharp.Core's
-    /// `getUnionCaseConstructor` (reflect.fs:595) -- so the union's *metadata* is now fully
-    /// readable and what remains is invoking the case constructor reflectively. That is a question
-    /// about byref-typed storage, unrelated to method tables.
-    ///
-    /// Observed by un-parking it and running, not inferred: the real runtime exits 0, PawPrint
-    /// reports "TODO: write through `ReinterpretAs` as System.Byte: write through `ReinterpretAs`
-    /// over byte-unaddressable storage (value type containing runtime pointers) is not modelled",
-    /// naming `System.Private.CoreLib.System.ByReference` as the declared type.
-    ///
-    /// Eleven earlier blockers are already gone: decoding each case's
+    /// Empty, and worth a note on how it got there. `UnionReflection` was parked for a long time and
+    /// took twelve distinct primitives to un-park: decoding each case's
     /// `CompilationMappingAttribute(SourceConstructFlags, ...)`, whose argument is an enum;
     /// enumerating the union's nested case types; `MetadataImport::GetSigOfFieldDef`; the raw-blob
     /// path of `Signature_Init`; `MetadataImport::GetDefaultValue`; `MetadataImport::GetName`;
     /// property enumeration; `MetadataImport::GetPropertyProps`; the associates branch of
-    /// `MetadataImport::Enum`; the fresh-slot rule for an unmatched non-NewSlot virtual, which
-    /// every F# union needs for its compiler-generated `CompareTo`/`Equals`/`GetHashCode` and which
-    /// `UnionVirtualSlots` covers end to end; and the slot region past the vtable, without which
-    /// `GetSlot` had no answer for a union case's non-virtual property accessors.
-    let unimplemented : Set<string> = Set.ofList [ "UnionReflection" ]
+    /// `MetadataImport::Enum`; the fresh-slot rule for an unmatched non-NewSlot virtual, which every
+    /// F# union needs for its compiler-generated `CompareTo`/`Equals`/`GetHashCode` and which
+    /// `UnionVirtualSlots` covers end to end; the method-table slot region past the vtable, without
+    /// which `RuntimeMethodHandle::GetSlot` had no answer for a union case's non-virtual property
+    /// accessors; and finally the width of a byref access, without which
+    /// `MethodBaseInvoker.InvokeDirectByRefWithFewArgs` silently destroyed its own argument buffer
+    /// while invoking the case constructor.
+    let unimplemented : Set<string> = Set.ofList []
 
     // F# test cases that legitimately throw under both runtimes. Without this set, a test
     // that crashes both runtimes would silently pass — see TestPureCases.fs for the same
