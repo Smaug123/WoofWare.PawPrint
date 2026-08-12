@@ -86,6 +86,7 @@
     <Compile Include="TestAssemblyNativeQCalls.fs" />
     <Compile Include="TestNativeEnum.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
+    <Compile Include="TestNativeGetDynamicMethod.fs" />
     <Compile Include="TestMethodReturnType.fs" />
     <Compile Include="TestFunctionPointerConcretization.fs" />
     <Compile Include="Netstandard21FSharpCore.fs" />

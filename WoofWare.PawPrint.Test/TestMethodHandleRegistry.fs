@@ -379,6 +379,8 @@ public static class GenericMethodHolder
         let resolved =
             match MethodHandleRegistry.resolveMethodFromId registryId registry with
             | Some (MethodHandle.FromMetadata identity) -> identity
+            | Some (MethodHandle.FromDynamic handle) ->
+                failwith $"registry id %d{registryId} resolved to %O{handle}, but a metadata method was registered"
             | None -> failwith $"registry id %d{registryId} did not resolve"
 
         resolved.GetMethodDefinitionHandle ()
@@ -1004,6 +1006,8 @@ public static class InstantiationHolder
         // `getOrAllocateInternalHandle` mints the definition: empty MethodGenerics.
         match MethodHandleRegistry.resolveMethodFromId 1L registry with
         | Some (MethodHandle.FromMetadata identity) -> identity.GetMethodGenerics () |> shouldEqual []
+        | Some (MethodHandle.FromDynamic handle) ->
+            failwith $"registry id 1 resolved to %O{handle}, but a metadata method was registered"
         | None -> failwith "expected the freshly minted handle to resolve"
 
         let state =
