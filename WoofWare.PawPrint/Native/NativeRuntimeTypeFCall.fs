@@ -907,6 +907,9 @@ module NativeRuntimeTypeFCall =
             let identity =
                 match MethodHandleRegistry.resolveMethodFromId currentId state.MethodHandles with
                 | Some (MethodHandle.FromMetadata identity) -> identity
+                | Some (MethodHandle.FromDynamic dynamicHandle) ->
+                    failwith
+                        $"%s{operation}: registry id %d{currentId} names %O{dynamicHandle}, a Reflection.Emit method; the enumerator can only have been resumed from a method-table slot, so this is a bug in whatever produced the handle it was given"
                 | None -> failwith $"%s{operation}: registry id %d{currentId} did not resolve to a known MethodHandle"
 
             // The registry only stores handles whose declaring type was Concrete (GetFirst emits

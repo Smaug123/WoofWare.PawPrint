@@ -78,6 +78,12 @@ module internal NativeReflectionInvocation =
         let identity =
             match MethodHandleRegistry.resolveMethodFromId methodHandleId state.MethodHandles with
             | Some (MethodHandle.FromMetadata identity) -> identity
+            | Some (MethodHandle.FromDynamic dynamicHandle) ->
+                // Legal in CoreCLR: invoking a `DynamicMethod` runs the IL its `DynamicResolver`
+                // hands back. PawPrint mints the method in `ModuleHandle_GetDynamicMethod` but has
+                // no interpretable body for it yet, so there is nothing to invoke.
+                failwith
+                    $"TODO: %s{operation} was asked to invoke %O{dynamicHandle}, a Reflection.Emit method; PawPrint cannot yet execute a method with no metadata body"
             | None ->
                 failwith $"%s{operation}: method-registry id %d{methodHandleId} did not resolve to a known MethodHandle"
 
