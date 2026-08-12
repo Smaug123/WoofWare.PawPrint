@@ -645,12 +645,12 @@ module IlMachineManagedByref =
         : CliType
         =
         let targetSize = CliType.sizeOf targetTemplate
-        let arrObj = state.ManagedHeap.Arrays.[arr]
+        let shape = ManagedHeap.getArrayShape arr state.ManagedHeap
 
         // Kept now that the stride no longer needs a cell: every byte-view read of an empty
         // array is out of bounds anyway, and refusing here keeps a zero-width read from
         // quietly succeeding against storage that has no bytes at all.
-        if arrObj.Shape.Length = 0 then
+        if shape.Length = 0 then
             failwith $"TODO: byte-view read from empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
         // The stride comes from the array's recorded element stride, not from measuring a
@@ -662,18 +662,17 @@ module IlMachineManagedByref =
         // exactly we return the typed cell directly, preserving provenance; everything else
         // falls through to the byte-scatter loop, which validates byte addressability per
         // cell as it gathers.
-        let stride = arrObj.Shape.ElementStride
+        let stride = shape.ElementStride
         let cellAdvance, inCellStart = floorDivRem byteOffset stride
 
         let shortCircuitCell =
             if inCellStart = 0 && targetSize = stride then
                 let targetCell = index + cellAdvance
 
-                if targetCell < 0 || targetCell >= arrObj.Shape.Length then
-                    failwith
-                        $"TODO: byte-view read past array bounds at cell %d{targetCell} of length %d{arrObj.Shape.Length}"
+                if targetCell < 0 || targetCell >= shape.Length then
+                    failwith $"TODO: byte-view read past array bounds at cell %d{targetCell} of length %d{shape.Length}"
 
-                let cellValue = arrObj.Elements.[targetCell]
+                let cellValue = ManagedHeap.getArrayValue arr targetCell state.ManagedHeap
 
                 // Mirror `readStackMemoryBytesAs` / `tryReadHeapValueFieldPrecise`:
                 // propagate the stored cell only when it (a) is non-byte-addressable
@@ -704,11 +703,11 @@ module IlMachineManagedByref =
 
             let targetCell = index + cellAdvance
 
-            if targetCell < 0 || targetCell >= arrObj.Shape.Length then
+            if targetCell < 0 || targetCell >= shape.Length then
                 ValueNone
             else
 
-            let cellValue = arrObj.Elements.[targetCell]
+            let cellValue = ManagedHeap.getArrayValue arr targetCell state.ManagedHeap
 
             tryNameCellForByrefAccess inCellStart cellValue targetTemplate
             |> Option.map (fun path -> CliType.getCellAtPath path cellValue)
@@ -724,22 +723,18 @@ module IlMachineManagedByref =
             let mutable inCellOffset = inCellStart
 
             while filled < targetSize do
-                if cell < 0 || cell >= arrObj.Shape.Length then
+                if cell < 0 || cell >= shape.Length then
                     failwith
-                        $"TODO: byte-view read past array bounds at cell %d{cell} of length %d{arrObj.Shape.Length} while gathering %d{targetSize} bytes"
+                        $"TODO: byte-view read past array bounds at cell %d{cell} of length %d{shape.Length} while gathering %d{targetSize} bytes"
 
-                let cellSize =
-                    byteAddressableCellSize $"array %O{arr} element %d{cell}" arrObj.Elements.[cell]
+                let cellValue = ManagedHeap.getArrayValue arr cell state.ManagedHeap
+                let cellSize = byteAddressableCellSize $"array %O{arr} element %d{cell}" cellValue
 
                 let canTake = cellSize - inCellOffset
                 let take = min canTake (targetSize - filled)
 
                 let bytes =
-                    byteAddressableCellBytesAt
-                        $"array %O{arr} element %d{cell}"
-                        inCellOffset
-                        take
-                        arrObj.Elements.[cell]
+                    byteAddressableCellBytesAt $"array %O{arr} element %d{cell}" inCellOffset take cellValue
 
                 Array.blit bytes 0 buf filled take
                 filled <- filled + take
@@ -1626,11 +1621,11 @@ module IlMachineManagedByref =
         (bytes : byte[])
         : IlMachineState
         =
-        let arrObj = state.ManagedHeap.Arrays.[arr]
+        let shape = ManagedHeap.getArrayShape arr state.ManagedHeap
 
         // Kept for the same reason as on the read side: an empty array has no bytes to
         // write, and a zero-byte write must not quietly become a no-op.
-        if arrObj.Shape.Length = 0 then
+        if shape.Length = 0 then
             failwith $"TODO: byte-view write to empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
         // Mirrors `readArrayBytesAs`: the stride is the array's recorded element stride, and
@@ -1640,7 +1635,7 @@ module IlMachineManagedByref =
         // non-byte-addressable provenance, then `p[1] = IntPtr.Zero` byte-scatters into
         // element 1: only the cells the loop actually touches need to be byte-addressable,
         // validated per iteration below.
-        let stride = arrObj.Shape.ElementStride
+        let stride = shape.ElementStride
 
         let cellAdvance, inCellStart = floorDivRem byteOffset stride
         let mutable state = state
@@ -1649,10 +1644,13 @@ module IlMachineManagedByref =
         let mutable inCellOffset = inCellStart
 
         while filled < bytes.Length do
-            if cell < 0 || cell >= arrObj.Shape.Length then
-                failwith $"TODO: byte-view write past array bounds at cell %d{cell} of length %d{arrObj.Shape.Length}"
+            if cell < 0 || cell >= shape.Length then
+                failwith $"TODO: byte-view write past array bounds at cell %d{cell} of length %d{shape.Length}"
 
-            let existing = state.ManagedHeap.Arrays.[arr].Elements.[cell]
+            // Re-read from the *current* state each iteration, not from a snapshot: the loop
+            // writes as it goes, and a multi-cell write whose range revisits a cell must see
+            // its own earlier store.
+            let existing = ManagedHeap.getArrayValue arr cell state.ManagedHeap
 
             // Deriving how much of this cell the write covers doesn't require the cell to be
             // byte-renderable, for the same reason the stride above doesn't; the byte-view
@@ -2009,13 +2007,13 @@ module IlMachineManagedByref =
             None
         else
 
-        let arrObj = state.ManagedHeap.Arrays.[arr]
+        let shape = ManagedHeap.getArrayShape arr state.ManagedHeap
 
-        if index < 0 || index >= arrObj.Shape.Length then
+        if index < 0 || index >= shape.Length then
             None
         else
 
-        let existing = arrObj.Elements.[index]
+        let existing = ManagedHeap.getArrayValue arr index state.ManagedHeap
 
         if CliType.sizeOf existing <> CliType.sizeOf newValue then
             None
@@ -2232,41 +2230,36 @@ module IlMachineManagedByref =
         //
         // Shape acceptance uses the shared `cellShapeMatches` (see its
         // docstring for why declared-handle equality is the right rule for
-        // user structs). Use `CliType.sizeOf` (not `byteAddressableCellSize`)
-        // for stride derivation because element 0 itself may already carry
-        // non-byte-renderable provenance from a prior typed store.
+        // user structs), against the element type's zero rather than against
+        // cell 0. "Is this value shaped like a cell of this array" is a
+        // question about the element type, and cell 0 answers it only by
+        // accident: it is a sample, so a store to cell 5 was being validated
+        // against whatever provenance cell 0 had picked up, and an empty array
+        // had no sample at all and was declined outright.
         let arrayElementTypedCellWrite =
             match src with
             | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, _) ->
                 match splitTrailingByteView src with
                 | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
-                    let arrObj = state.ManagedHeap.Arrays.[arr]
+                    let shape = ManagedHeap.getArrayShape arr state.ManagedHeap
+                    let cellSize = shape.ElementStride
+                    let cellAdvance, inCellStart = floorDivRem byteOffset cellSize
+                    let newSize = CliType.sizeOf newValue
 
-                    // The stride is the array's recorded one, but the shape test below still
-                    // consults cell 0, so an empty array has nothing to match against and is
-                    // declined here as before. (Whether a cell's *shape* is likewise
-                    // derivable from the element type is a separate question from its
-                    // stride, and is left alone here.)
-                    if arrObj.Shape.Length = 0 then
-                        None
-                    else
-                        let cellSize = arrObj.Shape.ElementStride
-                        let cellAdvance, inCellStart = floorDivRem byteOffset cellSize
-                        let newSize = CliType.sizeOf newValue
+                    if
+                        inCellStart = 0
+                        && newSize = cellSize
+                        && cellShapeMatches shape.ElementZero newValue
+                    then
+                        let targetCell = index + cellAdvance
 
-                        if
-                            inCellStart = 0
-                            && newSize = cellSize
-                            && cellShapeMatches arrObj.Elements.[0] newValue
-                        then
-                            let targetCell = index + cellAdvance
-
-                            if targetCell < 0 || targetCell >= arrObj.Shape.Length then
-                                None
-                            else
-                                Some (IlMachineThreadState.setArrayValue arr newValue targetCell state)
-                        else
+                        // Subsumes the empty-array case: no cell index is in bounds there.
+                        if targetCell < 0 || targetCell >= shape.Length then
                             None
+                        else
+                            Some (IlMachineThreadState.setArrayValue arr newValue targetCell state)
+                    else
+                        None
                 | _ -> None
             | _ -> None
 
@@ -3008,34 +3001,31 @@ module IlMachineManagedByref =
                 // Int32` and `Numeric NativeInt` differ at the unwrapped
                 // constructor level.
                 //
-                // Use `CliType.sizeOf` rather than `byteAddressableCellSize`
-                // because the cell itself may already carry non-byte-
-                // renderable provenance.
-                let arrObj = state.ManagedHeap.Arrays.[arr]
-
-                if arrObj.Shape.Length = 0 then
-                    failwith
-                        $"TODO: byte-view typed store into empty array %O{arr} at index %d{index} offset %d{byteOffset}"
-
-                let cellSize = arrObj.Shape.ElementStride
+                // As in `arrayElementTypedCellWrite`, the shape witness is the element type's
+                // zero rather than cell 0: the question is whether the payload is shaped like
+                // a cell of *this array*, which cell 0 answers only as a sample and an empty
+                // array could not answer at all.
+                let shape = ManagedHeap.getArrayShape arr state.ManagedHeap
+                let cellSize = shape.ElementStride
                 let cellAdvance, inCellStart = floorDivRem byteOffset cellSize
                 let newSize = CliType.sizeOf newValue
 
                 if
                     inCellStart = 0
                     && newSize = cellSize
-                    && haveSameCliShape arrObj.Elements.[0] newValue
+                    && haveSameCliShape shape.ElementZero newValue
                 then
                     let targetCell = index + cellAdvance
 
-                    if targetCell < 0 || targetCell >= arrObj.Shape.Length then
+                    // Subsumes the empty-array case: no cell index is in bounds there.
+                    if targetCell < 0 || targetCell >= shape.Length then
                         failwith
-                            $"TODO: byte-view typed store past array bounds at cell %d{targetCell} of length %d{arrObj.Shape.Length}"
+                            $"TODO: byte-view typed store past array bounds at cell %d{targetCell} of length %d{shape.Length}"
 
                     IlMachineThreadState.setArrayValue arr newValue targetCell state
                 else
                     failwith
-                        $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve %s{reason}: write size %d{newSize}, cell size %d{cellSize}, in-cell offset %d{inCellStart}, cell shape %O{arrObj.Elements.[0]}"
+                        $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve %s{reason}: write size %d{newSize}, cell size %d{cellSize}, in-cell offset %d{inCellStart}, element shape %O{shape.ElementZero}"
             | ValueSome _ ->
                 failwith
                     $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve %s{reason}"
@@ -3180,51 +3170,51 @@ module IlMachineManagedByref =
                     // store — the new value is the byte-addressable zero
                     // but the cell still holds a `TypeHandlePtr`, which the
                     // byte-scatter path would refuse.
-                    let arrObj = state.ManagedHeap.Arrays.[arr]
+                    let shape = ManagedHeap.getArrayShape arr state.ManagedHeap
 
                     let typedCellOverride =
-                        if arrObj.Shape.Length = 0 then
-                            ValueNone
-                        else
-                            let cellSize = arrObj.Shape.ElementStride
-                            let cellAdvance, inCellStart = floorDivRem byteOffset cellSize
+                        let cellSize = shape.ElementStride
+                        let cellAdvance, inCellStart = floorDivRem byteOffset cellSize
 
-                            if inCellStart = 0 && CliType.sizeOf newValue = cellSize then
-                                let targetCell = index + cellAdvance
+                        if inCellStart = 0 && CliType.sizeOf newValue = cellSize then
+                            let targetCell = index + cellAdvance
 
-                                if targetCell >= 0 && targetCell < arrObj.Shape.Length then
-                                    // Same destination-side test as the non-array arm below: the
-                                    // *routing* question is about the cell, so both sites must
-                                    // ask it the same way. (What the two do once routed still
-                                    // differs: the array path in
-                                    // `writeExactWidthPrimitiveTypedStore` demands
-                                    // `haveSameCliShape` and fails loudly otherwise, while the
-                                    // non-array path checks width only and restamps the cell with
-                                    // the payload's shape. That asymmetry predates this change.)
-                                    // An array element cell really can be a
-                                    // `CliType.RuntimePointer` — C# has no `int*[]` syntax, but
-                                    // `Array.CreateInstance(typeof(int*), n)` succeeds and
-                                    // `MemoryMarshal.GetArrayDataReference(Array)` hands out a
-                                    // byte-view byref over one.
-                                    //
-                                    // This does not make that case *work*: measured, a pointer
-                                    // cell that gets past the payload gate reaches
-                                    // `writeExactWidthPrimitiveTypedStore` and stops at its
-                                    // `haveSameCliShape` check, because a `stind.i` payload
-                                    // arrives as `Numeric NativeInt` while the cell is a
-                                    // `RuntimePointer`. That is a separate, pre-existing gap in
-                                    // the byte-view typed store, and it fails loudly with a
-                                    // message naming the shapes. Routing here is still the honest
-                                    // classification, and it only ever diverts cases that
-                                    // previously failed too.
-                                    match byteAddressabilityRejection arrObj.Elements.[targetCell] with
-                                    | Some rejection when destinationNeedsWholeCellStore newValue rejection ->
-                                        ValueSome (arrObj.Elements.[targetCell], rejection)
-                                    | _ -> ValueNone
-                                else
-                                    ValueNone
+                            // Subsumes the empty-array case: nothing is in bounds there.
+                            if targetCell >= 0 && targetCell < shape.Length then
+                                // Same destination-side test as the non-array arm below: the
+                                // *routing* question is about the cell, so both sites must
+                                // ask it the same way. (What the two do once routed still
+                                // differs: the array path in
+                                // `writeExactWidthPrimitiveTypedStore` demands
+                                // `haveSameCliShape` and fails loudly otherwise, while the
+                                // non-array path checks width only and restamps the cell with
+                                // the payload's shape. That asymmetry predates this change.)
+                                // An array element cell really can be a
+                                // `CliType.RuntimePointer` — C# has no `int*[]` syntax, but
+                                // `Array.CreateInstance(typeof(int*), n)` succeeds and
+                                // `MemoryMarshal.GetArrayDataReference(Array)` hands out a
+                                // byte-view byref over one.
+                                //
+                                // This does not make that case *work*: measured, a pointer
+                                // cell that gets past the payload gate reaches
+                                // `writeExactWidthPrimitiveTypedStore` and stops at its
+                                // `haveSameCliShape` check, because a `stind.i` payload
+                                // arrives as `Numeric NativeInt` while the cell is a
+                                // `RuntimePointer`. That is a separate, pre-existing gap in
+                                // the byte-view typed store, and it fails loudly with a
+                                // message naming the shapes. Routing here is still the honest
+                                // classification, and it only ever diverts cases that
+                                // previously failed too.
+                                let cellValue = ManagedHeap.getArrayValue arr targetCell state.ManagedHeap
+
+                                match byteAddressabilityRejection cellValue with
+                                | Some rejection when destinationNeedsWholeCellStore newValue rejection ->
+                                    ValueSome (cellValue, rejection)
+                                | _ -> ValueNone
                             else
                                 ValueNone
+                        else
+                            ValueNone
 
                     match typedCellOverride with
                     | ValueSome (existing, rejection) ->

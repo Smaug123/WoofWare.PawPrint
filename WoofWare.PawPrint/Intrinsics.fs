@@ -2034,14 +2034,10 @@ module Intrinsics =
                 )
             | Some rvaData ->
 
-            // Keeps the whole allocation: the RVA-decoding fold below reads element `i` as a
-            // *template* for `readPeByteRangeBytesAs`, which is a type query rather than a
-            // guest-visible cell read. Splitting that out is left to the follow-up that
-            // introduces a dedicated accessor for cell-type witnesses.
-            let arr = state.ManagedHeap.Arrays.[arrayAddr]
+            let shape = ManagedHeap.getArrayShape arrayAddr state.ManagedHeap
 
             let elementHandle : ConcreteTypeHandle =
-                match arr.Shape.ConcreteType with
+                match shape.ConcreteType with
                 | ConcreteTypeHandle.OneDimArrayZero element -> element
                 | ConcreteTypeHandle.Array (element, _) -> element
                 | other ->
@@ -2124,7 +2120,7 @@ module Intrinsics =
                 IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementHandle
 
             let elementStride : int = CliType.sizeOf elementZero
-            let totalSize : int64 = int64 elementStride * int64 arr.Shape.Length
+            let totalSize : int64 = int64 elementStride * int64 shape.Length
 
             // `// make certain you don't go off the end of the rva static
             //  if (totalSize > size) throw new ArgumentException(SR.Argument_BadFieldForInitializeArray);`
@@ -2145,15 +2141,17 @@ module Intrinsics =
             // encoding used everywhere else, so enums — and anything else it later learns to
             // reconstruct — need no decoder of their own here.
             //
-            // The template is the element's current value, which after `newarr` is the zero of
-            // the element type and so has exactly the right shape for that slot. Multi-dimensional
-            // arrays are stored flat in row-major order, matching the CLR's own layout, so the
-            // same flat walk serves them.
+            // The template is the element type's zero — the same value the stride above was
+            // measured from — rather than the cell's current contents. Every cell is overwritten
+            // here regardless, so what one happens to hold on the way in is not information this
+            // decode wants; reading it would be a guest-visible read performed to answer a
+            // question about a type. Multi-dimensional arrays are stored flat in row-major order,
+            // matching the CLR's own layout, so the same flat walk serves them.
             let state =
-                (state, seq { 0 .. arr.Shape.Length - 1 })
+                (state, seq { 0 .. shape.Length - 1 })
                 ||> Seq.fold (fun (state : IlMachineState) (i : int) ->
                     let decoded =
-                        IlMachineState.readPeByteRangeBytesAs state rvaData (i * elementStride) arr.Elements.[i]
+                        IlMachineState.readPeByteRangeBytesAs state rvaData (i * elementStride) elementZero
 
                     IlMachineState.setArrayValue arrayAddr decoded i state
                 )

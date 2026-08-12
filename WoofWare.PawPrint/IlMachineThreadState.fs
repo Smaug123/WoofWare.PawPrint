@@ -593,9 +593,11 @@ module IlMachineThreadState =
         let initialisation =
             (fun _ -> zeroOfType ()) |> Seq.init len |> ImmutableArray.CreateRange
 
-        // The element zero is the stride's definition, so it is taken from the factory
-        // rather than measured off a cell: an empty array has no cell to measure and still
-        // has a stride. One extra factory call, against `len` for the backing store.
+        // The element zero defines both the stride and the cell shape, so it is taken from
+        // the factory rather than sampled off a cell: an empty array has no cell to sample
+        // and still has both. One extra factory call, against `len` for the backing store.
+        let elementZero = zeroOfType ()
+
         let o : AllocatedArray =
             {
                 Shape =
@@ -603,7 +605,8 @@ module IlMachineThreadState =
                         ConcreteType = arrayType
                         Length = len
                         Lengths = ImmutableArray.Create len
-                        ElementStride = CliType.sizeOf (zeroOfType ())
+                        ElementStride = CliType.sizeOf elementZero
+                        ElementZero = elementZero
                     }
                 Elements = initialisation
             }
@@ -668,6 +671,9 @@ module IlMachineThreadState =
         let initialisation =
             (fun _ -> zeroOfType ()) |> Seq.init totalLength |> ImmutableArray.CreateRange
 
+        // See `allocateArray`: the element zero comes from the factory, not from a cell.
+        let elementZero = zeroOfType ()
+
         let o : AllocatedArray =
             {
                 Shape =
@@ -675,7 +681,8 @@ module IlMachineThreadState =
                         ConcreteType = arrayType
                         Length = totalLength
                         Lengths = dimensionLengths
-                        ElementStride = CliType.sizeOf (zeroOfType ())
+                        ElementStride = CliType.sizeOf elementZero
+                        ElementZero = elementZero
                     }
                 Elements = initialisation
             }
@@ -689,32 +696,17 @@ module IlMachineThreadState =
 
         alloc, state
 
-    /// Allocate a fresh array object that is a shallow copy of the array at `source`: same
-    /// element type, same rank, same per-dimension lengths, and the same element values.
-    /// `CliType` cells are immutable, so sharing the backing `ImmutableArray` gives exactly
-    /// the shallow-copy semantics `System.Array.Clone` promises: a later write through
-    /// either array replaces only that array's cell, while reference-typed elements continue
-    /// to name the same heap objects from both arrays.
+    /// `ManagedHeap.cloneArray` lifted to a whole machine state; see there for the semantics.
     /// Fails if `source` is not an array — callers must have established that already.
     let cloneArray (source : ManagedHeapAddress) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
-        match state.ManagedHeap.Arrays.TryGetValue source with
-        | false, _ ->
-            let what =
-                if (ManagedHeap.tryGet source state.ManagedHeap).IsSome then
-                    "a non-array object"
-                else
-                    "not allocated"
+        let alloc, heap = ManagedHeap.cloneArray source state.ManagedHeap
 
-            failwith $"cloneArray: address %O{source} is %s{what} on the managed heap, so has no array to clone"
-        | true, source ->
-            let alloc, heap = state.ManagedHeap |> ManagedHeap.allocateArray source
+        let state =
+            { state with
+                ManagedHeap = heap
+            }
 
-            let state =
-                { state with
-                    ManagedHeap = heap
-                }
-
-            alloc, state
+        alloc, state
 
     /// Allocate a fresh object that is a shallow copy of whatever is at `source`: the primitive
     /// behind `Object.MemberwiseClone`.

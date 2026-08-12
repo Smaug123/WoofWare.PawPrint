@@ -158,9 +158,10 @@ module ContextSwitchPrior =
         | NullaryIlOp.Xor
         // `Conv_I` and `Conv_U` may call
         // `ManagedPointerByteView.anchorByteViewIfPlainArrayByref`, which
-        // reads `state.ManagedHeap.Arrays` to decide whether to anchor a
-        // byte-view projection. Reading the (post-publication, immutable)
-        // array spine is bookkeeping rather than a guest sync event.
+        // calls `ManagedHeap.getArrayShape` to decide whether to anchor a
+        // byte-view projection. That is a query against the array's shape —
+        // fixed at allocation and carrying no cells at all — rather than a
+        // read of any element, so it is bookkeeping, not a guest sync event.
         | NullaryIlOp.Conv_I
         | NullaryIlOp.Conv_U -> ContextSwitchPrior.InterpreterOnly
 

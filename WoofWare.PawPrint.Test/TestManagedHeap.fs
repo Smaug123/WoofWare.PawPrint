@@ -34,6 +34,43 @@ module TestManagedHeap =
             ConcreteTypes = concreteTypes
         }
 
+    /// The zero of the element type used by the hand-built allocations in this fixture.
+    let private int32Zero : CliType = CliType.Numeric (CliNumericType.Int32 0)
+
+    /// An `ArrayShape` whose element facts are derived from `elementZero`, so a fixture
+    /// cannot violate the stride/zero agreement `allocateArray` enforces except on purpose.
+    let private shapeOf
+        (concreteType : ConcreteTypeHandle)
+        (elementZero : CliType)
+        (lengths : ImmutableArray<int>)
+        : ArrayShape
+        =
+        {
+            ConcreteType = concreteType
+            Length = Seq.fold (*) 1 lengths
+            Lengths = lengths
+            ElementStride = CliType.sizeOf elementZero
+            ElementZero = elementZero
+        }
+
+    /// A szarray shape of `length` `int32` cells.
+    let private int32ShapeOf (concreteType : ConcreteTypeHandle) (length : int) : ArrayShape =
+        shapeOf concreteType int32Zero (ImmutableArray.Create length)
+
+    /// The zero of a fieldless value type of exactly `size` bytes — what
+    /// `[StructLayout(LayoutKind.Sequential, Size = n)]` produces. Lets a test name a width
+    /// corelib has no type for, so that each of `allocateArray`'s checks can be provoked
+    /// without tripping one of the others first.
+    let private sizedZero (size : int) : CliType =
+        CliValueType.OfFields
+            baseClassTypes
+            concreteTypes
+            (ConcreteTypeHandle.Concrete 1)
+            (Layout.Custom (size, 1))
+            CharSet.Ansi
+            []
+        |> CliType.ValueType
+
     [<Test>]
     let ``allocateArray preserves concrete array type for empty arrays`` () : unit =
         let intHandle = ConcreteTypeHandle.Concrete 1
@@ -43,25 +80,13 @@ module TestManagedHeap =
 
         let intArray : AllocatedArray =
             {
-                Shape =
-                    {
-                        ConcreteType = intArrayHandle
-                        Length = 0
-                        Lengths = ImmutableArray.Create 0
-                        ElementStride = sizeof<int32>
-                    }
+                Shape = int32ShapeOf intArrayHandle 0
                 Elements = ImmutableArray.Empty
             }
 
         let stringArray : AllocatedArray =
             {
-                Shape =
-                    {
-                        ConcreteType = stringArrayHandle
-                        Length = 0
-                        Lengths = ImmutableArray.Create 0
-                        ElementStride = NATIVE_INT_SIZE
-                    }
+                Shape = shapeOf stringArrayHandle (CliType.ObjectRef None) (ImmutableArray.Create 0)
                 Elements = ImmutableArray.Empty
             }
 
@@ -81,13 +106,7 @@ module TestManagedHeap =
 
         let array : AllocatedArray =
             {
-                Shape =
-                    {
-                        ConcreteType = arrayHandle
-                        Length = 0
-                        Lengths = ImmutableArray.Create 0
-                        ElementStride = sizeof<int32>
-                    }
+                Shape = int32ShapeOf arrayHandle 0
                 Elements = ImmutableArray.Empty
             }
 
@@ -388,16 +407,8 @@ module TestManagedHeap =
 
     let private stubArray (length : int) : AllocatedArray =
         {
-            Shape =
-                {
-                    ConcreteType = ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 1)
-                    Length = length
-                    Lengths = ImmutableArray.Create length
-                    ElementStride = sizeof<int32>
-                }
-            Elements =
-                Seq.replicate length (CliType.Numeric (CliNumericType.Int32 0))
-                |> ImmutableArray.CreateRange
+            Shape = int32ShapeOf (ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 1)) length
+            Elements = Seq.replicate length int32Zero |> ImmutableArray.CreateRange
         }
 
     /// A placeholder non-array object whose payload is never inspected by the
@@ -567,16 +578,8 @@ module TestManagedHeap =
 
         let allocation : AllocatedArray =
             {
-                Shape =
-                    {
-                        ConcreteType = arrayHandle
-                        Length = 12
-                        Lengths = lengths
-                        ElementStride = sizeof<int32>
-                    }
-                Elements =
-                    Seq.replicate 12 (CliType.Numeric (CliNumericType.Int32 0))
-                    |> ImmutableArray.CreateRange
+                Shape = shapeOf arrayHandle int32Zero lengths
+                Elements = Seq.replicate 12 int32Zero |> ImmutableArray.CreateRange
             }
 
         let addr, heap = ManagedHeap.allocateArray allocation ManagedHeap.empty
@@ -627,12 +630,17 @@ module TestManagedHeap =
         // field-for-field, never derive or normalise. `Length` in particular is stored,
         // not recomputed from `Lengths`, and the projection must not start recomputing it.
         //
-        // The backing store is deliberately left empty while `Length` is not. That is an
-        // inconsistent allocation, which is the point: it distinguishes a projection that
-        // reads the stored `Length` from one that derives it from `Elements.Length`, and
-        // it keeps the generator from ever materialising a large array. Bounding the rank
-        // to 6 dimensions of at most 4 keeps the product well inside Int32 too, so no
-        // seed can make this test fail for reasons unrelated to the property.
+        // This used to allocate `Length = total` with an *empty* backing store, so that a
+        // projection deriving `Length` from `Elements.Length` would be caught. That
+        // discrimination has moved: `allocateArray` now rejects a length that disagrees with
+        // the cell count outright (see the test below), because `getArrayValue` bounds-checks
+        // against the shape and then indexes the cells, which is only sound while the two
+        // agree. Distinguishing stored from derived is no longer possible here — and no
+        // longer meaningful, since the allocator makes them provably equal.
+        //
+        // Bounding the rank to 6 dimensions of at most 4 keeps the product well inside Int32
+        // and the materialised array small, so no seed can make this test fail for reasons
+        // unrelated to the property.
         let property (lengths : int list) : bool =
             let lengths = lengths |> List.truncate 6 |> List.map (fun n -> (abs (n % 5)))
 
@@ -641,13 +649,11 @@ module TestManagedHeap =
             let allocation : AllocatedArray =
                 {
                     Shape =
-                        {
-                            ConcreteType = ConcreteTypeHandle.Array (ConcreteTypeHandle.Concrete 1, lengths.Length)
-                            Length = total
-                            Lengths = ImmutableArray.CreateRange lengths
-                            ElementStride = sizeof<int32>
-                        }
-                    Elements = ImmutableArray.Empty
+                        shapeOf
+                            (ConcreteTypeHandle.Array (ConcreteTypeHandle.Concrete 1, lengths.Length))
+                            int32Zero
+                            (ImmutableArray.CreateRange lengths)
+                    Elements = Seq.replicate total int32Zero |> ImmutableArray.CreateRange
                 }
 
             let addr, heap = ManagedHeap.allocateArray allocation ManagedHeap.empty
@@ -657,6 +663,7 @@ module TestManagedHeap =
             && shape.Length = allocation.Shape.Length
             && shape.Lengths = allocation.Shape.Lengths
             && shape.ElementStride = allocation.Shape.ElementStride
+            && shape.ElementZero = allocation.Shape.ElementZero
 
         Check.One (
             Config.QuickThrowOnFailure.WithMaxTest 200,
@@ -923,11 +930,17 @@ module TestManagedHeap =
     let ``allocateArray rejects a stride that disagrees with the cells`` () : unit =
         // The check that makes reading the stride, rather than measuring a cell, safe.
         // Without it the field is an honour-system claim.
+        //
+        // The element zero is widened to match the bogus stride, so that the zero-versus-
+        // stride check below passes and this one is what actually fires. Each of
+        // `allocateArray`'s guards has to be provokable on its own, or the later ones are
+        // untested and could be deleted without any test noticing.
         let wrong : AllocatedArray =
             { stubArray 3 with
                 Shape =
                     { (stubArray 3).Shape with
                         ElementStride = sizeof<int32> + 1
+                        ElementZero = sizedZero (sizeof<int32> + 1)
                     }
             }
 
@@ -937,10 +950,70 @@ module TestManagedHeap =
         exn.Message |> shouldContainText "but its first cell measures"
 
     [<Test>]
+    let ``allocateArray rejects a stride that disagrees with the element zero`` () : unit =
+        // The stride is *defined* as the size of the element zero, and is stored separately
+        // only because recomputing it walks a value type's whole field tree on every
+        // byte-view access. That makes the two a denormalisation, and this is what keeps
+        // them from drifting. Checked on an empty array, where the cell comparison above has
+        // nothing to say and this is the only thing standing between the two fields.
+        let wrong : AllocatedArray =
+            { stubArray 0 with
+                Shape =
+                    { (stubArray 0).Shape with
+                        ElementStride = sizeof<int32> + 1
+                    }
+            }
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> ManagedHeap.allocateArray wrong ManagedHeap.empty |> ignore)
+
+        exn.Message |> shouldContainText "but its element zero"
+
+    [<Test>]
+    let ``allocateArray rejects a length that disagrees with the cell count`` () : unit =
+        // `getArrayValue` bounds-checks the index against `Shape.Length` and then indexes
+        // `Elements`. Splitting the shape out of the payload record is what made it possible
+        // for those to be different numbers; without this check the two would silently
+        // disagree and an in-bounds-by-the-shape index would come back as a raw
+        // `IndexOutOfRangeException` from beneath the interpreter.
+        let tooFew : AllocatedArray =
+            { stubArray 3 with
+                Elements = Seq.replicate 2 int32Zero |> ImmutableArray.CreateRange
+            }
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> ManagedHeap.allocateArray tooFew ManagedHeap.empty |> ignore)
+
+        exn.Message |> shouldContainText "carries 2 cell(s)"
+
+    [<Test>]
+    let ``allocateArray rejects a length that disagrees with the per-dimension lengths`` () : unit =
+        // `Length` is documented as the product of `Lengths`, and the multi-dimensional
+        // accessors depend on it: array `Get`/`Set`/`Address` bounds-check each index against
+        // `Lengths` and then index by the flattened offset, which `getArrayValue` checks
+        // against `Length`. A disagreement lets an index that every per-dimension check
+        // accepts fall outside the cells.
+        let wrong : AllocatedArray =
+            {
+                Shape =
+                    { int32ShapeOf (ConcreteTypeHandle.Array (ConcreteTypeHandle.Concrete 1, 2)) 6 with
+                        Lengths = ImmutableArray.CreateRange [ 2 ; 4 ]
+                    }
+                Elements = Seq.replicate 6 int32Zero |> ImmutableArray.CreateRange
+            }
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> ManagedHeap.allocateArray wrong ManagedHeap.empty |> ignore)
+
+        exn.Message |> shouldContainText "multiply to 8"
+
+    [<Test>]
     let ``allocateArray rejects a non-positive stride`` () : unit =
-        // Checked separately from the cell comparison because an empty array has no cell to
-        // compare against, so this is the only guard standing between a nonsense stride and
-        // the `floorDivRem` that will later divide by it.
+        // The element-zero check subsumes this one — it forces the stride to equal a
+        // `CliType.sizeOf`, which is never below 1 — so this fires only because it runs
+        // first. It is kept as a direct assertion of what consumers depend on: `floorDivRem`
+        // divides by the stride, and that shouldn't rest on a two-step argument through a
+        // different check in a different file.
         //
         // Zero is rejected as well as negative, and is the more dangerous of the two: it is
         // the plausible-looking value for "an array with nothing in it", and it fails
@@ -989,6 +1062,117 @@ module TestManagedHeap =
 
         ManagedHeap.getArrayElementStride clone state.ManagedHeap
         |> shouldEqual sizeof<int64>
+
+    // ---------------------------------------------------------------------
+    // Element zero.
+    //
+    // The witness for "what shape is a cell of this array". Cell 0 used to
+    // serve, which was wrong three ways: it is a guest-visible read performed
+    // to answer a question about a type, it does not exist for an empty
+    // array, and it is only a *sample* — a store to cell 5 was validated
+    // against whatever provenance cell 0 had picked up.
+    // ---------------------------------------------------------------------
+
+    /// Allocate a `len`-element array of `elementHandle` and report its recorded element
+    /// zero.
+    let private elementZeroOfArray
+        (elementHandle : ConcreteTypeHandle)
+        (len : int)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        let zero, state =
+            IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementHandle
+
+        let addr, state =
+            IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero elementHandle) (fun () -> zero) len state
+
+        ManagedHeap.getArrayElementZero addr state.ManagedHeap, state
+
+    [<Test>]
+    let ``recorded element zero is the element type's zero, for an empty array too`` () : unit =
+        // The oracle is `cliTypeZeroOfHandle` — the same thing every cell of a fresh array
+        // is initialised to — asked independently of the allocation. An empty array must
+        // give the same answer as a populated one, which is the whole reason this is
+        // recorded rather than sampled off cell 0.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let mutable state = state loggerFactory
+
+        for name, selector, _ in strideOracle do
+            let handle =
+                AllConcreteTypes.getRequiredNonGenericHandle concreteTypes (selector baseClassTypes)
+
+            let expected, s0 = IlMachineState.cliTypeZeroOfHandle state baseClassTypes handle
+            let populated, s1 = elementZeroOfArray handle 3 s0
+            let empty, s2 = elementZeroOfArray handle 0 s1
+            state <- s2
+
+            if populated <> expected then
+                failwith $"array of %s{name} recorded element zero %O{populated}, but the type's zero is %O{expected}"
+
+            if empty <> populated then
+                failwith
+                    $"empty array of %s{name} records element zero %O{empty}, but a populated one records %O{populated}"
+
+    [<Test>]
+    let ``a stored cell may drift from the element zero, and does not change it`` () : unit =
+        // Why the element zero cannot simply be read back off cell 0, stated as a property
+        // of the heap rather than as a comment: a cell legitimately holds something other
+        // than the element type's zero the moment anything is written to it, while the
+        // element zero is a fact about the type and never moves.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let handle =
+            AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Int32
+
+        let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes handle
+
+        let addr, state =
+            IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero handle) (fun () -> zero) 3 state
+
+        let state =
+            IlMachineState.setArrayValue addr (CliType.Numeric (CliNumericType.Int32 7)) 0 state
+
+        ManagedHeap.getArrayValue addr 0 state.ManagedHeap
+        |> shouldEqual (CliType.Numeric (CliNumericType.Int32 7))
+
+        ManagedHeap.getArrayElementZero addr state.ManagedHeap |> shouldEqual zero
+
+    [<Test>]
+    let ``getArrayElementZero fails loudly for a non-array and for a dangling address`` () : unit =
+        let objAddr, heap = ManagedHeap.allocateNonArray stubNonArray ManagedHeap.empty
+
+        let notAnArray =
+            Assert.Throws<System.Exception> (fun () -> ManagedHeap.getArrayElementZero objAddr heap |> ignore)
+
+        notAnArray.Message |> shouldContainText "is not an array"
+
+        let dangling =
+            Assert.Throws<System.Exception> (fun () ->
+                ManagedHeap.getArrayElementZero (ManagedHeapAddress 42) heap |> ignore
+            )
+
+        dangling.Message |> shouldContainText "not a live managed heap allocation"
+
+    [<Test>]
+    let ``cloneArray distinguishes a non-array from a dangling address`` () : unit =
+        // Same discrimination as `getArrayShape` / `get`, for the same reason: a non-array
+        // address means the caller misjudged the kind of the reference it holds, whereas an
+        // unallocated address means the reference itself is bogus. Before `cloneArray` moved
+        // into `ManagedHeap` it reached into `Arrays` directly from the state layer.
+        let objAddr, heap = ManagedHeap.allocateNonArray stubNonArray ManagedHeap.empty
+
+        let notAnArray =
+            Assert.Throws<System.Exception> (fun () -> ManagedHeap.cloneArray objAddr heap |> ignore)
+
+        notAnArray.Message |> shouldContainText "is a non-array object"
+
+        let dangling =
+            Assert.Throws<System.Exception> (fun () -> ManagedHeap.cloneArray (ManagedHeapAddress 42) heap |> ignore)
+
+        dangling.Message |> shouldContainText "not a live managed heap allocation"
 
     [<Test>]
     let ``getArrayElementStride fails loudly for a non-array and for a dangling address`` () : unit =

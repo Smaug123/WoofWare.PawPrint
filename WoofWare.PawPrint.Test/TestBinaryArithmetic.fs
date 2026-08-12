@@ -73,6 +73,7 @@ module TestBinaryArithmetic =
                     Length = values.Length
                     Lengths = ImmutableArray.Create values.Length
                     ElementStride = sizeof<int32>
+                    ElementZero = CliType.Numeric (CliNumericType.Int32 0)
                 }
             Elements = elements
         }
