@@ -107,6 +107,7 @@ module TestSyncBlockMonitor =
                         Length = 0
                         Lengths = ImmutableArray.Create 0
                         ElementStride = sizeof<int32>
+                        ElementZero = CliType.Numeric (CliNumericType.Int32 0)
                     }
                 Elements = ImmutableArray.Empty
             }

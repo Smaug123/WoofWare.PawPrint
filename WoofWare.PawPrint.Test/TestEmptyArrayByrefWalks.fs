@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint.Test
 
 open System.Collections.Immutable
+open System.Runtime.InteropServices
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -122,18 +123,31 @@ module TestEmptyArrayByrefWalks =
         | [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset 2 ] -> ()
         | other -> failwith $"expected a trailing 2-byte cursor, got %O{other}"
 
-    /// An array whose element stride is `stride`, with no cells. `allocateArray`'s
-    /// stride-versus-cell-0 check is skipped when there are no cells, which is what lets a
-    /// test mint an odd stride without a matching 3-byte element type in corelib.
+    /// An array whose element stride is `stride`, with no cells. Corelib has no 3-byte
+    /// element type, so the element zero is a fieldless struct with an explicit `Size`:
+    /// `CliValueType.SizeOfFieldStorage` gives that exactly the width we want, which
+    /// `allocateArray` then agrees with rather than rejecting.
+    ///
+    /// The declared handle is `System.Byte`'s only so that the fixture needs no type of its
+    /// own; nothing here reads it back, and the walk under test consults the stride alone.
     let private emptyArrayWithStride (stride : int) (heap : ManagedHeap) : ManagedHeapAddress * ManagedHeap =
+        let elementHandle = handleFor baseClassTypes.Byte
+
+        let elementZero =
+            CliValueType.OfFields baseClassTypes concreteTypes elementHandle (Layout.Custom (stride, 1)) CharSet.Ansi []
+            |> CliType.ValueType
+
+        CliType.sizeOf elementZero |> shouldEqual stride
+
         let allocation : AllocatedArray =
             {
                 Shape =
                     {
-                        ConcreteType = ConcreteTypeHandle.OneDimArrayZero (handleFor baseClassTypes.Byte)
+                        ConcreteType = ConcreteTypeHandle.OneDimArrayZero elementHandle
                         Length = 0
                         Lengths = ImmutableArray.Create 0
                         ElementStride = stride
+                        ElementZero = elementZero
                     }
                 Elements = ImmutableArray.Empty
             }
