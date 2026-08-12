@@ -176,7 +176,7 @@ module AbstractMachine =
                 | CliType.ObjectRef (Some addr) -> addr
                 | _ -> failwith "expected a managed object ref to delegate"
 
-            let delegateToRun = state.ManagedHeap.NonArrayObjects.[delegateToRunAddr]
+            let delegateToRun = ManagedHeap.get delegateToRunAddr state.ManagedHeap
 
             let delegateTypeHandle =
                 AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.DelegateType

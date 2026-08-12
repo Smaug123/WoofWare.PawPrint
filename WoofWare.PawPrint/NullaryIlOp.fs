@@ -2687,7 +2687,7 @@ module NullaryIlOp =
 
             // Get exception type from heap object
             let heapObject =
-                match state.ManagedHeap.NonArrayObjects |> Map.tryFind addr with
+                match ManagedHeap.tryGet addr state.ManagedHeap with
                 | Some obj -> obj
                 | None -> failwith "Exception object not found in heap"
 

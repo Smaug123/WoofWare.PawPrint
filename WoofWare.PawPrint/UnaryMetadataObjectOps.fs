@@ -852,9 +852,9 @@ module internal UnaryMetadataObjectOps =
         | EvalStackValue.NullObjectRef -> state, UnboxTypeTest.NullOperand
         | EvalStackValue.ObjectRef addr ->
             let boxedOpt =
-                match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-                | true, v -> Some v
-                | false, _ ->
+                match ManagedHeap.tryGet addr state.ManagedHeap with
+                | Some v -> Some v
+                | None ->
                     // An array is never a boxed value type, so per the CLR this is an ordinary
                     // type mismatch rather than an interpreter abort.
                     if ManagedHeap.isArray addr state.ManagedHeap then
@@ -987,9 +987,9 @@ module internal UnaryMetadataObjectOps =
                 |> Tuple.withRight WhatWeDid.Executed
             | EvalStackValue.ObjectRef addr ->
                 let boxedOpt =
-                    match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-                    | true, v -> Some v
-                    | false, _ ->
+                    match ManagedHeap.tryGet addr state.ManagedHeap with
+                    | Some v -> Some v
+                    | None ->
                         // An array can never be a boxed T for any T that Nullable admits.
                         if ManagedHeap.isArray addr state.ManagedHeap then
                             None

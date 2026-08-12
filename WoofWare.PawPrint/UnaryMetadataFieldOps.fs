@@ -375,13 +375,15 @@ module internal UnaryMetadataFieldOps =
                 match RuntimeFieldProjection.tryProjectFieldLoad baseClassTypes field managedHeapAddress state with
                 | Some value -> IlMachineState.pushToEvalStack value thread state
                 | None ->
-                    match state.ManagedHeap.NonArrayObjects.TryGetValue managedHeapAddress with
-                    | false, _ -> failwith $"todo: array {managedHeapAddress}"
-                    | true, v ->
-                        IlMachineState.pushToEvalStack
-                            (AllocatedNonArrayObject.DereferenceFieldById fieldId v)
-                            thread
-                            state
+                    // `get` discriminates "this is an array" from "this address is not
+                    // allocated at all", which the message this replaces asserted was always
+                    // the former.
+                    IlMachineState.pushToEvalStack
+                        (AllocatedNonArrayObject.DereferenceFieldById
+                            fieldId
+                            (ManagedHeap.get managedHeapAddress state.ManagedHeap))
+                        thread
+                        state
             | EvalStackValue.ManagedPointer src ->
                 let currentValue =
                     IlMachineState.readManagedByrefField baseClassTypes state src fieldId

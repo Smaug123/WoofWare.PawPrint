@@ -121,11 +121,7 @@ module internal RuntimeFieldProjection =
     /// Per-byte safety is enforced when the byref is read or written, so the projection
     /// itself only needs to confirm a heap object exists.
     let private requireHeapObject (addr : ManagedHeapAddress) (state : IlMachineState) : unit =
-        let exists =
-            state.ManagedHeap.NonArrayObjects.ContainsKey addr
-            || ManagedHeap.isArray addr state.ManagedHeap
-
-        if not exists then
+        if not (ManagedHeap.isLive addr state.ManagedHeap) then
             failwith $"RawData::Data projection expected heap object at %O{addr}, but no such object exists"
 
     /// Size of `nint` on the guest. PawPrint targets 64-bit guests exclusively, so this is

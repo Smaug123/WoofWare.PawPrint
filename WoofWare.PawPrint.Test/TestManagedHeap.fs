@@ -1005,3 +1005,87 @@ module TestManagedHeap =
             )
 
         dangling.Message |> shouldContainText "not a live managed heap allocation"
+
+    // ---------------------------------------------------------------------
+    // Non-array reads.
+    //
+    // `tryGet` / `get` / `isLive` are the read half of the non-array seam,
+    // the counterparts of `tryGetArrayShape` / `getArrayShape` / `isArray`.
+    // Before them, seventeen sites indexed `NonArrayObjects` directly, so a
+    // read of a guest object was not an identifiable event and the
+    // "array" / "never allocated" distinction was open-coded where it was
+    // made at all.
+    // ---------------------------------------------------------------------
+
+    [<Test>]
+    let ``tryGet answers only for non-array objects`` () : unit =
+        // Deliberately `None` for a live array rather than throwing: an array has no
+        // `AllocatedNonArrayObject` payload at all, so "not here" is the honest answer, and
+        // callers that care which it is have `isArray` next door.
+        let objAddr, heap = ManagedHeap.allocateNonArray stubNonArray ManagedHeap.empty
+        let arrAddr, heap = ManagedHeap.allocateArray (stubArray 3) heap
+
+        (ManagedHeap.tryGet objAddr heap).IsSome |> shouldEqual true
+        ManagedHeap.tryGet arrAddr heap |> shouldEqual None
+        ManagedHeap.tryGet (ManagedHeapAddress 99) heap |> shouldEqual None
+
+    [<Test>]
+    let ``get fails loudly, and distinguishably, for an array and for a dangling address`` () : unit =
+        // Same discrimination as `getArrayShape`, and for the same reason: an array address
+        // means the caller misjudged the kind of reference it holds, whereas an unallocated
+        // address means the reference itself is bogus. This used to be a bare
+        // `KeyNotFoundException` from indexing the map, which distinguished neither.
+        let arrAddr, heap = ManagedHeap.allocateArray (stubArray 1) ManagedHeap.empty
+
+        let isArray =
+            Assert.Throws<System.Exception> (fun () -> ManagedHeap.get arrAddr heap |> ignore)
+
+        isArray.Message |> shouldContainText "is an array"
+
+        let dangling =
+            Assert.Throws<System.Exception> (fun () -> ManagedHeap.get (ManagedHeapAddress 99) heap |> ignore)
+
+        dangling.Message |> shouldContainText "not a live managed heap allocation"
+
+    [<Test>]
+    let ``isLive covers both payload kinds, and nothing else`` () : unit =
+        let objAddr, heap = ManagedHeap.allocateNonArray stubNonArray ManagedHeap.empty
+        let arrAddr, heap = ManagedHeap.allocateArray (stubArray 2) heap
+
+        ManagedHeap.isLive objAddr heap |> shouldEqual true
+        ManagedHeap.isLive arrAddr heap |> shouldEqual true
+        ManagedHeap.isLive (ManagedHeapAddress 99) heap |> shouldEqual false
+
+    [<Test>]
+    let ``isLive agrees with the object-header key set`` () : unit =
+        // An independent oracle for `isLive`, which is computed from the two *payload* maps.
+        // `SyncBlocks`' documented invariant is that its key set is exactly their union, so
+        // the header table answers the same question by a different route. Keeping the two
+        // routes separate is deliberate: had `isLive` been implemented on `SyncBlocks`, this
+        // would be a tautology instead of a check, and a broken invariant would show up as a
+        // wrong liveness answer rather than a failing test.
+        let property (ops : bool list) : bool =
+            let ops = ops |> List.truncate 12
+
+            let heap =
+                ops
+                |> List.fold
+                    (fun heap isArray ->
+                        if isArray then
+                            ManagedHeap.allocateArray (stubArray 1) heap |> snd
+                        else
+                            ManagedHeap.allocateNonArray stubNonArray heap |> snd
+                    )
+                    ManagedHeap.empty
+
+            // Probe past the end too, so a always-true implementation fails.
+            [ 1 .. ops.Length + 3 ]
+            |> List.forall (fun addr ->
+                let addr = ManagedHeapAddress addr
+                ManagedHeap.isLive addr heap = heap.SyncBlocks.ContainsKey addr
+            )
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 200,
+            Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary) property
+        )

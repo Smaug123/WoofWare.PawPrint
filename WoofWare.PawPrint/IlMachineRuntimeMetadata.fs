@@ -921,7 +921,7 @@ module IlMachineRuntimeMetadata =
         : IlMachineState
         =
         match
-            state.ManagedHeap.NonArrayObjects |> Map.tryFind exceptionAddr,
+            ManagedHeap.tryGet exceptionAddr state.ManagedHeap,
             AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Exception.Identity
         with
         | Some _, Some exceptionHandle ->
@@ -958,7 +958,7 @@ module IlMachineRuntimeMetadata =
             // Low-level dispatch tests sometimes use synthetic exception addresses in skeletal states.
             // Full guest execution has both pieces, so only then can we project into the managed object.
             match
-                state.ManagedHeap.NonArrayObjects |> Map.tryFind exceptionAddr,
+                ManagedHeap.tryGet exceptionAddr state.ManagedHeap,
                 AllConcreteTypes.findExistingNonGenericConcreteType
                     state.ConcreteTypes
                     baseClassTypes.Exception.Identity
@@ -1010,7 +1010,7 @@ module IlMachineRuntimeMetadata =
         : ManagedHeapAddress option
         =
         let exceptionObj =
-            match state.ManagedHeap.NonArrayObjects |> Map.tryFind exceptionAddr with
+            match ManagedHeap.tryGet exceptionAddr state.ManagedHeap with
             | Some obj -> obj
             | None ->
                 failwith
@@ -1103,7 +1103,7 @@ module IlMachineRuntimeMetadata =
         // Mirrors `setExceptionStackTraceString`: skeletal states in low-level dispatch tests may
         // lack either piece, and there is nothing to project into in that case.
         match
-            state.ManagedHeap.NonArrayObjects |> Map.tryFind exceptionAddr,
+            ManagedHeap.tryGet exceptionAddr state.ManagedHeap,
             AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Exception.Identity
         with
         | Some _, Some exceptionHandle ->

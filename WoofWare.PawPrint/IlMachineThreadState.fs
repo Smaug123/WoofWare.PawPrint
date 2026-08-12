@@ -219,14 +219,14 @@ module IlMachineThreadState =
                 // This ctor was constructing a runtime-synthesised exception object.
                 // Don't push it onto the eval stack; signal to the caller that exception
                 // dispatch should occur.
-                let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
+                let constructed = ManagedHeap.get constructing state.ManagedHeap
                 ReturnFrameResult.DispatchException (state, constructing, constructed.ConcreteType, message)
             | ConstructedObjectDisposition.PushToCaller ->
 
             // Assumption: a constructor can't also return a value.
             // If we were constructing a reference type, we push a reference to it.
             // Otherwise, extract the now-complete object from the heap and push it to the stack directly.
-            let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
+            let constructed = ManagedHeap.get constructing state.ManagedHeap
 
             let _, ty' =
                 AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes constructed.ConcreteType
@@ -700,7 +700,7 @@ module IlMachineThreadState =
         match state.ManagedHeap.Arrays.TryGetValue source with
         | false, _ ->
             let what =
-                if state.ManagedHeap.NonArrayObjects.ContainsKey source then
+                if (ManagedHeap.tryGet source state.ManagedHeap).IsSome then
                     "a non-array object"
                 else
                     "not allocated"
@@ -731,8 +731,8 @@ module IlMachineThreadState =
     /// The clone gets a fresh address, so it has its own identity for reference equality, for the
     /// synthesised pointer hash, and for monitors.
     let cloneObject (source : ManagedHeapAddress) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
-        match state.ManagedHeap.NonArrayObjects.TryGetValue source with
-        | true, sourceObj ->
+        match ManagedHeap.tryGet source state.ManagedHeap with
+        | Some sourceObj ->
             // `StringContents` is keyed by heap address, so a cloned string would land at a fresh
             // address with no character data behind it. Nothing can reach that: `MemberwiseClone`
             // is `protected internal`, `System.String` is sealed and never calls it, and PawPrint
@@ -750,7 +750,7 @@ module IlMachineThreadState =
                 }
 
             alloc, state
-        | false, _ ->
+        | None ->
 
         // `Array.Clone`'s managed body is `MemberwiseClone()`, so arrays are in scope even though
         // PawPrint intercepts `Array.Clone` itself and nothing can derive from `System.Array`.
