@@ -2697,15 +2697,25 @@ module IlMachineManagedByref =
         // that cell. The cell was chosen because it is identity-compatible with what the byref
         // reinterprets it as, so the value being stored must be too, or the cell would end up
         // holding a different kind of thing than it claims to.
-        let writeIntoNamedCell (path : FieldId list) (describeCell : string) : CliType option voption =
+        // `compatible` is the rule the caller *selected* this cell by, passed back in so the install
+        // holds the value to the same standard the selection did. The two must agree: a caller that
+        // named the cell strictly would otherwise accept a value here that could not have named it,
+        // and one that named it coercibly would reject the very value it was looking for. Under the
+        // strict rule `coerceToCellShape` is the identity, so those callers are unaffected by it.
+        let writeIntoNamedCell
+            (compatible : CliType -> CliType -> bool)
+            (path : FieldId list)
+            (describeCell : string)
+            : CliType option voption
+            =
             let current = CliType.getCellAtPath path storageValue
 
-            // A wrapper layer between the value and the cell is bridged rather than installed: the
-            // cell keeps its own declared shape, because that is what decides how the *next* read
-            // of it flattens. Anything the flattening cannot explain still fails, now from inside
+            // Where a wrapper layer is allowed at all, it is bridged rather than installed: the cell
+            // keeps its own declared shape, because that is what decides how the *next* read of it
+            // flattens. Anything the flattening cannot explain still fails, now from inside
             // `coerceToCellShape`; the check below keeps the message that names the two shapes and
             // the cell, which a bare coercion failure would not.
-            if isCellCoercionCompatible current newValue then
+            if compatible current newValue then
                 let coerced = coerceToCellShape current newValue
 
                 if isProvableNoOpWrite current coerced then
@@ -2724,7 +2734,11 @@ module IlMachineManagedByref =
         let tryNameThroughFieldAt (offset : int) (field : FieldId) : CliType option voption =
             match tryNameCellThroughReinterpretField baseClassTypes state offset storageValue reinterpretTy field with
             | None -> ValueNone
-            | Some path -> writeIntoNamedCell path $"the cell %O{path} named by field %O{field} of %O{reinterpretTy}"
+            | Some path ->
+                writeIntoNamedCell
+                    isCellIdentityCompatible
+                    path
+                    $"the cell %O{path} named by field %O{field} of %O{reinterpretTy}"
 
         let transparentWrapperFastPath () : CliType option voption =
             match reinterpretProjs with
@@ -2774,7 +2788,10 @@ module IlMachineManagedByref =
                         failwith
                             $"%s{operation}: assigning %s{describeCliStorage state other}, which is not the same kind of value as the %s{describeCliStorage state storageValue} it would replace, to field %O{field} of a single-instance-field wrapper"
                 | TransparentWrapperOutcome.ElideAsStorageInnerField innerPath ->
-                    writeIntoNamedCell innerPath $"inner cell %O{innerPath} of a nested single-instance-field wrapper"
+                    writeIntoNamedCell
+                        isCellIdentityCompatible
+                        innerPath
+                        $"inner cell %O{innerPath} of a nested single-instance-field wrapper"
                 | TransparentWrapperOutcome.NotTransparent ->
                     // Not a wrapper the classifier recognises, but the byref may still name a cell
                     // outright — the same naming route the non-zero-offset case above takes.
@@ -2809,7 +2826,11 @@ module IlMachineManagedByref =
                 // `System.Byte` and then stores eight bytes, and asking for a one-byte cell at
                 // offset 8 finds nothing — the storage has an eight-byte pointer cell there.
                 match tryNameCellForByrefAccessCoercible (byteOffset + trailingOffset) storageValue newValue with
-                | Some innerPath -> writeIntoNamedCell innerPath $"the storage cell %O{innerPath} that the byref names"
+                | Some innerPath ->
+                    writeIntoNamedCell
+                        isCellCoercionCompatible
+                        innerPath
+                        $"the storage cell %O{innerPath} that the byref names"
                 | None -> ValueNone
             | _ -> ValueNone
 
@@ -2850,9 +2871,9 @@ module IlMachineManagedByref =
     /// provably unobservable; `ValueNone` means this route cannot serve it and the caller should
     /// report that in its own terms.
     ///
-    /// Two mechanisms, in the order the rest of this module already prefers them. Bytes are the
-    /// general one and serve everything with a byte image. Naming the one cell the range covers is
-    /// the fallback for storage that has no byte image — a struct of managed pointers or
+    /// Two mechanisms, disjoint by construction rather than ordered by preference: bytes serve
+    /// everything with a byte image, and naming the one cell the range covers serves storage that
+    /// has no byte image — a struct of managed pointers or
     /// references — where there are no bytes to splice and the only honest answer is which cell the
     /// range picks out. `tryNameCellForByrefAccessCoercible` returns `None` for byte-addressable
     /// storage by construction, so the two never compete for the same access.

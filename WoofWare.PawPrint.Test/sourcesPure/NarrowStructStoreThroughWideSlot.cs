@@ -32,6 +32,8 @@ public class NarrowStructStoreThroughWideSlot
         public Wide Field;
     }
 
+    private static Wide StaticWide;
+
     public static unsafe int Main(string[] argv)
     {
         // `stobj Narrow` through a pointer to a `Wide` slot must write only the first four
@@ -111,6 +113,26 @@ public class NarrowStructStoreThroughWideSlot
         if (holder.Field.B != 8)
             return 9;
 
+        // A static-field root. `writeRootValue` reaches statics through a different accessor again,
+        // and a static slot is the one root whose extent has to be asked for rather than read
+        // (an uninitialised one has no value at all), so it is worth its own case.
+        StaticWide.A = 15;
+        StaticWide.B = 16;
+
+        fixed (Wide* s = &StaticWide)
+        {
+            *(Narrow*)s = new Narrow
+            {
+                A = 17,
+            };
+        }
+
+        if (StaticWide.A != 17)
+            return 14;
+
+        if (StaticWide.B != 16)
+            return 15;
+
         // An array-element root.
         Wide[] array = new Wide[2];
         array[0].A = 10;
@@ -136,10 +158,10 @@ public class NarrowStructStoreThroughWideSlot
         // array-element byref would have replaced element 0 alone, but a *byte* write that got
         // the extent wrong could run past it.
         if (array[1].A != 12)
-            return 12;
+            return 16;
 
         if (array[1].B != 13)
-            return 13;
+            return 17;
 
         return 0;
     }
