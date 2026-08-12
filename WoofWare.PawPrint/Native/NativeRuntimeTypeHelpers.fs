@@ -1444,13 +1444,26 @@ module NativeRuntimeTypeHelpers =
         // discriminates cctor-before-ctor *and* ctor-before-row-order. `Lazy`1` is the witness that
         // the rule still holds on a generic type, where every other method is placed in the first
         // pass below and could otherwise have swallowed the ctors with it.
+        //
+        // At most *one* row is hoisted for each. `ValidateMethods` records them by plain assignment
+        // inside its loop -- `bmtVT->pCCtor = *it` (methodtablebuilder.cpp:5019) and
+        // `bmtVT->pDefaultCtor = *it` (:5042) -- so when a type declares the same constructor twice,
+        // which ECMA-335 II.22.26 forbids but CoreCLR loads anyway, the *last* matching row wins and
+        // the earlier ones are placed in the ordinary pass like any other method. Measured: a type
+        // with `Plain` then two identical `.ctor()` rows gives the last `.ctor` slot 4 and leaves the
+        // earlier one at slot 6, *after* `Plain`. Hoisting both would move everything after them.
+        let lastMatching (predicate : MethodInfo<_, _, _> * MetadataMethodFacts -> bool) =
+            unplaced |> List.filter predicate |> List.tryLast
+
         let placedFirst =
-            (unplaced |> List.filter isClassConstructor)
-            @ (unplaced |> List.filter isDefaultConstructor)
+            [ lastMatching isClassConstructor ; lastMatching isDefaultConstructor ]
+            |> List.choose id
+
+        let hoisted = placedFirst |> List.map (fun (method, _) -> method.IdentityKey)
 
         let stillUnplaced =
             unplaced
-            |> List.filter (fun candidate -> not (isClassConstructor candidate || isDefaultConstructor candidate))
+            |> List.filter (fun (method, _) -> not (hoisted |> List.contains method.IdentityKey))
 
         // Steps 3 and 4: two passes, each in row order. Upstream's vocabulary for them is worth
         // knowing, because it cuts across the name of this function: the first pass places methods

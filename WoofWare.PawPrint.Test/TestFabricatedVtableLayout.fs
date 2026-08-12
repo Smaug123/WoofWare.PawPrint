@@ -357,6 +357,41 @@ module TestFabricatedVtableLayout =
         modoptOtherIl.Emit OpCodes.Ret
         modoptCtor.CreateType () |> ignore
 
+        // The same constructor declared twice. ECMA-335 II.22.26 forbids it, CoreCLR loads it anyway,
+        // and only the *last* row becomes `pDefaultCtor` -- `ValidateMethods` records it by plain
+        // assignment inside its loop, so a later match overwrites an earlier one. The earlier
+        // duplicate is then placed in the ordinary pass like any other method, *after* `Plain`.
+        let duplicateCtor =
+            moduleBuilder.DefineType (
+                "DuplicateDefaultCtor",
+                TypeAttributes.Public ||| TypeAttributes.Class,
+                typeof<obj>
+            )
+
+        // Declared first, so it sits between the two duplicates in the final layout if -- and only
+        // if -- exactly one of them is hoisted.
+        definePlain duplicateCtor "Plain"
+
+        for _ in 1..2 do
+            let ctor =
+                duplicateCtor.DefineMethod (".ctor", runtimeSpecial, typeof<Void>, Type.EmptyTypes)
+
+            let il = ctor.GetILGenerator ()
+            il.Emit OpCodes.Ldarg_0
+            il.Emit (OpCodes.Call, typeof<obj>.GetConstructor Type.EmptyTypes)
+            il.Emit OpCodes.Ret
+
+        // Suppresses the parameterless constructor `CreateType` would otherwise synthesise, which
+        // would be a third duplicate and would itself be the last row.
+        let duplicateOther =
+            duplicateCtor.DefineConstructor (MethodAttributes.Public, CallingConventions.Standard, [| typeof<int> |])
+
+        let duplicateOtherIl = duplicateOther.GetILGenerator ()
+        duplicateOtherIl.Emit OpCodes.Ldarg_0
+        duplicateOtherIl.Emit (OpCodes.Call, typeof<obj>.GetConstructor Type.EmptyTypes)
+        duplicateOtherIl.Emit OpCodes.Ret
+        duplicateCtor.CreateType () |> ignore
+
         // A COM vtable-gap marker: `RTSpecialName` with a `_VtblGap` name, which is *not* a
         // malformed type -- CoreCLR drops the row from the declared-method list and loads the type
         // happily. It sits here beside the malformed ones precisely because it looks like one to a
@@ -572,6 +607,36 @@ module TestFabricatedVtableLayout =
             |> List.sortBy fst
             |> List.map (fun (_, method) -> $"%s{method.Name}/%i{method.GetParameters().Length}")
 
+    /// The same list as MethodDef tokens rather than names. Necessary wherever two rows of a type are
+    /// indistinguishable by name and signature -- `DuplicateDefaultCtor` declares the very same
+    /// constructor twice, and a name-based comparison cannot tell which of them was hoisted. Measured
+    /// the hard way: it let a "hoist the *first* duplicate" mutation through.
+    let private hostBeyondVtableTokens (name : string) : int list =
+        match hostAssembly.GetType (name, false) with
+        | null -> failwith $"host CLR could not load fabricated type %s{name}"
+        | t ->
+            let flags =
+                BindingFlags.DeclaredOnly
+                ||| BindingFlags.Instance
+                ||| BindingFlags.Static
+                ||| BindingFlags.Public
+                ||| BindingFlags.NonPublic
+
+            let numVirtuals =
+                t.GetMethods (BindingFlags.Instance ||| BindingFlags.Public ||| BindingFlags.NonPublic)
+                |> Array.filter _.IsVirtual
+                |> Array.length
+
+            [
+                yield! (t.GetMethods flags |> Seq.cast<MethodBase>)
+                yield! (t.GetConstructors flags |> Seq.cast<MethodBase>)
+            ]
+            |> List.distinctBy _.MetadataToken
+            |> List.map (fun method -> hostSlotOf method, method.MetadataToken)
+            |> List.filter (fun (slot, _) -> slot >= numVirtuals)
+            |> List.sortBy fst
+            |> List.map snd
+
     /// The host's vtable for a fabricated type, slot 0 upwards, named by MethodDef token.
     let private hostLayout (name : string) : int list =
         match hostAssembly.GetType (name, false) with
@@ -730,6 +795,39 @@ module TestFabricatedVtableLayout =
         // And the host agrees about that order, so it is not merely PawPrint being self-consistent.
         hostBeyondVtableNames "ModoptVoidCtor"
         |> shouldEqual [ "Plain/0" ; ".ctor/0" ; ".ctor/1" ]
+
+    /// Only one row is hoisted per constructor kind, even when a type declares the same constructor
+    /// twice: `ValidateMethods` records it by assignment inside its loop, so the last match wins and
+    /// the earlier duplicate is placed in the ordinary pass. Hoisting both -- the obvious reading of
+    /// "the constructors go first" -- moves everything after them by one.
+    [<Test>]
+    let ``a duplicated default constructor hoists only its last row`` () : unit =
+        // Loadable, despite ECMA-335 II.22.26 forbidding it; `throwOnError` would raise otherwise.
+        hostAssembly.GetType ("DuplicateDefaultCtor", true) |> shouldNotEqual null
+
+        // Vacuity guard: there really are two nullary `.ctor` rows. If the builder ever started
+        // collapsing them, the type would be ordinary and this would test nothing.
+        match fabricated.TryGetTopLevelTypeDef "" "DuplicateDefaultCtor" with
+        | None -> failwith "fabricated assembly has no type DuplicateDefaultCtor"
+        | Some typeInfo ->
+            typeInfo.Methods
+            |> List.filter (fun method -> method.Name = ".ctor" && method.Signature.ParameterTypes.IsEmpty)
+            |> List.length
+            |> shouldEqual 2
+
+        // Shape first, for legibility: the hoisted row, then declaration order for the rest --
+        // `Plain`, the *earlier* duplicate, and the one taking an argument.
+        hostBeyondVtableNames "DuplicateDefaultCtor"
+        |> shouldEqual [ ".ctor/0" ; "Plain/0" ; ".ctor/0" ; ".ctor/1" ]
+
+        // Then by MethodDef token, which is the assertion that actually bites: the two duplicates
+        // are identical in name and signature, so the list above is the same whichever of them was
+        // hoisted. Comparing rows is what distinguishes "last wins" from "first wins".
+        let expected = hostBeyondVtableTokens "DuplicateDefaultCtor"
+
+        let table = slotTableOf "DuplicateDefaultCtor"
+
+        pawPrintLayout table.BeyondVtable |> shouldEqual expected
 
     /// The counterpart to the refusals above: a COM vtable-gap marker looks like a runtime-special
     /// method that is not a constructor, but CoreCLR loads the type and simply drops the row.
