@@ -268,7 +268,11 @@ module IlMachineManagedByref =
     /// pointer's provenance. A pair the flattening does not explain fails loudly inside
     /// `toCliTypeCoerced` rather than being silently reshaped.
     let private coerceToCellShape (template : CliType) (value : CliType) : CliType =
-        if sameCliConstructor template value then
+        // Both disjuncts, for the same reason `isCellCoercionCompatible` needs both: neither
+        // predicate alone recognises "already the right shape" for every cell kind — one has no
+        // runtime-pointer arm, the other refuses value types outright — and a value that is already
+        // the template's shape must be returned untouched rather than sent round the eval stack.
+        if sameCliConstructor template value || isCellIdentityCompatible template value then
             value
         else
             EvalStackValue.ofCliType value |> EvalStackValue.toCliTypeCoerced template
@@ -1523,41 +1527,6 @@ module IlMachineManagedByref =
             failwith
                 $"readManagedByrefAs: cannot dereference fake non-null byref @ 0x%x{bits}; the placeholder must never be read"
         | ManagedPointerSource.Byref (root, projs) ->
-
-        // When the pointer carries no byte view it names a storage cell outright, and when that
-        // cell is exactly the template's width the load *is* that cell. `ldarg.0; ldobj TSelf` —
-        // which is how a readonly struct returns a copy of itself — is this shape, and the copy has
-        // to come back with its identity intact even when the struct holds handles that have no
-        // byte image. This is the answer `readManagedByref` has always given; narrowing only ever
-        // applies where the widths genuinely differ.
-        let namesWholeCell =
-            match root with
-            | ByrefRoot.StackMemoryByte _
-            | ByrefRoot.NativeMemoryByte _
-            | ByrefRoot.PeByteRange _ -> None
-            | _ ->
-
-            if
-                projs
-                |> List.exists (fun p ->
-                    match p with
-                    | ByrefProjection.ReinterpretAs _ -> true
-                    | _ -> false
-                )
-            then
-                None
-            else
-
-            let cell = readProjectedValue (readRootValue state root) projs
-
-            if CliType.sizeOf cell = CliType.sizeOf template then
-                Some cell
-            else
-                None
-
-        match namesWholeCell with
-        | Some cell -> cell
-        | None ->
 
         match tryReadNamedCellThrough baseClassTypes state root projs template with
         | Some cell -> cell
