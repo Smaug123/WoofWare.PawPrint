@@ -937,22 +937,33 @@ module TestManagedHeap =
         exn.Message |> shouldContainText "but its first cell measures"
 
     [<Test>]
-    let ``allocateArray rejects a negative stride`` () : unit =
+    let ``allocateArray rejects a non-positive stride`` () : unit =
         // Checked separately from the cell comparison because an empty array has no cell to
         // compare against, so this is the only guard standing between a nonsense stride and
         // the `floorDivRem` that will later divide by it.
-        let wrong : AllocatedArray =
-            { stubArray 0 with
-                Shape =
-                    { (stubArray 0).Shape with
-                        ElementStride = -4
-                    }
-            }
+        //
+        // Zero is rejected as well as negative, and is the more dangerous of the two: it is
+        // the plausible-looking value for "an array with nothing in it", and it fails
+        // *quietly* — every index would map to byte offset zero, and a byte-offset walk
+        // could never advance a cell. No CLI type is zero-sized (a fieldless struct is
+        // padded to one byte, per CoreCLR and `CliValueType.SizeOfFieldStorage`), so no
+        // real allocation can want it.
+        let rejects (stride : int) : unit =
+            let wrong : AllocatedArray =
+                { stubArray 0 with
+                    Shape =
+                        { (stubArray 0).Shape with
+                            ElementStride = stride
+                        }
+                }
 
-        let exn =
-            Assert.Throws<System.Exception> (fun () -> ManagedHeap.allocateArray wrong ManagedHeap.empty |> ignore)
+            let exn =
+                Assert.Throws<System.Exception> (fun () -> ManagedHeap.allocateArray wrong ManagedHeap.empty |> ignore)
 
-        exn.Message |> shouldContainText "negative element stride"
+            exn.Message |> shouldContainText "non-positive element stride"
+
+        rejects 0
+        rejects -4
 
     [<Test>]
     let ``cloneArray carries the source's stride`` () : unit =

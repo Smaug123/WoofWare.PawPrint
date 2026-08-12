@@ -110,8 +110,13 @@ type ArrayShape =
         /// counterpart in the program under test, and it has no answer at all for an empty
         /// array.
         ///
-        /// `ManagedHeap.allocateArray` checks this against cell 0 of every non-empty
-        /// allocation, so the two can never drift apart.
+        /// Always strictly positive: every CLI type occupies at least one byte, a fieldless
+        /// struct included (CoreCLR pads it to 1, and `CliValueType.SizeOfFieldStorage`
+        /// follows). Consumers divide by it — see `floorDivRem` — so a zero here would be a
+        /// silent wrong answer rather than a loud one.
+        ///
+        /// `ManagedHeap.allocateArray` checks positivity, and checks the value itself
+        /// against cell 0 of every non-empty allocation, so the two can never drift apart.
         ElementStride : int
     }
 
@@ -203,9 +208,9 @@ module ManagedHeap =
     /// read the stride instead of measuring a cell precisely so that they never touch guest
     /// memory to learn it, which would be worthless if the recorded value could be wrong.
     let allocateArray (ty : AllocatedArray) (heap : ManagedHeap) : ManagedHeapAddress * ManagedHeap =
-        if ty.Shape.ElementStride < 0 then
+        if ty.Shape.ElementStride <= 0 then
             failwith
-                $"allocateArray: array of %O{ty.Shape.ConcreteType} declares a negative element stride %d{ty.Shape.ElementStride}"
+                $"allocateArray: array of %O{ty.Shape.ConcreteType} declares a non-positive element stride %d{ty.Shape.ElementStride}; every CLI type occupies at least one byte"
 
         if not ty.Elements.IsEmpty then
             let cellSize = CliType.sizeOf ty.Elements.[0]
