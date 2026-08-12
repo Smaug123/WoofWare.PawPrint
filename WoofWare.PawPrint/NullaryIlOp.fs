@@ -45,21 +45,14 @@ module NullaryIlOp =
             | ManagedPointerSource.NativeIntPlaceholder _ ->
                 failwith "unreachable: tryStableAddressBits handles NativeIntPlaceholder managed pointers"
             | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), projs) ->
-                let arrObj = state.ManagedHeap.Arrays.[arr]
+                // The stride is recorded on the array at allocation, so it is available even
+                // for `Array.Empty<T>()`, which has no cell to measure. That used to force a
+                // `None` for every index but zero; the offset of index `i` into an empty
+                // array is as well defined as into any other, so it is answered here.
+                let elementSize = ManagedHeap.getArrayElementStride arr state.ManagedHeap
 
-                let elementSize =
-                    if arrObj.Shape.Length = 0 then
-                        // Array.Empty<T>() has no representative element from
-                        // which to read the byte stride. The only stable address
-                        // we can derive without the element type is index zero.
-                        if index = 0 then Some 0 else None
-                    else
-                        // STRIDE-FROM-CELL: no BaseClassTypes here; see ArrayElementStride.
-                        CliType.sizeOf arrObj.Elements.[0] |> Some
-
-                match elementSize, projectionByteOffset projs with
-                | Some elementSize, Some byteOffset -> Some (int64<int> index * int64<int> elementSize + byteOffset)
-                | _ -> None
+                projectionByteOffset projs
+                |> Option.map (fun byteOffset -> int64<int> index * int64<int> elementSize + byteOffset)
             | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (_, charIndex), projs) ->
                 projectionByteOffset projs
                 |> Option.map (fun byteOffset -> int64<int> charIndex * cliCharSizeBytes + byteOffset)

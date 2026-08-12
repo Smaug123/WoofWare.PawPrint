@@ -1119,7 +1119,6 @@ module NativeRuntimeAssembly =
                         for i in 0 .. nestedCount - 1 do
                             let entryPtr =
                                 ManagedPointerByteView.addByteOffset
-                                    ctx.BaseClassTypes
                                     state
                                     byteConcreteType
                                     (i * intPtrStride)

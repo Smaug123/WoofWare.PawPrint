@@ -647,24 +647,26 @@ module IlMachineManagedByref =
         let targetSize = CliType.sizeOf targetTemplate
         let arrObj = state.ManagedHeap.Arrays.[arr]
 
+        // Kept now that the stride no longer needs a cell: every byte-view read of an empty
+        // array is out of bounds anyway, and refusing here keeps a zero-width read from
+        // quietly succeeding against storage that has no bytes at all.
         if arrObj.Shape.Length = 0 then
             failwith $"TODO: byte-view read from empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
-        // Compute cell size with `CliType.sizeOf` (not `byteAddressableCellSize`)
-        // so we can recognise whole-cell-aligned reads of cells that may
-        // carry non-byte-renderable provenance — e.g. an `IntPtr[]` slot
-        // that now holds a `TypeHandlePtr` after a typed store through a
-        // fixed-array pointer. For non-byte-addressable cells that match
-        // the target shape exactly, we short-circuit and return the typed
-        // cell directly, preserving provenance; for everything else we
-        // fall through to the byte-scatter loop, which validates byte
-        // addressability per cell as it gathers.
-        // STRIDE-FROM-CELL: no BaseClassTypes here; see ArrayElementStride.
-        let firstCellSize = CliType.sizeOf arrObj.Elements.[0]
-        let cellAdvance, inCellStart = floorDivRem byteOffset firstCellSize
+        // The stride comes from the array's recorded element stride, not from measuring a
+        // cell. It is deliberately *not* `byteAddressableCellSize`: a cell may carry
+        // non-byte-renderable provenance — e.g. an `IntPtr[]` slot that now holds a
+        // `TypeHandlePtr` after a typed store through a fixed-array pointer — and a
+        // whole-cell-aligned read of such a cell is exactly what the short-circuit below
+        // exists to serve. For non-byte-addressable cells that match the target shape
+        // exactly we return the typed cell directly, preserving provenance; everything else
+        // falls through to the byte-scatter loop, which validates byte addressability per
+        // cell as it gathers.
+        let stride = arrObj.Shape.ElementStride
+        let cellAdvance, inCellStart = floorDivRem byteOffset stride
 
         let shortCircuitCell =
-            if inCellStart = 0 && targetSize = firstCellSize then
+            if inCellStart = 0 && targetSize = stride then
                 let targetCell = index + cellAdvance
 
                 if targetCell < 0 || targetCell >= arrObj.Shape.Length then
@@ -1626,20 +1628,21 @@ module IlMachineManagedByref =
         =
         let arrObj = state.ManagedHeap.Arrays.[arr]
 
+        // Kept for the same reason as on the read side: an empty array has no bytes to
+        // write, and a zero-byte write must not quietly become a no-op.
         if arrObj.Shape.Length = 0 then
             failwith $"TODO: byte-view write to empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
-        // Use `CliType.sizeOf` (not `byteAddressableCellSize`) for the stride.
-        // Mirrors `readArrayBytesAs`: deriving the cell stride doesn't require
-        // element 0 to be byte-renderable. Consider `fixed (IntPtr* p = arr)`
-        // where `p[0] = typeof(int).TypeHandle.Value` populates element 0 with
-        // non-byte-addressable provenance, then `p[1] = IntPtr.Zero` byte-
-        // scatters into element 1: only the cells the loop actually touches
-        // need to be byte-addressable, validated per iteration below.
-        // STRIDE-FROM-CELL: no BaseClassTypes here; see ArrayElementStride.
-        let firstCellSize = CliType.sizeOf arrObj.Elements.[0]
+        // Mirrors `readArrayBytesAs`: the stride is the array's recorded element stride, and
+        // is deliberately not `byteAddressableCellSize`, because the stride does not require
+        // any cell to be byte-renderable. Consider `fixed (IntPtr* p = arr)` where
+        // `p[0] = typeof(int).TypeHandle.Value` populates element 0 with
+        // non-byte-addressable provenance, then `p[1] = IntPtr.Zero` byte-scatters into
+        // element 1: only the cells the loop actually touches need to be byte-addressable,
+        // validated per iteration below.
+        let stride = arrObj.Shape.ElementStride
 
-        let cellAdvance, inCellStart = floorDivRem byteOffset firstCellSize
+        let cellAdvance, inCellStart = floorDivRem byteOffset stride
         let mutable state = state
         let mutable filled = 0
         let mutable cell = index + cellAdvance
@@ -2239,11 +2242,15 @@ module IlMachineManagedByref =
                 | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
                     let arrObj = state.ManagedHeap.Arrays.[arr]
 
+                    // The stride is the array's recorded one, but the shape test below still
+                    // consults cell 0, so an empty array has nothing to match against and is
+                    // declined here as before. (Whether a cell's *shape* is likewise
+                    // derivable from the element type is a separate question from its
+                    // stride, and is left alone here.)
                     if arrObj.Shape.Length = 0 then
                         None
                     else
-                        // STRIDE-FROM-CELL: no BaseClassTypes here; see ArrayElementStride.
-                        let cellSize = CliType.sizeOf arrObj.Elements.[0]
+                        let cellSize = arrObj.Shape.ElementStride
                         let cellAdvance, inCellStart = floorDivRem byteOffset cellSize
                         let newSize = CliType.sizeOf newValue
 
@@ -3010,7 +3017,7 @@ module IlMachineManagedByref =
                     failwith
                         $"TODO: byte-view typed store into empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
-                let cellSize = ArrayElementStride.ofShape baseClassTypes state arrObj.Shape
+                let cellSize = arrObj.Shape.ElementStride
                 let cellAdvance, inCellStart = floorDivRem byteOffset cellSize
                 let newSize = CliType.sizeOf newValue
 
@@ -3179,7 +3186,7 @@ module IlMachineManagedByref =
                         if arrObj.Shape.Length = 0 then
                             ValueNone
                         else
-                            let cellSize = ArrayElementStride.ofShape baseClassTypes state arrObj.Shape
+                            let cellSize = arrObj.Shape.ElementStride
                             let cellAdvance, inCellStart = floorDivRem byteOffset cellSize
 
                             if inCellStart = 0 && CliType.sizeOf newValue = cellSize then

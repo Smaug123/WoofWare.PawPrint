@@ -230,10 +230,10 @@ module ArithmeticOperation =
             failwith "crossArrayPointerDelta called for two byrefs into the same array"
 
         let position1 =
-            ManagedPointerByteView.arrayBytePosition baseClassTypes state arr1 index1 (int64 byteOffset1)
+            ManagedPointerByteView.arrayBytePosition state arr1 index1 (int64 byteOffset1)
 
         let position2 =
-            ManagedPointerByteView.arrayBytePosition baseClassTypes state arr2 index2 (int64 byteOffset2)
+            ManagedPointerByteView.arrayBytePosition state arr2 index2 (int64 byteOffset2)
 
         NativeIntSource.syntheticCrossStorageByteOffset
             (ByteStorageIdentity.Array arr2)
@@ -257,7 +257,7 @@ module ArithmeticOperation =
             // result tagged so later arithmetic cannot silently compose it.
             crossArrayPointerDelta baseClassTypes state arr1 index1 offset1 arr2 index2 offset2
         else
-            let elementSize = ManagedPointerByteView.arrayElementSize baseClassTypes state arr1
+            let elementSize = ManagedPointerByteView.arrayElementSize state arr1
 
             let cellDelta = (int64 index1 - int64 index2) * int64 elementSize
             let byteDelta = cellDelta + int64 (offset1 - offset2)
@@ -325,13 +325,13 @@ module ArithmeticOperation =
                     let byteType = byteConcreteType baseClassTypes state
 
                     ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
-                    |> ManagedPointerByteView.addByteOffset baseClassTypes state byteType offset
+                    |> ManagedPointerByteView.addByteOffset state byteType offset
                     |> Choice1Of2
                 | FieldContainer.ByrefContainer parentPtr ->
                     let byteType = byteConcreteType baseClassTypes state
 
                     parentPtr
-                    |> ManagedPointerByteView.addByteOffset baseClassTypes state byteType offset
+                    |> ManagedPointerByteView.addByteOffset state byteType offset
                     |> Choice1Of2
             | Some field ->
                 let newField = CliConcreteField.ToCliField(field).Id
@@ -375,9 +375,7 @@ module ArithmeticOperation =
             // failure there beats a plausible answer here.
             let byteType = byteConcreteType baseClassTypes state
 
-            ptr
-            |> ManagedPointerByteView.addByteOffset baseClassTypes state byteType v
-            |> Choice1Of2
+            ptr |> ManagedPointerByteView.addByteOffset state byteType v |> Choice1Of2
         | ArithmeticTarget.ByteViewTarget _ ->
             // Walk the byte cursor under the trailing reinterpret. The reinterpret
             // stays (it's the type view the caller set up); the byte offset
@@ -387,9 +385,7 @@ module ArithmeticOperation =
             // denoting the same byte location must share one structural form,
             // else equality (Unsafe.AreSame, ceq) spuriously returns false
             // when the cursor lands on another cell boundary.
-            ptr
-            |> ManagedPointerByteView.addByteOffsetToByteView baseClassTypes state v
-            |> Choice1Of2
+            ptr |> ManagedPointerByteView.addByteOffsetToByteView state v |> Choice1Of2
 
     let private mulOffsetManagedPtr
         (state : IlMachineState)

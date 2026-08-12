@@ -2462,7 +2462,7 @@ module Intrinsics =
             let rightPtr = extractPtr right
 
             let normalisation =
-                ManagedPointerByteView.normalisationContextForPointers baseClassTypes state [ leftPtr ; rightPtr ]
+                ManagedPointerByteView.normalisationContextForPointers state [ leftPtr ; rightPtr ]
 
             let leftNormalised =
                 ManagedPointerSource.normaliseForComparison normalisation leftPtr
@@ -2693,10 +2693,7 @@ module Intrinsics =
                     let elementSize =
                         let obj = state.ManagedHeap.Arrays.[arr]
 
-                        if obj.Shape.Length = 0 then
-                            0
-                        else
-                            ArrayElementStride.ofShape baseClassTypes state obj.Shape
+                        if obj.Shape.Length = 0 then 0 else obj.Shape.ElementStride
 
                     ByteOffsetNormalisationContext.withArrayElementSize arr elementSize
                 | _ -> ByteOffsetNormalisationContext.fixedStrideRootsOnly
@@ -2725,7 +2722,7 @@ module Intrinsics =
                             if arrObj.Shape.Length = 0 then
                                 None
                             else
-                                let elementSize = ArrayElementStride.ofShape baseClassTypes state arrObj.Shape
+                                let elementSize = arrObj.Shape.ElementStride
 
                                 if elementSize > 0 && offset % elementSize = 0 then
                                     Some (
@@ -2847,7 +2844,7 @@ module Intrinsics =
                         if arrObj.Shape.Length = 0 then
                             tSize
                         else
-                            ArrayElementStride.ofShape baseClassTypes state arrObj.Shape
+                            arrObj.Shape.ElementStride
 
                     ByteStorageIdentity.Array arr, int64 i * int64 elementSize + projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->

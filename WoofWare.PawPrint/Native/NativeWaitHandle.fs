@@ -442,7 +442,7 @@ module NativeWaitHandle =
         [ 0 .. count - 1 ]
         |> List.map (fun index ->
             let elementPtr =
-                ManagedPointerByteView.addByteOffset baseClassTypes state intPtrConcreteType (index * stride) ptr
+                ManagedPointerByteView.addByteOffset state intPtrConcreteType (index * stride) ptr
 
             let element =
                 IlMachineState.readManagedByrefBytesAs

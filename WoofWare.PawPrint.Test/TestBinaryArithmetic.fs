@@ -72,6 +72,7 @@ module TestBinaryArithmetic =
                     ConcreteType = ConcreteTypeHandle.OneDimArrayZero int32Handle
                     Length = values.Length
                     Lengths = ImmutableArray.Create values.Length
+                    ElementStride = sizeof<int32>
                 }
             Elements = elements
         }
@@ -1892,7 +1893,7 @@ module TestBinaryArithmetic =
         // must say these are the same pointer.
         let normalise (p : ManagedPointerSource) : NormalisedManagedPointerSource =
             ManagedPointerSource.normaliseForComparison
-                (ManagedPointerByteView.normalisationContextForPointer baseClassTypes state p)
+                (ManagedPointerByteView.normalisationContextForPointer state p)
                 p
 
         ManagedPointerSource.ceqNormalised "round trip test" (normalise returned) (normalise ptr)

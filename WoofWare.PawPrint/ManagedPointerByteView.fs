@@ -3,22 +3,17 @@ namespace WoofWare.PawPrint
 [<RequireQualifiedAccess>]
 module ManagedPointerByteView =
     let private arrayElementHandle : ArrayShape -> ConcreteTypeHandle =
-        ArrayElementStride.elementHandle
+        ArrayElementType.ofShape
 
     /// The byte stride between cells of the array at `arr`.
     ///
     /// This used to measure cell 0 when the array was non-empty and fall back to the
     /// element type when it was empty. Both branches computed the same number — the
     /// stride is a property of the element type — so the non-empty branch was reading
-    /// guest memory to answer a question the type already answers. It now always takes
-    /// the type route; see `ArrayElementStride.ofShape`.
-    let arrayElementSize
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (arr : ManagedHeapAddress)
-        : int
-        =
-        ArrayElementStride.ofAddress baseClassTypes state arr
+    /// guest memory to answer a question the type already answers. The array now records
+    /// the stride at allocation; see `ArrayShape.ElementStride`.
+    let arrayElementSize (state : IlMachineState) (arr : ManagedHeapAddress) : int =
+        ManagedHeap.getArrayElementStride arr state.ManagedHeap
 
     /// The looked-up concrete element type of the given array, when the element
     /// is a registered concrete type. Returns `None` when the element handle is
@@ -35,28 +30,24 @@ module ManagedPointerByteView =
         AllConcreteTypes.lookup handle state.ConcreteTypes
 
     let arrayBytePosition
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (arr : ManagedHeapAddress)
         (index : int)
         (byteOffset : int64)
         : int64
         =
-        int64 index * int64 (arrayElementSize baseClassTypes state arr) + byteOffset
+        int64 index * int64 (arrayElementSize state arr) + byteOffset
 
     let normalisationContextForPointer
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ptr : ManagedPointerSource)
         : ByteOffsetNormalisationContext
         =
         match ManagedPointerSource.tryGetArrayRoot ptr with
-        | Some arr ->
-            ByteOffsetNormalisationContext.withArrayElementSize arr (arrayElementSize baseClassTypes state arr)
+        | Some arr -> ByteOffsetNormalisationContext.withArrayElementSize arr (arrayElementSize state arr)
         | None -> ByteOffsetNormalisationContext.nonArrayRootsOnly
 
     let normalisationContextForPointers
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ptrs : ManagedPointerSource list)
         : ByteOffsetNormalisationContext
@@ -65,7 +56,7 @@ module ManagedPointerByteView =
             ptrs
             |> List.choose ManagedPointerSource.tryGetArrayRoot
             |> List.distinct
-            |> List.map (fun arr -> arr, arrayElementSize baseClassTypes state arr)
+            |> List.map (fun arr -> arr, arrayElementSize state arr)
 
         if List.isEmpty arrayElementSizes then
             ByteOffsetNormalisationContext.nonArrayRootsOnly
@@ -73,25 +64,23 @@ module ManagedPointerByteView =
             ByteOffsetNormalisationContext.withArrayElementSizes arrayElementSizes
 
     let addByteOffset
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (viewType : ConcreteType<ConcreteTypeHandle>)
         (byteOffset : int)
         (ptr : ManagedPointerSource)
         : ManagedPointerSource
         =
-        let normalisation = normalisationContextForPointer baseClassTypes state ptr
+        let normalisation = normalisationContextForPointer state ptr
 
         ManagedPointerSource.addByteOffsetUnderReinterpret normalisation viewType byteOffset ptr
 
     let addByteOffsetToByteView
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (byteOffset : int)
         (ptr : ManagedPointerSource)
         : ManagedPointerSource
         =
-        let normalisation = normalisationContextForPointer baseClassTypes state ptr
+        let normalisation = normalisationContextForPointer state ptr
 
         ManagedPointerSource.addByteOffsetToByteView normalisation byteOffset ptr
 
@@ -163,7 +152,7 @@ module ManagedPointerByteView =
             match handle with
             | ConcreteTypeHandle.Concrete _ ->
                 match AllConcreteTypes.lookup handle state.ConcreteTypes with
-                | Some elementType -> addByteOffset baseClassTypes state elementType 0 ptr
+                | Some elementType -> addByteOffset state elementType 0 ptr
                 | None -> ptr
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ ->
@@ -171,14 +160,14 @@ module ManagedPointerByteView =
                 // reinterpret target only needs to carry the `ObjectRef` shape,
                 // and `System.Object` is the universal surrogate for that shape.
                 match tryObjectConcreteType () with
-                | Some objectType -> addByteOffset baseClassTypes state objectType 0 ptr
+                | Some objectType -> addByteOffset state objectType 0 ptr
                 | None -> ptr
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _
             | ConcreteTypeHandle.FunctionPointer _ -> ptr
         | ManagedPointerSource.Byref (ByrefRoot.StringCharAt _, []) ->
             match tryCharConcreteType () with
-            | Some charType -> addByteOffset baseClassTypes state charType 0 ptr
+            | Some charType -> addByteOffset state charType 0 ptr
             | None -> ptr
         | _ -> ptr
 
@@ -194,8 +183,9 @@ module ManagedPointerByteView =
     ///
     /// Consequently this is total over element handles, including the pointer/byref/fnptr
     /// elements the shape-preserving anchor declines: byte *stride* is well defined for those
-    /// (it comes from the cell's `CliType.sizeOf` via `arrayElementSize`, independent of the
-    /// reinterpret target), even though byte-granular *dereference* of such a cell is not
+    /// (it is recorded on the array at allocation and read back by `arrayElementSize`,
+    /// independent of the reinterpret target), even though byte-granular *dereference* of
+    /// such a cell is not
     /// modelled and still fails loudly at the access. That distinction matters: the arithmetic
     /// is perfectly well defined, so failing there would be rejecting legal IL.
     ///
@@ -216,5 +206,5 @@ module ManagedPointerByteView =
                     failwith "anchorByteStrideOverArrayData: System.Byte is not concretized"
                 )
 
-            addByteOffset baseClassTypes state byteType 0 ptr
+            addByteOffset state byteType 0 ptr
         | _ -> ptr

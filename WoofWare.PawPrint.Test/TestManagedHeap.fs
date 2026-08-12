@@ -48,6 +48,7 @@ module TestManagedHeap =
                         ConcreteType = intArrayHandle
                         Length = 0
                         Lengths = ImmutableArray.Create 0
+                        ElementStride = sizeof<int32>
                     }
                 Elements = ImmutableArray.Empty
             }
@@ -59,6 +60,7 @@ module TestManagedHeap =
                         ConcreteType = stringArrayHandle
                         Length = 0
                         Lengths = ImmutableArray.Create 0
+                        ElementStride = NATIVE_INT_SIZE
                     }
                 Elements = ImmutableArray.Empty
             }
@@ -84,6 +86,7 @@ module TestManagedHeap =
                         ConcreteType = arrayHandle
                         Length = 0
                         Lengths = ImmutableArray.Create 0
+                        ElementStride = sizeof<int32>
                     }
                 Elements = ImmutableArray.Empty
             }
@@ -390,6 +393,7 @@ module TestManagedHeap =
                     ConcreteType = ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 1)
                     Length = length
                     Lengths = ImmutableArray.Create length
+                    ElementStride = sizeof<int32>
                 }
             Elements =
                 Seq.replicate length (CliType.Numeric (CliNumericType.Int32 0))
@@ -568,6 +572,7 @@ module TestManagedHeap =
                         ConcreteType = arrayHandle
                         Length = 12
                         Lengths = lengths
+                        ElementStride = sizeof<int32>
                     }
                 Elements =
                     Seq.replicate 12 (CliType.Numeric (CliNumericType.Int32 0))
@@ -640,6 +645,7 @@ module TestManagedHeap =
                             ConcreteType = ConcreteTypeHandle.Array (ConcreteTypeHandle.Concrete 1, lengths.Length)
                             Length = total
                             Lengths = ImmutableArray.CreateRange lengths
+                            ElementStride = sizeof<int32>
                         }
                     Elements = ImmutableArray.Empty
                 }
@@ -650,6 +656,7 @@ module TestManagedHeap =
             shape.ConcreteType = allocation.Shape.ConcreteType
             && shape.Length = allocation.Shape.Length
             && shape.Lengths = allocation.Shape.Lengths
+            && shape.ElementStride = allocation.Shape.ElementStride
 
         Check.One (
             Config.QuickThrowOnFailure.WithMaxTest 200,
@@ -823,3 +830,178 @@ module TestManagedHeap =
             Config.QuickThrowOnFailure.WithMaxTest 200,
             Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary) property
         )
+
+    // ---------------------------------------------------------------------
+    // Element stride.
+    //
+    // The stride is the one part of `ArrayShape` that duplicates something
+    // also recoverable from the cells, so it is the one part that could
+    // drift. Callers read it precisely so that they never touch guest memory
+    // to learn the stride — which is worthless if the recorded number can be
+    // wrong. So it is pinned twice over: against an oracle outside PawPrint
+    // entirely (the host CLR's own element sizes), and by the check
+    // `allocateArray` runs against cell 0 of every non-empty allocation.
+    // ---------------------------------------------------------------------
+
+    /// Allocate a `len`-element array of `elementHandle` and report its recorded stride.
+    let private strideOfArray
+        (elementHandle : ConcreteTypeHandle)
+        (len : int)
+        (state : IlMachineState)
+        : int * IlMachineState
+        =
+        let zero, state =
+            IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementHandle
+
+        let addr, state =
+            IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero elementHandle) (fun () -> zero) len state
+
+        ManagedHeap.getArrayElementStride addr state.ManagedHeap, state
+
+    /// Element types paired with the stride the *host* CLR gives an array of them. These
+    /// are facts about .NET, established without consulting any PawPrint code, so they can
+    /// witness a wrong answer rather than merely a self-consistent one.
+    let private strideOracle
+        : (string * (BaseClassTypes<DumpedAssembly> -> TypeInfo<GenericParamFromMetadata, TypeDefn>) * int) list =
+        [
+            "System.Boolean", (fun bct -> bct.Boolean), sizeof<bool>
+            "System.Byte", (fun bct -> bct.Byte), sizeof<byte>
+            "System.SByte", (fun bct -> bct.SByte), sizeof<sbyte>
+            "System.Char", (fun bct -> bct.Char), sizeof<char>
+            "System.Int16", (fun bct -> bct.Int16), sizeof<int16>
+            "System.UInt16", (fun bct -> bct.UInt16), sizeof<uint16>
+            "System.Int32", (fun bct -> bct.Int32), sizeof<int32>
+            "System.UInt32", (fun bct -> bct.UInt32), sizeof<uint32>
+            "System.Int64", (fun bct -> bct.Int64), sizeof<int64>
+            "System.UInt64", (fun bct -> bct.UInt64), sizeof<uint64>
+            "System.Single", (fun bct -> bct.Single), sizeof<single>
+            "System.Double", (fun bct -> bct.Double), sizeof<double>
+            // A reference-typed element is a pointer-width slot, whatever it points at.
+            "System.Object", (fun bct -> bct.Object), System.IntPtr.Size
+            "System.String", (fun bct -> bct.String), System.IntPtr.Size
+        ]
+
+    [<Test>]
+    let ``recorded element stride is the host CLR's element size`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let mutable state = state loggerFactory
+
+        for name, selector, expected in strideOracle do
+            let handle =
+                AllConcreteTypes.getRequiredNonGenericHandle concreteTypes (selector baseClassTypes)
+
+            let stride, newState = strideOfArray handle 3 state
+            state <- newState
+
+            if stride <> expected then
+                failwith $"array of %s{name} recorded element stride %d{stride}, but .NET lays it out at %d{expected}"
+
+    [<Test>]
+    let ``an empty array records the same stride as a populated one`` () : unit =
+        // The whole reason the stride is recorded rather than measured: `Array.Empty<T>()`
+        // has no cell to measure, and used to leave callers with no answer at all. Every
+        // element type is checked, not just one, because a fallback that happened to return
+        // a plausible constant would pass a single-type test.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let mutable state = state loggerFactory
+
+        for name, selector, _ in strideOracle do
+            let handle =
+                AllConcreteTypes.getRequiredNonGenericHandle concreteTypes (selector baseClassTypes)
+
+            let populated, s1 = strideOfArray handle 3 state
+            let empty, s2 = strideOfArray handle 0 s1
+            state <- s2
+
+            if populated <> empty then
+                failwith
+                    $"empty array of %s{name} records element stride %d{empty}, but a populated one records %d{populated}"
+
+    [<Test>]
+    let ``allocateArray rejects a stride that disagrees with the cells`` () : unit =
+        // The check that makes reading the stride, rather than measuring a cell, safe.
+        // Without it the field is an honour-system claim.
+        let wrong : AllocatedArray =
+            { stubArray 3 with
+                Shape =
+                    { (stubArray 3).Shape with
+                        ElementStride = sizeof<int32> + 1
+                    }
+            }
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> ManagedHeap.allocateArray wrong ManagedHeap.empty |> ignore)
+
+        exn.Message |> shouldContainText "but its first cell measures"
+
+    [<Test>]
+    let ``allocateArray rejects a non-positive stride`` () : unit =
+        // Checked separately from the cell comparison because an empty array has no cell to
+        // compare against, so this is the only guard standing between a nonsense stride and
+        // the `floorDivRem` that will later divide by it.
+        //
+        // Zero is rejected as well as negative, and is the more dangerous of the two: it is
+        // the plausible-looking value for "an array with nothing in it", and it fails
+        // *quietly* — every index would map to byte offset zero, and a byte-offset walk
+        // could never advance a cell. No CLI type is zero-sized (a fieldless struct is
+        // padded to one byte, per CoreCLR and `CliValueType.SizeOfFieldStorage`), so no
+        // real allocation can want it.
+        let rejects (stride : int) : unit =
+            let wrong : AllocatedArray =
+                { stubArray 0 with
+                    Shape =
+                        { (stubArray 0).Shape with
+                            ElementStride = stride
+                        }
+                }
+
+            let exn =
+                Assert.Throws<System.Exception> (fun () -> ManagedHeap.allocateArray wrong ManagedHeap.empty |> ignore)
+
+            exn.Message |> shouldContainText "non-positive element stride"
+
+        rejects 0
+        rejects -4
+
+    [<Test>]
+    let ``cloneArray carries the source's stride`` () : unit =
+        // `cloneArray` reuses the source `AllocatedArray` verbatim, so this holds by
+        // construction today; it is pinned because a clone that rebuilt the shape without
+        // the stride would produce an array whose every byte-view access is silently
+        // misaligned rather than failing.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let handle =
+            AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Int64
+
+        let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes handle
+
+        let source, state =
+            IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero handle) (fun () -> zero) 2 state
+
+        let clone, state = IlMachineState.cloneArray source state
+
+        ManagedHeap.getArrayElementStride clone state.ManagedHeap
+        |> shouldEqual (ManagedHeap.getArrayElementStride source state.ManagedHeap)
+
+        ManagedHeap.getArrayElementStride clone state.ManagedHeap
+        |> shouldEqual sizeof<int64>
+
+    [<Test>]
+    let ``getArrayElementStride fails loudly for a non-array and for a dangling address`` () : unit =
+        let objAddr, heap = ManagedHeap.allocateNonArray stubNonArray ManagedHeap.empty
+
+        let notAnArray =
+            Assert.Throws<System.Exception> (fun () -> ManagedHeap.getArrayElementStride objAddr heap |> ignore)
+
+        notAnArray.Message |> shouldContainText "is not an array"
+
+        let dangling =
+            Assert.Throws<System.Exception> (fun () ->
+                ManagedHeap.getArrayElementStride (ManagedHeapAddress 42) heap |> ignore
+            )
+
+        dangling.Message |> shouldContainText "not a live managed heap allocation"

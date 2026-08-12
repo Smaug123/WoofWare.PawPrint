@@ -85,9 +85,9 @@ type AllocatedNonArrayObject =
         }
 
 /// Everything about an array except its contents: the element type, the total element
-/// count, and the per-dimension lengths. All three are fixed when the array is allocated
-/// and never change afterwards, so reading them is not a guest-visible memory access —
-/// unlike reading a cell, which is.
+/// count, the per-dimension lengths, and the byte stride between cells. All of them are
+/// fixed when the array is allocated and never change afterwards, so reading them is not a
+/// guest-visible memory access — unlike reading a cell, which is.
 ///
 /// The absence of an `Elements` field is the point. A caller that needs only the rank or
 /// the length holds a value from which no cell can be reached, so a shape query cannot
@@ -100,6 +100,24 @@ type ArrayShape =
         Length : int
         /// Per-dimension lengths in row-major order; length 1 for szarrays, else the rank.
         Lengths : ImmutableArray<int>
+        /// The byte distance between consecutive cells.
+        ///
+        /// A property of the *element type*, not of any stored value: CoreCLR fixes it when
+        /// the array type is laid out, and no store into a cell can change it. It is recorded
+        /// here at allocation, from the element zero the allocator was handed, rather than
+        /// recovered later by measuring a cell — measuring a cell would be a read of guest
+        /// memory to answer a question about a type, showing up as an access with no
+        /// counterpart in the program under test, and it has no answer at all for an empty
+        /// array.
+        ///
+        /// Always strictly positive: every CLI type occupies at least one byte, a fieldless
+        /// struct included (CoreCLR pads it to 1, and `CliValueType.SizeOfFieldStorage`
+        /// follows). Consumers divide by it — see `floorDivRem` — so a zero here would be a
+        /// silent wrong answer rather than a loud one.
+        ///
+        /// `ManagedHeap.allocateArray` checks positivity, and checks the value itself
+        /// against cell 0 of every non-empty allocation, so the two can never drift apart.
+        ElementStride : int
     }
 
 type AllocatedArray =
@@ -181,7 +199,26 @@ module ManagedHeap =
             SyncBlocks = heap.SyncBlocks |> Map.add addr syncValue
         }
 
+    /// Allocate `ty` at a fresh address.
+    ///
+    /// `ty.Shape.ElementStride` is checked against cell 0 here rather than trusted. The
+    /// stride is the one piece of `ArrayShape` that duplicates information also derivable
+    /// from the cells, and this is the single chokepoint through which every array reaches
+    /// the heap — including `cloneArray`, which reuses a source record verbatim. Callers
+    /// read the stride instead of measuring a cell precisely so that they never touch guest
+    /// memory to learn it, which would be worthless if the recorded value could be wrong.
     let allocateArray (ty : AllocatedArray) (heap : ManagedHeap) : ManagedHeapAddress * ManagedHeap =
+        if ty.Shape.ElementStride <= 0 then
+            failwith
+                $"allocateArray: array of %O{ty.Shape.ConcreteType} declares a non-positive element stride %d{ty.Shape.ElementStride}; every CLI type occupies at least one byte"
+
+        if not ty.Elements.IsEmpty then
+            let cellSize = CliType.sizeOf ty.Elements.[0]
+
+            if cellSize <> ty.Shape.ElementStride then
+                failwith
+                    $"allocateArray: array of %O{ty.Shape.ConcreteType} declares element stride %d{ty.Shape.ElementStride} but its first cell measures %d{cellSize}; the stride must be the element type's size, so one of the two is wrong"
+
         let addr = heap.FirstAvailableAddress
 
         let heap =
@@ -368,6 +405,11 @@ module ManagedHeap =
                 failwith $"getArrayShape: %O{addr} is not an array, so has no array shape"
             else
                 failwith $"getArrayShape: %O{addr} is not a live managed heap allocation, so has no array shape"
+
+    /// The byte distance between consecutive cells of the array at `addr`. Well defined for
+    /// an empty array, and never a read of a cell: see `ArrayShape.ElementStride`.
+    let getArrayElementStride (addr : ManagedHeapAddress) (heap : ManagedHeap) : int =
+        (getArrayShape addr heap).ElementStride
 
     let getArrayValue (alloc : ManagedHeapAddress) (offset : int) (heap : ManagedHeap) : CliType =
         match heap.Arrays.TryGetValue alloc with
