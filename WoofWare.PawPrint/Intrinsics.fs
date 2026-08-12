@@ -2690,10 +2690,10 @@ module Intrinsics =
             let normalisation =
                 match srcPtr with
                 | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, _), _) ->
-                    let elementSize =
-                        let obj = state.ManagedHeap.Arrays.[arr]
-
-                        if obj.Shape.Length = 0 then 0 else obj.Shape.ElementStride
+                    // See `IntrinsicHelpers.offsetManagedPointerByElements`: a zero here means
+                    // "do not normalise", so an empty array used to keep a raw byte cursor
+                    // where a populated one folded it into the cell index.
+                    let elementSize = (ManagedHeap.getArrayShape arr state.ManagedHeap).ElementStride
 
                     ByteOffsetNormalisationContext.withArrayElementSize arr elementSize
                 | _ -> ByteOffsetNormalisationContext.fixedStrideRootsOnly
@@ -2717,22 +2717,21 @@ module Intrinsics =
                     else
                         match root, projs with
                         | ByrefRoot.ArrayElement (arr, i), [] ->
-                            let arrObj = state.ManagedHeap.Arrays.[arr]
+                            // `ElementStride` is strictly positive by construction (see
+                            // `ArrayShape`), so no divisor check is needed and an empty array
+                            // needs no special case: the whole-cell test is a question about
+                            // the element type, which an empty array has just like any other.
+                            let elementSize = (ManagedHeap.getArrayShape arr state.ManagedHeap).ElementStride
 
-                            if arrObj.Shape.Length = 0 then
-                                None
-                            else
-                                let elementSize = arrObj.Shape.ElementStride
-
-                                if elementSize > 0 && offset % elementSize = 0 then
-                                    Some (
-                                        ManagedPointerSource.Byref (
-                                            ByrefRoot.ArrayElement (arr, i + offset / elementSize),
-                                            []
-                                        )
+                            if offset % elementSize = 0 then
+                                Some (
+                                    ManagedPointerSource.Byref (
+                                        ByrefRoot.ArrayElement (arr, i + offset / elementSize),
+                                        []
                                     )
-                                else
-                                    None
+                                )
+                            else
+                                None
                         | _ -> None
                 | _ -> None
 
@@ -2834,17 +2833,12 @@ module Intrinsics =
                 | ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringType, field, owner), projs) ->
                     ByteStorageIdentity.StaticField (declaringType, field, owner), projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
-                    // `Array.Empty<T>()` carries no stored element to read a
-                    // size from, but the statically-declared `T` on the method
-                    // gives the same answer for any byref the caller could
-                    // legally have obtained: both parameters are `ref T`.
-                    let arrObj = state.ManagedHeap.Arrays.[arr]
-
-                    let elementSize =
-                        if arrObj.Shape.Length = 0 then
-                            tSize
-                        else
-                            arrObj.Shape.ElementStride
+                    // The cell index is a position in *this array's* layout, so the array's
+                    // stride is what converts it to bytes — not `sizeof(T)` from the calling
+                    // method, which is only the same number when `T` is the element type.
+                    // `Array.Empty<T>()` needs no special case: it has no stored element to
+                    // measure, but it has a recorded stride like any other array.
+                    let elementSize = (ManagedHeap.getArrayShape arr state.ManagedHeap).ElementStride
 
                     ByteStorageIdentity.Array arr, int64 i * int64 elementSize + projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
