@@ -801,15 +801,23 @@ module ManagedPointerSource =
             match List.rev projs, tryGetCellSize root with
             | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs ty :: rest, Some cellSize when cellSize > 0 ->
                 // Floor-division so negatives land in `[0, cellSize)`.
-                let cellAdvance =
+                //
+                // The residual is carried out of the division rather than recovered
+                // afterwards as `n - cellAdvance * cellSize`. That product overflows int32
+                // whenever `n` is `Int32.MinValue` and `cellSize` does not divide it — a
+                // 3-byte element gives -2147483649 — and this file is `Checked`, so it would
+                // abort the guest over an intermediate, even though the residual being
+                // computed is by construction smaller than `cellSize`. The truncated
+                // remainder `r` is always in `(-cellSize, cellSize)`, so correcting it is
+                // safe; `q - 1` is too, since `r < 0` implies `q` is not `Int32.MinValue`.
+                let cellAdvance, newOffset =
                     let q = n / cellSize
                     let r = n - q * cellSize
-                    if r < 0 then q - 1 else q
+                    if r < 0 then q - 1, r + cellSize else q, r
 
                 match advanceRoot root cellAdvance with
                 | None -> src
                 | Some newRoot ->
-                    let newOffset = n - cellAdvance * cellSize
                     let prefix = List.rev rest
 
                     let tail =

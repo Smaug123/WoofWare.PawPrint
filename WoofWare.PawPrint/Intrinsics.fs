@@ -2690,10 +2690,10 @@ module Intrinsics =
             let normalisation =
                 match srcPtr with
                 | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, _), _) ->
-                    let elementSize =
-                        let obj = state.ManagedHeap.Arrays.[arr]
-
-                        if obj.Shape.Length = 0 then 0 else obj.Shape.ElementStride
+                    // See `IntrinsicHelpers.offsetManagedPointerByElements`: a zero here means
+                    // "do not normalise", so an empty array used to keep a raw byte cursor
+                    // where a populated one folded it into the cell index.
+                    let elementSize = (ManagedHeap.getArrayShape arr state.ManagedHeap).ElementStride
 
                     ByteOffsetNormalisationContext.withArrayElementSize arr elementSize
                 | _ -> ByteOffsetNormalisationContext.fixedStrideRootsOnly
@@ -2717,22 +2717,40 @@ module Intrinsics =
                     else
                         match root, projs with
                         | ByrefRoot.ArrayElement (arr, i), [] ->
-                            let arrObj = state.ManagedHeap.Arrays.[arr]
+                            // `ElementStride` is strictly positive by construction (see
+                            // `ArrayShape`), so no divisor check is needed and an empty array
+                            // needs no special case: the whole-cell test is a question about
+                            // the element type, which an empty array has just like any other.
+                            let elementSize = (ManagedHeap.getArrayShape arr state.ManagedHeap).ElementStride
 
-                            if arrObj.Shape.Length = 0 then
+                            if offset % elementSize <> 0 then
                                 None
                             else
-                                let elementSize = arrObj.Shape.ElementStride
 
-                                if elementSize > 0 && offset % elementSize = 0 then
-                                    Some (
-                                        ManagedPointerSource.Byref (
-                                            ByrefRoot.ArrayElement (arr, i + offset / elementSize),
-                                            []
-                                        )
-                                    )
-                                else
-                                    None
+                            // `ArrayElement` stores an int32 cell index, so a fold that does
+                            // not fit in one cannot be represented — and wrapping would not
+                            // merely lose precision, it would put the byref on the *wrong side*
+                            // of its own root, so `Unsafe.ByteOffset` would report
+                            // -8589934592 bytes instead of +8589934592. Refuse what we cannot
+                            // represent, as `IntrinsicHelpers.offsetManagedPointerByElements`
+                            // already does for the same arithmetic.
+                            //
+                            // Declining the shortcut instead would not give a right answer
+                            // either: the byte-view fallback normalises the resulting cursor
+                            // back into the cell index through `normaliseTrailingByteOffset`,
+                            // which performs the same addition. That file is `Checked`, so it
+                            // raises `OverflowException` rather than wrapping — a crash, but
+                            // one naming neither the byref nor the walk that produced it.
+                            let folded = int64<int> i + int64<int> (offset / elementSize)
+
+                            if
+                                folded < int64<int> System.Int32.MinValue
+                                || folded > int64<int> System.Int32.MaxValue
+                            then
+                                failwith
+                                    $"TODO: Unsafe.AddByteOffset: advancing the byref at cell %d{i} of array %O{arr} by %d{offset} bytes reaches cell %d{folded}, which does not fit in the int32 PawPrint stores for a cell index; a byref this far from its root is not modelled"
+
+                            Some (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, int32<int64> folded), []))
                         | _ -> None
                 | _ -> None
 
@@ -2834,17 +2852,12 @@ module Intrinsics =
                 | ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringType, field, owner), projs) ->
                     ByteStorageIdentity.StaticField (declaringType, field, owner), projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
-                    // `Array.Empty<T>()` carries no stored element to read a
-                    // size from, but the statically-declared `T` on the method
-                    // gives the same answer for any byref the caller could
-                    // legally have obtained: both parameters are `ref T`.
-                    let arrObj = state.ManagedHeap.Arrays.[arr]
-
-                    let elementSize =
-                        if arrObj.Shape.Length = 0 then
-                            tSize
-                        else
-                            arrObj.Shape.ElementStride
+                    // The cell index is a position in *this array's* layout, so the array's
+                    // stride is what converts it to bytes — not `sizeof(T)` from the calling
+                    // method, which is only the same number when `T` is the element type.
+                    // `Array.Empty<T>()` needs no special case: it has no stored element to
+                    // measure, but it has a recorded stride like any other array.
+                    let elementSize = (ManagedHeap.getArrayShape arr state.ManagedHeap).ElementStride
 
                     ByteStorageIdentity.Array arr, int64 i * int64 elementSize + projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
