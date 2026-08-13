@@ -62,6 +62,16 @@ Note that Codex did not demonstrate this end-to-end — its own repro died on an
 gap in the IL its rewriter emitted — but the mechanism is supported by design rather than
 accidental, so it was treated as real.
 
+**The caller's *assembly* was too coarse a proxy.** On the next review round Codex pointed out
+that once pointer-parameter reflection lands, a guest reaching this through
+`MethodInfo.Invoke` presents `RuntimeMethodHandle.InvokeMethod` as the immediate caller frame —
+CoreLib's, even though the registration and the code inspecting it afterwards are both the
+guest's. The check is now against an enumerated `permittedCallers` list of
+`(declaring type, method name)` pairs: every method in .NET 10's CoreLib that contains a call to
+`RegisterForGCReporting`. That is also a more honest statement of the property being relied on,
+which is "the registration cannot escape this frame", not "the caller is CoreLib". A future
+CoreLib caller not on the list gets the same loud refusal, which is the right failure mode.
+
 **The dependency resolved itself.** #955 merged as `e5d8b93` while this was being written, and
 its squash-merged tree is byte-identical to the branch tip this work started from, so the branch
 is based on plain `main` and the "stacks on" plan below no longer applies.

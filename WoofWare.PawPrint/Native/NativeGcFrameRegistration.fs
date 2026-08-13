@@ -4,13 +4,34 @@ open System.Reflection
 
 [<RequireQualifiedAccess>]
 module NativeGcFrameRegistration =
+    /// The `System.Reflection` frames, all in `System.Private.CoreLib`, that may register a GC
+    /// frame here: every method in .NET 10's CoreLib containing a call to
+    /// `GCFrameRegistration.RegisterForGCReporting`. Each builds its registration over a
+    /// `stackalloc` of its own, hands it straight to the invoke and unregisters it in the
+    /// matching `finally`, so the registration cannot escape to anything that reads it back —
+    /// which is what makes the no-op below exact rather than approximate. `MethodBaseInvoker`
+    /// contributes two entries under one name because `InvokeConstructorWithoutAlloc` is
+    /// overloaded (`MethodBaseInvoker.Constructor.cs:15` and `:68`), and matching by name
+    /// covers both.
+    ///
+    /// A CoreLib method that is *not* on this list gets the same loud refusal as a guest. That
+    /// is deliberate: if a future CoreLib grows another caller, the failure names it, which is a
+    /// better answer than silently assuming the new caller has the same escape property.
+    let private permittedCallers : (string * string) list =
+        [
+            "MethodBaseInvoker", "InvokeWithManyArgs"
+            "MethodBaseInvoker", "InvokeConstructorWithoutAlloc"
+            "MethodInvoker", "InvokeWithManyArgs"
+            "ConstructorInvoker", "InvokeWithManyArgs"
+        ]
+
     /// `System.Runtime.GCFrameRegistration::RegisterForGCReporting` and its
     /// `UnregisterForGCReporting` partner: the two InternalCalls (`vm/ecalllist.h:266-268`,
     /// bound to `GCReporting::Register`/`Unregister` declared at `vm/ecall.h:96`) by which
     /// managed code hands the GC a block of stack slots the JIT's own GC info cannot describe.
-    /// The four callers — `MethodBaseInvoker`, `MethodBaseInvoker.Constructor`, `MethodInvoker`,
-    /// `ConstructorInvoker` — each `stackalloc` an `IntPtr` block that holds `object` references
-    /// and `ByReference`s at runtime-computed offsets, so nothing static can describe it.
+    /// The callers — the reflection invoker frames enumerated in `permittedCallers` above —
+    /// each `stackalloc` an `IntPtr` block that holds `object` references and `ByReference`s at
+    /// runtime-computed offsets, so nothing static can describe it.
     ///
     /// `GCFrameRegistration` is a `[StructLayout(Sequential)]` struct laid out to be punned as
     /// the VM's `GCFrame` (`vm/frames.h:1865-1917`): `_reserved1`/`_reserved2` are `m_Next` and
@@ -52,17 +73,29 @@ module NativeGcFrameRegistration =
     /// guest action, and no object is ever moved, so identity and pinning are unaffected.
     ///
     /// "Does not read it back" is a property of the *caller*, not of this InternalCall, so it is
-    /// enforced rather than assumed. CoreLib qualifies: `_reserved1`/`_reserved2` are private,
-    /// are written only by the constructor (to zero) and by the native `Push`, and are read only
-    /// by the native `Remove` — a grep of `System.Private.CoreLib` finds no other mention of
-    /// either field. A guest does not necessarily qualify. PawPrint honours
-    /// `[IgnoresAccessChecksTo]` (`WoofWare.PawPrint.Domain/FriendAssemblies.fs`), so a guest
-    /// assembly can `call` this InternalCall directly on a `GCFrameRegistration` of its own and
-    /// then read the second native word, which CoreCLR's `Push` has by then set to the thread
-    /// pointer and PawPrint would leave at zero. Rather than answer that caller wrongly, the
-    /// handler refuses any caller outside CoreLib — the alternative being to model the frame
-    /// chain in guest memory, which needs a `Thread*` representation PawPrint does not have and
-    /// would have to invent a bit pattern for.
+    /// enforced rather than assumed: the handler reads the calling frame and refuses anything
+    /// not in `permittedCallers`. Two distinct callers would otherwise get a wrong answer, and
+    /// the second is why the check is on the frame rather than merely on its assembly:
+    ///
+    ///   * A guest. PawPrint honours `[IgnoresAccessChecksTo]`
+    ///     (`WoofWare.PawPrint.Domain/FriendAssemblies.fs`), so a guest assembly can `call` this
+    ///     InternalCall directly on a `GCFrameRegistration` of its own and then read the second
+    ///     native word, which CoreCLR's `Push` has by then set to the thread pointer and
+    ///     PawPrint would leave at zero.
+    ///   * A guest going through reflection. `RuntimeMethodHandle.InvokeMethod` issues the call
+    ///     itself, so the immediate caller frame is CoreLib's even though the registration and
+    ///     the code that inspects it afterwards are both the guest's. An assembly-level check
+    ///     would wave that through. It is not reachable today — pointer-typed parameters are
+    ///     refused by that QCall, see below — which is precisely why it is worth pinning now.
+    ///
+    /// The frames on the list qualify because the registration cannot escape them, not because
+    /// they are CoreLib: `_reserved1`/`_reserved2` are private, are written only by the
+    /// constructor (to zero) and by the native `Push`, and are read only by the native `Remove`
+    /// — a grep of `System.Private.CoreLib` finds no other mention of either field.
+    ///
+    /// The alternative to refusing is modelling the frame chain in guest memory, which needs a
+    /// `Thread*` representation PawPrint does not have and would have to invent a bit pattern
+    /// for.
     ///
     /// The equivalence has a second boundary, this one on the argument rather than the caller:
     /// it holds for a pointer to a registration the managed constructor built, which is every
@@ -124,19 +157,25 @@ module NativeGcFrameRegistration =
                 failwith $"%s{operation}: expected one argument, got %d{instruction.Arguments.Length}"
 
             // The no-op is only sound for a caller that does not read the registration back.
-            // That is a property of CoreLib's four invokers, not of the InternalCall, so the
-            // contract is enforced on the caller rather than assumed. See the doc comment.
-            let callerAssembly : AssemblyName =
+            // That is a property of the four CoreLib frames below, not of the InternalCall, so
+            // the contract is enforced on the caller rather than assumed. See the doc comment.
+            let caller =
                 match instruction.ReturnState with
                 | None ->
                     failwith
-                        $"%s{operation}: reached with no caller frame, so it is the thread's entry point; it is only ever called from CoreLib's reflection invokers."
-                | Some returnState ->
-                    (IlMachineState.getFrame ctx.Thread returnState.JumpTo state).ExecutingMethod.DeclaringType.Assembly
+                        $"%s{operation}: reached with no caller frame, so it is the thread's entry point; it is only ever called from the CoreLib invoker frames."
+                | Some returnState -> (IlMachineState.getFrame ctx.Thread returnState.JumpTo state).ExecutingMethod
 
-            if callerAssembly.Name <> "System.Private.CoreLib" then
+            let callerAssembly : AssemblyName = caller.DeclaringType.Assembly
+
+            let callerIsPermitted =
+                callerAssembly.Name = "System.Private.CoreLib"
+                && caller.DeclaringType.Namespace = "System.Reflection"
+                && permittedCallers |> List.contains (caller.DeclaringType.Name, caller.Name)
+
+            if not callerIsPermitted then
                 failwith
-                    $"%s{operation}: called from %s{callerAssembly.Name}, but PawPrint implements this only for CoreLib's reflection invokers. Those never read the registration back, which is what makes doing nothing an exact match; a caller that can see `_reserved1`/`_reserved2` would see them stay zero where CoreCLR writes the frame link and the thread pointer. Modelling those two words means modelling the GC frame chain itself."
+                    $"%s{operation}: called from %s{callerAssembly.Name} %s{caller.DeclaringType.Namespace}.%s{caller.DeclaringType.Name}::%s{caller.Name}, which is not one of the CoreLib invoker frames PawPrint implements this for. Those frames never read the registration back, which is what makes doing nothing an exact match; a caller that can see `_reserved1`/`_reserved2` would see them stay zero where CoreCLR writes the frame link and the thread pointer. Modelling those two words means modelling the GC frame chain itself. Note that the caller being CoreLib is not enough on its own: a guest that reaches this through `RuntimeMethodHandle.InvokeMethod` presents a CoreLib frame too, and can inspect the registration afterwards."
 
             match NativeCall.managedPointerOfPointerArgument operation "pRegistration" instruction.Arguments.[0] with
             | ManagedPointerSource.Null ->
