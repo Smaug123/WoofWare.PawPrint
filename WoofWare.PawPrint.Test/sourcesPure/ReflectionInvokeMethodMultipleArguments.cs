@@ -19,8 +19,7 @@ using System.Reflection;
 // stops exercising the `RuntimeMethodHandle_InvokeMethod` QCall at all.
 //
 // Targets taking more than four arguments take a structurally different route through
-// `InvokeWithManyArgs`, and live in `ReflectionInvokeMethodManyArguments.cs`, which is parked on an
-// unrelated missing primitive.
+// `InvokeWithManyArgs`, and live in `ReflectionInvokeMethodManyArguments.cs`.
 public class Program
 {
     // Two arguments, one of each kind: a value-type parameter (whose byref addresses a box payload)
