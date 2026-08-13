@@ -40,6 +40,8 @@ module TestInternalAlloc =
     ///   `beforefieldinit`, making it a precise-init type, the kind `MethodTable::Allocate` really
     ///   does initialise — so "allocating ran the type initialiser" has a witness. This is the one
     ///   claim that must come out the opposite way from `TestInternalAllocNoChecks`.
+    /// * `DerivedFromCctorBase` has no initialiser of its own but inherits one, so "allocating
+    ///   walked the parent chain" has a witness distinct from "allocating initialised the type".
     /// * `SomeStruct` is a value type, for the refusal.
     let private guestSource =
         """
@@ -63,6 +65,21 @@ public class WithCctor
     {
         Sentinel = 7;
     }
+}
+
+public class WithCctorBase
+{
+    public static int BaseSentinel;
+
+    static WithCctorBase()
+    {
+        BaseSentinel = 11;
+    }
+}
+
+public class DerivedFromCctorBase : WithCctorBase
+{
+    public int Field;
 }
 
 public struct SomeStruct
@@ -494,7 +511,7 @@ public static class Program
         // happened to run in.
         TypeInitTable.tryGet handle state.TypeInitTable |> shouldEqual None
 
-        let handleValue, target, _sentinel, state =
+        let handleValue, target, sentinel, state =
             objectHandleOnStackValue loggerFactory prepared.BaseClassTypes state
 
         // The initialiser is guest code, so the handler cannot run it inline: it suspends, the
@@ -508,13 +525,18 @@ public static class Program
 
         TypeInitTable.tryGet handle state.TypeInitTable |> shouldNotEqual None
 
-        // Nothing was written through the result handle on the suspending pass: the caller's
-        // local must not be left holding a half-built answer while the `.cctor` runs.
-        readAllocated prepared.BaseClassTypes state target |> ignore<ManagedHeapAddress>
+        // Nothing was written through the result handle on the suspending pass: the caller's local
+        // must still hold exactly what it held before, not a half-built answer parked there while
+        // the `.cctor` runs. Compared against the seeded sentinel rather than merely checked for
+        // non-nullness — the seed is itself non-null, so a weaker check passes against a handler
+        // that allocated and wrote before suspending, which a mutation run confirmed.
+        readAllocated prepared.BaseClassTypes state target |> shouldEqual sentinel
 
-    /// `Delegate.InternalAlloc` asserts its argument derives from `MulticastDelegate`, so a value
-    /// type cannot arrive through the only caller. Allocating one anyway would put an object on
-    /// the heap that no reader could interpret as a box, so refuse by name.
+    /// Neither caller can pass a non-nullable value type: `Delegate.InternalAlloc` asserts its
+    /// argument derives from `MulticastDelegate`, and `ReboxToNullable` asserts its argument is a
+    /// nullable. So this pins the guard that catches a *third* caller appearing, rather than a gap
+    /// with a known consumer — allocating one would put an object on the heap that no reader could
+    /// interpret as a box.
     [<Test>]
     let ``a value type is refused`` () : unit =
         let _messages, loggerFactory = LoggerFactory.makeTest ()
@@ -595,3 +617,45 @@ public static class Program
         // the fact that distinguishes them: this refusal is about there being no object with the
         // nullable's layout to write into.
         ex.Message |> shouldContainText "Unbox_Nullable"
+
+    /// `MethodTable::Allocate` initialises *as if constructing*
+    /// (`CheckRunClassInitAsIfConstructingThrowing`, methodtable.cpp:4034), which walks the whole
+    /// parent chain rather than stopping at the requested type. This is the only place in PawPrint
+    /// where that stronger rule applies: `loadClass` deliberately does not initialise base types,
+    /// and is right not to for ordinary static access, so the walk is the handler's own and needs
+    /// its own witness.
+    ///
+    /// `DerivedFromCctorBase` declares no initialiser, so a handler that initialised only the
+    /// requested type would find nothing to do and complete without suspending — which is exactly
+    /// what the `SuspendedForClassInit` match below rejects.
+    [<Test>]
+    let ``allocating runs an inherited type initialiser`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image = Roslyn.compile [ guestSource ]
+        let prepared = prepareGuest loggerFactory image
+        let guestAssembly = readGuestAssembly loggerFactory image
+
+        let derivedHandle, state =
+            concretiseGuestClass
+                loggerFactory
+                prepared.BaseClassTypes
+                guestAssembly
+                "DerivedFromCctorBase"
+                prepared.State
+
+        let baseHandle, state =
+            concretiseGuestClass loggerFactory prepared.BaseClassTypes guestAssembly "WithCctorBase" state
+
+        TypeInitTable.tryGet baseHandle state.TypeInitTable |> shouldEqual None
+
+        let handleValue, _target, _sentinel, state =
+            objectHandleOnStackValue loggerFactory prepared.BaseClassTypes state
+
+        let state =
+            match invokeNativeRaw loggerFactory prepared [ methodTablePointer derivedHandle ; handleValue ] state with
+            | NativeHandlerResult.SuspendedForClassInit (state, _) -> state
+            | other -> failwith $"expected the handler to suspend for the base type's class init, got %O{other}"
+
+        TypeInitTable.tryGet baseHandle state.TypeInitTable |> shouldNotEqual None

@@ -2035,25 +2035,51 @@ module NativeRuntimeTypeQCall =
                 failwith
                     $"TODO: %s{operation} was asked to allocate the value type %s{typeInfo.Namespace}.%s{typeInfo.Name}; neither Delegate.InternalAlloc nor RuntimeMethodHandle.ReboxToNullable can pass one, and PawPrint has no boxed representation for an object allocated here"
 
-            // `MethodTable::Allocate` runs the class initialiser only for a type with precise-init
-            // cctors, i.e. one that is *not* `beforefieldinit`. PawPrint initialises
-            // unconditionally, which is the convention its `newobj` already follows and which
-            // `docs/divergences.md` records: ECMA-335 II.10.5.3.2 permits an eager schedule, and
-            // being consistent with `newobj` beats having two different rules for allocating an
-            // object. The difference is only observable for a `beforefieldinit` type that both has
-            // a `.cctor` and is allocated through *this* entry point, which no caller can arrange:
-            // delegate types carry no static constructor.
+            // `MethodTable::Allocate` initialises *as if constructing*
+            // (`CheckRunClassInitAsIfConstructingThrowing`, methodtable.cpp:4034), which is a
+            // stronger rule than the one that governs ordinary static access: it walks the whole
+            // parent chain, running each non-`beforefieldinit` ancestor's `.cctor`. This is the
+            // only place in PawPrint where that rule applies, which is why the walk is open-coded
+            // here rather than folded into `ensureTypeInitialised` — `loadClass` deliberately does
+            // *not* initialise base types (IlMachineStateExecution.fs), and it is right not to:
+            // the CLR does not run a base initialiser just because a derived type's did.
             //
-            // This suspension needs no re-entry marker. Nothing has been written to the result
-            // handle and no managed call is outstanding, so re-entry simply re-runs this arm from
-            // the top and `ensureTypeInitialised` answers `Executed` the second time.
-            let state, typeInit =
-                IlMachineStateExecution.ensureTypeInitialised
-                    ctx.LoggerFactory
-                    ctx.BaseClassTypes
-                    ctx.Thread
-                    typeHandle
-                    state
+            // PawPrint runs every ancestor's initialiser rather than only the non-`beforefieldinit`
+            // ones, so it is uniformly more eager than CoreCLR here rather than modelling the
+            // `beforefieldinit` predicate. That matches the convention `newobj` already follows and
+            // `docs/divergences.md` records, and ECMA-335 II.10.5.3.2 permits an eager schedule.
+            // The difference needs a `beforefieldinit` ancestor that has a `.cctor` *and* an
+            // allocation through this entry point; neither caller can arrange one, since the
+            // delegate hierarchy carries no static constructor at all.
+            //
+            // The suspension needs no re-entry marker. Nothing has been written to the result
+            // handle and no managed call is outstanding, so re-entry re-runs this arm from the top;
+            // ancestors already initialised answer `Executed`, so the walk resumes where it left
+            // off and terminates.
+            let rec initialiseWithAncestors
+                (ty : ConcreteTypeHandle)
+                (state : IlMachineState)
+                : IlMachineState * WhatWeDid
+                =
+                let state, typeInit =
+                    IlMachineStateExecution.ensureTypeInitialised
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        ctx.Thread
+                        ty
+                        state
+
+                match typeInit with
+                | WhatWeDid.Executed ->
+                    let state, baseType =
+                        IlMachineState.resolveBaseConcreteType ctx.LoggerFactory ctx.BaseClassTypes state ty
+
+                    match baseType with
+                    | None -> state, WhatWeDid.Executed
+                    | Some baseType -> initialiseWithAncestors baseType state
+                | other -> state, other
+
+            let state, typeInit = initialiseWithAncestors typeHandle state
 
             match typeInit with
             | WhatWeDid.SuspendedForClassInit -> NativeHandlerResult.suspendedForClassInit state |> Some
