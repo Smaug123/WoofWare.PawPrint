@@ -2,159 +2,6 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 
-/// State carried when an object's monitor is `Held` by some thread.
-/// `AcquireQueue` is the FIFO list of (thread, optional re-entry depth) pairs
-/// parked in `BlockedOnSyncBlockAcquire` waiting for ownership to be transferred
-/// to them when `LockingThread` calls `Monitor.Exit`. FIFO order is load-bearing
-/// for fairness: switching to LIFO or arbitrary order would change the
-/// observable interleaving for guests that race multiple threads into the same
-/// `lock` block.
-///
-/// The `int option` snapshot on each `AcquireQueue` entry distinguishes the
-/// two flavours of waiter:
-///   * `None` — a fresh entrant from `Monitor.Enter`. On ownership transfer it
-///     becomes the new owner with `ReentrancyCount = 1`.
-///   * `Some depth` — a waiter that was woken from `Monitor.Wait` by
-///     `Monitor.Pulse` / `PulseAll` (or a spurious wake). `Wait` snapshots its
-///     prior `ReentrancyCount` so that on re-acquire the depth it had before
-///     parking is restored verbatim. Storing the depth inline next to the
-///     thread keeps the "what's waiting and what depth do they need" coupling
-///     visible at every read site; a separate map would let a transition lose
-///     the pairing silently.
-///
-/// `ReentrancyCount` is the depth of nested `Monitor.Enter` calls by
-/// `LockingThread` and must reach exactly zero before ownership can transfer.
-type LockedSyncBlock =
-    {
-        LockingThread : ThreadId
-        ReentrancyCount : int
-        AcquireQueue : (ThreadId * int option) list
-    }
-
-/// Ownership state of an object's monitor — distinct from its `WaitQueue`
-/// because `Monitor.Wait` fully releases the lock (`Free`) while leaving its
-/// caller parked in the SyncBlock's `WaitQueue`.
-type SyncBlockLock =
-    | Free
-    | Held of LockedSyncBlock
-
-/// Per-object monitor metadata. `Lock` describes ownership and FIFO of
-/// `Monitor.Enter` contenders. `WaitQueue` is the FIFO list of (thread,
-/// snapshot depth) pairs currently parked in `BlockedOnSyncBlockWait` from a
-/// `Monitor.Wait` call; they do NOT contend for the lock until a `Pulse` /
-/// `PulseAll` moves them onto `AcquireQueue` (FIFO tail), at which point they
-/// re-enter via the normal ownership-transfer path. The two fields are
-/// orthogonal: a non-empty `WaitQueue` can coexist with `Lock = Free` (the
-/// owner called `Wait`, releasing the lock, but the waiter is still parked).
-/// Pulse on an empty wait queue is a documented no-op (matches CoreCLR's
-/// `SyncBlock`).
-type SyncBlock =
-    {
-        Lock : SyncBlockLock
-        WaitQueue : (ThreadId * int) list
-    }
-
-    /// Initial state for a freshly-allocated object: lock free, no waiters.
-    static member Empty : SyncBlock =
-        {
-            Lock = SyncBlockLock.Free
-            WaitQueue = []
-        }
-
-type AllocatedNonArrayObject =
-    {
-        // TODO: this is a slightly odd domain; the same type for value types as class types!
-        Contents : CliValueType
-        ConcreteType : ConcreteTypeHandle
-    }
-
-    static member DereferenceField (name : string) (f : AllocatedNonArrayObject) : CliType =
-        CliValueType.DereferenceField name f.Contents
-
-    static member DereferenceFieldById (field : FieldId) (f : AllocatedNonArrayObject) : CliType =
-        CliValueType.DereferenceFieldById field f.Contents
-
-    static member SetField (name : string) (v : CliType) (f : AllocatedNonArrayObject) : AllocatedNonArrayObject =
-        { f with
-            Contents = CliValueType.WithFieldSet name v f.Contents
-        }
-
-    static member SetFieldById (field : FieldId) (v : CliType) (f : AllocatedNonArrayObject) : AllocatedNonArrayObject =
-        { f with
-            Contents = CliValueType.WithFieldSetById field v f.Contents
-        }
-
-/// Everything about an array except its contents: the element type, the total element
-/// count, the per-dimension lengths, and the two element-type facts the access paths need —
-/// the byte stride between cells and the element's zero value. All of them are fixed when
-/// the array is allocated and never change afterwards, so reading them is not a
-/// guest-visible memory access — unlike reading a cell, which is.
-///
-/// The absence of an `Elements` field is the point. A caller that needs only the rank or
-/// the length holds a value from which no cell can be reached, so a shape query cannot
-/// silently become a data read as the code around it changes. Cell reads go through
-/// `ManagedHeap.getArrayValue`.
-type ArrayShape =
-    {
-        ConcreteType : ConcreteTypeHandle
-        /// Total element count, equal to the product of `Lengths`.
-        Length : int
-        /// Per-dimension lengths in row-major order; length 1 for szarrays, else the rank.
-        Lengths : ImmutableArray<int>
-        /// The byte distance between consecutive cells.
-        ///
-        /// A property of the *element type*, not of any stored value: CoreCLR fixes it when
-        /// the array type is laid out, and no store into a cell can change it. It is recorded
-        /// here at allocation, from the element zero the allocator was handed, rather than
-        /// recovered later by measuring a cell — measuring a cell would be a read of guest
-        /// memory to answer a question about a type, showing up as an access with no
-        /// counterpart in the program under test, and it has no answer at all for an empty
-        /// array.
-        ///
-        /// Always strictly positive: every CLI type occupies at least one byte, a fieldless
-        /// struct included (CoreCLR pads it to 1, and `CliValueType.SizeOfFieldStorage`
-        /// follows). Consumers divide by it — see `floorDivRem` — so a zero here would be a
-        /// silent wrong answer rather than a loud one.
-        ///
-        /// `ManagedHeap.allocateArray` checks positivity, checks the value against
-        /// `ElementZero`, and checks it against cell 0 of every non-empty allocation, so it
-        /// can never drift from either.
-        ElementStride : int
-        /// The zero value of the element type: what every cell held immediately after
-        /// allocation, and the canonical witness for "what shape is a cell of this array".
-        ///
-        /// Like `ElementStride`, a property of the element type rather than of any stored
-        /// value, recorded from the zero factory the allocator was handed. Callers asking a
-        /// *type* question — is this store whole-cell-shaped, what template should this
-        /// decoded value take — read this instead of sampling cell 0. Sampling cell 0 is
-        /// wrong in three separate ways: it is a guest-visible read performed to answer a
-        /// question about a type, it has no answer for an empty array, and cell 0 is only a
-        /// sample, so a store to cell 5 ends up validated against whatever provenance cell 0
-        /// happens to be carrying.
-        ///
-        /// Not a substitute for reading a cell. A cell legitimately drifts from this shape —
-        /// an `IntPtr[]` slot holding a `TypeHandlePtr` after a typed store through a fixed
-        /// pointer — so anything that cares what is *actually stored* must still go through
-        /// `getArrayValue`.
-        ///
-        /// `ElementStride` is exactly `CliType.sizeOf ElementZero`, checked at
-        /// `allocateArray`. It is stored rather than recomputed because `CliType.sizeOf`
-        /// walks a value type's whole field tree, and the stride is read on every byte-view
-        /// array access.
-        ElementZero : CliType
-    }
-
-type AllocatedArray =
-    {
-        /// Identity and dimensions, fixed at allocation. Held as a nested record rather
-        /// than inlined so that a caller wanting only the shape can be handed a value
-        /// from which no cell is reachable; see `ArrayShape`.
-        Shape : ArrayShape
-        /// Backing store in row-major order. For multi-dim arrays the element at
-        /// `(i_0, ..., i_{n-1})` lives at flat offset
-        /// `((((i_0)*d_1)+i_1)*d_2 + i_2)*...*d_{n-1} + i_{n-1}`, where `d_k = Lengths.[k]`.
-        Elements : ImmutableArray<CliType>
-    }
 
 type ManagedHeap =
     {
@@ -222,6 +69,34 @@ module ManagedHeap =
         { heap with
             SyncBlocks = heap.SyncBlocks |> Map.add addr syncValue
         }
+
+    /// Every object whose monitor is currently `Held` by `thread`, with the ownership
+    /// state, in ascending address order.
+    ///
+    /// Ownership is a property of the object header rather than of any object's payload,
+    /// so this is monitor bookkeeping and not a read of guest memory.
+    let syncBlocksHeldBy (thread : ThreadId) (heap : ManagedHeap) : (ManagedHeapAddress * LockedSyncBlock) list =
+        heap.SyncBlocks
+        |> Map.toList
+        |> List.choose (fun (addr, syncBlock) ->
+            match syncBlock.Lock with
+            | SyncBlockLock.Held locked when locked.LockingThread = thread -> Some (addr, locked)
+            | SyncBlockLock.Held _
+            | SyncBlockLock.Free -> None
+        )
+
+    /// Every (object, thread) pair where `thread` is parked in the object's `WaitQueue`
+    /// from a `Monitor.Wait`, in ascending address order and then in wait-queue (FIFO)
+    /// order within each object.
+    ///
+    /// The ordering is load-bearing, which is why it lives here rather than at the call
+    /// sites: `SyncBlockMonitor.applySpuriousWakeups` folds a wake over this list, and a
+    /// different enumeration order would give a different interleaving for the same seed.
+    /// Objects with an empty wait queue contribute nothing.
+    let syncBlockWaiters (heap : ManagedHeap) : (ManagedHeapAddress * ThreadId) list =
+        heap.SyncBlocks
+        |> Map.toList
+        |> List.collect (fun (addr, syncBlock) -> syncBlock.WaitQueue |> List.map (fun (tid, _) -> addr, tid))
 
     /// Allocate `ty` at a fresh address.
     ///
@@ -364,10 +239,18 @@ module ManagedHeap =
         | true, s -> Some s
         | false, _ -> None
 
-    let getStringDataOffset (addr : ManagedHeapAddress) (heap : ManagedHeap) : int =
+    /// The index in `StringArrayData` of the first character of the string object at
+    /// `addr`, or None if none was recorded — a string allocated off the standard path,
+    /// or an address that is not a string at all.
+    let tryGetStringDataOffset (addr : ManagedHeapAddress) (heap : ManagedHeap) : int option =
         match heap.StringDataOffsets.TryGetValue addr with
-        | true, offset -> offset
-        | false, _ -> failwith $"string data offset for %O{addr} was not recorded"
+        | true, offset -> Some offset
+        | false, _ -> None
+
+    let getStringDataOffset (addr : ManagedHeapAddress) (heap : ManagedHeap) : int =
+        match tryGetStringDataOffset addr heap with
+        | Some offset -> offset
+        | None -> failwith $"string data offset for %O{addr} was not recorded"
 
     let private requireStringContents (operation : string) (addr : ManagedHeapAddress) (heap : ManagedHeap) : string =
         match getStringContents addr heap with
@@ -616,3 +499,69 @@ module ManagedHeap =
         { heap with
             Arrays = newArrs
         }
+
+/// Read-only introspection of the heap by code that is *not the running guest*: the
+/// debugger server, crash reporting, and tests.
+///
+/// The split from `ManagedHeap` is by *caller identity*, not by what is read. A debugger
+/// dumping an array reads exactly the cells `ManagedHeap.getArrayValue` reads; the
+/// difference is that the guest did not ask for them, and so a race detector must not
+/// treat them as an access by any thread. Keeping the two sets of functions in separate
+/// modules means that boundary is visible at every call site and mechanical to act on:
+/// when heap accesses come to emit events, `ManagedHeap`'s functions are the ones that
+/// emit and `HeapObserver`'s are the ones that deliberately do not.
+///
+/// Consequently these functions must stay pure reads. Anything the interpreter proper
+/// needs belongs in `ManagedHeap`, even if a test is its only current caller.
+[<RequireQualifiedAccess>]
+module HeapObserver =
+    /// The number of live non-array objects, arrays excluded.
+    let nonArrayObjectCount (heap : ManagedHeap) : int = heap.NonArrayObjects.Count
+
+    /// The number of live arrays.
+    let arrayCount (heap : ManagedHeap) : int = heap.Arrays.Count
+
+    /// The number of objects with recorded string content. Not the number of live
+    /// `System.String` instances as such: it counts exactly those registered via
+    /// `ManagedHeap.recordStringContents`.
+    let stringContentCount (heap : ManagedHeap) : int = heap.StringContents.Count
+
+    /// The address the next allocation will be given. Exposed for tests that need to name
+    /// an address which is guaranteed *not* to be live.
+    let nextAddress (heap : ManagedHeap) : int = heap.FirstAvailableAddress
+
+    /// The whole array at `addr`, cells included, or None if `addr` is not a live array.
+    ///
+    /// The only accessor that hands out every cell at once, because dumping an array is
+    /// the one thing an observer legitimately wants and the guest never does. Interpreter
+    /// code reads one cell at a time through `ManagedHeap.getArrayValue`.
+    let tryGetArray (addr : ManagedHeapAddress) (heap : ManagedHeap) : AllocatedArray option =
+        match heap.Arrays.TryGetValue addr with
+        | true, arr -> Some arr
+        | false, _ -> None
+
+    /// Every live non-array object with its payload, in ascending address order.
+    let nonArrayObjects (heap : ManagedHeap) : (ManagedHeapAddress * AllocatedNonArrayObject) list =
+        heap.NonArrayObjects |> Map.toList
+
+    /// The addresses of all live allocations, arrays and non-arrays alike.
+    ///
+    /// Derived from the two payload maps, deliberately *not* from `SyncBlocks`, so that it
+    /// remains an independent answer to the same question `syncBlockAddresses` answers.
+    /// Tests compare the two to check the header-table invariant; implementing either in
+    /// terms of the other would turn that check into a tautology.
+    let liveAddresses (heap : ManagedHeap) : Set<ManagedHeapAddress> =
+        Set.union (heap.NonArrayObjects |> Map.keys |> Set.ofSeq) (heap.Arrays |> Map.keys |> Set.ofSeq)
+
+    /// The addresses that have an object header. See `liveAddresses` for why this is
+    /// computed from `SyncBlocks` alone.
+    let syncBlockAddresses (heap : ManagedHeap) : Set<ManagedHeapAddress> =
+        heap.SyncBlocks |> Map.keys |> Set.ofSeq
+
+    /// Whether `addr` has an object header. Computed from `SyncBlocks` alone; see
+    /// `liveAddresses`.
+    let hasSyncBlock (addr : ManagedHeapAddress) (heap : ManagedHeap) : bool = heap.SyncBlocks.ContainsKey addr
+
+    /// Every object header, keyed by address. Exposed as a whole so that a test can
+    /// compare monitor state across two machine states in one equality.
+    let syncBlocks (heap : ManagedHeap) : Map<ManagedHeapAddress, SyncBlock> = heap.SyncBlocks

@@ -1008,7 +1008,10 @@ public static class StreamVersionLibrary
         (expected : byte array)
         : unit
         =
-        let array = state.ManagedHeap.Arrays.[addr]
+        let array =
+            match HeapObserver.tryGetArray addr state.ManagedHeap with
+            | Some array -> array
+            | None -> failwith $"expected a live byte array at %O{addr}"
 
         let byteHandle =
             AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte

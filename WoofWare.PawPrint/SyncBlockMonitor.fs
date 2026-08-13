@@ -433,11 +433,7 @@ module SyncBlockMonitor =
         | SyncBlockSpuriousWakeupStrategy.Disabled -> state
 
         | SyncBlockSpuriousWakeupStrategy.AlwaysAll ->
-            state.ManagedHeap.SyncBlocks
-            |> Map.toSeq
-            |> Seq.sortBy (fun (ManagedHeapAddress aid, _) -> aid)
-            |> Seq.collect (fun (addr, syncBlock) -> syncBlock.WaitQueue |> List.map (fun (tid, _) -> addr, tid))
-            |> Seq.toList
+            ManagedHeap.syncBlockWaiters state.ManagedHeap
             |> List.fold (fun acc (addr, tid) -> spuriousWake addr tid acc) state
 
         | SyncBlockSpuriousWakeupStrategy.Random (seed, probability) ->
@@ -445,12 +441,8 @@ module SyncBlockMonitor =
                 failwith
                     $"SyncBlockSpuriousWakeupStrategy.Random: probability %f{probability} is outside [0.0, 1.0] (NaN or out of range)."
 
-            state.ManagedHeap.SyncBlocks
-            |> Map.toSeq
-            |> Seq.sortBy (fun (ManagedHeapAddress aid, _) -> aid)
-            |> Seq.collect (fun (addr, syncBlock) -> syncBlock.WaitQueue |> List.map (fun (tid, _) -> addr, tid))
-            |> Seq.filter (fun (addr, tid) -> coinFlip seed tick addr tid < probability)
-            |> Seq.toList
+            ManagedHeap.syncBlockWaiters state.ManagedHeap
+            |> List.filter (fun (addr, tid) -> coinFlip seed tick addr tid < probability)
             |> List.fold (fun acc (addr, tid) -> spuriousWake addr tid acc) state
 
         | SyncBlockSpuriousWakeupStrategy.Scripted wakeups ->
