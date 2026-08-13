@@ -253,6 +253,8 @@ module NativeRuntimeTypeHelpers =
         // `TypeHandle::GetSignatureCorElementType` (typehandle.cpp:1160) routes it to
         // `MethodTable::GetSignatureCorElementType`, which reports the EEClass's internal
         // element type — the same CLASS/VALUETYPE the definition reports.
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
         | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
             let assembly =
@@ -580,6 +582,8 @@ module NativeRuntimeTypeHelpers =
         match typeHandleTarget with
         // An instantiation carries no metadata row of its own; `Type.MetadataToken` reports
         // the generic definition's TypeDef row for both the open and the closed forms.
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
         | RuntimeTypeHandleTarget.OpenConstructed (identity, _) -> typeDefinitionToken identity.TypeDefinition.Get
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
@@ -1653,6 +1657,8 @@ module NativeRuntimeTypeHelpers =
         : IlMachineState * int
         =
         match typeHandleTarget with
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
         | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
             failwith
                 $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -1808,6 +1814,8 @@ module NativeRuntimeTypeHelpers =
         : ManagedHeapAddress option * IlMachineState
         =
         match typeHandleTarget with
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery "RuntimeTypeHandle.declaringRuntimeType" scopeAssembly
         | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
             failwith
                 $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -1899,6 +1907,8 @@ module NativeRuntimeTypeHelpers =
         =
         let baseHandle, state =
             match typeHandleTarget with
+            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                RuntimeTypeHandleTarget.refuseMetadataQuery "RuntimeTypeHandle.baseRuntimeType" scopeAssembly
             | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                 failwith
                     $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -1973,6 +1983,8 @@ module NativeRuntimeTypeHelpers =
         =
         let elementHandle =
             match typeHandleTarget with
+            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                RuntimeTypeHandleTarget.refuseMetadataQuery "RuntimeTypeHandle.elementRuntimeType" scopeAssembly
             | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                 failwith
                     $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -2165,6 +2177,8 @@ module NativeRuntimeTypeHelpers =
         : ConcreteTypeHandle * IlMachineState
         =
         match target with
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
         | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
             failwith
                 $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -2216,6 +2230,10 @@ module NativeRuntimeTypeHelpers =
             | Some assembly -> Some assembly.TypeDefs.[identity.TypeDefinition.Get]
 
         match target with
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery
+                "RuntimeTypeHandle.openGenericTypeInfoForValidation"
+                scopeAssembly
         | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
             failwith
                 $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -2773,6 +2791,8 @@ module NativeRuntimeTypeHelpers =
 
         let rec targetName (target : RuntimeTypeHandleTarget) : string =
             match target with
+            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
             | RuntimeTypeHandleTarget.Closed typeHandle -> concreteTypeHandleName typeHandle
             | RuntimeTypeHandleTarget.OpenConstructed (definition, arguments) ->
                 // CoreCLR's `TypeString::AppendType` emits the definition's name followed by the
@@ -2812,6 +2832,8 @@ module NativeRuntimeTypeHelpers =
 
         and nonConstructedName (typeHandleTarget : RuntimeTypeHandleTarget) : string =
             match typeHandleTarget with
+            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
             | RuntimeTypeHandleTarget.Closed typeHandle -> concreteTypeHandleName typeHandle
             | RuntimeTypeHandleTarget.OpenConstructed _ -> targetName typeHandleTarget
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
@@ -2921,6 +2943,8 @@ module NativeRuntimeTypeHelpers =
 
         match target with
         // `TypeDesc::GetName` -> `TypeDesc::ConstructName` (`vm/typedesc.cpp:190`).
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
         | RuntimeTypeHandleTarget.GenericParameter (_, position) -> $"!%d{position}"
         | RuntimeTypeHandleTarget.MethodGenericParameter (_, _, position) -> $"!!%d{position}"
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
@@ -3175,6 +3199,8 @@ module ActivationInfo =
         =
         let handle =
             match target with
+            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
             | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                 failwith
                     $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -3329,6 +3355,8 @@ module BoxInfo =
         =
         let handle =
             match target with
+            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
             | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                 failwith
                     $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"

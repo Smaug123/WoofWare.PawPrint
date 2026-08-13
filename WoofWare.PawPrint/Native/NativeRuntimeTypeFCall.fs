@@ -134,6 +134,8 @@ module NativeRuntimeTypeFCall =
 
             let state, fieldHandleIds =
                 match typeHandleTarget with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                    RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                 | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                     failwith
                         $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeFCall.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -208,6 +210,8 @@ module NativeRuntimeTypeFCall =
             // means the wrapper's guard was bypassed, so fail rather than invent a name.
             let name =
                 match typeHandleTarget with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                    RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                 | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                     failwith
                         $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeFCall.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -324,6 +328,8 @@ module NativeRuntimeTypeFCall =
 
             let isGenericVariable =
                 match target with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                    RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                 | RuntimeTypeHandleTarget.GenericParameter _
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ -> true
                 // An open constructed type *contains* generic variables but is not one: it has a
@@ -358,6 +364,8 @@ module NativeRuntimeTypeFCall =
 
             let index =
                 match target with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                    RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                 | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                     failwith
                         $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeFCall.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -394,6 +402,8 @@ module NativeRuntimeTypeFCall =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
             match target with
+            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
             | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                 failwith
                     $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeFCall.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -631,6 +641,8 @@ module NativeRuntimeTypeFCall =
 
             let elementTypeSource : NativeIntSource =
                 match target with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                    RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                 | RuntimeTypeHandleTarget.OpenConstructed _
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                 | RuntimeTypeHandleTarget.GenericParameter _
@@ -680,6 +692,8 @@ module NativeRuntimeTypeFCall =
 
             let sourceHandle =
                 match sourceTarget with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                    RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                 | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                     failwith
                         $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeFCall.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -696,6 +710,8 @@ module NativeRuntimeTypeFCall =
 
             let targetHandle =
                 match targetTarget with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                    RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                 | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                     failwith
                         $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeFCall.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -760,6 +776,8 @@ module NativeRuntimeTypeFCall =
 
             let attributes : int32 =
                 match target with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                    RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                 | RuntimeTypeHandleTarget.GenericParameter _
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ -> int System.Reflection.TypeAttributes.Public
                 // An instantiation's attributes are its definition's: instantiating an interface
@@ -865,6 +883,8 @@ module NativeRuntimeTypeFCall =
 
             let handle =
                 match target with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                    RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                 | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                     failwith
                         $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeFCall.fs:%s{__LINE__}; got %O{openConstructed}"

@@ -1056,22 +1056,54 @@ public static class Entry
     /// `RuntimeMethodHandle.GetMethodTable` is legal on a dynamic method — CoreCLR answers with the
     /// `DynamicMethodTable`'s synthetic MethodTable — and is what `Delegate.CreateDelegate` reaches
     /// through `GetDeclaringType` (Delegate.CoreCLR.cs:381-391) before binding.
-    ///
-    /// PawPrint stands in the scope module's `<Module>` type; see `dynamicMethodDeclaringType` for
-    /// why, and for the tripwire that would make it mint a real synthetic type instead.
     [<Test>]
-    let ``GetMethodTable answers with the scope module's type`` () : unit =
+    let ``GetMethodTable answers with the scope assembly's dynamic-methods class`` () : unit =
         let loggerFactory, prepared, state = loadFixture ()
 
         let stubAddress, _, state =
             mintOne loggerFactory prepared "Probe" [| 0x01uy |] doublingBody state
 
-        let expected, state = moduleTypeHandle loggerFactory prepared state
+        let expected =
+            RuntimeTypeHandleTarget.DynamicMethodsClass state.EntryAssembly.FullName
 
         invokeGetMethodTable loggerFactory prepared (internalHandleOfStub state stubAddress) state
-        |> shouldEqual (
-            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed expected))
-        )
+        |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr expected))
+
+    /// Why the synthetic case has to exist at all, rather than the scope module's `<Module>` type
+    /// standing in for it: `TypeHandleRegistry` keys guest `Type` object identity on
+    /// `RuntimeTypeHandleTarget`, so under that design a global (`<Module>`-declared) method and a
+    /// dynamic method in one assembly would come back as the *same* `Type`, where CoreCLR keeps them
+    /// distinct.
+    ///
+    /// Read precisely: the test above is what rejects that design — mutating the handler to answer
+    /// with `Closed <Module>` fails it, and was measured doing so. This one guards the *consequence*
+    /// that made the design wrong, and so is the test that would fail if someone later reintroduced
+    /// the collapse further down — by resolving the synthetic target to `<Module>` inside
+    /// `getOrAllocateType`, say, which is the shape the mistake would most naturally take once the
+    /// producer is correct.
+    [<Test>]
+    let ``the dynamic-methods class is distinct from the module type`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let moduleType, state = moduleTypeHandle loggerFactory prepared state
+
+        let dynamicClass =
+            RuntimeTypeHandleTarget.DynamicMethodsClass state.EntryAssembly.FullName
+
+        let moduleTarget = RuntimeTypeHandleTarget.Closed moduleType
+
+        // Distinct as targets...
+        dynamicClass |> shouldNotEqual moduleTarget
+
+        // ...and therefore distinct as guest `Type` objects, which is the consequence that matters:
+        // this registry is what `RuntimeTypeHandle.GetRuntimeType` hands the guest.
+        let dynamicType, state =
+            IlMachineState.getOrAllocateType loggerFactory prepared.BaseClassTypes dynamicClass state
+
+        let moduleTypeObj, _state =
+            IlMachineState.getOrAllocateType loggerFactory prepared.BaseClassTypes moduleTarget state
+
+        dynamicType |> shouldNotEqual moduleTypeObj
 
     /// CoreCLR's answer is a property of the scope *module* and of nothing else, so two dynamic
     /// methods minted against the same module share one declaring type however they differ

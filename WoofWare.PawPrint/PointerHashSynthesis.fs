@@ -115,7 +115,10 @@ module PointerHashSynthesis =
         // `NativeIntSourceComparison.equalsForCli` says they are equal, and the synthesised bits have
         // to agree with that.
         | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ as target)
-        | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.OpenConstructed _ as target) ->
+        | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.OpenConstructed _ as target)
+        // Same again: the dynamic-methods class is a real MethodTable, so its `MethodTablePtr` and
+        // `TypeHandlePtr` are one address and must share a key.
+        | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.DynamicMethodsClass _ as target) ->
             CanonicalPointerKey.TypeHandle target
         | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.GenericParameter _ as target)
         | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.MethodGenericParameter _ as target) ->

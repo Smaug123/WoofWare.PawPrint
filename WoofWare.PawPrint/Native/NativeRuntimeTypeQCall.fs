@@ -292,6 +292,8 @@ module NativeRuntimeTypeQCall =
                 // `Type` objects handed back are the very ones the registry holds — which is
                 // what makes `typeof(Box<>).GetGenericArguments()[0]` reference-equal to the
                 // argument of its own `IComparable<T>` constraint.
+                | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                    RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                 | RuntimeTypeHandleTarget.OpenConstructed (_, arguments) -> arguments
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
@@ -400,6 +402,8 @@ module NativeRuntimeTypeQCall =
                 // `openConstructed` has already collapsed the typical instantiation to
                 // `OpenGenericTypeDefinition`, so anything still spelled `OpenConstructed` is a
                 // genuine instantiation whose definition is exactly this.
+                | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                    RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                 | RuntimeTypeHandleTarget.OpenConstructed (definition, _) ->
                     RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition
                 | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
@@ -466,6 +470,8 @@ module NativeRuntimeTypeQCall =
                 NativeCall.objectHandleOnStackTarget operation state "retTypes" instruction.Arguments.[1]
 
             match typeHandleTarget with
+            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
             | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                 failwith
                     $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeQCall.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -641,6 +647,8 @@ module NativeRuntimeTypeQCall =
                             baseTargets
                             |> List.exists (fun t ->
                                 match t with
+                                | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                                    RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                                 | RuntimeTypeHandleTarget.Closed h -> h = valueTypeHandle
                                 // An open constructed type is never System.ValueType, which is
                                 // non-generic.
@@ -929,6 +937,8 @@ module NativeRuntimeTypeQCall =
                 match target with
                 // The declaring type of an instantiation is the declaring type of its
                 // definition — `IComparable<T>` is nested exactly where `IComparable<>` is.
+                | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                    RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
                 | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
                     let assembly =
@@ -1011,6 +1021,8 @@ module NativeRuntimeTypeQCall =
             // shape rather than silently returning a wrong answer.
             let declaringTarget, state =
                 match target with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                    RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                 | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                     failwith
                         $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeQCall.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -1101,6 +1113,8 @@ module NativeRuntimeTypeQCall =
                 NativeCall.objectHandleOnStackTarget operation state "result" instruction.Arguments.[1]
 
             match typeHandleTarget with
+            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
             | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                 failwith
                     $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeQCall.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -1549,6 +1563,8 @@ module NativeRuntimeTypeQCall =
 
             let state, fieldHandleIds =
                 match typeHandleTarget with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                    RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                 | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                     failwith
                         $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeQCall.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -1638,6 +1654,8 @@ module NativeRuntimeTypeQCall =
                 NativeCall.objectHandleOnStackTarget operation state "result" instruction.Arguments.[1]
 
             match typeHandleTarget with
+            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
             | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                 failwith
                     $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeQCall.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -1704,6 +1722,8 @@ module NativeRuntimeTypeQCall =
                     // reached by the base-type walk below); byrefs, pointers and function
                     // pointers are TypeDescs, which have no MethodTable and so no map at
                     // all. Either way the walk continues to the parent rather than stopping.
+                    | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                        RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                     | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                         failwith
                             $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeQCall.fs:%s{__LINE__}; got %O{openConstructed}"

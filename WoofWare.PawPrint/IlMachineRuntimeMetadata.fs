@@ -384,6 +384,10 @@ module IlMachineRuntimeMetadata =
         : IlMachineState * RuntimeTypeHandleTarget option
         =
         match target with
+        // `CreateMinimalMethodTable` calls `SetParentMethodTable(NULL)` (methodtable.cpp:701), so
+        // the dynamic-methods class has no base type at all -- not even `object`. Its own comment
+        // observes that the global type is built the same way.
+        | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> state, None
         | RuntimeTypeHandleTarget.Closed handle ->
             let state, parent =
                 resolveBaseConcreteType loggerFactory baseClassTypes state handle
@@ -2430,6 +2434,13 @@ module IlMachineRuntimeMetadata =
         // answer decidable without the substitution the general case needs, and it is the query
         // reflection over a returned constraint object actually makes
         // (`typeof(object).IsAssignableFrom(constraint)`).
+        // The dynamic-methods class is assignable to nothing but itself, and nothing but itself is
+        // assignable to it: `CreateMinimalMethodTable` gives it no parent and no interfaces, so the
+        // usual "everything is assignable to System.Object" shortcut below does not apply to it
+        // either. One per scope assembly, so identity is the name.
+        | RuntimeTypeHandleTarget.DynamicMethodsClass a, RuntimeTypeHandleTarget.DynamicMethodsClass b -> state, a = b
+        | RuntimeTypeHandleTarget.DynamicMethodsClass _, _
+        | _, RuntimeTypeHandleTarget.DynamicMethodsClass _ -> state, false
         | RuntimeTypeHandleTarget.OpenConstructed _, RuntimeTypeHandleTarget.Closed t when
             (match AllConcreteTypes.lookup t state.ConcreteTypes with
              | Some ct -> ct.Identity = baseClassTypes.Object.Identity

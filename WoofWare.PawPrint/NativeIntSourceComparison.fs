@@ -175,6 +175,14 @@ module NativeIntSourceComparison =
               (RuntimeTypeHandleTarget.Closed _ | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _)
             | (RuntimeTypeHandleTarget.Closed _ | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _),
               RuntimeTypeHandleTarget.OpenConstructed _ -> false
+            // The dynamic-methods class has a MethodTable of its own, distinct from every type any
+            // assembly declares — including the `<Module>` type of the very assembly it is keyed
+            // by. One per scope assembly, so structural equality on that name is the identity test.
+            | RuntimeTypeHandleTarget.DynamicMethodsClass a1, RuntimeTypeHandleTarget.DynamicMethodsClass a2 -> a1 = a2
+            | RuntimeTypeHandleTarget.DynamicMethodsClass _,
+              (RuntimeTypeHandleTarget.Closed _ | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ | RuntimeTypeHandleTarget.OpenConstructed _)
+            | (RuntimeTypeHandleTarget.Closed _ | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ | RuntimeTypeHandleTarget.OpenConstructed _),
+              RuntimeTypeHandleTarget.DynamicMethodsClass _ -> false
             | RuntimeTypeHandleTarget.GenericParameter _, _
             | RuntimeTypeHandleTarget.MethodGenericParameter _, _ ->
                 // The *MethodTablePtr* side cannot legitimately name a generic parameter:

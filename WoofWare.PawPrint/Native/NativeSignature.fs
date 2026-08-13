@@ -211,6 +211,8 @@ module NativeSignature =
             | other -> failwith $"%s{operation}: expected TypeHandlePtr in RuntimeType.m_handle, got %O{other}"
 
         match declaringTarget with
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
         | RuntimeTypeHandleTarget.Closed handle ->
             match AllConcreteTypes.lookup handle state.ConcreteTypes with
             | Some ct -> ct.Generics
