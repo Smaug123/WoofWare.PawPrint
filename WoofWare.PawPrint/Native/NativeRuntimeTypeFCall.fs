@@ -63,6 +63,49 @@ module NativeRuntimeTypeFCall =
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
+          "InternalAllocNoChecks_FastPath",
+          [ ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                               "System.Runtime.CompilerServices",
+                                                               "MethodTable",
+                                                               methodTableGenerics)) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Object) when
+            methodTableGenerics.IsEmpty
+            ->
+            // CoreCLR: `RuntimeTypeHandle::InternalAllocNoChecks_FastPath`, runtimehandles.cpp:1155.
+            // It bump-allocates out of the calling thread's allocation context, and answers NULL
+            // whenever it cannot: when `GCHeapUtilities::UseThreadAllocationContexts()` is false,
+            // when the type has a finalizer, when it requires 8-byte alignment on a target with
+            // FEATURE_64BIT_ALIGNMENT, or when the context has insufficient room. Its only caller,
+            // `RuntimeTypeHandle.InternalAllocNoChecks` (RuntimeHandles.cs:304), spells that
+            // `FastPath(pMT) ?? Worker(pMT)`, where the worker is the
+            // `RuntimeTypeHandle_InternalAllocNoChecks` QCall (Native/NativeRuntimeTypeQCall.fs).
+            //
+            // PawPrint has no thread allocation contexts at all, so NULL is not a stub here — it
+            // is exactly what CoreCLR answers in that configuration, and it is a state real
+            // CoreCLR reaches routinely besides (any exhausted allocation context), so no guest
+            // can distinguish. Every allocation therefore goes through the QCall, which keeps a
+            // single allocation site and means the refusals encoded above never need modelling
+            // separately: notably `HasFinalizer`, which is a refusal precisely so that the slow
+            // path can register the new object for finalization.
+            //
+            // The MethodTable argument is decoded rather than ignored. CoreCLR asserts
+            // `pMT != nullptr` here, and a caller that reached this entry point with something
+            // that is not a MethodTable is broken whichever branch it would have gone on to take;
+            // failing at the faulting call is much easier to trace than failing in the QCall.
+            let operation = "RuntimeTypeHandle.InternalAllocNoChecks_FastPath"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            NativeCall.methodTableOfEvalStackValue operation (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+            |> ignore<ConcreteTypeHandle>
+
+            let state = IlMachineState.pushToEvalStack (CliType.ObjectRef None) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
           "GetFields",
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics)
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)

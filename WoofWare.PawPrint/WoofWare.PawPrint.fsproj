@@ -43,6 +43,8 @@
     <Compile Include="TypeHandleRegistry.fs" />
     <Compile Include="FieldHandleRegistry.fs" />
     <Compile Include="MethodHandleRegistry.fs" />
+    <Compile Include="ManagedHeapTypes.fs" />
+    <Compile Include="ManagedHeap.fsi" />
     <Compile Include="ManagedHeap.fs" />
     <Compile Include="ArrayElementType.fs" />
     <Compile Include="TypeInitialisation.fs" />

@@ -319,9 +319,18 @@ public interface IOpenInterface<T>
         (state : IlMachineState)
         : CliValueType
         =
-        match state.ManagedHeap.Arrays.[addr].Elements.[index] with
+        match ManagedHeap.getArrayValue addr index state.ManagedHeap with
         | CliType.ValueType vt -> vt
         | other -> failwith $"Expected array element %d{index} at %O{addr} to be a value type, got %O{other}"
+
+    /// The whole allocation record for the array at `addr`. Used only by the identity
+    /// assertions below, which check that a byte-identical write left the record itself
+    /// untouched rather than rebuilding an equal one, so they need the reference and not
+    /// just the cells.
+    let private arrayRecord (addr : ManagedHeapAddress) (state : IlMachineState) : AllocatedArray =
+        match HeapObserver.tryGetArray addr state.ManagedHeap with
+        | Some arr -> arr
+        | None -> failwith $"expected a live array at %O{addr}"
 
     let private assertReadWriteByteViewRejected
         (state : IlMachineState)
@@ -1939,7 +1948,7 @@ public unsafe struct PointerWrapper
             let boxedAddr, state = allocateBoxedIntPtr sample.Initial state
             let valueType = boxedPayloadValueType boxedAddr state
             let arrayAddr, state = allocateSingleValueTypeArray valueType state
-            let arrayBefore = state.ManagedHeap.Arrays.[arrayAddr]
+            let arrayBefore = arrayRecord arrayAddr state
             let payloadBefore = arrayElementValueType arrayAddr 0 state
             let initialBytes = System.BitConverter.GetBytes sample.Initial
             let payload = System.BitConverter.ToUInt16 (initialBytes, sample.Offset)
@@ -1960,7 +1969,7 @@ public unsafe struct PointerWrapper
                     ptr
                     (CliType.Numeric (CliNumericType.UInt16 payload))
 
-            let arrayAfter = state.ManagedHeap.Arrays.[arrayAddr]
+            let arrayAfter = arrayRecord arrayAddr state
             let payloadAfter = arrayElementValueType arrayAddr 0 state
 
             System.Object.ReferenceEquals (arrayAfter, arrayBefore) |> shouldEqual true
@@ -2022,11 +2031,11 @@ public unsafe struct PointerWrapper
         let arrayAddr, state =
             IlMachineState.allocateArray doubleArrayHandle (fun () -> nan) 1 state
 
-        let arrayBefore = state.ManagedHeap.Arrays.[arrayAddr]
+        let arrayBefore = arrayRecord arrayAddr state
         let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
 
         let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr nan
-        let arrayAfter = state.ManagedHeap.Arrays.[arrayAddr]
+        let arrayAfter = arrayRecord arrayAddr state
 
         System.Object.ReferenceEquals (arrayAfter, arrayBefore) |> shouldEqual true
 
@@ -2040,7 +2049,7 @@ public unsafe struct PointerWrapper
         let arrayAddr, state =
             IlMachineState.allocateArray ushortArrayHandle (fun () -> initial) 1 state
 
-        let arrayBefore = state.ManagedHeap.Arrays.[arrayAddr]
+        let arrayBefore = arrayRecord arrayAddr state
 
         let ptr =
             ManagedPointerSource.Byref (
@@ -2051,7 +2060,7 @@ public unsafe struct PointerWrapper
         let state =
             IlMachineState.writeManagedByrefWithBase bct state ptr shortWithSameBytes
 
-        let arrayAfter = state.ManagedHeap.Arrays.[arrayAddr]
+        let arrayAfter = arrayRecord arrayAddr state
 
         System.Object.ReferenceEquals (arrayAfter, arrayBefore) |> shouldEqual true
         IlMachineState.getArrayValue arrayAddr 0 state |> shouldEqual initial
@@ -2069,7 +2078,7 @@ public unsafe struct PointerWrapper
             |> IlMachineState.setArrayValue arrayAddr first 0
             |> IlMachineState.setArrayValue arrayAddr second 1
 
-        let arrayBefore = state.ManagedHeap.Arrays.[arrayAddr]
+        let arrayBefore = arrayRecord arrayAddr state
 
         let writtenBytes =
             [| yield! CliType.ToBytes first ; yield! CliType.ToBytes second |]
@@ -2081,7 +2090,7 @@ public unsafe struct PointerWrapper
 
         let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
         let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr written
-        let arrayAfter = state.ManagedHeap.Arrays.[arrayAddr]
+        let arrayAfter = arrayRecord arrayAddr state
 
         System.Object.ReferenceEquals (arrayAfter, arrayBefore) |> shouldEqual true
         IlMachineState.getArrayValue arrayAddr 0 state |> shouldEqual first

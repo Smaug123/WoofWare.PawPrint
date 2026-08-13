@@ -39,7 +39,7 @@
       dotnet-runtime-src = pkgs.fetchgit {
         url = "https://github.com/dotnet/runtime";
         rev = "7706f546bac1a99b3d891afe3591dc88c67f0cc4"; # v10.0.7 (tree self-reports 10.0.6; see above)
-        hash = "sha256-ivd8/HvHF+0keQM1CWUXS6AivxJWmJTWSUKGPFVmkjA=";
+        hash = "sha256-vDIXH6/gQMh5xQI5WSG+HhJ6La44QsQBgRjGq4XyPjc=";
         sparseCheckout = [
           "src/coreclr"
           "src/libraries/System.Private.CoreLib"
@@ -49,6 +49,23 @@
           # to the vendored rapidjson below for every non-string value.
           "src/native/corehost"
           "src/native/external/rapidjson"
+          # The `SystemNative_*` boundary, which `Native/NativeSystemNative.fs` reimplements.
+          # Two halves, and we need both:
+          #  - `Common/src/Interop/Unix` is the *managed* side: the `[LibraryImport]` declarations
+          #    that say what CoreLib passes and expects back, the `FileStatus` layout `FStat` fills
+          #    in, and `Interop.Errors.cs`'s `Error`/`ErrorInfo` PAL enum.
+          #  - `native/libs/System.Native` is the C shim itself, which is the authority on the
+          #    behaviour we have to reproduce: PAL-to-platform flag translation, EINTR retry loops,
+          #    and which errno each failure reports. Handlers in `NativeSystemNative.fs` already
+          #    cite `pal_console.c` / `pal_time.c` / `pal_runtimeinformation.c` by line.
+          #  - `native/libs/Common` holds the headers those `.c` files defer to, and it is where
+          #    the tables actually live: `pal_error_common.h` has the raw-errno-to-PAL-`Error`
+          #    conversion that `SystemNative_ConvertErrorPlatformToPal` is a one-line wrapper
+          #    around, and `pal_io_common.h` has the `Common_Read`/`Common_Write` bodies that
+          #    `Errno.fs` already cites for their negative-size ERANGE contract.
+          "src/libraries/Common/src/Interop/Unix"
+          "src/native/libs/System.Native"
+          "src/native/libs/Common"
           "eng"
         ];
       };
