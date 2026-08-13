@@ -57,7 +57,7 @@ module TestVirtualFileSystem =
             SymlinkPolicy.Follow
             (path "/..")
             VirtualFileSystem.empty
-        |> shouldEqual (Ok (ResolvedTarget.Directory (rootOf VirtualFileSystem.empty)))
+        |> shouldEqual (Ok (ResolvedTarget.Directory (rootOf VirtualFileSystem.empty, FinalNavigation.Parent)))
 
     [<Test>]
     let ``the empty path is ENOENT, not the directory we started from`` () : unit =
@@ -369,6 +369,42 @@ module TestVirtualFileSystem =
         // and out of the seed manifest.
         SymlinkTarget.parse "" |> shouldEqual (Error SymlinkTargetError.Empty)
         SymlinkTarget.parse null |> shouldEqual (Error SymlinkTargetError.Empty)
+
+    [<Test>]
+    let ``a symlink expansion's own final navigation is reported`` () : unit =
+        // Probed on macOS: with l1 -> "." and l2 -> "d/..", rmdir("l1/") gives
+        // EINVAL while rmdir("l2/") gives ENOTEMPTY. The two paths are the same
+        // shape, so a caller reading the final component off its own UnixPath
+        // could not tell them apart — the walk has to say which navigation it
+        // actually ended on.
+        let vfs =
+            build
+                [
+                    mkdir (rootOf VirtualFileSystem.empty) "d"
+                    mklink (rootOf VirtualFileSystem.empty) "l1" "."
+                    mklink (rootOf VirtualFileSystem.empty) "l2" "d/.."
+                    mklink (rootOf VirtualFileSystem.empty) "l3" "/"
+                ]
+
+        let reachedBy (candidate : string) =
+            match VirtualFileSystem.resolve (rootOf vfs) SymlinkPolicy.NoFollowFinal (path candidate) vfs with
+            | Ok (ResolvedTarget.Directory (_, reachedBy)) -> reachedBy
+            | other -> failwith $"expected a navigation-final directory, got %A{other}"
+
+        reachedBy "/l1/" |> shouldEqual FinalNavigation.Current
+        reachedBy "/l2/" |> shouldEqual FinalNavigation.Parent
+        // A target of "/" has no components at all, so the effective path is
+        // the root rather than whatever navigation preceded the link. Reached
+        // via ".." so that the reset is observable: with the link at the start
+        // of the path, the navigation would already be Root and a missing reset
+        // would look correct.
+        reachedBy "/d/../l3/" |> shouldEqual FinalNavigation.Root
+        reachedBy "/l3/" |> shouldEqual FinalNavigation.Root
+
+        // ...and the unexpanded forms agree with the expanded ones.
+        reachedBy "/." |> shouldEqual FinalNavigation.Current
+        reachedBy "/d/.." |> shouldEqual FinalNavigation.Parent
+        reachedBy "/" |> shouldEqual FinalNavigation.Root
 
     // ------------------------------------------------------------- builders
 
@@ -778,7 +814,7 @@ module TestVirtualFileSystem =
                 VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path candidate) vfs
 
             match full, existing with
-            | Ok (ResolvedTarget.Directory a), Ok b -> b |> shouldEqual a
+            | Ok (ResolvedTarget.Directory (a, _)), Ok b -> b |> shouldEqual a
             | Ok (ResolvedTarget.Entry (_, _, Some a)), Ok b -> b |> shouldEqual a
             | Ok (ResolvedTarget.Entry (_, _, None)), Error error -> error |> shouldEqual UnixError.ENOENT
             | Error a, Error b -> b |> shouldEqual a

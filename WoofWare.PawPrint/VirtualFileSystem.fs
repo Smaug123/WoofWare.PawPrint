@@ -206,6 +206,25 @@ type SymlinkPolicy =
     /// and `open` with `O_NOFOLLOW` do.
     | NoFollowFinal
 
+/// Which component a resolution last consumed, for the paths that end without
+/// a name to look up.
+///
+/// Carried on `ResolvedTarget.Directory` rather than left to the caller to read
+/// off its own path, because a symlink expansion replaces the final component:
+/// with `l1 -> "."` and `l2 -> "d/.."`, the paths "l1/" and "l2/" are the same
+/// shape but land on different navigation. Probed on macOS, `rmdir` owes them
+/// different errnos — EINVAL and ENOTEMPTY respectively — so the distinction is
+/// guest-observable and unrecoverable from the original path.
+[<RequireQualifiedAccess>]
+type FinalNavigation =
+    /// The path named no component at all: "/" itself, or a symlink whose
+    /// target was "/". `rmdir` owes this EBUSY on Linux.
+    | Root
+    /// The last component consumed was ".". `rmdir` owes this EINVAL.
+    | Current
+    /// The last component consumed was "..". `rmdir` owes this ENOTEMPTY.
+    | Parent
+
 /// Where a path resolution ended up.
 [<RequireQualifiedAccess>]
 type ResolvedTarget =
@@ -216,17 +235,14 @@ type ResolvedTarget =
     /// ENOENT themselves.
     | Entry of directory : InodeNumber * name : FileName * existing : InodeNumber option
     /// The path resolved straight to a directory with no final name to look
-    /// up, because its last component was "/", "." or "..".
+    /// up, because its last component — after any symlink expansion — was "/",
+    /// "." or "..".
     ///
-    /// This case deliberately does *not* record how it was reached, and the
-    /// errno that follows depends on exactly that: `rmdir` owes EINVAL for a
-    /// final ".", ENOTEMPTY for a final "..", and EBUSY for "/". The caller
-    /// still holds the `UnixPath` it passed in, so it can read the final
-    /// component off that; the contract is that errno selection for
-    /// navigation-final paths belongs to the caller, not here. (Note ENOTEMPTY
-    /// is itself platform-dependent — Linux 39, Darwin 66 — so it will join
-    /// `UnixError` the way `ELOOP` did.)
-    | Directory of inode : InodeNumber
+    /// `ReachedBy` says which, because the errno that follows depends on it and
+    /// the caller cannot recover it from the path it passed in: see
+    /// `FinalNavigation`. (Note ENOTEMPTY is itself platform-dependent — Linux
+    /// 39, Darwin 66 — so it will join `UnixError` the way `ELOOP` did.)
+    | Directory of inode : InodeNumber * reachedBy : FinalNavigation
 
 /// The outcome of a resolution, together with the facts about *how* it
 /// finished that a caller cannot recover from the path it passed in.
@@ -492,23 +508,25 @@ module VirtualFileSystem =
             (remaining : PathComponent list)
             (trailing : bool)
             (finalSymlinkFollowed : bool)
+            (lastNavigation : FinalNavigation)
             (symlinks : int)
             : Result<Resolution, UnixError> * int
             =
             match remaining with
-            // Reachable only for a path that named no component at all — "/",
-            // or a symlink whose target was "/" — since every case below
-            // consumes exactly one component.
+            // Reached when the path has no name left to look up: after a "." or
+            // "..", or immediately for a path that named no component at all.
             | [] ->
                 Ok
                     {
-                        Target = ResolvedTarget.Directory directory
+                        Target = ResolvedTarget.Directory (directory, lastNavigation)
                         TrailingSeparatorDemanded = trailing
                         FinalSymlinkFollowed = finalSymlinkFollowed
                     },
                 symlinks
-            | PathComponent.Current :: rest -> walk directory rest trailing finalSymlinkFollowed symlinks
-            | PathComponent.Parent :: rest -> walk (parentOf directory vfs) rest trailing finalSymlinkFollowed symlinks
+            | PathComponent.Current :: rest ->
+                walk directory rest trailing finalSymlinkFollowed FinalNavigation.Current symlinks
+            | PathComponent.Parent :: rest ->
+                walk (parentOf directory vfs) rest trailing finalSymlinkFollowed FinalNavigation.Parent symlinks
             | PathComponent.Name name :: rest ->
 
             let entries =
@@ -583,12 +601,19 @@ module VirtualFileSystem =
                     else
                         trailing
 
-                walk
-                    next
-                    (UnixPath.components linkPath @ rest)
-                    trailing
-                    (finalSymlinkFollowed || isFinal)
-                    (symlinks + 1)
+                let spliced = UnixPath.components linkPath @ rest
+
+                // An empty splice can only mean the target was "/", that being
+                // the one path with no components; the effective path is then
+                // the root itself rather than whatever navigation preceded the
+                // link.
+                let lastNavigation =
+                    if List.isEmpty spliced then
+                        FinalNavigation.Root
+                    else
+                        lastNavigation
+
+                walk next spliced trailing (finalSymlinkFollowed || isFinal) lastNavigation (symlinks + 1)
             | InodeContent.Symlink _ ->
                 // Final position under NoFollowFinal with no trailing
                 // separator: the link itself is the answer, which is what
@@ -598,7 +623,7 @@ module VirtualFileSystem =
                 if isFinal then
                     finish (ResolvedTarget.Entry (directory, name, Some target))
                 else
-                    walk target rest trailing finalSymlinkFollowed symlinks
+                    walk target rest trailing finalSymlinkFollowed lastNavigation symlinks
             | InodeContent.RegularFile _ ->
                 if isFinal then
                     // The one part of the trailing-separator rule every platform
@@ -613,7 +638,7 @@ module VirtualFileSystem =
                     Error UnixError.ENOTDIR, symlinks
 
         let outcome, symlinks =
-            walk start (UnixPath.components path) (UnixPath.hasTrailingSeparator path) false 0
+            walk start (UnixPath.components path) (UnixPath.hasTrailingSeparator path) false FinalNavigation.Root 0
 
         if symlinks <= symlinksEveryPlatformAllows then
             outcome
@@ -655,7 +680,7 @@ module VirtualFileSystem =
         =
         match resolve startDirectory policy path vfs with
         | Error error -> Error error
-        | Ok (ResolvedTarget.Directory inode) -> Ok inode
+        | Ok (ResolvedTarget.Directory (inode, _)) -> Ok inode
         | Ok (ResolvedTarget.Entry (_, _, Some inode)) -> Ok inode
         | Ok (ResolvedTarget.Entry (_, _, None)) -> Error UnixError.ENOENT
 
