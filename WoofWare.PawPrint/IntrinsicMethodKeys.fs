@@ -741,6 +741,47 @@ module IntrinsicMethodKeys =
             pattern "System.Private.CoreLib" "System.Threading.Thread" "get_CurrentThread" []
             // IL body is `ldarg.0; ldfld _managedThreadId; ret` — pure field access.
             pattern "System.Private.CoreLib" "System.Threading.Thread" "get_ManagedThreadId" []
+            // `ValueTask<TResult>.ConfigureAwait(bool)` — the awaitable-configuring member every
+            // `await something.ConfigureAwait(false)` over a `ValueTask<T>` goes through.
+            //
+            // Its `[Intrinsic]` is not an implementation at all: `lookupNamedIntrinsic` maps
+            // `ConfigureAwait` to `NI_System_Threading_Tasks_Task_ConfigureAwait`
+            // (importercalls.cpp:11200-11209), and the only place in the whole JIT that ever *reads*
+            // that enumerator is `impMatchTaskAwaitPattern` (importer.cpp:6027), which recognises the
+            // `call <Method>; ldc.i4.0/1; call <ConfigureAwait>; call <AsyncHelpers.Await>` IL
+            // shape a *runtime-async* method compiles to, and rewrites the trio into a single call
+            // to the runtime-async counterpart of `Method`. There is no `impIntrinsic` case for it,
+            // so outside that peephole the JIT emits the ordinary call and the managed body is the
+            // semantic definition. (For this member the peephole cannot fire even in principle: the
+            // class-name test upstream compares against "ValuTask`1" — importercalls.cpp:11205, a
+            // typo for "ValueTask`1" — so `ValueTask<T>`'s own overload is never recognised at all.
+            // We do not rely on that: the reasoning above holds for the whole family.)
+            //
+            // That body is:
+            //   ldarg.0; ldfld _obj; ldarg.0; ldfld _result; ldarg.0; ldfld _token; ldarg.1
+            //   newobj ValueTask`1::.ctor(object, !TResult, int16, bool)
+            //   stloc.0; ldloca.s 0
+            //   newobj ConfiguredValueTaskAwaitable`1::.ctor(ValueTask`1&)
+            //   ret
+            // i.e. three field reads through the `this` byref, the private "non-verified
+            // initialization" constructor — four plain field stores, no validation — and the
+            // awaitable's own constructor, whose body is the single `_value = value` copy from the
+            // `in` parameter. Every step is ordinary value-type IL over fields PawPrint already
+            // models; there is no P/Invoke, no vectorisation, and no `continueOnCapturedContext`
+            // interpretation here at all — the flag is merely stored, and only the *awaiter* later
+            // reads it to decide how to schedule a continuation.
+            //
+            // Deliberately not allowlisted alongside it: the non-generic `ValueTask.ConfigureAwait`
+            // and the four `Task`/`Task<T>` overloads, which are `[Intrinsic]` for the same
+            // pattern-match reason and have equally plain bodies, but which no test here reaches.
+            // They keep failing at the intrinsic dispatcher, naming themselves.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Threading/Tasks/ValueTask.cs#L829-L832
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/ConfiguredValueTaskAwaitable.cs#L127
+            pattern
+                "System.Private.CoreLib"
+                "System.Threading.Tasks.ValueTask`1"
+                "ConfigureAwait"
+                [ IntrinsicParameterPattern.Exact "System.Boolean" ]
             // IL body is `ldsfld <Default>k__BackingField; ret`; the .cctor constructs the comparer.
             pattern "System.Private.CoreLib" "System.Collections.Generic.EqualityComparer`1" "get_Default" []
             // Same shape as its EqualityComparer sibling above: the IL body is
