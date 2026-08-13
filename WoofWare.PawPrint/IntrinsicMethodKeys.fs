@@ -771,11 +771,10 @@ module IntrinsicMethodKeys =
             // interpretation here at all — the flag is merely stored, and only the *awaiter* later
             // reads it to decide how to schedule a continuation.
             //
-            // Deliberately not allowlisted alongside it: the two `ConfigureAwaitOptions`-taking
-            // `Task`/`Task<T>` overloads, which are `[Intrinsic]` for the same pattern-match reason,
-            // but whose bodies validate their argument against a per-type mask and so want their own
-            // review and their own coverage. They keep failing at the intrinsic dispatcher, naming
-            // themselves.
+            // The `ConfigureAwaitOptions`-taking `Task`/`Task<T>` overloads are allowlisted further
+            // down, separately: they are `[Intrinsic]` for the same pattern-match reason, but their
+            // bodies validate their argument against a per-type mask and so warrant their own
+            // review.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Threading/Tasks/ValueTask.cs#L829-L832
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/ConfiguredValueTaskAwaitable.cs#L127
             pattern
@@ -836,6 +835,47 @@ module IntrinsicMethodKeys =
                 "System.Threading.Tasks.Task`1"
                 "ConfigureAwait"
                 [ IntrinsicParameterPattern.Exact "System.Boolean" ]
+            // The `ConfigureAwaitOptions`-taking siblings of the two entries above. The
+            // `[Intrinsic]` reasoning is again unchanged, but these are the only members of the
+            // family whose body does more than shuffle values into an awaitable: each validates its
+            // argument against a mask, and the two masks differ.
+            //
+            //   Task:    ldarg.1; ldc.i4.s -8; and; brfalse.s ok
+            //            ldc.i4.s 83; call ThrowHelper::ThrowArgumentOutOfRangeException
+            //     ok:    ldarg.0; ldarg.1; newobj ConfiguredTaskAwaitable::.ctor(Task, opts); ret
+            //
+            //   Task<T>: the same with `ldc.i4.s -6`, and a private local function in place of the
+            //            ThrowHelper call, which picks between the two ArgumentOutOfRangeException
+            //            constructors on `(options & SuppressThrowing) != 0`.
+            //
+            // `~7` and `~5` are the legal masks: `None | ContinueOnCapturedContext |
+            // SuppressThrowing | ForceYielding` for `Task`, the same minus SuppressThrowing (0x2)
+            // for `Task<T>`, which cannot both swallow a fault and return a result. Interpreting
+            // the bodies is what keeps that asymmetry — and the two distinct exception messages —
+            // the guest's CoreLib's business rather than something PawPrint restates and can get
+            // out of step with.
+            //
+            // Every step is modelled: the mask test is `and`/`brfalse`, and both throw paths
+            // construct an ordinary `ArgumentOutOfRangeException`. `ThrowHelper` and the SR lookup
+            // behind `Task<T>`'s message are already exercised elsewhere; the accompanying
+            // `TaskConfigureAwaitOptions.cs` reaches both throws end-to-end, so neither is taken on
+            // trust here.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Threading/Tasks/Task.cs#L2460-L2472
+            pattern
+                "System.Private.CoreLib"
+                "System.Threading.Tasks.Task"
+                "ConfigureAwait"
+                [
+                    IntrinsicParameterPattern.Exact "System.Threading.Tasks.ConfigureAwaitOptions"
+                ]
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Threading/Tasks/Future.cs#L522-L536
+            pattern
+                "System.Private.CoreLib"
+                "System.Threading.Tasks.Task`1"
+                "ConfigureAwait"
+                [
+                    IntrinsicParameterPattern.Exact "System.Threading.Tasks.ConfigureAwaitOptions"
+                ]
             // IL body is `ldsfld <Default>k__BackingField; ret`; the .cctor constructs the comparer.
             pattern "System.Private.CoreLib" "System.Collections.Generic.EqualityComparer`1" "get_Default" []
             // Same shape as its EqualityComparer sibling above: the IL body is
