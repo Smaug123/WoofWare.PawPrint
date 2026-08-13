@@ -253,8 +253,9 @@ module NativeRuntimeTypeHelpers =
         // `TypeHandle::GetSignatureCorElementType` (typehandle.cpp:1160) routes it to
         // `MethodTable::GetSignatureCorElementType`, which reports the EEClass's internal
         // element type — the same CLASS/VALUETYPE the definition reports.
-        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
-            RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
+        // `CreateMinimalMethodTable` calls `SetInternalCorElementType(ELEMENT_TYPE_CLASS)`
+        // (methodtable.cpp:703). Stored on the MethodTable itself, so no row is needed to read it.
+        | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> 0x12
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
         | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
             let assembly =
