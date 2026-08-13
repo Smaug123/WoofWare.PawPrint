@@ -10,6 +10,7 @@ module NativeDispatch =
     let private net10NativeHandlers : (NativeCallContext -> NativeHandlerResult option) list =
         [
             NativeGc.tryExecute
+            NativeGcFrameRegistration.tryExecute
             NativeEnvironment.tryExecute
             NativeMonitor.tryExecute
             NativeMarshal.tryExecute

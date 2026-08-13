@@ -105,6 +105,7 @@
     <Compile Include="ExternImplementations\System.Threading.Monitor.fs" />
     <Compile Include="Native\NativeCall.fs" />
     <Compile Include="Native\NativeGc.fs" />
+    <Compile Include="Native\NativeGcFrameRegistration.fs" />
     <Compile Include="Native\NativeEnvironment.fs" />
     <Compile Include="Native\NativeMonitor.fs" />
     <Compile Include="Native\NativeMetadataImport.fs" />
