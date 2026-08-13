@@ -46,6 +46,22 @@ justification is the deliverable here, and the house style for a justification o
 a `///` doc at top level — which `NativeGc.fs` has no room for, both its entry points already
 carrying method-specific docs. A separate module also leaves that file's prose untouched.
 
+**The no-op is only sound for a caller that does not read the registration back, and that had
+to be enforced rather than assumed.** Codex found the hole: PawPrint honours
+`[IgnoresAccessChecksTo]` (`WoofWare.PawPrint.Domain/FriendAssemblies.fs`), so a guest assembly
+can `call` this InternalCall directly on a `GCFrameRegistration` of its own and then read the
+second native word — which CoreCLR's `Push` has set to the thread pointer and PawPrint would
+leave at zero. That falsifies the plan's "nothing managed can read the difference out of the
+struct", which was true of CoreLib and not of guests. Three options were put to the user: refuse a
+non-CoreLib caller, model the chain in guest memory (needs a `Thread*` representation PawPrint
+does not have, so it would have to invent a bit pattern), or document the divergence. The user
+chose to refuse, which is also what "prefer crashing over documented divergence" points at. The
+handler now reads the calling frame's assembly and fails loudly outside CoreLib.
+
+Note that Codex did not demonstrate this end-to-end — its own repro died on an unrelated `Ldloc`
+gap in the IL its rewriter emitted — but the mechanism is supported by design rather than
+accidental, so it was treated as real.
+
 **The dependency resolved itself.** #955 merged as `e5d8b93` while this was being written, and
 its squash-merged tree is byte-identical to the branch tip this work started from, so the branch
 is based on plain `main` and the "stacks on" plan below no longer applies.

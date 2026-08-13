@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+open System.Reflection
+
 [<RequireQualifiedAccess>]
 module NativeGcFrameRegistration =
     /// `System.Runtime.GCFrameRegistration::RegisterForGCReporting` and its
@@ -41,20 +43,31 @@ module NativeGcFrameRegistration =
     ///   * `Thread::GetGCFrame`'s `_DEBUG_IMPL` assert (`vm/threads.h:1191-1205`) that the head
     ///     lies within the current stack bounds. Debug-only, and not guest-observable.
     ///
-    /// So the complete set of guest-observable consequences of a registration is "the referenced
-    /// objects stay alive across the call", and PawPrint supplies that unconditionally, for
-    /// every object, registered or not. This is observational equivalence rather than a
-    /// divergence — hence no entry in `docs/divergences.md` — and it is not weakened by the
-    /// usual GC-adjacent surfaces: finalizers never run, a weak or dependent handle's target is
-    /// cleared only by explicit guest action, and no object is ever moved, so identity and
-    /// pinning are unaffected. Nothing managed can read the difference out of the struct
-    /// either: `_reserved1`/`_reserved2` are private, are written only by the constructor (to
-    /// zero) and by the native `Push`, and are read only by the native `Remove` — grep of
-    /// `System.Private.CoreLib` finds no other mention of either field.
+    /// So for a caller that does not read the registration back, the complete set of
+    /// guest-observable consequences is "the referenced objects stay alive across the call", and
+    /// PawPrint supplies that unconditionally, for every object, registered or not. That is
+    /// observational equivalence rather than a divergence — hence no entry in
+    /// `docs/divergences.md` — and it is not weakened by the usual GC-adjacent surfaces:
+    /// finalizers never run, a weak or dependent handle's target is cleared only by explicit
+    /// guest action, and no object is ever moved, so identity and pinning are unaffected.
     ///
-    /// That equivalence is scoped to calls whose argument points at a registration the managed
-    /// constructor built, which is every call CoreLib can make. It does *not* extend to a forged
-    /// pointer, which reflection can produce (`RuntimeType.CanValueSpecialCast` accepts a bare
+    /// "Does not read it back" is a property of the *caller*, not of this InternalCall, so it is
+    /// enforced rather than assumed. CoreLib qualifies: `_reserved1`/`_reserved2` are private,
+    /// are written only by the constructor (to zero) and by the native `Push`, and are read only
+    /// by the native `Remove` — a grep of `System.Private.CoreLib` finds no other mention of
+    /// either field. A guest does not necessarily qualify. PawPrint honours
+    /// `[IgnoresAccessChecksTo]` (`WoofWare.PawPrint.Domain/FriendAssemblies.fs`), so a guest
+    /// assembly can `call` this InternalCall directly on a `GCFrameRegistration` of its own and
+    /// then read the second native word, which CoreCLR's `Push` has by then set to the thread
+    /// pointer and PawPrint would leave at zero. Rather than answer that caller wrongly, the
+    /// handler refuses any caller outside CoreLib — the alternative being to model the frame
+    /// chain in guest memory, which needs a `Thread*` representation PawPrint does not have and
+    /// would have to invent a bit pattern for.
+    ///
+    /// The equivalence has a second boundary, this one on the argument rather than the caller:
+    /// it holds for a pointer to a registration the managed constructor built, which is every
+    /// call CoreLib can make. It does *not* extend to a forged pointer, which reflection can
+    /// produce (`RuntimeType.CanValueSpecialCast` accepts a bare
     /// `IntPtr` for a pointer-typed parameter, and reflection ignores the `internal` on these
     /// methods). CoreCLR has no defined behaviour there — its `_ASSERTE(frame != NULL)` compiles
     /// out of a release build, leaving `Push` to write `m_Next`/`m_pCurThread` straight through
@@ -62,9 +75,8 @@ module NativeGcFrameRegistration =
     /// as close as PawPrint gets to "the runtime faulted". `ManagedPointerSource.Null` is the
     /// only spelling of null the refusal has to catch: `ofBitPattern` normalises a zero
     /// `NativeIntPlaceholder` into it, so the placeholder case never carries zero. A *non-null*
-    /// forged pointer is still accepted and no-opped, which is the same answer PawPrint gives
-    /// any other unreachable-but-representable argument: there is nothing here for it to
-    /// corrupt.
+    /// forged pointer is accepted and no-opped: CoreCLR has no defined behaviour for it either,
+    /// and with no chain to link it onto there is nothing here for it to corrupt.
     ///
     /// No guest can reach that refusal today, and this was measured rather than assumed: a guest
     /// doing exactly the above (`GetType("System.Runtime.GCFrameRegistration")`, then
@@ -110,6 +122,21 @@ module NativeGcFrameRegistration =
 
             if instruction.Arguments.Length <> 1 then
                 failwith $"%s{operation}: expected one argument, got %d{instruction.Arguments.Length}"
+
+            // The no-op is only sound for a caller that does not read the registration back.
+            // That is a property of CoreLib's four invokers, not of the InternalCall, so the
+            // contract is enforced on the caller rather than assumed. See the doc comment.
+            let callerAssembly : AssemblyName =
+                match instruction.ReturnState with
+                | None ->
+                    failwith
+                        $"%s{operation}: reached with no caller frame, so it is the thread's entry point; it is only ever called from CoreLib's reflection invokers."
+                | Some returnState ->
+                    (IlMachineState.getFrame ctx.Thread returnState.JumpTo state).ExecutingMethod.DeclaringType.Assembly
+
+            if callerAssembly.Name <> "System.Private.CoreLib" then
+                failwith
+                    $"%s{operation}: called from %s{callerAssembly.Name}, but PawPrint implements this only for CoreLib's reflection invokers. Those never read the registration back, which is what makes doing nothing an exact match; a caller that can see `_reserved1`/`_reserved2` would see them stay zero where CoreCLR writes the frame link and the thread pointer. Modelling those two words means modelling the GC frame chain itself."
 
             match NativeCall.managedPointerOfPointerArgument operation "pRegistration" instruction.Arguments.[0] with
             | ManagedPointerSource.Null ->
