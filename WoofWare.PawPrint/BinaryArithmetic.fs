@@ -346,16 +346,23 @@ module ArithmeticOperation =
                 Choice1Of2 newPtr
         | ArithmeticTarget.WholeValueTarget ptr ->
             if v = 0 then
-                // `p + 0` is `p`, structurally and not merely by address.
+                // `p + 0` is `p`, structurally and not merely by address: one byte location gets
+                // one structural form, which is the same canonicalisation the non-zero branch
+                // below performs when it folds whole cells into the root.
                 //
                 // Equality is *not* the reason: `ceqNormalised` strips a trailing `ReinterpretAs`,
-                // so a zero-length byte cursor would compare equal to the bare pointer and no
-                // guest could tell the two apart with `ceq` or `Unsafe.AreSame`. The write path is
-                // the reason. A slot whose value has no byte image — a struct of byrefs, which is
-                // exactly what `MethodBaseInvoker`'s `StackAllocatedByRefs` is — can be written
-                // whole but not through a byte cursor, and `stobj` through `&byrefs + 0` has to
-                // keep working. `TestBinaryArithmetic` pins that directly, since no C# guest can
-                // express a pointer to a struct of byrefs.
+                // so a zero-length byte cursor would compare equal to the bare pointer and no guest
+                // could tell the two apart with `ceq` or `Unsafe.AreSame`.
+                //
+                // Nor is the write path the reason, though it was once given as one. The claim was
+                // that a slot with no byte image — a struct of byrefs, which is what
+                // `MethodBaseInvoker`'s `StackAllocatedByRefs` is — could be written whole but not
+                // through a byte cursor, so `stobj` through `&byrefs + 0` had to stay a whole-slot
+                // write. It did stay one, and that was the bug: the store is eight bytes wide and
+                // the slot is thirty-two, so "whole" silently discarded the other three inline-array
+                // elements. A byref's width now comes from the access rather than from the slot
+                // (see `writeManagedByrefCore`), so both spellings write the same eight bytes and
+                // nothing here depends on which one the guest produced.
                 Choice1Of2 ptr
             else
 

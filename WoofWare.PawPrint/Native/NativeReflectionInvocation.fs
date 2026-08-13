@@ -145,11 +145,12 @@ module internal NativeReflectionInvocation =
     /// resolve what that lands on — the same rule `sourcesPure/StructLocalPointerArithmetic.cs`
     /// pins for `(T*)&local + i`.
     ///
-    /// Only `index = 0` is reachable today, and the stride below is therefore unexercised: a target
-    /// taking two or more arguments never reaches this QCall, because writing `args[1]` into the
-    /// buffer fails first in the guest (a byte-view write over pointer-containing struct storage).
-    /// `sourcesPure/ReflectionInvokeMethodMultipleArguments.cs` is parked on exactly that and will
-    /// cover the stride when it un-parks.
+    /// The stride *establishes* the byte view rather than assuming one: the four-argument buffer
+    /// arrives as the bare address of the struct local (`p + 0` is `p`, BinaryArithmetic.fs:347),
+    /// so there is no cursor there to advance. Anchoring one is exactly what the guest's own
+    /// `(IntPtr*)&byrefs + i` does for `i > 0`, and appending to an existing cursor — which the
+    /// `stackalloc` buffer does carry — accumulates rather than restarts, so one call serves both.
+    /// `sourcesPure/ReflectionInvokeMethodMultipleArguments.cs` covers both buffer shapes.
     let private argumentByrefSlot
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -160,7 +161,15 @@ module internal NativeReflectionInvocation =
         if index = 0 then
             buffer
         else
-            ManagedPointerByteView.addByteOffsetToByteView state (index * NativeRuntimeTypeHelpers.nativeIntSize) buffer
+
+        let byteType =
+            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
+            |> Option.bind (fun handle -> AllConcreteTypes.lookup handle state.ConcreteTypes)
+            |> Option.defaultWith (fun () ->
+                failwith "argumentByrefSlot: System.Byte is not concretized, so no byte cursor can be built"
+            )
+
+        ManagedPointerByteView.addByteOffset state byteType (index * NativeRuntimeTypeHelpers.nativeIntSize) buffer
 
     /// Read the value the caller placed behind `args[index]`, as the *signature's* parameter type.
     ///
@@ -182,6 +191,7 @@ module internal NativeReflectionInvocation =
         (ctx : NativeCallContext)
         (operation : string)
         (state : IlMachineState)
+        (byReferenceZero : CliType)
         (buffer : ManagedPointerSource)
         (index : int)
         (parameterType : ConcreteTypeHandle)
@@ -189,8 +199,14 @@ module internal NativeReflectionInvocation =
         =
         let slot = argumentByrefSlot ctx.BaseClassTypes state buffer index
 
+        // Read the slot *as a `ByReference`*, which is what the caller stored there, rather than as
+        // whatever the pointer happens to describe. Neither spelling of the slot describes it:
+        // index 0 is the bare address of a four-element `StackAllocatedByRefs` local, whose whole
+        // value is thirty-two bytes, and index 1 and up is that address plus a `System.Byte`
+        // cursor, whose view is one byte. The width belongs to the buffer's element type, which is
+        // something this boundary knows and the pointer does not.
         let byref =
-            IlMachineState.readManagedByref ctx.BaseClassTypes state slot
+            IlMachineState.readManagedByrefAs ctx.BaseClassTypes state byReferenceZero slot
             |> NativeCall.managedPointerOfPointerArgument operation $"args[%d{index}]"
 
         if byref = ManagedPointerSource.Null then
@@ -510,10 +526,23 @@ module internal NativeReflectionInvocation =
                         failwith
                             $"%s{operation}: args buffer was null for a method taking %d{List.length parameterTypes} argument(s)"
 
+                    // Every slot of the buffer is a `System.ByReference`, so its zero is materialised
+                    // once here rather than per argument — and here rather than inside
+                    // `readArgument`, because materialising it can register concrete types and that
+                    // has to reach the state the call goes on to use.
+                    let byReferenceZero, state =
+                        match ctx.BaseClassTypes.ByReference with
+                        | None ->
+                            failwith
+                                $"%s{operation}: this corelib declares no System.ByReference, but MethodBaseInvoker builds its argument buffer out of them"
+                        | Some byReference ->
+                            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes byReference
+                            |> IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes
+
                     state,
                     (parameterTypes
                      |> List.mapi (fun index parameterType ->
-                         readArgument ctx operation state buffer index parameterType
+                         readArgument ctx operation state byReferenceZero buffer index parameterType
                      ))
 
                 // The re-entry marker. It must be pushed *first*, because `callMethod` pops exactly

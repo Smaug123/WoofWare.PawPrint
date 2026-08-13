@@ -182,7 +182,22 @@ module IlMachineManagedByref =
     /// cell's extent, unaliased by any sibling, so nothing outside it can be disturbed. It reports
     /// nested cells outermost first, so taking the first type-compatible answer names the
     /// shallowest cell that will do.
-    let private tryNameCellForByrefAccess
+    /// `isCellIdentityCompatible`, widened by the one equivalence the eval stack already defines: a
+    /// primitive-like single-field wrapper and the thing it wraps are the same cell.
+    ///
+    /// The two disjuncts do genuinely different work and neither subsumes the other.
+    /// `isCellIdentityCompatible` is what accepts two value types of the same declared type, which
+    /// `sameCliConstructor` deliberately refuses (a value type is not a primitive cell shape).
+    /// `haveSameCliShape` is what accepts a `System.ByReference` against the bare
+    /// `CliType.RuntimePointer` a `ref byte` cell holds — a pair the strict rule refuses twice
+    /// over, since it has no runtime-pointer arm at all.
+    ///
+    /// This is only ever a *permission to coerce*: see `coerceToCellShape`.
+    let private isCellCoercionCompatible (cell : CliType) (target : CliType) : bool =
+        isCellIdentityCompatible cell target || haveSameCliShape cell target
+
+    let private tryNameCellWith
+        (compatible : CliType -> CliType -> bool)
         (byteOffset : int)
         (storage : CliType)
         (targetTemplate : CliType)
@@ -203,14 +218,64 @@ module IlMachineManagedByref =
         if
             byteOffset = 0
             && targetSize = CliType.sizeOf storage
-            && isCellIdentityCompatible storage targetTemplate
+            && compatible storage targetTemplate
         then
             Some []
         else
 
         CliType.CellPathsExactlyCovering byteOffset targetSize storage
-        |> List.tryFind (fun (_, contents) -> isCellIdentityCompatible contents targetTemplate)
+        |> List.tryFind (fun (_, contents) -> compatible contents targetTemplate)
         |> Option.map fst
+
+    let private tryNameCellForByrefAccess
+        (byteOffset : int)
+        (storage : CliType)
+        (targetTemplate : CliType)
+        : FieldId list option
+        =
+        tryNameCellWith isCellIdentityCompatible byteOffset storage targetTemplate
+
+    /// `tryNameCellForByrefAccess`, for callers that will put the value into the *cell's* shape on
+    /// the way in (and the cell into the *template's* shape on the way out) rather than installing
+    /// it verbatim.
+    ///
+    /// Those callers can bridge a wrapper layer, so they can accept a cell the strict predicate
+    /// refuses: `MethodBaseInvoker` stores a `System.ByReference` — a single-field wrapper — into a
+    /// cell declared `ref byte`, which holds a bare `CliType.RuntimePointer`. Those are the same
+    /// eight bytes on a real runtime, and PawPrint already says so: `PrimitiveLikeStruct.kind`
+    /// classifies `ByReference` as `FlattenToManagedPointer`, which is exactly what
+    /// `haveSameCliShape` unwraps. Nothing new is being called compatible here — this is the one
+    /// equivalence the eval stack already defines, asked at a different boundary.
+    ///
+    /// It stays a *permission to coerce*, never a permission to install: writing the wrapper into
+    /// the cell verbatim would restamp the cell's `Declared`, and `Declared` is what decides how
+    /// the next read of that cell flattens. That is precisely the hazard `haveSameCliShape`'s
+    /// "do NOT use on the write side" warning names, and coercing is what answers it.
+    let private tryNameCellForByrefAccessCoercible
+        (byteOffset : int)
+        (storage : CliType)
+        (targetTemplate : CliType)
+        : FieldId list option
+        =
+        tryNameCellWith isCellCoercionCompatible byteOffset storage targetTemplate
+
+    /// Put `value` into the CLI shape of `template`, for the two sites that have named a storage
+    /// cell by its *extent* and now have to reconcile a wrapper layer.
+    ///
+    /// The eval-stack round trip is the whole mechanism: `ofCliType` flattens a primitive-like
+    /// wrapper to what it wraps and `toCliTypeCoerced` re-wraps against the target, so a
+    /// `System.ByReference` and a bare managed pointer convert both ways without losing the
+    /// pointer's provenance. A pair the flattening does not explain fails loudly inside
+    /// `toCliTypeCoerced` rather than being silently reshaped.
+    let private coerceToCellShape (template : CliType) (value : CliType) : CliType =
+        // Both disjuncts, for the same reason `isCellCoercionCompatible` needs both: neither
+        // predicate alone recognises "already the right shape" for every cell kind — one has no
+        // runtime-pointer arm, the other refuses value types outright — and a value that is already
+        // the template's shape must be returned untouched rather than sent round the eval stack.
+        if sameCliConstructor template value || isCellIdentityCompatible template value then
+            value
+        else
+            EvalStackValue.ofCliType value |> EvalStackValue.toCliTypeCoerced template
 
     /// Byte image of a CLI value for noop-detection purposes. If a value is
     /// classified as byte-addressable, `CliType.ToBytes` must be able to render
@@ -355,6 +420,38 @@ module IlMachineManagedByref =
             | None ->
                 failwith
                     $"interpreter bug: cached-RuntimeType byref for type %O{target} reached read without prior RuntimeType registry allocation"
+
+    /// The value a root already holds, when asking is defined — used to measure a root's *extent*
+    /// before writing to it, which is how a store learns whether it covers the whole root or only
+    /// its leading bytes.
+    ///
+    /// `readRootValue` throws for a root that has no typed value yet, and rightly so for a caller
+    /// that wants to read one: a fresh `stackalloc` block has no cell until something installs one,
+    /// an uninitialised static slot has no value, and a PE byte range has no structural value at
+    /// all. A caller that only wants the extent must not turn those into failures — a write to any
+    /// of them is perfectly legal and, in the raw-byte pools' case, already width-checked by
+    /// `writeRootValue` itself. So they answer `None` here, and a `None` means "keep doing what you
+    /// did before" rather than "this write is wrong".
+    let private tryReadTypedSlotRoot (state : IlMachineState) (root : ByrefRoot) : CliType option =
+        match root with
+        | ByrefRoot.LocalVariable _
+        | ByrefRoot.Argument _
+        | ByrefRoot.HeapValue _
+        | ByrefRoot.HeapObjectField _
+        | ByrefRoot.ArrayElement _ -> Some (readRootValue state root)
+        | ByrefRoot.StaticField (ty, field, owner) -> getStatic owner ty field state
+        // The raw-byte pools carry a cell only once one has been installed, and both already refuse
+        // a typed write that would change an existing cell's size (see `writeRootValue` below), so
+        // the width question is answered there and answering it twice could only disagree.
+        | ByrefRoot.StackMemoryByte _
+        | ByrefRoot.NativeMemoryByte _
+        | ByrefRoot.PeByteRange _
+        // A string character is two bytes and a write through this root is normalised to a `char`
+        // by `writeRootValue`; there is no narrower typed store to distinguish.
+        | ByrefRoot.StringCharAt _
+        // The cached-`RuntimeType` root is a synthesised object reference, not a slot with an
+        // interior to write part of.
+        | ByrefRoot.ExposedClassObject _ -> None
 
     let private writeRootValue (state : IlMachineState) (root : ByrefRoot) (updated : CliType) : IlMachineState =
         // The ReferenceEquals checks in this function are allocation shortcuts for direct root
@@ -1319,6 +1416,88 @@ module IlMachineManagedByref =
                 byteAddressableCellBytesAt $"plain byref %O{src}" 0 targetSize raw
                 |> CliType.ofBytesLike targetTemplate
 
+    /// The storage cell a byref names, for reads the bytewise path cannot serve.
+    ///
+    /// CoreLib hosts the captured `ExecutionContext` inside `Task.m_stateObject` (typed `object?`)
+    /// and exposes it via `ref Unsafe.As<object?, ExecutionContext?>(ref m_stateObject)`. The
+    /// resulting byref is `[…, ReinterpretAs RefType]` over storage whose immediate cell is an
+    /// `ObjectRef`, and a subsequent `Ldind.ref` needs that reference back unchanged. Object
+    /// references are not byte-addressable in this value model, so routing that bytewise refuses.
+    /// This is the read mirror of the write side's structural escape (`useStructuralWriter` in
+    /// `writeManagedByrefCore`).
+    ///
+    /// A bare reference is not the only storage with no byte image, so the second arm below is not
+    /// restricted to reference-shaped targets: `[InlineArray(N)]` over managed pointers is read
+    /// slot by slot in exactly the same way, and `MethodBaseInvoker`'s argument buffer is read back
+    /// by the reflection QCall boundary through a `System.Byte` cursor whose target is an
+    /// eight-byte `System.ByReference`. Byte-addressable storage still answers `None` here —
+    /// `tryNameCellForByrefAccessCoercible` refuses it by construction — so this only ever serves
+    /// accesses the byte path could not have served anyway.
+    ///
+    /// Gated on the root having a typed cell at all. Byte-only roots (`StackMemoryByte`,
+    /// `NativeMemoryByte`, `PeByteRange`) have no structural value to read — `readRootValue` would
+    /// throw — and a reinterpreting view over them really does mean "read these bytes as a T".
+    let private tryReadNamedCellThrough
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (root : ByrefRoot)
+        (projs : ByrefProjection list)
+        (targetTemplate : CliType)
+        : CliType option
+        =
+        let isTypedCellRoot =
+            match root with
+            | ByrefRoot.StackMemoryByte _
+            | ByrefRoot.NativeMemoryByte _
+            | ByrefRoot.PeByteRange _ -> false
+            | _ -> true
+
+        if not isTypedCellRoot then
+            None
+        else
+
+        let structuralPrefix, byteOffset =
+            match peelTrailingByteView (Some baseClassTypes) state projs with
+            | ValueSome (prefix, offset) -> prefix, offset
+            | ValueNone -> projs, 0
+
+        let cell = readProjectedValue (readRootValue state root) structuralPrefix
+
+        match CliType.ByteAddressability cell with
+        | CliByteAddressability.ByteAddressable ->
+            // Bytes are the general mechanism and this cell has them, so leave the access where it
+            // has always gone. Naming would only ever agree, and refusing here keeps that agreement
+            // something this code does not have to rely on — the same gate
+            // `tryNameCellForByrefAccessCoercible` applies to composites.
+            None
+        | CliByteAddressability.Rejected _ ->
+
+        match cell with
+        | CliType.ValueType _ ->
+            // The byte range picked out is exactly one cell of the storage, so the byref addresses
+            // precisely that cell and we can hand it back. Storage where the range merely
+            // *straddles* a cell, or is aliased by a sibling, names nothing and still routes
+            // bytewise, where it fails loudly rather than silently dropping the rest of the struct.
+            tryNameCellForByrefAccessCoercible byteOffset cell targetTemplate
+            |> Option.map (fun path -> coerceToCellShape targetTemplate (CliType.getCellAtPath path cell))
+        | _ ->
+            // A cell that is not a composite has nothing to name *inside* it, so the access either
+            // is the whole cell or is a fragment of one, and only the former has an answer. A
+            // mid-cell view of a reference or a tagged pointer has no defined meaning.
+            //
+            // This leg matters because a primitive-like wrapper is read through a cell holding what
+            // it wraps: `ldobj System.IntPtr` over a slot storing a bare provenance-tagged native
+            // int, or `ldobj System.ByReference` over a `ref byte` field. Both are byte-imageless,
+            // so without it they reach a byte reader that cannot represent them.
+            if
+                byteOffset = 0
+                && CliType.sizeOf cell = CliType.sizeOf targetTemplate
+                && isCellCoercionCompatible cell targetTemplate
+            then
+                Some (coerceToCellShape targetTemplate cell)
+            else
+                None
+
     let readManagedByref
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -1336,68 +1515,43 @@ module IlMachineManagedByref =
             | ByrefProjection.ReinterpretAs ty :: _ ->
                 let targetTemplate = zeroForConcreteType baseClassTypes state ty
 
-                // CoreLib hosts the captured ExecutionContext inside Task.m_stateObject
-                // (typed object?) and exposes it via `ref Unsafe.As<object?, ExecutionContext?>(ref m_stateObject)`.
-                // The resulting byref shape is `[..., ReinterpretAs RefType]` over storage
-                // whose immediate cell is an ObjectRef; a subsequent Ldind.ref then needs
-                // the stored reference unchanged. Object references are not byte-addressable
-                // in our value model, so routing this through the bytewise path would
-                // refuse. Mirror the write side's structural-write escape (see
-                // `useStructuralWriter` in `writeManagedByrefCore`) by short-circuiting
-                // here when the peeled byte offset is exactly zero and both the storage
-                // cell and the reinterpret target are reference-typed: return the cell
-                // unchanged. Non-zero offsets still fail loudly in the bytewise path —
-                // a mid-cell view of an ObjectRef has no defined meaning — and any other
-                // storage/target shape continues to route through the bytewise dispatcher.
-                //
-                // The elision is gated on the root having a typed cell. Byte-only roots
-                // (`StackMemoryByte`, `NativeMemoryByte`, `PeByteRange`) have no
-                // structural value to read — `readRootValue` would throw — and a
-                // `ReinterpretAs RefType` over them really does mean "read these bytes
-                // as a reference", which only the bytewise path can answer.
-                let isTypedCellRoot =
-                    match root with
-                    | ByrefRoot.StackMemoryByte _
-                    | ByrefRoot.NativeMemoryByte _
-                    | ByrefRoot.PeByteRange _ -> false
-                    | _ -> true
-
-                let elideAsObjectRefCell () : CliType option =
-                    if not isTypedCellRoot then
-                        None
-                    else
-                        match peelTrailingByteView (Some baseClassTypes) state projs with
-                        | ValueSome (structuralPrefix, byteOffset) ->
-                            let cell = readProjectedValue (readRootValue state root) structuralPrefix
-
-                            match cell, targetTemplate with
-                            | CliType.ObjectRef _, CliType.ObjectRef _ ->
-                                // A whole-cell view of a reference is the reference; a *mid-cell*
-                                // one has no defined meaning, so only offset 0 elides here.
-                                if byteOffset = 0 then Some cell else None
-                            | CliType.ValueType _, CliType.ObjectRef _ ->
-                                // The storage is a value type but the target is a bare
-                                // reference: `Unsafe.As<TBuffer, T>(ref buffer)`, optionally
-                                // walked forward by `Unsafe.Add`, where the byte range picked
-                                // out is exactly one reference-typed cell of `TBuffer` — as
-                                // `[InlineArray(N)]` over a reference element generates for
-                                // every slot. The byref addresses precisely that cell, so we
-                                // can hand it back. Storage where the range merely *straddles*
-                                // a reference, or is aliased by a sibling, names no cell and
-                                // still routes bytewise, where it fails loudly rather than
-                                // silently dropping the rest of the struct.
-                                tryNameCellForByrefAccess byteOffset cell targetTemplate
-                                |> Option.map (fun path -> CliType.getCellAtPath path cell)
-                            | _ -> None
-                        | _ -> None
-
-                match elideAsObjectRefCell () with
+                match tryReadNamedCellThrough baseClassTypes state root projs targetTemplate with
                 | Some cell -> cell
                 | None -> readManagedByrefBytesAs baseClassTypes state src targetTemplate
             | ByrefProjection.ByteOffset n :: _ ->
                 failwith
                     $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
             | _ -> readProjectedValue (readRootValue state root) projs
+
+    /// Read a `template`-shaped value from the byte address `src` denotes.
+    ///
+    /// `readManagedByref` takes the shape from the *pointer*: the type view its trailing
+    /// `ReinterpretAs` names, or — for a bare byref — the whole root. That is the best a caller
+    /// with nothing else to go on can do, but it is not what the CLI says an access is. `ldobj T`
+    /// loads a `T`, and `T` need not be the pointer's view or the root's type: `ldobj Narrow`
+    /// through `(Narrow*)&wide` reads four bytes of an eight-byte slot, and the reflection QCall
+    /// boundary reads an eight-byte `System.ByReference` out of a buffer it reached through a
+    /// `System.Byte` cursor. Both are answered here and neither can be answered from the pointer.
+    ///
+    /// Same two mechanisms as the write side and in the same order: name the one cell the range
+    /// covers when the storage has no byte image, and read bytes otherwise.
+    let readManagedByrefAs
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (template : CliType)
+        (src : ManagedPointerSource)
+        : CliType
+        =
+        match src with
+        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"readManagedByrefAs: cannot dereference fake non-null byref @ 0x%x{bits}; the placeholder must never be read"
+        | ManagedPointerSource.Byref (root, projs) ->
+
+        match tryReadNamedCellThrough baseClassTypes state root projs template with
+        | Some cell -> cell
+        | None -> readManagedByrefBytesAs baseClassTypes state src template
 
     /// Outcome of classifying the projection
     /// `[..., ReinterpretAs reinterpretTy, Field field]` over storage of some
@@ -2564,14 +2718,31 @@ module IlMachineManagedByref =
         // that cell. The cell was chosen because it is identity-compatible with what the byref
         // reinterprets it as, so the value being stored must be too, or the cell would end up
         // holding a different kind of thing than it claims to.
-        let writeIntoNamedCell (path : FieldId list) (describeCell : string) : CliType option voption =
+        // `compatible` is the rule the caller *selected* this cell by, passed back in so the install
+        // holds the value to the same standard the selection did. The two must agree: a caller that
+        // named the cell strictly would otherwise accept a value here that could not have named it,
+        // and one that named it coercibly would reject the very value it was looking for. Under the
+        // strict rule `coerceToCellShape` is the identity, so those callers are unaffected by it.
+        let writeIntoNamedCell
+            (compatible : CliType -> CliType -> bool)
+            (path : FieldId list)
+            (describeCell : string)
+            : CliType option voption
+            =
             let current = CliType.getCellAtPath path storageValue
 
-            if isCellIdentityCompatible newValue current then
-                if isProvableNoOpWrite current newValue then
+            // Where a wrapper layer is allowed at all, it is bridged rather than installed: the cell
+            // keeps its own declared shape, because that is what decides how the *next* read of it
+            // flattens. Anything the flattening cannot explain still fails, now from inside
+            // `coerceToCellShape`; the check below keeps the message that names the two shapes and
+            // the cell, which a bare coercion failure would not.
+            if compatible current newValue then
+                let coerced = coerceToCellShape current newValue
+
+                if isProvableNoOpWrite current coerced then
                     ValueSome None
                 else
-                    ValueSome (Some (CliType.withCellAtPathSet path newValue storageValue))
+                    ValueSome (Some (CliType.withCellAtPathSet path coerced storageValue))
             else
                 failwith
                     $"%s{operation}: assigning %s{describeCliStorage state newValue}, which is not the same kind of value as the %s{describeCliStorage state current} held by %s{describeCell}"
@@ -2584,7 +2755,11 @@ module IlMachineManagedByref =
         let tryNameThroughFieldAt (offset : int) (field : FieldId) : CliType option voption =
             match tryNameCellThroughReinterpretField baseClassTypes state offset storageValue reinterpretTy field with
             | None -> ValueNone
-            | Some path -> writeIntoNamedCell path $"the cell %O{path} named by field %O{field} of %O{reinterpretTy}"
+            | Some path ->
+                writeIntoNamedCell
+                    isCellIdentityCompatible
+                    path
+                    $"the cell %O{path} named by field %O{field} of %O{reinterpretTy}"
 
         let transparentWrapperFastPath () : CliType option voption =
             match reinterpretProjs with
@@ -2634,7 +2809,10 @@ module IlMachineManagedByref =
                         failwith
                             $"%s{operation}: assigning %s{describeCliStorage state other}, which is not the same kind of value as the %s{describeCliStorage state storageValue} it would replace, to field %O{field} of a single-instance-field wrapper"
                 | TransparentWrapperOutcome.ElideAsStorageInnerField innerPath ->
-                    writeIntoNamedCell innerPath $"inner cell %O{innerPath} of a nested single-instance-field wrapper"
+                    writeIntoNamedCell
+                        isCellIdentityCompatible
+                        innerPath
+                        $"inner cell %O{innerPath} of a nested single-instance-field wrapper"
                 | TransparentWrapperOutcome.NotTransparent ->
                     // Not a wrapper the classifier recognises, but the byref may still name a cell
                     // outright — the same naming route the non-zero-offset case above takes.
@@ -2662,10 +2840,18 @@ module IlMachineManagedByref =
                     | [ ByrefProjection.ByteOffset n ] -> n
                     | _ -> 0
 
-                let targetTemplate = zeroForConcreteType baseClassTypes state reinterpretTy
-
-                match tryNameCellForByrefAccess (byteOffset + trailingOffset) storageValue targetTemplate with
-                | Some innerPath -> writeIntoNamedCell innerPath $"the storage cell %O{innerPath} that the byref names"
+                // The extent of the write is the *value's*, not the reinterpret view's. Those
+                // coincide for `Unsafe.As<TBuffer, T>(ref buffer)` followed by a `T` store, which
+                // is why taking it from the view worked until now. They come apart the moment the
+                // view is a byte cursor: `(ByReference*)((byte*)&byrefs + 8) = b` reinterprets as
+                // `System.Byte` and then stores eight bytes, and asking for a one-byte cell at
+                // offset 8 finds nothing — the storage has an eight-byte pointer cell there.
+                match tryNameCellForByrefAccessCoercible (byteOffset + trailingOffset) storageValue newValue with
+                | Some innerPath ->
+                    writeIntoNamedCell
+                        isCellCoercionCompatible
+                        innerPath
+                        $"the storage cell %O{innerPath} that the byref names"
                 | None -> ValueNone
             | _ -> ValueNone
 
@@ -2702,6 +2888,38 @@ module IlMachineManagedByref =
             else
                 CliType.WithBytesAtIfChanged byteOffset updatedBytes storageValue
 
+    /// Install `newValue` at byte offset `byteOffset` of `storage`. `None` means the write is
+    /// provably unobservable; `ValueNone` means this route cannot serve it and the caller should
+    /// report that in its own terms.
+    ///
+    /// Two mechanisms, disjoint by construction rather than ordered by preference: bytes serve
+    /// everything with a byte image, and naming the one cell the range covers serves storage that
+    /// has no byte image — a struct of managed pointers or
+    /// references — where there are no bytes to splice and the only honest answer is which cell the
+    /// range picks out. `tryNameCellForByrefAccessCoercible` returns `None` for byte-addressable
+    /// storage by construction, so the two never compete for the same access.
+    let private tryWriteValueIntoStorageAt
+        (byteOffset : int)
+        (storage : CliType)
+        (newValue : CliType)
+        : CliType option voption
+        =
+        match tryNameCellForByrefAccessCoercible byteOffset storage newValue with
+        | Some path ->
+            let current = CliType.getCellAtPath path storage
+            let coerced = coerceToCellShape current newValue
+
+            if isProvableNoOpWrite current coerced then
+                ValueSome None
+            else
+                ValueSome (Some (CliType.withCellAtPathSet path coerced storage))
+        | None ->
+
+        match CliType.ByteAddressability storage, CliType.ByteAddressability newValue with
+        | CliByteAddressability.ByteAddressable, CliByteAddressability.ByteAddressable ->
+            ValueSome (CliType.WithBytesAtIfChanged byteOffset (CliType.ToBytes newValue) storage)
+        | _ -> ValueNone
+
     let private writeManagedByrefCore
         (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
         (state : IlMachineState)
@@ -2714,7 +2932,33 @@ module IlMachineManagedByref =
         | ManagedPointerSource.NativeIntPlaceholder bits ->
             failwith
                 $"writeManagedByrefCore: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
-        | ManagedPointerSource.Byref (root, []) -> writeRootValue state root newValue
+        | ManagedPointerSource.Byref (root, []) ->
+            // A bare byref names the *first byte* of its root, not the root as a whole. The two
+            // coincide for the overwhelmingly common `ldloca x; …; stobj TypeOfX`, and that case
+            // must go on replacing the slot outright — including restamping its declared type,
+            // which `stobj IntPtr` over a bare `NativeInt` cell relies on (see the shape-preserving
+            // discussion in `writeRootValue` above).
+            //
+            // A *narrower* store does not coincide. `*(Narrow*)&wide = n` covers four bytes of an
+            // eight-byte slot, and `*(ByReference*)(&byrefs + 0) = b` covers the first of four
+            // inline-array slots — `p + 0` is `p`, so that store arrives here with no projections
+            // at all. Replacing the root for either loses every byte past the store *and* restamps
+            // the slot's declared type, so the slots after it stop existing; the guest then fails
+            // somewhere else entirely, or silently reads the wrong thing.
+            match tryReadTypedSlotRoot state root with
+            | Some existing when CliType.sizeOf newValue < CliType.sizeOf existing ->
+                match tryWriteValueIntoStorageAt 0 existing newValue with
+                | ValueSome None -> state
+                | ValueSome (Some updated) -> writeRootValue state root updated
+                | ValueNone ->
+                    failwith
+                        $"TODO: storing %d{CliType.sizeOf newValue} bytes at the start of a %d{CliType.sizeOf existing}-byte slot names no cell of it and neither side has a byte image: %O{src}"
+            | Some existing when CliType.sizeOf newValue > CliType.sizeOf existing ->
+                // Not a narrow store with the comparison the other way round: this would run past
+                // the end of the slot, and there is no honest thing to do with the excess bytes.
+                failwith
+                    $"storing %d{CliType.sizeOf newValue} bytes through a byref to a %d{CliType.sizeOf existing}-byte slot would overrun it: %O{src}"
+            | _ -> writeRootValue state root newValue
         | ManagedPointerSource.Byref (root, projs) ->
             // Mirror the read-side dispatch: when we have BaseClassTypes,
             // use the iterative peel so chained byte views like
@@ -2831,20 +3075,23 @@ module IlMachineManagedByref =
                         // step would find a cell, using the very function that will look.
                         tryNameCellThroughReinterpretField bct state 0 storageValue reinterpretTy field
                         |> Option.isSome
-                | Some bct,
+                // These two ask the question `transparentWrapperFastPath`'s no-`Field` arm will
+                // answer, so they must ask it the same way: the extent comes from `newValue`, not
+                // from the reinterpret view. Asking with the view's extent here while answering
+                // with the value's there would route a byte-cursor store to the byte writer, which
+                // then refuses it.
+                | Some _,
                   (ByrefRoot.HeapValue _ | ByrefRoot.HeapObjectField _ | ByrefRoot.ArrayElement _),
-                  [ ByrefProjection.ReinterpretAs reinterpretTy ] ->
+                  [ ByrefProjection.ReinterpretAs _ ] ->
                     let storageValue = readRootValue state root
-                    let targetTemplate = zeroForConcreteType bct state reinterpretTy
 
-                    tryNameCellForByrefAccess 0 storageValue targetTemplate |> Option.isSome
-                | Some bct,
+                    tryNameCellForByrefAccessCoercible 0 storageValue newValue |> Option.isSome
+                | Some _,
                   (ByrefRoot.HeapValue _ | ByrefRoot.HeapObjectField _ | ByrefRoot.ArrayElement _),
-                  [ ByrefProjection.ReinterpretAs reinterpretTy ; ByrefProjection.ByteOffset byteOffset ] ->
+                  [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset byteOffset ] ->
                     let storageValue = readRootValue state root
-                    let targetTemplate = zeroForConcreteType bct state reinterpretTy
 
-                    tryNameCellForByrefAccess byteOffset storageValue targetTemplate
+                    tryNameCellForByrefAccessCoercible byteOffset storageValue newValue
                     |> Option.isSome
                 | _ -> false
 

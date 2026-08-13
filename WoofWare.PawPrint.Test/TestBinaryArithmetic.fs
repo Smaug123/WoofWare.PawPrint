@@ -2003,13 +2003,20 @@ module TestBinaryArithmetic =
         | Choice2Of2 e when e.Message.Contains "no interior to address" -> ()
         | Choice2Of2 e -> failwith $"unexpected exception: %s{e.Message}"
 
-    /// Why the zero offset must be the identity rather than a zero-length byte cursor, which
-    /// would compare equal to it and so be invisible to `ceq`. A slot whose value has no byte
-    /// image can be written whole but not through a byte cursor, and that is exactly the shape
-    /// `MethodBaseInvoker` builds: `StackAllocatedByRefs` is an inline array of `ref byte`, and
-    /// a managed pointer has no bytes. `stobj` through `&byrefs + 0` has to keep working.
+    /// The zero offset is the identity, and a slot whose value has no byte image can be written
+    /// through either spelling.
+    ///
+    /// This test used to assert the opposite of its second half — that the byte cursor *could not*
+    /// carry such a value — and offered that as the reason the zero offset had to be the identity.
+    /// The reasoning was circular and the conclusion was wrong: a byte cursor could not carry the
+    /// value because the write path took its width from the storage rather than from the value, and
+    /// keeping `p + 0` bare merely routed `MethodBaseInvoker`'s store to the *other* broken answer,
+    /// where an eight-byte value replaced a thirty-two-byte slot outright. Both are fixed, so this
+    /// now asserts what it should have all along: the two spellings agree. Zero-offset identity
+    /// survives as canonicalisation — one byte location, one structural form — which is what the
+    /// first half checks.
     [<Test>]
-    let ``a whole-slot byref can carry a value with no byte image, a byte cursor cannot`` () : unit =
+    let ``a whole-slot byref and a zero-length byte cursor write an imageless value alike`` () : unit =
         let state = state ()
 
         // A managed pointer has no bit pattern in this interpreter — it is a root plus
@@ -2064,28 +2071,25 @@ module TestBinaryArithmetic =
         | EvalStackValue.ManagedPointer actual -> actual |> shouldEqual ptr
         | other -> failwith $"expected the identity at offset zero, got %O{other}"
 
-        IlMachineState.writeManagedByrefWithBase baseClassTypes state ptr (CliType.ValueType imageless)
-        |> ignore
+        let throughSlot =
+            IlMachineState.writeManagedByrefWithBase baseClassTypes state ptr (CliType.ValueType imageless)
 
         // The same write through a zero-length byte cursor — the form a non-identity zero offset
-        // would have produced — cannot represent the value.
+        // would have produced. It names the same single cell, so it must land the same value.
         let cursor =
             ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [ ByrefProjection.ReinterpretAs byteType ])
 
         let throughCursor =
-            try
-                IlMachineState.writeManagedByrefWithBase baseClassTypes state cursor (CliType.ValueType imageless)
-                |> ignore
+            IlMachineState.writeManagedByrefWithBase baseClassTypes state cursor (CliType.ValueType imageless)
 
-                Choice1Of2 ()
-            with e ->
-                Choice2Of2 e
+        let stored (state : IlMachineState) : CliType =
+            (ManagedHeap.get addr state.ManagedHeap).Contents
+            |> CliValueType.DereferenceField "Reference"
 
-        match throughCursor with
-        | Choice1Of2 () ->
-            failwith
-                "expected writing an imageless value through a byte cursor to fail; if it now succeeds, the zero-offset identity may no longer be load-bearing"
-        | Choice2Of2 _ -> ()
+        stored throughCursor |> shouldEqual (stored throughSlot)
+
+        stored throughSlot
+        |> shouldEqual (CliType.RuntimePointer (CliRuntimePointer.Managed heldPointer))
 
     [<Test>]
     let ``subtracting a byte cursor and its own whole slot gives the byte delta`` () : unit =
