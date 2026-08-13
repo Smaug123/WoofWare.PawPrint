@@ -127,20 +127,6 @@ module TestFSharpPureCases =
     /// behaviour is checked. Nothing therefore detects a parked case that has started passing, so
     /// before recording that a case is blocked on a named primitive, un-park it and observe the
     /// failure: parking it is what stops the claim being checked.
-    ///
-    /// Empty, and worth a note on how it got there. `UnionReflection` was parked for a long time and
-    /// took twelve distinct primitives to un-park: decoding each case's
-    /// `CompilationMappingAttribute(SourceConstructFlags, ...)`, whose argument is an enum;
-    /// enumerating the union's nested case types; `MetadataImport::GetSigOfFieldDef`; the raw-blob
-    /// path of `Signature_Init`; `MetadataImport::GetDefaultValue`; `MetadataImport::GetName`;
-    /// property enumeration; `MetadataImport::GetPropertyProps`; the associates branch of
-    /// `MetadataImport::Enum`; the fresh-slot rule for an unmatched non-NewSlot virtual, which every
-    /// F# union needs for its compiler-generated `CompareTo`/`Equals`/`GetHashCode` and which
-    /// `UnionVirtualSlots` covers end to end; the method-table slot region past the vtable, without
-    /// which `RuntimeMethodHandle::GetSlot` had no answer for a union case's non-virtual property
-    /// accessors; and finally the width of a byref access, without which
-    /// `MethodBaseInvoker.InvokeDirectByRefWithFewArgs` silently destroyed its own argument buffer
-    /// while invoking the case constructor.
     let unimplemented : Set<string> = Set.ofList []
 
     // F# test cases that legitimately throw under both runtimes. Without this set, a test
