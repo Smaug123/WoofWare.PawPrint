@@ -1868,6 +1868,89 @@ module NativeRuntimeTypeQCall =
                         (CliType.ObjectRef (Some arrayAddr))
 
                 NativeHandlerResult.completed state |> Some
+        | "RuntimeTypeHandle_InternalAllocNoChecks",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "InternalAllocNoChecks",
+          [ ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                               "System.Runtime.CompilerServices",
+                                                               "MethodTable",
+                                                               methodTableGenerics))
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Void when methodTableGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            // CoreCLR: `RuntimeTypeHandle_InternalAllocNoChecks`, reflectioninvocation.cpp:134,
+            // which is `pMT->AllocateNoChecks()`. This is the slow half of
+            // `RuntimeTypeHandle.InternalAllocNoChecks` (RuntimeHandles.cs:304); PawPrint's fast
+            // half always declines, so this is where every such allocation lands. See
+            // `RuntimeTypeHandle.InternalAllocNoChecks_FastPath` in Native/NativeRuntimeTypeFCall.fs
+            // for why.
+            //
+            // "NoChecks" is load-bearing, and is what separates this from
+            // `RuntimeTypeHandle_InternalAlloc`: it runs no class initialiser and performs no
+            // activation or instantiability check, because its callers already know the type is
+            // initialised and allocatable (`MethodTable::AllocateNoChecks`, methodtable.h:2701,
+            // "can only be used if ... IsClassInited() are known to be true"). Do not "tidy" this
+            // into initialising the type the way the sibling
+            // `RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter` does;
+            // `TestInternalAllocNoChecks` pins that a type carrying a `.cctor` allocates here
+            // without that `.cctor` running.
+            let operation = "RuntimeTypeHandle.InternalAllocNoChecks"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let typeHandle =
+                NativeCall.methodTableOfEvalStackValue operation (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            // PawPrint never puts a `Nullable<T>` on the heap: `box`/`unbox` special-case it
+            // before allocating (UnaryMetadataObjectOps), so a heap object carrying a Nullable
+            // MethodTable is a shape no reader here is prepared for. Creating one would be silent
+            // corruption; refusing is a loud failure. CoreCLR needs no such guard — its readers
+            // cope with a raw-layout box — so this is PawPrint's invariant, not upstream
+            // behaviour, and it is a genuine (if currently unreachable) divergence rather than
+            // tidiness.
+            //
+            // Unlike the same refusal in the `calli` allocation helper
+            // (UnaryMetadataCallOps.executeAllocationHelperCall), this is a guard rather than a
+            // proof. That helper can enumerate its two producers and show neither can pair it
+            // with a Nullable. Here, one of the three BCL callers *deliberately* can:
+            // `AsyncHelpers.AllocContinuationResultBox` (AsyncHelpers.CoreCLR.cs:198) exists
+            // precisely "to store structs without changing layout, including nullables", so a
+            // runtime-async method returning an object-containing `Nullable<T>` passes exactly
+            // this shape. It is unreachable today because PawPrint models no runtime-async at all
+            // — that method is called from JIT-generated code (`corelib.h`,
+            // `ALLOC_CONTINUATION_RESULT_BOX`), never from IL a guest can execute — and until
+            // that changes there is no way to exercise, or therefore to test, a raw-layout
+            // Nullable box. So the guard stays and names the situation: when runtime-async
+            // arrives, this failure is what will fire, and the fix is a heap representation for a
+            // layout-preserving Nullable box, not a wider predicate here. The other two callers
+            // avoid the shape for good: `MulticastDelegate.NewMulticastDelegate` passes a
+            // delegate's MethodTable, and `RuntimeHelpers.Box` routes Nullables to
+            // `CastHelpers.Box_Nullable`, which substitutes the underlying `T`.
+            //
+            // The invariant properly belongs at the chokepoint
+            // (`IlMachineState.allocateUninitialisedInstance`), which would subsume both copies;
+            // that is a wider change than this one and wants measuring against the whole suite.
+            match AllConcreteTypes.lookup typeHandle state.ConcreteTypes with
+            | Some ct when InternalTypeKind.kind ctx.BaseClassTypes ct = InternalTypeKind.Nullable ->
+                failwith
+                    $"%s{operation}: refusing to allocate a Nullable<T> (%O{typeHandle}) on the heap; PawPrint boxes the underlying value instead, so no reader can interpret such an object. CoreCLR does allow this, for runtime-async continuation result boxes, which preserve a nullable's layout — if that is what you are hitting, PawPrint needs a layout-preserving boxed-Nullable representation"
+            | _ -> ()
+
+            let result =
+                NativeCall.objectHandleOnStackTarget operation state "result" instruction.Arguments.[1]
+
+            let addr, state =
+                IlMachineState.allocateUninitialisedInstance ctx.LoggerFactory ctx.BaseClassTypes typeHandle state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state result (CliType.ObjectRef (Some addr))
+
+            NativeHandlerResult.completed state |> Some
         | "RuntimeTypeHandle_GetActivationInfo",
           "System.Private.CoreLib",
           "System",

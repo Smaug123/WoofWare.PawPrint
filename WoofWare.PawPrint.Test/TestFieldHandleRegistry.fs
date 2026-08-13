@@ -277,7 +277,7 @@ public class GenericHolder<T>
         let _, state = getOrAllocateField fixture fixture.Field fixture.State
 
         FieldHandleRegistry.resolveFieldIdFromAddress
-            (ManagedHeapAddress state.ManagedHeap.FirstAvailableAddress)
+            (ManagedHeapAddress (HeapObserver.nextAddress state.ManagedHeap))
             state.FieldHandles
         |> shouldEqual None
 
@@ -287,7 +287,7 @@ public class GenericHolder<T>
         |> shouldEqual None
 
         FieldHandleRegistry.resolveFieldIdFromAddress
-            (ManagedHeapAddress state.ManagedHeap.FirstAvailableAddress)
+            (ManagedHeapAddress (HeapObserver.nextAddress state.ManagedHeap))
             state.FieldHandles
         |> shouldEqual None
 

@@ -85,6 +85,7 @@
     <Compile Include="TestNativeCustomAttribute.fs" />
     <Compile Include="TestManifestResources.fs" />
     <Compile Include="TestAssemblyNativeQCalls.fs" />
+    <Compile Include="TestInternalAllocNoChecks.fs" />
     <Compile Include="TestNativeEnum.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
     <Compile Include="TestNativeGetDynamicMethod.fs" />

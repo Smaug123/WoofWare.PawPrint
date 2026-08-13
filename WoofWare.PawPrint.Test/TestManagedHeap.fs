@@ -37,6 +37,15 @@ module TestManagedHeap =
     /// The zero of the element type used by the hand-built allocations in this fixture.
     let private int32Zero : CliType = CliType.Numeric (CliNumericType.Int32 0)
 
+    /// The whole allocation record for the array at `addr`, shape and cells together.
+    /// Tests that need to check the shape and the backing store *against each other* go
+    /// through this; a test that only wants one of the two should use the narrower
+    /// `ManagedHeap.getArrayShape` / `getArrayValue` instead.
+    let private arrayRecord (addr : ManagedHeapAddress) (heap : ManagedHeap) : AllocatedArray =
+        match HeapObserver.tryGetArray addr heap with
+        | Some arr -> arr
+        | None -> failwith $"expected a live array at %O{addr}"
+
     /// An `ArrayShape` whose element facts are derived from `elementZero`, so a fixture
     /// cannot violate the stride/zero agreement `allocateArray` enforces except on purpose.
     let private shapeOf
@@ -263,7 +272,7 @@ module TestManagedHeap =
         let addr, state =
             IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
 
-        let array = state.ManagedHeap.Arrays.[addr]
+        let array = arrayRecord addr state.ManagedHeap
         array.Shape.ConcreteType |> shouldEqual arrayHandle
         array.Shape.Length |> shouldEqual 12
         array.Shape.Lengths |> shouldEqual lengths
@@ -285,7 +294,7 @@ module TestManagedHeap =
         let addr, state =
             IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
 
-        let array = state.ManagedHeap.Arrays.[addr]
+        let array = arrayRecord addr state.ManagedHeap
         array.Shape.Length |> shouldEqual 0
         array.Shape.Lengths |> shouldEqual lengths
         array.Elements.Length |> shouldEqual 0
@@ -328,7 +337,7 @@ module TestManagedHeap =
         let addr, state =
             IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
 
-        let array = state.ManagedHeap.Arrays.[addr]
+        let array = arrayRecord addr state.ManagedHeap
         array.Shape.Length |> shouldEqual 0
         array.Shape.Lengths |> shouldEqual lengths
         array.Elements.Length |> shouldEqual 0
@@ -545,10 +554,9 @@ module TestManagedHeap =
                     )
                     ManagedHeap.empty
 
-            let live =
-                Set.union (heap.NonArrayObjects |> Map.keys |> Set.ofSeq) (heap.Arrays |> Map.keys |> Set.ofSeq)
+            let live = HeapObserver.liveAddresses heap
 
-            let withSyncBlocks = heap.SyncBlocks |> Map.keys |> Set.ofSeq
+            let withSyncBlocks = HeapObserver.syncBlockAddresses heap
 
             live = withSyncBlocks
             && live.Count = ops.Length
@@ -1266,7 +1274,268 @@ module TestManagedHeap =
             [ 1 .. ops.Length + 3 ]
             |> List.forall (fun addr ->
                 let addr = ManagedHeapAddress addr
-                ManagedHeap.isLive addr heap = heap.SyncBlocks.ContainsKey addr
+                ManagedHeap.isLive addr heap = HeapObserver.hasSyncBlock addr heap
+            )
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 200,
+            Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary) property
+        )
+
+    // ---------------------------------------------------------------------
+    // Sync-block queries. Both were open-coded at their single call site
+    // before; the ordering each guarantees is what makes them worth naming.
+    // ---------------------------------------------------------------------
+
+    /// Three live addresses, allocated in ascending order, with the given headers.
+    let private heapWithSyncBlocks (blocks : SyncBlock list) : ManagedHeapAddress list * ManagedHeap =
+        let addrs, heap =
+            blocks
+            |> List.fold
+                (fun (addrs, heap) _ ->
+                    let addr, heap = ManagedHeap.allocateNonArray stubNonArray heap
+                    addrs @ [ addr ], heap
+                )
+                ([], ManagedHeap.empty)
+
+        let heap =
+            List.zip addrs blocks
+            |> List.fold (fun heap (addr, block) -> ManagedHeap.setSyncBlock addr block heap) heap
+
+        addrs, heap
+
+    let private heldBy (thread : ThreadId) : SyncBlock =
+        {
+            Lock =
+                SyncBlockLock.Held
+                    {
+                        LockingThread = thread
+                        ReentrancyCount = 1
+                        AcquireQueue = []
+                    }
+            WaitQueue = []
+        }
+
+    [<Test>]
+    let ``syncBlocksHeldBy selects only that thread's held locks, in address order`` () : unit =
+        // The three non-matching shapes are all present at once: a block held by another
+        // thread, a `Free` block, and (via the `waiting` entry) a block with a waiter but
+        // no owner — `Monitor.Wait` releases the lock, so "someone is queued here" must
+        // not be mistaken for "this thread owns it".
+        let t0 = ThreadId 0
+        let t1 = ThreadId 1
+
+        let waiting =
+            {
+                Lock = SyncBlockLock.Free
+                WaitQueue = [ t0, 3 ]
+            }
+
+        let addrs, heap =
+            heapWithSyncBlocks [ heldBy t1 ; heldBy t0 ; SyncBlock.Empty ; waiting ; heldBy t0 ]
+
+        let held = ManagedHeap.syncBlocksHeldBy t0 heap
+
+        held |> List.map fst |> shouldEqual [ addrs.[1] ; addrs.[4] ]
+
+        held
+        |> List.map (fun (_, locked) -> locked.LockingThread)
+        |> shouldEqual [ t0 ; t0 ]
+
+        ManagedHeap.syncBlocksHeldBy t1 heap
+        |> List.map fst
+        |> shouldEqual [ addrs.[0] ]
+
+        ManagedHeap.syncBlocksHeldBy (ThreadId 9) heap |> shouldEqual []
+
+    [<Test>]
+    let ``syncBlockWaiters enumerates in address order, then FIFO within an object`` () : unit =
+        // The ordering is the whole contract: `applySpuriousWakeups` folds a wake over this
+        // list, so a different order is a different interleaving for the same seed. The
+        // second object is given its waiters in an order that a per-object sort by thread id
+        // would reverse, so such a sort fails here rather than silently changing schedules.
+        let t0 = ThreadId 0
+        let t1 = ThreadId 1
+        let t2 = ThreadId 2
+
+        let first =
+            {
+                Lock = SyncBlockLock.Free
+                WaitQueue = [ t1, 1 ]
+            }
+
+        let second =
+            {
+                Lock = SyncBlockLock.Free
+                WaitQueue = [ t2, 1 ; t0, 4 ]
+            }
+
+        let addrs, heap = heapWithSyncBlocks [ first ; SyncBlock.Empty ; second ]
+
+        ManagedHeap.syncBlockWaiters heap
+        |> shouldEqual [ addrs.[0], t1 ; addrs.[2], t2 ; addrs.[2], t0 ]
+
+    [<Test>]
+    let ``syncBlockWaiters ignores lock ownership`` () : unit =
+        // A held lock with an acquire queue has contenders, but they are parked in
+        // `BlockedOnSyncBlockAcquire`, not in a `Monitor.Wait`. Only the latter can be
+        // spuriously woken, so neither the owner nor the acquire queue may appear here.
+        let owner = ThreadId 0
+
+        let contended =
+            {
+                Lock =
+                    SyncBlockLock.Held
+                        {
+                            LockingThread = owner
+                            ReentrancyCount = 2
+                            AcquireQueue = [ ThreadId 1, None ; ThreadId 2, Some 3 ]
+                        }
+                WaitQueue = []
+            }
+
+        let _, heap = heapWithSyncBlocks [ contended ]
+
+        ManagedHeap.syncBlockWaiters heap |> shouldEqual []
+
+    [<Test>]
+    let ``tryGetStringDataOffset answers None rather than failing, and getStringDataOffset still fails`` () : unit =
+        let addr = ManagedHeapAddress 42
+
+        ManagedHeap.tryGetStringDataOffset addr ManagedHeap.empty |> shouldEqual None
+
+        let heap = ManagedHeap.recordStringDataOffset addr 7 ManagedHeap.empty
+        ManagedHeap.tryGetStringDataOffset addr heap |> shouldEqual (Some 7)
+        ManagedHeap.getStringDataOffset addr heap |> shouldEqual 7
+
+        Assert.Throws<System.Exception> (fun () ->
+            ManagedHeap.getStringDataOffset (ManagedHeapAddress 43) heap |> ignore
+        )
+        |> ignore
+
+    // ---------------------------------------------------------------------
+    // HeapObserver. These are projections, so the risk is not that one is
+    // subtly wrong but that one answers about the wrong table.
+    // ---------------------------------------------------------------------
+
+    [<Test>]
+    let ``HeapObserver counts each table separately`` () : unit =
+        let heap = ManagedHeap.empty
+        HeapObserver.nonArrayObjectCount heap |> shouldEqual 0
+        HeapObserver.arrayCount heap |> shouldEqual 0
+        HeapObserver.stringContentCount heap |> shouldEqual 0
+
+        let _, heap = ManagedHeap.allocateNonArray stubNonArray heap
+        let objAddr, heap = ManagedHeap.allocateNonArray stubNonArray heap
+        let _, heap = ManagedHeap.allocateArray (stubArray 3) heap
+        let heap = ManagedHeap.recordStringContents objAddr "hi" heap
+
+        // Distinct values throughout, so a projection that reads the wrong table fails.
+        HeapObserver.nonArrayObjectCount heap |> shouldEqual 2
+        HeapObserver.arrayCount heap |> shouldEqual 1
+        HeapObserver.stringContentCount heap |> shouldEqual 1
+
+    [<Test>]
+    let ``HeapObserver nextAddress names an address that is not yet live`` () : unit =
+        let _, heap = ManagedHeap.allocateNonArray stubNonArray ManagedHeap.empty
+
+        let next = HeapObserver.nextAddress heap
+        ManagedHeap.isLive (ManagedHeapAddress next) heap |> shouldEqual false
+
+        let allocated, heap = ManagedHeap.allocateNonArray stubNonArray heap
+        allocated |> shouldEqual (ManagedHeapAddress next)
+        ManagedHeap.isLive allocated heap |> shouldEqual true
+
+    [<Test>]
+    let ``HeapObserver tryGetArray answers only for arrays`` () : unit =
+        let arrAddr, heap = ManagedHeap.allocateArray (stubArray 3) ManagedHeap.empty
+        let objAddr, heap = ManagedHeap.allocateNonArray stubNonArray heap
+
+        (HeapObserver.tryGetArray arrAddr heap).Value.Elements.Length |> shouldEqual 3
+        HeapObserver.tryGetArray objAddr heap |> shouldEqual None
+        HeapObserver.tryGetArray (ManagedHeapAddress 99) heap |> shouldEqual None
+
+    [<Test>]
+    let ``HeapObserver nonArrayObjects lists non-arrays only, in address order`` () : unit =
+        let _, heap = ManagedHeap.allocateArray (stubArray 1) ManagedHeap.empty
+        let obj1, heap = ManagedHeap.allocateNonArray stubNonArray heap
+        let _, heap = ManagedHeap.allocateArray (stubArray 1) heap
+        let obj2, heap = ManagedHeap.allocateNonArray stubNonArray heap
+
+        HeapObserver.nonArrayObjects heap |> List.map fst |> shouldEqual [ obj1 ; obj2 ]
+
+    [<Test>]
+    let ``HeapObserver liveAddresses spans both payload tables`` () : unit =
+        // Guards the half of the `isLive` invariant property that a union-of-one-table
+        // implementation would still pass: that property compares `liveAddresses` against
+        // the header table, and both would be wrong together only if `allocateArray` also
+        // stopped registering a header.
+        let arrAddr, heap = ManagedHeap.allocateArray (stubArray 1) ManagedHeap.empty
+        let objAddr, heap = ManagedHeap.allocateNonArray stubNonArray heap
+
+        HeapObserver.liveAddresses heap
+        |> shouldEqual (Set.ofList [ arrAddr ; objAddr ])
+
+    [<Test>]
+    let ``HeapObserver mirrors agree with their ManagedHeap counterparts`` () : unit =
+        // Four `HeapObserver` functions answer exactly the same question as a `ManagedHeap`
+        // function of the same name, and deliberately do not delegate to it: under the
+        // planned access instrumentation, delegating would route an observer's read back
+        // through the emitting path. Nothing but this test stops the two copies drifting.
+        let property (ops : bool list) : bool =
+            let ops = ops |> List.truncate 8
+
+            let heap =
+                ops
+                |> List.fold
+                    (fun heap isArray ->
+                        if isArray then
+                            ManagedHeap.allocateArray (stubArray 1) heap |> snd
+                        else
+                            ManagedHeap.allocateNonArray stubNonArray heap |> snd
+                    )
+                    ManagedHeap.empty
+
+            // Give one object string contents and one a non-empty header, so the mirrors
+            // are compared on present values and not only on absent ones.
+            let heap =
+                match ManagedHeap.isLive (ManagedHeapAddress 1) heap with
+                | false -> heap
+                | true ->
+                    heap
+                    |> ManagedHeap.recordStringContents (ManagedHeapAddress 1) "contents"
+                    |> ManagedHeap.setSyncBlock (ManagedHeapAddress 1) (heldBy (ThreadId 3))
+
+            // Probe past the end too, so the "not live" answers are compared as well.
+            [ 1 .. ops.Length + 3 ]
+            |> List.forall (fun addr ->
+                let addr = ManagedHeapAddress addr
+
+                ManagedHeap.isLive addr heap = HeapObserver.isLive addr heap
+                // Compared by reference, not structurally: `stubNonArray`'s payload is
+                // deliberately null, so a structural comparison would read it and NRE. This
+                // is the stronger claim anyway — the same record, not merely an equal one.
+                && (
+                    match ManagedHeap.tryGet addr heap, HeapObserver.tryGetNonArrayObject addr heap with
+                    | None, None -> true
+                    | Some a, Some b -> System.Object.ReferenceEquals (a, b)
+                    | Some _, None
+                    | None, Some _ -> false
+                )
+                && ManagedHeap.getStringContents addr heap = HeapObserver.getStringContents addr heap
+                && (if ManagedHeap.isLive addr heap then
+                        ManagedHeap.getSyncBlock addr heap = HeapObserver.getSyncBlock addr heap
+                    else
+                        // Both must refuse, and say so rather than inventing a header.
+                        let failed (f : unit -> SyncBlock) : bool =
+                            try
+                                f () |> ignore
+                                false
+                            with _ ->
+                                true
+
+                        failed (fun () -> ManagedHeap.getSyncBlock addr heap)
+                        && failed (fun () -> HeapObserver.getSyncBlock addr heap))
             )
 
         Check.One (

@@ -730,7 +730,7 @@ module IlMachineThreadState =
             // is `protected internal`, `System.String` is sealed and never calls it, and PawPrint
             // intercepts the `String` methods that would. Refuse rather than hand back a string
             // whose characters have silently vanished.
-            if state.ManagedHeap.StringContents.ContainsKey source then
+            if (ManagedHeap.getStringContents source state.ManagedHeap).IsSome then
                 failwith
                     $"TODO: MemberwiseClone of the string at %O{source}; PawPrint keys string character data by heap address, so the clone would have none. Copy StringContents and the StringArrayData range if this becomes reachable."
 

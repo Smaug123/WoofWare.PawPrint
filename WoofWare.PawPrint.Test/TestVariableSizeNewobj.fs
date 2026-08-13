@@ -50,15 +50,16 @@ module TestVariableSizeNewobj =
     /// Returns the addresses that violate that invariant, with which side-table
     /// each is missing from.
     let private unregisteredStringObjects (state : IlMachineState) : (ManagedHeapAddress * string) list =
-        state.ManagedHeap.NonArrayObjects
-        |> Map.toList
+        HeapObserver.nonArrayObjects state.ManagedHeap
         |> List.choose (fun (addr, object) ->
             if not (isSystemString state object.ConcreteType) then
                 None
             else
 
-            let hasContents = state.ManagedHeap.StringContents.ContainsKey addr
-            let hasDataOffset = state.ManagedHeap.StringDataOffsets.ContainsKey addr
+            let hasContents = (ManagedHeap.getStringContents addr state.ManagedHeap).IsSome
+
+            let hasDataOffset =
+                (ManagedHeap.tryGetStringDataOffset addr state.ManagedHeap).IsSome
 
             if hasContents && hasDataOffset then
                 None
@@ -67,10 +68,9 @@ module TestVariableSizeNewobj =
         )
 
     let private countStringObjects (state : IlMachineState) : int =
-        state.ManagedHeap.NonArrayObjects
-        |> Map.toSeq
-        |> Seq.filter (fun (_, object) -> isSystemString state object.ConcreteType)
-        |> Seq.length
+        HeapObserver.nonArrayObjects state.ManagedHeap
+        |> List.filter (fun (_, object) -> isSystemString state object.ConcreteType)
+        |> List.length
 
     /// Compile `source` and run it through PawPrint, returning the final machine
     /// state. Fails the test if the guest does not exit cleanly with code 0.

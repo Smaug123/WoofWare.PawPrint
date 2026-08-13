@@ -693,9 +693,9 @@ public sealed class MethodSignatureHost
             | other -> failwith $"Expected _arguments to be a RuntimeType[] object ref, got %O{other}"
 
         let array =
-            match state.ManagedHeap.Arrays.TryGetValue arrayAddr with
-            | true, array -> array
-            | false, _ -> failwith $"_arguments pointed at %O{arrayAddr}, which is not an array"
+            match HeapObserver.tryGetArray arrayAddr state.ManagedHeap with
+            | Some array -> array
+            | None -> failwith $"_arguments pointed at %O{arrayAddr}, which is not an array"
 
         [
             for index in 0 .. array.Shape.Length - 1 do
