@@ -76,13 +76,17 @@ module ManagedHeap =
     /// Ownership is a property of the object header rather than of any object's payload,
     /// so this is monitor bookkeeping and not a read of guest memory.
     let syncBlocksHeldBy (thread : ThreadId) (heap : ManagedHeap) : (ManagedHeapAddress * LockedSyncBlock) list =
-        heap.SyncBlocks
-        |> Map.toList
-        |> List.choose (fun (addr, syncBlock) ->
+        // Folded rather than `Map.toList |> List.choose`, which would allocate a tuple and a
+        // cons cell for every object on the heap before discarding all but the matches — and
+        // a terminating thread almost never holds any. `Map.foldBack` visits keys in
+        // descending order, so consing during the fold produces the ascending list directly
+        // and allocates only for matches. Same reasoning as `Scheduler.runnableThreads`.
+        (heap.SyncBlocks, [])
+        ||> Map.foldBack (fun addr syncBlock acc ->
             match syncBlock.Lock with
-            | SyncBlockLock.Held locked when locked.LockingThread = thread -> Some (addr, locked)
+            | SyncBlockLock.Held locked when locked.LockingThread = thread -> (addr, locked) :: acc
             | SyncBlockLock.Held _
-            | SyncBlockLock.Free -> None
+            | SyncBlockLock.Free -> acc
         )
 
     /// Every (object, thread) pair where `thread` is parked in the object's `WaitQueue`
@@ -94,9 +98,15 @@ module ManagedHeap =
     /// different enumeration order would give a different interleaving for the same seed.
     /// Objects with an empty wait queue contribute nothing.
     let syncBlockWaiters (heap : ManagedHeap) : (ManagedHeapAddress * ThreadId) list =
-        heap.SyncBlocks
-        |> Map.toList
-        |> List.collect (fun (addr, syncBlock) -> syncBlock.WaitQueue |> List.map (fun (tid, _) -> addr, tid))
+        // Folded rather than `Map.toList |> List.collect`, for the same reason as
+        // `syncBlocksHeldBy`: most objects have no waiters, so the intermediate would be one
+        // entry per object on the heap to produce a handful. The inner `List.foldBack`
+        // preserves each queue's FIFO order while prepending it.
+        (heap.SyncBlocks, [])
+        ||> Map.foldBack (fun addr syncBlock acc ->
+            (syncBlock.WaitQueue, acc)
+            ||> List.foldBack (fun (tid, _) acc -> (addr, tid) :: acc)
+        )
 
     /// Allocate `ty` at a fresh address.
     ///
