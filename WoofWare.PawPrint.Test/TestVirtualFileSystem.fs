@@ -660,6 +660,48 @@ module TestVirtualFileSystem =
         exn.Message |> shouldContainText "seed manifest"
         exn.Message |> shouldContainText "RootMissing"
 
+    [<Test>]
+    let ``a forged default name or target is rejected at the boundary`` () : unit =
+        // `private` on a struct union case stops construction but not
+        // `Unchecked.defaultof`, and C# `default` reaches the same value. Left
+        // unchecked, both produce a graph checkInvariants calls sound: an entry
+        // no parsed path could ever name, or a symlink that crashes only later
+        // when some unrelated resolution happens to traverse it.
+        let vfs = VirtualFileSystem.empty
+
+        let forgedName =
+            Assert.Throws<Exception> (fun () ->
+                VirtualFileSystem.createFile (rootOf vfs) Unchecked.defaultof<FileName> noBytes vfs
+                |> ignore<Result<InodeNumber * VirtualFileSystem, UnixError>>
+            )
+
+        forgedName.Message |> shouldContainText "Unchecked.defaultof"
+
+        let forgedTarget =
+            Assert.Throws<Exception> (fun () ->
+                VirtualFileSystem.createSymlink (rootOf vfs) (name "l") Unchecked.defaultof<SymlinkTarget> vfs
+                |> ignore<Result<InodeNumber * VirtualFileSystem, UnixError>>
+            )
+
+        forgedTarget.Message |> shouldContainText "Unchecked.defaultof"
+
+        // Every builder binds through one place, so the name check covers them
+        // all rather than only the one probed above.
+        for builder in
+            [
+                (fun n -> VirtualFileSystem.createDirectory (rootOf vfs) n vfs |> Result.map snd)
+                (fun n -> VirtualFileSystem.createFile (rootOf vfs) n noBytes vfs |> Result.map snd)
+                (fun n ->
+                    VirtualFileSystem.createSymlink (rootOf vfs) n (target "x") vfs
+                    |> Result.map snd
+                )
+            ] do
+            Assert.Throws<Exception> (fun () ->
+                builder Unchecked.defaultof<FileName>
+                |> ignore<Result<VirtualFileSystem, UnixError>>
+            )
+            |> ignore<Exception>
+
     // ------------------------------------------------------------- properties
 
     /// A script of builder operations, each naming a directory by index into

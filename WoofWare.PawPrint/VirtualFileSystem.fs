@@ -79,6 +79,22 @@ module SymlinkTarget =
         | Ok target -> target
         | Error error -> failwith $"%s{context}: %s{describe error} (got %s{candidate})"
 
+    /// Re-check the invariant of a value that may not have come from `parse`.
+    /// See `FileName.assertValid`: the only value this can reject is
+    /// `Unchecked.defaultof` / C# `default`, whose null payload would otherwise
+    /// be stored as a symlink target that `checkInvariants` calls sound and
+    /// that crashes only later, when some unrelated resolution happens to
+    /// traverse it.
+    let assertValid (context : string) (target : SymlinkTarget) : SymlinkTarget =
+        match target with
+        | SymlinkTarget raw ->
+
+        match parse raw with
+        | Ok _ -> target
+        | Error error ->
+            failwith
+                $"%s{context}: %s{describe error}. A SymlinkTarget that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; construct one with SymlinkTarget.parse instead."
+
     /// The path structure of the target, for a resolution walk to splice in.
     /// Total: `parse` has already discharged every rule `UnixPath.parse`
     /// enforces.
@@ -357,6 +373,11 @@ module VirtualFileSystem =
         (vfs : VirtualFileSystem)
         : Result<VirtualFileSystem, UnixError>
         =
+        // Every builder binds through here, so this is the one place a name
+        // enters the graph — and the one place a forged `default(FileName)` can
+        // be stopped before it becomes an entry no path could ever name.
+        let name = FileName.assertValid "VirtualFileSystem: directory entry name" name
+
         match Map.tryFind directory vfs.Inodes with
         | None -> Error UnixError.ENOENT
         | Some (InodeContent.RegularFile _)
@@ -423,6 +444,7 @@ module VirtualFileSystem =
         (vfs : VirtualFileSystem)
         : Result<InodeNumber * VirtualFileSystem, UnixError>
         =
+        let target = SymlinkTarget.assertValid "VirtualFileSystem.createSymlink" target
         let inode, allocated = allocate (InodeContent.Symlink target) vfs
         bind directory name inode allocated |> Result.map (fun vfs -> inode, vfs)
 

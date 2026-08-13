@@ -37,6 +37,12 @@ module TestVirtualFileSystemAgainstHost =
     [<DllImport("libc", SetLastError = true)>]
     extern int private symlink(string target, string linkpath)
 
+    [<DllImport("libc", SetLastError = true)>]
+    extern nativeint private realpath(string path, nativeint resolved)
+
+    [<DllImport("libc")>]
+    extern void private free(nativeint ptr)
+
     [<Literal>]
     let private F_OK = 0
 
@@ -53,6 +59,26 @@ module TestVirtualFileSystemAgainstHost =
         | Failed of errno : int
 
     let private errno () : int = Marshal.GetLastPInvokeError ()
+
+    /// The physical path of `path`, with every symlink in it resolved away.
+    ///
+    /// Load-bearing rather than tidy-minded: on macOS `Path.GetTempPath()`
+    /// returns "/var/folders/...", and "/var" is itself a symlink to
+    /// "/private/var". Every absolute path built under the raw temporary
+    /// directory therefore spends one symlink traversal before reaching
+    /// anything this test created — which silently shifts the measured limit
+    /// down by one, and made an earlier version of the boundary test below
+    /// conclude this kernel allows 31 traversals when it allows 32.
+    let private physicalPath (path : string) : string =
+        let resolved = realpath (path, 0n)
+
+        if resolved = 0n then
+            failwith $"realpath(%s{path}) failed: errno %d{errno ()}"
+
+        try
+            Marshal.PtrToStringUTF8 resolved
+        finally
+            free resolved
 
     /// The raw errno this host uses for a given error, which for `ELOOP` is
     /// the whole reason `UnixError` refuses to pick one: the model speaks
@@ -268,6 +294,69 @@ module TestVirtualFileSystemAgainstHost =
         | Some _ -> Outcome.NotASymlink
         | None -> failwith $"the model resolved %s{relative} to inode %O{inode}, which it does not contain"
 
+    /// Where this kernel's symlink limit actually sits: the longest chain that
+    /// still resolves.
+    let private hostSymlinkLimit (root : string) : int =
+        let build (n : int) : bool =
+            for i in 1..n do
+                let link = Path.Combine (root, $"limit%d{n}_s%d{i}")
+
+                let target =
+                    if i = n then
+                        $"limit%d{n}_target"
+                    else
+                        $"limit%d{n}_s%d{i + 1}"
+
+                if symlink (target, link) <> 0 then
+                    failwith $"could not build the probe chain: errno %d{errno ()}"
+
+            File.WriteAllBytes (Path.Combine (root, $"limit%d{n}_target"), Array.empty)
+            access (Path.Combine (root, $"limit%d{n}_s1"), F_OK) = 0
+
+        // Search upwards from below every plausible limit rather than assuming
+        // one; the point is to measure, not to restate the constant.
+        let mutable n = 1
+
+        while n < 100 && build n do
+            n <- n + 1
+
+        n - 1
+
+    [<Test>]
+    let ``the traversal bounds bracket this kernel's real symlink limit`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // Pins the band arithmetic against the kernel rather than against a
+        // header or a recollection. A review of this code claimed macOS fails
+        // at 32 rather than 33; measuring settled it, and this test keeps the
+        // answer from drifting. Runs on whichever platform CI uses, so the two
+        // halves of the band are each pinned somewhere.
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-loop-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            let limit = hostSymlinkLimit root
+
+            // Sanity: a limit of 0 or 99 would mean the probe measured nothing.
+            limit |> shouldBeGreaterThan 7
+            limit |> shouldBeSmallerThan 99
+
+            if limit < VirtualFileSystem.symlinksEveryPlatformAllows then
+                failwith
+                    $"This kernel allows only %d{limit} symlink traversals, but VirtualFileSystem treats up to %d{VirtualFileSystem.symlinksEveryPlatformAllows} as unanimously permitted — so the model would return success where this platform returns ELOOP."
+
+            if limit >= VirtualFileSystem.symlinksNoPlatformAllows then
+                failwith
+                    $"This kernel allows %d{limit} symlink traversals, but VirtualFileSystem treats %d{VirtualFileSystem.symlinksNoPlatformAllows} as unanimously refused — so the model would return ELOOP where this platform succeeds."
+        finally
+            try
+                Directory.Delete (root, true)
+            with _ ->
+                ()
+
     // ------------------------------------------------------------------ the test
 
     [<Test>]
@@ -278,6 +367,7 @@ module TestVirtualFileSystemAgainstHost =
         let unique = Guid.NewGuid().ToString "N"
         let root = Path.Combine (Path.GetTempPath (), $"pawprint-vfs-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
 
         try
             buildHostTree root
