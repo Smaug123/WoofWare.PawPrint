@@ -17,6 +17,14 @@ module NativeGcFrameRegistration =
     /// A CoreLib method that is *not* on this list gets the same loud refusal as a guest. That
     /// is deliberate: if a future CoreLib grows another caller, the failure names it, which is a
     /// better answer than silently assuming the new caller has the same escape property.
+    ///
+    /// Only the first entry is exercised by a test, and the others are unreachable today for a
+    /// reason that has nothing to do with this handler — measured, not assumed. A guest calling
+    /// `ConstructorInfo.Invoke` with six arguments, which is the shape that would reach
+    /// `InvokeConstructorWithoutAlloc`, stops much earlier at the unimplemented InternalCall
+    /// `RuntimeMethodHandle::GetMethodDef`. They are on the list on the authority of the
+    /// upstream grep rather than of a passing test, which is the right way round: leaving a real
+    /// caller off would turn a working path into a loud failure the moment it became reachable.
     let private permittedCallers : (string * string) list =
         [
             "MethodBaseInvoker", "InvokeWithManyArgs"
