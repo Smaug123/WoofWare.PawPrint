@@ -178,6 +178,10 @@ module ManagedHeap =
 ///
 /// Consequently these must stay pure reads. Anything the interpreter proper needs belongs
 /// in `ManagedHeap`, even if a test is its only current caller.
+///
+/// Several of these mirror a `ManagedHeap` function of the same name and answer exactly the
+/// same question. The duplication is the design: the two must stay distinct functions
+/// precisely so that one can come to emit an access event and the other cannot.
 [<RequireQualifiedAccess>]
 module HeapObserver =
     /// The number of live non-array objects, arrays excluded.
@@ -200,6 +204,22 @@ module HeapObserver =
 
     /// Every live non-array object with its payload, in ascending address order.
     val nonArrayObjects : heap : ManagedHeap -> (ManagedHeapAddress * AllocatedNonArrayObject) list
+
+    /// The non-array object at `addr`, or None if there is no live non-array object there —
+    /// including when `addr` is a live *array*. Mirrors `ManagedHeap.tryGet`.
+    val tryGetNonArrayObject : addr : ManagedHeapAddress -> heap : ManagedHeap -> AllocatedNonArrayObject option
+
+    /// The character content of the string object at `addr`, or None if none was recorded.
+    /// Mirrors `ManagedHeap.getStringContents`.
+    val getStringContents : addr : ManagedHeapAddress -> heap : ManagedHeap -> string option
+
+    /// The object header of the object at `addr`. Fails for an address that is not a live
+    /// allocation. Mirrors `ManagedHeap.getSyncBlock`.
+    val getSyncBlock : addr : ManagedHeapAddress -> heap : ManagedHeap -> SyncBlock
+
+    /// Whether `addr` is a live heap allocation of either kind. Mirrors
+    /// `ManagedHeap.isLive`.
+    val isLive : addr : ManagedHeapAddress -> heap : ManagedHeap -> bool
 
     /// The addresses of all live allocations, arrays and non-arrays alike. Computed from
     /// the payload tables, independently of `syncBlockAddresses`.

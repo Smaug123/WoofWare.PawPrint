@@ -883,13 +883,13 @@ module DebuggerServer =
         writer.WriteStartObject ()
         writer.WriteNumber ("address", heapAddressValue address)
 
-        match ManagedHeap.tryGet address state.ManagedHeap with
+        match HeapObserver.tryGetNonArrayObject address state.ManagedHeap with
         | Some object ->
             writer.WriteString ("kind", "object")
             writer.WriteString ("concreteType", string object.ConcreteType)
             writer.WriteString ("contents", string object.Contents)
-            writeOptionalString writer "string" (ManagedHeap.getStringContents address state.ManagedHeap)
-            writer.WriteString ("syncBlock", string (ManagedHeap.getSyncBlock address state.ManagedHeap))
+            writeOptionalString writer "string" (HeapObserver.getStringContents address state.ManagedHeap)
+            writer.WriteString ("syncBlock", string (HeapObserver.getSyncBlock address state.ManagedHeap))
         | None ->
             match HeapObserver.tryGetArray address state.ManagedHeap with
             | Some array ->
@@ -899,7 +899,7 @@ module DebuggerServer =
                 writeValueArray writer "elements" array.Elements writeCliType
                 // Arrays carry an object header exactly like any other heap object, so a
                 // `lock (array)` is visible here too.
-                writer.WriteString ("syncBlock", string (ManagedHeap.getSyncBlock address state.ManagedHeap))
+                writer.WriteString ("syncBlock", string (HeapObserver.getSyncBlock address state.ManagedHeap))
             | None ->
                 writer.WriteString ("kind", "missing")
                 writer.WriteString ("error", $"heap address %d{heapAddressValue address} does not exist")
@@ -909,7 +909,7 @@ module DebuggerServer =
     let private hasHeapAddress (session : SessionState) (address : ManagedHeapAddress) : bool =
         let state = sessionState session
 
-        ManagedHeap.isLive address state.ManagedHeap
+        HeapObserver.isLive address state.ManagedHeap
 
     type private DebuggerHttpResponse =
         {

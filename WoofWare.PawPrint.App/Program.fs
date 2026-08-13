@@ -285,7 +285,7 @@ module AppProgram =
                     drainRemaining state
 
                     let exceptionTypeName =
-                        match ManagedHeap.tryGet exn.ExceptionObject state.ManagedHeap with
+                        match HeapObserver.tryGetNonArrayObject exn.ExceptionObject state.ManagedHeap with
                         | Some obj ->
                             match AllConcreteTypes.lookup obj.ConcreteType state.ConcreteTypes with
                             | Some ti -> $"{ti.Namespace}.{ti.Name}"

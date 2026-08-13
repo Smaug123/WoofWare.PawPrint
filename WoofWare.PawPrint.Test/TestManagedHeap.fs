@@ -1475,3 +1475,70 @@ module TestManagedHeap =
 
         HeapObserver.liveAddresses heap
         |> shouldEqual (Set.ofList [ arrAddr ; objAddr ])
+
+    [<Test>]
+    let ``HeapObserver mirrors agree with their ManagedHeap counterparts`` () : unit =
+        // Four `HeapObserver` functions answer exactly the same question as a `ManagedHeap`
+        // function of the same name, and deliberately do not delegate to it: under the
+        // planned access instrumentation, delegating would route an observer's read back
+        // through the emitting path. Nothing but this test stops the two copies drifting.
+        let property (ops : bool list) : bool =
+            let ops = ops |> List.truncate 8
+
+            let heap =
+                ops
+                |> List.fold
+                    (fun heap isArray ->
+                        if isArray then
+                            ManagedHeap.allocateArray (stubArray 1) heap |> snd
+                        else
+                            ManagedHeap.allocateNonArray stubNonArray heap |> snd
+                    )
+                    ManagedHeap.empty
+
+            // Give one object string contents and one a non-empty header, so the mirrors
+            // are compared on present values and not only on absent ones.
+            let heap =
+                match ManagedHeap.isLive (ManagedHeapAddress 1) heap with
+                | false -> heap
+                | true ->
+                    heap
+                    |> ManagedHeap.recordStringContents (ManagedHeapAddress 1) "contents"
+                    |> ManagedHeap.setSyncBlock (ManagedHeapAddress 1) (heldBy (ThreadId 3))
+
+            // Probe past the end too, so the "not live" answers are compared as well.
+            [ 1 .. ops.Length + 3 ]
+            |> List.forall (fun addr ->
+                let addr = ManagedHeapAddress addr
+
+                ManagedHeap.isLive addr heap = HeapObserver.isLive addr heap
+                // Compared by reference, not structurally: `stubNonArray`'s payload is
+                // deliberately null, so a structural comparison would read it and NRE. This
+                // is the stronger claim anyway — the same record, not merely an equal one.
+                && (
+                    match ManagedHeap.tryGet addr heap, HeapObserver.tryGetNonArrayObject addr heap with
+                    | None, None -> true
+                    | Some a, Some b -> System.Object.ReferenceEquals (a, b)
+                    | Some _, None
+                    | None, Some _ -> false
+                )
+                && ManagedHeap.getStringContents addr heap = HeapObserver.getStringContents addr heap
+                && (if ManagedHeap.isLive addr heap then
+                        ManagedHeap.getSyncBlock addr heap = HeapObserver.getSyncBlock addr heap
+                    else
+                        // Both must refuse, and say so rather than inventing a header.
+                        let failed (f : unit -> SyncBlock) : bool =
+                            try
+                                f () |> ignore
+                                false
+                            with _ ->
+                                true
+
+                        failed (fun () -> ManagedHeap.getSyncBlock addr heap)
+                        && failed (fun () -> HeapObserver.getSyncBlock addr heap))
+            )
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 200,
+            Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary) property
+        )

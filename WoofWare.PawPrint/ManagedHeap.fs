@@ -513,6 +513,14 @@ module ManagedHeap =
 ///
 /// Consequently these functions must stay pure reads. Anything the interpreter proper
 /// needs belongs in `ManagedHeap`, even if a test is its only current caller.
+///
+/// Several of these mirror a `ManagedHeap` function of the same name and answer exactly
+/// the same question. That is not accidental duplication: the two must stay distinct
+/// *functions* precisely so that one can come to emit an access event and the other cannot.
+/// For the same reason they read the representation directly rather than delegating to
+/// their `ManagedHeap` counterpart, which would route an observer's read straight back
+/// through the emitting path. `HeapObserver mirrors agree with their ManagedHeap
+/// counterparts` pins them together.
 [<RequireQualifiedAccess>]
 module HeapObserver =
     /// The number of live non-array objects, arrays excluded.
@@ -543,6 +551,32 @@ module HeapObserver =
     /// Every live non-array object with its payload, in ascending address order.
     let nonArrayObjects (heap : ManagedHeap) : (ManagedHeapAddress * AllocatedNonArrayObject) list =
         heap.NonArrayObjects |> Map.toList
+
+    /// The non-array object at `addr`, or None if there is no live non-array object there
+    /// — including when `addr` is a live *array*.
+    let tryGetNonArrayObject (addr : ManagedHeapAddress) (heap : ManagedHeap) : AllocatedNonArrayObject option =
+        match heap.NonArrayObjects.TryGetValue addr with
+        | true, v -> Some v
+        | false, _ -> None
+
+    /// The character content of the string object at `addr`, or None if none was recorded.
+    let getStringContents (addr : ManagedHeapAddress) (heap : ManagedHeap) : string option =
+        match heap.StringContents.TryGetValue addr with
+        | true, s -> Some s
+        | false, _ -> None
+
+    /// The object header of the object at `addr`. Fails for an address that is not a live
+    /// allocation.
+    let getSyncBlock (addr : ManagedHeapAddress) (heap : ManagedHeap) : SyncBlock =
+        match heap.SyncBlocks.TryGetValue addr with
+        | true, v -> v
+        | false, _ ->
+            failwith
+                $"HeapObserver.getSyncBlock: %O{addr} is not a live managed heap allocation, so has no object header"
+
+    /// Whether `addr` is a live heap allocation of either kind.
+    let isLive (addr : ManagedHeapAddress) (heap : ManagedHeap) : bool =
+        heap.NonArrayObjects.ContainsKey addr || heap.Arrays.ContainsKey addr
 
     /// The addresses of all live allocations, arrays and non-arrays alike.
     ///
