@@ -771,15 +771,35 @@ module IntrinsicMethodKeys =
             // interpretation here at all — the flag is merely stored, and only the *awaiter* later
             // reads it to decide how to schedule a continuation.
             //
-            // Deliberately not allowlisted alongside it: the non-generic `ValueTask.ConfigureAwait`
-            // and the four `Task`/`Task<T>` overloads, which are `[Intrinsic]` for the same
-            // pattern-match reason and have equally plain bodies, but which no test here reaches.
-            // They keep failing at the intrinsic dispatcher, naming themselves.
+            // Deliberately not allowlisted alongside it: the four `Task`/`Task<T>` overloads, which
+            // are `[Intrinsic]` for the same pattern-match reason and have equally plain bodies, but
+            // which no test here reaches. They keep failing at the intrinsic dispatcher, naming
+            // themselves.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Threading/Tasks/ValueTask.cs#L829-L832
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/ConfiguredValueTaskAwaitable.cs#L127
             pattern
                 "System.Private.CoreLib"
                 "System.Threading.Tasks.ValueTask`1"
+                "ConfigureAwait"
+                [ IntrinsicParameterPattern.Exact "System.Boolean" ]
+            // The non-generic sibling of the entry above. Every word of that review applies here
+            // unchanged — same `[Intrinsic]`-is-only-a-peephole-marker reasoning, same shape of body
+            // — with one field fewer, since a `ValueTask` carries no `_result`:
+            //   ldarg.0; ldfld _obj; ldarg.0; ldfld _token; ldarg.1
+            //   newobj ValueTask::.ctor(object, int16, bool)
+            //   stloc.0; ldloca.s 0
+            //   newobj ConfiguredValueTaskAwaitable::.ctor(ValueTask&)
+            //   ret
+            // Unlike `ValueTask<T>`'s overload this one *is* spelled correctly in the JIT's
+            // class-name test (importercalls.cpp:11205 lists "ValueTask"), so the runtime-async
+            // peephole can recognise it; that changes nothing here, because the peephole only fires
+            // inside a runtime-async method and rewrites the whole `call; ConfigureAwait; Await`
+            // trio rather than supplying a body for this method.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Threading/Tasks/ValueTask.cs#L428-L431
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/ConfiguredValueTaskAwaitable.cs#L22
+            pattern
+                "System.Private.CoreLib"
+                "System.Threading.Tasks.ValueTask"
                 "ConfigureAwait"
                 [ IntrinsicParameterPattern.Exact "System.Boolean" ]
             // IL body is `ldsfld <Default>k__BackingField; ret`; the .cctor constructs the comparer.
