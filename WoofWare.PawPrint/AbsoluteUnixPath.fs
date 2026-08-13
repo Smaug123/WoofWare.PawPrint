@@ -2,7 +2,6 @@ namespace WoofWare.PawPrint
 
 open System
 open System.Collections.Immutable
-open System.Text
 
 /// Why a candidate string is not a path `getcwd(3)` could ever have returned.
 [<RequireQualifiedAccess>]
@@ -54,8 +53,7 @@ type AbsoluteUnixPath =
 module AbsoluteUnixPath =
     /// The Unix directory separator. There is only one — unlike Windows,
     /// Unix has no alternate separator to normalise away.
-    [<Literal>]
-    let separator : char = '/'
+    let separator : char = UnixPathText.separator
 
     /// The root directory, "/". The one absolute path that is legally
     /// separator-terminated, and the only one guaranteed to exist on any Unix.
@@ -65,33 +63,17 @@ module AbsoluteUnixPath =
         match path with
         | AbsoluteUnixPath path -> path
 
-    /// First per-character defect in `candidate`, scanning left to right, or
-    /// `None` if there is none. Separate from the segment rules because it has
-    /// to consider surrogate *pairs*, so it cannot be a per-character predicate.
+    /// First encoding defect in `candidate`, scanning left to right, or `None`
+    /// if there is none. Shared with `UnixPath` via `UnixPathText`, so that the
+    /// two path shapes cannot drift on which strings survive the `char*`
+    /// boundary; only the mapping into this type's error DU is local.
     let private firstCharacterDefect (candidate : string) : AbsoluteUnixPathError option =
-        let mutable i = 0
-        let mutable result = None
-
-        while result.IsNone && i < candidate.Length do
-            let c = candidate.[i]
-
-            if c = '\000' then
-                result <- Some (AbsoluteUnixPathError.ContainsNul i)
-            elif Char.IsHighSurrogate c then
-                if i + 1 < candidate.Length && Char.IsLowSurrogate candidate.[i + 1] then
-                    // A well-formed pair; step over its low half too, so that
-                    // the low surrogate is not itself reported as unpaired.
-                    i <- i + 1
-                else
-                    result <- Some (AbsoluteUnixPathError.UnpairedSurrogate i)
-            elif Char.IsLowSurrogate c then
-                // A low surrogate not consumed by the branch above has no high
-                // half preceding it.
-                result <- Some (AbsoluteUnixPathError.UnpairedSurrogate i)
-
-            i <- i + 1
-
-        result
+        UnixPathText.firstDefect candidate
+        |> Option.map (fun defect ->
+            match defect with
+            | UnixPathTextDefect.ContainsNul index -> AbsoluteUnixPathError.ContainsNul index
+            | UnixPathTextDefect.UnpairedSurrogate index -> AbsoluteUnixPathError.UnpairedSurrogate index
+        )
 
     /// First defect in `candidate`'s segment structure, or `None` if there is
     /// none. `candidate` must already be known non-empty and separator-rooted.
@@ -192,16 +174,9 @@ module AbsoluteUnixPath =
         | Ok path -> path
         | Error error -> failwith $"%s{context}: %s{describe error} (got %s{candidate})"
 
-    /// Strict UTF-8 encoder. `parse` has already rejected the only inputs that
-    /// could trigger a fallback (unpaired surrogates), so the throwing
-    /// configuration is an assertion that the type's invariant holds rather
-    /// than a reachable error path — a silent U+FFFD substitution here would
-    /// hand the guest bytes that do not decode back to the configured path.
-    let private utf8 : UTF8Encoding = UTF8Encoding (false, true)
-
     /// The path as the NUL-free byte string a Unix kernel would hand back.
     /// Note this is the encoding *without* a terminator; callers that need a C
     /// string append the NUL themselves, because whether there is room for it
     /// is exactly what `getcwd`'s ERANGE check is about.
     let toUtf8 (path : AbsoluteUnixPath) : ImmutableArray<byte> =
-        toString path |> utf8.GetBytes |> ImmutableArray.CreateRange
+        toString path |> UnixPathText.utf8.GetBytes |> ImmutableArray.CreateRange
