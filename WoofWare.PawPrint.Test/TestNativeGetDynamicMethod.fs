@@ -960,3 +960,24 @@ public static class Entry
 
         message |> shouldContainText "LOCAL_SIG"
         message |> shouldContainText "Field"
+
+    /// `DynamicMethod.InitLocals` is settable right up until the method is first executed, and
+    /// CoreCLR reads it late — `GetCodeInfo` runs during the first JIT, not during this QCall. So a
+    /// guest may `CreateDelegate`, then assign `InitLocals`, then invoke, and get the assigned
+    /// value; the flag recorded here is the earlier one.
+    ///
+    /// `localloc` is the only instruction that consults it, so refusing `localloc` is what makes
+    /// the difference unobservable rather than merely unlikely to be hit.
+    [<Test>]
+    let ``a body whose behaviour depends on InitLocals is refused`` () : unit =
+        // ldc.i4.1; localloc; pop; ret
+        let body =
+            { doublingBody with
+                Code = [| 0x17uy ; 0xFEuy ; 0x0Fuy ; 0x26uy ; 0x2Auy |]
+            }
+
+        let message = mintExpectingFailure body
+
+        message |> shouldContainText "InitLocals"
+        message |> shouldContainText "Localloc"
+        message |> shouldContainText "IL_0001"

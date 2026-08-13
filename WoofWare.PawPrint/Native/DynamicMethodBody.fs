@@ -88,6 +88,33 @@ module internal DynamicMethodBody =
         | IlOp.UnaryConst _
         | IlOp.Switch _ -> false
 
+    /// Whether this instruction's behaviour depends on `LocalsInit`, which this module can only
+    /// snapshot and not track.
+    ///
+    /// `DynamicMethod.InitLocals` has a public setter and CoreCLR reads it *late*: the QCall only
+    /// installs the resolver, and `GetCodeInfo` — which is what reports `initLocals` — is called
+    /// by `LCGMethodResolver` during the first JIT of the method. So a guest may legally call
+    /// `CreateDelegate`, then assign `InitLocals`, then invoke, and CoreCLR uses the assigned
+    /// value. Reading the field at the QCall, as this module does, captures the earlier one.
+    ///
+    /// `localloc` is the whole of the observable difference: it is the only instruction whose
+    /// execution consults `MethodInstructions.LocalsInit` (`NullaryIlOp.fs`), choosing zeroed over
+    /// uninitialised stack memory. Refusing it here makes the snapshot unobservable rather than
+    /// merely unlikely to be noticed, so the recorded flag cannot be silently wrong.
+    ///
+    /// The refusal should go away with the deferral, not on its own: whoever makes a dynamic
+    /// method executable should read `_initLocals` off `m_method` at first execution — the address
+    /// is reachable from `DynamicMethodDefinition.Resolver` — and drop this check in the same
+    /// change.
+    let private dependsOnLocalsInit (op : IlOp) : bool =
+        match op with
+        | IlOp.Nullary NullaryIlOp.Localloc -> true
+        | IlOp.Nullary _
+        | IlOp.UnaryMetadataToken _
+        | IlOp.UnaryStringToken _
+        | IlOp.UnaryConst _
+        | IlOp.Switch _ -> false
+
     /// <summary>
     /// The body held by the <c>DynamicResolver</c> at <paramref name="resolver" />.
     /// </summary>
@@ -161,6 +188,12 @@ module internal DynamicMethodBody =
         | Some (op, offset) ->
             failwith
                 $"TODO: %s{operation} was given a dynamic method whose IL carries a token operand (%O{op} at IL_%04x{offset}); those name entries in the method's DynamicScope, not rows in %s{scopeAssembly.Name.Name}, and PawPrint cannot yet resolve them"
+        | None -> ()
+
+        match instructions |> List.tryFind (fst >> dependsOnLocalsInit) with
+        | Some (op, offset) ->
+            failwith
+                $"TODO: %s{operation} was given a dynamic method whose IL contains %O{op} at IL_%04x{offset}, whose behaviour depends on DynamicMethod.InitLocals; that property is settable until the method is first executed, and PawPrint records it once here"
         | None -> ()
 
         let localVars =
