@@ -1951,6 +1951,111 @@ module NativeRuntimeTypeQCall =
                 IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state result (CliType.ObjectRef (Some addr))
 
             NativeHandlerResult.completed state |> Some
+        | "RuntimeTypeHandle_InternalAlloc",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "InternalAlloc",
+          [ ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                               "System.Runtime.CompilerServices",
+                                                               "MethodTable",
+                                                               methodTableGenerics))
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Void when methodTableGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            // CoreCLR: `RuntimeTypeHandle_InternalAlloc`, reflectioninvocation.cpp:119, which is
+            // `pMT->Allocate()`. The checked counterpart of `RuntimeTypeHandle_InternalAllocNoChecks`
+            // above: same allocation, but `MethodTable::Allocate` (methodtable.cpp:4056) first
+            // runs `EnsureInstanceActive` and, for a type with precise-init cctors, a class
+            // initialiser.
+            //
+            // Every caller is delegate creation: `Delegate.InternalAlloc` (Delegate.CoreCLR.cs:435)
+            // is the sole caller of the managed `RuntimeTypeHandle.InternalAlloc`, and all four
+            // `Delegate.CreateDelegate` overloads plus `CreateDelegateInternal` reach it. It
+            // allocates the delegate object; a separate `Delegate_BindToMethodName`/
+            // `Delegate_BindToMethodInfo` QCall then binds it to a target.
+            let operation = "RuntimeTypeHandle.InternalAlloc"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let typeHandle =
+                NativeCall.methodTableOfEvalStackValue operation (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            // No `Nullable<T>` guard here, unlike the "NoChecks" arm above. That one has a caller
+            // (`AsyncHelpers.AllocContinuationResultBox`) that deliberately passes a nullable's
+            // MethodTable, so it needs one. This entry point's only caller is
+            // `Delegate.InternalAlloc`, which asserts its argument is assignable to
+            // `MulticastDelegate`, so the shape cannot arrive. The invariant properly belongs at
+            // the `IlMachineState.allocateUninitialisedInstance` chokepoint either way; see the
+            // sibling's comment.
+            let concreteType =
+                AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: MethodTable handle was not registered: %O{typeHandle}"
+                )
+
+            let assembly =
+                state.LoadedAssembly concreteType.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: assembly is not loaded: %s{concreteType.Assembly.FullName}"
+                )
+
+            let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
+
+            if DumpedAssembly.isValueType ctx.BaseClassTypes state._LoadedAssemblies typeInfo then
+                // `pMT->Allocate()` on a value-type MethodTable produces a box, and PawPrint's
+                // heap has no representation for one that came from here rather than from `box`.
+                // Unreachable through the only caller — `Delegate.InternalAlloc` asserts its
+                // argument derives from `MulticastDelegate` — so refuse rather than invent a
+                // representation for a shape nothing can produce.
+                failwith
+                    $"TODO: %s{operation} was asked to allocate the value type %s{typeInfo.Namespace}.%s{typeInfo.Name}; only reference types reach CoreCLR's Delegate.InternalAlloc, and PawPrint has no boxed representation for an object allocated here"
+
+            // `MethodTable::Allocate` runs the class initialiser only for a type with precise-init
+            // cctors, i.e. one that is *not* `beforefieldinit`. PawPrint initialises
+            // unconditionally, which is the convention its `newobj` already follows and which
+            // `docs/divergences.md` records: ECMA-335 II.10.5.3.2 permits an eager schedule, and
+            // being consistent with `newobj` beats having two different rules for allocating an
+            // object. The difference is only observable for a `beforefieldinit` type that both has
+            // a `.cctor` and is allocated through *this* entry point, which no caller can arrange:
+            // delegate types carry no static constructor.
+            //
+            // This suspension needs no re-entry marker. Nothing has been written to the result
+            // handle and no managed call is outstanding, so re-entry simply re-runs this arm from
+            // the top and `ensureTypeInitialised` answers `Executed` the second time.
+            let state, typeInit =
+                IlMachineStateExecution.ensureTypeInitialised
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    ctx.Thread
+                    typeHandle
+                    state
+
+            match typeInit with
+            | WhatWeDid.SuspendedForClassInit -> NativeHandlerResult.suspendedForClassInit state |> Some
+            | WhatWeDid.BlockedOnClassInit blockedBy -> NativeHandlerResult.blockedOnClassInit blockedBy state |> Some
+            | WhatWeDid.ThrowingTypeInitializationException ->
+                NativeHandlerResult.throwingTypeInitializationException state |> Some
+            | WhatWeDid.SuspendedForManagedCall ->
+                failwith
+                    $"logic error: %s{operation}: ensureTypeInitialised cannot suspend for an arbitrary managed call"
+            | WhatWeDid.VoluntaryYield _ ->
+                failwith $"logic error: %s{operation}: ensureTypeInitialised cannot produce a VoluntaryYield"
+            | WhatWeDid.Executed ->
+
+            let result =
+                NativeCall.objectHandleOnStackTarget operation state "result" instruction.Arguments.[1]
+
+            let addr, state =
+                IlMachineState.allocateUninitialisedInstance ctx.LoggerFactory ctx.BaseClassTypes typeHandle state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state result (CliType.ObjectRef (Some addr))
+
+            NativeHandlerResult.completed state |> Some
         | "RuntimeTypeHandle_GetActivationInfo",
           "System.Private.CoreLib",
           "System",
