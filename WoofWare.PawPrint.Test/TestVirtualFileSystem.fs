@@ -449,6 +449,25 @@ module TestVirtualFileSystem =
         |> shouldEqual (Ok file)
 
     [<Test>]
+    let ``creating into the about-to-be-allocated inode is ENOENT, not self-parenthood`` () : unit =
+        // The parent is checked *before* the child is allocated, so that a
+        // parent naming exactly the next inode number cannot be satisfied by
+        // the allocation itself. Otherwise createDirectory would install the
+        // new directory at that number, find it, and bind it as its own child —
+        // returning Ok for a filesystem that is unreachable from the root.
+        let vfs = build [ mkdir (rootOf VirtualFileSystem.empty) "d" ]
+        let absent = VirtualFileSystem.nextInode vfs
+
+        VirtualFileSystem.createDirectory absent (name "x") vfs
+        |> shouldEqual (Error UnixError.ENOENT)
+
+        VirtualFileSystem.createFile absent (name "x") noBytes vfs
+        |> shouldEqual (Error UnixError.ENOENT)
+
+        VirtualFileSystem.createSymlink absent (name "x") (target "y") vfs
+        |> shouldEqual (Error UnixError.ENOENT)
+
+    [<Test>]
     let ``a rejected builder leaves the filesystem sound`` () : unit =
         let vfs = build [ mkdir (rootOf VirtualFileSystem.empty) "d" ]
 
@@ -736,10 +755,10 @@ module TestVirtualFileSystem =
 
         Gen.oneof
             [
-                Gen.map2 (fun p n -> Step.MakeDirectory (p, n)) (Gen.choose (0, 5)) nameGen
-                Gen.map2 (fun p n -> Step.MakeFile (p, n)) (Gen.choose (0, 5)) nameGen
-                Gen.map3 (fun p n t -> Step.MakeSymlink (p, n, t)) (Gen.choose (0, 5)) nameGen targetGen
-                Gen.map3 (fun p n t -> Step.MakeHardLink (p, n, t)) (Gen.choose (0, 5)) nameGen (Gen.choose (0, 5))
+                Gen.map2 (fun p n -> Step.MakeDirectory (p, n)) (Gen.choose (0, 9)) nameGen
+                Gen.map2 (fun p n -> Step.MakeFile (p, n)) (Gen.choose (0, 9)) nameGen
+                Gen.map3 (fun p n t -> Step.MakeSymlink (p, n, t)) (Gen.choose (0, 9)) nameGen targetGen
+                Gen.map3 (fun p n t -> Step.MakeHardLink (p, n, t)) (Gen.choose (0, 9)) nameGen (Gen.choose (0, 9))
             ]
 
     let private applyStep (step : Step) (vfs : VirtualFileSystem) : VirtualFileSystem =
@@ -763,7 +782,17 @@ module TestVirtualFileSystem =
                 | _ -> false
             )
 
-        let pick (xs : InodeNumber list) (i : int) = xs.[i % List.length xs]
+        // Deliberately able to name an inode that does not exist, and in
+        // particular the one about to be allocated. Restricting the generator
+        // to existing directories is why this property missed a builder that
+        // returned Ok for a self-parented, unreachable directory: the failure
+        // needed a parent equal to `nextInode`, which the generator could not
+        // produce. A rejected step leaves the filesystem alone, so widening the
+        // alphabet costs nothing.
+        let pick (xs : InodeNumber list) (i : int) =
+            if i < List.length xs then xs.[i]
+            elif i % 2 = 0 then VirtualFileSystem.nextInode vfs
+            else InodeNumber (int64 (1000 + i))
 
         let outcome =
             match step with

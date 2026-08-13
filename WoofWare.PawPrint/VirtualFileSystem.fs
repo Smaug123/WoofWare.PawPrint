@@ -364,6 +364,33 @@ module VirtualFileSystem =
 
         inode, vfs
 
+    /// Whether `name` could be bound in `directory` right now, with the errno
+    /// the attempt would otherwise fail with.
+    ///
+    /// Separate from `bind` because the creators must check the *parent* before
+    /// allocating the child. Allocating first is not merely wasteful: a
+    /// `directory` that does not exist but happens to equal `NextInode` would
+    /// be *created* by the allocation, so `bind` would then find it, bind the
+    /// new inode as its own child, and return `Ok` for a filesystem unreachable
+    /// from the root — instead of the ENOENT the operation promises.
+    let private ensureBindable
+        (directory : InodeNumber)
+        (name : FileName)
+        (vfs : VirtualFileSystem)
+        : Result<unit, UnixError>
+        =
+        match Map.tryFind directory vfs.Inodes with
+        | None -> Error UnixError.ENOENT
+        | Some (InodeContent.RegularFile _)
+        | Some (InodeContent.Symlink _) -> Error UnixError.ENOTDIR
+        | Some (InodeContent.Directory content) ->
+            if
+                Map.containsKey (FileName.assertValid "VirtualFileSystem: directory entry name" name) content.Entries
+            then
+                Error UnixError.EEXIST
+            else
+                Ok ()
+
     /// Bind `name` to `inode` in `directory`, which must exist, be a directory,
     /// and not already hold `name`.
     let private bind
@@ -406,9 +433,10 @@ module VirtualFileSystem =
         (vfs : VirtualFileSystem)
         : Result<InodeNumber * VirtualFileSystem, UnixError>
         =
-        // Allocate first so the new directory can record its parent, but bind
-        // second so a rejected bind leaves nothing but a burnt inode number —
-        // which is unobservable, since numbers are never reused anyway.
+        match ensureBindable directory name vfs with
+        | Error error -> Error error
+        | Ok () ->
+
         let inode, allocated =
             allocate
                 (InodeContent.Directory
@@ -440,6 +468,10 @@ module VirtualFileSystem =
             failwith
                 "VirtualFileSystem.createFile: contents is the default ImmutableArray, whose underlying array is null. That is not an empty file — it is an uninitialised value that would pass checkInvariants and then throw on the first read. Pass ImmutableArray<byte>.Empty for an empty file."
 
+        match ensureBindable directory name vfs with
+        | Error error -> Error error
+        | Ok () ->
+
         let inode, allocated = allocate (InodeContent.RegularFile contents) vfs
         bind directory name inode allocated |> Result.map (fun vfs -> inode, vfs)
 
@@ -456,6 +488,11 @@ module VirtualFileSystem =
         : Result<InodeNumber * VirtualFileSystem, UnixError>
         =
         let target = SymlinkTarget.assertValid "VirtualFileSystem.createSymlink" target
+
+        match ensureBindable directory name vfs with
+        | Error error -> Error error
+        | Ok () ->
+
         let inode, allocated = allocate (InodeContent.Symlink target) vfs
         bind directory name inode allocated |> Result.map (fun vfs -> inode, vfs)
 
