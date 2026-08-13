@@ -1056,11 +1056,11 @@ module IlMachineManagedByref =
                 $"local memory byte-view read at offset %d{byteOffset} in %O{block} is outside the block (negative offset)"
 
         let pool = IlMachineThreadState.getStackMemoryPool thread frame state
-        let blockData = StackMemoryPool.getBlock block pool
+        let blockSize = StackMemoryPool.blockSize block pool
 
-        if int64 byteOffset + int64 targetSize > int64 blockData.Size then
+        if int64 byteOffset + int64 targetSize > int64 blockSize then
             failwith
-                $"local memory byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside %O{block} of size %d{blockData.Size}"
+                $"local memory byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside %O{block} of size %d{blockSize}"
 
         // Fast path that preserves provenance: when a typed cell starts at
         // exactly `byteOffset`, matches the requested size, AND has the same
@@ -1097,7 +1097,8 @@ module IlMachineManagedByref =
         CliType.ofBytesLike targetTemplate buf
 
     /// Mirror of `readStackMemoryBytesAs` for native-heap blocks. Use-after-free is
-    /// reported by `NativeMemoryPool.getBlock` if the block was freed.
+    /// reported by the first `NativeMemoryPool` accessor this reaches — here
+    /// `blockSize`, before any byte is read — if the block was freed.
     let private readNativeMemoryBytesAs
         (state : IlMachineState)
         (block : NativeMemoryBlockId)
@@ -1112,11 +1113,11 @@ module IlMachineManagedByref =
                 $"native-heap byte-view read at offset %d{byteOffset} in %O{block} is outside the block (negative offset)"
 
         let pool = state.Kernel.NativeMemoryPool
-        let blockData = NativeMemoryPool.getBlock block pool
+        let blockSize = NativeMemoryPool.blockSize block pool
 
-        if int64 byteOffset + int64 targetSize > int64 blockData.Size then
+        if int64 byteOffset + int64 targetSize > int64 blockSize then
             failwith
-                $"native-heap byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside %O{block} of size %d{blockData.Size}"
+                $"native-heap byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside %O{block} of size %d{blockSize}"
 
         let fastPath =
             match NativeMemoryPool.tryReadCell block byteOffset pool with
