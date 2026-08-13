@@ -19,12 +19,13 @@ open WoofWare.PawPrint
 /// answers here and there, and each file pins its own. A change that made the two handlers agree
 /// would be caught by whichever file it broke.
 ///
-/// There is no end-to-end guest coverage yet, and cannot be until a delegate can be bound: the
-/// sole managed caller is `Delegate.InternalAlloc` (Delegate.CoreCLR.cs:435), reached from all
-/// four `Delegate.CreateDelegate` overloads and from `CreateDelegateInternal`, and every one of
-/// them goes on to `Delegate_BindToMethodName`/`Delegate_BindToMethodInfo` — neither of which is
-/// implemented — one statement later. So this drives the handler directly, in the shape
-/// `TestAssemblyNativeQCalls` established for the same reason.
+/// There are two managed callers. `Delegate.InternalAlloc` (Delegate.CoreCLR.cs:435) is reached
+/// from all four `Delegate.CreateDelegate` overloads and from `CreateDelegateInternal`, and every
+/// one of them goes on to `Delegate_BindToMethodName`/`Delegate_BindToMethodInfo` — neither of
+/// which is implemented — one statement later, so there is no end-to-end guest coverage of the
+/// working path yet. `RuntimeMethodHandle.ReboxToNullable` (RuntimeHandles.cs:1200) is the other,
+/// and PawPrint refuses it; see `a Nullable is refused` below. So this drives the handler
+/// directly, in the shape `TestAssemblyNativeQCalls` established for the same reason.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestInternalAlloc =
@@ -537,3 +538,60 @@ public static class Program
 
         ex.Message |> shouldContainText "SomeStruct"
         ex.Message |> shouldContainText "value type"
+
+    /// The other managed caller, and a genuine gap rather than an unreachable guard.
+    ///
+    /// `RuntimeMethodHandle.ReboxToNullable` (RuntimeHandles.cs:1200) allocates through this QCall
+    /// with a `Nullable<T>` MethodTable and then `Unbox_Nullable`s into the result's raw data.
+    /// PawPrint boxes a nullable as its underlying value, so there is no object here with the
+    /// nullable's own layout for that write to land in. A guest reaches this by calling
+    /// `MethodInfo.Invoke` on a method with a `Nullable<T>` parameter, so the refusal is
+    /// provokeable — and this provokes it directly, since reflection cannot yet get that far.
+    ///
+    /// The fix is a layout-preserving boxed-Nullable heap representation, which is the same thing
+    /// `TestInternalAllocNoChecks`'s `refuses to put a Nullable on the heap` is waiting for. When
+    /// it lands, both tests are the ones to revisit.
+    [<Test>]
+    let ``a Nullable is refused`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image = Roslyn.compile [ guestSource ]
+        let prepared = prepareGuest loggerFactory image
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let nullableType = requiredTopLevelType baseClassTypes.Corelib "System" "Nullable`1"
+
+        let nullableDefn =
+            TypeDefn.GenericInstantiation (
+                TypeDefn.FromDefinition (nullableType.Identity, SignatureTypeKind.ValueType),
+                ImmutableArray.Create (TypeDefn.PrimitiveType PrimitiveType.Int32)
+            )
+
+        let state, handle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                prepared.State
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                nullableDefn
+
+        let handleValue, _target, _sentinel, state =
+            objectHandleOnStackValue loggerFactory baseClassTypes state
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeNativeRaw loggerFactory prepared [ methodTablePointer handle ; handleValue ] state
+                |> ignore<NativeHandlerResult>
+            )
+
+        // Deliberately *not* asserted on "Nullable" or "ReboxToNullable": a `Nullable<T>` is a
+        // value type, so deleting this arm entirely would drop through to the generic value-type
+        // refusal below it — whose message names `ReboxToNullable` too, as one of the callers that
+        // cannot reach it. Both of those assertions therefore pass against the wrong arm, which a
+        // mutation run caught. `Unbox_Nullable` appears only in the nullable arm's message, and is
+        // the fact that distinguishes them: this refusal is about there being no object with the
+        // nullable's layout to write into.
+        ex.Message |> shouldContainText "Unbox_Nullable"

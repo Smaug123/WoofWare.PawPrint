@@ -1971,11 +1971,18 @@ module NativeRuntimeTypeQCall =
             // runs `EnsureInstanceActive` and, for a type with precise-init cctors, a class
             // initialiser.
             //
-            // Every caller is delegate creation: `Delegate.InternalAlloc` (Delegate.CoreCLR.cs:435)
-            // is the sole caller of the managed `RuntimeTypeHandle.InternalAlloc`, and all four
-            // `Delegate.CreateDelegate` overloads plus `CreateDelegateInternal` reach it. It
-            // allocates the delegate object; a separate `Delegate_BindToMethodName`/
-            // `Delegate_BindToMethodInfo` QCall then binds it to a target.
+            // Two managed callers, and they want different things:
+            //
+            //  * `Delegate.InternalAlloc` (Delegate.CoreCLR.cs:435), reached from all four
+            //    `Delegate.CreateDelegate` overloads and from `CreateDelegateInternal`. It
+            //    allocates the delegate object; a separate `Delegate_BindToMethodName`/
+            //    `Delegate_BindToMethodInfo` QCall then binds it to a target. This is the caller
+            //    that works.
+            //  * `RuntimeMethodHandle.ReboxToNullable` (RuntimeHandles.cs:1200), reached from
+            //    `RuntimeType.CheckValue` whenever reflection has to coerce an argument to a
+            //    `Nullable<T>` parameter — `MethodInfo.Invoke` on a method taking `int?`, say. It
+            //    passes a *nullable's* MethodTable and then `Unbox_Nullable`s into the raw data of
+            //    what comes back. This is the caller that is refused below.
             let operation = "RuntimeTypeHandle.InternalAlloc"
 
             if instruction.Arguments.Length <> 2 then
@@ -1984,13 +1991,6 @@ module NativeRuntimeTypeQCall =
             let typeHandle =
                 NativeCall.methodTableOfEvalStackValue operation (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
 
-            // No `Nullable<T>` guard here, unlike the "NoChecks" arm above. That one has a caller
-            // (`AsyncHelpers.AllocContinuationResultBox`) that deliberately passes a nullable's
-            // MethodTable, so it needs one. This entry point's only caller is
-            // `Delegate.InternalAlloc`, which asserts its argument is assignable to
-            // `MulticastDelegate`, so the shape cannot arrive. The invariant properly belongs at
-            // the `IlMachineState.allocateUninitialisedInstance` chokepoint either way; see the
-            // sibling's comment.
             let concreteType =
                 AllConcreteTypes.lookup typeHandle state.ConcreteTypes
                 |> Option.defaultWith (fun () ->
@@ -2005,14 +2005,35 @@ module NativeRuntimeTypeQCall =
 
             let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
 
-            if DumpedAssembly.isValueType ctx.BaseClassTypes state._LoadedAssemblies typeInfo then
-                // `pMT->Allocate()` on a value-type MethodTable produces a box, and PawPrint's
-                // heap has no representation for one that came from here rather than from `box`.
-                // Unreachable through the only caller — `Delegate.InternalAlloc` asserts its
-                // argument derives from `MulticastDelegate` — so refuse rather than invent a
-                // representation for a shape nothing can produce.
+            // The `ReboxToNullable` caller lands here, and PawPrint cannot serve it. A boxed
+            // `Nullable<T>` in PawPrint is a box of the *underlying* `T`: `box`/`unbox`
+            // special-case nullables before allocating (UnaryMetadataObjectOps), so nothing on
+            // the heap ever carries a nullable MethodTable and no reader is prepared for one.
+            // `ReboxToNullable` needs precisely the opposite — an object whose raw data has the
+            // nullable's own layout, so that `CastHelpers.Unbox_Nullable` can write the has-value
+            // flag and the payload into it. Producing an ordinary box of `T` here would satisfy
+            // the allocation and then be silently corrupted by that write.
+            //
+            // So this is a real gap, not an unreachable guard: a guest calling `MethodInfo.Invoke`
+            // on a method with a `Nullable<T>` parameter reaches it. The fix is a layout-preserving
+            // boxed-Nullable heap representation, which is the same thing the "NoChecks" arm above
+            // says it needs for `AsyncHelpers.AllocContinuationResultBox`; one representation would
+            // serve both, and neither is in scope here. Refusing loudly beats corrupting.
+            match InternalTypeKind.kind ctx.BaseClassTypes concreteType with
+            | InternalTypeKind.Nullable ->
                 failwith
-                    $"TODO: %s{operation} was asked to allocate the value type %s{typeInfo.Namespace}.%s{typeInfo.Name}; only reference types reach CoreCLR's Delegate.InternalAlloc, and PawPrint has no boxed representation for an object allocated here"
+                    $"TODO: %s{operation} was asked to allocate the Nullable %s{typeInfo.Namespace}.%s{typeInfo.Name}, as RuntimeMethodHandle.ReboxToNullable does when reflection coerces an argument to a Nullable<T> parameter; PawPrint boxes the underlying value instead, so there is no object here whose raw data Unbox_Nullable could write the nullable's layout into"
+            | _ -> ()
+
+            if DumpedAssembly.isValueType ctx.BaseClassTypes state._LoadedAssemblies typeInfo then
+                // Any other value type: `pMT->Allocate()` produces a box, and PawPrint's heap has
+                // no representation for one that arrived here rather than through `box`. Neither
+                // caller can produce this — `Delegate.InternalAlloc` asserts its argument derives
+                // from `MulticastDelegate`, and `ReboxToNullable` asserts its argument is a
+                // nullable — so this is the guard that catches a *third* caller appearing, rather
+                // than a gap with a known consumer.
+                failwith
+                    $"TODO: %s{operation} was asked to allocate the value type %s{typeInfo.Namespace}.%s{typeInfo.Name}; neither Delegate.InternalAlloc nor RuntimeMethodHandle.ReboxToNullable can pass one, and PawPrint has no boxed representation for an object allocated here"
 
             // `MethodTable::Allocate` runs the class initialiser only for a type with precise-init
             // cctors, i.e. one that is *not* `beforefieldinit`. PawPrint initialises
