@@ -137,8 +137,7 @@ module TestImpureCases =
     /// here.
     let private assertCapturedFrozenStackTrace (state : IlMachineState) : unit =
         let ediObjects =
-            state.ManagedHeap.NonArrayObjects
-            |> Map.toList
+            HeapObserver.nonArrayObjects state.ManagedHeap
             |> List.filter (fun (_, object) -> isExceptionDispatchInfo state object.ConcreteType)
 
         let _ediAddr, ediObject =

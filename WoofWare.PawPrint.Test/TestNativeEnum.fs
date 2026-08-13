@@ -339,7 +339,10 @@ public static class Entry
         let expectedElementHandle =
             AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes expectedElementType
 
-        let array = state.ManagedHeap.Arrays.[arrayAddr]
+        let array =
+            match HeapObserver.tryGetArray arrayAddr state.ManagedHeap with
+            | Some array -> array
+            | None -> failwith $"expected a live array at %O{arrayAddr}"
 
         array.Shape.ConcreteType
         |> shouldEqual (ConcreteTypeHandle.OneDimArrayZero expectedElementHandle)
@@ -356,13 +359,19 @@ public static class Entry
             namesArray
             |> Option.defaultWith (fun () -> failwith "expected names array to be populated")
 
-        let array = state.ManagedHeap.Arrays.[namesArray]
+        let array =
+            match HeapObserver.tryGetArray namesArray state.ManagedHeap with
+            | Some array -> array
+            | None -> failwith $"expected a live names array at %O{namesArray}"
 
         let actualNames =
             array.Elements
             |> Seq.map (fun element ->
                 match element with
-                | CliType.ObjectRef (Some addr) -> state.ManagedHeap.StringContents.[addr]
+                | CliType.ObjectRef (Some addr) ->
+                    match ManagedHeap.getStringContents addr state.ManagedHeap with
+                    | Some contents -> contents
+                    | None -> failwith $"names array element %O{addr} has no recorded string contents"
                 | other -> failwith $"expected string object ref in names array, got %O{other}"
             )
             |> Seq.toList
