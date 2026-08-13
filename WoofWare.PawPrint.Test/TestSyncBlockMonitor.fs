@@ -721,7 +721,7 @@ module TestSyncBlockMonitor =
     /// is not equality-comparable (it embeds MethodStates with structural
     /// non-equality), so we compare what we care about explicitly.
     let private wakeupVisibleState (state : IlMachineState) =
-        let blocks = state.ManagedHeap.SyncBlocks
+        let blocks = HeapObserver.syncBlocks state.ManagedHeap
 
         let statuses = state.ThreadState |> Map.map (fun _ ts -> ts.Status)
         blocks, statuses

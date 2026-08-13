@@ -101,9 +101,8 @@ module TestContextSwitchPrior =
         ]
 
     /// Ops whose only effect is on interpreter-internal mutable bookkeeping
-    /// (`PointerHashState` or `ManagedHeap.Arrays` reads via the byte-view
-    /// anchor path). Guest IL has no opcode that directly addresses these
-    /// structures.
+    /// (`PointerHashState`, or the array-shape reads on the byte-view anchor
+    /// path). Guest IL has no opcode that directly addresses these structures.
     let private nullaryInterpreterOnly : NullaryIlOp list =
         [
             // Reads `PointerHashState` to decide whether synthesised bits are a
@@ -124,8 +123,8 @@ module TestContextSwitchPrior =
             NullaryIlOp.Or
             NullaryIlOp.Xor
             // Anchor a byte-view on a plain-array byref via
-            // `anchorByteViewIfPlainArrayByref`, which reads
-            // `state.ManagedHeap.Arrays`.
+            // `anchorByteViewIfPlainArrayByref`, which reads the array's shape
+            // (`ManagedHeap.getArrayShape`) and never a cell.
             NullaryIlOp.Conv_I
             NullaryIlOp.Conv_U
         ]

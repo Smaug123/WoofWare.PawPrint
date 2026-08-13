@@ -553,9 +553,9 @@ module DebuggerServer =
 
         writer.WritePropertyName "heap"
         writer.WriteStartObject ()
-        writer.WriteNumber ("nonArrayObjects", state.ManagedHeap.NonArrayObjects.Count)
-        writer.WriteNumber ("arrays", state.ManagedHeap.Arrays.Count)
-        writer.WriteNumber ("stringContents", state.ManagedHeap.StringContents.Count)
+        writer.WriteNumber ("nonArrayObjects", HeapObserver.nonArrayObjectCount state.ManagedHeap)
+        writer.WriteNumber ("arrays", HeapObserver.arrayCount state.ManagedHeap)
+        writer.WriteNumber ("stringContents", HeapObserver.stringContentCount state.ManagedHeap)
         writer.WriteEndObject ()
 
         writeValueArray
@@ -883,15 +883,15 @@ module DebuggerServer =
         writer.WriteStartObject ()
         writer.WriteNumber ("address", heapAddressValue address)
 
-        match state.ManagedHeap.NonArrayObjects |> Map.tryFind address with
+        match HeapObserver.tryGetNonArrayObject address state.ManagedHeap with
         | Some object ->
             writer.WriteString ("kind", "object")
             writer.WriteString ("concreteType", string object.ConcreteType)
             writer.WriteString ("contents", string object.Contents)
-            writeOptionalString writer "string" (ManagedHeap.getStringContents address state.ManagedHeap)
-            writer.WriteString ("syncBlock", string (ManagedHeap.getSyncBlock address state.ManagedHeap))
+            writeOptionalString writer "string" (HeapObserver.getStringContents address state.ManagedHeap)
+            writer.WriteString ("syncBlock", string (HeapObserver.getSyncBlock address state.ManagedHeap))
         | None ->
-            match state.ManagedHeap.Arrays |> Map.tryFind address with
+            match HeapObserver.tryGetArray address state.ManagedHeap with
             | Some array ->
                 writer.WriteString ("kind", "array")
                 writer.WriteString ("concreteType", string array.Shape.ConcreteType)
@@ -899,7 +899,7 @@ module DebuggerServer =
                 writeValueArray writer "elements" array.Elements writeCliType
                 // Arrays carry an object header exactly like any other heap object, so a
                 // `lock (array)` is visible here too.
-                writer.WriteString ("syncBlock", string (ManagedHeap.getSyncBlock address state.ManagedHeap))
+                writer.WriteString ("syncBlock", string (HeapObserver.getSyncBlock address state.ManagedHeap))
             | None ->
                 writer.WriteString ("kind", "missing")
                 writer.WriteString ("error", $"heap address %d{heapAddressValue address} does not exist")
@@ -909,8 +909,7 @@ module DebuggerServer =
     let private hasHeapAddress (session : SessionState) (address : ManagedHeapAddress) : bool =
         let state = sessionState session
 
-        (state.ManagedHeap.NonArrayObjects |> Map.containsKey address)
-        || (state.ManagedHeap.Arrays |> Map.containsKey address)
+        HeapObserver.isLive address state.ManagedHeap
 
     type private DebuggerHttpResponse =
         {
