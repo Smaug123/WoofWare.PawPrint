@@ -685,6 +685,21 @@ module TestVirtualFileSystem =
 
         forgedTarget.Message |> shouldContainText "Unchecked.defaultof"
 
+        // ImmutableArray is a struct too, and its default wraps a null array —
+        // which is not an empty file but an uninitialised one.
+        let forgedContents =
+            Assert.Throws<Exception> (fun () ->
+                VirtualFileSystem.createFile (rootOf vfs) (name "f") Unchecked.defaultof<ImmutableArray<byte>> vfs
+                |> ignore<Result<InodeNumber * VirtualFileSystem, UnixError>>
+            )
+
+        forgedContents.Message |> shouldContainText "ImmutableArray<byte>.Empty"
+
+        // ...and the genuinely empty file is still fine.
+        VirtualFileSystem.createFile (rootOf vfs) (name "f") ImmutableArray<byte>.Empty vfs
+        |> Result.isOk
+        |> shouldEqual true
+
         // Every builder binds through one place, so the name check covers them
         // all rather than only the one probed above.
         for builder in

@@ -429,6 +429,17 @@ module VirtualFileSystem =
         (vfs : VirtualFileSystem)
         : Result<InodeNumber * VirtualFileSystem, UnixError>
         =
+        // `ImmutableArray` is a struct wrapping an array, so `default` carries a
+        // null one: it stores happily, passes `checkInvariants`, and throws only
+        // when some later read touches `Length`. Rejected here for the same
+        // reason as a forged `FileName` or `SymlinkTarget`, and deliberately
+        // rejected rather than normalised to `Empty` — a caller who wrote
+        // `default` meant something, and quietly turning it into an empty file
+        // would hide the bug rather than surface it.
+        if contents.IsDefault then
+            failwith
+                "VirtualFileSystem.createFile: contents is the default ImmutableArray, whose underlying array is null. That is not an empty file — it is an uninitialised value that would pass checkInvariants and then throw on the first read. Pass ImmutableArray<byte>.Empty for an empty file."
+
         let inode, allocated = allocate (InodeContent.RegularFile contents) vfs
         bind directory name inode allocated |> Result.map (fun vfs -> inode, vfs)
 
