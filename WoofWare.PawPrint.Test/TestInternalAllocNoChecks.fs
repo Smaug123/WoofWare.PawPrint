@@ -504,6 +504,13 @@ public static class Program
         // carrying a Nullable MethodTable is a shape no reader here can interpret, so the QCall
         // refuses rather than creating one. This is a guard, not an unreachable arm: it is
         // provokeable, and this provokes it.
+        //
+        // This pins a deliberate divergence, not a mere invariant. CoreCLR *does* allocate such
+        // an object, for `AsyncHelpers.AllocContinuationResultBox`, which preserves a nullable's
+        // layout on purpose. No guest can reach that today — it is called from JIT-generated
+        // runtime-async code, which PawPrint does not model — so crashing loudly is the right
+        // answer until PawPrint has a layout-preserving boxed-Nullable representation. When it
+        // does, this test is the one to revisit.
         let exn =
             Assert.Throws (fun () ->
                 allocate loggerFactory prepared handle state

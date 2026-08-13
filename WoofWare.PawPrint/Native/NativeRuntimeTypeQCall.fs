@@ -1908,25 +1908,37 @@ module NativeRuntimeTypeQCall =
 
             // PawPrint never puts a `Nullable<T>` on the heap: `box`/`unbox` special-case it
             // before allocating (UnaryMetadataObjectOps), so a heap object carrying a Nullable
-            // MethodTable is a shape no reader here is prepared for, and creating one would be
-            // silent corruption rather than a loud failure. CoreCLR needs no such guard — its
-            // readers cope — so this is PawPrint's invariant, not upstream behaviour.
+            // MethodTable is a shape no reader here is prepared for. Creating one would be silent
+            // corruption; refusing is a loud failure. CoreCLR needs no such guard — its readers
+            // cope with a raw-layout box — so this is PawPrint's invariant, not upstream
+            // behaviour, and it is a genuine (if currently unreachable) divergence rather than
+            // tidiness.
             //
             // Unlike the same refusal in the `calli` allocation helper
             // (UnaryMetadataCallOps.executeAllocationHelperCall), this is a guard rather than a
-            // proof: that helper can enumerate its two producers and show neither can pair it
-            // with a Nullable, whereas this entry point is reachable from any BCL caller. Today's
-            // three all avoid it — `MulticastDelegate.NewMulticastDelegate` passes a delegate's
-            // MethodTable, `RuntimeHelpers.Box` routes Nullables to `CastHelpers.Box_Nullable`
-            // which substitutes the underlying `T`, and `AsyncHelpers.AllocContinuation` passes a
-            // continuation type — but that is an argument about the callers that exist, so the
-            // guard stays. The invariant properly belongs at the chokepoint
+            // proof. That helper can enumerate its two producers and show neither can pair it
+            // with a Nullable. Here, one of the three BCL callers *deliberately* can:
+            // `AsyncHelpers.AllocContinuationResultBox` (AsyncHelpers.CoreCLR.cs:198) exists
+            // precisely "to store structs without changing layout, including nullables", so a
+            // runtime-async method returning an object-containing `Nullable<T>` passes exactly
+            // this shape. It is unreachable today because PawPrint models no runtime-async at all
+            // — that method is called from JIT-generated code (`corelib.h`,
+            // `ALLOC_CONTINUATION_RESULT_BOX`), never from IL a guest can execute — and until
+            // that changes there is no way to exercise, or therefore to test, a raw-layout
+            // Nullable box. So the guard stays and names the situation: when runtime-async
+            // arrives, this failure is what will fire, and the fix is a heap representation for a
+            // layout-preserving Nullable box, not a wider predicate here. The other two callers
+            // avoid the shape for good: `MulticastDelegate.NewMulticastDelegate` passes a
+            // delegate's MethodTable, and `RuntimeHelpers.Box` routes Nullables to
+            // `CastHelpers.Box_Nullable`, which substitutes the underlying `T`.
+            //
+            // The invariant properly belongs at the chokepoint
             // (`IlMachineState.allocateUninitialisedInstance`), which would subsume both copies;
             // that is a wider change than this one and wants measuring against the whole suite.
             match AllConcreteTypes.lookup typeHandle state.ConcreteTypes with
             | Some ct when InternalTypeKind.kind ctx.BaseClassTypes ct = InternalTypeKind.Nullable ->
                 failwith
-                    $"%s{operation}: refusing to allocate a Nullable<T> (%O{typeHandle}) on the heap; PawPrint boxes the underlying value instead, so no reader can interpret such an object"
+                    $"%s{operation}: refusing to allocate a Nullable<T> (%O{typeHandle}) on the heap; PawPrint boxes the underlying value instead, so no reader can interpret such an object. CoreCLR does allow this, for runtime-async continuation result boxes, which preserve a nullable's layout — if that is what you are hitting, PawPrint needs a layout-preserving boxed-Nullable representation"
             | _ -> ()
 
             let result =
