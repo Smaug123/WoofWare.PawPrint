@@ -2,6 +2,7 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 open System.Reflection
+open Microsoft.Extensions.Logging
 
 /// The properties of a MethodTable-backed declaring type that CoreCLR's
 /// `MethodDesc::FindOrCreateAssociatedMethodDescForReflection` (genmeth.cpp:1233) and its
@@ -464,6 +465,110 @@ module NativeRuntimeMethodHandle =
         =
         resolveMetadataIdentityFromArg operation state arg
         |> methodInfoOfMetadataIdentity operation state
+
+    /// <summary>
+    /// The type PawPrint reports as the declaring type of a method minted by
+    /// <c>Reflection.Emit</c>: the <c>&lt;Module&gt;</c> type of the module the method is scoped
+    /// to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// CoreCLR's answer is a *synthetic* type. A <c>DynamicMethodDesc</c> is allocated from its
+    /// module's <c>DynamicMethodTable</c>, whose MethodTable comes from
+    /// <c>CreateMinimalMethodTable</c> (methodtable.cpp:663, via
+    /// <c>DynamicMethodTable::MakeMethodTable</c>, dynamicmethod.cpp:113): parentless
+    /// (<c>SetParentMethodTable(NULL)</c>), <c>ELEMENT_TYPE_CLASS</c>, carrying no metadata token
+    /// and no name at all outside a debug build — <c>SetDebugClassName("dynamicClass")</c> is
+    /// <c>_DEBUG</c>-only.
+    /// </para>
+    /// <para>
+    /// Two things about it are worth stating because they are easy to get wrong. It is
+    /// **owner-independent**: <c>ModuleHandle_GetDynamicMethod</c> receives only a
+    /// <c>QCall::ModuleHandle</c>, and <c>DynamicMethod._typeOwner</c> never crosses the QCall
+    /// boundary — it exists for JIT-time visibility checks. So two dynamic methods with different
+    /// owners in the same module share one MethodTable, and a method owned by <c>System.Int128</c>
+    /// gets a MethodTable with nothing to do with <c>Int128</c>. And it is **per-module**, so the
+    /// granularity to match is the scope module, not the method.
+    /// </para>
+    /// <para>
+    /// PawPrint cannot represent a type with no TypeDef row: <c>ResolvedTypeIdentity</c> is
+    /// (assembly, <c>TypeDefinitionHandle</c>), so type identity is metadata-backed throughout.
+    /// The stand-in is the scope module's <c>&lt;Module&gt;</c> type, which is a close structural
+    /// cousin and matches on every axis that is cheap to match: one per module, parentless,
+    /// class-shaped, carrying no custom attributes and no <c>.cctor</c>. CoreCLR's own comment
+    /// draws the same parallel — "Note that MethodTable for COR_GLOBAL_PARENT_TOKEN does not have
+    /// parent either" (methodtable.cpp:719).
+    /// </para>
+    /// <para>
+    /// The remaining difference is that a global (<c>&lt;Module&gt;</c>-declared) method and a
+    /// dynamic method scoped to the same module report the *same* declaring type here, where
+    /// CoreCLR reports two. Nothing in the public reflection surface appears to expose it:
+    /// <c>RuntimeType.GetMethodBase</c> (RuntimeType.CoreCLR.cs:1824) branches on
+    /// <c>IsDynamicMethod</c> before ever consulting the declaring type, so
+    /// <c>MethodBase.GetMethodFromHandle</c>, <c>Delegate.Method</c> and
+    /// <c>DynamicMethod.DeclaringType</c> all take resolver-backed paths. **The tripwire for
+    /// revisiting this is concrete: the day a guest-observable behaviour is found that
+    /// distinguishes the two, widen <c>ResolvedTypeIdentity</c> to
+    /// <c>Metadata of … | Synthetic of …</c> and mint a real synthetic type.** Until then that
+    /// widening is speculative, and a fabricated TypeDef row would be worse than either — it would
+    /// make <c>DumpedAssembly.TypeDefs</c>, whose contract is "the rows of this PE image", tell
+    /// lies, and would surface a bogus <c>0x02xxxxxx</c> token wherever tokens do.
+    /// </para>
+    /// <para>
+    /// Note this does not settle the anonymously-hosted case. There, CoreCLR hangs the
+    /// <c>DynamicMethodTable</c> off a dynamic assembly's module
+    /// (<c>DynamicMethod.GetDynamicMethodsModule</c>), so a synthetic type would need a synthetic
+    /// *module* to be scoped to. PawPrint reaches neither: an ownerless <c>DynamicMethod</c> dies
+    /// in <c>AssemblyNative_InitializeAssemblyLoadContext</c> long before any declaring-type
+    /// question is asked.
+    /// </para>
+    /// </remarks>
+    let dynamicMethodDeclaringType
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (dynamicHandle : DynamicMethodHandle)
+        (state : IlMachineState)
+        : ConcreteTypeHandle * IlMachineState
+        =
+        let definition =
+            MethodHandleRegistry.resolveDynamicMethod dynamicHandle state.MethodHandles
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: %O{dynamicHandle} is not registered in the method-handle registry"
+            )
+
+        let scopeAssemblyFullName = definition.GetScopeAssemblyFullName ()
+
+        let assembly =
+            state.LoadedAssembly' scopeAssemblyFullName
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{operation}: the scope assembly %s{scopeAssemblyFullName} of %O{dynamicHandle} is not loaded"
+            )
+
+        let moduleTypeInfo =
+            assembly.TypeDefs.Values
+            |> Seq.tryFind (fun typeInfo -> typeInfo.Namespace = "" && typeInfo.Name = "<Module>")
+            |> Option.defaultWith (fun () ->
+                // ECMA-335 II.10.8 makes the global type mandatory, so its absence is a malformed
+                // image rather than a shape to route around.
+                failwith $"%s{operation}: assembly %s{scopeAssemblyFullName} has no <Module> type"
+            )
+
+        let stk =
+            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies moduleTypeInfo
+
+        let state, handle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                moduleTypeInfo.Assembly
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (moduleTypeInfo.Identity, stk))
+
+        handle, state
 
     /// Resolve a <c>QCallTypeHandle</c>-encoded type to its
     /// <c>(DumpedAssembly, TypeInfo)</c>, accepting the MethodTable-backed
@@ -1235,11 +1340,18 @@ module NativeRuntimeMethodHandle =
             // that accessor never fires, which is what lets this hand back a bare pointer identity.
             let operation = "RuntimeMethodHandle.GetMethodTable"
 
-            let identity =
-                resolveMetadataIdentityFromArg operation state instruction.Arguments.[0]
+            // Legal on a dynamic method, and this is the FCall that makes `CreateDelegate` work on
+            // one: `Delegate.CreateDelegate` reaches it through `RuntimeMethodHandle.GetDeclaringType`
+            // (Delegate.CoreCLR.cs:381-391) before handing the result to `Delegate_BindToMethodInfo`.
+            // See `dynamicMethodDeclaringType` for what PawPrint answers and why.
+            let declaringType, state =
+                match resolveMethodHandleFromArg operation state instruction.Arguments.[0] with
+                | MethodHandle.FromMetadata identity -> identity.GetDeclaringType (), state
+                | MethodHandle.FromDynamic dynamicHandle ->
+                    dynamicMethodDeclaringType ctx.LoggerFactory ctx.BaseClassTypes operation dynamicHandle state
 
             let target =
-                match methodTableOfDeclaringType (identity.GetDeclaringType ()) with
+                match methodTableOfDeclaringType declaringType with
                 | Ok target -> target
                 | Error reason -> failwith $"%s{operation}: %s{reason}"
 
