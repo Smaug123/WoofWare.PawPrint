@@ -102,6 +102,7 @@
     <Compile Include="TestGenericParamConstraints.fs" />
     <Compile Include="TestGenericConstraintSatisfaction.fs" />
     <Compile Include="TestGcHandleRegistry.fs" />
+    <Compile Include="TestUnixError.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />
     <Compile Include="TestNonCryptoRandom.fs" />
     <Compile Include="TestDeterministicMath.fs" />

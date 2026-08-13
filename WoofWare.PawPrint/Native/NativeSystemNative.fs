@@ -126,7 +126,7 @@ module NativeSystemNative =
     /// as `(byte*)123`. Real `write(2)` and `getcwd(3)` alike return `EFAULT`
     /// for either, having performed no I/O, so an entry point that is about to
     /// dereference its buffer collapses both to that errno rather than aborting
-    /// the interpreter — see `Errno.EFAULT`. A guest reaches this only by
+    /// the interpreter — see `UnixError.EFAULT`. A guest reaches this only by
     /// hand-rolling a P/Invoke; the BCL's own wrappers null-check upstream.
     ///
     /// Note this is a question about *dereferenceability*, so callers that need
@@ -631,10 +631,10 @@ module NativeSystemNative =
 
             /// Set errno and hand the guest a NULL `char*`, as the C does on
             /// every failure path.
-            let fail (errno : int) : NativeHandlerResult option =
+            let fail (error : UnixError) : NativeHandlerResult option =
                 state.MapKernel (fun kernel ->
                     { kernel with
-                        LastSystemError = errno
+                        LastSystemError = UnixError.toRawErrno error
                     }
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ManagedPointerSource.Null) ctx.Thread
@@ -655,7 +655,7 @@ module NativeSystemNative =
                 // checked native build would abort instead; EINVAL is what a
                 // guest running against a retail runtime can observe, and it
                 // is the only one of the two behaviours we can reproduce.
-                fail Errno.EINVAL
+                fail UnixError.EINVAL
             elif isNullPointerArgument bufferArgument then
                 // `getcwd(NULL, size)` is a glibc/BSD extension that mallocs
                 // the result, and PawPrint does not model it: CoreLib's
@@ -669,9 +669,9 @@ module NativeSystemNative =
             elif bufferSize = 0 then
                 // POSIX: size 0 with a non-NULL buffer is EINVAL, *not*
                 // ERANGE — so a guest must not treat it as "grow and retry".
-                fail Errno.EINVAL
+                fail UnixError.EINVAL
             elif bufferSize < path.Length + 1 then
-                fail Errno.ERANGE
+                fail UnixError.ERANGE
             else
 
             // The buffer is genuinely dereferenced from here on, so this is
@@ -681,7 +681,7 @@ module NativeSystemNative =
             // size checks above come first, so `getcwd((byte*)123, 1)` is
             // ERANGE rather than EFAULT, as on the real kernel.
             match dereferenceablePointerArgument operation "buffer" bufferArgument with
-            | None -> fail Errno.EFAULT
+            | None -> fail UnixError.EFAULT
             | Some buffer ->
 
             // Success. errno is left untouched, per Unix convention (and
@@ -778,7 +778,7 @@ module NativeSystemNative =
                     -1L,
                     state.MapKernel (fun kernel ->
                         { kernel with
-                            LastSystemError = Errno.EBADF
+                            LastSystemError = UnixError.toRawErrno UnixError.EBADF
                         }
                     )
 
@@ -811,7 +811,7 @@ module NativeSystemNative =
                     -1,
                     state.MapKernel (fun kernel ->
                         { kernel with
-                            LastSystemError = Errno.EBADF
+                            LastSystemError = UnixError.toRawErrno UnixError.EBADF
                         }
                     )
 
@@ -837,15 +837,15 @@ module NativeSystemNative =
             // `Marshal.GetLastSystemError`, so we set it honestly.
             let fd = fdArgument "SystemNative_IsATty" instruction.Arguments.[0]
 
-            let errno =
+            let error =
                 match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
-                | Some _ -> Errno.ENOTTY
-                | None -> Errno.EBADF
+                | Some _ -> UnixError.ENOTTY
+                | None -> UnixError.EBADF
 
             let state =
                 state.MapKernel (fun kernel ->
                     { kernel with
-                        LastSystemError = errno
+                        LastSystemError = UnixError.toRawErrno error
                     }
                 )
 
@@ -875,10 +875,10 @@ module NativeSystemNative =
 
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
 
-            let setErrno (state : IlMachineState) (errno : int) : IlMachineState =
+            let setErrno (state : IlMachineState) (error : UnixError) : IlMachineState =
                 state.MapKernel (fun kernel ->
                     { kernel with
-                        LastSystemError = errno
+                        LastSystemError = UnixError.toRawErrno error
                     }
                 )
 
@@ -924,13 +924,13 @@ module NativeSystemNative =
                     // Write`) never pass negative sizes, so this is a guest
                     // misuse path; surface it through errno rather than
                     // crashing so the guest's own error reporting runs.
-                    -1, StepEffect.NoEffect, setErrno state Errno.ERANGE
+                    -1, StepEffect.NoEffect, setErrno state UnixError.ERANGE
                 else
                     match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
                     | None ->
                         // Unknown fd: report EBADF the same way `write(2)`
                         // would.
-                        -1, StepEffect.NoEffect, setErrno state Errno.EBADF
+                        -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
                     | Some entry ->
                         match entry.Role with
                         | FileDescriptorRole.StandardInput ->
@@ -939,7 +939,7 @@ module NativeSystemNative =
                             // operation). Real stdin is opened O_RDONLY by
                             // the shell, so this matches what guests would
                             // observe on the host.
-                            -1, StepEffect.NoEffect, setErrno state Errno.EBADF
+                            -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
                         | (FileDescriptorRole.StandardOutput | FileDescriptorRole.StandardError) as role ->
                             if bufferSize = 0 then
                                 // `write(fd, _, 0)` is a no-op on every Unix
@@ -973,7 +973,7 @@ module NativeSystemNative =
                                 | None ->
                                     // EFAULT: bad address. Real kernels
                                     // perform no I/O on this path.
-                                    -1, StepEffect.NoEffect, setErrno state Errno.EFAULT
+                                    -1, StepEffect.NoEffect, setErrno state UnixError.EFAULT
                                 | Some buffer ->
                                     let bytes = readBuffer buffer state
 
@@ -1178,7 +1178,7 @@ module NativeSystemNative =
                 // simulator bug.
                 state.MapKernel (fun kernel ->
                     { kernel with
-                        LastSystemError = Errno.EINVAL
+                        LastSystemError = UnixError.toRawErrno UnixError.EINVAL
                     }
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
