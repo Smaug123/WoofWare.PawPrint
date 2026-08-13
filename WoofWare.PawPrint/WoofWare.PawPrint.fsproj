@@ -37,7 +37,7 @@
     <Compile Include="CliType.fs" />
     <Compile Include="FieldIdentity.fs" />
     <Compile Include="GcHandleRegistry.fs" />
-    <Compile Include="Errno.fs" />
+    <Compile Include="UnixError.fs" />
     <Compile Include="AbsoluteUnixPath.fs" />
     <Compile Include="FileDescriptorRegistry.fs" />
     <Compile Include="TypeHandleRegistry.fs" />

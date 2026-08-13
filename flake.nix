@@ -62,7 +62,7 @@
           #    the tables actually live: `pal_error_common.h` has the raw-errno-to-PAL-`Error`
           #    conversion that `SystemNative_ConvertErrorPlatformToPal` is a one-line wrapper
           #    around, and `pal_io_common.h` has the `Common_Read`/`Common_Write` bodies that
-          #    `Errno.fs` already cites for their negative-size ERANGE contract.
+          #    `UnixError.fs` cites for their negative-size ERANGE contract.
           "src/libraries/Common/src/Interop/Unix"
           "src/native/libs/System.Native"
           "src/native/libs/Common"
