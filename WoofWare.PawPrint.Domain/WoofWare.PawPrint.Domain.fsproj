@@ -35,6 +35,7 @@
         <Compile Include="ComparableGenericParameterHandle.fs" />
         <Compile Include="TypeIdentity.fs" />
         <Compile Include="TypeDefn.fs" />
+        <Compile Include="LocalSignatureDecoding.fs" />
         <Compile Include="CustomAttribute.fs" />
         <Compile Include="GenericParameter.fs" />
         <Compile Include="ConcreteType.fs" />

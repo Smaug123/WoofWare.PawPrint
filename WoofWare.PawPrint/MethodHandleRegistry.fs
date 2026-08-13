@@ -63,12 +63,25 @@ type DynamicMethodDefinition =
             Signature : ImmutableArray<byte>
             ScopeAssemblyFullName : string
             Resolver : ManagedHeapAddress option
+            Body : MethodInstructions<TypeDefn>
         }
 
     member this.GetName () : string = this.Name
     member this.GetSignature () : ImmutableArray<byte> = this.Signature
     member this.GetScopeAssemblyFullName () : string = this.ScopeAssemblyFullName
     member this.GetResolver () : ManagedHeapAddress option = this.Resolver
+
+    /// The IL this method will execute, read out of `Resolver` at the moment the method was
+    /// minted (see `DynamicMethodBody`).
+    ///
+    /// Recorded eagerly and not as an option, so that a minted dynamic method is never in a
+    /// half-built state where it has an identity but no body. That will have to give when a
+    /// dynamic method is allowed to carry a token for *itself*: CoreCLR installs the method and
+    /// assigns `_methodHandle` before anything resolves its tokens, precisely so that the
+    /// self-reference has something to resolve *to*, and matching that needs the identity minted
+    /// first and the body attached second. Bodies carrying tokens at all are refused today, so
+    /// the cycle is unreachable and the simpler shape is the honest one.
+    member this.GetBody () : MethodInstructions<TypeDefn> = this.Body
 
 /// What a `RuntimeMethodHandleInternal` registry id can name.
 ///
@@ -427,6 +440,7 @@ module MethodHandleRegistry =
         (signature : ImmutableArray<byte>)
         (scopeAssemblyFullName : string)
         (resolver : ManagedHeapAddress option)
+        (body : MethodInstructions<TypeDefn>)
         (reg : MethodHandleRegistry)
         : ManagedHeapAddress * MethodHandleRegistry * 'allocState
         =
@@ -444,6 +458,7 @@ module MethodHandleRegistry =
                 Signature = signature
                 ScopeAssemblyFullName = scopeAssemblyFullName
                 Resolver = resolver
+                Body = body
             }
             : DynamicMethodDefinition
 
