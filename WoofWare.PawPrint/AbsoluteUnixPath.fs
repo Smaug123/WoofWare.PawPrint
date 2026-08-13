@@ -53,6 +53,12 @@ type AbsoluteUnixPath =
 module AbsoluteUnixPath =
     /// The Unix directory separator. There is only one — unlike Windows,
     /// Unix has no alternate separator to normalise away.
+    ///
+    /// Defined from `UnixPathText.separator` so there is a single source of
+    /// truth, but kept `[<Literal>]`: this is public surface of a published
+    /// package, and a downstream use in a constant position (a pattern, an
+    /// attribute argument, another literal) would stop compiling without it.
+    [<Literal>]
     let separator : char = UnixPathText.separator
 
     /// The root directory, "/". The one absolute path that is legally

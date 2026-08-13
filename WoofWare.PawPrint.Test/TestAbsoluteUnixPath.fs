@@ -64,6 +64,21 @@ module TestAbsoluteUnixPath =
         | Ok path -> failwith $"expected %s{candidate} to be rejected, but it parsed as %O{path}"
         | Error error -> error
 
+    /// A constant pattern accepts a `[<Literal>]` value and nothing else, so
+    /// this file stops compiling if `separator` is ever downgraded to an
+    /// ordinary `let` binding. That matters because it is public surface of a
+    /// published package: the downgrade breaks downstream code that uses it in
+    /// a constant position, while breaking nothing inside this repository.
+    let private classify (c : char) : string =
+        match c with
+        | AbsoluteUnixPath.separator -> "separator"
+        | _ -> "other"
+
+    [<Test>]
+    let ``separator is a literal, so it works in a constant pattern`` () : unit =
+        classify '/' |> shouldEqual "separator"
+        classify 'a' |> shouldEqual "other"
+
     [<Test>]
     let ``The root parses and renders as "/"`` () : unit =
         AbsoluteUnixPath.toString AbsoluteUnixPath.root |> shouldEqual "/"
