@@ -82,10 +82,14 @@ module StackMemoryPool =
     /// not zero-initialised.
     val readBytes : blockId : StackMemoryBlockId -> offset : int -> count : int -> pool : StackMemoryPool -> byte[]
 
-    /// Overwrite the bytes at `offset` through the raw overlay, evicting any cell they
-    /// intersect. A partially-overwritten cell is removed rather than edited: its remaining
-    /// bytes stay readable through the overlay, but its provenance does not survive being
-    /// half-overwritten.
+    /// Overwrite the `bytes.Length` bytes at `offset`.
+    ///
+    /// Unlike `writeCell`, this evicts nothing. A byte landing inside a byte-addressable
+    /// cell edits that cell in place, so the cell — and its provenance — survives a partial
+    /// overwrite and stays visible to `tryReadCell`; a byte landing outside every cell goes
+    /// to the raw overlay. A byte landing inside a cell that is *not* byte-addressable, such
+    /// as a tagged `NativeIntSource`, fails rather than silently collapsing the tag to its
+    /// bit pattern.
     val writeBytes :
         blockId : StackMemoryBlockId -> offset : int -> bytes : byte[] -> pool : StackMemoryPool -> StackMemoryPool
 
@@ -139,7 +143,9 @@ module NativeMemoryPool =
     /// not zero-initialised.
     val readBytes : blockId : NativeMemoryBlockId -> offset : int -> count : int -> pool : NativeMemoryPool -> byte[]
 
-    /// Overwrite the bytes at `offset` through the raw overlay, evicting any cell they
-    /// intersect.
+    /// Overwrite the `bytes.Length` bytes at `offset`. As for the stack pool, this evicts
+    /// nothing: a byte inside a byte-addressable cell edits that cell in place, a byte
+    /// outside every cell goes to the raw overlay, and a byte inside a non-byte-addressable
+    /// cell fails rather than discarding the tag.
     val writeBytes :
         blockId : NativeMemoryBlockId -> offset : int -> bytes : byte[] -> pool : NativeMemoryPool -> NativeMemoryPool
