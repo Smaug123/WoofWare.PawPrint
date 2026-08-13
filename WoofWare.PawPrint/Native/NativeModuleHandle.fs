@@ -253,9 +253,9 @@ module NativeModuleHandle =
             // `DynamicMethodDesc`, attaches the managed `DynamicResolver` to its
             // `LCGMethodResolver`, and writes back `pNewMD->AllocateStubMethodInfo()`.
             //
-            // This mints the method and hands back the stub. It does *not* make the method
-            // executable: the IL lives in the resolver, and nothing yet reads it back. A guest
-            // that goes on to bind or invoke the result therefore stops at the next primitive,
+            // This mints the method, reads its IL back out of the resolver, and hands back the
+            // stub. It does *not* make the method executable: nothing yet binds or invokes a
+            // dynamic method, so a guest that goes on to do either stops at the next primitive,
             // loudly and by name, rather than running the wrong code.
             let operation = "ModuleHandle_GetDynamicMethod"
 
@@ -305,6 +305,27 @@ module NativeModuleHandle =
             let result =
                 NativeCall.objectHandleOnStackTarget operation state "result" instruction.Arguments.[5]
 
+            // CoreCLR's `resolver` is an `OBJECTREF` the QCall only ever stores, so a null one is
+            // representable here; but `DynamicMethod.GetMethodDescriptor` constructs the resolver
+            // itself immediately before this call, and there is no other caller.
+            let resolverAddress =
+                resolver
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: the resolver is null, but DynamicMethod.GetMethodDescriptor constructs one immediately before reaching this QCall"
+                )
+
+            let scopeAssembly =
+                state.LoadedAssembly' scopeAssemblyFullName
+                |> Option.defaultWith (fun () ->
+                    let available = state._LoadedAssemblies.DefinitionNames |> String.concat " ; "
+
+                    failwith
+                        $"%s{operation}: the scope assembly %s{scopeAssemblyFullName} is not loaded; available assemblies: %s{available}"
+                )
+
+            let body = DynamicMethodBody.read operation state scopeAssembly resolverAddress
+
             let runtimeMethodInfoStubType =
                 AllConcreteTypes.getRequiredNonGenericHandle
                     state.ConcreteTypes
@@ -320,6 +341,7 @@ module NativeModuleHandle =
                     signature
                     scopeAssemblyFullName
                     resolver
+                    body
                     state.MethodHandles
 
             let state =
