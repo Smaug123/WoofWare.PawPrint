@@ -82,25 +82,6 @@ module TestImpureCases =
 
     let unimplemented : EndToEndTestCase list =
         [
-            // Both of these have a current directory whose UTF-8 encoding
-            // overflows the 256 bytes `Interop.Sys.GetCwd()` stackallocs, so
-            // `SystemNative_GetCwd` correctly returns NULL with errno=ERANGE
-            // and the guest takes its ArrayPool grow-and-retry branch. It then
-            // stops one call later, at `Interop.Sys.GetLastErrorInfo()`: that
-            // converts the raw errno to the `Interop.Error` PAL enum through
-            // `SystemNative_ConvertErrorPlatformToPal`, which has no handler
-            // registered in `Native/NativeDispatch.fs`, so this reaches
-            // `NativeCall.failUnimplemented`.
-            //
-            // That entry point is the runtime's shared errno<->PAL translation
-            // (an 84-case table in `src/native/libs/Common/pal_error_common.h`)
-            // used by every `SystemNative_*` shim rather than anything specific
-            // to getcwd, so it wants its own change. Un-park both when it lands
-            // — nothing else here is missing, and the short-path siblings in
-            // `cases` below already prove the success path end to end.
-            currentDirectoryCase longCurrentDirectory
-            currentDirectoryCase multiByteCurrentDirectory
-
             // A *short* non-ASCII directory, parked for an unrelated reason:
             // it fits the stackalloc, so `SystemNative_GetCwd` succeeds and
             // ERANGE never enters into it, but decoding the bytes back with
@@ -113,7 +94,6 @@ module TestImpureCases =
             // directory. `TestAbsoluteUnixPath` covers the UTF-8 encoding of
             // such a path directly in the meantime.
             currentDirectoryCase "/héllo/中文/🐶"
-
         ]
 
     /// Is this the concrete handle for `System.Runtime.ExceptionServices.ExceptionDispatchInfo`?
@@ -182,6 +162,24 @@ module TestImpureCases =
 
     let cases : EndToEndTestCase list =
         [
+            // Both of these have a current directory whose UTF-8 encoding
+            // overflows the 256 bytes `Interop.Sys.GetCwd()` stackallocs, so
+            // `SystemNative_GetCwd` returns NULL with errno=ERANGE and the
+            // guest takes its ArrayPool grow-and-retry branch. That branch runs
+            // through `Interop.Sys.GetLastErrorInfo()`, which converts the raw
+            // errno with `SystemNative_ConvertErrorPlatformToPal` and compares
+            // the result against `Interop.Error.ERANGE` to decide whether to
+            // retry or throw — so these are the cases that exercise that
+            // handler against *real* CoreLib, including its `Interop.Error`
+            // enum return type, rather than a hand-rolled P/Invoke declaration.
+            // They were parked until that entry point existed.
+            //
+            // Note the short non-ASCII sibling still in `unimplemented` below
+            // is parked for a genuinely different reason and was re-checked
+            // when these two were promoted: it still fails, on the
+            // TrailingZeroCount intrinsic.
+            currentDirectoryCase longCurrentDirectory
+            currentDirectoryCase multiByteCurrentDirectory
             {
                 // Pins the PawPrint-side contract of `ExceptionNative_GetFrozenStackTrace`.
                 // Impure because the claim is about interpreter state (the token and the frame
@@ -530,6 +528,25 @@ module TestImpureCases =
                 // property tests; this test verifies the wiring from the
                 // P/Invoke handler through to the registry.
                 FileName = "SystemNativeClose.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Exercises SystemNative_ConvertErrorPlatformToPal, the point
+                // at which PawPrint's raw errno vocabulary becomes the
+                // platform-independent `Interop.Error` CoreLib branches on.
+                // Impure by necessity rather than convenience: the PAL values
+                // are platform-independent but the *mapping* is not, because
+                // the real shim is compiled against one platform's <errno.h>
+                // (raw 39 is ENOTEMPTY on Linux, EDESTADDRREQ on Darwin). A
+                // cross-runtime oracle would therefore be asserting a
+                // host-specific fact. Covers both arms of the handler's
+                // return-type match: the enum CoreLib declares and the plain
+                // `int` a hand-rolled P/Invoke would use.
+                FileName = "SystemNativeConvertErrorPlatformToPal.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty

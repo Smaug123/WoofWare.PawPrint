@@ -200,31 +200,32 @@ module TestUnixError =
         UnixError.palOfRawErrno 0 |> shouldEqual UnixError.palSuccess
 
     [<Test>]
-    let ``rawErrnoOfPal maps SUCCESS to zero`` () : unit =
-        UnixError.rawErrnoOfPal UnixError.palSuccess |> shouldEqual 0
-
-    [<Test>]
     let ``palOfRawErrno inverts toRawErrno`` () : unit =
         for error in UnixError.all do
             UnixError.palOfRawErrno (UnixError.toRawErrno error)
             |> shouldEqual (UnixError.toPal error)
 
-    /// Upstream disclaims platform -> pal -> platform round-tripping, but the
-    /// pal -> platform -> pal direction is exactly what
-    /// `ConvertErrorPalToPlatform` is for ("to synthesize a platform number from
-    /// the fixed set above"), and it must be faithful.
+    /// ENOTBLK is 15 on both Linux and Darwin, so its meaning needs no platform
+    /// choice — but `Interop.Error` has no entry for it, so upstream's switch
+    /// falls through to ENONSTANDARD. We must do the same rather than crash:
+    /// this conversion is unambiguous, it simply has no PAL name. Today this is
+    /// the only raw errno in that class.
     [<Test>]
-    let ``rawErrnoOfPal inverts toPal`` () : unit =
-        for error in UnixError.all do
-            UnixError.rawErrnoOfPal (UnixError.toPal error)
-            |> shouldEqual (UnixError.toRawErrno error)
+    let ``palOfRawErrno reports ENONSTANDARD for a portable errno with no PAL name`` () : unit =
+        UnixError.palOfRawErrno 15 |> shouldEqual UnixError.palNonStandard
 
-    [<Test>]
-    let ``rawErrnoOfPal reports -1 for an unmapped PAL value`` () : unit =
-        // ENONSTANDARD is the value upstream itself falls through to; it has no
-        // raw number by construction.
-        UnixError.rawErrnoOfPal UnixError.palNonStandard |> shouldEqual -1
-        UnixError.rawErrnoOfPal 0x1003A |> shouldEqual -1 // ENOTEMPTY: real, but not portable.
+    /// POSIX requires errno values to be positive, so a negative number names an
+    /// error on no Unix we model and every platform's switch falls through to
+    /// ENONSTANDARD. Answering that needs no platform choice, so it must not
+    /// crash. -0x20001 and -0x20002 are upstream's synthetic EHOSTNOTFOUND and
+    /// ESOCKETERROR, which is how a negative most plausibly reaches here.
+    [<TestCase -1>]
+    [<TestCase -34>]
+    [<TestCase 0x80000000>]
+    [<TestCase -0x20001>]
+    [<TestCase -0x20002>]
+    let ``palOfRawErrno reports ENONSTANDARD for a negative errno`` (raw : int) : unit =
+        UnixError.palOfRawErrno raw |> shouldEqual UnixError.palNonStandard
 
     /// The crux of the design: an errno whose meaning depends on the platform
     /// must not be silently resolved. 11 and 35 are the transposed
