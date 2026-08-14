@@ -247,10 +247,10 @@ module internal NativeReflectionInvocation =
         : bool
         =
         let declaringAssembly =
-            state.LoadedAssembly method.DeclaringType.Assembly
+            state.LoadedAssembly method.DeclaringAssembly
             |> Option.defaultWith (fun () ->
                 failwith
-                    $"RuntimeMethodHandle.InvokeMethod: declaring assembly for %O{method} is not loaded: %O{method.DeclaringType.Assembly}"
+                    $"RuntimeMethodHandle.InvokeMethod: declaring assembly for %O{method} is not loaded: %O{method.DeclaringAssembly}"
             )
 
         let getMemberRefParentType (handle : MemberReferenceHandle) : TypeRef =
@@ -258,7 +258,8 @@ module internal NativeReflectionInvocation =
             | MetadataToken.TypeReference r -> declaringAssembly.TypeRefs.[r]
             | other -> failwith $"RuntimeMethodHandle.InvokeMethod: unexpected MemberReference parent %O{other}"
 
-        let declaringType = declaringAssembly.TypeDefs.[method.DeclaringType.Definition.Get]
+        let declaringType =
+            declaringAssembly.TypeDefs.[method.RequiredDeclaringType.Definition.Get]
 
         // `[Intrinsic]` on an abstract body is a call-site inlining hint with no IL behind it, and
         // is not serviced inline; the same suppression as `isAbstractBody` / `callSiteBodyIsAbstract`.
@@ -288,7 +289,7 @@ module internal NativeReflectionInvocation =
         : unit
         =
         let describe () =
-            $"%s{target.Method.DeclaringType.Namespace}.%s{target.Method.DeclaringType.Name}::%s{target.Method.Name}"
+            $"%s{MethodOwner.describe target.Method.Owner}::%s{target.Method.Name}"
 
         if
             target.Method.Signature.Header.Get.CallingConvention = System.Reflection.Metadata.SignatureCallingConvention.VarArgs
@@ -506,7 +507,7 @@ module internal NativeReflectionInvocation =
                             // null target on an instance method before we are reached, so this is a
                             // guest that bypassed it rather than an ordinary null.
                             failwith
-                                $"%s{operation}: null target for the instance method %s{target.Method.DeclaringType.Namespace}.%s{target.Method.DeclaringType.Name}::%s{target.Method.Name}; the managed layer is expected to have thrown TargetException"
+                                $"%s{operation}: null target for the instance method %s{MethodOwner.describe target.Method.Owner}::%s{target.Method.Name}; the managed layer is expected to have thrown TargetException"
                         | other ->
                             failwith $"%s{operation}: expected ObjectRef in target ObjectHandleOnStack, got %O{other}"
 
@@ -626,7 +627,7 @@ module internal NativeReflectionInvocation =
                     // `callMethodWithCommitment`; fail loudly rather than silently answering with
                     // the marker.
                     failwith
-                        $"TODO: %s{operation} on %s{target.Method.DeclaringType.Namespace}.%s{target.Method.DeclaringType.Name}::%s{target.Method.Name}: the call raised instead of committing, which the re-entry protocol cannot represent"
+                        $"TODO: %s{operation} on %s{MethodOwner.describe target.Method.Owner}::%s{target.Method.Name}: the call raised instead of committing, which the re-entry protocol cannot represent"
 
             // The re-entry protocol. This native frame's eval stack *is* the state machine, and its
             // four shapes are told apart by depth, plus — where two shapes share a depth — by the
@@ -703,7 +704,7 @@ module internal NativeReflectionInvocation =
                                 let _state, target = resolveTarget ctx operation methodHandleId state
 
                                 failwith
-                                    $"%s{operation}: expected an object reference from the reference-typed return of %s{target.Method.DeclaringType.Namespace}.%s{target.Method.DeclaringType.Name}::%s{target.Method.Name}, got %O{other}"
+                                    $"%s{operation}: expected an object reference from the reference-typed return of %s{MethodOwner.describe target.Method.Owner}::%s{target.Method.Name}, got %O{other}"
                     | _ ->
                         failwith
                             $"%s{operation}: expected a re-entry marker on the eval stack, optionally beneath one return value, got %d{stack.Length} value(s): %A{stack}"

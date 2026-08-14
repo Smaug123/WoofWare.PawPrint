@@ -36,7 +36,7 @@ module internal UnaryMetadataArrayOps =
                 failwith
                     $"unexpectedly popped value %O{popped} to serve as array len for Newarr. ECMA-335 III.4.13 also permits a native int here — Roslyn emits `conv.ovf.i; newarr` for `new T[someLong]` — which PawPrint does not yet decode."
 
-        let typeGenerics = currentMethod.DeclaringType.Generics
+        let typeGenerics = currentMethod.DeclaringTypeGenerics
 
         let state, elementType, assy =
             IlMachineState.resolveTypeMetadataToken
@@ -44,7 +44,7 @@ module internal UnaryMetadataArrayOps =
                 baseClassTypes
                 state
                 activeAssy
-                currentMethod.DeclaringType.Generics
+                currentMethod.DeclaringTypeGenerics
                 metadataToken
 
         let state, zeroOfType, concreteTypeHandle =
@@ -138,7 +138,7 @@ module internal UnaryMetadataArrayOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let typeGenerics = currentMethod.DeclaringType.Generics
+        let typeGenerics = currentMethod.DeclaringTypeGenerics
         let methodGenerics = currentMethod.Generics
 
         // ECMA-335 III.2.2: capture and consume the `readonly.` prefix that may have
@@ -251,7 +251,7 @@ module internal UnaryMetadataArrayOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let declaringTypeGenerics = currentMethod.DeclaringType.Generics
+        let declaringTypeGenerics = currentMethod.DeclaringTypeGenerics
 
         let state, assy, elementType =
             resolveElementTypeToken
@@ -332,7 +332,7 @@ module internal UnaryMetadataArrayOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let declaringTypeGenerics = currentMethod.DeclaringType.Generics
+        let declaringTypeGenerics = currentMethod.DeclaringTypeGenerics
 
         let state, assy, elementType =
             resolveElementTypeToken

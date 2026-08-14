@@ -51,7 +51,10 @@ module TestMethodHandleRegistry =
         : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
         =
         assembly.Methods.Values
-        |> Seq.find (fun method -> method.DeclaringType.Name = declaringTypeName && method.Name = methodName)
+        |> Seq.find (fun method ->
+            method.RequiredDeclaringType.Name = declaringTypeName
+            && method.Name = methodName
+        )
 
     let private installFrameForMethod
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
@@ -324,10 +327,12 @@ public static class GenericMethodHolder
         : ConcreteType<ConcreteTypeHandle>
         =
         let handle =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes method.DeclaringType.Identity
+            AllConcreteTypes.findExistingNonGenericConcreteType
+                state.ConcreteTypes
+                method.RequiredDeclaringType.Identity
             |> Option.defaultWith (fun () ->
                 failwith
-                    $"Closed ConcreteType for declaring type '%s{method.DeclaringType.Name}' was not registered in state.ConcreteTypes"
+                    $"Closed ConcreteType for declaring type '%s{method.RequiredDeclaringType.Name}' was not registered in state.ConcreteTypes"
             )
 
         AllConcreteTypes.lookup handle state.ConcreteTypes
@@ -445,7 +450,7 @@ public static class GenericMethodHolder
         // Register the (non-generic) declaring type in state.ConcreteTypes WITHOUT concretizing
         // the generic method itself.
         let declaringTypeInfo =
-            assembly.TypeDefs.[targetMethod.DeclaringType.Definition.Get]
+            assembly.TypeDefs.[targetMethod.RequiredDeclaringType.Definition.Get]
 
         let stk =
             DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
@@ -458,7 +463,7 @@ public static class GenericMethodHolder
                 assembly.Name
                 ImmutableArray.Empty
                 ImmutableArray.Empty
-                (TypeDefn.FromDefinition (targetMethod.DeclaringType.Identity, stk))
+                (TypeDefn.FromDefinition (targetMethod.RequiredDeclaringType.Identity, stk))
 
         let declaringConcrete, _ =
             IlMachineState.tryGetConcreteTypeInfo state declaringHandle
@@ -606,7 +611,8 @@ public static class GenericMethodHolder
         (state : IlMachineState)
         : IlMachineState * ConcreteType<ConcreteTypeHandle>
         =
-        let declaringTypeInfo = assembly.TypeDefs.[method.DeclaringType.Definition.Get]
+        let declaringTypeInfo =
+            assembly.TypeDefs.[method.RequiredDeclaringType.Definition.Get]
 
         let stk =
             DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
@@ -619,7 +625,7 @@ public static class GenericMethodHolder
                 assembly.Name
                 ImmutableArray.Empty
                 ImmutableArray.Empty
-                (TypeDefn.FromDefinition (method.DeclaringType.Identity, stk))
+                (TypeDefn.FromDefinition (method.RequiredDeclaringType.Identity, stk))
 
         let concrete =
             AllConcreteTypes.lookup handle state.ConcreteTypes
@@ -745,7 +751,9 @@ public class HasConstructors
         let declaringType = findDeclaringConcreteType state targetMethod
 
         let expected =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes targetMethod.DeclaringType.Identity
+            AllConcreteTypes.findExistingNonGenericConcreteType
+                state.ConcreteTypes
+                targetMethod.RequiredDeclaringType.Identity
             |> Option.defaultWith (fun () -> failwith "declaring type was not registered in ConcreteTypes")
 
         let internalHandle, registry =
@@ -792,14 +800,14 @@ public class GenericHolder<T>
         let targetMethod = assembly |> findMethod "GenericHolder`1" "Target"
 
         let declaringTypeInfo =
-            assembly.TypeDefs.[targetMethod.DeclaringType.Definition.Get]
+            assembly.TypeDefs.[targetMethod.RequiredDeclaringType.Definition.Get]
 
         let stk =
             DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
 
         let closedDefn =
             TypeDefn.GenericInstantiation (
-                TypeDefn.FromDefinition (targetMethod.DeclaringType.Identity, stk),
+                TypeDefn.FromDefinition (targetMethod.RequiredDeclaringType.Identity, stk),
                 ImmutableArray.Create (TypeDefn.PrimitiveType PrimitiveType.Int32)
             )
 
@@ -891,7 +899,9 @@ public static class GenericMethodHolder
             concretizeWith (TypeDefn.PrimitiveType PrimitiveType.String) state
 
         let expected =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes targetMethod.DeclaringType.Identity
+            AllConcreteTypes.findExistingNonGenericConcreteType
+                state.ConcreteTypes
+                targetMethod.RequiredDeclaringType.Identity
             |> Option.defaultWith (fun () -> failwith "declaring type was not registered in ConcreteTypes")
 
         let expectedValue =

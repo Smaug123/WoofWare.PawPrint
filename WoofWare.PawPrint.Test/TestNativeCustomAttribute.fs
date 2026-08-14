@@ -517,7 +517,7 @@ public sealed class CctorAttribute : System.Attribute
             threadState.MethodStates
             |> Map.toList
             |> List.find (fun (_, ms) ->
-                ms.ExecutingMethod.DeclaringType.Identity = fixture.CustomAttributeType.Identity
+                ms.ExecutingMethod.RequiredDeclaringType.Identity = fixture.CustomAttributeType.Identity
                 && ms.ExecutingMethod.Name = fixture.QCallMethod.Name
             )
             |> fst
@@ -537,7 +537,7 @@ public sealed class CctorAttribute : System.Attribute
         let activeFrame = threadState.MethodState
         activeFrame.ExecutingMethod.Name |> shouldEqual ".ctor"
 
-        activeFrame.ExecutingMethod.DeclaringType.Identity
+        activeFrame.ExecutingMethod.RequiredDeclaringType.Identity
         |> shouldEqual fixture.AttributeType.Identity
 
         activeFrame.Arguments.Length |> shouldEqual 3

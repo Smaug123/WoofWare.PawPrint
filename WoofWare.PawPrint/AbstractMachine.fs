@@ -79,11 +79,10 @@ module AbstractMachine =
 
         let dispatchNative () =
             let targetAssy =
-                state.LoadedAssembly instruction.ExecutingMethod.DeclaringType.Assembly
-                |> Option.get
+                state.LoadedAssembly instruction.ExecutingMethod.DeclaringAssembly |> Option.get
 
             let targetType =
-                targetAssy.TypeDefs.[instruction.ExecutingMethod.DeclaringType.Definition.Get]
+                targetAssy.TypeDefs.[instruction.ExecutingMethod.RequiredDeclaringType.Definition.Get]
 
             let nativeContext =
                 {
@@ -232,11 +231,11 @@ module AbstractMachine =
             let declaringTypeHandle =
                 AllConcreteTypes.findExistingConcreteType
                     state.ConcreteTypes
-                    methodPtr.DeclaringType.Identity
-                    methodPtr.DeclaringType.Generics
+                    methodPtr.RequiredDeclaringType.Identity
+                    methodPtr.DeclaringTypeGenerics
                 |> Option.defaultWith (fun () ->
                     failwith
-                        $"delegate invocation: declaring type %s{methodPtr.DeclaringType.Namespace}.%s{methodPtr.DeclaringType.Name} of the target method is not registered in AllConcreteTypes"
+                        $"delegate invocation: declaring type %s{MethodOwner.describe methodPtr.Owner} of the target method is not registered in AllConcreteTypes"
                 )
 
             // No class-initialisation check here: the target's frame carries it and runs it as its
@@ -315,13 +314,13 @@ module AbstractMachine =
                 | None -> "<attributed method name>"
 
             failwith
-                $"TODO: dispatch [UnsafeAccessor] is unimplemented for {instruction.ExecutingMethod.DeclaringType.Name}::{instruction.ExecutingMethod.Name} (kind={kind}, target={nameStr})"
+                $"TODO: dispatch [UnsafeAccessor] is unimplemented for {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name} (kind={kind}, target={nameStr})"
         | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
             failwith
-                $"BUG: reached executeOneStep for {instruction.ExecutingMethod.DeclaringType.Name}::{instruction.ExecutingMethod.Name} which is runtime-provided but unclassified ({name}); add explicit handling"
+                $"BUG: reached executeOneStep for {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name} which is runtime-provided but unclassified ({name}); add explicit handling"
         | MethodBody.Abstract ->
             failwith
-                $"BUG: reached executeOneStep for abstract method {instruction.ExecutingMethod.DeclaringType.Name}::{instruction.ExecutingMethod.Name}; virtual dispatch should have resolved to a concrete override"
+                $"BUG: reached executeOneStep for abstract method {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name}; virtual dispatch should have resolved to a concrete override"
         | MethodBody.InternalCall
         | MethodBody.PInvoke -> dispatchNative ()
         | MethodBody.Il instructions ->
@@ -329,7 +328,7 @@ module AbstractMachine =
         match instructions.Locations.TryGetValue instruction.IlOpIndex with
         | false, _ ->
             failwith
-                $"Wanted to execute a nonexistent instruction in {instruction.ExecutingMethod.DeclaringType.Name}.{instruction.ExecutingMethod.Name}"
+                $"Wanted to execute a nonexistent instruction in {MethodOwner.describe instruction.ExecutingMethod.Owner}.{instruction.ExecutingMethod.Name}"
         | true, executingInstruction ->
 
         // Everything this message needs stays behind the level check, because it runs once per
@@ -342,13 +341,15 @@ module AbstractMachine =
             // resolved from the executing method's *declaring type*, which is what makes it the
             // assembly whose metadata handles that method's `TryResolveMethodSource` indexes.
             let declaringAssembly =
-                state.LoadedAssembly instruction.ExecutingMethod.DeclaringType.Assembly
+                state.LoadedAssembly instruction.ExecutingMethod.DeclaringAssembly
 
             let executingInType =
                 match declaringAssembly with
                 | None -> "<unloaded assembly>"
                 | Some assy ->
-                    match assy.TypeDefs.TryGetValue instruction.ExecutingMethod.DeclaringType.Definition.Get with
+                    match
+                        assy.TypeDefs.TryGetValue instruction.ExecutingMethod.RequiredDeclaringType.Definition.Get
+                    with
                     | true, v -> v.Name
                     | false, _ -> "<unrecognised type>"
 

@@ -113,7 +113,7 @@ module GuestLocation =
         (ilOffset : int)
         : SourceLocation option
         =
-        state.LoadedAssembly method.DeclaringType.Assembly
+        state.LoadedAssembly method.DeclaringAssembly
         |> Option.bind (fun assy -> assy.TryResolveMethodSource method ilOffset)
 
     /// <summary>

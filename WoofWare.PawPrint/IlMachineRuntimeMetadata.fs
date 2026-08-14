@@ -814,17 +814,17 @@ module IlMachineRuntimeMetadata =
         (frame : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         : string
         =
-        let typeName = concreteTypeFullName state frame.Method.DeclaringType
+        let typeName = concreteTypeFullName state frame.Method.RequiredDeclaringType
 
         // The method's defining assembly is the assembly that contains its declaring type;
         // both the type-level and the method-level generic-parameter names live in there.
-        let declaringAssembly = state.LoadedAssembly frame.Method.DeclaringType.Assembly
+        let declaringAssembly = state.LoadedAssembly frame.Method.DeclaringAssembly
 
         let typeGenericNames : string array =
             match declaringAssembly with
             | None -> Array.empty
             | Some assy ->
-                match assy.TypeDefs.TryGetValue frame.Method.DeclaringType.Definition.Get with
+                match assy.TypeDefs.TryGetValue frame.Method.RequiredDeclaringType.Definition.Get with
                 | true, ti -> ti.Generics |> Seq.map (fun (gp, _) -> gp.Name) |> Seq.toArray
                 | false, _ -> Array.empty
 

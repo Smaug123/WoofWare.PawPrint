@@ -46,12 +46,7 @@ type SignalHandler =
         | _ -> false
 
     override this.GetHashCode () : int =
-        hash (
-            this.Method.DeclaringType.Identity,
-            this.Method.DeclaringType.Generics,
-            this.Method.IdentityKey,
-            this.Method.Generics
-        )
+        hash (this.Method.Owner, this.Method.IdentityKey, this.Method.Generics)
 
 [<RequireQualifiedAccess>]
 module SignalHandler =

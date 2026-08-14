@@ -789,8 +789,8 @@ type DumpedAssembly =
         // method's declaring type*, which makes the mismatch unreachable; assert it rather than
         // trusting it, at no cost in release.
         Debug.Assert (
-            method.DeclaringType.Assembly.FullName = this.Name.FullName,
-            $"TryResolveMethodSource: {method.Name} is declared by {method.DeclaringType.Assembly.FullName}, not {this.Name.FullName}"
+            method.DeclaringAssembly.FullName = this.Name.FullName,
+            $"TryResolveMethodSource: {method.Name} is declared by {method.DeclaringAssembly.FullName}, not {this.Name.FullName}"
         )
 
         match method.TryMetadata with

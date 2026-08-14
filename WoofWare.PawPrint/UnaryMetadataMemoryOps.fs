@@ -16,7 +16,7 @@ module internal UnaryMetadataMemoryOps =
         let thread = ctx.Thread
 
         let popped, state = IlMachineState.popEvalStack thread state
-        let declaringTypeGenerics = currentMethod.DeclaringType.Generics
+        let declaringTypeGenerics = currentMethod.DeclaringTypeGenerics
 
         let state, targetType, assy =
             IlMachineState.resolveTypeMetadataToken
@@ -67,7 +67,7 @@ module internal UnaryMetadataMemoryOps =
                 baseClassTypes
                 state
                 activeAssy
-                currentMethod.DeclaringType.Generics
+                currentMethod.DeclaringTypeGenerics
                 metadataToken
 
         let state, typeHandle =
@@ -76,7 +76,7 @@ module internal UnaryMetadataMemoryOps =
                 baseClassTypes
                 state
                 assy.Name
-                currentMethod.DeclaringType.Generics
+                currentMethod.DeclaringTypeGenerics
                 currentMethod.Generics
                 ty
 
@@ -141,7 +141,7 @@ module internal UnaryMetadataMemoryOps =
                 baseClassTypes
                 state
                 activeAssy
-                currentMethod.DeclaringType.Generics
+                currentMethod.DeclaringTypeGenerics
                 metadataToken
 
         let state, typeHandle =
@@ -150,7 +150,7 @@ module internal UnaryMetadataMemoryOps =
                 baseClassTypes
                 state
                 assy.Name
-                currentMethod.DeclaringType.Generics
+                currentMethod.DeclaringTypeGenerics
                 currentMethod.Generics
                 ty
 
@@ -265,7 +265,7 @@ module internal UnaryMetadataMemoryOps =
                 baseClassTypes
                 state
                 activeAssy
-                currentMethod.DeclaringType.Generics
+                currentMethod.DeclaringTypeGenerics
                 metadataToken
 
         let state, typeHandle =
@@ -274,7 +274,7 @@ module internal UnaryMetadataMemoryOps =
                 baseClassTypes
                 state
                 assy.Name
-                currentMethod.DeclaringType.Generics
+                currentMethod.DeclaringTypeGenerics
                 currentMethod.Generics
                 ty
 

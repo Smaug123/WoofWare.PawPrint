@@ -76,7 +76,7 @@ module GenericScope =
         : GenericScope
         =
         {
-            TypeParameters = names method.DeclaringType.Generics
+            TypeParameters = names method.DeclaringTypeGenerics
             MethodParameters = names method.Generics
         }
 
@@ -331,7 +331,10 @@ module IlFormatting =
                 // renderTypeDefinition also covers the case where the declaring type is somehow
                 // absent from the TypeDef index; ConcreteType's own ToString would render each
                 // of its generic parameters as a raw metadata record.
-                let typeName = renderTypeDefinition assembly m.DeclaringType.Identity
+                let typeName =
+                    renderTypeDefinition
+                        assembly
+                        (MethodOwner.requireDeclaringType "rendering a MethodDef token" m.Owner).Identity
 
                 $"%s{typeName}::%s{m.Name}"
             | false, _ -> $"MethodDef(%O{handle})"

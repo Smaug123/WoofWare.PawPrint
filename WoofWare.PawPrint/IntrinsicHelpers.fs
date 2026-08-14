@@ -822,11 +822,10 @@ module internal IntrinsicHelpers =
         =
         AllConcreteTypes.findExistingConcreteType
             state.ConcreteTypes
-            methodToCall.DeclaringType.Identity
-            methodToCall.DeclaringType.Generics
+            methodToCall.RequiredDeclaringType.Identity
+            methodToCall.DeclaringTypeGenerics
         |> Option.defaultWith (fun () ->
-            failwith
-                $"Intrinsic method declaring type was not registered: %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}"
+            failwith $"Intrinsic method declaring type was not registered: %s{MethodOwner.describe methodToCall.Owner}"
         )
 
     let popManagedByrefArgument (operation : string) (arg : EvalStackValue) : ManagedPointerSource =
@@ -844,7 +843,7 @@ module internal IntrinsicHelpers =
         (state : IlMachineState)
         : IlMachineState
         =
-        let elementType = methodToCall.DeclaringType.Generics |> Seq.exactlyOne
+        let elementType = methodToCall.DeclaringTypeGenerics |> Seq.exactlyOne
 
         match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
         | [ ConcretePointer _ ; ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Void -> ()
@@ -857,14 +856,14 @@ module internal IntrinsicHelpers =
 
         if elementContainsRefs then
             failwith
-                $"TODO: %s{methodToCall.DeclaringType.Name}(void*, int) with reference-containing element type should throw ArgumentException"
+                $"TODO: %s{MethodOwner.describe methodToCall.Owner}(void*, int) with reference-containing element type should throw ArgumentException"
 
         let thisPtr, sourcePtr, length, state =
             popPointerBackedSpanConstructorArgs currentThread wasConstructing state
 
         if length < 0 then
             failwith
-                $"TODO: %s{methodToCall.DeclaringType.Name}(void*, int) with negative length should throw ArgumentOutOfRangeException"
+                $"TODO: %s{MethodOwner.describe methodToCall.Owner}(void*, int) with negative length should throw ArgumentOutOfRangeException"
 
         let elementTypeInfo =
             match AllConcreteTypes.lookup elementType state.ConcreteTypes with
@@ -885,7 +884,7 @@ module internal IntrinsicHelpers =
             | ManagedPointerSource.NativeIntPlaceholder _ when length = 0 -> sourcePtr
             | ManagedPointerSource.NativeIntPlaceholder bits ->
                 failwith
-                    $"TODO: %s{methodToCall.DeclaringType.Name}(void*, int) with non-zero length %d{length} over placeholder pointer 0x%x{bits}"
+                    $"TODO: %s{MethodOwner.describe methodToCall.Owner}(void*, int) with non-zero length %d{length} over placeholder pointer 0x%x{bits}"
             | sourcePtr ->
                 ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs elementTypeInfo) sourcePtr
 
@@ -1081,8 +1080,8 @@ module internal IntrinsicHelpers =
             failwith
                 $"bad signature for %s{IntrinsicMethodKeys.formatMethodKey (IntrinsicMethodKeys.methodKey state methodToCall)}"
 
-        let operation = $"{methodToCall.DeclaringType.Name}.ToString"
-        let elementType = methodToCall.DeclaringType.Generics |> Seq.exactlyOne
+        let operation = $"{MethodOwner.describe methodToCall.Owner}.ToString"
+        let elementType = methodToCall.DeclaringTypeGenerics |> Seq.exactlyOne
         let receiver, state = IlMachineState.popEvalStack currentThread state
         let span = spanReceiverValue baseClassTypes operation state receiver
         let reference, length = spanReferenceAndLength operation state span
@@ -1115,7 +1114,7 @@ module internal IntrinsicHelpers =
                 |> fun (chars, state) -> System.String (chars |> List.rev |> List.toArray), state
             else
                 let typeKind =
-                    if methodToCall.DeclaringType.Name = "ReadOnlySpan`1" then
+                    if methodToCall.RequiredDeclaringType.Name = "ReadOnlySpan`1" then
                         "ReadOnlySpan"
                     else
                         "Span"

@@ -119,7 +119,10 @@ module AttributeFormatting =
         | MetadataToken.MethodDef handle ->
             match assembly.Methods.TryGetValue handle with
             | true, m ->
-                let typeHandle = m.DeclaringType.Definition.Get
+                // Indexed out of `assembly.Methods`, i.e. a MethodDef row, so it is declared by a type.
+                let typeHandle =
+                    (MethodOwner.requireDeclaringType "rendering a custom attribute application" m.Owner).Definition.Get
+
 
                 match assembly.TypeDefs.TryGetValue typeHandle with
                 | true, td ->

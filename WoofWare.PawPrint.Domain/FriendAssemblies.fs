@@ -471,7 +471,12 @@ module FriendAssemblies =
         | MetadataToken.MethodDef methodHandle ->
             match input.Methods.TryGetValue methodHandle with
             | false, _ -> None
-            | true, methodInfo -> Some (methodInfo.DeclaringType.Namespace, methodInfo.DeclaringType.Name)
+            | true, methodInfo ->
+                // From `input.Methods`, a MethodDef index, so this is a declared method.
+                let declaringType =
+                    MethodOwner.requireDeclaringType "resolving an attribute constructor's type" methodInfo.Owner
+
+                Some (declaringType.Namespace, declaringType.Name)
         | _ -> None
 
     /// The fully-qualified type name of <c>System.Runtime.CompilerServices.InternalsVisibleToAttribute</c>.

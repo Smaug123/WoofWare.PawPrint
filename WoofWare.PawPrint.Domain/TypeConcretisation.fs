@@ -1266,13 +1266,20 @@ module Concretization =
           LoadedAssemblies
         =
 
+        // Concretization walks the declaring type's metadata throughout -- its base-type closure, its
+        // TypeDef row, its instantiation -- so it cannot proceed without one. A method minted by
+        // `Reflection.Emit` never arrives here: nothing concretizes it, because its signature and
+        // body are concretized directly from the registry at the point it is invoked.
+        let declaringType =
+            MethodOwner.requireDeclaringType "concretizing a method" method.Owner
+
         // Ensure base type assemblies are loaded for the declaring type
         let assemblies =
             ensureTypeDefinitionBaseAssembliesLoaded
                 loadAssembly
                 assemblies
-                assemblies.[method.DeclaringType.Assembly]
-                method.DeclaringType.Definition.Get
+                assemblies.[declaringType.Assembly]
+                declaringType.Definition.Get
 
         let concCtx =
             {
@@ -1283,27 +1290,26 @@ module Concretization =
 
         // First, we need to create a TypeDefn for the declaring type with its generics instantiated
         let declaringTypeDefn =
-            if method.DeclaringType._Generics.IsEmpty then
+            if declaringType._Generics.IsEmpty then
                 // Non-generic type - determine the SignatureTypeKind
-                let assy = concCtx.LoadedAssemblies.[method.DeclaringType.Assembly]
-                let arg = assy.TypeDefs.[method.DeclaringType.Definition.Get]
+                let assy = concCtx.LoadedAssemblies.[declaringType.Assembly]
+                let arg = assy.TypeDefs.[declaringType.Definition.Get]
 
                 let signatureTypeKind =
                     DumpedAssembly.signatureTypeKind baseTypes concCtx.LoadedAssemblies arg
 
-                TypeDefn.FromDefinition (method.DeclaringType.Identity, signatureTypeKind)
+                TypeDefn.FromDefinition (declaringType.Identity, signatureTypeKind)
             else
                 // Generic type - create a GenericInstantiation
-                let assy = concCtx.LoadedAssemblies.[method.DeclaringType.Assembly]
-                let arg = assy.TypeDefs.[method.DeclaringType.Definition.Get]
+                let assy = concCtx.LoadedAssemblies.[declaringType.Assembly]
+                let arg = assy.TypeDefs.[declaringType.Definition.Get]
 
                 let signatureTypeKind =
                     DumpedAssembly.signatureTypeKind baseTypes concCtx.LoadedAssemblies arg
 
-                let baseType =
-                    TypeDefn.FromDefinition (method.DeclaringType.Identity, signatureTypeKind)
+                let baseType = TypeDefn.FromDefinition (declaringType.Identity, signatureTypeKind)
 
-                let genericArgsLength = method.DeclaringType.Generics.Length
+                let genericArgsLength = declaringType.Generics.Length
 
                 if genericArgsLength > typeArgs.Length then
                     failwithf
@@ -1323,7 +1329,7 @@ module Concretization =
             TypeConcretization.concretizeType
                 concCtx
                 loadAssembly
-                method.DeclaringType.Assembly
+                declaringType.Assembly
                 typeArgs
                 methodArgs
                 declaringTypeDefn
@@ -1334,13 +1340,7 @@ module Concretization =
 
         // Concretize signature
         let signature, concCtx =
-            concretizeMethodSignature
-                concCtx
-                loadAssembly
-                method.DeclaringType.Assembly
-                typeArgs
-                methodArgs
-                method.Signature
+            concretizeMethodSignature concCtx loadAssembly declaringType.Assembly typeArgs methodArgs method.Signature
 
         // Concretize local variables (only IL bodies carry them).
         let body, concCtx2 =
@@ -1351,13 +1351,7 @@ module Concretization =
                     | None -> None, concCtx
                     | Some vars ->
                         let handles, ctx =
-                            concretizeTypeArray
-                                concCtx
-                                loadAssembly
-                                method.DeclaringType.Assembly
-                                typeArgs
-                                methodArgs
-                                vars
+                            concretizeTypeArray concCtx loadAssembly declaringType.Assembly typeArgs methodArgs vars
 
                         Some handles, ctx
 
@@ -1378,7 +1372,7 @@ module Concretization =
             method
             |> MethodInfo.mapCore (fun core ->
                 {
-                    DeclaringType = concretizedDeclaringType
+                    Owner = MethodOwner.DeclaredOn concretizedDeclaringType
                     Name = core.Name
                     Body = body
                     Generics = genericHandles

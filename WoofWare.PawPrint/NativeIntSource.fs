@@ -152,7 +152,7 @@ type FunctionPointerTarget =
     override this.ToString () : string =
         match this with
         | FunctionPointerTarget.Managed methodDefinition ->
-            $"{methodDefinition.Name} in {methodDefinition.DeclaringType.Assembly.Name}"
+            $"{methodDefinition.Name} in {methodDefinition.DeclaringAssembly.Name}"
         | FunctionPointerTarget.RuntimeAllocator -> "the runtime's newobj allocation helper"
         | FunctionPointerTarget.Dynamic handle -> string<DynamicMethodHandle> handle
 
@@ -172,13 +172,17 @@ type FunctionPointerTarget =
     override this.GetHashCode () : int =
         match this with
         | FunctionPointerTarget.Managed methodDefinition ->
-            HashCode.Combine (
-                0,
-                methodDefinition.DeclaringType.Identity,
-                methodDefinition.DeclaringType.Generics,
-                methodDefinition.IdentityKey,
-                methodDefinition.Generics
-            )
+            // `MethodOwner`'s own hash, so this stays consistent with `MethodInfo.NominallyEqual`
+            // -- which is what `Equals` above delegates to.
+            //
+            // F#'s structural `hash` rather than `HashCode.Combine`, and the difference is not
+            // cosmetic: the method's generic arguments are an `ImmutableArray`, whose own
+            // `GetHashCode` reflects backing-array identity where `NominallyEqual` compares it
+            // elementwise. `HashCode.Combine` calls that `GetHashCode`, so two methods this
+            // `Equals` calls equal could hash differently -- and a delegate over a generic method
+            // would then go missing from any hash-keyed collection. See `MethodOwner.GetHashCode`,
+            // which had to be spelled the same way for the same reason.
+            hash (0, methodDefinition.Owner, methodDefinition.IdentityKey, methodDefinition.Generics)
         | FunctionPointerTarget.RuntimeAllocator -> HashCode.Combine 1
         | FunctionPointerTarget.Dynamic handle -> HashCode.Combine (2, handle.GetRegistryId ())
 

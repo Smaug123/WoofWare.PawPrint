@@ -904,9 +904,9 @@ module NativeThreading =
                     failwith $"Thread.StartInternal: expected FunctionPointer in delegate _methodPtr, got %O{other}"
 
             let containingAssembly =
-                state.LoadedAssembly targetMethod.DeclaringType.Assembly
+                state.LoadedAssembly targetMethod.DeclaringAssembly
                 |> Option.defaultWith (fun () ->
-                    failwith $"Thread.StartInternal: assembly {targetMethod.DeclaringType.Assembly.Name} not loaded"
+                    failwith $"Thread.StartInternal: assembly {targetMethod.DeclaringAssembly.Name} not loaded"
                 )
 
             let thisArgs =
@@ -919,7 +919,7 @@ module NativeThreading =
                         // must be a managed pointer into the boxed heap object's value
                         // data, matching `callMethod`'s coercion in IlMachineStateExecution.
                         let declaringTypeDef =
-                            containingAssembly.TypeDefs.[targetMethod.DeclaringType.Definition.Get]
+                            containingAssembly.TypeDefs.[targetMethod.RequiredDeclaringType.Definition.Get]
 
                         let receiver =
                             if
@@ -988,11 +988,11 @@ module NativeThreading =
             let declaringTypeHandle =
                 AllConcreteTypes.findExistingConcreteType
                     state.ConcreteTypes
-                    targetMethod.DeclaringType.Identity
-                    targetMethod.DeclaringType.Generics
+                    targetMethod.RequiredDeclaringType.Identity
+                    targetMethod.DeclaringTypeGenerics
                 |> Option.defaultWith (fun () ->
                     failwith
-                        $"Thread.StartInternal: declaring type %s{targetMethod.DeclaringType.Name} of delegate target is not registered in ConcreteTypes"
+                        $"Thread.StartInternal: declaring type %s{MethodOwner.describe targetMethod.Owner} of delegate target is not registered in ConcreteTypes"
                 )
 
             let state, workerInitOutcome =
@@ -1018,7 +1018,7 @@ module NativeThreading =
             match workerInitOutcome with
             | WhatWeDid.BlockedOnClassInit _ ->
                 failwith
-                    $"Thread.StartInternal: target type %s{targetMethod.DeclaringType.Name} is being initialised on another thread. Cross-thread class-init synchronisation for workers is not yet implemented."
+                    $"Thread.StartInternal: target type %s{MethodOwner.describe targetMethod.Owner} is being initialised on another thread. Cross-thread class-init synchronisation for workers is not yet implemented."
             | _ -> ()
 
             let state = Scheduler.onWorkerSpawned newThreadId workerInitOutcome state

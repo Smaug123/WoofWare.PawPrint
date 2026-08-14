@@ -355,7 +355,7 @@ module StructMarshalStub =
 
         MethodInfo.Synthesised (
             {
-                DeclaringType = declaringType
+                Owner = MethodOwner.DeclaredOn declaringType
                 Name = "<StructMarshalStub>"
                 Body = MethodBody.RuntimeProvided RuntimeBehaviour.StructMarshalStub
                 Generics = ImmutableArray.Empty
@@ -563,11 +563,11 @@ module StructMarshalStub =
         let typeHandle =
             AllConcreteTypes.findExistingConcreteType
                 state.ConcreteTypes
-                instruction.ExecutingMethod.DeclaringType.Identity
-                instruction.ExecutingMethod.DeclaringType.Generics
+                instruction.ExecutingMethod.RequiredDeclaringType.Identity
+                instruction.ExecutingMethod.DeclaringTypeGenerics
             |> Option.defaultWith (fun () ->
                 failwith
-                    $"%s{operation}: declaring type %O{instruction.ExecutingMethod.DeclaringType} is not registered in AllConcreteTypes"
+                    $"%s{operation}: declaring type %s{MethodOwner.describe instruction.ExecutingMethod.Owner} is not registered in AllConcreteTypes"
             )
 
         let frameId = state.ThreadState.[thread].ActiveMethodState

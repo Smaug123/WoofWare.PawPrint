@@ -136,7 +136,7 @@ module internal UnaryMetadataCallOps =
 
         let flat = rowMajorOffset arrObj.Lengths indices
 
-        let typeGenerics = currentMethod.DeclaringType.Generics
+        let typeGenerics = currentMethod.DeclaringTypeGenerics
         let methodGenerics = currentMethod.Generics
 
         let state, zeroOfType, _elementHandle =
@@ -353,7 +353,7 @@ module internal UnaryMetadataCallOps =
             buildResult state
         else
 
-        let typeGenerics = currentMethod.DeclaringType.Generics
+        let typeGenerics = currentMethod.DeclaringTypeGenerics
         let methodGenerics = currentMethod.Generics
 
         let state, _zeroOfType, tokenElementHandle =
@@ -440,14 +440,14 @@ module internal UnaryMetadataCallOps =
           WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
           ConcreteTypeHandle
         =
-        let methodDeclAssy = state._LoadedAssemblies.[methodToCall.DeclaringType.Assembly]
+        let methodDeclAssy = state._LoadedAssemblies.[methodToCall.DeclaringAssembly]
 
         let methodDeclType =
-            methodDeclAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
+            methodDeclAssy.TypeDefs.[methodToCall.RequiredDeclaringType.Definition.Get]
 
         if not methodToCall.IsStatic || not methodDeclType.IsInterface then
             failwith
-                $"%s{opName}: expected a static interface method, got %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name}"
+                $"%s{opName}: expected a static interface method, got %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name}"
 
         match constrainedTypeHandle with
         | ConcreteTypeHandle.Concrete _ ->
@@ -483,16 +483,16 @@ module internal UnaryMetadataCallOps =
             failwith $"%s{opName}: could not find static implementation of %s{methodToCall.Name} on %s{constrained}"
         | Some implementation when not implementation.IsStatic ->
             failwith
-                $"%s{opName}: resolved non-static implementation %s{implementation.DeclaringType.Namespace}.%s{implementation.DeclaringType.Name}::%s{implementation.Name}"
+                $"%s{opName}: resolved non-static implementation %s{MethodOwner.describe implementation.Owner}::%s{implementation.Name}"
         | Some implementation ->
             let declaringTypeHandle =
                 AllConcreteTypes.findExistingConcreteType
                     state.ConcreteTypes
-                    implementation.DeclaringType.Identity
-                    implementation.DeclaringType.Generics
+                    implementation.RequiredDeclaringType.Identity
+                    implementation.DeclaringTypeGenerics
                 |> Option.defaultWith (fun () ->
                     failwith
-                        $"%s{opName}: resolved implementation declaring type %s{implementation.DeclaringType.Namespace}.%s{implementation.DeclaringType.Name} is not registered"
+                        $"%s{opName}: resolved implementation declaring type %s{MethodOwner.describe implementation.Owner} is not registered"
                 )
 
             state, implementation, declaringTypeHandle
@@ -540,7 +540,7 @@ module internal UnaryMetadataCallOps =
                                 baseClassTypes
                                 state
                                 activeAssy.Name
-                                currentMethod.DeclaringType.Generics
+                                currentMethod.DeclaringTypeGenerics
                                 currentMethod.Generics
                                 typeDefn
 
@@ -708,7 +708,7 @@ module internal UnaryMetadataCallOps =
                                 baseClassTypes
                                 state
                                 activeAssy.Name
-                                currentMethod.DeclaringType.Generics
+                                currentMethod.DeclaringTypeGenerics
                                 currentMethod.Generics
                                 typeDefn
 
@@ -891,9 +891,9 @@ module internal UnaryMetadataCallOps =
                     // non-virtually with the managed pointer still serving as `this` (ECMA
                     // case 2). Otherwise, if the method belongs to Object/ValueType/Enum, box
                     // and let ordinary virtual dispatch handle the boxed receiver (case 3).
-                    let methodDeclAssyName = methodToCall.DeclaringType.Assembly
-                    let methodDeclTypeName = methodToCall.DeclaringType.Name
-                    let methodDeclNamespace = methodToCall.DeclaringType.Namespace
+                    let methodDeclAssyName = methodToCall.DeclaringAssembly
+                    let methodDeclTypeName = methodToCall.RequiredDeclaringType.Name
+                    let methodDeclNamespace = methodToCall.RequiredDeclaringType.Namespace
 
                     let isBaseMethodType =
                         methodDeclAssyName.FullName = baseClassTypes.Corelib.Name.FullName
@@ -1098,7 +1098,7 @@ module internal UnaryMetadataCallOps =
                     baseClassTypes
                     state
                     activeAssy
-                    currentMethod.DeclaringType.Generics
+                    currentMethod.DeclaringTypeGenerics
                     ref
             | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
             | _ -> failwith $"unexpected token {metadataToken} in Constrained"
@@ -1109,7 +1109,7 @@ module internal UnaryMetadataCallOps =
                 baseClassTypes
                 state
                 assy.Name
-                currentMethod.DeclaringType.Generics
+                currentMethod.DeclaringTypeGenerics
                 currentMethod.Generics
                 ty
 
@@ -1439,7 +1439,7 @@ module internal UnaryMetadataCallOps =
 
         if calleeSlots <> callSiteSlots then
             failwith
-                $"calli: call-site signature consumes %d{callSiteSlots} eval-stack slots but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} consumes %d{calleeSlots}; refusing to execute a call that would corrupt the frame"
+                $"calli: call-site signature consumes %d{callSiteSlots} eval-stack slots but target %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name} consumes %d{calleeSlots}; refusing to execute a call that would corrupt the frame"
 
         // Whether a result is left on the caller's stack is decided by the *callee*
         // signature, because that is what `callMethod` and the frame return use. If the
@@ -1459,7 +1459,7 @@ module internal UnaryMetadataCallOps =
             let describe (b : bool) = if b then "a value" else "void"
 
             failwith
-                $"calli: call-site signature returns %s{describe callSiteReturnsValue} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} returns %s{describe calleeReturnsValue}; refusing to execute a call that would leave the caller's eval stack the wrong depth"
+                $"calli: call-site signature returns %s{describe callSiteReturnsValue} but target %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name} returns %s{describe calleeReturnsValue}; refusing to execute a call that would leave the caller's eval stack the wrong depth"
 
         // The two signatures agree on shape; now check they agree on *representation*, to the
         // extent we can prove it. See the "Known divergence" note on this function: we invoke
@@ -1496,7 +1496,7 @@ module internal UnaryMetadataCallOps =
                     (fun i (callSiteTy : TypeDefn) (calleeTy : TypeDefn) ->
                         if calliKindsConflict callSiteTy calleeTy then
                             failwith
-                                $"calli: call-site signature declares parameter %d{i} as %O{callSiteTy} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} declares it as %O{calleeTy}; these occupy different evaluation-stack representations, and PawPrint does not yet marshal calli arguments through the call-site signature"
+                                $"calli: call-site signature declares parameter %d{i} as %O{callSiteTy} but target %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name} declares it as %O{calleeTy}; these occupy different evaluation-stack representations, and PawPrint does not yet marshal calli arguments through the call-site signature"
                     )
                     callSiteSignature.ParameterTypes
                     calleeRaw.ParameterTypes
@@ -1506,17 +1506,17 @@ module internal UnaryMetadataCallOps =
                 calliKindsConflict callSiteRet calleeRet
                 ->
                 failwith
-                    $"calli: call-site signature declares a return type of %O{callSiteRet} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} returns %O{calleeRet}; these occupy different evaluation-stack representations, and PawPrint does not yet marshal the calli result through the call-site signature"
+                    $"calli: call-site signature declares a return type of %O{callSiteRet} but target %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name} returns %O{calleeRet}; these occupy different evaluation-stack representations, and PawPrint does not yet marshal the calli result through the call-site signature"
             | _ -> ()
 
         let declaringTypeHandle =
             AllConcreteTypes.findExistingConcreteType
                 state.ConcreteTypes
-                methodToCall.DeclaringType.Identity
-                methodToCall.DeclaringType.Generics
+                methodToCall.RequiredDeclaringType.Identity
+                methodToCall.DeclaringTypeGenerics
             |> Option.defaultWith (fun () ->
                 failwith
-                    $"calli: declaring type %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name} of the target method is not registered in AllConcreteTypes"
+                    $"calli: declaring type %s{MethodOwner.describe methodToCall.Owner} of the target method is not registered in AllConcreteTypes"
             )
 
         // No class-initialisation check here: `callMethodWithCommitment` arms it on the callee's

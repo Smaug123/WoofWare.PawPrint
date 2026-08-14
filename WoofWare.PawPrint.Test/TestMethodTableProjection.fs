@@ -3654,7 +3654,9 @@ public unsafe struct PointerWrapper
             let frame = IlMachineThreadState.getFrame thread activeFrame state
 
             frame.ExecutingMethod.Name |> shouldEqual ".ctor"
-            frame.ExecutingMethod.DeclaringType.Name |> shouldEqual "NullReferenceException"
+
+            frame.ExecutingMethod.RequiredDeclaringType.Name
+            |> shouldEqual "NullReferenceException"
 
             match frame.ReturnState with
             | Some returnState ->

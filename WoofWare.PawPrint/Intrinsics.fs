@@ -155,7 +155,7 @@ module Intrinsics =
 
         // In general, some implementations are in:
         // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L192
-        match methodToCall.DeclaringType.Assembly.Name, methodToCall.DeclaringType.Name, methodToCall.Name with
+        match methodToCall.DeclaringAssembly.Name, methodToCall.RequiredDeclaringType.Name, methodToCall.Name with
         | "System.Private.CoreLib", _, "get_IsSupported" when
             scalarOnlyFalseIsSupportedIntrinsics.Contains intrinsicKey.DeclaringTypeFullName
             ->
@@ -199,17 +199,17 @@ module Intrinsics =
             // models a deterministic virtual CPU profile; the default scalar-only profile reports
             // them unavailable without consulting the host. The fully-qualified-name guard on the
             // "Vector" arm rejects any unrelated CoreLib type that happens to share the short name.
-            methodToCall.DeclaringType.Name <> "Vector"
+            methodToCall.RequiredDeclaringType.Name <> "Vector"
             || intrinsicKey.DeclaringTypeFullName = "System.Numerics.Vector"
             ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ ->
                 failwith
-                    $"bad signature for System.Private.CoreLib.%s{methodToCall.DeclaringType.Name}.get_IsHardwareAccelerated"
+                    $"bad signature for System.Private.CoreLib.%s{MethodOwner.describe methodToCall.Owner}.get_IsHardwareAccelerated"
 
             let isAccelerated =
-                vectorAccelerationAvailable methodToCall.DeclaringType.Name state.HardwareIntrinsics
+                vectorAccelerationAvailable methodToCall.RequiredDeclaringType.Name state.HardwareIntrinsics
 
             IlMachineState.pushToEvalStack (CliType.ofBool isAccelerated) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -2893,10 +2893,10 @@ module Intrinsics =
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L141
             // The source-level body returns `ref Unsafe.Add(ref _reference, index)`;
             // the method is intrinsic so we model that primitive boundary directly.
-            let spanTypeName : string = methodToCall.DeclaringType.Name
+            let spanTypeName : string = methodToCall.RequiredDeclaringType.Name
 
             let elementType : ConcreteTypeHandle =
-                methodToCall.DeclaringType.Generics |> Seq.exactlyOne
+                methodToCall.DeclaringTypeGenerics |> Seq.exactlyOne
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteByref ret) when ret = elementType ->
@@ -2979,7 +2979,7 @@ module Intrinsics =
             // same byref-projection helpers as get_Item. That is also the more direct
             // model — it needs no byte-count derivation at all.
             let elementType : ConcreteTypeHandle =
-                methodToCall.DeclaringType.Generics |> Seq.exactlyOne
+                methodToCall.DeclaringTypeGenerics |> Seq.exactlyOne
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Void -> ()

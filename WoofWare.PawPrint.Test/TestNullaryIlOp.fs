@@ -742,7 +742,7 @@ module TestNullaryIlOp =
             let ctor = threadState.MethodState.ExecutingMethod
             ctor.Name |> shouldEqual ".ctor"
 
-            let declaring = ctor.DeclaringType
+            let declaring = ctor.RequiredDeclaringType
             declaring.Namespace |> shouldEqual "System"
             declaring.Name |> shouldEqual "OverflowException"
 
@@ -1030,7 +1030,7 @@ module TestNullaryIlOp =
             let ctor = threadState.MethodState.ExecutingMethod
             ctor.Name |> shouldEqual ".ctor"
 
-            let declaring = ctor.DeclaringType
+            let declaring = ctor.RequiredDeclaringType
             declaring.Namespace |> shouldEqual "System"
             declaring.Name |> shouldEqual "OverflowException"
 

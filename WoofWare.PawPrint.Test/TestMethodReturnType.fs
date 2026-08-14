@@ -49,7 +49,10 @@ module TestMethodReturnType =
         : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
         =
         assembly.Methods.Values
-        |> Seq.find (fun method -> method.DeclaringType.Name = declaringTypeName && method.Name = methodName)
+        |> Seq.find (fun method ->
+            method.RequiredDeclaringType.Name = declaringTypeName
+            && method.Name = methodName
+        )
 
     let private source =
         """

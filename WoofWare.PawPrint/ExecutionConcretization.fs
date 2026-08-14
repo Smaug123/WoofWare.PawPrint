@@ -40,8 +40,8 @@ module ExecutionConcretization =
             match
                 AllConcreteTypes.findExistingConcreteType
                     state.ConcreteTypes
-                    concretizedMethod.DeclaringType.Identity
-                    concretizedMethod.DeclaringType.Generics
+                    concretizedMethod.RequiredDeclaringType.Identity
+                    concretizedMethod.DeclaringTypeGenerics
             with
             | Some handle -> handle
             | None -> failwith "Concretized method's declaring type not found in ConcreteTypes"
@@ -141,7 +141,7 @@ module ExecutionConcretization =
         | _ ->
             // Fall back to current execution context
             let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
-            currentMethod.DeclaringType.Generics, state
+            currentMethod.DeclaringTypeGenerics, state
 
     /// Returns also the declaring type.
     let concretizeMethodForExecution
@@ -297,7 +297,7 @@ module ExecutionConcretization =
         // Get type and method generics from current execution context
         let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
 
-        let contextTypeGenerics = currentMethod.DeclaringType.Generics
+        let contextTypeGenerics = currentMethod.DeclaringTypeGenerics
 
         let contextMethodGenerics = currentMethod.Generics |> ImmutableArray.CreateRange
 

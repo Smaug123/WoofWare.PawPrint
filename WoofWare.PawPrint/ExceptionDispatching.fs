@@ -114,7 +114,7 @@ module ExceptionDispatching =
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, 'methodVar>)
         : DumpedAssembly
         =
-        let name = method.DeclaringType.Assembly
+        let name = method.DeclaringAssembly
 
         match state.LoadedAssembly name with
         | Some assy -> assy
@@ -180,7 +180,7 @@ module ExceptionDispatching =
                                 baseClassTypes
                                 state
                                 activeAssy
-                                method.DeclaringType.Generics
+                                method.DeclaringTypeGenerics
                                 method.Generics
                                 exceptionType
                                 typeToken

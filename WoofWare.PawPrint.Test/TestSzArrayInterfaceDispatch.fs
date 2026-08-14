@@ -241,7 +241,8 @@ module TestSzArrayInterfaceDispatch =
                 failwith $"%O{case}: dispatch did not resolve, so the interpreter would crash on the abstract body"
             | Some resolved ->
 
-            resolved.DeclaringType.Identity |> shouldEqual bct.SZArrayHelper.Identity
+            resolved.RequiredDeclaringType.Identity
+            |> shouldEqual bct.SZArrayHelper.Identity
 
             // The shim is instantiated from the *interface's* type argument (not the array's
             // element type), modulo CoreCLR's reference-type canonicalisation. Getting this
@@ -308,7 +309,9 @@ module TestSzArrayInterfaceDispatch =
             match resolved with
             | None -> true
             | Some resolved ->
-                resolved.DeclaringType.Identity |> shouldNotEqual bct.SZArrayHelper.Identity
+                resolved.RequiredDeclaringType.Identity
+                |> shouldNotEqual bct.SZArrayHelper.Identity
+
                 true
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen genDispatchCase) property)

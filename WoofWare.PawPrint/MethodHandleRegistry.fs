@@ -133,13 +133,15 @@ module MethodHandleRegistry =
         : MethodHandle
         =
         {
-            AssemblyFullName = method.DeclaringType.Assembly.FullName
+            AssemblyFullName = method.DeclaringAssembly.FullName
             MethodDefinition = ComparableMethodDefinitionHandle.Make (requireDeclaredMethod method)
             DeclaringType =
-                AllConcreteTypes.findExistingConcreteType
-                    allConcreteTypes
-                    method.DeclaringType.Identity
-                    method.DeclaringType.Generics
+                // `requireDeclaredMethod` has already refused anything without a MethodDef row,
+                // and only a dynamic method lacks a declaring type, so this cannot fire.
+                let declaringType =
+                    MethodOwner.requireDeclaringType "minting a RuntimeMethodHandle" method.Owner
+
+                AllConcreteTypes.findExistingConcreteType allConcreteTypes declaringType.Identity declaringType.Generics
                 |> Option.defaultWith (fun () ->
                     failwith $"declaring type for method %O{method} was not found in ConcreteTypes"
                 )

@@ -495,7 +495,7 @@ type ThreadState =
         ThreadState.getFrame this.ActiveMethodState this
 
     member this.ActiveAssembly : AssemblyName =
-        this.MethodState.ExecutingMethod.DeclaringType.Assembly
+        this.MethodState.ExecutingMethod.DeclaringAssembly
 
     member this.LiveFrameCount : int = this.MethodStates.Count
 
@@ -618,10 +618,10 @@ type ThreadState =
             | true, op -> Some op
             | false, _ ->
                 failwith
-                    $"ThreadState.peekNextOp: IlOpIndex %d{frame.IlOpIndex} is not in Locations for method %s{frame.ExecutingMethod.DeclaringType.Name}.%s{frame.ExecutingMethod.Name}; the PC is corrupt."
+                    $"ThreadState.peekNextOp: IlOpIndex %d{frame.IlOpIndex} is not in Locations for method %s{MethodOwner.describe frame.ExecutingMethod.Owner}.%s{frame.ExecutingMethod.Name}; the PC is corrupt."
         | MethodBody.InternalCall
         | MethodBody.PInvoke
         | MethodBody.RuntimeProvided _ -> None
         | MethodBody.Abstract ->
             failwith
-                $"ThreadState.peekNextOp: reached abstract method %s{frame.ExecutingMethod.DeclaringType.Name}.%s{frame.ExecutingMethod.Name}; virtual dispatch should have resolved to a concrete override."
+                $"ThreadState.peekNextOp: reached abstract method %s{MethodOwner.describe frame.ExecutingMethod.Owner}.%s{frame.ExecutingMethod.Name}; virtual dispatch should have resolved to a concrete override."

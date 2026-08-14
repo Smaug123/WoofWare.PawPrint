@@ -64,14 +64,14 @@ module IntrinsicMethodKeys =
         : IntrinsicMethodKey
         =
         let declaringAssy =
-            match state.LoadedAssembly methodToCall.DeclaringType.Assembly with
+            match state.LoadedAssembly methodToCall.DeclaringAssembly with
             | Some assy -> assy
             | None ->
                 failwith
                     $"Intrinsic method key requested for method whose declaring assembly is not loaded: %O{methodToCall}"
 
         let declaringType =
-            declaringAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
+            declaringAssy.TypeDefs.[methodToCall.RequiredDeclaringType.Definition.Get]
 
         let concreteTypeShape (handle : ConcreteTypeHandle) : string =
             match handle with
@@ -90,7 +90,7 @@ module IntrinsicMethodKeys =
             | ConcreteTypeHandle.Array (_, rank) -> $"[%i{rank}]"
 
         {
-            AssemblyName = methodToCall.DeclaringType.Assembly.Name
+            AssemblyName = methodToCall.DeclaringAssembly.Name
             DeclaringTypeFullName = TypeInfo.fullName (fun h -> declaringAssy.TypeDefs.[h]) declaringType
             MethodName = methodToCall.Name
             ParameterShapes = methodToCall.Signature.ParameterTypes |> List.map concreteTypeShape

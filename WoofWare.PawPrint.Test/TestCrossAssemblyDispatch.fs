@@ -29,7 +29,9 @@ module TestCrossAssemblyDispatch =
     let private findMethod (assembly : DumpedAssembly) (typeName : string) (methodName : string) =
         assembly.TypeDefs.Values
         |> Seq.collect (fun typeInfo -> typeInfo.Methods)
-        |> Seq.filter (fun methodInfo -> methodInfo.DeclaringType.Name = typeName && methodInfo.Name = methodName)
+        |> Seq.filter (fun methodInfo ->
+            methodInfo.RequiredDeclaringType.Name = typeName && methodInfo.Name = methodName
+        )
         |> Seq.exactlyOne
 
     let private exactlyOne (label : string) (values : 'a list) : 'a =

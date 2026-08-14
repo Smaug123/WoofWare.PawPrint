@@ -68,7 +68,7 @@ module TestCalliSuspensionOutcome =
         | None -> None
         | Some threadState ->
             let m = threadState.MethodState.ExecutingMethod
-            Some (m.DeclaringType.Name, m.Name)
+            Some (m.RequiredDeclaringType.Name, m.Name)
 
     /// Steps the guest to completion, returning one entry per step together with the exit code.
     ///
