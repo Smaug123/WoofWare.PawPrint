@@ -85,6 +85,34 @@ type RuntimeTypeHandleTarget =
     /// well-formedness rules there are what keep guest `Type` identity canonical, and
     /// `TypeHandleRegistry` keys on this value.
     | OpenConstructed of definition : ResolvedTypeIdentity * arguments : RuntimeTypeHandleTarget list
+    /// The synthetic class that owns every `Reflection.Emit` method scoped to one module: CoreCLR's
+    /// `DynamicMethodTable`'s MethodTable, built by `CreateMinimalMethodTable`
+    /// (coreclr/vm/methodtable.cpp:663, via `DynamicMethodTable::MakeMethodTable`,
+    /// dynamicmethod.cpp:113). Parentless, `ELEMENT_TYPE_CLASS`, `OBJECT_BASESIZE`, and carrying no
+    /// metadata at all — no token, no name outside a debug build, no fields, no methods, no
+    /// attributes.
+    ///
+    /// This is the *only* case here that no `ResolvedTypeIdentity` backs, and that is the point: it
+    /// is a type the guest can be handed but no assembly declares. Standing the scope module's
+    /// `&lt;Module&gt;` type in for it would be an identity collision rather than an approximation,
+    /// because `TypeHandleRegistry` keys guest `Type` object identity on this very DU — a global
+    /// method and a dynamic method in one module would come back as the same `Type`, where CoreCLR
+    /// keeps them distinct.
+    ///
+    /// Owner-independent and per-module, exactly as CoreCLR is: `ModuleHandle_GetDynamicMethod`
+    /// receives only a `QCall::ModuleHandle`, and `DynamicMethod._typeOwner` never crosses that
+    /// boundary — it exists for JIT-time visibility checks. So a method owned by `System.Int128`
+    /// belongs to a class that has nothing to do with `Int128`, and two dynamic methods minted
+    /// against one module share this type however else they differ.
+    ///
+    /// Keyed by assembly full name where CoreCLR keys by `Module`. PawPrint's unit of loading is the
+    /// `DumpedAssembly` and multi-module assemblies are extinct in practice, so the two coincide;
+    /// the distinction would matter only for a multi-module assembly, which nothing can produce here.
+    ///
+    /// Almost every metadata query against this target is expected to *fail*, and loudly: there is
+    /// no row to read. That is faithful rather than incomplete — CoreCLR's minimal MethodTable has
+    /// no EEClass metadata either.
+    | DynamicMethodsClass of scopeAssemblyFullName : string
 
     override this.ToString () : string =
         match this with
@@ -99,9 +127,26 @@ type RuntimeTypeHandleTarget =
             let args = arguments |> List.map string |> String.concat ", "
 
             $"open constructed %s{definition.Assembly.Name}/%O{definition.TypeDefinition.Get}[%s{args}]"
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssemblyFullName ->
+            $"dynamic methods class of %s{scopeAssemblyFullName}"
 
 [<RequireQualifiedAccess>]
 module RuntimeTypeHandleTarget =
+    /// Refuse a query that only metadata can answer, asked of the dynamic-methods class.
+    ///
+    /// CoreCLR's `CreateMinimalMethodTable` builds a MethodTable with no metadata behind it at all:
+    /// no token, no name outside a debug build, no fields, no methods, no attributes, no parent. So
+    /// there is no honest answer to give, and inventing one — most temptingly, borrowing the scope
+    /// module's `&lt;Module&gt;` row — would put a real type's metadata behind a type that is not it.
+    ///
+    /// A guest reaching one of these is doing reflection over a `DynamicMethod`'s declaring type,
+    /// which CoreCLR's own managed layer goes out of its way never to expose (`RuntimeType.GetMethodBase`
+    /// short-circuits on `IsDynamicMethod` before ever consulting it). If one of these fires, the
+    /// question to ask is which path leaked the type out, not what this should have returned.
+    let refuseMetadataQuery (operation : string) (scopeAssemblyFullName : string) : 'a =
+        failwith
+            $"%s{operation}: refusing a metadata query against the dynamic-methods class of %s{scopeAssemblyFullName}. CoreCLR's DynamicMethodTable MethodTable (CreateMinimalMethodTable, methodtable.cpp:663) carries no metadata to answer from -- no token, no name, no members -- so there is nothing to read here rather than something PawPrint has not implemented"
+
     /// Is this target the definition <paramref name="definition"/> applied to exactly its own
     /// formal parameters, in declaration order? CoreCLR calls that the *typical instantiation*,
     /// and represents it as the generic type definition itself rather than as a distinct
@@ -186,7 +231,10 @@ module RuntimeTypeHandleTarget =
         | RuntimeTypeHandleTarget.Closed _
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
         | RuntimeTypeHandleTarget.GenericParameter _
-        | RuntimeTypeHandleTarget.MethodGenericParameter _ -> ()
+        | RuntimeTypeHandleTarget.MethodGenericParameter _
+        // A leaf carrying one string, with no canonicalisation rules to check: there is exactly
+        // one dynamic-methods class per scope assembly and nothing it could collapse to.
+        | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> ()
 
 /// The root storage location that a managed pointer points into.
 [<NoComparison>]

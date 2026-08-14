@@ -32,6 +32,8 @@ module NativeRuntimeHelpers =
                 NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state qCallHandle
 
             match typeHandleTarget with
+            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
             | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                 failwith
                     $"TODO: open constructed types are not handled at Native/NativeRuntimeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"

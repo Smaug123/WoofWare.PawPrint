@@ -20,6 +20,9 @@ module NativeCastHelpers =
     /// `false` for a TypeDesc target without consulting the structural walk at all.
     let private isTypeDescTarget (target : RuntimeTypeHandleTarget) : bool =
         match target with
+        // `CreateMinimalMethodTable` produces a MethodTable, not a TypeDesc (methodtable.cpp:663);
+        // this is the same answer `TypeHandleTag.forTarget` gives, and must stay consistent with it.
+        | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> false
         | RuntimeTypeHandleTarget.GenericParameter _
         | RuntimeTypeHandleTarget.MethodGenericParameter _ -> true
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
@@ -39,6 +42,9 @@ module NativeCastHelpers =
     let private isInterfaceTarget (state : IlMachineState) (target : RuntimeTypeHandleTarget) : bool =
         let identity =
             match target with
+            // `CreateMinimalMethodTable` sets no category flag, so the class is exactly that: a
+            // class, never an interface.
+            | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> None
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
                 AllConcreteTypes.lookup handle state.ConcreteTypes
                 |> Option.map (fun ct -> ct.Identity)
@@ -123,6 +129,8 @@ module NativeCastHelpers =
         =
         let nullableMatches =
             match target with
+            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
             | RuntimeTypeHandleTarget.Closed targetHandle ->
                 IlMachineState.isNullableForType ctx.BaseClassTypes state targetHandle objType
             // `Nullable::IsNullableForType` compares the target against a *closed* `Nullable<U>`;
