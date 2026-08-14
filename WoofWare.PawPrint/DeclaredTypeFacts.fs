@@ -40,6 +40,10 @@ type DeclaredTypeFacts =
         IsValueType : bool
         /// Whether the type's immediate base is `System.Enum`. False for `System.Enum` itself.
         IsEnum : bool
+        /// The alignment CoreCLR stamps on this type *by name*, overriding the one its fields
+        /// would imply; `None` for the overwhelming majority of types, whose demand is derived.
+        /// See `DeclaredTypeFacts.nominalAlignment`.
+        NominalAlignment : int option
         /// Which field-placement algorithm governs the type, as `TypeLayoutKind.applied` reports
         /// it — i.e. after the correction that a reference type declaring `Auto` is laid out
         /// sequentially by PawPrint today (issue #994).
@@ -53,6 +57,39 @@ type DeclaredTypeFacts =
 
 [<RequireQualifiedAccess>]
 module DeclaredTypeFacts =
+
+    /// The alignment CoreCLR stamps on a type by name, if any.
+    ///
+    /// Almost every type's alignment demand is derived from its fields, but
+    /// `MethodTableBuilder::CheckForSystemTypes` (methodtablebuilder.cpp:10368) overwrites the
+    /// derived answer for a handful of corelib types that correspond to fundamental ABI data
+    /// types. `Int128`/`UInt128` are `__int128`/`unsigned __int128` (:10576), whose two `ulong`s
+    /// would otherwise imply 8.
+    ///
+    /// Two things about that function are load-bearing rather than incidental:
+    ///
+    /// * it runs only when `GetModule()->IsSystem()` (:11181), so a guest assembly defining its
+    ///   own `System.Int128` gets an ordinary struct — hence the corelib gate below;
+    /// * it runs *after* the type's own size has been computed and does not recompute it
+    ///   (`InitializeSequentialFieldLayout` sizes with the derived alignment,
+    ///   classlayoutinfo.cpp:548), so this changes what a *container* must do, not the type's own
+    ///   size. `CliValueType.SizeOf` applies it that way round.
+    ///
+    /// The `Vector64`/`Vector128`/`Vector256`/`Vector512` family is stamped by the same code and
+    /// is deliberately absent: `Vector256` and `Vector512` demand 32/64 on x64 but 16 on arm64
+    /// (:10416, :10440), so modelling them means first deciding which target PawPrint's *layout*
+    /// claims to be — a question `SimulatedUnixPlatform` answers for the guest's view of the OS
+    /// but not for the type loader, and which nothing yet forces. `Int128`/`UInt128` are 16 on
+    /// every 64-bit target, so they need no such decision. Adding a row is pure data once that
+    /// question is settled (issue #992).
+    let nominalAlignment (bct : BaseClassTypes<DumpedAssembly>) (ti : TypeInfo<'generic, 'field>) : int option =
+        if ti.Assembly.FullName <> bct.Corelib.Name.FullName then
+            None
+        else
+
+        match ti.Namespace, ti.Name with
+        | "System", ("Int128" | "UInt128") -> Some 16
+        | _ -> None
 
     /// Derive every fact from one `TypeInfo`, given a load context that can resolve its base chain.
     ///
@@ -70,6 +107,7 @@ module DeclaredTypeFacts =
         {
             IsValueType = isValueType
             IsEnum = DumpedAssembly.isEnum bct assemblies ti
+            NominalAlignment = nominalAlignment bct ti
             LayoutKind = TypeLayoutKind.applied isValueType ti.TypeAttributes
             Layout = ti.Layout
             CharSet = CharSetMetadata.ofTypeAttributes ti.TypeAttributes

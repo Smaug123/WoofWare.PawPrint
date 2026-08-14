@@ -50,6 +50,7 @@
     <Compile Include="TestProjectionByteOffset.fs" />
     <Compile Include="TestInlineArrayStorage.fs" />
     <Compile Include="TestStructLayout.fs" />
+    <Compile Include="TestNominalAlignment.fs" />
     <Compile Include="TestMarshalLayout.fs" />
     <Compile Include="TestManagedHeap.fs" />
     <Compile Include="TestStaticStorage.fs" />

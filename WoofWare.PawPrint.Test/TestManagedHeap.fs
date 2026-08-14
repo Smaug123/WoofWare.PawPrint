@@ -78,6 +78,7 @@ module TestManagedHeap =
             {
                 IsValueType = true
                 IsEnum = false
+                NominalAlignment = None
                 LayoutKind = TypeLayoutKind.Sequential
                 Layout = Layout.Custom (size, 1)
                 CharSet = CharSet.Ansi
@@ -729,6 +730,7 @@ module TestManagedHeap =
                 {
                     IsValueType = true
                     IsEnum = false
+                    NominalAlignment = None
                     // Both fields carry a `FieldOffset`, so this is an explicit-layout type.
                     LayoutKind = TypeLayoutKind.Explicit
                     Layout = Layout.Custom (size = 8, packingSize = 0)

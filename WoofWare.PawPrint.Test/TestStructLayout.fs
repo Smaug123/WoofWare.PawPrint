@@ -174,6 +174,7 @@ module TestStructLayout =
             {
                 IsValueType = true
                 IsEnum = false
+                NominalAlignment = None
                 LayoutKind = layoutKind
                 Layout = layout
                 CharSet = CharSet.Ansi

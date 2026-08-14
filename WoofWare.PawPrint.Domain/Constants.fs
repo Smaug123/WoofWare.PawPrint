@@ -9,8 +9,18 @@ module Constants =
     [<Literal>]
     let SIZEOF_OBJ = 8
 
+    /// The ceiling a type's `[StructLayout(Pack = ...)]` puts on each field's alignment, when the
+    /// type requests no packing of its own. CoreCLR's `DEFAULT_PACKING_SIZE` (fieldmarshaler.h:27),
+    /// used both when the `ClassLayout` table has no row for the type and when its `Pack` is 0
+    /// (methodtablebuilder.cpp:12590, classlayoutinfo.cpp:904).
+    ///
+    /// This is a *ceiling*, not an alignment — the name it replaced (`DEFAULT_STRUCT_ALIGNMENT`,
+    /// value 8) read as though it were the latter, and the two coincided only because no PawPrint
+    /// type demanded more than pointer alignment. `Int128` demands 16, so a ceiling of 8 would
+    /// silently cap it back down to 8 and undo the nominal stamp
+    /// (`DeclaredTypeFacts.nominalAlignment`).
     [<Literal>]
-    let DEFAULT_STRUCT_ALIGNMENT = 8
+    let DEFAULT_PACKING_SIZE = 64
 
     [<Literal>]
     let NATIVE_INT_SIZE = 8

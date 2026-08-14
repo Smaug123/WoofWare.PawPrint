@@ -58,6 +58,7 @@ module TestEnumClassification =
             {
                 IsValueType = true
                 IsEnum = isEnum
+                NominalAlignment = None
                 LayoutKind = TypeLayoutKind.Sequential
                 Layout = Layout.Default
                 CharSet = CharSet.Ansi
@@ -274,6 +275,7 @@ module TestEnumClassification =
             {
                 IsValueType = true
                 IsEnum = true
+                NominalAlignment = None
                 LayoutKind = TypeLayoutKind.Sequential
                 Layout = Layout.Default
                 CharSet = CharSet.Ansi
