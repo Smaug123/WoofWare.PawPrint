@@ -21,6 +21,54 @@ type MetadataMethodIdentity =
     member this.GetMethodDefinitionHandle () : ComparableMethodDefinitionHandle = this.MethodDefinition
     member this.GetMethodGenerics () : ConcreteTypeHandle list = this.MethodGenerics
 
+/// A dynamic method's body as it is known at the moment the method is minted: everything a
+/// <see cref="MethodInstructions{T}"/> holds *except* <c>LocalsInit</c>.
+///
+/// The omission is the point. `DynamicMethod.InitLocals` has a public setter that never latches
+/// (`DynamicMethod.cs`, `set => _initLocals = value;`), and CoreCLR reads it late — the managed
+/// `DynamicResolver.GetCodeInfo` returns `m_method.InitLocals` at call time
+/// (`DynamicILGenerator.cs:729`), and the native `LCGMethodResolver::GetCodeInfo`
+/// (`vm/dynamicmethod.cpp`) calls that during the *first JIT* of the method and caches the answer
+/// under `if (!m_Code)`. So the flag simply is not known when the method is minted, and a type
+/// that carried a field for it here would have to put something untrue in it.
+///
+/// Everything else `GetCodeInfo` reports is frozen at resolver construction (bake time), so this
+/// is the whole of what is not yet decided. `MethodHandleRegistry.latchInitLocals` decides it, at
+/// first execution, and `withLocalsInit` is the only way to get a `MethodInstructions` back out.
+type MintedDynamicMethodBody =
+    {
+        Instructions : (IlOp * int) list
+        Locations : Map<int, IlOp>
+        LocalVars : ImmutableArray<TypeDefn> option
+        ExceptionRegions : ImmutableArray<WoofWare.PawPrint.ExceptionRegion>
+    }
+
+[<RequireQualifiedAccess>]
+module MintedDynamicMethodBody =
+    /// Everything about a dynamic method's body that reading its `DynamicResolver` establishes.
+    let make
+        (instructions : (IlOp * int) list)
+        (localVars : ImmutableArray<TypeDefn> option)
+        (exceptionRegions : ImmutableArray<WoofWare.PawPrint.ExceptionRegion>)
+        : MintedDynamicMethodBody
+        =
+        {
+            Instructions = instructions
+            Locations = instructions |> List.map (fun (a, b) -> b, a) |> Map.ofList
+            LocalVars = localVars
+            ExceptionRegions = exceptionRegions
+        }
+
+    /// Complete the body with the `initLocals` that was latched at first execution.
+    let withLocalsInit (localsInit : bool) (body : MintedDynamicMethodBody) : MethodInstructions<TypeDefn> =
+        {
+            Instructions = body.Instructions
+            Locations = body.Locations
+            LocalsInit = localsInit
+            LocalVars = body.LocalVars
+            ExceptionRegions = body.ExceptionRegions
+        }
+
 /// Everything `ModuleHandle_GetDynamicMethod` (runtimehandles.cpp:2388) was told about a dynamic
 /// method: the name and signature blob CoreCLR copies onto the loader heap beside the fresh
 /// `DynamicMethodDesc`, the module the method is scoped to, and the managed `DynamicResolver` it
@@ -32,7 +80,8 @@ type MetadataMethodIdentity =
 /// garbage collection, of any kind, ever (see `Native/NativeGc.fs`), so nothing a weak handle
 /// would permit to be collected ever is, and the guest cannot ask after the handle's strength --
 /// `GetLCGMethodResolver` is reachable only from native code. Should a collector ever land, this
-/// is one of the places that has to grow a real weak reference.
+/// is one of the places that has to grow a real weak reference -- and note that `Resolver` is now
+/// read *late* as well as at mint, by `latchInitLocals`, so it is live for longer than it looks.
 type DynamicMethodDefinition =
     private
         {
@@ -40,7 +89,11 @@ type DynamicMethodDefinition =
             Signature : ImmutableArray<byte>
             ScopeAssemblyFullName : string
             Resolver : ManagedHeapAddress option
-            Body : MethodInstructions<TypeDefn>
+            Body : MintedDynamicMethodBody
+            /// The `initLocals` this method was compiled with, once something has executed it;
+            /// `None` until then. See `MintedDynamicMethodBody` for why it cannot be known
+            /// earlier, and `latchInitLocals` for why it never changes once set.
+            LocalsInit : bool option
         }
 
     member this.GetName () : string = this.Name
@@ -58,7 +111,15 @@ type DynamicMethodDefinition =
     /// self-reference has something to resolve *to*, and matching that needs the identity minted
     /// first and the body attached second. Bodies carrying tokens at all are refused today, so
     /// the cycle is unreachable and the simpler shape is the honest one.
-    member this.GetBody () : MethodInstructions<TypeDefn> = this.Body
+    ///
+    /// This is *not* the whole body: `initLocals` is not known at mint. See
+    /// <see cref="MintedDynamicMethodBody"/>.
+    member this.GetBody () : MintedDynamicMethodBody = this.Body
+
+    /// The `initLocals` latched at first execution, or `None` if nothing has executed this method
+    /// yet. Exposed so that a test can tell "not yet decided" from "decided as false"; the
+    /// interpreter goes through `latchInitLocals` instead.
+    member this.GetLatchedLocalsInit () : bool option = this.LocalsInit
 
 /// What a `RuntimeMethodHandleInternal` registry id can name.
 ///
@@ -421,7 +482,7 @@ module MethodHandleRegistry =
         (signature : ImmutableArray<byte>)
         (scopeAssemblyFullName : string)
         (resolver : ManagedHeapAddress option)
-        (body : MethodInstructions<TypeDefn>)
+        (body : MintedDynamicMethodBody)
         (reg : MethodHandleRegistry)
         : ManagedHeapAddress * MethodHandleRegistry * 'allocState
         =
@@ -436,6 +497,8 @@ module MethodHandleRegistry =
                 ScopeAssemblyFullName = scopeAssemblyFullName
                 Resolver = resolver
                 Body = body
+                // Not read here, deliberately: see `MintedDynamicMethodBody`.
+                LocalsInit = None
             }
             : DynamicMethodDefinition
 
@@ -457,6 +520,46 @@ module MethodHandleRegistry =
         let address, allocState = allocate stub allocState
 
         address, reg, allocState
+
+    /// <summary>
+    /// Fix this dynamic method's <c>initLocals</c> at <paramref name="observed" /> if nothing has
+    /// fixed it already, and return the value that is now in effect.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// First write wins, and that is the semantics rather than mere tolerance of a double call.
+    /// CoreCLR's <c>LCGMethodResolver::GetCodeInfo</c> computes <c>m_Options</c> only under
+    /// <c>if (!m_Code)</c>, so the value the first JIT saw is the value the method is compiled
+    /// with forever; a guest that assigns <c>InitLocals</c> afterwards -- which the property's
+    /// setter cheerfully permits, at any time -- changes nothing. Re-reading the field on each
+    /// invocation would be wrong in exactly the opposite direction from reading it at mint.
+    /// </para>
+    /// <para>
+    /// Returning the effective value, rather than leaving the caller to read it back, is what
+    /// stops a caller from compiling a frame with a value the registry did not latch.
+    /// </para>
+    /// </remarks>
+    let latchInitLocals
+        (handle : DynamicMethodHandle)
+        (observed : bool)
+        (reg : MethodHandleRegistry)
+        : bool * MethodHandleRegistry
+        =
+        match Map.tryFind handle reg.DynamicMethods with
+        | None -> failwith $"cannot latch initLocals for %O{handle}: this registry never minted it"
+        | Some definition ->
+            match definition.LocalsInit with
+            | Some alreadyLatched -> alreadyLatched, reg
+            | None ->
+                let definition =
+                    { definition with
+                        LocalsInit = Some observed
+                    }
+
+                observed,
+                { reg with
+                    DynamicMethods = reg.DynamicMethods |> Map.add handle definition
+                }
 
     /// What the given dynamic method was built from, or `None` if this registry never minted it.
     let resolveDynamicMethod
