@@ -27,19 +27,51 @@ module TestVirtualFileSystem =
 
     let private noBytes : ImmutableArray<byte> = ImmutableArray<byte>.Empty
 
+    let private filePerms : PermissionBits = PermissionBits.defaultForRegularFile
+
+    let private dirPerms : PermissionBits = PermissionBits.defaultForDirectory
+
+    /// The moment the tests build their filesystems at, where the test is not
+    /// *about* time. A distinctive non-epoch value with a nanosecond part, so
+    /// that a metadata assertion cannot pass against a zero someone forgot to
+    /// set: `Unchecked.defaultof<UnixTimestamp>` is the epoch, so building at
+    /// the epoch would make "the times were recorded" indistinguishable from
+    /// "the times are default".
+    let private buildTime : UnixTimestamp =
+        UnixTimestamp.createOrFail "test" 1_700_000_000L 123_456_789
+
+    let private emptyFs : VirtualFileSystem = VirtualFileSystem.empty buildTime
+
     /// Build a filesystem from a script of operations, failing loudly if any
     /// step is rejected. Keeps the tests below readable.
     let private build (steps : (VirtualFileSystem -> VirtualFileSystem) list) : VirtualFileSystem =
-        steps |> List.fold (fun vfs step -> step vfs) VirtualFileSystem.empty
+        steps |> List.fold (fun vfs step -> step vfs) emptyFs
 
     let private mkdir (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        VirtualFileSystem.createDirectory parent (name n) vfs |> ok |> snd
+        VirtualFileSystem.createDirectory parent (name n) dirPerms buildTime vfs
+        |> ok
+        |> snd
 
     let private mkfile (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        VirtualFileSystem.createFile parent (name n) noBytes vfs |> ok |> snd
+        VirtualFileSystem.createFile parent (name n) filePerms buildTime noBytes vfs
+        |> ok
+        |> snd
 
     let private mklink (parent : InodeNumber) (n : string) (t : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        VirtualFileSystem.createSymlink parent (name n) (target t) vfs |> ok |> snd
+        VirtualFileSystem.createSymlink parent (name n) buildTime (target t) vfs
+        |> ok
+        |> snd
+
+    /// An inode for the `Unchecked.ofParts` tests, whose subject is the shape of
+    /// the graph rather than any metadata.
+    let private inodeOf (content : InodeContent) : Inode =
+        {
+            Content = content
+            Times = InodeTimes.createdAt buildTime
+        }
+
+    let private regularFileInode : Inode =
+        inodeOf (InodeContent.RegularFile (noBytes, filePerms))
 
     let private rootOf (vfs : VirtualFileSystem) : InodeNumber = VirtualFileSystem.root vfs
 
@@ -47,33 +79,25 @@ module TestVirtualFileSystem =
 
     [<Test>]
     let ``empty is a sound filesystem containing only the root`` () : unit =
-        VirtualFileSystem.checkInvariants VirtualFileSystem.empty |> shouldEqual []
+        VirtualFileSystem.checkInvariants emptyFs |> shouldEqual []
 
-        VirtualFileSystem.inodes VirtualFileSystem.empty |> Map.count |> shouldEqual 1
+        VirtualFileSystem.inodes emptyFs |> Map.count |> shouldEqual 1
 
         // The root's parent is itself, so "/.." is "/".
-        VirtualFileSystem.resolve
-            (rootOf VirtualFileSystem.empty)
-            SymlinkPolicy.Follow
-            (path "/..")
-            VirtualFileSystem.empty
-        |> shouldEqual (Ok (ResolvedTarget.Directory (rootOf VirtualFileSystem.empty, FinalNavigation.Parent)))
+        VirtualFileSystem.resolve (rootOf emptyFs) SymlinkPolicy.Follow (path "/..") emptyFs
+        |> shouldEqual (Ok (ResolvedTarget.Directory (rootOf emptyFs, FinalNavigation.Parent)))
 
     [<Test>]
     let ``the empty path is ENOENT, not the directory we started from`` () : unit =
         // The trap this guards: a walk over zero components would silently mean
         // "the start directory", which is a successful answer to a call every
         // Unix rejects.
-        VirtualFileSystem.resolve
-            (rootOf VirtualFileSystem.empty)
-            SymlinkPolicy.Follow
-            UnixPath.empty
-            VirtualFileSystem.empty
+        VirtualFileSystem.resolve (rootOf emptyFs) SymlinkPolicy.Follow UnixPath.empty emptyFs
         |> shouldEqual (Error UnixError.ENOENT)
 
     [<Test>]
     let ``a relative path starting from a non-directory is ENOTDIR`` () : unit =
-        let vfs = build [ mkfile (rootOf VirtualFileSystem.empty) "f" ]
+        let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
         let file =
             VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
@@ -84,7 +108,7 @@ module TestVirtualFileSystem =
 
     [<Test>]
     let ``a path cannot continue through a regular file`` () : unit =
-        let vfs = build [ mkfile (rootOf VirtualFileSystem.empty) "f" ]
+        let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
         VirtualFileSystem.resolve (rootOf vfs) SymlinkPolicy.Follow (path "/f/x") vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
@@ -93,7 +117,7 @@ module TestVirtualFileSystem =
     let ``a free name in the final position is not an error`` () : unit =
         // The whole point of stopping short of the final lookup: mkdir and
         // open(O_CREAT) need this state, and only stat turns it into ENOENT.
-        let vfs = VirtualFileSystem.empty
+        let vfs = emptyFs
 
         VirtualFileSystem.resolve (rootOf vfs) SymlinkPolicy.Follow (path "/nx") vfs
         |> shouldEqual (Ok (ResolvedTarget.Entry (rootOf vfs, name "nx", None)))
@@ -113,7 +137,7 @@ module TestVirtualFileSystem =
         // and rmdir("d/") succeeds while rmdir("d/.") is EINVAL. Desugaring
         // would collapse the Entry that mkdir("nx/") needs into a Directory,
         // and would make a free name report ENOENT.
-        let vfs = VirtualFileSystem.empty
+        let vfs = emptyFs
 
         let resolution =
             VirtualFileSystem.resolveFull (rootOf vfs) SymlinkPolicy.Follow (path "/nx/") vfs
@@ -134,7 +158,7 @@ module TestVirtualFileSystem =
     [<Test>]
     let ``a trailing separator on an existing non-directory is ENOTDIR`` () : unit =
         // The part of the trailing-separator rule every platform agrees on.
-        let vfs = build [ mkfile (rootOf VirtualFileSystem.empty) "f" ]
+        let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
         VirtualFileSystem.resolve (rootOf vfs) SymlinkPolicy.Follow (path "/f/") vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
@@ -158,12 +182,7 @@ module TestVirtualFileSystem =
     let ``a trailing separator follows a final symlink even under NoFollowFinal`` () : unit =
         // POSIX resolves "p/" as "p/.", and both platforms agree for lookups:
         // probed, lstat("ld/") stats the directory the link names.
-        let vfs =
-            build
-                [
-                    mkdir (rootOf VirtualFileSystem.empty) "d"
-                    mklink (rootOf VirtualFileSystem.empty) "ld" "d"
-                ]
+        let vfs = build [ mkdir (rootOf emptyFs) "d" ; mklink (rootOf emptyFs) "ld" "d" ]
 
         let directory =
             VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/d") vfs
@@ -187,18 +206,13 @@ module TestVirtualFileSystem =
             VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.NoFollowFinal (path "/ld") vfs
             |> ok
 
-        match VirtualFileSystem.tryGet link vfs with
+        match VirtualFileSystem.tryGetContent link vfs with
         | Some (InodeContent.Symlink _) -> ()
         | other -> failwith $"expected the symlink itself, got %A{other}"
 
     [<Test>]
     let ``a symlink target's own trailing separator takes effect only when final`` () : unit =
-        let vfs =
-            build
-                [
-                    mkfile (rootOf VirtualFileSystem.empty) "f"
-                    mklink (rootOf VirtualFileSystem.empty) "lf" "f/"
-                ]
+        let vfs = build [ mkfile (rootOf emptyFs) "f" ; mklink (rootOf emptyFs) "lf" "f/" ]
 
         // "lf" expands to "f/", whose trailing separator now demands that f be
         // a directory. It is not.
@@ -211,14 +225,14 @@ module TestVirtualFileSystem =
     let ``a dangling final symlink under Follow is a free name, not an error`` () : unit =
         // open("/link", O_CREAT) where link -> /nx must create nx, so the walk
         // has to hand back the *target's* parent and name.
-        let vfs = build [ mklink (rootOf VirtualFileSystem.empty) "dang" "nx" ]
+        let vfs = build [ mklink (rootOf emptyFs) "dang" "nx" ]
 
         VirtualFileSystem.resolve (rootOf vfs) SymlinkPolicy.Follow (path "/dang") vfs
         |> shouldEqual (Ok (ResolvedTarget.Entry (rootOf vfs, name "nx", None)))
 
         // But a dangling link whose target's *parent* is missing is ENOENT,
         // because that failure happens part-way along.
-        let vfs = build [ mklink (rootOf VirtualFileSystem.empty) "deep" "nx1/nx2" ]
+        let vfs = build [ mklink (rootOf emptyFs) "deep" "nx1/nx2" ]
 
         VirtualFileSystem.resolve (rootOf vfs) SymlinkPolicy.Follow (path "/deep") vfs
         |> shouldEqual (Error UnixError.ENOENT)
@@ -228,14 +242,14 @@ module TestVirtualFileSystem =
         let vfs =
             build
                 [
-                    mkdir (rootOf VirtualFileSystem.empty) "a"
+                    mkdir (rootOf emptyFs) "a"
                     fun vfs ->
                         let a =
                             VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/a") vfs
                             |> ok
 
                         vfs |> mkfile a "f" |> mklink a "up" "/f2"
-                    mkfile (rootOf VirtualFileSystem.empty) "f2"
+                    mkfile (rootOf emptyFs) "f2"
                 ]
 
         let f2 =
@@ -322,7 +336,7 @@ module TestVirtualFileSystem =
         // The case that defeats cycle detection: "l" -> "l/x" never repeats a
         // (directory, remaining) state, it just grows the path. Only the
         // traversal count stops it, which is why there is no seen-state set.
-        let vfs = build [ mklink (rootOf VirtualFileSystem.empty) "l" "l/x" ]
+        let vfs = build [ mklink (rootOf emptyFs) "l" "l/x" ]
 
         VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/l") vfs
         |> shouldEqual (Error UnixError.ELOOP)
@@ -333,11 +347,7 @@ module TestVirtualFileSystem =
         // rather than referred back as a divergence — the count reaches the
         // no-platform-allows bound before it reaches the divergent band's top.
         let vfs =
-            build
-                [
-                    mklink (rootOf VirtualFileSystem.empty) "a" "b"
-                    mklink (rootOf VirtualFileSystem.empty) "b" "a"
-                ]
+            build [ mklink (rootOf emptyFs) "a" "b" ; mklink (rootOf emptyFs) "b" "a" ]
 
         VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/a") vfs
         |> shouldEqual (Error UnixError.ELOOP)
@@ -348,13 +358,13 @@ module TestVirtualFileSystem =
         // their length as st_size, but UnixPath.parse collapses "//". Storing
         // a parsed path would make FileInfo.LinkTarget disagree with every Unix.
         let raw = "a//b/"
-        let vfs = build [ mklink (rootOf VirtualFileSystem.empty) "l" raw ]
+        let vfs = build [ mklink (rootOf emptyFs) "l" raw ]
 
         let link =
             VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.NoFollowFinal (path "/l") vfs
             |> ok
 
-        match VirtualFileSystem.tryGet link vfs with
+        match VirtualFileSystem.tryGetContent link vfs with
         | Some (InodeContent.Symlink stored) ->
             SymlinkTarget.toString stored |> shouldEqual raw
             SymlinkTarget.toUtf8 stored |> Seq.length |> shouldEqual raw.Length
@@ -380,10 +390,10 @@ module TestVirtualFileSystem =
         let vfs =
             build
                 [
-                    mkdir (rootOf VirtualFileSystem.empty) "d"
-                    mklink (rootOf VirtualFileSystem.empty) "l1" "."
-                    mklink (rootOf VirtualFileSystem.empty) "l2" "d/.."
-                    mklink (rootOf VirtualFileSystem.empty) "l3" "/"
+                    mkdir (rootOf emptyFs) "d"
+                    mklink (rootOf emptyFs) "l1" "."
+                    mklink (rootOf emptyFs) "l2" "d/.."
+                    mklink (rootOf emptyFs) "l3" "/"
                 ]
 
         let reachedBy (candidate : string) =
@@ -410,12 +420,7 @@ module TestVirtualFileSystem =
 
     [<Test>]
     let ``builders report the errnos their syscalls do`` () : unit =
-        let vfs =
-            build
-                [
-                    mkdir (rootOf VirtualFileSystem.empty) "d"
-                    mkfile (rootOf VirtualFileSystem.empty) "f"
-                ]
+        let vfs = build [ mkdir (rootOf emptyFs) "d" ; mkfile (rootOf emptyFs) "f" ]
 
         let root = rootOf vfs
 
@@ -427,22 +432,22 @@ module TestVirtualFileSystem =
             VirtualFileSystem.resolveExisting root SymlinkPolicy.Follow (path "/d") vfs
             |> ok
 
-        VirtualFileSystem.createDirectory root (name "d") vfs
+        VirtualFileSystem.createDirectory root (name "d") dirPerms buildTime vfs
         |> shouldEqual (Error UnixError.EEXIST)
 
-        VirtualFileSystem.createFile file (name "x") noBytes vfs
+        VirtualFileSystem.createFile file (name "x") filePerms buildTime noBytes vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
-        VirtualFileSystem.createFile (InodeNumber 9999L) (name "x") noBytes vfs
+        VirtualFileSystem.createFile (InodeNumber 9999L) (name "x") filePerms buildTime noBytes vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
         // link(2) refuses to hard-link a directory: it would make the graph a
         // non-tree and leave Parent naming only one container.
-        VirtualFileSystem.hardLink root (name "d2") directory vfs
+        VirtualFileSystem.hardLink root (name "d2") directory buildTime vfs
         |> shouldEqual (Error UnixError.EPERM)
 
         // ...but hard-linking a file is fine, and both names reach one inode.
-        let linked = VirtualFileSystem.hardLink root (name "f2") file vfs |> ok
+        let linked = VirtualFileSystem.hardLink root (name "f2") file buildTime vfs |> ok
         VirtualFileSystem.checkInvariants linked |> shouldEqual []
 
         VirtualFileSystem.resolveExisting root SymlinkPolicy.Follow (path "/f2") linked
@@ -455,23 +460,23 @@ module TestVirtualFileSystem =
         // the allocation itself. Otherwise createDirectory would install the
         // new directory at that number, find it, and bind it as its own child —
         // returning Ok for a filesystem that is unreachable from the root.
-        let vfs = build [ mkdir (rootOf VirtualFileSystem.empty) "d" ]
+        let vfs = build [ mkdir (rootOf emptyFs) "d" ]
         let absent = VirtualFileSystem.nextInode vfs
 
-        VirtualFileSystem.createDirectory absent (name "x") vfs
+        VirtualFileSystem.createDirectory absent (name "x") dirPerms buildTime vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
-        VirtualFileSystem.createFile absent (name "x") noBytes vfs
+        VirtualFileSystem.createFile absent (name "x") filePerms buildTime noBytes vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
-        VirtualFileSystem.createSymlink absent (name "x") (target "y") vfs
+        VirtualFileSystem.createSymlink absent (name "x") buildTime (target "y") vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
     [<Test>]
     let ``a rejected builder leaves the filesystem sound`` () : unit =
-        let vfs = build [ mkdir (rootOf VirtualFileSystem.empty) "d" ]
+        let vfs = build [ mkdir (rootOf emptyFs) "d" ]
 
-        match VirtualFileSystem.createDirectory (rootOf vfs) (name "d") vfs with
+        match VirtualFileSystem.createDirectory (rootOf vfs) (name "d") dirPerms buildTime vfs with
         | Ok _ -> failwith "expected EEXIST"
         | Error _ ->
             // The burnt inode number is unobservable, since numbers are never
@@ -480,20 +485,15 @@ module TestVirtualFileSystem =
 
     [<Test>]
     let ``inode numbers are never reused`` () : unit =
-        let vfs = build [ mkfile (rootOf VirtualFileSystem.empty) "a" ]
+        let vfs = build [ mkfile (rootOf emptyFs) "a" ]
         let before = VirtualFileSystem.nextInode vfs
 
         // A rejected creation still consumes a number.
-        VirtualFileSystem.createFile (InodeNumber 9999L) (name "x") noBytes vfs
+        VirtualFileSystem.createFile (InodeNumber 9999L) (name "x") filePerms buildTime noBytes vfs
         |> Result.isError
         |> shouldEqual true
 
-        let after =
-            build
-                [
-                    mkfile (rootOf VirtualFileSystem.empty) "a"
-                    mkfile (rootOf VirtualFileSystem.empty) "b"
-                ]
+        let after = build [ mkfile (rootOf emptyFs) "a" ; mkfile (rootOf emptyFs) "b" ]
 
         VirtualFileSystem.nextInode after |> shouldBeGreaterThan before
 
@@ -504,7 +504,7 @@ module TestVirtualFileSystem =
         let vfs =
             build
                 [
-                    mkdir (rootOf VirtualFileSystem.empty) "a"
+                    mkdir (rootOf emptyFs) "a"
                     fun vfs ->
                         let a =
                             VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/a") vfs
@@ -513,8 +513,8 @@ module TestVirtualFileSystem =
                         vfs |> mkdir a "b" |> mkfile a "f"
                 ]
 
-        for inode, content in Map.toList (VirtualFileSystem.inodes vfs) do
-            match content with
+        for inode, entry in Map.toList (VirtualFileSystem.inodes vfs) do
+            match entry.Content with
             | InodeContent.Directory _ ->
                 match VirtualFileSystem.pathOfDirectory inode vfs with
                 | None -> failwith $"no path for directory %O{inode} in a sound filesystem"
@@ -533,18 +533,21 @@ module TestVirtualFileSystem =
 
     [<Test>]
     let ``pathOfDirectory of the root is the root`` () : unit =
-        VirtualFileSystem.pathOfDirectory (rootOf VirtualFileSystem.empty) VirtualFileSystem.empty
+        VirtualFileSystem.pathOfDirectory (rootOf emptyFs) emptyFs
         |> shouldEqual (Some AbsoluteUnixPath.root)
 
     // ------------------------------------------------------------- invariants
 
     /// A directory holding one entry, for assembling defective graphs.
-    let private dir (parent : InodeNumber) (entries : (string * InodeNumber) list) : InodeContent =
-        InodeContent.Directory
-            {
-                Entries = entries |> List.map (fun (n, i) -> name n, i) |> Map.ofList
-                Parent = parent
-            }
+    let private dir (parent : InodeNumber) (entries : (string * InodeNumber) list) : Inode =
+        inodeOf (
+            InodeContent.Directory
+                {
+                    Entries = entries |> List.map (fun (n, i) -> name n, i) |> Map.ofList
+                    Parent = parent
+                    Permissions = dirPerms
+                }
+        )
 
     let private one = InodeNumber 1L
     let private two = InodeNumber 2L
@@ -563,7 +566,7 @@ module TestVirtualFileSystem =
 
     [<Test>]
     let ``RootIsNotDirectory`` () : unit =
-        VirtualFileSystem.Unchecked.ofParts (Map.ofList [ one, InodeContent.RegularFile noBytes ]) one two
+        VirtualFileSystem.Unchecked.ofParts (Map.ofList [ one, regularFileInode ]) one two
         |> shouldHaveDefects [ VirtualFileSystemDefect.RootIsNotDirectory one ]
 
     [<Test>]
@@ -602,7 +605,7 @@ module TestVirtualFileSystem =
             (Map.ofList
                 [
                     one, dir one [ "f", two ; "d", three ]
-                    two, InodeContent.RegularFile noBytes
+                    two, regularFileInode
                     three, dir two []
                 ])
             one
@@ -634,10 +637,7 @@ module TestVirtualFileSystem =
 
     [<Test>]
     let ``UnreachableFromRoot`` () : unit =
-        VirtualFileSystem.Unchecked.ofParts
-            (Map.ofList [ one, dir one [] ; two, InodeContent.RegularFile noBytes ])
-            one
-            three
+        VirtualFileSystem.Unchecked.ofParts (Map.ofList [ one, dir one [] ; two, regularFileInode ]) one three
         |> shouldHaveDefects [ VirtualFileSystemDefect.UnreachableFromRoot two ]
 
     [<Test>]
@@ -686,11 +686,11 @@ module TestVirtualFileSystem =
         // unchecked, both produce a graph checkInvariants calls sound: an entry
         // no parsed path could ever name, or a symlink that crashes only later
         // when some unrelated resolution happens to traverse it.
-        let vfs = VirtualFileSystem.empty
+        let vfs = emptyFs
 
         let forgedName =
             Assert.Throws<Exception> (fun () ->
-                VirtualFileSystem.createFile (rootOf vfs) Unchecked.defaultof<FileName> noBytes vfs
+                VirtualFileSystem.createFile (rootOf vfs) Unchecked.defaultof<FileName> filePerms buildTime noBytes vfs
                 |> ignore<Result<InodeNumber * VirtualFileSystem, UnixError>>
             )
 
@@ -698,7 +698,12 @@ module TestVirtualFileSystem =
 
         let forgedTarget =
             Assert.Throws<Exception> (fun () ->
-                VirtualFileSystem.createSymlink (rootOf vfs) (name "l") Unchecked.defaultof<SymlinkTarget> vfs
+                VirtualFileSystem.createSymlink
+                    (rootOf vfs)
+                    (name "l")
+                    buildTime
+                    Unchecked.defaultof<SymlinkTarget>
+                    vfs
                 |> ignore<Result<InodeNumber * VirtualFileSystem, UnixError>>
             )
 
@@ -708,14 +713,20 @@ module TestVirtualFileSystem =
         // which is not an empty file but an uninitialised one.
         let forgedContents =
             Assert.Throws<Exception> (fun () ->
-                VirtualFileSystem.createFile (rootOf vfs) (name "f") Unchecked.defaultof<ImmutableArray<byte>> vfs
+                VirtualFileSystem.createFile
+                    (rootOf vfs)
+                    (name "f")
+                    filePerms
+                    buildTime
+                    Unchecked.defaultof<ImmutableArray<byte>>
+                    vfs
                 |> ignore<Result<InodeNumber * VirtualFileSystem, UnixError>>
             )
 
         forgedContents.Message |> shouldContainText "ImmutableArray<byte>.Empty"
 
         // ...and the genuinely empty file is still fine.
-        VirtualFileSystem.createFile (rootOf vfs) (name "f") ImmutableArray<byte>.Empty vfs
+        VirtualFileSystem.createFile (rootOf vfs) (name "f") filePerms buildTime ImmutableArray<byte>.Empty vfs
         |> Result.isOk
         |> shouldEqual true
 
@@ -723,10 +734,16 @@ module TestVirtualFileSystem =
         // all rather than only the one probed above.
         for builder in
             [
-                (fun n -> VirtualFileSystem.createDirectory (rootOf vfs) n vfs |> Result.map snd)
-                (fun n -> VirtualFileSystem.createFile (rootOf vfs) n noBytes vfs |> Result.map snd)
                 (fun n ->
-                    VirtualFileSystem.createSymlink (rootOf vfs) n (target "x") vfs
+                    VirtualFileSystem.createDirectory (rootOf vfs) n dirPerms buildTime vfs
+                    |> Result.map snd
+                )
+                (fun n ->
+                    VirtualFileSystem.createFile (rootOf vfs) n filePerms buildTime noBytes vfs
+                    |> Result.map snd
+                )
+                (fun n ->
+                    VirtualFileSystem.createSymlink (rootOf vfs) n buildTime (target "x") vfs
                     |> Result.map snd
                 )
             ] do
@@ -761,11 +778,20 @@ module TestVirtualFileSystem =
                 Gen.map3 (fun p n t -> Step.MakeHardLink (p, n, t)) (Gen.choose (0, 9)) nameGen (Gen.choose (0, 9))
             ]
 
-    let private applyStep (step : Step) (vfs : VirtualFileSystem) : VirtualFileSystem =
+    /// A distinct moment for each step, so that a timestamp copied from the
+    /// wrong inode — or never moved at all — is visible rather than
+    /// indistinguishable from the right one.
+    let private tickOf (index : int) : UnixTimestamp =
+        UnixTimestamp.createOrFail
+            "test"
+            (UnixTimestamp.seconds buildTime + int64 index)
+            (UnixTimestamp.nanoseconds buildTime)
+
+    let private applyStep (now : UnixTimestamp) (step : Step) (vfs : VirtualFileSystem) : VirtualFileSystem =
         let inodesOfKind (predicate : InodeContent -> bool) =
             VirtualFileSystem.inodes vfs
             |> Map.toList
-            |> List.filter (fun (_, content) -> predicate content)
+            |> List.filter (fun (_, entry) -> predicate entry.Content)
             |> List.map fst
 
         let directories =
@@ -797,19 +823,19 @@ module TestVirtualFileSystem =
         let outcome =
             match step with
             | Step.MakeDirectory (p, n) ->
-                VirtualFileSystem.createDirectory (pick directories p) (name n) vfs
+                VirtualFileSystem.createDirectory (pick directories p) (name n) dirPerms now vfs
                 |> Result.map snd
             | Step.MakeFile (p, n) ->
-                VirtualFileSystem.createFile (pick directories p) (name n) noBytes vfs
+                VirtualFileSystem.createFile (pick directories p) (name n) filePerms now noBytes vfs
                 |> Result.map snd
             | Step.MakeSymlink (p, n, t) ->
-                VirtualFileSystem.createSymlink (pick directories p) (name n) (target t) vfs
+                VirtualFileSystem.createSymlink (pick directories p) (name n) now (target t) vfs
                 |> Result.map snd
             | Step.MakeHardLink (p, n, t) ->
                 if List.isEmpty files then
                     Ok vfs
                 else
-                    VirtualFileSystem.hardLink (pick directories p) (name n) (pick files t) vfs
+                    VirtualFileSystem.hardLink (pick directories p) (name n) (pick files t) now vfs
 
         // A rejected step (EEXIST, mostly) leaves the filesystem alone, which is
         // itself part of what the property asserts.
@@ -819,7 +845,11 @@ module TestVirtualFileSystem =
 
     let private filesystemGen : Gen<VirtualFileSystem> =
         Gen.listOf stepGen
-        |> Gen.map (List.fold (fun vfs step -> applyStep step vfs) VirtualFileSystem.empty)
+        |> Gen.map (fun steps ->
+            steps
+            |> List.mapi (fun index step -> tickOf (index + 1), step)
+            |> List.fold (fun vfs (now, step) -> applyStep now step vfs) emptyFs
+        )
 
     [<Test>]
     let ``any sequence of builder operations leaves a sound filesystem`` () : unit =
@@ -833,8 +863,8 @@ module TestVirtualFileSystem =
         // The corollary of tree-ness: on a sound filesystem the Parent chain
         // always reaches the root, so pathOfDirectory is total on directories.
         let property (vfs : VirtualFileSystem) : unit =
-            for inode, content in Map.toList (VirtualFileSystem.inodes vfs) do
-                match content with
+            for inode, entry in Map.toList (VirtualFileSystem.inodes vfs) do
+                match entry.Content with
                 | InodeContent.Directory _ ->
                     match VirtualFileSystem.pathOfDirectory inode vfs with
                     | None -> failwith $"no path for directory %O{inode} in a sound filesystem"
@@ -907,3 +937,217 @@ module TestVirtualFileSystem =
             | a, b -> failwith $"resolve gave %A{a} but resolveExisting gave %A{b}"
 
         Check.One (config, Prop.forAll (Arb.fromGen (Gen.zip filesystemGen pathGen)) property)
+
+    // --------------------------------------------------------------- metadata
+
+    let private timesOf (inode : InodeNumber) (vfs : VirtualFileSystem) : InodeTimes =
+        match VirtualFileSystem.tryGet inode vfs with
+        | Some entry -> entry.Times
+        | None -> failwith $"no such inode %O{inode}"
+
+    [<Test>]
+    let ``permission bits are exactly chmod's domain`` () : unit =
+        PermissionBits.parse 0o7777 |> Option.isSome |> shouldEqual true
+        PermissionBits.parse 0 |> Option.isSome |> shouldEqual true
+        PermissionBits.parse -1 |> shouldEqual None
+
+        // The one that matters: a caller handing over a whole `st_mode` is
+        // making exactly the type/permission conflation this type exists to
+        // prevent, and is refused rather than silently masked down to 0o644.
+        PermissionBits.parse 0o100644 |> shouldEqual None
+        PermissionBits.parse 0o10000 |> shouldEqual None
+
+    [<Test>]
+    let ``the default permissions are the umask-022 derivation, not invented constants`` () : unit =
+        // 0o666 and 0o777 are what `open(2)` and `mkdir(2)` are actually passed;
+        // 022 is the umask that produces the familiar 644/755. Asserting the
+        // arithmetic as well as the answer keeps the doc comment honest about
+        // where the numbers come from.
+        PermissionBits.toInt PermissionBits.defaultForRegularFile
+        |> shouldEqual (0o666 &&& ~~~0o022)
+
+        PermissionBits.toInt PermissionBits.defaultForDirectory
+        |> shouldEqual (0o777 &&& ~~~0o022)
+
+        PermissionBits.toInt PermissionBits.defaultForRegularFile |> shouldEqual 0o644
+        PermissionBits.toInt PermissionBits.defaultForDirectory |> shouldEqual 0o755
+
+    [<Test>]
+    let ``a timestamp is a timespec, not a nanosecond count`` () : unit =
+        UnixTimestamp.create 0L 999_999_999 |> Option.isSome |> shouldEqual true
+        UnixTimestamp.create 0L 1_000_000_000 |> shouldEqual None
+        UnixTimestamp.create 0L -1 |> shouldEqual None
+
+        // Pre-1970 is an ordinary mtime — tar archives are full of them — so
+        // negative seconds are representable even though negative nanoseconds
+        // are not.
+        UnixTimestamp.create -1L 0 |> Option.isSome |> shouldEqual true
+
+        // Seconds are a genuine int64, not the ±292 years a single nanosecond
+        // count would have bought. `File.SetLastWriteTime` can be handed a
+        // DateTime well outside that, and a filesystem does not clamp.
+        UnixTimestamp.seconds (UnixTimestamp.createOrFail "test" 300_000_000_000L 0)
+        |> shouldEqual 300_000_000_000L
+
+        // Ordering is lexicographic on (seconds, nanoseconds), which the
+        // invariants below rely on.
+        UnixTimestamp.createOrFail "test" 1L 0 < UnixTimestamp.createOrFail "test" 1L 1
+        |> shouldEqual true
+
+        UnixTimestamp.createOrFail "test" 1L 999_999_999 < UnixTimestamp.createOrFail "test" 2L 0
+        |> shouldEqual true
+
+        // There is no `assertValid` counterpart to FileName's, because there is
+        // nothing to catch: the forged value is a legal timestamp.
+        Unchecked.defaultof<UnixTimestamp> |> shouldEqual UnixTimestamp.epoch
+
+    [<Test>]
+    let ``a pre-epoch timestamp renders as the instant it is`` () : unit =
+        // A timespec is seconds *plus* nanoseconds, so a negative instant is not
+        // the pair with a minus glued on the front: (-1, 5e8) is half a second
+        // *before* the epoch, not one and a half. Printing the fields adjacently
+        // would name a different moment — in a diagnostic, which is exactly
+        // where someone would trust it.
+        let render (seconds : int64) (nanoseconds : int) : string =
+            sprintf "%O" (UnixTimestamp.createOrFail "test" seconds nanoseconds)
+
+        render -1L 500_000_000 |> shouldEqual "-0.500000000"
+        render -2L 500_000_000 |> shouldEqual "-1.500000000"
+        render -1L 999_999_999 |> shouldEqual "-0.000000001"
+
+        // Whole negative seconds have no fractional part to carry.
+        render -1L 0 |> shouldEqual "-1.000000000"
+
+        // ...and the ordinary case is unaffected.
+        render 1L 500_000_000 |> shouldEqual "1.500000000"
+        render 0L 0 |> shouldEqual "0.000000000"
+
+    [<Test>]
+    let ``permissions are stored for files and directories and derived for symlinks`` () : unit =
+        let vfs =
+            build
+                [
+                    mkfile (rootOf emptyFs) "f"
+                    mkdir (rootOf emptyFs) "d"
+                    mklink (rootOf emptyFs) "l" "f"
+                ]
+
+        let permissionsOf (p : string) : InodePermissions =
+            let inode =
+                VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.NoFollowFinal (path p) vfs
+                |> ok
+
+            match VirtualFileSystem.tryGet inode vfs with
+            | Some entry -> VirtualFileSystem.permissions entry
+            | None -> failwith "missing inode"
+
+        permissionsOf "/f" |> shouldEqual (InodePermissions.Stored filePerms)
+        permissionsOf "/d" |> shouldEqual (InodePermissions.Stored dirPerms)
+
+        // Not `Stored 0o777`: a symlink's bits are a property of the platform
+        // (Linux always 0o777; macOS applies the creating umask — probed), and
+        // no syscall PawPrint models can make two links differ, so storing one
+        // could only ever describe a filesystem no kernel produced.
+        permissionsOf "/l" |> shouldEqual InodePermissions.PlatformSymlinkDefault
+
+    [<Test>]
+    let ``a fresh inode's four times are all the moment it was created`` () : unit =
+        let vfs = build [ mkfile (rootOf emptyFs) "f" ]
+
+        let file =
+            VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+            |> ok
+
+        timesOf file vfs |> shouldEqual (InodeTimes.createdAt buildTime)
+
+        // ...which is to say, all four really are the *supplied* moment rather
+        // than a default that happens to look plausible.
+        (timesOf file vfs).Birth |> shouldEqual buildTime
+
+        UnixTimestamp.nanoseconds (timesOf file vfs).Modification
+        |> shouldEqual 123_456_789
+
+    [<Test>]
+    let ``gaining an entry moves a directory's mtime and ctime, and nothing else`` () : unit =
+        let later = UnixTimestamp.createOrFail "test" 1_700_000_500L 7
+
+        let root = rootOf emptyFs
+        let before = timesOf root emptyFs
+
+        let vfs =
+            VirtualFileSystem.createFile root (name "f") filePerms later noBytes emptyFs
+            |> ok
+            |> snd
+
+        let after = timesOf root vfs
+
+        // What a kernel moves: the directory's contents changed, so mtime; and
+        // any change to the inode moves ctime with it.
+        after.Modification |> shouldEqual later
+        after.StatusChange |> shouldEqual later
+
+        // What it does not: nothing read the directory, and it is not reborn.
+        after.Access |> shouldEqual before.Access
+        after.Birth |> shouldEqual before.Birth
+
+    [<Test>]
+    let ``a hard link moves the target's ctime but not its mtime`` () : unit =
+        let later = UnixTimestamp.createOrFail "test" 1_700_000_900L 0
+        let vfs = build [ mkfile (rootOf emptyFs) "f" ]
+
+        let file =
+            VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+            |> ok
+
+        let linked =
+            VirtualFileSystem.hardLink (rootOf vfs) (name "f2") file later vfs |> ok
+
+        let after = timesOf file linked
+
+        // link(2) changes the inode's link count, which is a change to the
+        // inode — but it touches no byte of the file, so mtime stays put. This
+        // is the case that makes StatusChange worth storing separately rather
+        // than deriving it from Modification.
+        after.StatusChange |> shouldEqual later
+        after.Modification |> shouldEqual buildTime
+        after.Birth |> shouldEqual buildTime
+
+        // The containing directory gained an entry, so its own pair moves.
+        (timesOf (rootOf linked) linked).Modification |> shouldEqual later
+
+    [<Test>]
+    let ``every inode's times respect the order a kernel would have moved them`` () : unit =
+        // Each generated step happens at its own moment (see `tickOf`), so a
+        // timestamp copied from the wrong inode, or never moved at all, shows up
+        // here rather than being indistinguishable from the right answer.
+        let mutable observedLateModification = 0
+        let mutable observedCtimeAheadOfMtime = 0
+
+        let property (vfs : VirtualFileSystem) : unit =
+            for inode, entry in Map.toList (VirtualFileSystem.inodes vfs) do
+                let times = entry.Times
+
+                // Nothing in this slice *reads*, so atime never moves off
+                // creation. When `open`/`read` land, this is the line that has
+                // to change — deliberately, rather than silently.
+                times.Access |> shouldEqual times.Birth
+
+                if times.Birth > times.Modification then
+                    failwith $"inode %O{inode} was modified before it was born: %A{times}"
+
+                if times.Modification > times.StatusChange then
+                    failwith $"inode %O{inode} changed contents after its inode last changed: %A{times}"
+
+                if times.Modification > times.Birth then
+                    observedLateModification <- observedLateModification + 1
+
+                if times.StatusChange > times.Modification then
+                    observedCtimeAheadOfMtime <- observedCtimeAheadOfMtime + 1
+
+        Check.One (config, Prop.forAll (Arb.fromGen filesystemGen) property)
+
+        // Without these the property is satisfied by a model that never moves a
+        // timestamp at all: every inode would trivially have all four equal, and
+        // every comparison above would hold vacuously.
+        observedLateModification |> shouldBeGreaterThan 100
+        observedCtimeAheadOfMtime |> shouldBeGreaterThan 10

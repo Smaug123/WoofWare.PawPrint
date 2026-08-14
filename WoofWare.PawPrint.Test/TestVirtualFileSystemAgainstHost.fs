@@ -227,8 +227,15 @@ module TestVirtualFileSystemAgainstHost =
 
     // ----------------------------------------------------------- the model side
 
+    /// When the model's inodes are created. Irrelevant to every comparison in
+    /// this file — the host side is compared on resolution outcomes, never on
+    /// timestamps, which could not agree anyway — but a filesystem has to be
+    /// built at *some* moment.
+    let private buildTime : UnixTimestamp =
+        UnixTimestamp.createOrFail "test" 1_700_000_000L 0
+
     let private buildModel () : VirtualFileSystem =
-        let mutable vfs = VirtualFileSystem.empty
+        let mutable vfs = VirtualFileSystem.empty buildTime
 
         let resolveDirectory (relative : string) : InodeNumber =
             match
@@ -255,14 +262,27 @@ module TestVirtualFileSystemAgainstHost =
 
         for directory in directories do
             let parent, name = split directory
-            let _, updated = apply (VirtualFileSystem.createDirectory parent name vfs) directory
+
+            let _, updated =
+                apply
+                    (VirtualFileSystem.createDirectory parent name PermissionBits.defaultForDirectory buildTime vfs)
+                    directory
+
             vfs <- updated
 
         for file in files do
             let parent, name = split file
 
             let _, updated =
-                apply (VirtualFileSystem.createFile parent name ImmutableArray<byte>.Empty vfs) file
+                apply
+                    (VirtualFileSystem.createFile
+                        parent
+                        name
+                        PermissionBits.defaultForRegularFile
+                        buildTime
+                        ImmutableArray<byte>.Empty
+                        vfs)
+                    file
 
             vfs <- updated
 
@@ -270,7 +290,9 @@ module TestVirtualFileSystemAgainstHost =
             let parent, leaf = split name
 
             let _, updated =
-                apply (VirtualFileSystem.createSymlink parent leaf (SymlinkTarget.parseOrFail "test" target) vfs) name
+                apply
+                    (VirtualFileSystem.createSymlink parent leaf buildTime (SymlinkTarget.parseOrFail "test" target) vfs)
+                    name
 
             vfs <- updated
 
@@ -289,7 +311,7 @@ module TestVirtualFileSystemAgainstHost =
         | Error error -> Outcome.Failed (hostErrno error)
         | Ok inode ->
 
-        match VirtualFileSystem.tryGet inode vfs with
+        match VirtualFileSystem.tryGetContent inode vfs with
         | Some (InodeContent.Symlink target) -> Outcome.Symlink (SymlinkTarget.toString target)
         | Some _ -> Outcome.NotASymlink
         | None -> failwith $"the model resolved %s{relative} to inode %O{inode}, which it does not contain"
@@ -420,3 +442,91 @@ module TestVirtualFileSystemAgainstHost =
                 Directory.Delete (root, true)
             with _ ->
                 ()
+
+    // ------------------------------------------------ the S_IFMT band's values
+
+    /// The pinned runtime source only exists inside the Nix devshell, so a plain
+    /// `dotnet test` in a non-Nix checkout skips rather than fails. Same shape
+    /// as `TestUnixError.requireRuntimeSrc`, which is private to its own module.
+    let private requireRuntimeSrc () : string =
+        match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with
+        | null
+        | "" ->
+            Assert.Ignore
+                "DOTNET_RUNTIME_SRC is unset; run under `nix develop` to check against pinned upstream sources."
+
+            failwith "unreachable: Assert.Ignore did not throw"
+        | dir -> dir
+
+    /// `internal const int S_IFDIR = 0x4000;` and friends.
+    let private fileTypeEntry : Text.RegularExpressions.Regex =
+        Text.RegularExpressions.Regex (@"internal const int (?<name>S_IF[A-Z]+)\s*=\s*0x(?<value>[0-9A-Fa-f]+);")
+
+    [<Test>]
+    let ``the derived S_IFMT band agrees with the pinned Interop.Stat.cs`` () : unit =
+        // `fileTypeBits` is where PawPrint decides what a guest's
+        // `st_mode & S_IFMT` says. Checking it against a second copy of the same
+        // literals would prove nothing, so the oracle is upstream's own
+        // declaration — the very numbers the guest's CoreLib will compare
+        // against.
+        let path =
+            Path.Combine (
+                requireRuntimeSrc (),
+                "src",
+                "libraries",
+                "Common",
+                "src",
+                "Interop",
+                "Unix",
+                "System.Native",
+                "Interop.Stat.cs"
+            )
+
+        if not (File.Exists path) then
+            failwith
+                $"expected the pinned FileStatus declaration at %s{path}. If the sparse checkout in flake.nix no longer includes src/libraries/Common/src/Interop/Unix/System.Native, VirtualFileSystem.fileTypeBits has lost its oracle."
+
+        let pinned =
+            fileTypeEntry.Matches (File.ReadAllText path)
+            |> Seq.map (fun m -> m.Groups.["name"].Value, Convert.ToInt32 (m.Groups.["value"].Value, 16))
+            |> Map.ofSeq
+
+        // Guard against the regex silently matching nothing, which would make
+        // every assertion below vacuous: upstream declares eight file types.
+        pinned |> Map.count |> shouldEqual 8
+
+        let ofName (name : string) : int =
+            match Map.tryFind name pinned with
+            | Some value -> value
+            | None -> failwith $"the pinned Interop.Stat.cs no longer declares %s{name}"
+
+        VirtualFileSystem.fileTypeBits (
+            InodeContent.RegularFile (ImmutableArray<byte>.Empty, PermissionBits.defaultForRegularFile)
+        )
+        |> shouldEqual (ofName "S_IFREG")
+
+        VirtualFileSystem.fileTypeBits (
+            InodeContent.Directory
+                {
+                    Entries = Map.empty
+                    Parent = InodeNumber 1L
+                    Permissions = PermissionBits.defaultForDirectory
+                }
+        )
+        |> shouldEqual (ofName "S_IFDIR")
+
+        VirtualFileSystem.fileTypeBits (InodeContent.Symlink (SymlinkTarget.parseOrFail "test" "x"))
+        |> shouldEqual (ofName "S_IFLNK")
+
+        // ...and each of them really is inside the band, so that a value that
+        // happened to match a typo'd constant still could not be a plausible
+        // file type.
+        let mask = ofName "S_IFMT"
+
+        for content in
+            [
+                InodeContent.RegularFile (ImmutableArray<byte>.Empty, PermissionBits.defaultForRegularFile)
+                InodeContent.Symlink (SymlinkTarget.parseOrFail "test" "x")
+            ] do
+            let bits = VirtualFileSystem.fileTypeBits content
+            bits &&& mask |> shouldEqual bits

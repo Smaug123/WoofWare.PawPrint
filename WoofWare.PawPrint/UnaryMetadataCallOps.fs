@@ -1401,6 +1401,14 @@ module internal UnaryMetadataCallOps =
                 thread
                 state
         | Some FunctionPointerTarget.RuntimeAllocator -> executeAllocatorCalli ctx callSiteSignature state
+        | Some (FunctionPointerTarget.Dynamic handle) ->
+            // The same boundary `FunctionPointerTarget.requireManaged` enforces on the delegate
+            // path, stated separately because `calli` does not go through it. Reachable in
+            // principle — `Marshal.GetFunctionPointerForDelegate` over a delegate bound to a
+            // dynamic method would hand the guest one of these — and it must fail here rather
+            // than be silently mistaken for some other target.
+            failwith
+                $"calli: the function pointer names %O{handle}; PawPrint can mint and bind a Reflection.Emit method but cannot yet execute one"
         | Some (FunctionPointerTarget.Managed methodToCall) ->
 
         // Slots this call consumes: the callee's declared parameters, plus `this` when the

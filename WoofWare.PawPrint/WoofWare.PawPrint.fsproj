@@ -30,6 +30,7 @@
     <Compile Include="SchedulerState.fs" />
     <Compile Include="FieldId.fs" />
     <Compile Include="ManagedPointerSource.fs" />
+    <Compile Include="DynamicMethodHandle.fs" />
     <Compile Include="NativeIntSource.fs" />
     <Compile Include="PointerHashSynthesis.fs" />
     <Compile Include="NativeIntSourceComparison.fs" />
@@ -85,6 +86,7 @@
     <Compile Include="ExecutionConcretization.fs" />
     <Compile Include="ExceptionDispatching.fs" />
     <Compile Include="ManagedPointerByteView.fs" />
+    <Compile Include="StorageLocation.fs" />
     <Compile Include="BinaryArithmetic.fs" />
     <Compile Include="IntrinsicMethodKeys.fs" />
     <Compile Include="CellAwareMemOps.fs" />
@@ -150,6 +152,7 @@
     <Compile Include="Native\NativeModuleHandle.fs" />
     <!-- After NativeRuntimeTypeHelpers.fs: the CastHelpers QCall formats CoreCLR's
          InvalidCastException message with that module's type-name renderer. -->
+    <Compile Include="Native\NativeDelegate.fs" />
     <Compile Include="Native\NativeCastHelpers.fs" />
     <Compile Include="Native\NativeQCall.fs" />
     <Compile Include="Native\NativeType.fs" />
