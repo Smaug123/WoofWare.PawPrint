@@ -978,8 +978,8 @@ module NativeSystemNative =
                         // Unknown fd: report EBADF the same way `write(2)`
                         // would.
                         -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
-                    | Some entry ->
-                        match entry.Role with
+                    | Some (OpenFileDescription.StandardStream role) ->
+                        match role with
                         | FileDescriptorRole.StandardInput ->
                             // `write(2)` on a read-only fd returns -1 + EBADF
                             // on Linux (the fd's access mode is wrong for the
@@ -987,7 +987,8 @@ module NativeSystemNative =
                             // the shell, so this matches what guests would
                             // observe on the host.
                             -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
-                        | (FileDescriptorRole.StandardOutput | FileDescriptorRole.StandardError) as role ->
+                        | FileDescriptorRole.StandardOutput
+                        | FileDescriptorRole.StandardError ->
                             if bufferSize = 0 then
                                 // `write(fd, _, 0)` is a no-op on every Unix
                                 // we model — no errno, no buffer

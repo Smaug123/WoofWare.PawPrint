@@ -535,6 +535,34 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // Writes through descriptors produced by `dup(2)` and asserts
+                // the bytes land under the role of the *shared* open file
+                // description, not under some default. A wiring regression
+                // that lost the role on the dup path — routing every duped
+                // descriptor to stdout, say — is invisible to the registry's
+                // own property tests, which never reach the Write handler.
+                //
+                // PawPrint-only because OutputLog has no real-runtime
+                // counterpart; the cross-runtime half of this contract is
+                // sourcesPure/SystemNativeDupWrite.cs, which asserts the same
+                // routing through return values without emitting bytes.
+                FileName = "SystemNativeDupWriteRole.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                        |> Seq.toArray
+                        |> shouldEqual [| 0x61uy ; 0x62uy |]
+
+                        OutputLogEntry.bytesFor FileDescriptorRole.StandardError state.Kernel.OutputLog
+                        |> Seq.toArray
+                        |> shouldEqual [| 0x7Auy |]
+                    )
+            }
+            {
                 // Exercises SystemNative_ConvertErrorPlatformToPal, the point
                 // at which PawPrint's raw errno vocabulary becomes the
                 // platform-independent `Interop.Error` CoreLib branches on.
