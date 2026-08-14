@@ -79,31 +79,26 @@ module internal CellAwareMemOps =
         (byteCount : int)
         : bool
         =
-        match
-            StorageLocation.byteLocation baseClassTypes state src,
-            StorageLocation.byteLocation baseClassTypes state dest
-        with
-        | Some (srcStorage, srcOffset), Some (destStorage, destOffset) when srcStorage = destStorage ->
-            srcOffset < destOffset && destOffset < srcOffset + int64 byteCount
-        | Some _, Some _ ->
-            // Distinct flat byte storages — disjoint, no overlap is possible.
+        let verdict =
+            StorageLocation.overlapVerdict
+                (StorageLocation.resolve baseClassTypes state src)
+                (StorageLocation.resolve baseClassTypes state dest)
+                byteCount
+
+        match verdict with
+        | StorageLocation.OverlapVerdict.CopyBackwards -> true
+        | StorageLocation.OverlapVerdict.Undecidable sharedStorage ->
+            // No flat byte offset was derivable for at least one side (e.g. residual
+            // `Field` projections, or a heap-rooted byref), yet the two share root
+            // storage. We cannot determine the safe direction for `Memmove` semantics,
+            // so we fail loud rather than silently picking a forward loop that could
+            // corrupt overlapping writes.
+            failwith
+                $"%s{operation}: cannot determine overlap direction for byrefs sharing storage %A{sharedStorage} (residual projections lack a flat byte offset). src=%O{src}, dest=%O{dest}, byteCount=%d{byteCount}"
+        | StorageLocation.OverlapVerdict.CopyForwards ->
+            // Provably disjoint, or overlapping with `dest` at or before `src`: a forward
+            // loop cannot clobber a byte it has yet to read.
             false
-        | _ ->
-            // `byteLocation` could not compute a precise flat byte offset for
-            // at least one side (e.g. residual `Field` projections, or a
-            // heap-rooted byref). If the byrefs nonetheless share root
-            // storage (flat, heap-allocated, or MT auxiliary cell), we
-            // cannot determine the safe direction for `Memmove` semantics,
-            // so we must fail loud rather than silently picking a forward
-            // loop that could corrupt overlapping writes.
-            match StorageLocation.sharedStorageKey src, StorageLocation.sharedStorageKey dest with
-            | Some s, Some d when s = d ->
-                failwith
-                    $"%s{operation}: cannot determine overlap direction for byrefs sharing storage %A{s} (residual projections lack a flat byte offset). src=%O{src}, dest=%O{dest}, byteCount=%d{byteCount}"
-            | _ ->
-                // Distinct storage discriminators or a non-byref endpoint —
-                // overlap is impossible under the model.
-                false
 
     /// All residual projections must be plain `Field` projections. The
     /// fast-path uses `readManagedByref` on the residual, which dispatches
