@@ -78,22 +78,142 @@ module internal DynamicMethodBody =
                 | other -> failwith $"%s{operation}: expected %s{what}[%d{i}] to be a byte, got %O{other}"
             )
 
-    /// Whether this instruction carries an operand drawn from the method's token universe.
-    ///
-    /// For a dynamic method that universe is the `DynamicScope` attached to the resolver — a
-    /// `List<object?>` handing out operands of the form `index | tokenTypeTag` — and *not* the
-    /// metadata of the assembly the method is scoped to. The two are indistinguishable by
-    /// inspection: a scope operand is a perfectly well-formed `MethodDef`/`TypeDef`/`String`
-    /// token that names an unrelated real row. So a body carrying one cannot be stored until
-    /// those operands can be resolved against the scope, and until then it is refused here
-    /// rather than decoded into something that would silently execute against the wrong rows.
-    let private carriesToken (op : IlOp) : bool =
-        match op with
-        | IlOp.UnaryMetadataToken _
-        | IlOp.UnaryStringToken _ -> true
-        | IlOp.Nullary _
-        | IlOp.UnaryConst _
-        | IlOp.Switch _ -> false
+    /// <summary>
+    /// The entries of the <c>DynamicScope</c> reachable from this resolver: what each one is, so
+    /// the decoder can resolve operands against it, and where the guest object holding it lives,
+    /// so <c>ldstr</c> can intern the right instance.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The scope is <c>List&lt;object?&gt; m_tokens</c> (<c>DynamicILGenerator.cs:972</c>), seeded
+    /// with a single <c>null</c> so that index 0 is never a real entry, and appended to by
+    /// <c>GetTokenFor</c>, which returns <c>m_tokens.Count - 1 ||| tag</c>. Read
+    /// <c>_items[0 .. _size)</c> and not the whole backing array: <c>List</c> over-allocates, and
+    /// the slots past <c>_size</c> hold whatever was last there.
+    /// </para>
+    /// <para>
+    /// Classification is *total*: an entry whose kind PawPrint cannot resolve becomes
+    /// <c>Unsupported</c> rather than an error. That is not leniency, it is required.
+    /// <c>DynamicILGenerator</c>'s constructor calls <c>m_scope.GetTokenFor(methodSignature)</c>
+    /// before any user code runs, so every dynamic method's scope has a signature blob at index 1
+    /// which no instruction ever names — <c>GetCallableMethod</c> reads it out by field. Refusing
+    /// at read time on an unsupported entry would refuse every dynamic method there is, including
+    /// one whose whole body is <c>ldstr; ret</c>.
+    /// </para>
+    /// </remarks>
+    let private readScope
+        (operation : string)
+        (state : IlMachineState)
+        (resolver : AllocatedNonArrayObject)
+        : Map<int, DynamicScopeEntry> * Map<int, ManagedHeapAddress>
+        =
+        let scope =
+            AllocatedNonArrayObject.DereferenceField "m_scope" resolver
+            |> requireObject operation "m_scope" state
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{operation}: the resolver's m_scope is null, but DynamicResolver's constructor assigns it from the ILGenerator's scope"
+            )
+
+        let scopeObj = ManagedHeap.get scope state.ManagedHeap
+
+        let tokens =
+            AllocatedNonArrayObject.DereferenceField "m_tokens" scopeObj
+            |> requireObject operation "m_tokens" state
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{operation}: the scope's m_tokens is null, but DynamicScope initialises it inline with a one-element list"
+            )
+
+        let tokensObj = ManagedHeap.get tokens state.ManagedHeap
+
+        let size =
+            match
+                AllocatedNonArrayObject.DereferenceField "_size" tokensObj
+                |> CliType.unwrapPrimitiveLikeDeep
+            with
+            | CliType.Numeric (CliNumericType.Int32 v) -> v
+            | other -> failwith $"%s{operation}: expected List<object>._size to be an int32, got %O{other}"
+
+        let items =
+            AllocatedNonArrayObject.DereferenceField "_items" tokensObj
+            |> requireObject operation "_items" state
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{operation}: the token list's _items is null, but List<T> assigns it either the shared empty array or a real one"
+            )
+
+        let itemsShape = ManagedHeap.getArrayShape items state.ManagedHeap
+
+        if size < 0 || size > itemsShape.Length then
+            failwith
+                $"%s{operation}: the token list claims %d{size} entries but its backing array holds %d{itemsShape.Length}"
+
+        // Classify on the entry's *type*, not on whether string contents happen to be recorded for
+        // it. The two differ on exactly the case that matters: a `System.String` whose contents
+        // were never recorded is a bug in whatever allocated it, and reading the type first turns
+        // that into a loud failure here instead of a silent demotion to `Unsupported`, which would
+        // surface much later as "this ldstr names a signature blob".
+        // Rendered structurally rather than by handle, because the entries that reach `Unsupported`
+        // are mostly arrays -- the signature blob at index 1 above all -- and a `ConcreteTypeHandle`
+        // renders an array as its element's integer id followed by `[]`, which names nothing a
+        // reader of the failure could act on.
+        let rec describeType (handle : ConcreteTypeHandle) : string =
+            match handle with
+            | ConcreteTypeHandle.Concrete _ ->
+                match AllConcreteTypes.lookup handle state.ConcreteTypes with
+                | Some ty -> $"%s{ty.Namespace}.%s{ty.Name}"
+                | None -> $"an unconcretized type %O{handle}"
+            | ConcreteTypeHandle.OneDimArrayZero element -> $"%s{describeType element}[]"
+            | ConcreteTypeHandle.Array (element, rank) ->
+                let inside = if rank <= 1 then "*" else System.String (',', rank - 1)
+                $"%s{describeType element}[%s{inside}]"
+            | ConcreteTypeHandle.Pointer element -> $"%s{describeType element}*"
+            | ConcreteTypeHandle.Byref element -> $"%s{describeType element}&"
+            | ConcreteTypeHandle.FunctionPointer _ -> $"a function pointer %O{handle}"
+
+        let isString (handle : ConcreteTypeHandle) : bool =
+            match handle with
+            | ConcreteTypeHandle.Concrete _ ->
+                match AllConcreteTypes.lookup handle state.ConcreteTypes with
+                | Some ty -> ty.Namespace = "System" && ty.Name = "String"
+                | None -> false
+            | _ -> false
+
+        let mutable entries = Map.empty
+        let mutable strings = Map.empty
+
+        for i in 0 .. size - 1 do
+            let entry =
+                match
+                    ManagedHeap.getArrayValue items i state.ManagedHeap
+                    |> CliType.unwrapPrimitiveLikeDeep
+                with
+                | CliType.ObjectRef None ->
+                    // Index 0 always. Nothing else should be null, but a null anywhere is simply an
+                    // entry no instruction may name.
+                    DynamicScopeEntry.Unsupported "the null every DynamicScope is seeded with at index 0"
+                | CliType.ObjectRef (Some addr) ->
+                    match ManagedHeap.tryGetObjectConcreteType addr state.ManagedHeap with
+                    | None -> DynamicScopeEntry.Unsupported $"an object at %O{addr} that is not on the heap"
+                    | Some concreteType ->
+                        if isString concreteType then
+                            let contents =
+                                ManagedHeap.getStringContents addr state.ManagedHeap
+                                |> Option.defaultWith (fun () ->
+                                    failwith
+                                        $"%s{operation}: DynamicScope entry %d{i} is a System.String at %O{addr} whose contents were never recorded; every string the guest can hand to ILGenerator.Emit was allocated through allocateManagedString, which records them"
+                                )
+
+                            strings <- Map.add i addr strings
+                            DynamicScopeEntry.String contents
+                        else
+                            DynamicScopeEntry.Unsupported $"a %s{describeType concreteType}"
+                | other -> failwith $"%s{operation}: expected DynamicScope entry %d{i} to be a reference, got %O{other}"
+
+            entries <- Map.add i entry entries
+
+        entries, strings
 
     /// <summary>
     /// The `initLocals` a dynamic method would be compiled with if it were compiled *now*, read
@@ -198,16 +318,15 @@ module internal DynamicMethodBody =
                 failwith
                     $"%s{operation}: the resolver's m_code is null, but DynamicResolver's constructor assigns it from BakeByteArray and DynamicMethod.GetMethodDescriptor refuses an empty ILGenerator before reaching this QCall"
 
-        // Decoded against the scope assembly's name, which is a placeholder and is why the very
-        // next thing done with the result is to refuse any instruction that kept it. Nothing that
-        // claims that universe escapes this function.
-        let instructions = IlDecoding.decodeInstructions scopeAssembly.Name code
+        // Decoded against the scope, not against `scopeAssembly` — that is the whole point. A
+        // token here names an entry in `m_tokens`; decoding it against the assembly's tables would
+        // silently resolve it to an unrelated real row, because the bit patterns are the same.
+        // `scopeAssembly` remains the right universe for the *local signature* below, which
+        // `SignatureHelper` really does spell against a module.
+        let scopeEntries, scopeStrings = readScope operation state obj
 
-        match instructions |> List.tryFind (fst >> carriesToken) with
-        | Some (op, offset) ->
-            failwith
-                $"TODO: %s{operation} was given a dynamic method whose IL carries a token operand (%O{op} at IL_%04x{offset}); those name entries in the method's DynamicScope, not rows in %s{scopeAssembly.Name.Name}, and PawPrint cannot yet resolve them"
-        | None -> ()
+        let instructions =
+            IlDecoding.decodeInstructions (IlTokenUniverse.DynamicScope scopeEntries) code
 
         let localVars =
             match field "m_localSignature" |> requireObject operation "m_localSignature" state with
@@ -222,4 +341,4 @@ module internal DynamicMethodBody =
 
         // No `initLocals` here: it is not knowable yet. `readInitLocals` above answers it, at
         // first execution, and `MethodHandleRegistry.latchInitLocals` fixes it there.
-        MintedDynamicMethodBody.make instructions localVars ImmutableArray.Empty
+        MintedDynamicMethodBody.make instructions localVars ImmutableArray.Empty scopeStrings

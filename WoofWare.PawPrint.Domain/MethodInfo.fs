@@ -937,7 +937,8 @@ module MethodInfo =
                 let s = methodBody.LocalSignature |> metadataReader.GetStandaloneSignature
                 s.DecodeLocalSignature (TypeDefn.typeProvider assembly, ()) |> Some
 
-            let instructions = IlDecoding.decodeInstructions assembly (methodBody.GetILBytes ())
+            let instructions =
+                IlDecoding.decodeInstructions (IlTokenUniverse.Metadata assembly) (methodBody.GetILBytes ())
 
             let er =
                 methodBody.ExceptionRegions

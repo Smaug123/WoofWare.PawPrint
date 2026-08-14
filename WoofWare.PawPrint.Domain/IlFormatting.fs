@@ -413,9 +413,13 @@ module IlFormatting =
         | IlOp.UnaryMetadataToken (op, token) ->
             let tokenStr = formatMetadataToken assembly scope token.Token
             $"    IL_%04X{offset}: %-20O{op} %s{tokenStr}"
-        | IlOp.UnaryStringToken (op, token) ->
+        | IlOp.UnaryStringToken (op, StringOperand.FromMetadata token) ->
             let str = assembly.Strings token.Token |> escapeStringLiteral
             $"    IL_%04X{offset}: %-20O{op} \"%s{str}\""
+        | IlOp.UnaryStringToken (op, StringOperand.FromDynamicScope scopeIndex) ->
+            // No value to show: it lives in the guest heap, which this formatter has no access to,
+            // and is read when the instruction executes rather than when the body was decoded.
+            $"    IL_%04X{offset}: %-20O{op} DynamicScope[%d{scopeIndex}]"
         | _ -> IlOp.Format ilOp offset
 
     /// <remarks>

@@ -442,7 +442,9 @@ module TestContextSwitchPrior =
 
     [<Test>]
     let ``ofIlOp dispatches to unary-string classifier`` () : unit =
-        ContextSwitchPrior.ofIlOp (IlOp.UnaryStringToken (UnaryStringTokenIlOp.Ldstr, stringToken))
+        ContextSwitchPrior.ofIlOp (
+            IlOp.UnaryStringToken (UnaryStringTokenIlOp.Ldstr, StringOperand.FromMetadata stringToken)
+        )
         |> shouldEqual ContextSwitchPrior.InterpreterOnly
 
     [<Test>]
