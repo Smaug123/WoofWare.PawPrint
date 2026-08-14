@@ -49,6 +49,8 @@
     <Compile Include="ManagedHeapTypes.fs" />
     <Compile Include="ManagedHeap.fsi" />
     <Compile Include="ManagedHeap.fs" />
+    <Compile Include="StaticStorage.fsi" />
+    <Compile Include="StaticStorage.fs" />
     <Compile Include="ArrayElementType.fs" />
     <Compile Include="TypeInitialisation.fs" />
     <Compile Include="Exceptions.fs" />

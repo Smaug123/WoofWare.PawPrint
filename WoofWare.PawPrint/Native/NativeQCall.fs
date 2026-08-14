@@ -32,6 +32,7 @@ module NativeQCall =
             NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter"
             "RuntimeTypeHandle_GetActivationInfo",
             NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetActivationInfo"
+            "RuntimeTypeHandle_InternalAlloc", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_InternalAlloc"
             "RuntimeTypeHandle_InternalAllocNoChecks",
             NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_InternalAllocNoChecks"
             "RuntimeTypeHandle_GetConstraints", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetConstraints"
