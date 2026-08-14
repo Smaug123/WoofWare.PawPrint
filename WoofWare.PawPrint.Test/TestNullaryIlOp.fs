@@ -140,6 +140,28 @@ module TestNullaryIlOp =
 
         state, thread
 
+    /// `stateWithNullary`, but for the binary opcodes. `val1` goes on first, so the opcode pops
+    /// `val2` as its right-hand operand — the divisor, for the four divisions.
+    let private stateWithBinary
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (op : NullaryIlOp)
+        (val1 : EvalStackValue)
+        (val2 : EvalStackValue)
+        : IlMachineState * ThreadId
+        =
+        let state, thread = stateWithNullary loggerFactory op val1
+        IlMachineState.pushToEvalStack' val2 thread state, thread
+
+    /// NUnit `TestCase` arguments have to be constants and a `NullaryIlOp` is not one, so the
+    /// division cases name their opcode and resolve it here.
+    let private faultingDivisionOp (name : string) : NullaryIlOp =
+        match name with
+        | "Div" -> NullaryIlOp.Div
+        | "Div_un" -> NullaryIlOp.Div_un
+        | "Rem" -> NullaryIlOp.Rem
+        | "Rem_un" -> NullaryIlOp.Rem_un
+        | other -> failwith $"test bug: %s{other} is not one of the four IL divisions"
+
     let private genNonZeroInt32Bits : Gen<int32> =
         gen {
             let! highBit = ArbMap.defaults |> ArbMap.generate<bool>
@@ -432,6 +454,112 @@ module TestNullaryIlOp =
         if highBitDenominators < 100 || lowBitDenominators < 100 then
             failwith
                 $"Div_un native-int generator was unbalanced: high-bit denominators %d{highBitDenominators}, low-bit denominators %d{lowBitDenominators}"
+
+    /// `div`, `div.un`, `rem` and `rem.un` are the only arithmetic instructions that fault on
+    /// their operands, and a guest can catch what they raise. These four cases pin the mapping
+    /// from the fault to the exception type PawPrint manufactures — the end-to-end guest can only
+    /// see that it caught *a* `DivideByZeroException`, whereas this sees which type PawPrint chose
+    /// to construct, and so it discriminates `rem`'s two faults from each other.
+    [<TestCase("Div", 7, 0, "DivideByZeroException")>]
+    [<TestCase("Div", -2147483648, -1, "OverflowException")>]
+    [<TestCase("Div_un", 7, 0, "DivideByZeroException")>]
+    [<TestCase("Rem", 7, 0, "DivideByZeroException")>]
+    [<TestCase("Rem", -2147483648, -1, "OverflowException")>]
+    [<TestCase("Rem_un", 7, 0, "DivideByZeroException")>]
+    let ``a faulting division raises the exception the CLR would``
+        (opName : string)
+        (numerator : int32)
+        (denominator : int32)
+        (expectedExceptionType : string)
+        : unit
+        =
+        let op = faultingDivisionOp opName
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state, thread =
+            stateWithBinary
+                loggerFactory
+                op
+                (EvalStackValue.Int32 (Int32Source.Verbatim numerator))
+                (EvalStackValue.Int32 (Int32Source.Verbatim denominator))
+
+        let faultingFrame = state.ThreadState.[thread].ActiveMethodState
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread op with
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            let threadState = state.ThreadState.[thread]
+
+            // A ctor frame for the exception must have been pushed on top of the faulting one.
+            threadState.ActiveMethodState |> shouldNotEqual faultingFrame
+
+            let ctor = threadState.MethodState.ExecutingMethod
+            ctor.Name |> shouldEqual ".ctor"
+
+            let declaringType =
+                ctor.TryDeclaringType
+                |> Option.defaultWith (fun () -> failwith $"%s{opName} raised a ctor with no declaring type")
+
+            declaringType.Name |> shouldEqual expectedExceptionType
+            declaringType.Namespace |> shouldEqual "System"
+
+            // Exception dispatch keys handler lookup and the stack-trace frame on the *faulting*
+            // instruction's offset, so the frame that faulted must not have moved on. Nothing a
+            // guest written in C# can observe — Roslyn never emits a division as the last
+            // instruction of a protected region — but the contract `raiseRuntimeException`
+            // documents, and the reason these opcodes cannot share the success path's
+            // `advanceProgramCounter`.
+            let faulted =
+                threadState.MethodStates
+                |> Map.tryFind faultingFrame
+                |> Option.defaultWith (fun () -> failwith $"%s{opName} discarded the faulting frame")
+
+            faulted.IlOpIndex |> shouldEqual 0
+        | other -> failwith $"Expected %s{opName} to step, got %O{other}"
+
+    /// The control for the tests above: these operand pairs do not fault, so the same opcodes must
+    /// take the ordinary path — result pushed, program counter advanced, no frame pushed. Without
+    /// it, a change that raised on *every* division would still satisfy everything above.
+    [<TestCase("Div", 7, 2, 3)>]
+    [<TestCase("Div_un", -1, 2, 2147483647)>]
+    [<TestCase("Rem", 7, 2, 1)>]
+    [<TestCase("Rem_un", -1, 10, 5)>]
+    let ``a division that does not fault takes the ordinary path``
+        (opName : string)
+        (numerator : int32)
+        (denominator : int32)
+        (expected : int32)
+        : unit
+        =
+        let op = faultingDivisionOp opName
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state, thread =
+            stateWithBinary
+                loggerFactory
+                op
+                (EvalStackValue.Int32 (Int32Source.Verbatim numerator))
+                (EvalStackValue.Int32 (Int32Source.Verbatim denominator))
+
+        let executingFrame = state.ThreadState.[thread].ActiveMethodState
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread op with
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            let threadState = state.ThreadState.[thread]
+            threadState.ActiveMethodState |> shouldEqual executingFrame
+
+            match threadState.MethodState.EvaluationStack.Values with
+            | [ EvalStackValue.Int32 (Int32Source.Verbatim actual) ] -> actual |> shouldEqual expected
+            | other -> failwith $"Expected %s{opName} to leave one int32 on the stack, got %O{other}"
+
+            threadState.MethodState.IlOpIndex
+            |> shouldEqual (IlOp.NumberOfBytes (IlOp.Nullary op))
+        | other -> failwith $"Expected %s{opName} to step, got %O{other}"
 
     [<Test>]
     let ``Neg executes unchecked numeric negation`` () : unit =
