@@ -85,6 +85,8 @@
     <Compile Include="TestNativeKernel32.fs" />
     <Compile Include="TestFieldHandleRegistry.fs" />
     <Compile Include="TestNativeMetadataImport.fs" />
+    <Compile Include="TestLocalSignatureDecoding.fs" />
+    <Compile Include="TestMethodSignatureDecoding.fs" />
     <Compile Include="TestNativeSignature.fs" />
     <Compile Include="TestNativeCustomAttribute.fs" />
     <Compile Include="TestManifestResources.fs" />
