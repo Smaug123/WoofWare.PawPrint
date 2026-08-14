@@ -76,6 +76,7 @@ module TypeHandleRegistry =
                 corelib
                 allConcreteTypes
                 runtimeTypeHandle
+                (TypeLayoutKind.applied false corelib.RuntimeType.TypeAttributes)
                 Layout.Default
                 (CharSetMetadata.ofTypeAttributes corelib.RuntimeType.TypeAttributes)
 

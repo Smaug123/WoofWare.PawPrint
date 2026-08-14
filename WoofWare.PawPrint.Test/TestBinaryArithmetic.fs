@@ -1794,7 +1794,7 @@ module TestBinaryArithmetic =
             }
 
         [ field "A" a ; field "B" b ]
-        |> CliValueType.OfFields
+        |> SynthesisedLayoutKind.ofFields
             baseClassTypes
             state.ConcreteTypes
             int32Handle
@@ -2037,7 +2037,7 @@ module TestBinaryArithmetic =
                     MarshallingDescriptor = None
                 }
             ]
-            |> CliValueType.OfFields
+            |> SynthesisedLayoutKind.ofFields
                 baseClassTypes
                 state.ConcreteTypes
                 int32Handle

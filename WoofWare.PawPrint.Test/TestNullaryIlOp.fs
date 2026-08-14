@@ -1984,7 +1984,7 @@ module TestNullaryIlOp =
                 MarshallingDescriptor = None
             }
             |> List.singleton
-            |> CliValueType.OfFields baseClassTypes concreteTypes intPtrHandle Layout.Default CharSet.Ansi
+            |> SynthesisedLayoutKind.ofFields baseClassTypes concreteTypes intPtrHandle Layout.Default CharSet.Ansi
             |> CliType.ValueType
 
         match cell with

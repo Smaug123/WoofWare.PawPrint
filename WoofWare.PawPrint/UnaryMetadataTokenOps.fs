@@ -442,6 +442,7 @@ module internal UnaryMetadataTokenOps =
                     baseClassTypes
                     state.ConcreteTypes
                     runtimeTypeHandleHandle
+                    (TypeLayoutKind.applied true baseClassTypes.RuntimeTypeHandle.TypeAttributes)
                     Layout.Default
                     (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeTypeHandle.TypeAttributes)
 
