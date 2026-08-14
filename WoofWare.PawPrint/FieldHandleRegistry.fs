@@ -121,6 +121,7 @@ module FieldHandleRegistry =
                 baseClassTypes
                 allConcreteTypes
                 (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandle)
+                (TypeLayoutKind.applied true baseClassTypes.RuntimeFieldHandle.TypeAttributes)
                 Layout.Default
                 (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeFieldHandle.TypeAttributes)
             |> CliType.ValueType
@@ -159,6 +160,7 @@ module FieldHandleRegistry =
                 baseClassTypes
                 allConcreteTypes
                 (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandleInternal)
+                (TypeLayoutKind.applied true baseClassTypes.RuntimeFieldHandleInternal.TypeAttributes)
                 Layout.Default
                 (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeFieldHandleInternal.TypeAttributes)
             |> CliType.ValueType
@@ -208,6 +210,7 @@ module FieldHandleRegistry =
                 baseClassTypes
                 allConcreteTypes
                 runtimeFieldInfoStubHandle
+                (TypeLayoutKind.applied false baseClassTypes.RuntimeFieldInfoStub.TypeAttributes)
                 Layout.Default
                 (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeFieldInfoStub.TypeAttributes) // explicitly sequential but no custom packing size
 

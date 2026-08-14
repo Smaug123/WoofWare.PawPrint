@@ -89,7 +89,7 @@ module TestMarshalLayout =
     /// A `System.DateTime`-typed field: structurally one `ulong _dateData`, but declared as
     /// corelib's `DateTime`, which is what `IsHostKnownDateTime` keys on.
     let private dateTimeValue : CliType =
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             dateTimeHandle
@@ -185,7 +185,7 @@ module TestMarshalLayout =
             ]
 
     let private ofFields (layout : Layout) (fields : CliField list) : CliValueType =
-        CliValueType.OfFields bct allCt declaredHandle layout CharSet.Ansi fields
+        SynthesisedLayoutKind.ofFields bct allCt declaredHandle layout CharSet.Ansi fields
 
     let private layoutOf (layout : Layout) (fields : GeneratedField list) : SizeofResult * MarshalFieldPlacement list =
         let vt = ofFields layout (fields |> List.map _.Field)

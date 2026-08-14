@@ -210,7 +210,12 @@ public class GenericHolder<T>
 
         let contents =
             ([] : CliField list)
-            |> CliValueType.OfFields fixture.BaseClassTypes state.ConcreteTypes objectType Layout.Default CharSet.Ansi
+            |> SynthesisedLayoutKind.ofFields
+                fixture.BaseClassTypes
+                state.ConcreteTypes
+                objectType
+                Layout.Default
+                CharSet.Ansi
 
         IlMachineState.allocateManagedObject objectType contents state
 
@@ -629,7 +634,7 @@ public class GenericHolder<T>
 
         FieldIdentity.cliField runtimeFieldHandleInternalType field handleValue intPtrType
         |> List.singleton
-        |> CliValueType.OfFields
+        |> SynthesisedLayoutKind.ofFields
             fixture.BaseClassTypes
             state.ConcreteTypes
             runtimeFieldHandleInternalType

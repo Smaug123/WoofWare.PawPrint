@@ -134,7 +134,13 @@ module TestEmptyArrayByrefWalks =
         let elementHandle = handleFor baseClassTypes.Byte
 
         let elementZero =
-            CliValueType.OfFields baseClassTypes concreteTypes elementHandle (Layout.Custom (stride, 1)) CharSet.Ansi []
+            SynthesisedLayoutKind.ofFields
+                baseClassTypes
+                concreteTypes
+                elementHandle
+                (Layout.Custom (stride, 1))
+                CharSet.Ansi
+                []
             |> CliType.ValueType
 
         CliType.sizeOf elementZero |> shouldEqual stride

@@ -64,7 +64,7 @@ module TestProjectionByteOffset =
         }
 
     let private ofFields (fields : CliField list) : CliType =
-        CliValueType.OfFields bct allCt declaredHandle Layout.Default CharSet.Ansi fields
+        SynthesisedLayoutKind.ofFields bct allCt declaredHandle Layout.Default CharSet.Ansi fields
         |> CliType.ValueType
 
     /// `struct Elem { byte Tag; Box Payload }`. GC auto-layout promotes the reference, so the real

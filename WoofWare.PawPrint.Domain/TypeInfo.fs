@@ -23,6 +23,66 @@ module CharSetMetadata =
         | TypeAttributes.AutoClass -> CharSet.Auto
         | _ -> CharSet.None
 
+/// Which of CoreCLR's three field-placement algorithms governs a type.
+///
+/// This is the <c>TypeAttributes.LayoutMask</c> classification (ECMA §II.10.1.2), and is a
+/// *different* fact from <c>Layout</c>: that models the <c>ClassLayout</c> metadata table
+/// (<c>Pack</c>/<c>Size</c>) and says nothing about which algorithm reads it. Auto layout reads
+/// neither, so the two must travel together to size a type.
+[<RequireQualifiedAccess>]
+type TypeLayoutKind =
+    /// Fields are placed by `MethodTableBuilder::HandleAutoLayout`: bucketed by size class,
+    /// references first, `Pack` and `Size` both ignored.
+    | Auto
+    /// Fields are placed in declared order, respecting `Pack`, with `Size` as a floor.
+    | Sequential
+    /// Every field carries its own `FieldOffset`.
+    | Explicit
+
+[<RequireQualifiedAccess>]
+module TypeLayoutKind =
+    /// Project a `TypeAttributes` value's `LayoutMask` bits onto the layout kind they denote.
+    /// `LayoutMask = 0x18`; `AutoLayout = 0x00`, `SequentialLayout = 0x08`, `ExplicitLayout = 0x10`.
+    /// The zero-valued bits are AutoLayout by ECMA §II.10.1.2, which is why a type carrying no
+    /// `[StructLayout]` at all — every C# class — reports `Auto`.
+    let ofTypeAttributes (attrs : TypeAttributes) : TypeLayoutKind =
+        match attrs &&& TypeAttributes.LayoutMask with
+        | TypeAttributes.AutoLayout -> TypeLayoutKind.Auto
+        | TypeAttributes.SequentialLayout -> TypeLayoutKind.Sequential
+        | TypeAttributes.ExplicitLayout -> TypeLayoutKind.Explicit
+        | other ->
+            // 0x18 is the one remaining bit pattern, and it is not a legal LayoutMask value.
+            // CoreCLR rejects it at type load: `(dwAttrClass & tdLayoutMask) == tdLayoutMask`
+            // yields `COR_E_TYPELOAD` in `MethodTableBuilder::CreateClass`
+            // (methodtablebuilder.cpp:144). Roslyn cannot emit it; only hand-crafted metadata can.
+            failwith
+                $"TypeLayoutKind.ofTypeAttributes: TypeAttributes.LayoutMask is %O{other}, which is not one of AutoLayout, SequentialLayout or ExplicitLayout (CoreCLR rejects this at type load with COR_E_TYPELOAD)"
+
+    /// The layout kind PawPrint actually *applies* to a type, which for a value type is the
+    /// declared one.
+    ///
+    /// A reference type reports `Sequential` however it was declared — and every C# class is
+    /// declared `Auto`. That is a deliberate restriction, not an oversight: PawPrint flattens a
+    /// reference type's whole base chain into one field list
+    /// (`IlMachineRuntimeMetadata.collectAllInstanceFields`) and lays it out in a single pass,
+    /// whereas CoreCLR lays a parent out first and starts the derived type's own fields after the
+    /// parent's instance size. Running the bucketing algorithm over the flattened list would sort
+    /// inherited fields in among the derived type's own, so honouring the declared kind for a
+    /// reference type would trade one infidelity for another — and for a reference-free derived
+    /// class, today's declared-order placement is frequently the one that matches CoreCLR.
+    /// Reference types therefore keep the promotion rule below and nothing else, until the
+    /// flattening is fixed (issue #994).
+    ///
+    /// Note that this suppresses only the *declared-`Auto`* route into auto layout. The GC
+    /// promotion — a `Sequential` type holding references is laid out by auto layout anyway
+    /// (`PlaceInstanceFields`, methodtablebuilder.cpp:8212) — is a property of the fields rather
+    /// than of the declaration and still applies, which is how reference-containing classes reach
+    /// auto layout today.
+    let applied (isValueType : bool) (attrs : TypeAttributes) : TypeLayoutKind =
+        match ofTypeAttributes attrs with
+        | TypeLayoutKind.Auto when not isValueType -> TypeLayoutKind.Sequential
+        | kind -> kind
+
 [<RequireQualifiedAccess>]
 type BaseTypeInfo =
     | TypeDef of TypeDefinitionHandle

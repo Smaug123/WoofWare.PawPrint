@@ -482,6 +482,9 @@ public static class Entry
                 baseClassTypes
                 state.ConcreteTypes
                 handle
+                (TypeLayoutKind.applied
+                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
+                    typeInfo.TypeAttributes)
                 typeInfo.Layout
                 (CharSetMetadata.ofTypeAttributes typeInfo.TypeAttributes)
                 allFields

@@ -1314,6 +1314,9 @@ module ExceptionDispatching =
                 baseClassTypes
                 state.ConcreteTypes
                 exnHandle
+                (TypeLayoutKind.applied
+                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies exceptionTypeInfo)
+                    exceptionTypeInfo.TypeAttributes)
                 exceptionTypeInfo.Layout
                 (CharSetMetadata.ofTypeAttributes exceptionTypeInfo.TypeAttributes)
                 allFields
