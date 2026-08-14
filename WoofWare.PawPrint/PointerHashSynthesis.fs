@@ -160,6 +160,18 @@ module PointerHashSynthesis =
             )
         | NativeIntSource.FunctionPointer FunctionPointerTarget.RuntimeAllocator ->
             CanonicalPointerKey.RuntimeAllocatorFunctionPointer
+        | NativeIntSource.FunctionPointer (FunctionPointerTarget.Dynamic handle) ->
+            // Same reasoning as the synthesised-method refusal above, though for a different
+            // reason: a dynamic method *has* an identity to key on (its registry id, which is the
+            // whole payload), so `CanonicalPointerKey.DynamicMethodFunctionPointer of int64` would
+            // be a five-line addition. It is not here because nothing consumes it. The only guest
+            // path that reads a bound dynamic method's `_methodPtr` is `Delegate.Equals`
+            // (Delegate.CoreCLR.cs:96), whose `_methodPtr == d._methodPtr` is a `ceq` over native
+            // ints, which `NativeIntSourceComparison.equalsForCli` answers structurally through
+            // `FunctionPointerTarget.Equals` without materialising any bits at all. Minting bits
+            // now would be committing to keeping them stable for a consumer that does not exist.
+            failwith
+                $"PointerHashSynthesis.canonicalKey: %O{handle} has no synthesised address bits; nothing hashes or does arithmetic on a dynamic method's code address today, so widening CanonicalPointerKey is work for whichever consumer first needs it"
         | NativeIntSource.MethodHandlePtr id -> CanonicalPointerKey.MethodHandle id
         | NativeIntSource.FieldHandlePtr id -> CanonicalPointerKey.FieldHandle id
         // The canonical key is the handle's *identity*; its tag bits are a view

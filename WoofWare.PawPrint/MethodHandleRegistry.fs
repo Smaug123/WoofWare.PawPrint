@@ -21,29 +21,6 @@ type MetadataMethodIdentity =
     member this.GetMethodDefinitionHandle () : ComparableMethodDefinitionHandle = this.MethodDefinition
     member this.GetMethodGenerics () : ConcreteTypeHandle list = this.MethodGenerics
 
-/// The identity of a method minted at runtime by `Reflection.Emit` rather than read out of any
-/// assembly's metadata: CoreCLR's `DynamicMethodDesc`, which is exactly what
-/// `MethodDesc::IsNoMetadata()` answers `true` for.
-///
-/// The payload is deliberately nothing but the registry id. Two `DynamicMethod`s built with the
-/// same name, the same signature and the same module are *different methods*, and CoreCLR's
-/// identity for one is its `DynamicMethodDesc`'s address: distinct for any two methods that are
-/// live at once, though `DynamicMethodTable::GetDynamicMethod` (dynamicmethod.cpp:218) recycles a
-/// desc off its free list once the method it belonged to has died, so an address can be reused
-/// across generations. PawPrint never frees, so a monotone counter is the faithful projection of
-/// that. Either way nothing descriptive may participate in equality here, or two distinct dynamic
-/// methods would collide in the registry's maps. What the method is called, and what its signature
-/// says, live in `MethodHandleRegistry.DynamicMethods` keyed by this.
-type DynamicMethodHandle =
-    private
-        {
-            RegistryId : int64
-        }
-
-    member this.GetRegistryId () : int64 = this.RegistryId
-
-    override this.ToString () : string = $"dynamic method #%d{this.RegistryId}"
-
 /// Everything `ModuleHandle_GetDynamicMethod` (runtimehandles.cpp:2388) was told about a dynamic
 /// method: the name and signature blob CoreCLR copies onto the loader heap beside the fresh
 /// `DynamicMethodDesc`, the module the method is scoped to, and the managed `DynamicResolver` it
@@ -446,11 +423,7 @@ module MethodHandleRegistry =
         =
         let registryId = reg.NextHandle
 
-        let dynamicHandle =
-            {
-                RegistryId = registryId
-            }
-            : DynamicMethodHandle
+        let dynamicHandle = DynamicMethodHandle.ofRegistryId registryId
 
         let definition =
             {
