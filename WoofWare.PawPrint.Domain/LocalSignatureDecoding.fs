@@ -52,7 +52,7 @@ module LocalSignatureDecoding =
         // `SignatureHelper.GetLocalVarSigHelper()` whether or not `DeclareLocal` is ever called,
         // and `InternalGetSignatureArray` then writes a count of zero — so it is the common case
         // rather than a malformed one. Read the count first and answer it here.
-        let localCount =
+        let localCount, bytesAfterCount =
             let mutable probe : BlobReader = BlobReader (bytes, blob.Length)
             let header = probe.ReadSignatureHeader ()
 
@@ -60,7 +60,18 @@ module LocalSignatureDecoding =
                 failwith
                     $"expected a local variable signature (LOCAL_SIG, 0x07), but the blob's calling convention is %O{header.Kind}"
 
-            probe.ReadCompressedInteger ()
+            let localCount = probe.ReadCompressedInteger ()
+            localCount, probe.RemainingBytes
+
+        // Diagnosability, not safety: `SignatureDecoder` refuses an absurd declared count promptly
+        // and without a large allocation, but it refuses it with a bare `BadImageFormatException`,
+        // which the catch below reports as the likely `ELEMENT_TYPE_INTERNAL` cause -- pointing at
+        // a missing encoding when the blob is merely truncated. Every local occupies at least one
+        // byte, so the count can never exceed what is left to spell them in, and saying so here
+        // names the real problem. Same reasoning as `MethodSignatureDecoding`'s parameter bound.
+        if localCount > bytesAfterCount then
+            failwith
+                $"local variable signature blob declares %d{localCount} local(s) but has only %d{bytesAfterCount} byte(s) left to spell them in; it is truncated or corrupt"
 
         if localCount = 0 then
             ImmutableArray.Empty
@@ -74,20 +85,4 @@ module LocalSignatureDecoding =
         try
             decoder.DecodeLocalSignature &reader
         with :? BadImageFormatException as e ->
-            // The overwhelmingly likely cause, and the one worth naming, is a signature built by
-            // `SignatureHelper` with no module to spell types against: `AddOneArgTypeHelper` then
-            // takes its `m_module == null` branch and emits `ELEMENT_TYPE_INTERNAL` (0x21)
-            // followed by the raw bytes of the type's handle, which is not a signature element
-            // `MetadataReader` knows how to read. That encoding is a separate piece of work; see
-            // "Prerequisites that are not emit" in the Reflection.Emit tracking issue.
-            //
-            // Deliberately not narrowed to "the blob contains a 0x21 byte": 0x21 is also a
-            // perfectly ordinary payload byte inside a compressed integer or a type name, so such
-            // a test would be wrong in both directions. A genuinely malformed blob gets this
-            // message too, which is why it is phrased as the likely cause rather than the finding.
-            raise (
-                Exception (
-                    "could not decode a local variable signature blob. If it came from a DynamicMethod, the likely cause is ELEMENT_TYPE_INTERNAL (0x21), which SignatureHelper emits for any type that is not one of the primitives, object or string, and which PawPrint cannot yet read.",
-                    e
-                )
-            )
+            SignatureBlobDecoding.reraiseAsUndecodable "local variable signature blob" e
