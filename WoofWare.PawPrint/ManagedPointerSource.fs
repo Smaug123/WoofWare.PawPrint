@@ -1021,7 +1021,7 @@ module ManagedPointerSource =
     /// address-preserving in that case. A trailing `ByteOffset` DOES change the
     /// byte address and is preserved; a trailing `ByteOffset 0` is stripped as a
     /// no-op, and the reinterpret it qualified then becomes strippable.
-    let stripTrailingReinterprets (src : NormalisedManagedPointerSource) : ManagedPointerSource =
+    let private stripTrailingReinterprets (src : NormalisedManagedPointerSource) : ManagedPointerSource =
         let (NormalisedManagedPointerSource src) = src
         stripTrailingReinterpretsRaw src
 
@@ -1032,7 +1032,7 @@ module ManagedPointerSource =
     /// projection chains — and we don't yet model that. Callers that compare
     /// byrefs structurally use this to refuse the comparison rather than
     /// silently returning a potentially-wrong answer.
-    let hasNonTrailingReinterpret (src : NormalisedManagedPointerSource) : bool =
+    let private hasNonTrailingReinterpret (src : NormalisedManagedPointerSource) : bool =
         let (NormalisedManagedPointerSource src) = src
 
         match src with
@@ -1056,6 +1056,179 @@ module ManagedPointerSource =
                 | _ -> false
             )
 
+    /// Drop the longest common prefix of two projection chains, returning what is
+    /// left of each.
+    let rec private stripCommonProjectionPrefix
+        (xs : ByrefProjection list)
+        (ys : ByrefProjection list)
+        : ByrefProjection list * ByrefProjection list
+        =
+        match xs, ys with
+        | x :: xs', y :: ys' when x = y -> stripCommonProjectionPrefix xs' ys'
+        | _ -> xs, ys
+
+    /// Does this run of projections contain a `Field` step, whose byte offset is a
+    /// layout fact that byref comparison does not carry?
+    let private containsField : ByrefProjection list -> bool =
+        List.exists (fun p ->
+            match p with
+            | ByrefProjection.Field _ -> true
+            | ByrefProjection.ReinterpretAs _
+            | ByrefProjection.ByteOffset _ -> false
+        )
+
+    /// The byte displacement this run contributes that comparison *can* see.
+    /// `ReinterpretAs` is address-preserving and contributes nothing; `Field` steps
+    /// contribute an unknown non-negative amount and are counted by `containsField`
+    /// instead.
+    let private knownByteDisplacement (projs : ByrefProjection list) : int =
+        projs
+        |> List.sumBy (fun p ->
+            match p with
+            | ByrefProjection.ByteOffset n -> n
+            | ByrefProjection.Field _
+            | ByrefProjection.ReinterpretAs _ -> 0
+        )
+
+    /// What, if anything, bounds a byte cursor sitting on this root — that is, what stops a
+    /// `ByteOffset` in the chain from having carried the byref clean out of the storage its
+    /// root names and into somebody else's.
+    ///
+    /// This is a statement about *extent*, not about normalisation, and each case must say
+    /// which one it is. Getting that wrong is how `PeByteRange` came to be refused: it was
+    /// grouped with the roots that have no stride to fold against, on the strength of a
+    /// predicate named after folding, when in fact it carries its own size.
+    [<RequireQualifiedAccess>]
+    type private RootCursorBound =
+        /// The root carries its own index (element, character, byte) and
+        /// `normaliseTrailingByteOffset` folds whole strides of a cursor into it — the roots
+        /// with a fixed cell size, listed by `tryGetCellSize` at each of the
+        /// `normalise*ByteOffset` helpers above, which this must be kept in step with. What
+        /// survives folding is a residual *within* one cell.
+        ///
+        /// Note precisely what that does and does not give us. The residual is bounded by the
+        /// cell; the folded index is *not* bounded by the allocation, because nothing checks
+        /// it against the array's length. So `Unsafe.Add (ref a[0], 1_000_000)` still yields
+        /// an `ArrayElement` root this treats as disjoint from every other root — the LLVM
+        /// answer, in a place where the rest of this rule takes CompCert's. Constructing such
+        /// a byref is undefined behaviour in .NET, and bounding it would need each
+        /// allocation's extent, which byref comparison does not carry; so it is left, named
+        /// rather than papered over.
+        | ResidualWithinCell
+        /// The root names a byte range whose size it carries, so a cursor is inside the root
+        /// exactly when it lands within that size. `PeByteRange` is the case: a `u8` literal
+        /// or a field-RVA blob knows how long it is.
+        | WithinKnownSize of size : int
+        /// Nothing bounds a cursor on this root: no stride to fold against, and no size to
+        /// check against either.
+        | Unbounded
+
+    let private rootCursorBound (root : ByrefRoot) : RootCursorBound =
+        match root with
+        | ByrefRoot.ArrayElement _
+        | ByrefRoot.StringCharAt _
+        | ByrefRoot.StackMemoryByte _
+        | ByrefRoot.NativeMemoryByte _ -> RootCursorBound.ResidualWithinCell
+        | ByrefRoot.PeByteRange range -> RootCursorBound.WithinKnownSize range.Size
+        | ByrefRoot.LocalVariable _
+        | ByrefRoot.Argument _
+        | ByrefRoot.HeapValue _
+        | ByrefRoot.HeapObjectField _
+        | ByrefRoot.StaticField _
+        | ByrefRoot.ExposedClassObject _ -> RootCursorBound.Unbounded
+
+    /// Could this run of projections have moved the byref outside the extent of the root it
+    /// names?
+    ///
+    /// Only a byte cursor can. Selecting a `Field` navigates *into* the current value and so
+    /// stays within the root however the type is laid out — that a field's offset is unknown
+    /// makes two chains under **one** root hard to compare, but it cannot carry either of
+    /// them out of the root. A `ReinterpretAs` changes the type view without moving at all.
+    ///
+    /// A cursor applied *after* a `Field`, though, starts from an offset this comparison
+    /// cannot see, so it cannot be placed within the root whatever the root is: that is how
+    /// `a[0].Y` advanced four bytes reaches `a[1]`.
+    ///
+    /// For an `Unbounded` root any non-zero cursor is unbounded, and that is not a
+    /// hypothetical: `Unsafe.AddByteOffset` applies to a `LocalVariable` root with no
+    /// special-casing, and `Byref (local 0, [ReinterpretAs byte; ByteOffset 1000])` against
+    /// `Byref (local 1, [])` was measured *answering* `false` while the predicate here still
+    /// justified itself by folding that had never happened.
+    ///
+    /// Whether such a pair should be answered at all is a genuine policy question rather than
+    /// a fact: ECMA-335 promises no relative address between two independently declared
+    /// locals, so a real JIT could place them any distance apart. LLVM's alias analysis
+    /// assumes distinct identified objects never alias however the arithmetic goes; CompCert
+    /// declines to compare pointers from different blocks. This takes CompCert's side, per
+    /// this project's preference for crashing over quiet divergence. Note that a root which
+    /// knows its own size poses no such question — "did this cursor stay inside" is then a
+    /// fact, and answering it is not a policy choice.
+    ///
+    /// This is what makes root disjointness insufficient on its own: two byrefs on different
+    /// roots are different addresses only while each stays within the root it started from.
+    let private mayLeaveRootExtent (root : ByrefRoot) (projs : ByrefProjection list) : bool =
+        // Canonically there is at most one `ByteOffset` and it is last — `appendProjection`
+        // coalesces adjacent offsets, so a second one cannot arrive without an intervening
+        // `Field`, and such a chain carries a non-trailing `ReinterpretAs` that `ceqNormalised`
+        // has already refused above. So this sum is that single cursor.
+        //
+        // It is written as a sum anyway, because it is the *total* displacement that decides
+        // whether the root's extent was left, and testing each step in turn gets that wrong:
+        // two offsets each inside a range can sum to one outside it. Note the limit of that
+        // robustness — `knownByteDisplacement` sums with `List.sumBy`, which is unchecked
+        // whatever this file's `open Checked` says, so a chain that really did carry several
+        // offsets would need that made checked before this could be trusted on it.
+        let cursor = knownByteDisplacement projs
+
+        if cursor = 0 then
+            // Nothing displaced it, whatever else the chain navigates through.
+            false
+        elif containsField projs then
+            true
+        else
+            match rootCursorBound root with
+            | RootCursorBound.ResidualWithinCell -> false
+            | RootCursorBound.WithinKnownSize size ->
+                // A cursor landing strictly inside the range is still addressing this root.
+                // One landing exactly at `size` is the range's one-past-the-end address,
+                // which may well be the *next* range's base, so it is not inside.
+                not (cursor > 0 && cursor < size)
+            | RootCursorBound.Unbounded -> true
+
+    /// Whether two byrefs sharing a root name the same address, or `None` when saying
+    /// so would need field-offset layout that byref comparison does not carry.
+    ///
+    /// The residuals are what is left of each chain after their common prefix, so the
+    /// question is only ever whether those two runs displace by the same number of
+    /// bytes. Each run displaces by `knownByteDisplacement` plus, for every `Field`
+    /// step, an unknown but *non-negative* amount — a field lives inside its container.
+    /// That single inequality is what the decidable cases below rest on.
+    let private tryDecideResiduals (rest1 : ByrefProjection list) (rest2 : ByrefProjection list) : bool option =
+        let known1 = knownByteDisplacement rest1
+        let known2 = knownByteDisplacement rest2
+
+        match containsField rest1, containsField rest2 with
+        // Neither side's displacement has an unknown component, so it is simply arithmetic.
+        | false, false -> Some (known1 = known2)
+        // Exactly one side walks through fields, so its displacement is `known + (unknown
+        // >= 0)` while the other's is exactly `known`. The unknown part can only push the
+        // field-walking side further forward, so a known part that already exceeds the other
+        // proves the two differ. Anything else could still land back on the same byte —
+        // `ref a.X` is `ref a` exactly when `X` sits at offset 0, which is the `known1 =
+        // known2 = 0` corner.
+        | true, false -> if known1 > known2 then Some false else None
+        | false, true -> if known2 > known1 then Some false else None
+        | _ ->
+            // Both runs walk through fields. It is tempting to say that two *different*
+            // fields occupy disjoint extents, so the divergence alone proves the addresses
+            // differ — but that is false under explicit layout, where
+            // `[FieldOffset(0)] int A; [FieldOffset(0)] int B;` puts two distinct fields on
+            // one address, and such values stay field-backed rather than becoming byte
+            // ranges. `Unsafe.AreSame(ref u.A, ref u.B)` is `true` on real .NET and was
+            // measured answering `false` here. Nothing short of the declaring type's field
+            // offsets separates that from an ordinary sequential struct, so refuse.
+            None
+
     /// CEQ semantics for two normalised byref sources. Trailing address-
     /// preserving `ReinterpretAs` projections are stripped before comparison,
     /// so `Unsafe.As`-style type-view changes don't break identity. A non-
@@ -1063,6 +1236,11 @@ module ManagedPointerSource =
     /// bytewise layout comparison, which we don't model — fail loudly rather
     /// than silently returning a wrong answer. `context` is folded into the
     /// failure message so callers can identify which boundary refused.
+    ///
+    /// The same applies to any pair whose chains differ in a way that only field-offset
+    /// layout could settle; `tryDecideResiduals` is where that line is drawn. Structural
+    /// inequality is *not* address inequality — two chains reaching one byte by different
+    /// routes are equal — so anything it cannot prove is refused rather than answered.
     let ceqNormalised
         (context : string)
         (p1 : NormalisedManagedPointerSource)
@@ -1076,7 +1254,51 @@ module ManagedPointerSource =
             failwith
                 $"TODO (CEQ): %s{context} with `ReinterpretAs` followed by `Field` needs a bytewise layout comparison; got %O{raw1} vs %O{raw2}"
 
-        stripTrailingReinterprets p1 = stripTrailingReinterprets p2
+        let stripped1 = stripTrailingReinterprets p1
+        let stripped2 = stripTrailingReinterprets p2
+
+        match stripped1, stripped2 with
+        | ManagedPointerSource.Byref (root1, projs1), ManagedPointerSource.Byref (root2, projs2) when root1 = root2 ->
+            let rest1, rest2 = stripCommonProjectionPrefix projs1 projs2
+
+            match tryDecideResiduals rest1 rest2 with
+            | Some answer -> answer
+            | None ->
+                failwith
+                    $"TODO (CEQ): %s{context} compares byrefs whose projection chains differ by field steps, so whether they alias depends on field offsets within their declaring types — layout that byref comparison does not carry. Got %O{raw1} vs %O{raw2}"
+        | ManagedPointerSource.Byref (root1, projs1), ManagedPointerSource.Byref (root2, projs2) when
+            mayLeaveRootExtent root1 projs1 || mayLeaveRootExtent root2 projs2
+            ->
+            // Distinct roots, but at least one byref has been displaced by an amount this
+            // comparison cannot evaluate, so it may have walked clean out of its own root's
+            // extent and into the other's. Measured: for `struct Pair { int X; int Y }` and
+            // `Pair[] a`, a byte view of `a[0].Y` advanced 4 bytes IS `a[1]`, and real .NET
+            // says so — yet the two byrefs keep different `ArrayElement` roots because the
+            // intervening `Field` stops the cursor folding into the index.
+            //
+            // Disjointness of the *roots* — separate locals, distinct array elements,
+            // distinct string characters — says nothing once a projection can leave the
+            // root it started from.
+            failwith
+                $"TODO (CEQ): %s{context} compares byrefs on different roots where at least one carries a byte cursor this comparison cannot place within its root, so it may have left that root's extent; deciding that needs layout this comparison does not carry. Got %O{raw1} vs %O{raw2}"
+        | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (obj1, field1), _),
+          ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (obj2, field2), _) when obj1 = obj2 && field1 <> field2 ->
+            // Undisplaced, but two fields of one heap object are still *different roots* here
+            // — again a statement about how each byref was built, not about where it points.
+            // Under `[StructLayout(LayoutKind.Explicit)]` on a class, two fields share an
+            // address: measured, `Unsafe.AreSame(ref c.A, ref c.B)` for two `[FieldOffset(0)]`
+            // fields is `true` on real .NET and was answering `false` here.
+            failwith
+                $"TODO (CEQ): %s{context} compares byrefs to two fields of one heap object, which alias iff those fields share an offset — layout that byref comparison does not carry. Got %O{raw1} vs %O{raw2}"
+        | _, _ ->
+            // Distinct roots, neither byref displaced from the root it names, and not two
+            // fields of one object. Each byref is then exactly its root's base address, and
+            // those roots are distinct storage: separate locals and arguments are separate
+            // slots, distinct array elements and string characters are disjoint, statics get
+            // a slot each, and a heap allocation has a single object kind so a boxed value
+            // and a class-field byref never name one address. The non-byref sources (`Null`,
+            // bit-pattern placeholders) carry their whole identity in the value itself.
+            stripped1 = stripped2
 
 [<RequireQualifiedAccess>]
 module NormalisedManagedPointerSource =
