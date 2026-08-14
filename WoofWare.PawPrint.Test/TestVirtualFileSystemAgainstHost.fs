@@ -46,6 +46,25 @@ module TestVirtualFileSystemAgainstHost =
     [<Literal>]
     let private F_OK = 0
 
+    /// Which simulated platform this test host actually is, so the model is
+    /// asked to resolve as a kernel of the flavour it is being compared against.
+    ///
+    /// A function rather than a value so that the `failwith` cannot fire during
+    /// module initialisation on a host where every test here `Assert.Ignore`s.
+    /// Only the *flavour* of the result is ever consumed, so `macOsArm64` is the
+    /// right answer on an Intel Mac too.
+    let private hostPlatform () : SimulatedUnixPlatform =
+        if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
+            SimulatedUnixPlatform.macOsArm64
+        elif RuntimeInformation.IsOSPlatform OSPlatform.Linux then
+            SimulatedUnixPlatform.linuxX64
+        else
+            failwith
+                "TestVirtualFileSystemAgainstHost: this host is neither macOS nor Linux, so there is no SimulatedUnixPlatform to compare it against. Every test in this fixture is supposed to Assert.Ignore before reaching here."
+
+    let private limits () : PathLimits =
+        SimulatedUnixPlatform.pathLimits (hostPlatform ())
+
     /// How a path resolution finished, in terms both the model and the kernel
     /// can express without needing `struct stat`.
     [<RequireQualifiedAccess>]
@@ -240,6 +259,7 @@ module TestVirtualFileSystemAgainstHost =
         let resolveDirectory (relative : string) : InodeNumber =
             match
                 VirtualFileSystem.resolveExisting
+                    (limits ())
                     (VirtualFileSystem.root vfs)
                     SymlinkPolicy.Follow
                     (UnixPath.parseOrFail "test" relative)
@@ -303,6 +323,7 @@ module TestVirtualFileSystemAgainstHost =
         // NoFollowFinal — and a trailing separator overrides that on both sides.
         match
             VirtualFileSystem.resolveExisting
+                (limits ())
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.NoFollowFinal
                 (UnixPath.parseOrFail "test" relative)
@@ -345,15 +366,16 @@ module TestVirtualFileSystemAgainstHost =
         n - 1
 
     [<Test>]
-    let ``the traversal bounds bracket this kernel's real symlink limit`` () : unit =
+    let ``pathLimits states this kernel's real symlink limit exactly`` () : unit =
         if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
             Assert.Ignore "This oracle compares against a Unix kernel."
 
-        // Pins the band arithmetic against the kernel rather than against a
-        // header or a recollection. A review of this code claimed macOS fails
-        // at 32 rather than 33; measuring settled it, and this test keeps the
-        // answer from drifting. Runs on whichever platform CI uses, so the two
-        // halves of the band are each pinned somewhere.
+        // Pins `SimulatedUnixPlatform.pathLimits` against the kernel rather than
+        // against a header or a recollection. A review of this code claimed
+        // macOS fails at 32 rather than 33; measuring settled it, and this test
+        // keeps the answer from drifting. macOS locally and Linux in CI, so each
+        // flavour's entry is checked on the machine that can actually falsify
+        // it — and neither rests on my say-so.
         let unique = Guid.NewGuid().ToString "N"
         let root = Path.Combine (Path.GetTempPath (), $"pawprint-loop-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
@@ -366,13 +388,12 @@ module TestVirtualFileSystemAgainstHost =
             limit |> shouldBeGreaterThan 7
             limit |> shouldBeSmallerThan 99
 
-            if limit < VirtualFileSystem.symlinksEveryPlatformAllows then
-                failwith
-                    $"This kernel allows only %d{limit} symlink traversals, but VirtualFileSystem treats up to %d{VirtualFileSystem.symlinksEveryPlatformAllows} as unanimously permitted — so the model would return success where this platform returns ELOOP."
+            let modelled =
+                PathLimits.maxSymlinkTraversals (SimulatedUnixPlatform.pathLimits (hostPlatform ()))
 
-            if limit >= VirtualFileSystem.symlinksNoPlatformAllows then
+            if limit <> modelled then
                 failwith
-                    $"This kernel allows %d{limit} symlink traversals, but VirtualFileSystem treats %d{VirtualFileSystem.symlinksNoPlatformAllows} as unanimously refused — so the model would return ELOOP where this platform succeeds."
+                    $"This kernel resolves a chain of %d{limit} symlinks and refuses %d{limit + 1}, but SimulatedUnixPlatform.pathLimits says %O{hostPlatform ()} permits %d{modelled}. The model would disagree with a real kernel of the flavour it claims to be; %d{limit} is the measured answer."
         finally
             try
                 Directory.Delete (root, true)
