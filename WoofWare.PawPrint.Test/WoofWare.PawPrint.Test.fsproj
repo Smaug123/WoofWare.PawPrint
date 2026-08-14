@@ -61,6 +61,8 @@
     <Compile Include="TestNativeMemoryPool.fs" />
     <Compile Include="TestAbsoluteUnixPath.fs" />
     <Compile Include="TestUnixPath.fs" />
+    <Compile Include="TestVirtualFileSystem.fs" />
+    <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
     <Compile Include="TestRuntimeConfig.fs" />
     <Compile Include="TestDynamicCodeSupport.fs" />
     <Compile Include="TestSwitchIlOp.fs" />
