@@ -20,6 +20,13 @@ module TestVirtualFileSystem =
 
     let private target (s : string) : SymlinkTarget = SymlinkTarget.parseOrFail "test" s
 
+    /// The limits every test here resolves under unless it is specifically about
+    /// the limits themselves. Obtained from a platform rather than constructed,
+    /// so no test can accidentally pin behaviour under a `MAXSYMLINKS` no real
+    /// kernel has; Linux because that is what `KernelConfig` defaults to.
+    let private limits : PathLimits =
+        SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
+
     let private ok (result : Result<'a, UnixError>) : 'a =
         match result with
         | Ok value -> value
@@ -84,7 +91,7 @@ module TestVirtualFileSystem =
         VirtualFileSystem.inodes emptyFs |> Map.count |> shouldEqual 1
 
         // The root's parent is itself, so "/.." is "/".
-        VirtualFileSystem.resolve (rootOf emptyFs) SymlinkPolicy.Follow (path "/..") emptyFs
+        VirtualFileSystem.resolve limits (rootOf emptyFs) SymlinkPolicy.Follow (path "/..") emptyFs
         |> shouldEqual (Ok (ResolvedTarget.Directory (rootOf emptyFs, FinalNavigation.Parent)))
 
     [<Test>]
@@ -92,7 +99,7 @@ module TestVirtualFileSystem =
         // The trap this guards: a walk over zero components would silently mean
         // "the start directory", which is a successful answer to a call every
         // Unix rejects.
-        VirtualFileSystem.resolve (rootOf emptyFs) SymlinkPolicy.Follow UnixPath.empty emptyFs
+        VirtualFileSystem.resolve limits (rootOf emptyFs) SymlinkPolicy.Follow UnixPath.empty emptyFs
         |> shouldEqual (Error UnixError.ENOENT)
 
     [<Test>]
@@ -100,17 +107,17 @@ module TestVirtualFileSystem =
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
         let file =
-            VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
             |> ok
 
-        VirtualFileSystem.resolve file SymlinkPolicy.Follow (path "a") vfs
+        VirtualFileSystem.resolve limits file SymlinkPolicy.Follow (path "a") vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
     [<Test>]
     let ``a path cannot continue through a regular file`` () : unit =
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
-        VirtualFileSystem.resolve (rootOf vfs) SymlinkPolicy.Follow (path "/f/x") vfs
+        VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path "/f/x") vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
     [<Test>]
@@ -119,14 +126,14 @@ module TestVirtualFileSystem =
         // open(O_CREAT) need this state, and only stat turns it into ENOENT.
         let vfs = emptyFs
 
-        VirtualFileSystem.resolve (rootOf vfs) SymlinkPolicy.Follow (path "/nx") vfs
+        VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path "/nx") vfs
         |> shouldEqual (Ok (ResolvedTarget.Entry (rootOf vfs, name "nx", None)))
 
-        VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/nx") vfs
+        VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/nx") vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
         // ...but a free name part-way along is ENOENT even so.
-        VirtualFileSystem.resolve (rootOf vfs) SymlinkPolicy.Follow (path "/nx/y") vfs
+        VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path "/nx/y") vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
     // --------------------------------------------------- the trailing separator
@@ -140,7 +147,7 @@ module TestVirtualFileSystem =
         let vfs = emptyFs
 
         let resolution =
-            VirtualFileSystem.resolveFull (rootOf vfs) SymlinkPolicy.Follow (path "/nx/") vfs
+            VirtualFileSystem.resolveFull limits (rootOf vfs) SymlinkPolicy.Follow (path "/nx/") vfs
             |> ok
 
         resolution.Target
@@ -151,7 +158,7 @@ module TestVirtualFileSystem =
         // Whereas the genuinely-dotted path has no final name at all, which is
         // what makes rmdir able to tell the two apart and report EINVAL.
         let withDot =
-            VirtualFileSystem.resolveFull (rootOf vfs) SymlinkPolicy.Follow (path "/nx/.") vfs
+            VirtualFileSystem.resolveFull limits (rootOf vfs) SymlinkPolicy.Follow (path "/nx/.") vfs
 
         withDot |> shouldEqual (Error UnixError.ENOENT)
 
@@ -160,18 +167,18 @@ module TestVirtualFileSystem =
         // The part of the trailing-separator rule every platform agrees on.
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
-        VirtualFileSystem.resolve (rootOf vfs) SymlinkPolicy.Follow (path "/f/") vfs
+        VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path "/f/") vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
         // Without the separator the same path is perfectly fine.
-        VirtualFileSystem.resolve (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+        VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
         |> shouldEqual (
             Ok (
                 ResolvedTarget.Entry (
                     rootOf vfs,
                     name "f",
                     Some (
-                        VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+                        VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
                         |> ok
                     )
                 )
@@ -185,11 +192,11 @@ module TestVirtualFileSystem =
         let vfs = build [ mkdir (rootOf emptyFs) "d" ; mklink (rootOf emptyFs) "ld" "d" ]
 
         let directory =
-            VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/d") vfs
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/d") vfs
             |> ok
 
         let withSlash =
-            VirtualFileSystem.resolveFull (rootOf vfs) SymlinkPolicy.NoFollowFinal (path "/ld/") vfs
+            VirtualFileSystem.resolveFull limits (rootOf vfs) SymlinkPolicy.NoFollowFinal (path "/ld/") vfs
             |> ok
 
         withSlash.Target
@@ -203,7 +210,7 @@ module TestVirtualFileSystem =
 
         // Without the separator, NoFollowFinal stops at the link itself.
         let link =
-            VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.NoFollowFinal (path "/ld") vfs
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.NoFollowFinal (path "/ld") vfs
             |> ok
 
         match VirtualFileSystem.tryGetContent link vfs with
@@ -216,7 +223,7 @@ module TestVirtualFileSystem =
 
         // "lf" expands to "f/", whose trailing separator now demands that f be
         // a directory. It is not.
-        VirtualFileSystem.resolve (rootOf vfs) SymlinkPolicy.Follow (path "/lf") vfs
+        VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path "/lf") vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
     // ------------------------------------------------------------- symlinks
@@ -227,14 +234,14 @@ module TestVirtualFileSystem =
         // has to hand back the *target's* parent and name.
         let vfs = build [ mklink (rootOf emptyFs) "dang" "nx" ]
 
-        VirtualFileSystem.resolve (rootOf vfs) SymlinkPolicy.Follow (path "/dang") vfs
+        VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path "/dang") vfs
         |> shouldEqual (Ok (ResolvedTarget.Entry (rootOf vfs, name "nx", None)))
 
         // But a dangling link whose target's *parent* is missing is ENOENT,
         // because that failure happens part-way along.
         let vfs = build [ mklink (rootOf emptyFs) "deep" "nx1/nx2" ]
 
-        VirtualFileSystem.resolve (rootOf vfs) SymlinkPolicy.Follow (path "/deep") vfs
+        VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path "/deep") vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
     [<Test>]
@@ -245,7 +252,7 @@ module TestVirtualFileSystem =
                     mkdir (rootOf emptyFs) "a"
                     fun vfs ->
                         let a =
-                            VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/a") vfs
+                            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/a") vfs
                             |> ok
 
                         vfs |> mkfile a "f" |> mklink a "up" "/f2"
@@ -253,10 +260,10 @@ module TestVirtualFileSystem =
                 ]
 
         let f2 =
-            VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/f2") vfs
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/f2") vfs
             |> ok
 
-        VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/a/up") vfs
+        VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/a/up") vfs
         |> shouldEqual (Ok f2)
 
     /// A chain of `length` symlinks ending at a regular file, so that resolving
@@ -272,47 +279,98 @@ module TestVirtualFileSystem =
 
         build steps
 
-    [<Test>]
-    let ``a symlink chain every platform allows resolves`` () : unit =
-        let vfs = symlinkChain VirtualFileSystem.symlinksEveryPlatformAllows
+    /// Both flavours, so neither column of the table rests on the other. These
+    /// come from the platform rather than being written out here, because a
+    /// literal would let this test agree with a wrong `pathLimits`.
+    let private everyFlavour : SimulatedUnixPlatform list =
+        [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ]
 
-        VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
+    [<Test>]
+    let ``forged path limits are refused rather than silently obeyed`` () : unit =
+        // `PathLimits.create` rejects a zero limit, but the type is a struct, so
+        // `Unchecked.defaultof` carries one past the constructor. Left
+        // unchecked, that limit does not crash: it makes the first symlink on
+        // *any* path report ELOOP, which is a plausible-looking answer from a
+        // kernel that cannot exist.
+        let forged = Unchecked.defaultof<PathLimits>
+        let vfs = build [ mkfile (rootOf emptyFs) "f" ; mklink (rootOf emptyFs) "l" "f" ]
+
+        let exn =
+            Assert.Throws<Exception> (fun () ->
+                VirtualFileSystem.resolveExisting forged (rootOf vfs) SymlinkPolicy.Follow (path "/l") vfs
+                |> ignore<Result<InodeNumber, UnixError>>
+            )
+
+        exn.Message |> shouldContainText "no Unix does"
+
+        // ...and it is refused even where no symlink is involved, so that the
+        // guard cannot be satisfied by a check that only runs at a traversal.
+        Assert.Throws<Exception> (fun () ->
+            VirtualFileSystem.resolveExisting forged (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+            |> ignore<Result<InodeNumber, UnixError>>
+        )
+        |> ignore<Exception>
+
+    [<Test>]
+    let ``create refuses a limit no Unix has`` () : unit =
+        Assert.Throws<Exception> (fun () -> PathLimits.create 0 |> ignore<PathLimits>)
+        |> ignore<Exception>
+
+    [<Test>]
+    let ``a symlink chain exactly at a platform's limit resolves`` () : unit =
+        for platform in everyFlavour do
+            let limits = SimulatedUnixPlatform.pathLimits platform
+            let vfs = symlinkChain (PathLimits.maxSymlinkTraversals limits)
+
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
+            |> Result.isOk
+            |> shouldEqual true
+
+    [<Test>]
+    let ``a symlink chain one past a platform's limit is ELOOP`` () : unit =
+        for platform in everyFlavour do
+            let limits = SimulatedUnixPlatform.pathLimits platform
+            let vfs = symlinkChain (PathLimits.maxSymlinkTraversals limits + 1)
+
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
+            |> shouldEqual (Error UnixError.ELOOP)
+
+    [<Test>]
+    let ``the band the two platforms disagree about is answered, each its own way`` () : unit =
+        // The whole point of threading the limit: a chain of 33 to 40 links is
+        // exactly where Linux and macOS differ, and this used to abort the
+        // interpreter rather than choose. Now each platform gets its own answer.
+        let darwin = SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.macOsArm64
+        let linux = SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
+
+        let inBetween = PathLimits.maxSymlinkTraversals darwin + 1
+        inBetween |> shouldBeSmallerThan (PathLimits.maxSymlinkTraversals linux + 1)
+
+        let vfs = symlinkChain inBetween
+
+        VirtualFileSystem.resolveExisting darwin (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
+        |> shouldEqual (Error UnixError.ELOOP)
+
+        VirtualFileSystem.resolveExisting linux (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
         |> Result.isOk
         |> shouldEqual true
 
     [<Test>]
-    let ``a symlink chain no platform allows is ELOOP`` () : unit =
-        let vfs = symlinkChain VirtualFileSystem.symlinksNoPlatformAllows
-
-        VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
-        |> shouldEqual (Error UnixError.ELOOP)
-
-    [<Test>]
-    let ``a symlink chain only some platforms allow crashes rather than choosing`` () : unit =
-        // Linux permits 40 traversals and macOS 32, so anything in between has
-        // two different right answers and PawPrint refuses to pick.
-        for length in
-            [
-                VirtualFileSystem.symlinksEveryPlatformAllows + 1
-                VirtualFileSystem.symlinksNoPlatformAllows - 1
-            ] do
-            let vfs = symlinkChain length
-
-            let exn =
-                Assert.Throws<Exception> (fun () ->
-                    VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
-                    |> ignore<Result<InodeNumber, UnixError>>
-                )
-
-            exn.Message |> shouldContainText "MAXSYMLINKS"
-
-    [<Test>]
-    let ``the divergence crash fires for a failing walk too, not only a succeeding one`` () : unit =
-        // The hole worth guarding: a 35-link chain ending at a missing name
-        // gives ENOENT on Linux and ELOOP on macOS. Once the 33rd traversal has
-        // happened, ELOOP is the only outcome any platform could still agree
-        // on, so ENOENT would be a silent divergence.
-        let length = VirtualFileSystem.symlinksEveryPlatformAllows + 3
+    let ``a chain past the limit is ELOOP even where the walk would have failed anyway`` () : unit =
+        // A chain in the disputed band ending at a *missing* name, so the walk
+        // has two reasons to fail and their order is what is pinned: under macOS
+        // limits the 33rd traversal fails before the missing name is ever looked
+        // up (ELOOP), while under Linux limits the walk reaches it (ENOENT).
+        //
+        // This is the case the deleted `failwith` was guarding, and it is worth
+        // its own test because the limit is easy to apply only on the path where
+        // the walk *succeeds*. It does not distinguish enforcement mid-walk from
+        // enforcement after the fact: the count is monotone, so both answer
+        // ELOOP here. What it does distinguish is a limit that only bounds
+        // successful resolutions.
+        let darwin = SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.macOsArm64
+        let linux = SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
+        let length = PathLimits.maxSymlinkTraversals darwin + 3
 
         let steps =
             [
@@ -323,13 +381,11 @@ module TestVirtualFileSystem =
 
         let vfs = build steps
 
-        let exn =
-            Assert.Throws<Exception> (fun () ->
-                VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
-                |> ignore<Result<InodeNumber, UnixError>>
-            )
+        VirtualFileSystem.resolveExisting darwin (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
+        |> shouldEqual (Error UnixError.ELOOP)
 
-        exn.Message |> shouldContainText "MAXSYMLINKS"
+        VirtualFileSystem.resolveExisting linux (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
+        |> shouldEqual (Error UnixError.ENOENT)
 
     [<Test>]
     let ``a self-extending symlink terminates rather than growing forever`` () : unit =
@@ -338,7 +394,7 @@ module TestVirtualFileSystem =
         // traversal count stops it, which is why there is no seen-state set.
         let vfs = build [ mklink (rootOf emptyFs) "l" "l/x" ]
 
-        VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/l") vfs
+        VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/l") vfs
         |> shouldEqual (Error UnixError.ELOOP)
 
     [<Test>]
@@ -349,7 +405,7 @@ module TestVirtualFileSystem =
         let vfs =
             build [ mklink (rootOf emptyFs) "a" "b" ; mklink (rootOf emptyFs) "b" "a" ]
 
-        VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/a") vfs
+        VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/a") vfs
         |> shouldEqual (Error UnixError.ELOOP)
 
     [<Test>]
@@ -361,7 +417,7 @@ module TestVirtualFileSystem =
         let vfs = build [ mklink (rootOf emptyFs) "l" raw ]
 
         let link =
-            VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.NoFollowFinal (path "/l") vfs
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.NoFollowFinal (path "/l") vfs
             |> ok
 
         match VirtualFileSystem.tryGetContent link vfs with
@@ -397,7 +453,7 @@ module TestVirtualFileSystem =
                 ]
 
         let reachedBy (candidate : string) =
-            match VirtualFileSystem.resolve (rootOf vfs) SymlinkPolicy.NoFollowFinal (path candidate) vfs with
+            match VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.NoFollowFinal (path candidate) vfs with
             | Ok (ResolvedTarget.Directory (_, reachedBy)) -> reachedBy
             | other -> failwith $"expected a navigation-final directory, got %A{other}"
 
@@ -425,11 +481,11 @@ module TestVirtualFileSystem =
         let root = rootOf vfs
 
         let file =
-            VirtualFileSystem.resolveExisting root SymlinkPolicy.Follow (path "/f") vfs
+            VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow (path "/f") vfs
             |> ok
 
         let directory =
-            VirtualFileSystem.resolveExisting root SymlinkPolicy.Follow (path "/d") vfs
+            VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow (path "/d") vfs
             |> ok
 
         VirtualFileSystem.createDirectory root (name "d") dirPerms buildTime vfs
@@ -450,7 +506,7 @@ module TestVirtualFileSystem =
         let linked = VirtualFileSystem.hardLink root (name "f2") file buildTime vfs |> ok
         VirtualFileSystem.checkInvariants linked |> shouldEqual []
 
-        VirtualFileSystem.resolveExisting root SymlinkPolicy.Follow (path "/f2") linked
+        VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow (path "/f2") linked
         |> shouldEqual (Ok file)
 
     [<Test>]
@@ -507,7 +563,7 @@ module TestVirtualFileSystem =
                     mkdir (rootOf emptyFs) "a"
                     fun vfs ->
                         let a =
-                            VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/a") vfs
+                            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/a") vfs
                             |> ok
 
                         vfs |> mkdir a "b" |> mkfile a "f"
@@ -520,6 +576,7 @@ module TestVirtualFileSystem =
                 | None -> failwith $"no path for directory %O{inode} in a sound filesystem"
                 | Some absolute ->
                     VirtualFileSystem.resolveExisting
+                        limits
                         (rootOf vfs)
                         SymlinkPolicy.Follow
                         (UnixPath.ofAbsolute absolute)
@@ -874,6 +931,7 @@ module TestVirtualFileSystem =
                         // ResolvedTarget.Directory, and pathOfDirectory names
                         // every directory but the root.
                         VirtualFileSystem.resolveExisting
+                            limits
                             (rootOf vfs)
                             SymlinkPolicy.Follow
                             (UnixPath.ofAbsolute absolute)
@@ -913,7 +971,7 @@ module TestVirtualFileSystem =
 
         let property (vfs : VirtualFileSystem, candidate : string) : unit =
             for policy in [ SymlinkPolicy.Follow ; SymlinkPolicy.NoFollowFinal ] do
-                VirtualFileSystem.resolveFull (rootOf vfs) policy (path candidate) vfs
+                VirtualFileSystem.resolveFull limits (rootOf vfs) policy (path candidate) vfs
                 |> ignore<Result<Resolution, UnixError>>
 
         Check.One (config, Prop.forAll (Arb.fromGen (Gen.zip filesystemGen pathGen)) property)
@@ -924,10 +982,10 @@ module TestVirtualFileSystem =
 
         let property (vfs : VirtualFileSystem, candidate : string) : unit =
             let full =
-                VirtualFileSystem.resolve (rootOf vfs) SymlinkPolicy.Follow (path candidate) vfs
+                VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path candidate) vfs
 
             let existing =
-                VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path candidate) vfs
+                VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path candidate) vfs
 
             match full, existing with
             | Ok (ResolvedTarget.Directory (a, _)), Ok b -> b |> shouldEqual a
@@ -1034,7 +1092,7 @@ module TestVirtualFileSystem =
 
         let permissionsOf (p : string) : InodePermissions =
             let inode =
-                VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.NoFollowFinal (path p) vfs
+                VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.NoFollowFinal (path p) vfs
                 |> ok
 
             match VirtualFileSystem.tryGet inode vfs with
@@ -1055,7 +1113,7 @@ module TestVirtualFileSystem =
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
         let file =
-            VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
             |> ok
 
         timesOf file vfs |> shouldEqual (InodeTimes.createdAt buildTime)
@@ -1096,7 +1154,7 @@ module TestVirtualFileSystem =
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
         let file =
-            VirtualFileSystem.resolveExisting (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
             |> ok
 
         let linked =

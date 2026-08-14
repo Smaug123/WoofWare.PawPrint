@@ -240,6 +240,51 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // Pins the emulated kernel's MAXSYMLINKS end to end, which is
+                // the one part of `pathLimits` that unit tests cannot reach:
+                // they call the resolver directly, so a `resolveGuestPath` that
+                // hardcoded a platform would satisfy every one of them.
+                //
+                // Impure because its subject is a 33-link chain — precisely the
+                // length Linux resolves and macOS refuses — so it is not a
+                // cross-runtime fact and must not be handed to the oracle.
+                FileName = "SymlinkLimitSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        FileSystem =
+                            let name (s : string) = FileName.parseOrFail "test seed" s
+                            let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
+
+                            /// A chain of `length` links under `prefix`, ending
+                            /// at a regular file, so resolving its head performs
+                            /// exactly `length` traversals.
+                            let chain (prefix : string) (length : int) =
+                                [
+                                    for i in 1..length do
+                                        let next =
+                                            if i = length then
+                                                $"%s{prefix}target"
+                                            else
+                                                $"%s{prefix}%d{i + 1}"
+
+                                        yield name $"%s{prefix}%d{i}", SeedEntry.Symlink (target next)
+
+                                    yield name $"%s{prefix}target", SeedEntry.File ImmutableArray<byte>.Empty
+                                ]
+
+                            // 32 is below every platform's limit, 41 above every
+                            // platform's limit, and 33 is the disputed band.
+                            // Written as literals rather than derived from
+                            // `pathLimits`, so that this test disagrees with a
+                            // wrong `pathLimits` instead of agreeing with it.
+                            [ chain "a" 32 ; chain "b" 33 ; chain "c" 41 ] |> List.concat |> Map.ofList
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The motivating case for host-seeded AppContext: a BCL feature switch,
                 // declared in `runtimeconfig.json` and latched by `EventSource` on first
                 // read. Impure for the same reason as the case below.
