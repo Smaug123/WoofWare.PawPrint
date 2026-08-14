@@ -62,18 +62,15 @@ type IlMachineState =
         EntryAssembly : AssemblyName
         /// Tracks initialization state of types across assemblies
         TypeInitTable : TypeInitTable
-        /// For each static-storage owner, then for each concrete type, a map of field definition
-        /// handle to static value.
-        /// The FieldDefinitionHandle is scoped to the assembly that defines the outer ConcreteTypeHandle's type;
-        /// do not mix handles from different assemblies under the same key.
-        /// An ordinary static lives under `StaticOwner.Shared`; a `[ThreadStatic]` field lives
-        /// under `StaticOwner.OwnedBy` of each thread that has touched it, and a thread that has
-        /// not touched it simply misses, which is how zero-initialisation stays lazy.
-        _Statics :
-            ImmutableDictionary<
-                StaticOwner,
-                ImmutableDictionary<ConcreteTypeHandle, Map<ComparableFieldDefinitionHandle, CliType>>
-             >
+        /// The guest's static fields. An ordinary static lives under `StaticOwner.Shared`; a
+        /// `[ThreadStatic]` field lives under `StaticOwner.OwnedBy` of each thread that has
+        /// touched it, and a thread that has not touched it simply misses, which is how
+        /// zero-initialisation stays lazy.
+        ///
+        /// Reachable only through `StaticStorage.get` / `set` — see that signature file for
+        /// why the representation is sealed. Go through `IlMachineState.getStatic` /
+        /// `setStatic` rather than unpicking this field directly.
+        Statics : StaticStorage
         DotnetRuntimeDirs : string ImmutableArray
         TypeHandles : TypeHandleRegistry
         GcHandles : GcHandleRegistry
