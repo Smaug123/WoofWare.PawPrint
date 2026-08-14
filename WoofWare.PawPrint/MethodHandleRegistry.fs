@@ -240,9 +240,7 @@ module MethodHandleRegistry =
             baseClassTypes
             allConcreteTypes
             (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeMethodHandleInternal)
-            (TypeLayoutKind.applied true baseClassTypes.RuntimeMethodHandleInternal.TypeAttributes)
-            Layout.Default
-            (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeMethodHandleInternal.TypeAttributes)
+            (DeclaredTypeFacts.ofCorelibType baseClassTypes baseClassTypes.RuntimeMethodHandleInternal)
 
     /// Construct the `MethodHandle` that identifies an open method declared on `declaringType`.
     /// Callers in the introduced-method iterator path use this rather than going through
@@ -459,9 +457,7 @@ module MethodHandleRegistry =
             baseClassTypes
             allConcreteTypes
             runtimeMethodInfoStubHandle
-            (TypeLayoutKind.applied false baseClassTypes.RuntimeMethodInfoStub.TypeAttributes)
-            Layout.Default
-            (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeMethodInfoStub.TypeAttributes)
+            (DeclaredTypeFacts.ofCorelibType baseClassTypes baseClassTypes.RuntimeMethodInfoStub)
 
     /// Mint a fresh no-metadata method — CoreCLR's `DynamicMethodTable::GetDynamicMethod`
     /// followed by `AllocateStubMethodInfo` — and return the address of the
@@ -600,9 +596,7 @@ module MethodHandleRegistry =
                 baseClassTypes
                 allConcreteTypes
                 (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeMethodHandle)
-                (TypeLayoutKind.applied true baseClassTypes.RuntimeMethodHandle.TypeAttributes)
-                Layout.Default
-                (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeMethodHandle.TypeAttributes)
+                (DeclaredTypeFacts.ofCorelibType baseClassTypes baseClassTypes.RuntimeMethodHandle)
             |> CliType.ValueType
 
         let handle = makeMethodHandle allConcreteTypes method

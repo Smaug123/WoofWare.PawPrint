@@ -55,13 +55,7 @@ module TestEvalStackBoxedPrimitiveView =
             MarshallingDescriptor = field.MarshallingDescriptor
         }
         |> List.singleton
-        |> CliValueType.OfFields
-            bct
-            allCt
-            declared
-            (TypeLayoutKind.applied true ti.TypeAttributes)
-            ti.Layout
-            (CharSetMetadata.ofTypeAttributes ti.TypeAttributes)
+        |> CliValueType.OfFields bct allCt declared (DeclaredTypeFacts.ofTypeInfo bct loaded ti)
 
     /// Every primitive the CLI boxes into a single-field wrapper, paired with the
     /// `PrimitiveType` whose zero is the slot `ldind.<width>` asks the coercion for, and a

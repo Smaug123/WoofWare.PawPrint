@@ -121,9 +121,7 @@ module FieldHandleRegistry =
                 baseClassTypes
                 allConcreteTypes
                 (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandle)
-                (TypeLayoutKind.applied true baseClassTypes.RuntimeFieldHandle.TypeAttributes)
-                Layout.Default
-                (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeFieldHandle.TypeAttributes)
+                (DeclaredTypeFacts.ofCorelibType baseClassTypes baseClassTypes.RuntimeFieldHandle)
             |> CliType.ValueType
 
         let handle =
@@ -160,9 +158,7 @@ module FieldHandleRegistry =
                 baseClassTypes
                 allConcreteTypes
                 (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandleInternal)
-                (TypeLayoutKind.applied true baseClassTypes.RuntimeFieldHandleInternal.TypeAttributes)
-                Layout.Default
-                (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeFieldHandleInternal.TypeAttributes)
+                (DeclaredTypeFacts.ofCorelibType baseClassTypes baseClassTypes.RuntimeFieldHandleInternal)
             |> CliType.ValueType
 
         // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1074
@@ -210,9 +206,7 @@ module FieldHandleRegistry =
                 baseClassTypes
                 allConcreteTypes
                 runtimeFieldInfoStubHandle
-                (TypeLayoutKind.applied false baseClassTypes.RuntimeFieldInfoStub.TypeAttributes)
-                Layout.Default
-                (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeFieldInfoStub.TypeAttributes) // explicitly sequential but no custom packing size
+                (DeclaredTypeFacts.ofCorelibType baseClassTypes baseClassTypes.RuntimeFieldInfoStub) // explicitly sequential but no custom packing size
 
         let alloc, state = allocate runtimeFieldInfoStub allocState
 

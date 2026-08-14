@@ -1314,11 +1314,7 @@ module ExceptionDispatching =
                 baseClassTypes
                 state.ConcreteTypes
                 exnHandle
-                (TypeLayoutKind.applied
-                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies exceptionTypeInfo)
-                    exceptionTypeInfo.TypeAttributes)
-                exceptionTypeInfo.Layout
-                (CharSetMetadata.ofTypeAttributes exceptionTypeInfo.TypeAttributes)
+                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies exceptionTypeInfo)
                 allFields
 
         let addr, state = IlMachineState.allocateManagedObject exnHandle fields state

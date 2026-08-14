@@ -480,11 +480,7 @@ module NativeCustomAttribute =
                         ctx.BaseClassTypes
                         state.ConcreteTypes
                         instantiatedHandle
-                        (TypeLayoutKind.applied
-                            (DumpedAssembly.isValueType ctx.BaseClassTypes state._LoadedAssemblies attrTypeInfo)
-                            attrTypeInfo.TypeAttributes)
-                        attrTypeInfo.Layout
-                        (CharSetMetadata.ofTypeAttributes attrTypeInfo.TypeAttributes)
+                        (DeclaredTypeFacts.ofTypeInfo ctx.BaseClassTypes state._LoadedAssemblies attrTypeInfo)
                         allFields
 
                 let instanceAddr, state =
