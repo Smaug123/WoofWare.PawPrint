@@ -24,6 +24,13 @@ open System.Reflection.Metadata
 /// which is what bakes the IL, via <c>DynamicILGenerator.BakeByteArray</c> — and only then calls
 /// the QCall with it.
 /// </para>
+/// <para>
+/// With exactly one exception, which is why <see cref="readInitLocals"/> is separate from
+/// <see cref="read"/>: <c>initLocals</c> does not live on the resolver at all. It is read back off
+/// the <c>DynamicMethod</c> whenever <c>GetCodeInfo</c> is called, which is at first JIT, and its
+/// setter goes on working until then. Reading it here would capture a value the guest is still
+/// entitled to change.
+/// </para>
 /// </remarks>
 [<RequireQualifiedAccess>]
 module internal DynamicMethodBody =
@@ -88,32 +95,44 @@ module internal DynamicMethodBody =
         | IlOp.UnaryConst _
         | IlOp.Switch _ -> false
 
-    /// Whether this instruction's behaviour depends on `LocalsInit`, which this module can only
-    /// snapshot and not track.
-    ///
-    /// `DynamicMethod.InitLocals` has a public setter and CoreCLR reads it *late*: the QCall only
-    /// installs the resolver, and `GetCodeInfo` — which is what reports `initLocals` — is called
-    /// by `LCGMethodResolver` during the first JIT of the method. So a guest may legally call
-    /// `CreateDelegate`, then assign `InitLocals`, then invoke, and CoreCLR uses the assigned
-    /// value. Reading the field at the QCall, as this module does, captures the earlier one.
-    ///
-    /// `localloc` is the whole of the observable difference: it is the only instruction whose
-    /// execution consults `MethodInstructions.LocalsInit` (`NullaryIlOp.fs`), choosing zeroed over
-    /// uninitialised stack memory. Refusing it here makes the snapshot unobservable rather than
-    /// merely unlikely to be noticed, so the recorded flag cannot be silently wrong.
-    ///
-    /// The refusal should go away with the deferral, not on its own: whoever makes a dynamic
-    /// method executable should read `_initLocals` off `m_method` at first execution — the address
-    /// is reachable from `DynamicMethodDefinition.Resolver` — and drop this check in the same
-    /// change.
-    let private dependsOnLocalsInit (op : IlOp) : bool =
-        match op with
-        | IlOp.Nullary NullaryIlOp.Localloc -> true
-        | IlOp.Nullary _
-        | IlOp.UnaryMetadataToken _
-        | IlOp.UnaryStringToken _
-        | IlOp.UnaryConst _
-        | IlOp.Switch _ -> false
+    /// <summary>
+    /// The `initLocals` a dynamic method would be compiled with if it were compiled *now*, read
+    /// off the `DynamicMethod` the resolver was built for.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is `DynamicResolver.GetCodeInfo`'s `initLocals = (m_method.InitLocals) ? 1 : 0;`
+    /// (`DynamicILGenerator.cs:729`) and nothing else. Everything else that method reports was
+    /// frozen when the resolver was constructed, which is why the rest of this module can run at
+    /// mint time and this cannot: `DynamicMethod.InitLocals`' setter never latches, so the value
+    /// is whatever the guest last assigned.
+    /// </para>
+    /// <para>
+    /// The caller is responsible for latching what this returns
+    /// (`MethodHandleRegistry.latchInitLocals`); on its own this is a plain read of current state,
+    /// and calling it twice around a guest assignment will give two different answers.
+    /// </para>
+    /// </remarks>
+    let readInitLocals (operation : string) (state : IlMachineState) (resolver : ManagedHeapAddress) : bool =
+        let obj = ManagedHeap.get resolver state.ManagedHeap
+
+        let method =
+            AllocatedNonArrayObject.DereferenceField "m_method" obj
+            |> requireObject operation "m_method" state
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{operation}: the resolver's m_method is null, but DynamicResolver's constructor assigns it from the ILGenerator's method builder"
+            )
+
+        let methodObj = ManagedHeap.get method state.ManagedHeap
+
+        match
+            AllocatedNonArrayObject.DereferenceField "_initLocals" methodObj
+            |> CliType.unwrapPrimitiveLikeDeep
+        with
+        | CliType.Numeric (CliNumericType.Int32 v) -> v <> 0
+        | CliType.Bool v -> v <> 0uy
+        | other -> failwith $"%s{operation}: expected DynamicMethod._initLocals to be a bool, got %O{other}"
 
     /// <summary>
     /// The body held by the <c>DynamicResolver</c> at <paramref name="resolver" />.
@@ -128,7 +147,7 @@ module internal DynamicMethodBody =
         (state : IlMachineState)
         (scopeAssembly : DumpedAssembly)
         (resolver : ManagedHeapAddress)
-        : MethodInstructions<TypeDefn>
+        : MintedDynamicMethodBody
         =
         let obj = ManagedHeap.get resolver state.ManagedHeap
 
@@ -190,12 +209,6 @@ module internal DynamicMethodBody =
                 $"TODO: %s{operation} was given a dynamic method whose IL carries a token operand (%O{op} at IL_%04x{offset}); those name entries in the method's DynamicScope, not rows in %s{scopeAssembly.Name.Name}, and PawPrint cannot yet resolve them"
         | None -> ()
 
-        match instructions |> List.tryFind (fst >> dependsOnLocalsInit) with
-        | Some (op, offset) ->
-            failwith
-                $"TODO: %s{operation} was given a dynamic method whose IL contains %O{op} at IL_%04x{offset}, whose behaviour depends on DynamicMethod.InitLocals; that property is settable until the method is first executed, and PawPrint records it once here"
-        | None -> ()
-
         let localVars =
             match field "m_localSignature" |> requireObject operation "m_localSignature" state with
             | Some addr ->
@@ -207,29 +220,6 @@ module internal DynamicMethodBody =
                 failwith
                     $"%s{operation}: the resolver's m_localSignature is null, but DynamicResolver's constructor assigns it from SignatureHelper.InternalGetSignatureArray, which always returns at least the calling-convention byte"
 
-        let initLocals =
-            let method =
-                field "m_method"
-                |> requireObject operation "m_method" state
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"%s{operation}: the resolver's m_method is null, but DynamicResolver's constructor assigns it from the ILGenerator's method builder"
-                )
-
-            let methodObj = ManagedHeap.get method state.ManagedHeap
-
-            match
-                AllocatedNonArrayObject.DereferenceField "_initLocals" methodObj
-                |> CliType.unwrapPrimitiveLikeDeep
-            with
-            | CliType.Numeric (CliNumericType.Int32 v) -> v <> 0
-            | CliType.Bool v -> v <> 0uy
-            | other -> failwith $"%s{operation}: expected DynamicMethod._initLocals to be a bool, got %O{other}"
-
-        {
-            Instructions = instructions
-            Locations = instructions |> List.map (fun (a, b) -> b, a) |> Map.ofList
-            LocalsInit = initLocals
-            LocalVars = localVars
-            ExceptionRegions = ImmutableArray.Empty
-        }
+        // No `initLocals` here: it is not knowable yet. `readInitLocals` above answers it, at
+        // first execution, and `MethodHandleRegistry.latchInitLocals` fixes it there.
+        MintedDynamicMethodBody.make instructions localVars ImmutableArray.Empty

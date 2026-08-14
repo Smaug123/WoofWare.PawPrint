@@ -21,11 +21,13 @@ module ExecutionConcretization =
     /// <c>NativeDelegate</c> performs when it decides whether a delegate may bind at all.
     /// </para>
     /// <para>
-    /// Built at *invocation* rather than at bind time, deliberately. CoreCLR reads a dynamic
-    /// method's <c>initLocals</c> once, at first JIT, and latches it; PawPrint records it when the
-    /// method is minted, which is earlier still, and <c>DynamicMethodBody</c> refuses the one
-    /// instruction that could observe the difference. Building here keeps the shape that a future
-    /// first-execution latch would need, where a bind-time build would have to be undone first.
+    /// Built at *invocation* rather than at bind time, deliberately: CoreCLR reads a dynamic
+    /// method's <c>initLocals</c> once, at first JIT, and latches it, so a method built at
+    /// <c>CreateDelegate</c> would have been built too early to know it. <paramref
+    /// name="localsInit" /> is that latched value, and callers must obtain it from
+    /// <c>MethodHandleRegistry.latchInitLocals</c> rather than by reading the guest's field
+    /// directly -- see <c>DynamicMethodExecution.concretize</c>, which is the entry point that
+    /// does both and which exists so that this pairing cannot be forgotten.
     /// </para>
     /// <para>
     /// No generics, and no `this`: a <c>DynamicMethod</c> is always static and never generic
@@ -39,6 +41,7 @@ module ExecutionConcretization =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (handle : DynamicMethodHandle)
+        (localsInit : bool)
         (state : IlMachineState)
         : IlMachineState * WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         =
@@ -78,7 +81,8 @@ module ExecutionConcretization =
             )
             |> TypeMethodSignature.map state concretise
 
-        let body = definition.GetBody ()
+        let body =
+            definition.GetBody () |> MintedDynamicMethodBody.withLocalsInit localsInit
 
         // The locals were decoded at mint time by `LocalSignatureDecoding`, in the same token
         // universe as the signature; concretise them the same way. `None` means the method

@@ -791,11 +791,17 @@ public static class Entry
         instructions.ExceptionRegions |> Seq.toList |> shouldEqual []
 
     /// `initLocals` is not cosmetic: `MethodInstructions.LocalsInit` is what `localloc` reads to
-    /// choose zero-initialised over uninitialised stack memory. `DynamicMethod.InitLocals` defaults
-    /// to true and is settable, so both values are reachable and both must survive the trip.
+    /// choose zero-initialised over uninitialised stack memory. But minting must not decide it, in
+    /// either direction: `DynamicMethod.InitLocals` has a setter that never latches, and CoreCLR
+    /// does not read it until the method's first JIT (`DynamicILGenerator.cs:729`, reached from
+    /// `LCGMethodResolver::GetCodeInfo`). A mint that recorded the current value would capture one
+    /// the guest is still entitled to change.
+    ///
+    /// Both `TestCase`s assert the *same* thing — that nothing was decided — precisely because the
+    /// field's value at mint must make no difference at all.
     [<TestCase(true)>]
     [<TestCase(false)>]
-    let ``initLocals is read from the DynamicMethod`` (initLocals : bool) : unit =
+    let ``initLocals is not read when the method is minted`` (initLocals : bool) : unit =
         let loggerFactory, prepared, state = loadFixture ()
 
         let body =
@@ -807,7 +813,114 @@ public static class Entry
             mintOne loggerFactory prepared "Probe" [| 0x01uy |] body state
 
         let _, definition = definitionBehindStub state stubAddress
-        (definition.GetBody ()).LocalsInit |> shouldEqual initLocals
+        definition.GetLatchedLocalsInit () |> shouldEqual None
+
+    /// A well-formed `MethodDefSig` for `(int32) -> int32`, which is what `doublingBody` computes:
+    /// default calling convention, one parameter, `ELEMENT_TYPE_I4` for the return and again for
+    /// the parameter. The other tests here can hand the QCall arbitrary bytes because minting
+    /// stores the blob without looking at it; anything that *executes* the method decodes it.
+    let private doublingSignature = [| 0x00uy ; 0x01uy ; 0x08uy ; 0x08uy |]
+
+    /// The `DynamicMethod` a resolver was built for: the object whose `_initLocals` a guest goes on
+    /// mutating after the method has been minted, and which `readInitLocals` reaches through.
+    let private methodBehindResolver (state : IlMachineState) (resolver : ManagedHeapAddress) : ManagedHeapAddress =
+        match
+            ManagedHeap.get resolver state.ManagedHeap
+            |> AllocatedNonArrayObject.DereferenceField "m_method"
+            |> CliType.unwrapPrimitiveLikeDeep
+        with
+        | CliType.ObjectRef (Some addr) -> addr
+        | other -> failwith $"expected the resolver's m_method to be an object reference, got %O{other}"
+
+    /// Assign `DynamicMethod.InitLocals`, as the guest's property setter does.
+    let private setInitLocals (resolver : ManagedHeapAddress) (value : bool) (state : IlMachineState) : IlMachineState =
+        IlMachineState.setOwnInstanceField
+            (methodBehindResolver state resolver)
+            "_initLocals"
+            (CliType.ofBool value)
+            state
+
+    /// The `initLocals` a concretised dynamic method will run under.
+    let private localsInitOf (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>) : bool =
+        MethodInfo.tryIlBody method
+        |> Option.defaultWith (fun () -> failwith $"%s{method.Name} was concretised without an IL body")
+        |> fun instructions -> instructions.LocalsInit
+
+    /// Minted while the guest said `true`, executed after it changed its mind. CoreCLR reads
+    /// `InitLocals` when it first compiles the method, not when the method is created, so the value
+    /// in force is the later one.
+    [<Test>]
+    let ``initLocals is read at first execution, not at mint`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let body =
+            { doublingBody with
+                InitLocals = true
+            }
+
+        let stubAddress, resolver, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let handle, _ = definitionBehindStub state stubAddress
+
+        let state = setInitLocals resolver false state
+
+        let _, method =
+            DynamicMethodExecution.concretize loggerFactory prepared.BaseClassTypes "test" handle state
+
+        localsInitOf method |> shouldEqual false
+
+    /// ...and never read again. `LCGMethodResolver::GetCodeInfo` computes `m_Options` only under
+    /// `if (!m_Code)`, so the first compilation fixes the flag for the method's whole life; a guest
+    /// that assigns `InitLocals` afterwards is not refused, it is simply ignored.
+    [<Test>]
+    let ``initLocals is latched by the first execution`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let body =
+            { doublingBody with
+                InitLocals = true
+            }
+
+        let stubAddress, resolver, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let handle, _ = definitionBehindStub state stubAddress
+
+        let state, first =
+            DynamicMethodExecution.concretize loggerFactory prepared.BaseClassTypes "test" handle state
+
+        localsInitOf first |> shouldEqual true
+
+        let state = setInitLocals resolver false state
+
+        let _, second =
+            DynamicMethodExecution.concretize loggerFactory prepared.BaseClassTypes "test" handle state
+
+        localsInitOf second |> shouldEqual true
+
+    /// The latch has to survive in the *state*, not merely in the method that was handed back. A
+    /// build that computed the right flag and dropped the updated registry would satisfy both tests
+    /// above on its first call and quietly re-read the guest's field on every later one.
+    [<Test>]
+    let ``the latch is written back into the returned state`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let body =
+            { doublingBody with
+                InitLocals = false
+            }
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let handle, _ = definitionBehindStub state stubAddress
+
+        let state, _ =
+            DynamicMethodExecution.concretize loggerFactory prepared.BaseClassTypes "test" handle state
+
+        let _, definition = definitionBehindStub state stubAddress
+        definition.GetLatchedLocalsInit () |> shouldEqual (Some false)
 
     /// The refusal the whole design turns on. A `DynamicScope` operand is a well-formed
     /// `MethodDef`/`TypeDef`/`String` token that names an unrelated *real* row, so a body carrying
@@ -997,26 +1110,44 @@ public static class Entry
         message |> shouldContainText "LOCAL_SIG"
         message |> shouldContainText "Field"
 
-    /// `DynamicMethod.InitLocals` is settable right up until the method is first executed, and
-    /// CoreCLR reads it late — `GetCodeInfo` runs during the first JIT, not during this QCall. So a
-    /// guest may `CreateDelegate`, then assign `InitLocals`, then invoke, and get the assigned
-    /// value; the flag recorded here is the earlier one.
-    ///
-    /// `localloc` is the only instruction that consults it, so refusing `localloc` is what makes
-    /// the difference unobservable rather than merely unlikely to be hit.
+    /// A body containing `localloc` used to be refused here, because `localloc` is the one
+    /// instruction whose behaviour depends on `initLocals` and the flag was being snapshotted at
+    /// mint. Now that the flag is read late and latched at first execution, there is nothing to
+    /// refuse: such a body stores like any other, and the flag it will run under is not decided
+    /// yet.
     [<Test>]
-    let ``a body whose behaviour depends on InitLocals is refused`` () : unit =
+    let ``a body containing localloc is stored`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
         // ldc.i4.1; localloc; pop; ret
         let body =
             { doublingBody with
                 Code = [| 0x17uy ; 0xFEuy ; 0x0Fuy ; 0x26uy ; 0x2Auy |]
             }
 
-        let message = mintExpectingFailure body
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" [| 0x01uy |] body state
 
-        message |> shouldContainText "InitLocals"
-        message |> shouldContainText "Localloc"
-        message |> shouldContainText "IL_0001"
+        let _, definition = definitionBehindStub state stubAddress
+
+        // Unwrapped to the nullary payload for the same reason as `the body is read back from the
+        // resolver`: `IlOp` carries a `SourcedMetadataToken` and so has no equality.
+        (definition.GetBody ()).Instructions
+        |> List.map (fun (op, offset) ->
+            match op with
+            | IlOp.Nullary op -> op, offset
+            | other -> failwith $"expected only nullary instructions, got %O{other} at IL_%04x{offset}"
+        )
+        |> shouldEqual
+            [
+                NullaryIlOp.LdcI4_1, 0
+                // Two bytes wide (0xFE 0x0F), which is why `pop` lands at 3 and not at 2.
+                NullaryIlOp.Localloc, 1
+                NullaryIlOp.Pop, 3
+                NullaryIlOp.Ret, 4
+            ]
+
+        definition.GetLatchedLocalsInit () |> shouldEqual None
 
     /// The `<Module>` type of the entry assembly, concretised the way the handler concretises it.
     let private moduleTypeHandle

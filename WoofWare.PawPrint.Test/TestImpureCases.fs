@@ -343,6 +343,23 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // When `DynamicMethod.InitLocals` is read (after minting) and when it stops being
+                // read (after the first execution). Registered with the dynamic-code switch
+                // overridden, like its siblings.
+                FileName = "DynamicMethodInitLocals.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `Delegate_BindToMethodInfo`, the QCall behind `DynamicMethod.CreateDelegate`.
                 // Registered with the dynamic-code switch overridden to true, like its
                 // `ModuleHandle_GetDynamicMethod` sibling above. The guest walks every binding

@@ -205,17 +205,13 @@ module AbstractMachine =
             // A method minted by `Reflection.Emit` has no `MethodInfo` sitting in the pointer: it
             // has no MethodDef row for one to be read from, so `Delegate_BindToMethodInfo` stored
             // its registry handle instead. Build the method here, at the moment of invocation --
-            // see `concretizeDynamicMethod` for why not earlier.
+            // see `DynamicMethodExecution.concretize` for why not earlier, and for what the first
+            // such invocation latches.
             let state, methodPtr =
                 match methodPtrTarget with
                 | FunctionPointerTarget.Managed methodPtr -> state, methodPtr
                 | FunctionPointerTarget.Dynamic handle ->
-                    ExecutionConcretization.concretizeDynamicMethod
-                        loggerFactory
-                        baseClassTypes
-                        "delegate invocation"
-                        handle
-                        state
+                    DynamicMethodExecution.concretize loggerFactory baseClassTypes "delegate invocation" handle state
                 | FunctionPointerTarget.RuntimeAllocator ->
                     FunctionPointerTarget.requireManaged "delegate invocation" methodPtrTarget
                     |> fun m -> state, m
