@@ -34,6 +34,7 @@
     <Compile Include="PointerHashSynthesis.fs" />
     <Compile Include="NativeIntSourceComparison.fs" />
     <Compile Include="CliNumericType.fs" />
+    <Compile Include="DeclaredTypeFacts.fs" />
     <Compile Include="CliType.fs" />
     <Compile Include="FieldIdentity.fs" />
     <Compile Include="GcHandleRegistry.fs" />

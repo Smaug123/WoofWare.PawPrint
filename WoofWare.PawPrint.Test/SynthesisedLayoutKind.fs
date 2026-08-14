@@ -23,9 +23,29 @@ module SynthesisedLayoutKind =
         else
             TypeLayoutKind.Sequential
 
+    /// The `DeclaredTypeFacts` of a synthesised type, taking the layout kind from the field shape
+    /// as `ofFieldShape` describes.
+    ///
+    /// `IsEnum` is false: a synthesised type has no base type to be `System.Enum`, and a test that
+    /// is *about* enum classification must say so explicitly rather than inherit it from here.
+    /// `IsValueType` is true, since every synthesised type here stands in for a struct.
+    let facts
+        (layout : Layout)
+        (charSet : System.Runtime.InteropServices.CharSet)
+        (fields : CliField list)
+        : DeclaredTypeFacts
+        =
+        {
+            IsValueType = true
+            IsEnum = false
+            LayoutKind = ofFieldShape fields
+            Layout = layout
+            CharSet = charSet
+        }
+
     /// `CliValueType.OfFields` for a synthesised type, taking the layout kind from the field shape
-    /// as `ofFieldShape` describes. Same argument order as `OfFields` without its kind parameter,
-    /// so a test that does not care which kind it gets can read as it did before the kind existed.
+    /// as `ofFieldShape` describes. Same argument order as `OfFields` had before the declared-type
+    /// facts were bundled, so a test that does not care about them reads as it always did.
     let ofFields
         (bct : BaseClassTypes<DumpedAssembly>)
         (allCt : AllConcreteTypes)
@@ -35,4 +55,4 @@ module SynthesisedLayoutKind =
         (fields : CliField list)
         : CliValueType
         =
-        CliValueType.OfFields bct allCt declared (ofFieldShape fields) layout charSet fields
+        CliValueType.OfFields bct allCt declared (facts layout charSet fields) fields

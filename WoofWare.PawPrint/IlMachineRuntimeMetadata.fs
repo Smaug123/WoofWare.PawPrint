@@ -549,11 +549,7 @@ module IlMachineRuntimeMetadata =
                 baseClassTypes
                 state.ConcreteTypes
                 concreteType
-                (TypeLayoutKind.applied
-                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
-                    typeInfo.TypeAttributes)
-                typeInfo.Layout
-                (CharSetMetadata.ofTypeAttributes typeInfo.TypeAttributes)
+                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies typeInfo)
                 allFields
 
         IlMachineThreadState.allocateManagedObject concreteType fields state
@@ -625,9 +621,7 @@ module IlMachineRuntimeMetadata =
                 baseClassTypes
                 state.ConcreteTypes
                 stringType
-                (TypeLayoutKind.applied false baseClassTypes.String.TypeAttributes)
-                Layout.Default
-                (CharSetMetadata.ofTypeAttributes baseClassTypes.String.TypeAttributes)
+                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies baseClassTypes.String)
 
         let addr, state = IlMachineThreadState.allocateManagedObject stringType fields state
 
@@ -1206,11 +1200,7 @@ module IlMachineRuntimeMetadata =
                 baseClassTypes
                 state.ConcreteTypes
                 threadTypeHandle
-                (TypeLayoutKind.applied
-                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies threadTypeInfo)
-                    threadTypeInfo.TypeAttributes)
-                threadTypeInfo.Layout
-                (CharSetMetadata.ofTypeAttributes threadTypeInfo.TypeAttributes)
+                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies threadTypeInfo)
                 allFields
 
         let addr, state =
@@ -1339,11 +1329,7 @@ module IlMachineRuntimeMetadata =
                 baseClassTypes
                 state.ConcreteTypes
                 tieHandle
-                (TypeLayoutKind.applied
-                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies tieTypeInfo)
-                    tieTypeInfo.TypeAttributes)
-                tieTypeInfo.Layout
-                (CharSetMetadata.ofTypeAttributes tieTypeInfo.TypeAttributes)
+                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies tieTypeInfo)
                 allFields
 
         let addr, state = IlMachineThreadState.allocateManagedObject tieHandle fields state
@@ -1424,11 +1410,7 @@ module IlMachineRuntimeMetadata =
                 baseClassTypes
                 state.ConcreteTypes
                 tieHandle
-                (TypeLayoutKind.applied
-                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies tieTypeInfo)
-                    tieTypeInfo.TypeAttributes)
-                tieTypeInfo.Layout
-                (CharSetMetadata.ofTypeAttributes tieTypeInfo.TypeAttributes)
+                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies tieTypeInfo)
                 allFields
 
         let addr, state = IlMachineThreadState.allocateManagedObject tieHandle fields state
@@ -1693,7 +1675,7 @@ module IlMachineRuntimeMetadata =
     /// True for the built-in primitives themselves, and for enums over the fixed-width integers.
     /// False for enums over `bool`, `char` or a native int: ECMA-335 II.14.3 permits those and the
     /// CLR does load them (C# cannot declare one, but Reflection.Emit can), yet
-    /// `CliValueType.IsEnumStructural` deliberately answers false for them, so their storage stays
+    /// `CliValueType.EnumUnderlyingIsFlattenable` deliberately answers false for them, so their storage stays
     /// a wrapped `CliValueType`.
     let private unboxMaterialisesFlattened
         (loggerFactory : ILoggerFactory)
@@ -1798,7 +1780,7 @@ module IlMachineRuntimeMetadata =
                         let offender = if boxedFlattened then targetType else boxedType
 
                         failwith
-                            $"unbox of %O{boxedType} to %O{targetType}: CoreCLR permits this (both report the same primitive element type), but PawPrint does not store %O{offender} in flattened form — see CliValueType.IsEnumStructural, which covers only enums over the fixed-width integers, not over bool/char/native int"
+                            $"unbox of %O{boxedType} to %O{targetType}: CoreCLR permits this (both report the same primitive element type), but PawPrint does not store %O{offender} in flattened form — see CliValueType.EnumUnderlyingIsFlattenable, which covers only enums over the fixed-width integers, not over bool/char/native int"
 
     /// Does this handle denote a reference type (as opposed to a value type)?
     ///

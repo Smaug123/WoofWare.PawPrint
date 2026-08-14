@@ -101,7 +101,16 @@ module TestCliValueTypeCoerceFrom =
 
         let layout : Layout = Layout.Custom (size = 8, packingSize = 0)
 
-        CliValueType.OfFields bct allCt declaredHandle TypeLayoutKind.Explicit layout CharSet.Ansi [ a ; b ]
+        let facts : DeclaredTypeFacts =
+            {
+                IsValueType = true
+                IsEnum = false
+                LayoutKind = TypeLayoutKind.Explicit
+                Layout = layout
+                CharSet = CharSet.Ansi
+            }
+
+        CliValueType.OfFields bct allCt declaredHandle facts [ a ; b ]
 
     [<Test>]
     let ``CoerceFrom preserves overlap write order for explicit-layout unions`` () : unit =

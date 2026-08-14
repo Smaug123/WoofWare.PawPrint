@@ -852,8 +852,9 @@ and CliValueType =
             /// Cached primitive-like classification for `_Declared`. `Some kind` for any value type
             /// whose storage form is a single-field wrapper that the eval stack flattens: the
             /// closed set of BCL wrapper structs (IntPtr, RuntimeTypeHandle, ...) plus every CLR
-            /// enum (detected structurally by the reserved `value__` field at offset 0). `None`
-            /// for user-defined structs and non-primitive BCL structs. Populated at construction
+            /// enum over a fixed-width integer. `None` for user-defined structs and non-primitive
+            /// BCL structs. Enum-ness is decided nominally, by the constructing caller, and
+            /// arrives as `DeclaredTypeFacts.IsEnum`. Populated at construction
             /// time so the context-free `EvalStackValue.ofCliType` can flatten without threading
             /// `BaseClassTypes`/`AllConcreteTypes` through every push site.
             _PrimitiveLikeKind : PrimitiveLikeKind option
@@ -877,11 +878,24 @@ and CliValueType =
     member this.Declared : ConcreteTypeHandle = this._Declared
     member this.PrimitiveLikeKind : PrimitiveLikeKind option = this._PrimitiveLikeKind
 
-    /// Structural detection of CLR enums: exactly one instance field at offset 0 named `value__`
-    /// with an integral underlying type. The `value__` name is CLR-reserved for enums, so this
-    /// matches the nominal "has base type `System.Enum`" check without threading assembly lookup
-    /// through every construction site.
-    static member private IsEnumStructural (fields : CliConcreteField list) : bool =
+    /// Is an enum with this field shape one whose storage PawPrint flattens?
+    ///
+    /// True only for enums over the fixed-width integers. ECMA-335 II.14.3 also permits an enum
+    /// over `bool`, `char` or a native int — C# cannot declare one but Reflection.Emit can, and
+    /// the CLR loads them — and those deliberately answer false, so their storage stays a wrapped
+    /// `CliValueType`. `IlMachineRuntimeMetadata.unboxMaterialisesFlattened` depends on that:
+    /// it decides whether a boxed value materialises flattened, and if this widened to cover them,
+    /// `unboxPermitted` would start refusing a legal unbox that works today.
+    ///
+    /// This is the *structural* half of the enum question, and it is structural on purpose: it
+    /// asks which `CliNumericType` cell the value actually holds, which is a fact about the storage
+    /// in hand rather than about metadata. The nominal half — is the declared type an enum at all —
+    /// cannot be answered from the fields and arrives as `DeclaredTypeFacts.IsEnum`.
+    ///
+    /// The `value__`/offset-0/single-field conditions are retained as a guard rather than as the
+    /// test: for a genuine enum ECMA-335 II.14.3 guarantees them, so failing them means the caller
+    /// misidentified the type, and answering "not flattenable" is the safe direction.
+    static member private EnumUnderlyingIsFlattenable (fields : CliConcreteField list) : bool =
         match fields with
         | [ f ] when f.Name = "value__" && f.Offset = 0 ->
             match f.Contents with
@@ -904,20 +918,28 @@ and CliValueType =
             | CliType.ValueType _ -> false
         | _ -> false
 
-    /// Combine the nominal BCL-wrapper classification with the structural enum detection.
+    /// Combine the nominal BCL-wrapper classification with the enum classification.
     /// Returns the BCL kind if `declared` is one of the wrapper structs; otherwise returns
-    /// `Some EnumLike` if `fields` has the structural shape of a CLR enum; otherwise `None`.
+    /// `Some EnumLike` if the declared type is a CLR enum whose underlying integer we flatten;
+    /// otherwise `None`.
+    ///
+    /// Both halves of the enum test are load-bearing and neither implies the other. `isEnum` is
+    /// nominal and comes from the caller's metadata; `EnumUnderlyingIsFlattenable` is structural
+    /// and reads the storage in hand. Dropping the first classifies `struct Fake { int value__; }`
+    /// as an enum (issue #996); dropping the second flattens enums over `bool`/`char`/native int,
+    /// which `unboxMaterialisesFlattened` requires stay wrapped.
     static member private ClassifyPrimitiveLike
         (bct : BaseClassTypes<DumpedAssembly>)
         (allCt : AllConcreteTypes)
         (declared : ConcreteTypeHandle)
+        (isEnum : bool)
         (fields : CliConcreteField list)
         : PrimitiveLikeKind option
         =
         match PrimitiveLikeStruct.kindFromHandle bct allCt declared with
         | Some k -> Some k
         | None ->
-            if CliValueType.IsEnumStructural fields then
+            if isEnum && CliValueType.EnumUnderlyingIsFlattenable fields then
                 Some PrimitiveLikeKind.EnumLike
             else
                 None
@@ -1993,21 +2015,35 @@ and CliValueType =
         (bct : BaseClassTypes<DumpedAssembly>)
         (allCt : AllConcreteTypes)
         (declared : ConcreteTypeHandle)
-        (layoutKind : TypeLayoutKind)
-        (layout : Layout)
-        (charSet : CharSet)
+        (facts : DeclaredTypeFacts)
         (f : CliField list)
         : CliValueType
         =
-        let fields = CliValueType.ComputeConcreteFields layoutKind layout f
+        let fields = CliValueType.ComputeConcreteFields facts.LayoutKind facts.Layout f
+
+        // ECMA-335 II.14.3: an enum has exactly one instance field, named `value__`, at offset 0.
+        // Any loadable enum satisfies this, so a violation means `facts` describes some other type
+        // than the one whose fields these are — a caller error, and one worth catching here rather
+        // than several opcodes later when the misclassified value is flattened or refused.
+        if facts.IsEnum then
+            match fields with
+            | [ single ] when single.Name = "value__" && single.Offset = 0 -> ()
+            | _ ->
+                let described =
+                    fields
+                    |> List.map (fun field -> $"%s{field.Name}@%d{field.Offset}")
+                    |> String.concat ", "
+
+                failwith
+                    $"CliValueType.OfFields: %O{declared} is described as an enum, but its %d{fields.Length} instance field(s) are [%s{described}] rather than the single `value__` at offset 0 that ECMA-335 II.14.3 requires of one"
 
         {
             _Declared = declared
-            _PrimitiveLikeKind = CliValueType.ClassifyPrimitiveLike bct allCt declared fields
-            _Storage = CliValueType.StorageFromFields layoutKind layout fields
-            LayoutKind = layoutKind
-            Layout = layout
-            CharSet = charSet
+            _PrimitiveLikeKind = CliValueType.ClassifyPrimitiveLike bct allCt declared facts.IsEnum fields
+            _Storage = CliValueType.StorageFromFields facts.LayoutKind facts.Layout fields
+            LayoutKind = facts.LayoutKind
+            Layout = facts.Layout
+            CharSet = facts.CharSet
             NextTimestamp = 1UL
         }
 
@@ -3303,9 +3339,7 @@ module CliType =
                 corelib
                 concreteTypes
                 intPtrHandle
-                (TypeLayoutKind.applied true corelib.IntPtr.TypeAttributes)
-                Layout.Default
-                (CharSetMetadata.ofTypeAttributes corelib.IntPtr.TypeAttributes)
+                (DeclaredTypeFacts.ofCorelibType corelib corelib.IntPtr)
             |> CliType.ValueType
         | PrimitiveType.UIntPtr ->
             let uintPtrHandle =
@@ -3333,9 +3367,7 @@ module CliType =
                 corelib
                 concreteTypes
                 uintPtrHandle
-                (TypeLayoutKind.applied true corelib.UIntPtr.TypeAttributes)
-                Layout.Default
-                (CharSetMetadata.ofTypeAttributes corelib.UIntPtr.TypeAttributes)
+                (DeclaredTypeFacts.ofCorelibType corelib corelib.UIntPtr)
             |> CliType.ValueType
         | PrimitiveType.Object -> CliType.ObjectRef None
 
@@ -3575,9 +3607,7 @@ module CliType =
                     corelib
                     currentConcreteTypes
                     handle
-                    (TypeLayoutKind.applied isValueType typeDef.TypeAttributes)
-                    typeDef.Layout
-                    (CharSetMetadata.ofTypeAttributes typeDef.TypeAttributes)
+                    (DeclaredTypeFacts.ofTypeInfo corelib currentAssemblies typeDef)
 
             CliType.ValueType vt, currentConcreteTypes, currentAssemblies
         else

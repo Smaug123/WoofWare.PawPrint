@@ -287,10 +287,14 @@ module Corelib =
 ///
 /// Several BCL types are nominally `struct { single_field }` at metadata level (so `ldfld`,
 /// reflection, and heap layout see a one-field struct), but the real CLR's JIT treats them
-/// as if they were just the underlying primitive/reference. CLR enums share the same shape:
-/// a single instance field `value__` at offset 0 whose stack form is its integer underlying
-/// type. At the interpreter's eval-stack boundary we mirror that: storage keeps the wrapped
-/// struct form; the stack sees the flattened primitive form via the kind below.
+/// as if they were just the underlying primitive/reference. CLR enums have the same storage
+/// shape — a single instance field `value__` at offset 0 — and the same treatment. At the
+/// interpreter's eval-stack boundary we mirror that: storage keeps the wrapped struct form;
+/// the stack sees the flattened primitive form via the kind below.
+///
+/// Which types get which kind is decided *nominally*, never from the storage shape: the BCL
+/// wrappers by identity (`PrimitiveLikeStruct.kind`), enums by their base type. Two types with
+/// identical fields can differ here, so a structural guess is not good enough.
 [<RequireQualifiedAccess>]
 type PrimitiveLikeKind =
     /// `System.IntPtr`, `System.UIntPtr` — flattens to `EvalStackValue.NativeInt`.
@@ -307,10 +311,16 @@ type PrimitiveLikeKind =
     | FlattenToRuntimePointer
     /// `System.ByReference`/`System.ByReference<T>` — flattens to `EvalStackValue.ManagedPointer`.
     | FlattenToManagedPointer
-    /// Any CLR enum — structurally `struct { value__ : <integral> }` — flattens to the
-    /// `EvalStackValue` of its underlying integer. ECMA III.1.8 treats enums as their
-    /// underlying integer for every numeric/comparison opcode; the rewrap on pop reconstructs
-    /// the enum slot around the coerced integer.
+    /// A CLR enum over one of the fixed-width integers flattens to the `EvalStackValue` of that
+    /// integer. ECMA III.1.8 treats enums as their underlying integer for every numeric/comparison
+    /// opcode; the rewrap on pop reconstructs the enum slot around the coerced integer.
+    ///
+    /// Enum-ness here is nominal — the immediate base type is `System.Enum` — and is decided by
+    /// whoever constructs the value, since the classifier sees only a handle and a field list.
+    /// Deciding it from the CLR-reserved field name `value__` instead was issue #996: that name is
+    /// legal C#, so an ordinary struct could take this kind and be flattened. An enum over
+    /// `bool`, `char` or a native int is deliberately *not* this kind; see
+    /// `CliValueType.EnumUnderlyingIsFlattenable`.
     | EnumLike
 
 [<RequireQualifiedAccess>]
