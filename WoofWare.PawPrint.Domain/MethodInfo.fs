@@ -381,13 +381,121 @@ type MetadataMethodFacts =
         NativeImport : NativeMethodImport option
     }
 
+/// <summary>
+/// What a method belongs to.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Almost always a type: a MethodDef row lives in exactly one TypeDef's method list, and a
+/// synthesised method is given a declaring type too (its <em>subject</em> rather than its owner —
+/// see <see cref="SynthesisedMethod"/>) precisely so that it has one.
+/// </para>
+/// <para>
+/// The exception is a method minted by <c>Reflection.Emit</c>. CoreCLR allocates its
+/// <c>DynamicMethodDesc</c> from a per-module <c>DynamicMethodTable</c> whose
+/// <c>CreateMinimalMethodTable</c> class has no metadata behind it at all, so there is no TypeDef
+/// row for a <see cref="ConcreteType"/> to name — which is the same absence
+/// <c>RuntimeTypeHandleTarget.DynamicMethodsClass</c> models one layer up, at the reflection
+/// surface. Representing it as a case here rather than fabricating an owner is what stops a
+/// dynamic method's frame claiming to be declared by a type that never declared it; measured
+/// against real .NET, such a frame renders as a bare <c>at Thrower(Int32)</c> with no type at all.
+/// </para>
+/// </remarks>
+/// <remarks>
+/// Custom equality, for two reasons. A declared owner compares on identity plus instantiation and
+/// deliberately <em>not</em> on the whole <see cref="ConcreteType"/> record, matching what
+/// <c>MethodInfo.NominallyEqual</c> has always compared. And <c>AssemblyName</c> is a BCL class
+/// with reference equality, so the dynamic case has to compare <c>FullName</c> or two reads of the
+/// same assembly's name would be different owners.
+/// </remarks>
+[<CustomEquality>]
+[<NoComparison>]
+type MethodOwner<'typeGenerics> =
+    /// Declared by a type, which is every method read from metadata and every synthesised method
+    /// that has a subject to be keyed on.
+    | DeclaredOn of ConcreteType<'typeGenerics>
+
+    /// Owned by the synthetic per-module class that <c>Reflection.Emit</c> methods are minted into.
+    /// Carries the assembly the method is scoped to, which is the one fact that class does have —
+    /// and which consumers that resolve an assembly from a method alone (
+    /// <c>ThreadState.ActiveAssembly</c>, <c>ExceptionDispatching.assemblyOfMethod</c>) still need
+    /// a truthful answer for.
+    | DynamicMethodsClass of scopeAssembly : AssemblyName
+
+    /// The assembly this method belongs to. Total, and honest for both cases: a dynamic method's
+    /// scope assembly is a real loaded assembly, it simply declares no type that owns the method.
+    member this.Assembly : AssemblyName =
+        match this with
+        | MethodOwner.DeclaredOn declaringType -> declaringType.Assembly
+        | MethodOwner.DynamicMethodsClass scopeAssembly -> scopeAssembly
+
+    /// The declaring type's generic arguments — empty for a dynamic method, whose owning class is
+    /// non-generic (`CreateMinimalMethodTable` builds no instantiation). Total because that
+    /// emptiness is a fact rather than a stand-in: there is nothing for a signature to substitute.
+    member this.Generics : ImmutableArray<'typeGenerics> =
+        match this with
+        | MethodOwner.DeclaredOn declaringType -> declaringType.Generics
+        | MethodOwner.DynamicMethodsClass _ -> ImmutableArray.Empty
+
+    /// The declaring type, when there is one. Deliberately an option rather than a member that
+    /// throws: a caller needing the type's identity, name or TypeDef handle has to say what it
+    /// does without one.
+    member this.TryDeclaringType : ConcreteType<'typeGenerics> option =
+        match this with
+        | MethodOwner.DeclaredOn declaringType -> Some declaringType
+        | MethodOwner.DynamicMethodsClass _ -> None
+
+    override this.Equals (other : obj) : bool =
+        match other with
+        | :? MethodOwner<'typeGenerics> as other ->
+            match this, other with
+            | MethodOwner.DeclaredOn left, MethodOwner.DeclaredOn right ->
+                left.Identity = right.Identity && left.Generics = right.Generics
+            | MethodOwner.DynamicMethodsClass left, MethodOwner.DynamicMethodsClass right ->
+                // One synthetic class per module, so the assembly is the whole identity. Which
+                // *method* within it is what `MethodInfo.IdentityKey` carries.
+                left.FullName = right.FullName
+            | MethodOwner.DeclaredOn _, MethodOwner.DynamicMethodsClass _
+            | MethodOwner.DynamicMethodsClass _, MethodOwner.DeclaredOn _ -> false
+        | _ -> false
+
+    override this.GetHashCode () : int =
+        match this with
+        | MethodOwner.DeclaredOn declaringType -> HashCode.Combine (0, declaringType.Identity, declaringType.Generics)
+        | MethodOwner.DynamicMethodsClass scopeAssembly -> HashCode.Combine (1, scopeAssembly.FullName)
+
+[<RequireQualifiedAccess>]
+module MethodOwner =
+    /// A human-readable name for the owner, for diagnostics. Not a metadata name: the dynamic case
+    /// deliberately renders as something no type could be called, so that a message quoting it
+    /// cannot be mistaken for one naming a real type.
+    let describe (owner : MethodOwner<'typeGenerics>) : string =
+        match owner with
+        | MethodOwner.DeclaredOn declaringType -> $"%s{declaringType.Namespace}.%s{declaringType.Name}"
+        | MethodOwner.DynamicMethodsClass scopeAssembly -> $"<dynamic methods of %s{scopeAssembly.Name}>"
+
+    /// The declaring type, or a failure naming the operation that needed one. For call sites which
+    /// genuinely cannot proceed without a TypeDef row — metadata lookups, vtable walks, attribute
+    /// reads — and which a dynamic method therefore has no business reaching.
+    let requireDeclaringType (operation : string) (owner : MethodOwner<'typeGenerics>) : ConcreteType<'typeGenerics> =
+        match owner with
+        | MethodOwner.DeclaredOn declaringType -> declaringType
+        | MethodOwner.DynamicMethodsClass scopeAssembly ->
+            failwith
+                $"%s{operation}: this method is owned by the dynamic-methods class of %s{scopeAssembly.Name}, which has no TypeDef row; the operation needs a declaring type"
+
+    let map<'a, 'b> (f : ConcreteType<'a> -> ConcreteType<'b>) (owner : MethodOwner<'a>) : MethodOwner<'b> =
+        match owner with
+        | MethodOwner.DeclaredOn declaringType -> MethodOwner.DeclaredOn (f declaringType)
+        | MethodOwner.DynamicMethodsClass scopeAssembly -> MethodOwner.DynamicMethodsClass scopeAssembly
+
 /// The facts every method has, however it came to exist.
 type MethodCore<'typeGenerics, 'methodGenerics, 'methodVars> =
     {
         /// <summary>
-        /// The type that declares this method, along with its assembly information.
+        /// What declares this method: nearly always a type, but see <see cref="MethodOwner"/>.
         /// </summary>
-        DeclaringType : ConcreteType<'typeGenerics>
+        Owner : MethodOwner<'typeGenerics>
 
         /// <summary>The name of the method.</summary>
         Name : string
@@ -436,7 +544,46 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
         | MethodInfo.Metadata (core, _) -> core
         | MethodInfo.Synthesised (core, _) -> core
 
-    member this.DeclaringType : ConcreteType<'typeGenerics> = this.Core.DeclaringType
+    member this.Owner : MethodOwner<'typeGenerics> = this.Core.Owner
+
+    /// The assembly this method belongs to; see <see cref="MethodOwner.Assembly"/> for why this is
+    /// total where the declaring type is not.
+    member this.DeclaringAssembly : AssemblyName = this.Core.Owner.Assembly
+
+    /// The declaring type's generic arguments; see <see cref="MethodOwner.Generics"/>.
+    member this.DeclaringTypeGenerics : ImmutableArray<'typeGenerics> =
+        this.Core.Owner.Generics
+
+    /// The declaring type, when this method has one.
+    member this.TryDeclaringType : ConcreteType<'typeGenerics> option =
+        this.Core.Owner.TryDeclaringType
+
+    /// <summary>
+    /// The declaring type, failing if this method has none.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every call site of this is a place that cannot proceed without a TypeDef row — a metadata
+    /// lookup, a vtable walk, an intrinsic classifier keyed on a type name — and which therefore
+    /// has to decide what a <c>Reflection.Emit</c> method means to it. Today none of them can be
+    /// reached with one, because nothing constructs
+    /// <see cref="MethodOwner.DynamicMethodsClass"/> yet.
+    /// </para>
+    /// <para>
+    /// It exists rather than making each site write <c>MethodOwner.requireDeclaringType</c> so
+    /// that those sites stay a greppable set: <c>RequiredDeclaringType</c> enumerates exactly the
+    /// places that must be revisited when dynamic methods become executable, and several of them
+    /// will want to answer "not an intrinsic" or "no vtable slot" rather than to fail. Prefer
+    /// <see cref="TryDeclaringType"/> in new code, which forces that answer to be written down.
+    /// </para>
+    /// </remarks>
+    member this.RequiredDeclaringType : ConcreteType<'typeGenerics> =
+        match this.Core.Owner with
+        | MethodOwner.DeclaredOn declaringType -> declaringType
+        | MethodOwner.DynamicMethodsClass scopeAssembly ->
+            failwith
+                $"%O{this}: this method is owned by the dynamic-methods class of %s{scopeAssembly.Name}, which has no TypeDef row, but the operation being performed needs a declaring type"
+
     member this.Name : string = this.Core.Name
     member this.Body : MethodBody<'methodVars> = this.Core.Body
     member this.Generics : 'methodGenerics ImmutableArray = this.Core.Generics
@@ -528,7 +675,13 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
         | MethodInfo.Synthesised _ -> false
 
     override this.ToString () =
-        $"{this.DeclaringType.Assembly.Name}.{this.DeclaringType.Name}.{this.Name}"
+        match this.Owner with
+        | MethodOwner.DeclaredOn declaringType -> $"{declaringType.Assembly.Name}.{declaringType.Name}.{this.Name}"
+        // No declaring type to name, and nothing to invent: real .NET renders a dynamic method's
+        // frame as a bare `at Thrower(Int32)`. The assembly is still worth carrying here, because
+        // this string is what `GuestLocation.describeFrame` and `GuestFailureException` show and
+        // "which module was this emitted into" is the only locating fact there is.
+        | MethodOwner.DynamicMethodsClass scopeAssembly -> $"{scopeAssembly.Name}.<dynamic>.{this.Name}"
 
 [<RequireQualifiedAccess>]
 module MethodInfo =
@@ -587,8 +740,13 @@ module MethodInfo =
         (b : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
         : bool
         =
-        a.DeclaringType.Identity = b.DeclaringType.Identity
-        && a.DeclaringType.Generics = b.DeclaringType.Generics
+        // Owner equality, which for two declared methods is the identity-plus-instantiation
+        // comparison this has always done — see `MethodOwner`'s custom equality, which is where
+        // that spelling now lives so that hashing agrees with it. Two dynamic methods are *not*
+        // distinguished here: their owning class is per-module, so both sides of a same-module
+        // comparison agree, and what separates them is the `DynamicMethodHandle` in their
+        // synthesised kind, compared below where a metadata method's token is.
+        a.Owner = b.Owner
         && a.Generics = b.Generics
         && // Within a declaring type, a metadata method is identified by its token and a
         // synthesised one by its kind. The two are never equal: a synthesised method has no
@@ -622,11 +780,13 @@ module MethodInfo =
         | MetadataToken.MethodDef handle ->
             let constructor = methodDefs.[handle]
 
-            isIntrinsicAttributeType constructor.DeclaringType.Namespace constructor.DeclaringType.Name
-            && constructor.DeclaringType.Assembly.FullName.StartsWith (
-                "System.Private.CoreLib, ",
-                StringComparison.Ordinal
-            )
+            // A `[Intrinsic]` application is read from a MethodDef row, so its constructor is
+            // always declared by a type; a dynamic method can carry no attributes at all.
+            let declaringType =
+                MethodOwner.requireDeclaringType "reading an [Intrinsic] attribute application" constructor.Owner
+
+            isIntrinsicAttributeType declaringType.Namespace declaringType.Name
+            && declaringType.Assembly.FullName.StartsWith ("System.Private.CoreLib, ", StringComparison.Ordinal)
         | MetadataToken.MemberReference handle ->
             let ty = getMemberRefParentType handle
             isIntrinsicAttributeType ty.Namespace ty.Name
@@ -662,7 +822,7 @@ module MethodInfo =
         m
         |> mapCore (fun core ->
             {
-                DeclaringType = core.DeclaringType |> ConcreteType.mapGeneric (fun _ -> f)
+                Owner = core.Owner |> MethodOwner.map (ConcreteType.mapGeneric (fun _ -> f))
                 Name = core.Name
                 Body = core.Body
                 Generics = core.Generics
@@ -679,7 +839,7 @@ module MethodInfo =
         m
         |> mapCore (fun core ->
             {
-                DeclaringType = core.DeclaringType
+                Owner = core.Owner
                 Name = core.Name
                 Body = core.Body
                 Generics = core.Generics |> Seq.mapi f |> ImmutableArray.CreateRange
@@ -697,7 +857,7 @@ module MethodInfo =
         m
         |> mapCore (fun core ->
             {
-                DeclaringType = core.DeclaringType
+                Owner = core.Owner
                 Name = core.Name
                 Body = body
                 Generics = core.Generics
@@ -1060,7 +1220,7 @@ module MethodInfo =
 
         MethodInfo.Metadata (
             {
-                DeclaringType = declaringType
+                Owner = MethodOwner.DeclaredOn declaringType
                 Name = methodName
                 Body = body
                 Generics = methodGenericParams
@@ -1116,7 +1276,7 @@ module MethodInfo =
         | TypeDefn.GenericInstantiation (generic, args) -> failwith "todo"
         | TypeDefn.FunctionPointer _ -> ResolvedBaseType.ValueType
         | TypeDefn.GenericTypeParameter index ->
-            resolveBaseType methodGenerics executingMethod executingMethod.DeclaringType.Generics.[index]
+            resolveBaseType methodGenerics executingMethod executingMethod.DeclaringTypeGenerics.[index]
         | TypeDefn.GenericMethodParameter index ->
             match methodGenerics with
             | None -> failwith "unexpectedly asked for a generic method parameter when we had none"

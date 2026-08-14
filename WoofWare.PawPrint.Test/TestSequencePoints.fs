@@ -425,7 +425,7 @@ module TestSequencePoints =
                     for offset, _ in MethodSequencePoints.toList points do
                         if not (body.Locations.ContainsKey offset) then
                             failwith
-                                $"Sequence point at IL offset %d{offset} in %s{method.DeclaringType.Name}.%s{method.Name} is not an instruction boundary"
+                                $"Sequence point at IL offset %d{offset} in %s{method.RequiredDeclaringType.Name}.%s{method.Name} is not an instruction boundary"
 
                         verified <- verified + 1
 

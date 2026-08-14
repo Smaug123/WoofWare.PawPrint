@@ -967,7 +967,7 @@ module Program =
             | None ->
                 // We need to discover the core library by traversing the type hierarchy
                 let mainMethodType =
-                    dumped.TypeDefs.[mainMethodFromMetadata.DeclaringType.Definition.Get]
+                    dumped.TypeDefs.[mainMethodFromMetadata.RequiredDeclaringType.Definition.Get]
 
                 let state, baseTypes =
                     findCoreLibraryAssemblyFromGeneric state mainMethodType dumped

@@ -94,6 +94,7 @@
     <Compile Include="TestInternalAllocNoChecks.fs" />
     <Compile Include="TestInternalAlloc.fs" />
     <Compile Include="TestNativeEnum.fs" />
+    <Compile Include="TestMethodOwner.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
     <Compile Include="TestNativeGetDynamicMethod.fs" />
     <Compile Include="TestMethodReturnType.fs" />

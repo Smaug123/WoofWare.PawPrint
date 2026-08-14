@@ -88,7 +88,7 @@ module internal UnaryMetadataObjectOps =
                 baseClassTypes
                 state
                 activeAssy.Name
-                currentMethod.DeclaringType.Generics
+                currentMethod.DeclaringTypeGenerics
                 currentMethod.Generics
                 targetType
 
@@ -164,7 +164,7 @@ module internal UnaryMetadataObjectOps =
         let dimensionLengths = lengths |> ImmutableArray.CreateRange
         let state = s
 
-        let typeGenerics = currentMethod.DeclaringType.Generics
+        let typeGenerics = currentMethod.DeclaringTypeGenerics
         let methodGenerics = currentMethod.Generics
 
         let state, zeroOfType, elementHandle =
@@ -267,8 +267,8 @@ module internal UnaryMetadataObjectOps =
         // An allocation whose `.cctor` then throws is therefore garbage, exactly as on the real
         // runtime: the `newobj` never completes and nothing can reach the object.
 
-        let ctorAssembly = state.LoadedAssembly ctor.DeclaringType.Assembly |> Option.get
-        let ctorType = ctorAssembly.TypeDefs.[ctor.DeclaringType.Definition.Get]
+        let ctorAssembly = state.LoadedAssembly ctor.DeclaringAssembly |> Option.get
+        let ctorType = ctorAssembly.TypeDefs.[ctor.RequiredDeclaringType.Definition.Get]
 
         do
             logger.LogDebug (
@@ -391,8 +391,8 @@ module internal UnaryMetadataObjectOps =
             let ty =
                 AllConcreteTypes.findExistingConcreteType
                     state.ConcreteTypes
-                    concretizedCtor.DeclaringType.Identity
-                    concretizedCtor.DeclaringType.Generics
+                    concretizedCtor.RequiredDeclaringType.Identity
+                    concretizedCtor.DeclaringTypeGenerics
                 |> Option.get
 
             IlMachineState.allocateManagedObject ty fields state
@@ -538,7 +538,7 @@ module internal UnaryMetadataObjectOps =
                     baseClassTypes
                     state
                     activeAssy
-                    currentMethod.DeclaringType.Generics
+                    currentMethod.DeclaringTypeGenerics
                     ref
             | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
             | _ -> failwith $"unexpected token {metadataToken} in Box"
@@ -549,7 +549,7 @@ module internal UnaryMetadataObjectOps =
                 baseClassTypes
                 state
                 assy.Name
-                currentMethod.DeclaringType.Generics
+                currentMethod.DeclaringTypeGenerics
                 currentMethod.Generics
                 ty
 
@@ -723,7 +723,7 @@ module internal UnaryMetadataObjectOps =
                 baseClassTypes
                 state
                 activeAssy.Name
-                currentMethod.DeclaringType.Generics
+                currentMethod.DeclaringTypeGenerics
                 currentMethod.Generics
                 targetType
 
@@ -909,7 +909,7 @@ module internal UnaryMetadataObjectOps =
                 baseClassTypes
                 state
                 activeAssy.Name
-                currentMethod.DeclaringType.Generics
+                currentMethod.DeclaringTypeGenerics
                 currentMethod.Generics
                 targetType
 
@@ -1122,7 +1122,7 @@ module internal UnaryMetadataObjectOps =
                 baseClassTypes
                 state
                 activeAssy.Name
-                currentMethod.DeclaringType.Generics
+                currentMethod.DeclaringTypeGenerics
                 currentMethod.Generics
                 targetType
 

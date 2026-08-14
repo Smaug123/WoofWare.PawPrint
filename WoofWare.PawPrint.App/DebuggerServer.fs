@@ -649,11 +649,17 @@ module DebuggerServer =
         (method : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
         : string
         =
-        let typeHandle = method.DeclaringType.Definition.Get
+        match method.TryDeclaringType with
+        // A `Reflection.Emit` method is owned by a synthetic per-module class with no TypeDef row,
+        // and real .NET renders such a frame with no type name at all (`at Thrower(Int32)`).
+        // `MethodOwner.describe` says that in a form no type could be confused with, rather than
+        // this reaching for a name there is none of.
+        | None -> MethodOwner.describe method.Owner
+        | Some declaringType ->
 
-        match assembly.TypeDefs.TryGetValue typeHandle with
+        match assembly.TypeDefs.TryGetValue declaringType.Definition.Get with
         | true, typeInfo -> IlFormatting.qualifyTypeName assembly.TypeDefs typeInfo
-        | false, _ -> string method.DeclaringType
+        | false, _ -> string declaringType
 
     let private writeThreadStackSummaryResponse
         (writer : Utf8JsonWriter)
@@ -803,8 +809,7 @@ module DebuggerServer =
             let frameId = threadState.ActiveMethodState
             let frame = threadState.MethodState
 
-            let assembly =
-                state._LoadedAssemblies.[frame.ExecutingMethod.DeclaringType.Assembly]
+            let assembly = state._LoadedAssemblies.[frame.ExecutingMethod.DeclaringAssembly]
 
             let qualifiedTypeName = qualifiedTypeNameForMethod assembly frame.ExecutingMethod
 

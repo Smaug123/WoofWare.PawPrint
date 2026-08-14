@@ -152,7 +152,7 @@ type FunctionPointerTarget =
     override this.ToString () : string =
         match this with
         | FunctionPointerTarget.Managed methodDefinition ->
-            $"{methodDefinition.Name} in {methodDefinition.DeclaringType.Assembly.Name}"
+            $"{methodDefinition.Name} in {methodDefinition.DeclaringAssembly.Name}"
         | FunctionPointerTarget.RuntimeAllocator -> "the runtime's newobj allocation helper"
         | FunctionPointerTarget.Dynamic handle -> string<DynamicMethodHandle> handle
 
@@ -172,13 +172,9 @@ type FunctionPointerTarget =
     override this.GetHashCode () : int =
         match this with
         | FunctionPointerTarget.Managed methodDefinition ->
-            HashCode.Combine (
-                0,
-                methodDefinition.DeclaringType.Identity,
-                methodDefinition.DeclaringType.Generics,
-                methodDefinition.IdentityKey,
-                methodDefinition.Generics
-            )
+            // `MethodOwner`'s own hash, so this stays consistent with `MethodInfo.NominallyEqual`
+            // -- which is what `Equals` above delegates to.
+            HashCode.Combine (0, methodDefinition.Owner, methodDefinition.IdentityKey, methodDefinition.Generics)
         | FunctionPointerTarget.RuntimeAllocator -> HashCode.Combine 1
         | FunctionPointerTarget.Dynamic handle -> HashCode.Combine (2, handle.GetRegistryId ())
 

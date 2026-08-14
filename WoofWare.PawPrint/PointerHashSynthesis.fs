@@ -152,9 +152,13 @@ module PointerHashSynthesis =
                     $"PointerHashSynthesis.canonicalKey: %O{methodInfo} is synthesised by the runtime, so it has no MethodDef token to key on"
             | Some facts ->
 
+            // The `Some facts` branch: a metadata method, so it is declared by a type.
+            let declaringType =
+                MethodOwner.requireDeclaringType "synthesising hash bits for a function pointer" methodInfo.Owner
+
             CanonicalPointerKey.FunctionPointer (
-                methodInfo.DeclaringType.Identity,
-                List.ofSeq methodInfo.DeclaringType.Generics,
+                declaringType.Identity,
+                List.ofSeq declaringType.Generics,
                 ComparableMethodDefinitionHandle.Make facts.Handle,
                 List.ofSeq methodInfo.Generics
             )
