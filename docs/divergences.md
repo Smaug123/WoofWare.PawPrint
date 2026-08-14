@@ -356,6 +356,40 @@ The same reasoning is why the case carries no `MethodTable` payload. That would 
 
 **Where this lives in code**: `FunctionPointerTarget.RuntimeAllocator` in `NativeIntSource.fs` carries the reasoning; `NativeRuntimeTypeQCall.fs` is the only producer, and `UnaryMetadataCallOps.executeAllocatorCalli` the only consumer. `CanonicalPointerKey.RuntimeAllocatorFunctionPointer` gives it a single synthesised hash-bit identity to match.
 
+## An open delegate stores no shuffle thunk, and `_methodPtrAux` is always zero
+
+**CoreCLR**: a delegate's three code-related fields carry different things depending on whether the delegate is open (its `Invoke` supplies every argument the target takes) or closed (it supplies one fewer, and the missing first argument was bound at creation time). `COMDelegate::BindToMethod` (`comdelegate.cpp:1184`) writes, for a *closed* delegate, the bound object into `_target` and the target's code address into `_methodPtr`, leaving `_methodPtrAux` null; and for an *open* one, the delegate **itself** into `_target`, the address of a generated *shuffle thunk* into `_methodPtr`, and the target's real code address into `_methodPtrAux`. The thunk exists because the calling convention puts `this` in the first argument register, and an open delegate's first `Invoke` argument is not a receiver, so the arguments have to be moved down before the target is entered.
+
+**PawPrint**: `_target` holds the bound object for a closed delegate and null for an open one; `_methodPtr` names the target method directly; `_methodPtrAux` is never written, so it stays at the zero `Delegate.InternalAlloc` left.
+
+**Spec status**: Outside ECMA-335. II.14.6 describes delegates in terms of their observable behaviour and says nothing about the layout of `System.Delegate`'s private fields — which is why the divergence is representational rather than semantic.
+
+**Why we chose this**: there are no shuffle thunks to point at. PawPrint does not have a calling convention in the sense that makes one necessary: `AbstractMachine.dispatchDelegateInvoke` rebuilds the callee's evaluation stack explicitly, pushing the receiver first only when there is one, so argument positions are decided at the call rather than baked into a stub. Synthesising a thunk to hold a place in a layout nothing reads would be inventing a runtime artefact to imitate its own shadow.
+
+Note this is not a convention introduced for `Reflection.Emit`. `IlMachineRuntimeMetadata.executeDelegateConstructor` — the ordinary `newobj` path every C# `Func<int, int> f = SomeStatic;` takes — has always written the target into `_target` and the method into `_methodPtr` without regard to open-versus-closed. `Delegate_BindToMethodInfo` applies that same convention rather than adding a second one.
+
+The managed observables agree with CoreCLR for every shape a dynamic method can produce, which is what makes this safe to do:
+
+* `Delegate.Target` is `_methodPtrAux == IntPtr.Zero ? _target : null` (`Delegate.CoreCLR.cs:553`). Open: CoreCLR returns null because the aux field is set; PawPrint returns null because `_target` is. Closed: both return the bound object.
+* `Delegate.GetHashCode` (`Delegate.CoreCLR.cs:152`) branches on the same field, and both branches reduce to `GetType().GetHashCode()` for an open delegate under either representation.
+* `Delegate.Equals` (`Delegate.CoreCLR.cs:88`) compares all three fields optimistically and then falls back to `_methodBase`. Two delegates over the same dynamic method agree in every field under both representations; two over different dynamic methods disagree in `_methodPtr` under both.
+
+**What this costs later**: two things, both of which have to be paid by the slices that make them reachable rather than here.
+
+1. **Openness is no longer recoverable from the fields.** A delegate closed over `null` and an open delegate are both `(_target = null, _methodPtrAux = 0)` here, where CoreCLR distinguishes them by the aux field. So whoever makes a dynamic method *executable* must derive the shuffle from the arity — the delegate's `Invoke` parameter count against the target's — and not from whether `_target` is null. `sourcesImpure/DynamicMethodDelegateBinding.cs` pins the closed-over-null case existing.
+2. **Multicast (issue #959) must revisit this.** `MulticastDelegate.Equals` has a whole branch keyed on `_invocationCount != 0` for wrapper delegates and unmanaged function pointers, both of which read `_methodPtrAux`; and `Delegate.GetMulticastInvoke`/`GetInvokeMethod` are what would populate it. That work has to decide what `_methodPtrAux` means before it can use it.
+
+**Observable example**:
+
+```csharp
+// Reachable only by reflecting on System.Delegate's private fields.
+// CoreCLR:  for `Func<int,int> f = SomeStaticIntToInt;`, _target is f itself and _methodPtrAux is non-zero.
+// PawPrint: _target is null and _methodPtrAux is zero.
+// Every public accessor (Target, Method, Equals, GetHashCode) agrees between the two.
+```
+
+**Where this lives in code**: `IlMachineRuntimeMetadata.executeDelegateConstructor` for the `newobj` path, `NativeDelegate.tryExecuteQCall` for the `CreateDelegate` path, and `AbstractMachine.dispatchDelegateInvoke` for the consumer that makes the convention work.
+
 ## Simulated time advances per retired instruction
 
 **CoreCLR**: time is what the OS says it is. `Environment.TickCount64`, `Stopwatch` and

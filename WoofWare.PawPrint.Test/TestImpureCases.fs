@@ -308,6 +308,42 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // `Delegate_BindToMethodInfo`, the QCall behind `DynamicMethod.CreateDelegate`.
+                // Registered with the dynamic-code switch overridden to true, like its
+                // `ModuleHandle_GetDynamicMethod` sibling above. The guest walks every binding
+                // shape a dynamic method can produce and names what each non-zero exit code means.
+                FileName = "DynamicMethodDelegateBinding.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The other half of the same QCall: that the `_methodPtr` it writes is the *bound
+                // method's* identity rather than a constant or a per-binding one. Separate from
+                // the case above because nothing there compares two delegates, so nothing there
+                // can observe `_methodPtr` at all.
+                FileName = "DynamicMethodDelegateIdentity.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `SystemNative_GetCwd` must classify its error returns before
                 // resolving the caller's buffer to storage, because the C
                 // decides them without dereferencing it. Impure because the
