@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open System.Reflection
 open System.Runtime.InteropServices
 open FsCheck
 open FsCheck.FSharp
@@ -80,12 +81,50 @@ module private AutoLayoutOracle =
 
         (placedPrimitives @ placedValueClasses) |> Map.ofList, finalEnd
 
-    /// The size CoreCLR reports for a value class containing references. Its `minAlign` is
-    /// `containsGCPointers ? TARGET_POINTER_SIZE : largestAlignmentRequirement` once the type
-    /// exceeds a pointer in size, and a type holding a reference always does.
-    let size (fields : FieldShape list) : int =
+    /// `largestAlignmentRequirement` from the placement loop (methodtablebuilder.cpp:8500-8562).
+    /// Note the asymmetry: a *value class* field contributes its own alignment, but anything else
+    /// — including a one-byte primitive — contributes the pointer size, because "non-value-type
+    /// fields always require pointer alignment" (:8554).
+    let private largestAlignmentRequirement (fields : FieldShape list) : int =
+        (1, fields)
+        ||> List.fold (fun acc f ->
+            let required =
+                if not f.IsValueClass then 8
+                elif f.ContainsReferences then 8
+                else f.Alignment
+
+            max acc required
+        )
+
+    /// The size and alignment CoreCLR reports for a value class (methodtablebuilder.cpp:8566-8605):
+    /// a zero-length type is padded to one byte, then "the JITs like to copy full machine words,
+    /// so if the size is bigger than a void* round it up to minAlign and if the size is smaller
+    /// than void* round it up to next power of two".
+    ///
+    /// The reported alignment is that same `minAlign`: it is recorded as the type's custom field
+    /// alignment exactly when it differs from `min(size, pointer)`, which is what
+    /// `MethodTable::GetFieldAlignmentRequirement` (methodtable.cpp:8853) would otherwise return.
+    let finalise (fields : FieldShape list) : int * int =
         let _, finalEnd = place fields
-        roundUp 8 finalEnd
+        let unrounded = max 1 finalEnd
+
+        let minAlign =
+            if unrounded > 8 then
+                if fields |> List.exists (fun f -> f.ContainsReferences) then
+                    8
+                else
+                    largestAlignmentRequirement fields
+            else
+                let mutable candidate = 1
+
+                while candidate < unrounded do
+                    candidate <- candidate * 2
+
+                candidate
+
+        roundUp minAlign unrounded, minAlign
+
+    let size (fields : FieldShape list) : int = fst (finalise fields)
 
 [<TestFixture>]
 module TestStructLayout =
@@ -125,8 +164,18 @@ module TestStructLayout =
             MarshallingDescriptor = None
         }
 
+    let private ofFieldsWithKind
+        (layoutKind : TypeLayoutKind)
+        (layout : Layout)
+        (fields : CliField list)
+        : CliValueType
+        =
+        CliValueType.OfFields bct allCt declaredHandle layoutKind layout CharSet.Ansi fields
+
+    /// The overwhelmingly common shape in this file: a type whose metadata declares
+    /// `LayoutKind.Sequential`, which reaches auto layout only if it holds a reference.
     let private ofFields (layout : Layout) (fields : CliField list) : CliValueType =
-        CliValueType.OfFields bct allCt declaredHandle layout CharSet.Ansi fields
+        ofFieldsWithKind TypeLayoutKind.Sequential layout fields
 
     /// A field the property can hand to the implementation (`Field`) and to the oracle (`Shape`).
     /// Every generated field carries a distinct marker value, so that finding the right *shape*
@@ -212,6 +261,20 @@ module TestStructLayout =
         let refStruct =
             ofFields Layout.Default [ cliField "r" (CliType.ObjectRef (Some (ManagedHeapAddress marker))) None ]
 
+        // A struct of three bytes: 3 bytes, 1-aligned, no references — the only generated field
+        // whose alignment is narrower than a pointer. Without it, every field list either is
+        // empty or contains something pointer-aligned, so `largestAlignmentRequirement` is always
+        // 8 and an implementation that ignored it entirely would agree with the oracle on every
+        // case. `[Auto] struct { S3 x, y, z; }` is 9 bytes with alignment 1 on real .NET.
+        let narrowStruct =
+            ofFields
+                Layout.Default
+                [
+                    cliField "p" (CliType.Numeric (CliNumericType.UInt8 (byte marker))) None
+                    cliField "q" (CliType.Numeric (CliNumericType.UInt8 0uy)) None
+                    cliField "r" (CliType.Numeric (CliNumericType.UInt8 0uy)) None
+                ]
+
         [
             primitive (CliType.Numeric (CliNumericType.UInt8 (byte marker))) 1 false
             primitive (CliType.Bool (byte marker)) 1 false
@@ -222,18 +285,28 @@ module TestStructLayout =
             primitive (CliType.ObjectRef (Some (ManagedHeapAddress marker))) 8 true
             valueClass plainStruct false
             valueClass refStruct true
+            valueClass narrowStruct false
         ]
+
+    /// The number of distinct field kinds `makeKinds` offers, as an inclusive upper bound for
+    /// `Gen.choose`.
+    let private maxKindIndex = 9
 
     /// Index into `makeKinds` of the two kinds that put a reference into the type, so that a
     /// generated field list can be forced onto the auto-layout path.
     let private referenceKindIndices = [ 6 ; 8 ]
+
+    /// Index into `makeKinds` of the kinds that put *no* reference into the type, so that a
+    /// generated field list can be kept off the GC-promotion path and reach auto layout only by
+    /// declaring it.
+    let private plainKindIndices = [ 0 ; 1 ; 2 ; 3 ; 4 ; 5 ; 7 ; 9 ]
 
     /// A field list guaranteed to contain at least one reference, so it takes the auto-layout
     /// path, at a random position so the reference is not always first or last.
     let private genGcFields : Gen<GeneratedField list> =
         gen {
             let! count = Gen.choose (0, 6)
-            let! kindIndices = Gen.listOfLength count (Gen.choose (0, 8))
+            let! kindIndices = Gen.listOfLength count (Gen.choose (0, maxKindIndex))
             let! referenceKind = Gen.elements referenceKindIndices
             let! position = Gen.choose (0, count)
 
@@ -243,6 +316,15 @@ module TestStructLayout =
                 @ List.skip position kindIndices
 
             return indices |> List.mapi (fun i kind -> (makeKinds i).[kind])
+        }
+
+    /// A field list guaranteed to contain *no* reference, so the GC promotion cannot fire and the
+    /// only route into auto layout is the declared kind. May be empty.
+    let private genPlainFields : Gen<GeneratedField list> =
+        gen {
+            let! count = Gen.choose (0, 6)
+            let! kindIndices = Gen.listOfLength count (Gen.elements plainKindIndices)
+            return kindIndices |> List.mapi (fun i kind -> (makeKinds i).[kind])
         }
 
     /// `Pack` and `Size` values to sweep. Auto layout must ignore every one of them.
@@ -257,26 +339,84 @@ module TestStructLayout =
                 }
             ]
 
+    /// The shared body of the two oracle properties: whatever route took this type to auto
+    /// layout, its size, its alignment and every field's offset must be the ones the
+    /// transcription computes.
+    let private agreesWithOracle (vt : CliValueType) (generated : GeneratedField list) : unit =
+        let shapes = generated |> List.map _.Shape
+        let expectedOffsets, _ = AutoLayoutOracle.place shapes
+        let expectedSize, expectedAlignment = AutoLayoutOracle.finalise shapes
+        let actual = CliValueType.SizeOf vt
+
+        actual.Size |> shouldEqual expectedSize
+        // Asserted separately from the size because it is a separate rule: the alignment a type
+        // presents to whatever contains it is `minAlign`, which for a type of all-narrow value
+        // classes is *not* the pointer size the size rounding might suggest.
+        actual.Alignment |> shouldEqual expectedAlignment
+
+        for entry in generated do
+            let expectedOffset = expectedOffsets.[entry.Shape.Name]
+
+            match tryFieldAt expectedOffset entry.Shape.Size vt with
+            | None ->
+                failwith
+                    $"expected %s{entry.Shape.Name} at offset %d{expectedOffset} with size %d{entry.Shape.Size}, but nothing of that size is there"
+            | Some contents -> contents |> shouldEqual entry.Field.Contents
+
     [<Test>]
     let ``Auto layout agrees with an independent transcription of HandleAutoLayout`` () : unit =
+        // The GC-promotion route: the metadata says `Sequential`, but a reference in the type
+        // sends it to auto layout anyway.
         let property (generated : GeneratedField list) (layout : Layout) : unit =
-            let vt = ofFields layout (generated |> List.map _.Field)
-            let shapes = generated |> List.map _.Shape
-            let expectedOffsets, _ = AutoLayoutOracle.place shapes
-
-            (CliValueType.SizeOf vt).Size |> shouldEqual (AutoLayoutOracle.size shapes)
-
-            for entry in generated do
-                let expectedOffset = expectedOffsets.[entry.Shape.Name]
-
-                match tryFieldAt expectedOffset entry.Shape.Size vt with
-                | None ->
-                    failwith
-                        $"expected %s{entry.Shape.Name} at offset %d{expectedOffset} with size %d{entry.Shape.Size}, but nothing of that size is there"
-                | Some contents -> contents |> shouldEqual entry.Field.Contents
+            agreesWithOracle (ofFields layout (generated |> List.map _.Field)) generated
 
         Prop.forAll (Arb.fromGen (Gen.zip genGcFields genLayout)) (fun (f, l) -> property f l)
         |> Check.QuickThrowOnFailure
+
+    [<Test>]
+    let ``A declared-Auto type without references is laid out by auto layout too`` () : unit =
+        // The other route into `HandleAutoLayout` (`PlaceInstanceFields`,
+        // methodtablebuilder.cpp:8212): the type declares `LayoutKind.Auto`. Nothing in these
+        // field lists holds a reference, so the promotion rule cannot fire and the declared kind
+        // is the only thing that can send them here — which is exactly what
+        // `StructLayoutAutoWithoutReferences.cs` observes from a guest.
+        let property (generated : GeneratedField list) (layout : Layout) : unit =
+            agreesWithOracle (ofFieldsWithKind TypeLayoutKind.Auto layout (generated |> List.map _.Field)) generated
+
+        Prop.forAll (Arb.fromGen (Gen.zip genPlainFields genLayout)) (fun (f, l) -> property f l)
+        |> Check.QuickThrowOnFailure
+
+    [<Test>]
+    let ``A declared-Sequential type without references keeps declared order`` () : unit =
+        // The control for the property above, and the one that fails if the layout kind is
+        // ignored: the same reference-free field lists under `Sequential` must be placed in
+        // declared order at their natural alignments, not bucketed. Stated against a direct
+        // transcription of the sequential rule rather than against the auto oracle, so that
+        // "these two routes differ" is asserted by construction.
+        let property (generated : GeneratedField list) : unit =
+            let vt =
+                ofFieldsWithKind TypeLayoutKind.Sequential Layout.Default (generated |> List.map _.Field)
+
+            let mutable cursor = 0
+
+            for entry in generated do
+                let offset =
+                    let error = cursor % entry.Shape.Alignment
+
+                    if error = 0 then
+                        cursor
+                    else
+                        cursor + (entry.Shape.Alignment - error)
+
+                cursor <- offset + entry.Shape.Size
+
+                match tryFieldAt offset entry.Shape.Size vt with
+                | None ->
+                    failwith
+                        $"expected %s{entry.Shape.Name} at declared-order offset %d{offset} with size %d{entry.Shape.Size}, but nothing of that size is there"
+                | Some contents -> contents |> shouldEqual entry.Field.Contents
+
+        Prop.forAll (Arb.fromGen genPlainFields) property |> Check.QuickThrowOnFailure
 
     [<Test>]
     let ``The oracle places fields without overlap and inside the type`` () : unit =
@@ -328,6 +468,145 @@ module TestStructLayout =
         |> Check.QuickThrowOnFailure
 
     [<Test>]
+    let ``Pack and Size are inert once a value type declares LayoutKind.Auto`` () : unit =
+        // The sibling of the property above for the other route into auto layout, and the reason
+        // the layout kind has to reach the *sizing* code and not only the placement code: a
+        // declared `Size` is a floor only where something reads it, and auto layout does not
+        // (`HasLayoutMetadata` is false for an AutoLayout type, so `GetClassTotalSize` is never
+        // consulted). The generator emits empty field lists too, which is the sharpest case:
+        // `[StructLayout(LayoutKind.Auto, Size = 64)] struct Empty {}` is legal C# and is one
+        // byte on real .NET.
+        let property (generated : GeneratedField list) (layouts : Layout list) : unit =
+            let fields = generated |> List.map _.Field
+            let baseline = ofFieldsWithKind TypeLayoutKind.Auto Layout.Default fields
+            let baselineFingerprint = fingerprint baseline
+
+            for layout in layouts do
+                let candidate = ofFieldsWithKind TypeLayoutKind.Auto layout fields
+
+                (CliValueType.SizeOf candidate) |> shouldEqual (CliValueType.SizeOf baseline)
+                fingerprint candidate |> shouldEqual baselineFingerprint
+
+        Prop.forAll (Arb.fromGen (Gen.zip genPlainFields (Gen.listOfLength 4 genLayout))) (fun (f, l) -> property f l)
+        |> Check.QuickThrowOnFailure
+
+    [<Test>]
+    let ``A declared-Sequential type does read Pack and Size`` () : unit =
+        // Guards the guard above: "inert" is only a claim about auto layout, and would be
+        // vacuous if `Pack`/`Size` were inert everywhere. A `Size` floor over a single byte field
+        // is honoured under `Sequential` and discarded under `Auto`.
+        let field = [ cliField "b" (CliType.Numeric (CliNumericType.UInt8 7uy)) None ]
+        let layout = Layout.Custom (size = 24, packingSize = 0)
+
+        (CliValueType.SizeOf (ofFieldsWithKind TypeLayoutKind.Sequential layout field)).Size
+        |> shouldEqual 24
+
+        (CliValueType.SizeOf (ofFieldsWithKind TypeLayoutKind.Auto layout field)).Size
+        |> shouldEqual 1
+
+    [<Test>]
+    let ``The layout kind is projected from TypeAttributes.LayoutMask`` () : unit =
+        // `AutoLayout` is the zero bit pattern, so a type carrying no `[StructLayout]` at all
+        // reports it (ECMA §II.10.1.2). Sweeping the unrelated bits pins that the mask is applied
+        // rather than the whole attribute value compared.
+        for noise in
+            [
+                TypeAttributes.Public
+                TypeAttributes.Sealed
+                TypeAttributes.UnicodeClass
+                TypeAttributes.BeforeFieldInit
+            ] do
+            TypeLayoutKind.ofTypeAttributes (TypeAttributes.AutoLayout ||| noise)
+            |> shouldEqual TypeLayoutKind.Auto
+
+            TypeLayoutKind.ofTypeAttributes (TypeAttributes.SequentialLayout ||| noise)
+            |> shouldEqual TypeLayoutKind.Sequential
+
+            TypeLayoutKind.ofTypeAttributes (TypeAttributes.ExplicitLayout ||| noise)
+            |> shouldEqual TypeLayoutKind.Explicit
+
+        // The fourth bit pattern is not a legal LayoutMask value and CoreCLR refuses to load such
+        // a type, so we refuse to guess at one rather than pick a layout it never had.
+        let exn =
+            Assert.Throws<exn> (fun () -> TypeLayoutKind.ofTypeAttributes TypeAttributes.LayoutMask |> ignore)
+
+        exn.Message |> shouldContainText "not one of AutoLayout"
+
+    [<Test>]
+    let ``A declared-Auto reference type is laid out sequentially, deliberately`` () : unit =
+        // Pins the one place `TypeLayoutKind.applied` departs from the metadata, so that removing
+        // it is a decision rather than an accident. Reference types are held back from the
+        // declared-Auto route because PawPrint flattens the base chain into a single field list
+        // and would otherwise sort inherited fields in among the derived type's own; issue #994
+        // covers lifting both together, and records what real .NET does here. No guest can
+        // observe the difference today — reaching a reference type's first field means
+        // reinterpreting the reference as another class (`Unsafe.As<RawData>(obj).Data`), which
+        // PawPrint does not support — so this unit test is the only thing holding the gate in
+        // place.
+        //
+        // Note what is *not* suppressed: the GC promotion is a property of the fields, so a
+        // reference-containing class still reaches auto layout, which is how nearly every class
+        // is laid out today.
+        TypeLayoutKind.applied false TypeAttributes.AutoLayout
+        |> shouldEqual TypeLayoutKind.Sequential
+
+        TypeLayoutKind.applied true TypeAttributes.AutoLayout
+        |> shouldEqual TypeLayoutKind.Auto
+
+        // Sequential and explicit are reported faithfully for both.
+        for isValueType in [ true ; false ] do
+            TypeLayoutKind.applied isValueType TypeAttributes.SequentialLayout
+            |> shouldEqual TypeLayoutKind.Sequential
+
+            TypeLayoutKind.applied isValueType TypeAttributes.ExplicitLayout
+            |> shouldEqual TypeLayoutKind.Explicit
+
+    [<Test>]
+    let ``A declared-Auto type carrying field offsets is rejected`` () : unit =
+        // Explicit layout is read off the fields, so a declared-`Auto` type that carries offsets
+        // would silently be laid out explicitly rather than by the algorithm its kind names. That
+        // combination cannot arise from the base-chain flattening — `applied` reports `Auto` only
+        // for value types, which inherit no instance fields — so it is malformed input, and is
+        // refused rather than reinterpreted.
+        let withOffsets =
+            [
+                cliField "a" (CliType.Numeric (CliNumericType.Int32 1)) (Some 0)
+                cliField "b" (CliType.Numeric (CliNumericType.Int32 2)) (Some 4)
+            ]
+
+        let withoutOffsets =
+            [
+                cliField "a" (CliType.Numeric (CliNumericType.Int32 1)) None
+                cliField "b" (CliType.Numeric (CliNumericType.Int32 2)) None
+            ]
+
+        let exn =
+            Assert.Throws<exn> (fun () -> ofFieldsWithKind TypeLayoutKind.Auto Layout.Default withOffsets |> ignore)
+
+        exn.Message |> shouldContainText "carry a FieldOffset"
+
+        // Every other combination of kind and field shape is reachable, because a reference type's
+        // flattened base chain mixes fields governed by different kinds — see
+        // `LayoutKindAcrossInheritance.cs`, where an explicit-layout class presents only its
+        // sequential base's offset-free fields. They are laid out, not refused.
+        for kind in [ TypeLayoutKind.Explicit ; TypeLayoutKind.Sequential ] do
+            ofFieldsWithKind kind Layout.Default withOffsets |> ignore
+            ofFieldsWithKind kind Layout.Default withoutOffsets |> ignore
+
+        // A declared-`Explicit` type whose fields carry no offsets falls back to declared-order
+        // placement, which is what it received before the layout kind was modelled at all.
+        let fallback =
+            ofFieldsWithKind TypeLayoutKind.Explicit Layout.Default withoutOffsets
+
+        (CliValueType.SizeOf fallback).Size |> shouldEqual 8
+
+        tryFieldAt 0 4 fallback
+        |> shouldEqual (Some (CliType.Numeric (CliNumericType.Int32 1)))
+
+        tryFieldAt 4 4 fallback
+        |> shouldEqual (Some (CliType.Numeric (CliNumericType.Int32 2)))
+
+    [<Test>]
     let ``A value type holding references is pointer-sized and pointer-aligned`` () : unit =
         // What `writeArrayBytes` relies on when it derives a clear length as
         // `byteLength / sizeof(IntPtr)`: if a GC-containing element were not a whole number of
@@ -375,13 +654,17 @@ module TestStructLayout =
         // GC-containing type still ends on a pointer boundary, which makes the order of the two
         // operations observable: `Size = 9` over a reference is 16 bytes, not 9.
         let withRef =
-            ofFields (Layout.Custom (size = 9, packingSize = 0)) [ cliField "r" (CliType.ObjectRef None) (Some 0) ]
+            ofFieldsWithKind
+                TypeLayoutKind.Explicit
+                (Layout.Custom (size = 9, packingSize = 0))
+                [ cliField "r" (CliType.ObjectRef None) (Some 0) ]
 
         (CliValueType.SizeOf withRef).Size |> shouldEqual 16
 
         // The same floor over a non-reference field is honoured exactly.
         let withoutRef =
-            ofFields
+            ofFieldsWithKind
+                TypeLayoutKind.Explicit
                 (Layout.Custom (size = 9, packingSize = 0))
                 [
                     cliField "l" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) (Some 0)
@@ -398,7 +681,8 @@ module TestStructLayout =
         // `Int128`'s own 16-byte alignment requirement is a separate gap (parked as
         // `StructLayoutInt128Alignment.cs`), so this pins the alignment rule on its own.
         let wide =
-            ofFields
+            ofFieldsWithKind
+                TypeLayoutKind.Explicit
                 Layout.Default
                 [
                     cliField "l" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) (Some 0)

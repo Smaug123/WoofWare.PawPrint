@@ -549,6 +549,9 @@ module IlMachineRuntimeMetadata =
                 baseClassTypes
                 state.ConcreteTypes
                 concreteType
+                (TypeLayoutKind.applied
+                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
+                    typeInfo.TypeAttributes)
                 typeInfo.Layout
                 (CharSetMetadata.ofTypeAttributes typeInfo.TypeAttributes)
                 allFields
@@ -622,6 +625,7 @@ module IlMachineRuntimeMetadata =
                 baseClassTypes
                 state.ConcreteTypes
                 stringType
+                (TypeLayoutKind.applied false baseClassTypes.String.TypeAttributes)
                 Layout.Default
                 (CharSetMetadata.ofTypeAttributes baseClassTypes.String.TypeAttributes)
 
@@ -814,17 +818,25 @@ module IlMachineRuntimeMetadata =
         (frame : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         : string
         =
-        let typeName = concreteTypeFullName state frame.Method.RequiredDeclaringType
+        // A method minted by `Reflection.Emit` has no declaring type, and real .NET renders its
+        // frame with no type name at all: measured, a `DynamicMethod` called "Thrower" appears as
+        // `at Thrower(Int32)` where an ordinary method appears as `at Ns.Type.M(Int32)`. So the
+        // separating dot goes too, rather than leaving a leading `.` for a name that is not there.
+        let qualifier =
+            match frame.Method.TryDeclaringType with
+            | Some declaringType -> $"%s{concreteTypeFullName state declaringType}."
+            | None -> ""
 
         // The method's defining assembly is the assembly that contains its declaring type;
         // both the type-level and the method-level generic-parameter names live in there.
         let declaringAssembly = state.LoadedAssembly frame.Method.DeclaringAssembly
 
         let typeGenericNames : string array =
-            match declaringAssembly with
-            | None -> Array.empty
-            | Some assy ->
-                match assy.TypeDefs.TryGetValue frame.Method.RequiredDeclaringType.Definition.Get with
+            match declaringAssembly, frame.Method.TryDeclaringType with
+            | None, _
+            | _, None -> Array.empty
+            | Some assy, Some declaringType ->
+                match assy.TypeDefs.TryGetValue declaringType.Definition.Get with
                 | true, ti -> ti.Generics |> Seq.map (fun (gp, _) -> gp.Name) |> Seq.toArray
                 | false, _ -> Array.empty
 
@@ -879,7 +891,7 @@ module IlMachineRuntimeMetadata =
             )
             |> String.concat ", "
 
-        $"   at %s{typeName}.%s{frame.Method.Name}%s{methodGenericsText}(%s{paramText})"
+        $"   at %s{qualifier}%s{frame.Method.Name}%s{methodGenericsText}(%s{paramText})"
 
     /// CoreLib's `SR.Exception_EndStackTraceFromPreviousThrow` (Strings.resx:2291), emitted by
     /// `StackTrace.ToString` after a frame whose `IsLastFrameFromForeignExceptionStackTrace` is
@@ -1194,6 +1206,9 @@ module IlMachineRuntimeMetadata =
                 baseClassTypes
                 state.ConcreteTypes
                 threadTypeHandle
+                (TypeLayoutKind.applied
+                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies threadTypeInfo)
+                    threadTypeInfo.TypeAttributes)
                 threadTypeInfo.Layout
                 (CharSetMetadata.ofTypeAttributes threadTypeInfo.TypeAttributes)
                 allFields
@@ -1324,6 +1339,9 @@ module IlMachineRuntimeMetadata =
                 baseClassTypes
                 state.ConcreteTypes
                 tieHandle
+                (TypeLayoutKind.applied
+                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies tieTypeInfo)
+                    tieTypeInfo.TypeAttributes)
                 tieTypeInfo.Layout
                 (CharSetMetadata.ofTypeAttributes tieTypeInfo.TypeAttributes)
                 allFields
@@ -1406,6 +1424,9 @@ module IlMachineRuntimeMetadata =
                 baseClassTypes
                 state.ConcreteTypes
                 tieHandle
+                (TypeLayoutKind.applied
+                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies tieTypeInfo)
+                    tieTypeInfo.TypeAttributes)
                 tieTypeInfo.Layout
                 (CharSetMetadata.ofTypeAttributes tieTypeInfo.TypeAttributes)
                 allFields

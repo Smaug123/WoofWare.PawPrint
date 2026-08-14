@@ -67,11 +67,11 @@ module TestCliTypeCellPaths =
         }
 
     let private ofFields (fields : CliField list) : CliType =
-        CliValueType.OfFields bct allCt declaredHandle Layout.Default CharSet.Ansi fields
+        SynthesisedLayoutKind.ofFields bct allCt declaredHandle Layout.Default CharSet.Ansi fields
         |> CliType.ValueType
 
     let private ofFieldsSized (size : int) (fields : CliField list) : CliType =
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             declaredHandle

@@ -266,10 +266,17 @@ module MethodBody =
 /// directly.
 /// </para>
 /// <para>
-/// The case carries no payload: a synthesised method's identity is its declaring type plus its
-/// kind. For a struct-marshal stub the declaring type is the type being marshalled, so two stubs
-/// for the same type are the same method — which is exactly the per-MethodTable identity
-/// CoreCLR's stub cache has.
+/// A synthesised method's identity is its owner plus its kind, and for the two cases with a
+/// declaring type that is all the payload needed: a struct-marshal stub is owned by the type being
+/// marshalled, so two stubs for the same type are the same method, which is exactly the
+/// per-MethodTable identity CoreCLR's stub cache has.
+/// </para>
+/// <para>
+/// <see cref="DynamicMethod"/> is the exception, and has to carry one. Every method minted by
+/// <c>Reflection.Emit</c> into a given module shares one owner — the synthetic per-module class of
+/// <see cref="MethodOwner.DynamicMethodsClass"/> — so owner-plus-kind would make every dynamic
+/// method in an assembly the same method. Its <see cref="DynamicMethodHandle"/> is what separates
+/// them, which is why it sits in the position a metadata method's MethodDef token occupies.
 /// </para>
 /// </remarks>
 [<RequireQualifiedAccess>]
@@ -299,6 +306,19 @@ type SynthesisedMethod =
     /// </remarks>
     | EntryPointPlaceholder
 
+    /// <summary>
+    /// A method minted at runtime by <c>Reflection.Emit</c>: CoreCLR's <c>DynamicMethodDesc</c>,
+    /// the thing <c>MethodDesc::IsNoMetadata()</c> answers <c>true</c> for.
+    /// </summary>
+    /// <remarks>
+    /// Unlike the other cases, this one is not a *behaviour* the interpreter supplies — the method
+    /// has a real IL body, read off its <c>DynamicResolver</c> when it was minted. What makes it
+    /// synthesised is the absence of a MethodDef row, which is precisely what this DU distinguishes.
+    /// The handle is both its identity and the key to that body in
+    /// <c>MethodHandleRegistry.DynamicMethods</c>.
+    /// </remarks>
+    | DynamicMethod of DynamicMethodHandle
+
 [<RequireQualifiedAccess>]
 module SynthesisedMethod =
     /// Whether calling this method obliges the runtime to initialise its declaring type first, as
@@ -325,6 +345,12 @@ module SynthesisedMethod =
         // this frame demand it as a side effect of being entered would be a second, unrelated
         // reason for the same work to happen.
         | SynthesisedMethod.EntryPointPlaceholder -> false
+        // There is nothing to initialise. A dynamic method's owner is the synthetic per-module
+        // class, which has no metadata, no static fields and no `.cctor` — CoreCLR's
+        // `CreateMinimalMethodTable` builds it precisely so that a `DynamicMethodDesc` has
+        // *somewhere* to hang, not so that it can behave as a type. Invoking an LCG method runs no
+        // class initialiser in CoreCLR either.
+        | SynthesisedMethod.DynamicMethod _ -> false
 
 /// The facts that exist only because a method was read from a MethodDef row.
 ///

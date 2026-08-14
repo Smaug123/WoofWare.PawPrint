@@ -1589,9 +1589,6 @@ module IlMachineStateExecution =
         let methodHasIntrinsicAttribute =
             MethodInfo.isJITIntrinsic getMemberRefParentType declaringAssy.Methods methodToCall
 
-        let declaringType =
-            declaringAssy.TypeDefs.[methodToCall.RequiredDeclaringType.Definition.Get]
-
         // The two `[Intrinsic]` checks deliberately use different methods as their basis.
         //
         //  * Method-level `[Intrinsic]` (above) is a property of the body we are about to run, so
@@ -1617,9 +1614,6 @@ module IlMachineStateExecution =
             | MetadataToken.TypeReference r -> callSiteDeclaringAssy.TypeRefs.[r]
             | x -> failwith $"{x}"
 
-        let callSiteDeclaringType =
-            callSiteDeclaringAssy.TypeDefs.[callSiteMethod.RequiredDeclaringType.Definition.Get]
-
         // An abstract call-site declaration has no IL of its own, so a type-level `[Intrinsic]`
         // inherited from it is a hint about the interface, not about the override we resolved
         // to. `IEnumerator<T>` carries a type-level `[Intrinsic]`, so without this suppression
@@ -1630,12 +1624,35 @@ module IlMachineStateExecution =
             | MethodBody.Abstract -> true
             | _ -> false
 
+        // A method the runtime synthesised is never an intrinsic, and asking whether it is would
+        // crash: both of the remaining questions -- the type-level `[Intrinsic]` and the method
+        // key -- read a TypeDef row, and a `Reflection.Emit` method has none. `isJITIntrinsic`
+        // already answers `false` for a synthesised method on the same reasoning
+        // (Domain/MethodInfo.fs), so this keys on the same thing rather than on whether the owner
+        // happens to be a type.
+        //
+        // Keyed on the *kind* rather than on `TryDeclaringType` deliberately. It is the truthful
+        // classifier -- CoreCLR never intrinsic-classifies synthesised code -- and it also covers
+        // the struct-marshal stub, whose owner is the type being *marshalled*: without this, a
+        // `[Intrinsic]`-attributed struct being marshalled would divert its stub into
+        // `Intrinsics.call` and fail with a TODO naming the subject type.
+        //
+        // `callSiteMethod` need not be tested separately: a synthesised method has
+        // `DispatchesVirtually = false` and this path is reached with
+        // `performInterfaceResolution = false`, so resolution can never make one of the pair
+        // synthesised and the other not.
+        let isSynthesised =
+            match methodToCall with
+            | MethodInfo.Synthesised _ -> true
+            | MethodInfo.Metadata _ -> false
+
         let declaringTypeHasIntrinsicAttribute =
-            not callSiteBodyIsAbstract
+            not isSynthesised
+            && not callSiteBodyIsAbstract
             && MethodInfo.hasIntrinsicAttribute
                 callSiteGetMemberRefParentType
                 callSiteDeclaringAssy.Methods
-                callSiteDeclaringType.Attributes
+                callSiteDeclaringAssy.TypeDefs.[callSiteMethod.RequiredDeclaringType.Definition.Get].Attributes
 
         // `[Intrinsic]` on an abstract/interface method is a JIT inlining hint for the
         // call site only — there is no IL to interpret. Virtual resolution has already run
@@ -1651,7 +1668,14 @@ module IlMachineStateExecution =
             (methodHasIntrinsicAttribute || declaringTypeHasIntrinsicAttribute)
             && not isAbstractBody
 
-        let intrinsicKey = Intrinsics.methodKey state methodToCall
+        // `None` exactly when there is no metadata to key on; see `isSynthesised` above. Every
+        // consumer below therefore has to say what it does for a synthesised method, and each says
+        // the same thing: it is not that intrinsic.
+        let intrinsicKey : IntrinsicMethodKeys.IntrinsicMethodKey option =
+            if isSynthesised then
+                None
+            else
+                Some (Intrinsics.methodKey state methodToCall)
 
         // `static T Activator.CreateInstance<T>()` is marked `[Intrinsic]` because the JIT inlines it
         // to an allocate+ctor sequence. The managed IL bottoms out in InternalCalls
@@ -1680,6 +1704,12 @@ module IlMachineStateExecution =
         //    runs cctor eagerly on every instance creation regardless of the flag, so this
         //    intrinsic follows the same convention. ECMA-335 II.10.5.3.2 permits eager schedules.
         let tryHandleActivatorCreateInstance () : (IlMachineState * CallCommitment) option =
+            // A synthesised method has no key, and is not `Activator.CreateInstance` whatever else
+            // it is.
+            match intrinsicKey with
+            | None -> None
+            | Some intrinsicKey ->
+
             if
                 intrinsicKey.AssemblyName = "System.Private.CoreLib"
                 && intrinsicKey.DeclaringTypeFullName = "System.Activator"
@@ -1836,6 +1866,9 @@ module IlMachineStateExecution =
                         baseClassTypes
                         state.ConcreteTypes
                         declaringTypeHandle
+                        (TypeLayoutKind.applied
+                            (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeDef)
+                            typeDef.TypeAttributes)
                         typeDef.Layout
                         (CharSetMetadata.ofTypeAttributes typeDef.TypeAttributes)
                         allFields
@@ -1871,7 +1904,9 @@ module IlMachineStateExecution =
                 None
 
         match
-            if isIntrinsic && not (Intrinsics.isSafeIntrinsic intrinsicKey) then
+            // `isIntrinsic` is false whenever the key is absent, so the `Option.get` shape here is
+            // discharged by the conjunction rather than assumed.
+            if isIntrinsic && not (Intrinsics.isSafeIntrinsic (Option.get intrinsicKey)) then
                 match tryHandleActivatorCreateInstance () with
                 | Some result -> Some result
                 | None ->
@@ -1892,7 +1927,7 @@ module IlMachineStateExecution =
                     |> fun state -> Some (state, CallCommitment.Raised)
                 | IntrinsicResult.Unrecognised ->
                     failwith
-                        $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey intrinsicKey}, or add it to safeIntrinsics after reviewing its IL"
+                        $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey (Option.get intrinsicKey)}, or add it to safeIntrinsics after reviewing its IL"
             else
                 None
         with
@@ -2079,6 +2114,24 @@ module IlMachineStateExecution =
                 newFrame
             else
 
+            // The synthesised arm comes first, and asks its question *without* looking the
+            // declaring type up. That ordering is load-bearing rather than tidy: a method minted
+            // by `Reflection.Emit` is owned by a class with no TypeDef row, so the lookup below
+            // cannot succeed for one — and running it first would crash on every dynamic-method
+            // call before anything got to say that no initialisation is needed.
+            match methodToCall with
+            | MethodInfo.Synthesised (_, kind) ->
+                if SynthesisedMethod.initialisesDeclaringType kind then
+                    // No synthesised kind answers `true` today. When one does, it will need a
+                    // declaring type to initialise, and this is where to look it up — separately
+                    // from the metadata arm, because "which type does this synthesised method
+                    // initialise" is a question about its semantics rather than about its owner.
+                    failwith
+                        $"TODO: %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name} is a synthesised method whose kind claims to initialise its declaring type, but no path yet resolves which type that is"
+                else
+                    newFrame
+            | MethodInfo.Metadata _ ->
+
             let handle =
                 match
                     AllConcreteTypes.findExistingConcreteType
@@ -2092,10 +2145,6 @@ module IlMachineStateExecution =
                         $"calling %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name}: the resolved method's declaring type is not registered in AllConcreteTypes, so its initialiser cannot be scheduled"
 
             let initialises =
-                match methodToCall with
-                | MethodInfo.Synthesised (_, kind) -> SynthesisedMethod.initialisesDeclaringType kind
-                | MethodInfo.Metadata _ ->
-
                 if methodToCall.IsStatic then
                     true
                 elif methodToCall.Name = ".ctor" then

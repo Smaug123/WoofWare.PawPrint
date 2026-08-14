@@ -65,7 +65,7 @@ module TestInlineArrayStorage =
     let private refField = declaredField "_item" (CliType.ObjectRef None) objectHandle
 
     let private ofFields (fields : CliField list) : CliValueType =
-        CliValueType.OfFields bct allCt declaredHandle Layout.Default CharSet.Ansi fields
+        SynthesisedLayoutKind.ofFields bct allCt declaredHandle Layout.Default CharSet.Ansi fields
 
     [<Test>]
     let ``a type with no inline-array attribute is untouched`` () : unit =

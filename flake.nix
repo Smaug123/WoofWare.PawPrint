@@ -19,7 +19,7 @@
       pname = "WoofWare.PawPrint";
       dotnet-sdk = pkgs.dotnetCorePackages.sdk_10_0;
       dotnet-runtime = pkgs.dotnetCorePackages.runtime_10_0;
-      version = "0.1";
+      version = "0.2";
       # The .NET servicing version we emulate. This must equal what nixpkgs provides (enforced by
       # the `runtime-version-pin` check below) and WoofWare.PawPrint/EmulatedRuntime.fs (enforced by
       # the TestEmulatedRuntime drift test). When nixpkgs bumps the SDK, bump all of these together.

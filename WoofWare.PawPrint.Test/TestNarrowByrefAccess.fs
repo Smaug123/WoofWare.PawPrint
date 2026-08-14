@@ -112,7 +112,7 @@ module TestNarrowByrefAccess =
 
     let private structOf (declared : ConcreteTypeHandle) (fields : CliField list) : CliValueType =
         fields
-        |> CliValueType.OfFields baseClassTypes concreteTypes declared Layout.Default CharSet.Ansi
+        |> SynthesisedLayoutKind.ofFields baseClassTypes concreteTypes declared Layout.Default CharSet.Ansi
 
     /// A stand-in for `MethodBaseInvoker.StackAllocatedByRefs`: `slots` managed-pointer cells laid
     /// out end to end. A managed pointer is a root plus projections in this interpreter, not a bit

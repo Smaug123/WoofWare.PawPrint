@@ -30,7 +30,6 @@
     <Compile Include="SchedulerState.fs" />
     <Compile Include="FieldId.fs" />
     <Compile Include="ManagedPointerSource.fs" />
-    <Compile Include="DynamicMethodHandle.fs" />
     <Compile Include="NativeIntSource.fs" />
     <Compile Include="PointerHashSynthesis.fs" />
     <Compile Include="NativeIntSourceComparison.fs" />

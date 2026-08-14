@@ -988,6 +988,9 @@ module internal UnaryMetadataCallOps =
                                     baseClassTypes
                                     state.ConcreteTypes
                                     tHandle
+                                    (TypeLayoutKind.applied
+                                        (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies tDefn)
+                                        tDefn.TypeAttributes)
                                     tDefn.Layout
                                     (CharSetMetadata.ofTypeAttributes tDefn.TypeAttributes),
                                 state

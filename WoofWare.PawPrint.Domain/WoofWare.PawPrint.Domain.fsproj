@@ -42,6 +42,7 @@
         <Compile Include="GenericParameter.fs" />
         <Compile Include="ConcreteType.fs" />
         <Compile Include="FieldInfo.fs" />
+        <Compile Include="DynamicMethodHandle.fs" />
         <Compile Include="MethodInfo.fs" />
         <Compile Include="TypeInfo.fs" />
         <Compile Include="MethodSpec.fs" />

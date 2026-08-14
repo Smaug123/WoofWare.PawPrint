@@ -347,6 +347,41 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // What a `Reflection.Emit` method's frame looks like in a rendered stack trace:
+                // no qualifying type name, because it has no declaring type. The guest-visible
+                // consequence of #988's representation choice, and the one thing that would have
+                // caught a fabricated owner.
+                FileName = "DynamicMethodStackTrace.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Executing the body of a `Reflection.Emit` method: the first slice that runs the
+                // IL rather than only minting, describing or binding it. Registered with the
+                // dynamic-code switch overridden, like its siblings.
+                FileName = "DynamicMethodInvoke.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `Delegate_BindToMethodInfo`, the QCall behind `DynamicMethod.CreateDelegate`.
                 // Registered with the dynamic-code switch overridden to true, like its
                 // `ModuleHandle_GetDynamicMethod` sibling above. The guest walks every binding

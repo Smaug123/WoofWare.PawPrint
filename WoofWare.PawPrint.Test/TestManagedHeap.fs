@@ -75,6 +75,7 @@ module TestManagedHeap =
             baseClassTypes
             concreteTypes
             (ConcreteTypeHandle.Concrete 1)
+            TypeLayoutKind.Sequential
             (Layout.Custom (size, 1))
             CharSet.Ansi
             []
@@ -721,6 +722,8 @@ module TestManagedHeap =
                 baseClassTypes
                 state.ConcreteTypes
                 objectHandle
+                // Both fields carry a `FieldOffset`, so this is an explicit-layout type.
+                TypeLayoutKind.Explicit
                 (Layout.Custom (size = 8, packingSize = 0))
                 CharSet.Ansi
 

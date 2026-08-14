@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <Compile Include="LoggerFactory.fs" />
+    <Compile Include="SynthesisedLayoutKind.fs" />
     <Compile Include="TestGcHeapHardLimit.fs" />
     <Compile Include="Assembly.fs" />
     <Compile Include="Roslyn.fs" />
@@ -98,6 +99,7 @@
     <Compile Include="TestInternalAlloc.fs" />
     <Compile Include="TestNativeEnum.fs" />
     <Compile Include="TestMethodOwner.fs" />
+    <Compile Include="TestDynamicMethodTracing.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
     <Compile Include="TestNativeGetDynamicMethod.fs" />
     <Compile Include="TestMethodReturnType.fs" />
