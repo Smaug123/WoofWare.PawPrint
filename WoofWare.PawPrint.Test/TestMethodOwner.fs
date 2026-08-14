@@ -95,6 +95,44 @@ module TestMethodOwner =
         declaredOn "Guest, Version=1.0.0.0" 1
         |> shouldNotEqual (declaredOn "Other, Version=1.0.0.0" 1)
 
+    /// <summary>
+    /// Equal owners must hash equally when their instantiations were built from separate arrays.
+    /// </summary>
+    /// <remarks>
+    /// The trap that makes this worth its own test: F#'s <c>=</c> on an <c>ImmutableArray</c>
+    /// compares elementwise, but the array's own <c>GetHashCode</c> reflects the identity of its
+    /// backing storage — so <c>HashCode.Combine</c>, which calls that, disagrees with the equality
+    /// right beside it. Measured, on two three-element arrays with equal contents: <c>=</c> is
+    /// true, <c>GetHashCode</c> differs. Every non-generic owner hashes fine either way, which is
+    /// why the whole suite passed with this wrong and why the generic case has to be written down.
+    /// </remarks>
+    [<Test>]
+    let ``equal generic owners hash equally`` () : unit =
+        let identity =
+            ResolvedTypeIdentity.ofTypeDefinition
+                (assemblyName "Guest, Version=1.0.0.0")
+                (MetadataTokens.TypeDefinitionHandle 1)
+
+        let owner (generics : int list) : MethodOwner<int> =
+            ConcreteType.makeFromIdentity identity "Some.Namespace" "Generic`2" (ImmutableArray.CreateRange generics)
+            |> MethodOwner.DeclaredOn
+
+        let left = owner [ 7 ; 8 ]
+        let right = owner [ 7 ; 8 ]
+
+        // The premise: distinct backing arrays, or this passes for the wrong reason.
+        match left, right with
+        | MethodOwner.DeclaredOn l, MethodOwner.DeclaredOn r ->
+            System.Object.ReferenceEquals (l.Generics, r.Generics) |> shouldEqual false
+        | _ -> failwith "unreachable"
+
+        left |> shouldEqual right
+        hash left |> shouldEqual (hash right)
+
+        // ...and a differing instantiation is still a different owner, so the fix cannot have been
+        // to stop looking at the generics at all.
+        owner [ 7 ; 8 ] |> shouldNotEqual (owner [ 7 ; 9 ])
+
     /// `Assembly` and `Generics` are projected as total because both cases have a truthful answer;
     /// `TryDeclaringType` is an option because only one does. Pinned because the totality is what
     /// let roughly half the call sites of the old `DeclaringType` become renames rather than

@@ -174,7 +174,15 @@ type FunctionPointerTarget =
         | FunctionPointerTarget.Managed methodDefinition ->
             // `MethodOwner`'s own hash, so this stays consistent with `MethodInfo.NominallyEqual`
             // -- which is what `Equals` above delegates to.
-            HashCode.Combine (0, methodDefinition.Owner, methodDefinition.IdentityKey, methodDefinition.Generics)
+            //
+            // F#'s structural `hash` rather than `HashCode.Combine`, and the difference is not
+            // cosmetic: the method's generic arguments are an `ImmutableArray`, whose own
+            // `GetHashCode` reflects backing-array identity where `NominallyEqual` compares it
+            // elementwise. `HashCode.Combine` calls that `GetHashCode`, so two methods this
+            // `Equals` calls equal could hash differently -- and a delegate over a generic method
+            // would then go missing from any hash-keyed collection. See `MethodOwner.GetHashCode`,
+            // which had to be spelled the same way for the same reason.
+            hash (0, methodDefinition.Owner, methodDefinition.IdentityKey, methodDefinition.Generics)
         | FunctionPointerTarget.RuntimeAllocator -> HashCode.Combine 1
         | FunctionPointerTarget.Dynamic handle -> HashCode.Combine (2, handle.GetRegistryId ())
 

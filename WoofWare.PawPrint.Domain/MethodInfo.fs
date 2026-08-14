@@ -459,10 +459,19 @@ type MethodOwner<'typeGenerics> =
             | MethodOwner.DynamicMethodsClass _, MethodOwner.DeclaredOn _ -> false
         | _ -> false
 
+    /// <remarks>
+    /// F#'s structural <c>hash</c> throughout, and <em>not</em> <c>HashCode.Combine</c>, which is
+    /// the trap here. The generic arguments are an <c>ImmutableArray</c>, whose own
+    /// <c>GetHashCode</c> reflects the identity of the backing array while F#'s <c>=</c> — which
+    /// <c>Equals</c> above uses — compares it elementwise. Combining them the .NET way therefore
+    /// gives two equal owners different hashes whenever their instantiations were built from
+    /// separate arrays, which is most of the time. <c>ConcreteType.GetHashCode</c> is spelled the
+    /// same way for the same reason.
+    /// </remarks>
     override this.GetHashCode () : int =
         match this with
-        | MethodOwner.DeclaredOn declaringType -> HashCode.Combine (0, declaringType.Identity, declaringType.Generics)
-        | MethodOwner.DynamicMethodsClass scopeAssembly -> HashCode.Combine (1, scopeAssembly.FullName)
+        | MethodOwner.DeclaredOn declaringType -> hash (0, declaringType.Identity, declaringType.Generics)
+        | MethodOwner.DynamicMethodsClass scopeAssembly -> hash (1, scopeAssembly.FullName)
 
 [<RequireQualifiedAccess>]
 module MethodOwner =
