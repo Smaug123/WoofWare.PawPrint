@@ -84,7 +84,7 @@ module internal StorageLocation =
         with _ ->
             None
 
-    let byteLocation
+    let private byteLocation
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ptr : ManagedPointerSource)
@@ -178,8 +178,79 @@ module internal StorageLocation =
     /// Storage discriminator of a byref. Returns `None` for non-byref pointers
     /// (`Null`, `NativeIntPlaceholder`) which cannot participate in shared
     /// storage with another byref under PawPrint's model.
-    let sharedStorageKey (ptr : ManagedPointerSource) : SharedStorageKey option =
+    let private sharedStorageKey (ptr : ManagedPointerSource) : SharedStorageKey option =
         match ptr with
         | ManagedPointerSource.Byref (root, _) -> Some (sharedStorageKeyOfRoot root)
         | ManagedPointerSource.Null
         | ManagedPointerSource.NativeIntPlaceholder _ -> None
+
+    /// What is known about the storage a pointer names.
+    ///
+    /// The coarse key and the precise coordinate are deliberately *both* carried on
+    /// `Located`, rather than being alternatives. Consumers compare two resolutions, and
+    /// they degrade **pairwise**: if either side lacks a precise offset, both sides fall
+    /// back to the coarse key. A representation that dropped the coarse key once a precise
+    /// one was available would make such a pair incomparable — `ByteStorageIdentity.Array
+    /// arr` has lost the element index that `SharedStorageKey.ArrayCell (arr, index)`
+    /// carries — leaving the consumer to either call a possibly-aliasing pair disjoint or
+    /// reject an unrelated one.
+    [<RequireQualifiedAccess>]
+    type LocationResolution =
+        /// Not a byref, so it shares storage with nothing.
+        | Unrelatable
+        /// A byref whose container is known. `precise` is its flat byte coordinate, present
+        /// only when the projection chain resolves to one.
+        | Located of coarse : SharedStorageKey * precise : (ByteStorageIdentity * int64) option
+
+    /// Resolve a pointer to the storage it names. This is the only way in: `byteLocation`
+    /// and `sharedStorageKey` are private precisely so that a caller cannot obtain a precise
+    /// coordinate without also holding the coarse key it degrades to.
+    let resolve
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : LocationResolution
+        =
+        match sharedStorageKey ptr with
+        | None -> LocationResolution.Unrelatable
+        | Some coarse -> LocationResolution.Located (coarse, byteLocation baseClassTypes state ptr)
+
+    /// Which direction a byte-range copy between two resolved pointers must run.
+    [<RequireQualifiedAccess>]
+    type OverlapVerdict =
+        /// Either provably disjoint, or overlapping with `dest` at or before `src`: a
+        /// forward loop cannot clobber a byte it has yet to read.
+        | CopyForwards
+        /// `src` strictly precedes `dest` inside one storage and the ranges overlap, so the
+        /// loop must walk backwards.
+        | CopyBackwards
+        /// The two may share storage, but no flat coordinate is available on at least one
+        /// side, so the direction cannot be derived. Callers must fail loud rather than
+        /// assume forwards. Carries the shared key for the diagnostic.
+        | Undecidable of sharedStorage : SharedStorageKey
+
+    /// Decide copy direction from two resolutions. Pure, and total over the resolution
+    /// type — the partiality that `byteLocation` cannot avoid surfaces as `Undecidable`
+    /// rather than as a wrong answer.
+    let overlapVerdict (src : LocationResolution) (dest : LocationResolution) (byteCount : int) : OverlapVerdict =
+        match src, dest with
+        | LocationResolution.Located (_, Some (srcStorage, srcOffset)),
+          LocationResolution.Located (_, Some (destStorage, destOffset)) ->
+            if
+                srcStorage = destStorage
+                && srcOffset < destOffset
+                && destOffset < srcOffset + int64 byteCount
+            then
+                OverlapVerdict.CopyBackwards
+            else
+                // Either distinct byte storages, which cannot overlap, or one storage in
+                // which `dest` does not start strictly inside `src`'s range.
+                OverlapVerdict.CopyForwards
+        | LocationResolution.Located (srcCoarse, _), LocationResolution.Located (destCoarse, _) when
+            srcCoarse = destCoarse
+            ->
+            OverlapVerdict.Undecidable srcCoarse
+        | _ ->
+            // Distinct coarse keys, or a non-byref endpoint: no shared storage is possible
+            // under the model, so overlap is not either.
+            OverlapVerdict.CopyForwards

@@ -51,6 +51,7 @@
     <Compile Include="TestMarshalLayout.fs" />
     <Compile Include="TestManagedHeap.fs" />
     <Compile Include="TestStaticStorage.fs" />
+    <Compile Include="TestStorageLocation.fs" />
     <Compile Include="TestEmptyArrayByrefWalks.fs" />
     <Compile Include="TestBinaryArithmetic.fs" />
     <Compile Include="TestNarrowByrefAccess.fs" />
