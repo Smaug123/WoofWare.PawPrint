@@ -56,6 +56,8 @@
     <Compile Include="Exceptions.fs" />
     <Compile Include="EvalStack.fs" />
     <Compile Include="EvalStackValueComparisons.fs" />
+    <Compile Include="MemoryPools.fsi" />
+    <Compile Include="MemoryPools.fs" />
     <Compile Include="MethodState.fs" />
     <Compile Include="ThreadState.fs" />
     <Compile Include="TypeResolution.fs" />
