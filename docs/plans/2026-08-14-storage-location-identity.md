@@ -1,6 +1,12 @@
 # Plan: one storage-location identity, shared by everything that asks "same location?"
 
-Status: **proposed.** Nothing implemented.
+Status: **in progress.** Stage 1 implemented (`storage-location-hoist`, 3023 passing). Stages 2,
+3′ and 4 proposed; Stage 3 withdrawn.
+
+Reviewed by Codex, which found four defects in the first draft. All four were confirmed against
+the tree and all four changed the plan: §5 Stage 2's type shape, the withdrawal of Stage 3, the
+addition of Stage 3′, and #916 becoming a hard prerequisite of Stage 4. Each is recorded inline
+where it applies rather than in a changelog, so a reader of the stage sees the reasoning.
 
 Goal: give the question *"do these two byrefs name the same storage?"* a single implementation,
 and make its unavoidable partiality explicit in a type rather than in each caller's fallback path.
@@ -151,14 +157,22 @@ Today the partiality is encoded as `option` plus a separate fallback call, with
 
 ```fsharp
 type LocationResolution =
-    /// Container and flat byte offset both known: overlap is decidable by arithmetic.
-    | Exact of ByteStorageIdentity * int64
-    /// Same container provable, offset within it not: overlap is undecidable, callers must
-    /// fail loud rather than guess.
-    | SameStorageUnknownOffset of SharedStorageKey
-    /// No shared storage possible.
+    /// Not a byref (`Null`, `NativeIntPlaceholder`): cannot share storage with anything.
     | Unrelatable
+    /// A byref. `Coarse` is always available and is what two resolutions degrade to when
+    /// either lacks a precise offset; `Precise` adds the flat byte coordinate when the
+    /// projection chain resolves, making overlap decidable by arithmetic.
+    | Located of coarse : SharedStorageKey * precise : (ByteStorageIdentity * int64) option
 ```
+
+**Both fields, not a three-way choice.** The first draft of this plan made `Exact` and
+`SameStorageUnknownOffset` alternatives. Codex showed that breaks behaviour: `shouldCopyBackwards`
+degrades to the coarse key *pairwise* — when **either** side fails to resolve, **both** fall back —
+so a resolution that has dropped its coarse key cannot be compared against one that only has a
+coarse key. Concretely, `Exact (ByteStorageIdentity.Array arr, off)` has lost the element index
+that `SharedStorageKey.ArrayCell (arr, index)` carries, so the pair is incomparable and the
+consumer must either call a possibly-aliasing move disjoint or reject unrelated moves. Keeping
+`Coarse` populated on every byref preserves the existing degradation exactly.
 
 This is the AGENTS.md guideline — *"if callers use a classifier to justify a later operation, keep
 that classifier's contract truthful and load-bearing"* — applied to a classifier that currently
@@ -169,44 +183,90 @@ classification agrees with the old two-call pattern, keeping the pre-move privat
 test file as the reference implementation. The existing `Memmove` overlap tests must be unchanged;
 if any of them change, the move was not behaviour-preserving.
 
-### Stage 3 — Collapse `SharedStorageKey` into `ByteStorageIdentity`
+### Stage 3 — **Dropped.** Do not collapse `SharedStorageKey` into `ByteStorageIdentity`
 
-**Dependencies**: Stage 2. Parallel with Stage 4.
+The first draft proposed merging the two vocabularies, since `SharedStorageKey.HeapValue addr` ≡
+`ByteStorageIdentity.HeapObject addr`, `HeapObjectField` is duplicated verbatim, and `ArrayCell` /
+`StringChar` are `Array` / `String` plus an index. The duplication is real, but merging is
+actively harmful and the stage is withdrawn.
 
-**Implements**: §1 (the duplication half).
+`ByteStorageIdentity` is not merely a naming vocabulary: it is the **proof that a container has
+byte coordinates at all**, and downstream arithmetic consumes it as such —
+`NativeIntSource.SyntheticCrossArrayOffset` stores one as each of `_TargetRoot` and `_SourceRoot`
+(`NativeIntSource.fs:11,13`) to manufacture a deterministic cross-storage byte distance.
+`SharedStorageKey.RuntimeTypeAux` is explicitly byte-imageless — the `ExposedClassObject` cell is a
+single object reference, which is why `byteLocation` returns `None` for it. Adding it to
+`ByteStorageIdentity` would make `SyntheticCrossArrayOffset` representable over a container with no
+byte coordinates, and would make `Located (_, Some (RuntimeTypeAux, offset))` representable too.
 
-The two vocabularies overlap: `SharedStorageKey.HeapValue addr` ≡
-`ByteStorageIdentity.HeapObject addr`; `HeapObjectField` is duplicated verbatim; `ArrayCell` and
-`StringChar` are `Array`/`String` plus an index refinement; and `RuntimeTypeAux` has **no**
-`ByteStorageIdentity` counterpart (`ByteStorageIdentity` cannot name the `ExposedClassObject`
-cell). Express the refinement once and add the missing case.
+That is a "make illegal states unrepresentable" regression traded for removing two duplicated DU
+cases. The two types are deliberately different widths and should stay distinct: `SharedStorageKey`
+is the wider "could these share storage", `ByteStorageIdentity` the narrower "this storage has byte
+coordinates". Record that relationship in both types' doc comments; do not unify them.
 
-**Correctness oracle**: property — the collapsed key induces the *same equivalence relation* as the
-old pair, i.e. for generated pointers `p`, `q`: `newKey p = newKey q` iff
-`oldKey p = oldKey q`. Equivalence-relation equality is the property that actually matters here;
-key-by-key structural equality would be a stronger claim than the consumers need and would
-fail spuriously on the added case.
+### Stage 3′ — Classify cross-field aliasing before any consumer trusts a precise location
+
+**Dependencies**: Stage 2.
+
+**Implements**: §2. This is the stage §2's hazard actually demands, and the first draft of this
+plan omitted it.
+
+`byteLocation` resolves a bare `HeapObjectField` root without consulting layout, so two
+explicit-layout fields `A` and `B` that occupy the *same address* resolve to
+`Some (HeapObjectField (addr, A), 0)` and `Some (HeapObjectField (addr, B), 0)` — **different
+containers**, which every consumer reads as "disjoint, no overlap possible". That is precisely the
+aliasing §2 says cannot be decided, being silently decided the unsafe way.
+
+So `Located` must not advertise a precise offset for a field-rooted byref whose declaring type has
+explicit layout, unless the layout proves the fields disjoint. Conservative classification:
+resolve to `Located (coarse, None)` — same-storage-unknown-offset — for two field roots on one
+object under `LayoutKind.Explicit`, so consumers refuse rather than assume.
+
+**Suspected pre-existing defect, to be confirmed separately.** On `origin/main`,
+`shouldCopyBackwards` already takes the distinct-containers branch for this shape and returns
+`false` (copy forwards). If two overlapping explicit-layout fields can be the endpoints of one
+`Buffer.Memmove`, that is a live wrong-direction copy today, independent of this plan. Do not fold
+the fix into this stage: write the guest, confirm it against real .NET, and file it. If it is
+*not* reachable, say why in the issue — that answer determines whether this stage is a correctness
+fix or only a guard.
+
+**Correctness oracle**: a guest with two `[FieldOffset(0)]` fields of one type, byrefs taken to
+both, compared and `Memmove`d. Under `origin/main` the comparison decides; after this stage it
+refuses. Mutation: removing the explicit-layout check must fail exactly that test.
 
 ### Stage 4 — Give byref comparison access to the resolution
 
-**Dependencies**: Stage 2. Parallel with Stage 3.
+**Dependencies**: Stage 2, Stage 3′, **and PR #916**. See below — this is not optional.
 
-**Implements**: §4. This is the payoff, and it **changes behaviour** — it decides comparisons that
-#916 currently refuses. It must be its own PR, described as a behaviour change, not folded into a
-refactor.
+**Implements**: §4. This is the payoff, and it **changes behaviour** — it decides comparisons
+currently refused. Its own PR, described as a behaviour change, not folded into a refactor.
 
-Resolve the §4 (a)/(b) choice first. Then `ceqNormalised`'s field-bearing-residual refusal becomes
-a deferral, and the handler resolves it via `LocationResolution`: `Exact` on both sides with equal
-container and offset decides equal; equal container and differing offset decides unequal;
-`Unrelatable` pairs decide unequal; `SameStorageUnknownOffset` keeps refusing.
+**#916 is a hard prerequisite, and the first draft wrongly listed only Stage 2.** Two things this
+stage's oracle needs exist only on the unmerged `aresame-refuse-undecidable` branch:
 
-**Correctness oracle**: the three guests #916 parked in `TestByrefComparison.fs` — each should move
-from refused to decided, with the expected answer taken from real .NET (they are parked, so the
-harness already runs them there and nowhere else; see `park-a-test-to-validate-its-oracle`).
-Mutation-check in both directions as #916 did: disabling the new decision must fail only the
-newly-decided tests, and widening it past `SameStorageUnknownOffset` must fail the containment
-tests. Add an explicit case for two `HeapObjectField` roots on one object under explicit layout —
-per §2 that pair must stay refused, and it is the one a careless widening would break.
+- `WoofWare.PawPrint.Test/TestByrefComparison.fs` is **absent from `origin/main`** — verified at
+  `53fa6ad`. The first draft cited it as the oracle; it was read out of #916's PR description, not
+  the tree.
+- At this merge base `ceqNormalised` refuses only `ReinterpretAs`-then-`Field`. A *plain* field
+  residual is still compared structurally and can return `false` outright, as the parked
+  `AreSameFirstFieldVersusReinterpretedWhole.cs` shows. So the "deferral" this stage converts is
+  not yet a refusal — on `origin/main` it is a silent wrong answer, and #916 is what makes it
+  loud first.
+
+Either land #916 first and stack on it, or fold its refusal into this stage — but the dependency
+must be explicit either way. Recommend the former: #916 is reviewed and its "cost: zero, 2592
+passing" measurement is worth keeping as a separate bisection point.
+
+Resolve the §4 (a)/(b) choice first. Then the refusal becomes a deferral, and the handler resolves
+it: `Located` on both sides with `Some` precise on each and equal container decides by comparing
+offsets; distinct containers decide unequal **only when Stage 3′ has ruled out cross-field
+aliasing**; `Unrelatable` decides unequal; anything with `None` precise keeps refusing.
+
+**Correctness oracle**: the three guests #916 parks — each should move from refused to decided,
+with the expected answer taken from real .NET (they are parked, so the harness runs them there and
+nowhere else; see `park-a-test-to-validate-its-oracle`). Mutation-check both directions as #916
+did: disabling the new decision must fail only the newly-decided tests, and widening it past the
+`None`-precise case must fail the containment tests.
 
 ## 6. What would falsify this plan
 
@@ -215,6 +275,10 @@ per §2 that pair must stay refused, and it is the one a careless widening would
   suite and count the three outcomes before writing Stage 4. #916's "cost: zero, 2592 passing"
   note suggests the shapes reaching these predicates are far narrower than their input types
   admit, which cuts both ways.
+- **If Stage 3′ finds cross-field aliasing is unreachable in practice**, Stage 4's distinct-container
+  rule needs no guard and Stage 3′ collapses to a documentation note. Settle it with the guest, not
+  by argument.
+
 Two risks I raised while drafting are **already resolved**, checked at `53fa6ad`:
 
 - *Stage 1 might not be a pure move.* It is: the dependency cluster closes at `rootTemplate`,
