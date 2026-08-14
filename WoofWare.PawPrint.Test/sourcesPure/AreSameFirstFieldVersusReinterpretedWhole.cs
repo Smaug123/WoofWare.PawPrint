@@ -10,21 +10,28 @@ namespace AreSameFirstFieldVersusReinterpretedWholeTest
     }
 
     // A byref to a struct's first field and a byref to the whole struct reinterpreted as that
-    // field's type are the same address, and real .NET's `Unsafe.AreSame` says so. PawPrint
-    // says they differ: `ManagedPointerSource.normaliseForComparison` strips the trailing
-    // `ReinterpretAs`, which leaves a whole-value root on one side and a `Field` projection on
-    // the other, and nothing equates the two.
+    // field's type are the same address, and real .NET's `Unsafe.AreSame` says so.
     //
-    // Both halves are reported independently rather than short-circuiting, so the exit code
-    // says which of them diverged: 1 is the direct `Unsafe.AreSame`, 2 is the same comparison
-    // reached through `ReadOnlySpan<T>.op_Equality`, 3 is both. Measured 3 against 0.
+    // PawPrint cannot tell. Once the trailing `ReinterpretAs` is stripped, one side is
+    // `Byref (local, [Field X])` and the other the bare `Byref (local, [])`; whether those
+    // alias depends on whether `X` sits at offset 0 of its declaring type, and field-offset
+    // layout is not something byref comparison carries. So it refuses the comparison, naming
+    // both byrefs, rather than answering — this guest fails loudly at the first half below.
     //
-    // The first half is the point: it involves no span at all, so this is a defect in the
-    // byref normalisation under `Unsafe.AreSame` rather than anything about spans, and it is
-    // reachable today by any guest that calls `Unsafe.AreSame` directly. Fixing it means
-    // canonicalising "whole value" against "field at offset 0" in `ManagedPointerSource`,
-    // which reaches every consumer of byref comparison — `ceq` on byrefs, `Unsafe.ByteOffset`,
-    // the address-ordering predicates — and so wants its own change.
+    // It used to answer `false` and return 3 (both halves diverging, 1 for the direct
+    // `Unsafe.AreSame` and 2 for the same comparison through `ReadOnlySpan<T>.op_Equality`).
+    // The two halves are still reported as independent bits rather than short-circuiting, so
+    // if the refusal is ever replaced by a real answer the exit code still says which half is
+    // wrong.
+    //
+    // The first half is the point: it involves no span at all, so this is a byref-comparison
+    // gap rather than anything about spans, and it is reachable by any guest calling
+    // `Unsafe.AreSame` directly. Closing it needs either an "is this field at offset 0"
+    // predicate or full byte-offset byref identity; the latter cannot be total while
+    // reference- and pointer-containing values remain byte-imageless.
+    //
+    // PawPrint's side of this — that it refuses rather than guesses — is asserted by
+    // `TestByrefComparison.fs`, because a parked guest is only ever run against real .NET.
     class Program
     {
         static int Main(string[] args)

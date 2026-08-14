@@ -2468,15 +2468,11 @@ module Intrinsics =
             let rightNormalised =
                 ManagedPointerSource.normaliseForComparison normalisation rightPtr
 
-            if
-                ManagedPointerSource.hasNonTrailingReinterpret leftNormalised
-                || ManagedPointerSource.hasNonTrailingReinterpret rightNormalised
-            then
-                failwith
-                    $"TODO: Unsafe.AreSame on byref with `ReinterpretAs` followed by `Field` needs a bytewise layout comparison; got %O{leftPtr} vs %O{rightPtr}"
-
-            let strip = ManagedPointerSource.stripTrailingReinterprets
-            let areSame = strip leftNormalised = strip rightNormalised
+            // `AreSame` *is* byref CEQ — the JIT lowers it to exactly that — so it shares
+            // `ceqNormalised` rather than keeping a second copy of the stripping rules and
+            // the shapes they must refuse.
+            let areSame =
+                ManagedPointerSource.ceqNormalised "Unsafe.AreSame" leftNormalised rightNormalised
 
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool areSame) currentThread
