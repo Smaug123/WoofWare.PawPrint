@@ -64,6 +64,7 @@
     <Compile Include="TestAbsoluteUnixPath.fs" />
     <Compile Include="TestUnixPath.fs" />
     <Compile Include="TestVirtualFileSystem.fs" />
+    <Compile Include="TestFileSystemSeed.fs" />
     <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
     <Compile Include="TestRuntimeConfig.fs" />
     <Compile Include="TestDynamicCodeSupport.fs" />
