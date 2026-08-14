@@ -502,6 +502,20 @@ catch (Exception e) { Console.WriteLine(e.StackTrace); }
 substrings and counts precisely because of this: trace text is not comparable across the two
 runtimes, but the presence, count and ordering of the boundary annotation is.
 
+**A second, narrower gap in the same renderer**: a *synthesised* method's frame prints its
+parameter list as `(…)` where real .NET prints the types — so a `DynamicMethod` called `Thrower`
+taking an `int` renders `at Thrower(…)` against CoreCLR's `at Thrower(Int32)`. The reason is that
+the renderer walks the *raw* (`TypeDefn`) signature rather than the concretised one, deliberately,
+so that generic parameters survive as their formal names (`T`, `TResult`) rather than as whatever
+they were instantiated to — and a synthesised method has no raw signature, only a concretised one.
+Rendering from the concretised signature for this case alone would be straightforward and is the
+obvious fix whenever the parameter text starts mattering; it is not done here because the two
+halves of that decision (formal names for metadata methods, actual types for synthesised ones)
+should be made together. Note the *name* half of such a frame is faithful, including the absence
+of a declaring type — see "An open delegate stores no shuffle thunk" for why a `Reflection.Emit`
+method has none, and `sourcesImpure/DynamicMethodStackTrace.cs`, which asserts only the
+cross-runtime facts for exactly this reason.
+
 ## An unhandled exception is reported after its cleanup runs, not before
 
 **CoreCLR**: when the first pass of exception dispatch finds no handler on the thread, the runtime

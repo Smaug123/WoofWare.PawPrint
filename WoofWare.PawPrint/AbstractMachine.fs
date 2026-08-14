@@ -192,16 +192,33 @@ module AbstractMachine =
                 | CliType.ObjectRef addr -> addr
                 | x -> failwith $"TODO: delegate target wasn't an object ref: %O{x}"
 
-            let methodPtr =
+            let methodPtrTarget =
                 // Delegate._methodPtr is typed IntPtr (primitive-like); unwrap to the inner NativeInt.
                 match
                     delegateToRun
                     |> AllocatedNonArrayObject.DereferenceFieldById (delegateFieldId "_methodPtr")
                     |> CliType.unwrapPrimitiveLike
                 with
-                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer target)) ->
-                    FunctionPointerTarget.requireManaged "delegate invocation" target
+                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer target)) -> target
                 | d -> failwith $"unexpectedly not a method pointer in delegate invocation: {d}"
+
+            // A method minted by `Reflection.Emit` has no `MethodInfo` sitting in the pointer: it
+            // has no MethodDef row for one to be read from, so `Delegate_BindToMethodInfo` stored
+            // its registry handle instead. Build the method here, at the moment of invocation --
+            // see `concretizeDynamicMethod` for why not earlier.
+            let state, methodPtr =
+                match methodPtrTarget with
+                | FunctionPointerTarget.Managed methodPtr -> state, methodPtr
+                | FunctionPointerTarget.Dynamic handle ->
+                    ExecutionConcretization.concretizeDynamicMethod
+                        loggerFactory
+                        baseClassTypes
+                        "delegate invocation"
+                        handle
+                        state
+                | FunctionPointerTarget.RuntimeAllocator ->
+                    FunctionPointerTarget.requireManaged "delegate invocation" methodPtrTarget
+                    |> fun m -> state, m
 
             let methodGenerics = instruction.ExecutingMethod.Generics
 
@@ -228,16 +245,6 @@ module AbstractMachine =
             // Deferring to invocation rather than running it at `ldftn` is likewise measured, not
             // assumed: taking a function pointer is not a use of the type, and CoreCLR's
             // `comdelegate.cpp` contains no class-init call at all.
-            let declaringTypeHandle =
-                AllConcreteTypes.findExistingConcreteType
-                    state.ConcreteTypes
-                    methodPtr.RequiredDeclaringType.Identity
-                    methodPtr.DeclaringTypeGenerics
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"delegate invocation: declaring type %s{MethodOwner.describe methodPtr.Owner} of the target method is not registered in AllConcreteTypes"
-                )
-
             // No class-initialisation check here: the target's frame carries it and runs it as its
             // own prologue. That is what lets this synthetic frame be popped unconditionally
             // below. Previously the check ran first precisely *because* the frame was still up —
@@ -252,12 +259,32 @@ module AbstractMachine =
             | ReturnFrameResult.DispatchException _ -> failwith "unexpected exception dispatch from delegate frame pop"
             | ReturnFrameResult.NormalReturn state ->
 
-            // Rebuild the stack in normal instance-call shape: `this` below the real arguments.
-            // Push `target` first (if instance method) so it ends up at the bottom.
+            // Rebuild the stack in normal instance-call shape: the bound argument below the real
+            // ones, so it ends up at the bottom.
+            //
+            // Whether there *is* a bound argument comes from the arity, not from whether `_target`
+            // happens to be null. The two differ for a delegate closed over `null` — legal, and
+            // what `CreateDelegate(t, null)` produces for a static target one argument wider than
+            // `Invoke` (`NativeDelegate.isCompatible` classifies it `Closed` on arity for exactly
+            // this reason). Reading null as "nothing to push" would then hand the callee one
+            // argument too few: measured on real .NET, a `(string, int) -> int` closed over null
+            // and invoked with 7 receives `(null, 7)` and returns accordingly, so the null is a
+            // value that is passed, not an absence.
+            //
+            // `Invoke` supplies `instruction.Arguments.Length - 1` (its own `this` is index 0), so
+            // the callee taking one more than that is precisely the closed case.
+            let suppliedArgs = instruction.Arguments.Length - 1
+            let calleeArgs = MethodInfo.arity methodPtr + (if methodPtr.IsStatic then 0 else 1)
+
             let state =
-                match target with
-                | None -> state
-                | Some target -> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some target)) thread state
+                if calleeArgs = suppliedArgs then
+                    // Open: `Invoke` supplies everything, and nothing was bound.
+                    state
+                elif calleeArgs = suppliedArgs + 1 then
+                    IlMachineState.pushToEvalStack (CliType.ObjectRef target) thread state
+                else
+                    failwith
+                        $"delegate invocation: %O{methodPtr} takes %d{calleeArgs} argument(s) but Invoke supplied %d{suppliedArgs}; binding should have refused this pairing"
 
             // Push the real invoke parameters, skipping instruction.Arguments.[0] which is the
             // delegate object itself (not needed by the target method).
