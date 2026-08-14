@@ -138,11 +138,23 @@ type FunctionPointerTarget =
     /// towards an answer some real runtime gives, rather than towards one none does.
     | RuntimeAllocator
 
+    /// The address of a method minted by `Reflection.Emit`, which has no MethodDef row and so no
+    /// `MethodInfo` for the `Managed` case to hold. `Delegate_BindToMethodInfo` writes one of
+    /// these into a delegate's `_methodPtr` when the delegate is bound to a `DynamicMethod`.
+    ///
+    /// Identity is the handle's, i.e. the registry id, which is the faithful projection of
+    /// CoreCLR's `DynamicMethodDesc*` — see <see cref="DynamicMethodHandle"/> for why nothing
+    /// descriptive may participate. In particular two `DynamicMethod`s agreeing on name, signature
+    /// and module are distinct addresses, which is what `Delegate.Equals` observes when it
+    /// compares `_methodPtr`.
+    | Dynamic of DynamicMethodHandle
+
     override this.ToString () : string =
         match this with
         | FunctionPointerTarget.Managed methodDefinition ->
             $"{methodDefinition.Name} in {methodDefinition.DeclaringType.Assembly.Name}"
         | FunctionPointerTarget.RuntimeAllocator -> "the runtime's newobj allocation helper"
+        | FunctionPointerTarget.Dynamic handle -> string<DynamicMethodHandle> handle
 
     override this.Equals (other : obj) : bool =
         match other with
@@ -151,8 +163,10 @@ type FunctionPointerTarget =
             | FunctionPointerTarget.Managed left, FunctionPointerTarget.Managed right ->
                 MethodInfo.NominallyEqual left right
             | FunctionPointerTarget.RuntimeAllocator, FunctionPointerTarget.RuntimeAllocator -> true
+            | FunctionPointerTarget.Dynamic left, FunctionPointerTarget.Dynamic right -> left = right
             | FunctionPointerTarget.Managed _, _
-            | FunctionPointerTarget.RuntimeAllocator, _ -> false
+            | FunctionPointerTarget.RuntimeAllocator, _
+            | FunctionPointerTarget.Dynamic _, _ -> false
         | _ -> false
 
     override this.GetHashCode () : int =
@@ -166,6 +180,7 @@ type FunctionPointerTarget =
                 methodDefinition.Generics
             )
         | FunctionPointerTarget.RuntimeAllocator -> HashCode.Combine 1
+        | FunctionPointerTarget.Dynamic handle -> HashCode.Combine (2, handle.GetRegistryId ())
 
 [<RequireQualifiedAccess>]
 module FunctionPointerTarget =
@@ -182,6 +197,16 @@ module FunctionPointerTarget =
         | FunctionPointerTarget.RuntimeAllocator ->
             failwith
                 $"%s{operation}: expected a pointer to a managed method, got a pointer to %O{target}, which has no managed method to call"
+        | FunctionPointerTarget.Dynamic handle ->
+            // Distinct from the case above: this target *does* have a body -- `MethodHandleRegistry`
+            // recorded it when `ModuleHandle_GetDynamicMethod` minted the method -- but it is a
+            // `MethodInstructions<TypeDefn>` with no MethodDef row and no declaring type to
+            // concretise against, so it is not yet something a frame can be pushed for. Executing
+            // one is issue #849's next stage; until then this is the boundary, and it is here
+            // rather than at the binding site so that binding a delegate to a dynamic method
+            // succeeds (as it must, for `Target`/`Method` to be observable) while calling it fails.
+            failwith
+                $"%s{operation}: expected a pointer to a managed method, got a pointer to %O{handle}; PawPrint can mint and bind a Reflection.Emit method but cannot yet execute one"
 
 [<RequireQualifiedAccess>]
 [<CustomEquality>]
