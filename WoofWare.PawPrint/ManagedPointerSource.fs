@@ -1167,10 +1167,17 @@ module ManagedPointerSource =
     /// This is what makes root disjointness insufficient on its own: two byrefs on different
     /// roots are different addresses only while each stays within the root it started from.
     let private mayLeaveRootExtent (root : ByrefRoot) (projs : ByrefProjection list) : bool =
-        // Canonically there is at most one `ByteOffset` and it is last, so this sum is that
-        // one cursor; summing rather than testing each step in turn keeps the answer right
-        // if that invariant is ever relaxed, since it is the total displacement that decides
-        // whether the root's extent was left.
+        // Canonically there is at most one `ByteOffset` and it is last — `appendProjection`
+        // coalesces adjacent offsets, so a second one cannot arrive without an intervening
+        // `Field`, and such a chain carries a non-trailing `ReinterpretAs` that `ceqNormalised`
+        // has already refused above. So this sum is that single cursor.
+        //
+        // It is written as a sum anyway, because it is the *total* displacement that decides
+        // whether the root's extent was left, and testing each step in turn gets that wrong:
+        // two offsets each inside a range can sum to one outside it. Note the limit of that
+        // robustness — `knownByteDisplacement` sums with `List.sumBy`, which is unchecked
+        // whatever this file's `open Checked` says, so a chain that really did carry several
+        // offsets would need that made checked before this could be trusted on it.
         let cursor = knownByteDisplacement projs
 
         if cursor = 0 then
