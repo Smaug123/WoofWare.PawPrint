@@ -42,6 +42,7 @@
     <Compile Include="AbsoluteUnixPath.fs" />
     <Compile Include="UnixPath.fs" />
     <Compile Include="VirtualFileSystem.fs" />
+    <Compile Include="FileSystemSeed.fs" />
     <Compile Include="FileDescriptorRegistry.fs" />
     <Compile Include="TypeHandleRegistry.fs" />
     <Compile Include="FieldHandleRegistry.fs" />

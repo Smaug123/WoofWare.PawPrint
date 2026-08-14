@@ -351,12 +351,20 @@ module NativeCall =
         | CliType.Numeric (CliNumericType.UInt8 b) -> b
         | other -> failwith $"%s{operation}: UTF-8 byte read returned non-byte value %O{other}"
 
-    let readNullTerminatedUtf8
+    /// The bytes of a NUL-terminated C string, without the terminator and
+    /// without interpreting them.
+    ///
+    /// Separate from `readNullTerminatedUtf8` because not every caller wants
+    /// the lenient decode: `Encoding.UTF8.GetString` silently replaces an
+    /// invalid sequence with U+FFFD, which for a *filename* means quietly
+    /// naming a different file than the guest asked for. A caller that must not
+    /// alias reads the bytes and decodes them strictly.
+    let readNullTerminatedBytes
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ptr : ManagedPointerSource)
-        : string
+        : byte array
         =
         match ptr with
         | ManagedPointerSource.Null ->
@@ -367,7 +375,7 @@ module NativeCall =
         | ManagedPointerSource.Byref _ ->
             let byteConcreteType = requiredByteConcreteType operation baseClassTypes state
 
-            let rec loop (byteIndex : int) (bytes : byte list) : string =
+            let rec loop (byteIndex : int) (bytes : byte list) : byte array =
                 if byteIndex > 65535 then
                     // Defensive PawPrint bound against scanning guest memory
                     // forever for unterminated strings.
@@ -376,11 +384,21 @@ module NativeCall =
                 let b = readUtf8Byte operation baseClassTypes state byteConcreteType ptr byteIndex
 
                 if b = 0uy then
-                    bytes |> List.rev |> Array.ofList |> System.Text.Encoding.UTF8.GetString
+                    bytes |> List.rev |> Array.ofList
                 else
                     loop (byteIndex + 1) (b :: bytes)
 
             loop 0 []
+
+    let readNullTerminatedUtf8
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : string
+        =
+        readNullTerminatedBytes operation baseClassTypes state ptr
+        |> System.Text.Encoding.UTF8.GetString
 
     /// Read exactly <paramref name="byteCount"/> bytes of raw UTF-8 from the guest, without
     /// looking for a null terminator. CoreCLR's metadata strings are counted rather than

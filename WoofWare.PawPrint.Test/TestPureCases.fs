@@ -70,12 +70,47 @@ module TestPureCases =
         )
         |> Set.ofSeq
 
+    /// Guests that need a filesystem to look at, with the seed each one wants.
+    ///
+    /// The *same* seed configures both sides of the differential comparison:
+    /// PawPrint realises it into a `VirtualFileSystem` rooted at `/`, and
+    /// `RealRuntime.executeWithSeed` materialises it into the scratch directory
+    /// the real guest runs in. One description, two interpreters — which is
+    /// what makes the agreement worth something, rather than two hand-kept
+    /// copies of a tree that might have drifted apart.
+    ///
+    /// Excluded from `simpleCases` because they need a non-default
+    /// `KernelConfig`.
+    let seededCases : Map<string, Map<FileName, SeedEntry>> =
+        let name (s : string) = FileName.parseOrFail "test seed" s
+        let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
+
+        let file (contents : string) =
+            SeedEntry.File (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
+
+        [
+            "FileExistsSeeded.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    name "d", SeedEntry.Directory (Map.ofList [ name "g", file "nested" ])
+                    name "lf", SeedEntry.Symlink (target "f")
+                    name "ld", SeedEntry.Symlink (target "d")
+                    name "dang", SeedEntry.Symlink (target "nx")
+                    name "cyc", SeedEntry.Symlink (target "cyc")
+                ]
+        ]
+        |> Map.ofList
+
+    let seededCaseNames : string list = seededCases |> Map.toList |> List.map fst
+
     let simpleCases : string list =
         allPure
         |> Seq.filter (fun s ->
             (customExitCodes.ContainsKey s
              || unimplemented.Contains s
-             || expectsUnhandledException.Contains s)
+             || expectsUnhandledException.Contains s
+             || seededCases.ContainsKey s)
             |> not
         )
         |> Seq.toList
@@ -137,7 +172,11 @@ module TestPureCases =
             source
             case.KernelConfig
             (fun image pawPrintResult ->
-                let realResult = RealRuntime.executeWithRealRuntime [||] image
+                // The case's own seed drives the oracle too, so both runtimes
+                // are looking at one description of a filesystem. An unseeded
+                // case passes `FileSystemSeed.empty`, which materialises
+                // nothing and leaves the oracle exactly as it was.
+                let realResult = RealRuntime.executeWithSeed case.KernelConfig.FileSystem [||] image
 
                 // NormalExit and ProcessExit both represent a clean process termination with
                 // an exit code on the terminating thread's eval stack; the only difference is
@@ -643,6 +682,21 @@ class Program
             FileName = fileName
             ExpectedReturnCode = 0
             KernelConfig = KernelConfig.Default
+            AppContext = AppContextProperties.empty
+            ExpectsUnhandledException = false
+            AssertTerminalState = None
+        }
+        |> runTest
+
+    [<TestCaseSource(nameof seededCaseNames)>]
+    let ``Seeded filesystem tests`` (fileName : string) =
+        {
+            FileName = fileName
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    FileSystem = seededCases.[fileName]
+                }
             AppContext = AppContextProperties.empty
             ExpectsUnhandledException = false
             AssertTerminalState = None

@@ -285,6 +285,40 @@ module OutputLogEntry =
 
         builder.ToImmutable ()
 
+/// Which Unix a simulated platform *is*.
+///
+/// The axis along which the systems PawPrint models genuinely differ, and the
+/// only one: everything else it needs to know about a platform — the errno
+/// numbering, a symlink's permission bits, whether `stat` reports a creation
+/// time — is a consequence of this rather than an independent choice. Those
+/// are measured properties of real systems (the symlink mode was probed; the
+/// birth time is a `#if` in `pal_io.c`), so they are derived here from the
+/// flavour rather than supplied by a host, which could only invent them.
+///
+/// A third Unix therefore arrives as a case *here*, and every derivation below
+/// stops compiling until whoever adds it has looked each fact up. That is the
+/// same compile-time fork `RawErrnoPortability` makes, and for the same reason.
+[<RequireQualifiedAccess>]
+type SimulatedUnixFlavour =
+    /// Linux, whose `<errno.h>` numbering, always-0o777 symlink modes and
+    /// birth-time-less `stat` PawPrint follows.
+    | Linux
+    /// Darwin, i.e. macOS. Note that `uname -r` reports the *Darwin* kernel
+    /// release rather than the macOS product version.
+    | Darwin
+
+/// Why a string is not usable as a `utsname.release`.
+[<RequireQualifiedAccess>]
+type SimulatedUnixReleaseError =
+    /// Every Unix fills `utsname.release`, so the empty string names no system.
+    | Empty
+    /// Longer than any `utsname.release` can hold.
+    | TooLong of length : int * limit : int
+    /// The value is handed to the guest as a C string of single bytes, so a
+    /// non-ASCII character has no faithful encoding and an embedded NUL would
+    /// silently truncate what the guest sees.
+    | NotPrintableAscii of index : int * character : char
+
 /// Identity of the Unix-shaped platform the simulated process believes it is
 /// running on. Consulted by the `SystemNative_*` entry points that report
 /// host identity — today only `SystemNative_GetUnixRelease`, which surfaces
@@ -297,73 +331,176 @@ module OutputLogEntry =
 /// workarounds), so letting the host leak in here would change guest
 /// *control flow* between runs.
 ///
-/// Modelled as a closed set of platform identities rather than as a bag of
-/// loose `utsname` strings so that the facts we report stay mutually
-/// consistent as more of `utsname` gets implemented: a future
-/// `SystemNative_GetUnixVersion` or `SystemNative_GetOSArchitecture` is a new
-/// total *function* over this DU, not a new independently-settable string
-/// that could claim a Darwin release alongside an x86_64 machine.
-[<RequireQualifiedAccess>]
+/// Modelled as a flavour plus a release string, rather than as a bag of loose
+/// `utsname` fields, so that the facts we report stay mutually consistent as
+/// more of `utsname` gets implemented: a future `SystemNative_GetUnixVersion`
+/// or `SystemNative_GetOSArchitecture` is a new total *function* of the
+/// flavour, not a new independently-settable string that could claim a Darwin
+/// release alongside an x86_64 machine.
+///
+/// One representation per platform, which is what the flavour buys. An earlier shape had two presets plus a
+/// `Custom of release`, which could not answer anything *but* the release —
+/// so every platform-dependent fact had a failure arm for it, and a guest on a
+/// `Custom` platform could abort the interpreter by stat-ing a symlink. Making
+/// the flavour explicit removes those arms rather than handling them.
+///
+/// Construct with `SimulatedUnixPlatform.linuxX64`, `macOsArm64`, or `create`
+/// for a specific release string.
+[<CustomEquality ; NoComparison>]
 type SimulatedUnixPlatform =
-    /// 64-bit x86 Linux, kernel release shaped like Ubuntu 24.04 LTS. The
-    /// default: it is the platform PawPrint's CI runs on, and the one whose
-    /// CoreLib actually routes `Environment.OSVersion` through
-    /// `SystemNative_GetUnixRelease` at all (the macOS CoreLib goes via
-    /// `Interop.libobjc.GetOperatingSystemVersion` instead).
-    | LinuxX64
-    /// 64-bit ARM macOS. Note that `uname -r` on macOS reports the *Darwin*
-    /// kernel release, not the macOS product version — so this is `24.6.0`
-    /// (macOS 15.6), not `15.6.0`.
-    | MacOsArm64
-    /// Explicit `utsname.release`, for guests that need a specific kernel
-    /// version string (e.g. to exercise a version-sniffing code path, or the
-    /// integer-overflow branch in CoreLib's
-    /// `Environment.FindAndParseNextNumber`). Validated by
-    /// `SimulatedUnixPlatform.unixRelease`; see there for what a legal
-    /// release string is.
-    | Custom of release : string
+    private
+        {
+            Flavour : SimulatedUnixFlavour
+            Release : string
+        }
+
+    override this.ToString () : string = $"%O{this.Flavour} %s{this.Release}"
+
+    override this.Equals (other : obj) : bool =
+        match other with
+        | :? SimulatedUnixPlatform as other -> this.Flavour = other.Flavour && this.Release = other.Release
+        | _ -> false
+
+    override this.GetHashCode () : int =
+        System.HashCode.Combine (this.Flavour, this.Release)
 
 [<RequireQualifiedAccess>]
 module SimulatedUnixPlatform =
     /// Loosest ceiling any Unix we model imposes on `utsname.release`:
     /// macOS's `_SYS_NAMELEN` is 256 (including the NUL), while Linux's
-    /// `_UTSNAME_LENGTH` is only 65. We bound `Custom` by the looser of the
-    /// two because the case deliberately does not say which platform it is
-    /// impersonating, so neither limit is uniquely correct — but an
-    /// unbounded string could hand a guest a release no real `uname` could
-    /// ever produce.
+    /// `_UTSNAME_LENGTH` is only 65. Bounded by the looser of the two rather
+    /// than per-flavour, because the limit is about what a *guest* can be
+    /// handed rather than about which kernel wrote it, and an unbounded string
+    /// could hand a guest a release no real `uname` could produce.
     [<Literal>]
     let private maxReleaseLength : int = 255
 
+    let describe (error : SimulatedUnixReleaseError) : string =
+        match error with
+        | SimulatedUnixReleaseError.Empty ->
+            "release string is empty, but every Unix `uname(2)` fills `utsname.release`"
+        | SimulatedUnixReleaseError.TooLong (length, limit) ->
+            $"release string is %d{length} characters, exceeding the %d{limit}-character limit any Unix `utsname.release` can hold"
+        | SimulatedUnixReleaseError.NotPrintableAscii (index, character) ->
+            $"release string contains non-printable-ASCII character U+%04X{int character} at index %d{index}; `utsname.release` is reported to the guest as single-byte characters, so only printable ASCII round-trips faithfully"
+
+    /// A platform of the given flavour reporting `release` from `uname -r`.
+    ///
+    /// Validated here rather than when the release is read, which is what makes
+    /// every accessor below total: a value of this type is a platform some Unix
+    /// could actually be.
+    let create
+        (flavour : SimulatedUnixFlavour)
+        (release : string)
+        : Result<SimulatedUnixPlatform, SimulatedUnixReleaseError>
+        =
+        if System.String.IsNullOrEmpty release then
+            Error SimulatedUnixReleaseError.Empty
+        elif String.length release > maxReleaseLength then
+            Error (SimulatedUnixReleaseError.TooLong (String.length release, maxReleaseLength))
+        else
+
+        match release |> Seq.tryFindIndex (fun c -> c < ' ' || c > '~') with
+        | Some i -> Error (SimulatedUnixReleaseError.NotPrintableAscii (i, release.[i]))
+        | None ->
+            Ok
+                {
+                    Flavour = flavour
+                    Release = release
+                }
+
+    let createOrFail (context : string) (flavour : SimulatedUnixFlavour) (release : string) : SimulatedUnixPlatform =
+        match create flavour release with
+        | Ok platform -> platform
+        | Error error -> failwith $"%s{context}: %s{describe error}"
+
+    /// 64-bit x86 Linux, kernel release shaped like Ubuntu 24.04 LTS. The
+    /// default: it is the platform PawPrint's CI runs on, and the one whose
+    /// CoreLib actually routes `Environment.OSVersion` through
+    /// `SystemNative_GetUnixRelease` at all (the macOS CoreLib goes via
+    /// `Interop.libobjc.GetOperatingSystemVersion` instead).
+    let linuxX64 : SimulatedUnixPlatform =
+        createOrFail "SimulatedUnixPlatform.linuxX64" SimulatedUnixFlavour.Linux "6.8.0-51-generic"
+
+    /// 64-bit ARM macOS. The release is the *Darwin* kernel's, so `24.6.0`
+    /// (macOS 15.6) rather than `15.6.0`.
+    let macOsArm64 : SimulatedUnixPlatform =
+        createOrFail "SimulatedUnixPlatform.macOsArm64" SimulatedUnixFlavour.Darwin "24.6.0"
+
+    /// Which Unix this platform is.
+    let flavour (platform : SimulatedUnixPlatform) : SimulatedUnixFlavour = platform.Flavour
+
     /// The `utsname.release` string this platform reports, i.e. exactly what
     /// `uname -r` would print. Part of PawPrint's replay contract: changing a
-    /// preset's value changes the `Environment.OSVersion` every recorded
-    /// trace on that platform observes.
+    /// preset's value changes the `Environment.OSVersion` every recorded trace
+    /// on that platform observes.
+    let unixRelease (platform : SimulatedUnixPlatform) : string = platform.Release
+
+    /// Re-check the invariant of a value that may not have come from `create`.
+    /// See `FileName.assertValid`: the only value this can reject is
+    /// `Unchecked.defaultof` / C# `default`, whose null release would otherwise
+    /// be handed to a guest as its `uname -r`.
+    let assertValid (context : string) (platform : SimulatedUnixPlatform) : SimulatedUnixPlatform =
+        // A record is a reference type, so the forged value is `null` itself
+        // rather than a record with a null field — and reading `Flavour` off it
+        // would throw a `NullReferenceException` naming nothing useful.
+        match box platform with
+        | null ->
+            failwith
+                $"%s{context}: the platform is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; construct one with SimulatedUnixPlatform.create, or use the linuxX64 / macOsArm64 presets."
+        | _ ->
+
+        match create platform.Flavour platform.Release with
+        | Ok _ -> platform
+        | Error error ->
+            failwith
+                $"%s{context}: %s{describe error}. A SimulatedUnixPlatform that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; construct one with SimulatedUnixPlatform.create instead."
+
+    /// Whose `<errno.h>` numbering this platform reports, for the errors where
+    /// the two Unixes disagree.
     ///
-    /// Rejects a `Custom` payload that no real `uname` could produce: empty
-    /// (every Unix fills `release`), longer than `maxReleaseLength`, or
-    /// containing a byte outside printable ASCII. The last is load-bearing
-    /// rather than fussy — the value is handed to the guest as a C string of
-    /// single bytes, so a non-ASCII character has no faithful encoding here,
-    /// and an embedded NUL would silently truncate the string the guest sees.
-    let unixRelease (platform : SimulatedUnixPlatform) : string =
-        match platform with
-        | SimulatedUnixPlatform.LinuxX64 -> "6.8.0-51-generic"
-        | SimulatedUnixPlatform.MacOsArm64 -> "24.6.0"
-        | SimulatedUnixPlatform.Custom release ->
-            if String.length release = 0 then
-                failwith
-                    "SimulatedUnixPlatform.Custom: release string is empty, but every Unix `uname(2)` fills `utsname.release`"
+    /// This is the choice `UnixError.toRawErrno` refuses to make on its own, and
+    /// it is what lets an `ELOOP` reach a guest at all: raw 40 is `ELOOP` on
+    /// Linux but `EMSGSIZE` on Darwin, so the number is meaningless until
+    /// something says which Unix is being impersonated. The flavour says.
+    let rawErrnoNumbering (platform : SimulatedUnixPlatform) : RawErrnoNumbering =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> RawErrnoNumbering.Linux
+        | SimulatedUnixFlavour.Darwin -> RawErrnoNumbering.Darwin
 
-            if String.length release > maxReleaseLength then
-                failwith
-                    $"SimulatedUnixPlatform.Custom: release string is %d{String.length release} characters, exceeding the %d{maxReleaseLength}-character limit any Unix `utsname.release` can hold"
+    /// Whether this platform's `stat` reports a creation time.
+    ///
+    /// A compile-time property of the native shim rather than of any file:
+    /// `ConvertFileStatus` in `pal_io.c` sets `BirthTime` and the
+    /// `HAS_BIRTHTIME` flag under `#if HAVE_STAT_BIRTHTIME` — true on macOS,
+    /// false on Linux, where it hard-zeroes both with the comment "Linux path:
+    /// until we use statx()". So the birth time is a real fact about the inode
+    /// on both, and this governs only whether the guest is told it.
+    let reportsBirthTime (platform : SimulatedUnixPlatform) : bool =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> false
+        | SimulatedUnixFlavour.Darwin -> true
 
-            match release |> Seq.tryFindIndex (fun c -> c < ' ' || c > '~') with
-            | Some i ->
-                failwith
-                    $"SimulatedUnixPlatform.Custom: release string contains non-printable-ASCII character U+%04X{int release.[i]} at index %d{i}; `utsname.release` is reported to the guest as single-byte characters, so only printable ASCII round-trips faithfully"
-            | None -> release
+    /// The permission bits this platform reports for a symbolic link, which no
+    /// syscall can set and which the two Unixes genuinely disagree about.
+    ///
+    /// Measured rather than read: with `umask 022` macOS reports 0o755 for a
+    /// fresh symlink, with `umask 077` it reports 0o700 and with `umask 000`
+    /// 0o777 — it applies the creating process's umask, exactly as it does to a
+    /// regular file. Linux reports 0o777 whatever the umask, which is why
+    /// `InodePermissions` derives this rather than storing it: under a Linux
+    /// simulation a stored value could only ever describe a filesystem no
+    /// kernel produced.
+    ///
+    /// The Darwin answer here is the `umask 022` one, which PawPrint has to
+    /// invent because it models no umask yet (nothing can read or set one —
+    /// CoreLib's interop surface has no `SystemNative_UMask` — and no creating
+    /// native exists). When a umask arrives, this becomes a function of it.
+    let symlinkPermissions (platform : SimulatedUnixPlatform) : PermissionBits =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> PermissionBits.parseOrFail "SimulatedUnixPlatform.symlinkPermissions" 0o777
+        | SimulatedUnixFlavour.Darwin ->
+            PermissionBits.parseOrFail "SimulatedUnixPlatform.symlinkPermissions" (0o777 &&& ~~~0o022)
 
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
 /// syscall-emulation state: process-wide last-error registers, the native
@@ -666,6 +803,27 @@ type EmulatedKernel =
         /// within a run the cwd is immutable and a guest must not be able to
         /// observe it changing under it.
         CurrentDirectory : AbsoluteUnixPath
+        /// The simulated process's filesystem: every inode a guest can reach
+        /// through the `SystemNative_*` path calls.
+        ///
+        /// Seeded from `KernelConfig.FileSystem` and, for now, immutable — no
+        /// native mutates it yet. It is emulated kernel state rather than
+        /// anything the interpreter reads from the host, for the usual reason:
+        /// a filesystem read from the host would make a replay depend on the
+        /// machine that produced it, and guests branch on what they find.
+        FileSystem : VirtualFileSystem
+        /// The effective user ID the simulated process runs as, reported by
+        /// `stat` as every inode's `st_uid` and (when it lands) by
+        /// `SystemNative_GetEUid`.
+        ///
+        /// Process-wide rather than per-inode: no managed caller can change a
+        /// file's owner, because `SystemNative_ChOwn` does not exist anywhere in
+        /// the runtime's interop surface, so a per-inode field could never make
+        /// two inodes differ and would carry no information this does not.
+        UserId : uint32
+        /// The effective group ID, reported as every inode's `st_gid`. See
+        /// `UserId`.
+        GroupId : uint32
         /// Pure data model of the simulated process's signal disposition,
         /// per-thread sigprocmasks, and pending-signal queue. Populated by
         /// future slices: nothing in the simulator dispatches signals yet,
@@ -827,7 +985,7 @@ module EmulatedKernel =
     /// macOS CoreLib uses `Interop.libobjc.GetOperatingSystemVersion`
     /// instead), and because it is what PawPrint's CI runs on. Hosts choose
     /// a different identity via `KernelConfig.UnixPlatform`.
-    let defaultUnixPlatform : SimulatedUnixPlatform = SimulatedUnixPlatform.LinuxX64
+    let defaultUnixPlatform : SimulatedUnixPlatform = SimulatedUnixPlatform.linuxX64
 
     /// Current working directory a freshly-minted simulated process reports.
     /// The root, because it is the one directory that exists on every Unix and
@@ -839,6 +997,33 @@ module EmulatedKernel =
     /// where it is, so it claims nothing beyond the root. Hosts that want the
     /// guest to see a particular directory set `KernelConfig.CurrentDirectory`.
     let defaultCurrentDirectory : AbsoluteUnixPath = AbsoluteUnixPath.root
+
+    /// Effective user ID a freshly-minted simulated process runs as.
+    ///
+    /// 1000 rather than 0, and the choice is load-bearing rather than
+    /// cosmetic: `Environment.IsPrivilegedProcess` is literally
+    /// `GetEUid() == 0`, so a guest that defaulted to root would silently take
+    /// the privileged branch of every check it makes about itself — the
+    /// uninteresting one, and not the one most programs are written for. 1000
+    /// is also the first interactive user on the Ubuntu-shaped platform
+    /// `defaultUnixPlatform` already claims to be. A host that wants root says
+    /// so in `KernelConfig.UserId`.
+    let defaultUserId : uint32 = 1000u
+
+    /// Effective group ID a freshly-minted simulated process runs as. Matches
+    /// `defaultUserId`, as a Linux user-private group does.
+    let defaultGroupId : uint32 = 1000u
+
+    /// The `st_dev` every inode in the emulated filesystem reports.
+    ///
+    /// One device for the whole tree, since PawPrint models no mounts. The
+    /// value itself is unobservable beyond comparison — the BCL reads
+    /// `(st_dev, st_ino)` pairs to decide whether two paths name the same file
+    /// (`File.Copy`, `File.Move`, `File.Replace`) and never interprets the
+    /// device number — but it is deliberately *non-zero*: no mounted filesystem
+    /// reports 0, so a zero here would be indistinguishable from a field
+    /// nobody remembered to write.
+    let simulatedDeviceId : int64 = 0x1000001L
 
     let initial : EmulatedKernel =
         {
@@ -865,25 +1050,54 @@ module EmulatedKernel =
             OptimalMaxSpinWaitsPerSpinIteration = defaultOptimalMaxSpinWaitsPerSpinIteration
             UnixPlatform = defaultUnixPlatform
             CurrentDirectory = defaultCurrentDirectory
+            FileSystem = VirtualFileSystem.empty (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
+            UserId = defaultUserId
+            GroupId = defaultGroupId
             Signals = SignalState.empty
         }
 
-    /// Set the Unix platform identity the simulated process reports. Forces
-    /// the release string eagerly so that an invalid `Custom` payload fails
-    /// at configuration time — where the caller can see which knob is wrong —
-    /// rather than at the first `Environment.OSVersion` read deep inside
-    /// guest code.
+    /// Set the Unix platform identity the simulated process reports.
+    ///
+    /// No eager validation of the release string, unlike the shape this
+    /// replaced: `SimulatedUnixPlatform.create` validates at construction, so a
+    /// value of the type is already a platform some Unix could be. `assertValid`
+    /// still catches the one value that can bypass that — a forged
+    /// `Unchecked.defaultof`, whose null release would otherwise reach a guest
+    /// as its `uname -r`.
     let withUnixPlatform (platform : SimulatedUnixPlatform) (kernel : EmulatedKernel) : EmulatedKernel =
-        SimulatedUnixPlatform.unixRelease platform |> ignore<string>
-
         { kernel with
-            UnixPlatform = platform
+            UnixPlatform = SimulatedUnixPlatform.assertValid "EmulatedKernel.UnixPlatform" platform
         }
 
     /// Set the simulated process's current working directory.
     let withCurrentDirectory (dir : AbsoluteUnixPath) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
             CurrentDirectory = AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory" dir
+        }
+
+    /// Realise a host's filesystem seed, with every inode created at
+    /// `createdAt`.
+    ///
+    /// Takes the moment explicitly rather than reading `kernel.WallClockEpochMs`
+    /// so that the result does not depend on whether the caller happened to set
+    /// the clock before or after the filesystem — an ordering dependence between
+    /// two `with` functions is exactly the kind of thing that works until
+    /// someone reorders `KernelConfig.applyTo`.
+    let withFileSystem
+        (createdAt : UnixTimestamp)
+        (seed : Map<FileName, SeedEntry>)
+        (kernel : EmulatedKernel)
+        : EmulatedKernel
+        =
+        { kernel with
+            FileSystem = FileSystemSeed.toVirtualFileSystem createdAt seed
+        }
+
+    /// Set the effective user and group IDs the simulated process runs as.
+    let withUserAndGroupId (userId : uint32) (groupId : uint32) (kernel : EmulatedKernel) : EmulatedKernel =
+        { kernel with
+            UserId = userId
+            GroupId = groupId
         }
 
     /// Set the logical-processor count the simulated process reports. Rejects
@@ -1388,6 +1602,22 @@ type KernelConfig =
         /// `getcwd(3)` read, and note that whatever a host picks here becomes
         /// part of that run's replay contract.
         CurrentDirectory : AbsoluteUnixPath
+        /// The filesystem the guest sees, as the entries of its root directory.
+        /// A tree rather than a list of paths; see `SeedEntry`. Every inode is
+        /// created at `WallClockEpochMs`, so a guest reading an mtime sees the
+        /// instant its process booted.
+        ///
+        /// This, and not any host directory, is the replay input: PawPrint
+        /// never reads the real filesystem, so two runs of the same seed see
+        /// the same tree whatever the machine.
+        FileSystem : Map<FileName, SeedEntry>
+        /// Effective user ID the simulated process runs as, observed as every
+        /// inode's `st_uid`. See `EmulatedKernel.defaultUserId` for why the
+        /// default is 1000 rather than root.
+        UserId : uint32
+        /// Effective group ID the simulated process runs as, observed as every
+        /// inode's `st_gid`.
+        GroupId : uint32
     }
 
     /// Configuration a host gets if it expresses no preference: no environment
@@ -1402,6 +1632,9 @@ type KernelConfig =
             WallClockEpochMs = 0L
             UnixPlatform = EmulatedKernel.defaultUnixPlatform
             CurrentDirectory = EmulatedKernel.defaultCurrentDirectory
+            FileSystem = FileSystemSeed.empty
+            UserId = EmulatedKernel.defaultUserId
+            GroupId = EmulatedKernel.defaultGroupId
         }
 
 [<RequireQualifiedAccess>]
@@ -1419,3 +1652,7 @@ module KernelConfig =
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
         |> EmulatedKernel.withUnixPlatform config.UnixPlatform
         |> EmulatedKernel.withCurrentDirectory config.CurrentDirectory
+        |> EmulatedKernel.withFileSystem
+            (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)
+            config.FileSystem
+        |> EmulatedKernel.withUserAndGroupId config.UserId config.GroupId
