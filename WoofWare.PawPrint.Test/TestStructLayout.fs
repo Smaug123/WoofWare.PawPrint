@@ -562,11 +562,12 @@ module TestStructLayout =
             |> shouldEqual TypeLayoutKind.Explicit
 
     [<Test>]
-    let ``A layout kind that disagrees with the field shape is rejected`` () : unit =
-        // The declared kind and the presence of `FieldOffset` rows are two independent records of
-        // the same fact — a `FieldLayout` row exists exactly for the fields of an explicit-layout
-        // type — and the offsets are only meaningful when they agree. Neither direction may be
-        // silently reinterpreted as the other, because each would invent a different layout.
+    let ``A declared-Auto type carrying field offsets is rejected`` () : unit =
+        // Explicit layout is read off the fields, so a declared-`Auto` type that carries offsets
+        // would silently be laid out explicitly rather than by the algorithm its kind names. That
+        // combination cannot arise from the base-chain flattening — `applied` reports `Auto` only
+        // for value types, which inherit no instance fields — so it is malformed input, and is
+        // refused rather than reinterpreted.
         let withOffsets =
             [
                 cliField "a" (CliType.Numeric (CliNumericType.Int32 1)) (Some 0)
@@ -579,25 +580,31 @@ module TestStructLayout =
                 cliField "b" (CliType.Numeric (CliNumericType.Int32 2)) None
             ]
 
-        for kind in [ TypeLayoutKind.Sequential ; TypeLayoutKind.Auto ] do
-            let exn =
-                Assert.Throws<exn> (fun () -> ofFieldsWithKind kind Layout.Default withOffsets |> ignore)
-
-            exn.Message |> shouldContainText "carry a FieldOffset"
-
         let exn =
-            Assert.Throws<exn> (fun () ->
-                ofFieldsWithKind TypeLayoutKind.Explicit Layout.Default withoutOffsets |> ignore
-            )
+            Assert.Throws<exn> (fun () -> ofFieldsWithKind TypeLayoutKind.Auto Layout.Default withOffsets |> ignore)
 
-        exn.Message |> shouldContainText "carry no FieldOffset"
+        exn.Message |> shouldContainText "carry a FieldOffset"
 
-        // The agreeing combinations are accepted, so the rejection above is about the mismatch and
-        // not about these field lists.
-        ofFieldsWithKind TypeLayoutKind.Explicit Layout.Default withOffsets |> ignore
+        // Every other combination of kind and field shape is reachable, because a reference type's
+        // flattened base chain mixes fields governed by different kinds — see
+        // `LayoutKindAcrossInheritance.cs`, where an explicit-layout class presents only its
+        // sequential base's offset-free fields. They are laid out, not refused.
+        for kind in [ TypeLayoutKind.Explicit ; TypeLayoutKind.Sequential ] do
+            ofFieldsWithKind kind Layout.Default withOffsets |> ignore
+            ofFieldsWithKind kind Layout.Default withoutOffsets |> ignore
 
-        ofFieldsWithKind TypeLayoutKind.Sequential Layout.Default withoutOffsets
-        |> ignore
+        // A declared-`Explicit` type whose fields carry no offsets falls back to declared-order
+        // placement, which is what it received before the layout kind was modelled at all.
+        let fallback =
+            ofFieldsWithKind TypeLayoutKind.Explicit Layout.Default withoutOffsets
+
+        (CliValueType.SizeOf fallback).Size |> shouldEqual 8
+
+        tryFieldAt 0 4 fallback
+        |> shouldEqual (Some (CliType.Numeric (CliNumericType.Int32 1)))
+
+        tryFieldAt 4 4 fallback
+        |> shouldEqual (Some (CliType.Numeric (CliNumericType.Int32 2)))
 
     [<Test>]
     let ``A value type holding references is pointer-sized and pointer-aligned`` () : unit =

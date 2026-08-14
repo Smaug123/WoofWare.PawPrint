@@ -1074,11 +1074,21 @@ and CliValueType =
         )
 
     /// Whether CoreCLR's auto-layout algorithm governs a type, given the layout kind PawPrint
-    /// applies to it (`TypeLayoutKind.applied`) and two facts about its fields.
+    /// applies to it (`TypeLayoutKind.applied`) and three facts about its fields.
     ///
     /// Two routes reach auto layout (`MethodTableBuilder::PlaceInstanceFields`,
     /// methodtablebuilder.cpp:8212): the type declares it, or the type declares `Sequential` and
     /// holds GC references, which promotes it. Explicit layout is never promoted.
+    ///
+    /// Explicit layout is recognised from the fields rather than from the declared kind, and that
+    /// is not a shortcut: a *reference* type's field list here is its whole base chain flattened
+    /// (issue #994), so it routinely mixes fields governed by different kinds. An explicit-layout
+    /// class with no instance fields of its own presents only its sequential base's offset-free
+    /// fields, and a sequential class deriving from an explicit-layout base presents only
+    /// offset-carrying ones — both load on real .NET (`LayoutKindAcrossInheritance.cs`). So "the
+    /// declared kind and the field shape agree" is simply false as a property of this list, and
+    /// the kind is load-bearing only for the choice this function exists to make: among fields
+    /// that carry no offsets, auto placement or sequential.
     ///
     /// The inline-array carve-out is a *deliberate, recorded* divergence rather than a rule of
     /// CoreCLR's. CoreCLR lays an `[InlineArray(N)]` type out as its one declared field and then
@@ -1093,14 +1103,21 @@ and CliValueType =
     /// visible only for an element whose own size is not already its rounded size).
     static member private AutoLayoutGoverns
         (layoutKind : TypeLayoutKind)
+        (hasFieldOffsets : bool)
         (isInlineArrayExpansion : bool)
         (containsReferences : bool)
         : bool
         =
+        if hasFieldOffsets then
+            false
+        else
+
         match layoutKind with
-        | TypeLayoutKind.Explicit -> false
-        | TypeLayoutKind.Auto -> not isInlineArrayExpansion
-        | TypeLayoutKind.Sequential -> containsReferences
+        | TypeLayoutKind.Auto -> not isInlineArrayExpansion || containsReferences
+        // A declared-`Explicit` type whose fields carry no offsets is the inheritance shape above;
+        // it keeps the promotion rule, which is what it got before the kind was modelled at all.
+        | TypeLayoutKind.Sequential
+        | TypeLayoutKind.Explicit -> containsReferences
 
     static member private ComputeConcreteFields
         (layoutKind : TypeLayoutKind)
@@ -1118,25 +1135,25 @@ and CliValueType =
         let seqFields, nonSeqFields =
             fields |> List.partition (fun field -> field.Offset.IsNone)
 
-        // The declared kind and the field shape are two independent records of the same fact, and
-        // the layout below is only meaningful when they agree: a `FieldLayout` row exists exactly
-        // for the fields of an explicit-layout type. Disagreement means the metadata is malformed
-        // or a synthetic construction site passed a kind that does not describe its fields, and
-        // either way the resulting offsets would be an invention.
-        match layoutKind, nonSeqFields, seqFields with
-        | TypeLayoutKind.Explicit, _, _ :: _ ->
+        // A declared-`Auto` type may not carry `FieldOffset` rows: `AutoLayoutGoverns` reads the
+        // offsets structurally, so such a type would silently get explicit layout instead of the
+        // auto layout its caller asked for. Unlike the mismatches in the other direction this one
+        // cannot arise from the base-chain flattening, because `TypeLayoutKind.applied` reports
+        // `Auto` only for value types and a value type inherits no instance fields — so it means
+        // malformed metadata (Roslyn rejects `FieldOffset` outside an explicit-layout type) or a
+        // synthetic construction site contradicting itself.
+        match nonSeqFields with
+        | _ :: _ when layoutKind = TypeLayoutKind.Auto ->
             failwith
-                $"CliValueType.ComputeConcreteFields: type declares LayoutKind.Explicit but %d{seqFields.Length} of its %d{fields.Length} fields carry no FieldOffset (first: %O{seqFields.Head.Id})"
-        | (TypeLayoutKind.Auto | TypeLayoutKind.Sequential), _ :: _, _ ->
-            failwith
-                $"CliValueType.ComputeConcreteFields: type declares %O{layoutKind} layout but %d{nonSeqFields.Length} of its %d{fields.Length} fields carry a FieldOffset (first: %O{nonSeqFields.Head.Id})"
-        | _, _, _ -> ()
+                $"CliValueType.ComputeConcreteFields: type declares LayoutKind.Auto but %d{nonSeqFields.Length} of its %d{fields.Length} fields carry a FieldOffset (first: %O{nonSeqFields.Head.Id})"
+        | _ -> ()
 
         match seqFields, nonSeqFields with
         | [], [] -> []
         | _ :: _, [] when
             CliValueType.AutoLayoutGoverns
                 layoutKind
+                false
                 (CliValueType.IsInlineArrayExpansion (seqFields |> Seq.map _.Id))
                 (seqFields
                  |> List.exists (fun field -> CliType.ContainsObjectReferences field.Contents))
@@ -1299,6 +1316,7 @@ and CliValueType =
         let isAutoLaidOut =
             CliValueType.AutoLayoutGoverns
                 layoutKind
+                (fields |> List.exists (fun field -> field.ConfiguredOffset.IsSome))
                 (CliValueType.IsInlineArrayExpansion (fields |> Seq.map _.Id))
                 containsObjectReferences
 
