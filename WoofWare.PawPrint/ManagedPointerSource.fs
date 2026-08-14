@@ -1021,7 +1021,7 @@ module ManagedPointerSource =
     /// address-preserving in that case. A trailing `ByteOffset` DOES change the
     /// byte address and is preserved; a trailing `ByteOffset 0` is stripped as a
     /// no-op, and the reinterpret it qualified then becomes strippable.
-    let stripTrailingReinterprets (src : NormalisedManagedPointerSource) : ManagedPointerSource =
+    let private stripTrailingReinterprets (src : NormalisedManagedPointerSource) : ManagedPointerSource =
         let (NormalisedManagedPointerSource src) = src
         stripTrailingReinterpretsRaw src
 
@@ -1032,7 +1032,7 @@ module ManagedPointerSource =
     /// projection chains — and we don't yet model that. Callers that compare
     /// byrefs structurally use this to refuse the comparison rather than
     /// silently returning a potentially-wrong answer.
-    let hasNonTrailingReinterpret (src : NormalisedManagedPointerSource) : bool =
+    let private hasNonTrailingReinterpret (src : NormalisedManagedPointerSource) : bool =
         let (NormalisedManagedPointerSource src) = src
 
         match src with
@@ -1090,6 +1090,53 @@ module ManagedPointerSource =
             | ByrefProjection.ReinterpretAs _ -> 0
         )
 
+    /// What, if anything, bounds a byte cursor sitting on this root — that is, what stops a
+    /// `ByteOffset` in the chain from having carried the byref clean out of the storage its
+    /// root names and into somebody else's.
+    ///
+    /// This is a statement about *extent*, not about normalisation, and each case must say
+    /// which one it is. Getting that wrong is how `PeByteRange` came to be refused: it was
+    /// grouped with the roots that have no stride to fold against, on the strength of a
+    /// predicate named after folding, when in fact it carries its own size.
+    [<RequireQualifiedAccess>]
+    type private RootCursorBound =
+        /// The root carries its own index (element, character, byte) and
+        /// `normaliseTrailingByteOffset` folds whole strides of a cursor into it — the roots
+        /// with a fixed cell size, listed by `tryGetCellSize` at each of the
+        /// `normalise*ByteOffset` helpers above, which this must be kept in step with. What
+        /// survives folding is a residual *within* one cell.
+        ///
+        /// Note precisely what that does and does not give us. The residual is bounded by the
+        /// cell; the folded index is *not* bounded by the allocation, because nothing checks
+        /// it against the array's length. So `Unsafe.Add (ref a[0], 1_000_000)` still yields
+        /// an `ArrayElement` root this treats as disjoint from every other root — the LLVM
+        /// answer, in a place where the rest of this rule takes CompCert's. Constructing such
+        /// a byref is undefined behaviour in .NET, and bounding it would need each
+        /// allocation's extent, which byref comparison does not carry; so it is left, named
+        /// rather than papered over.
+        | ResidualWithinCell
+        /// The root names a byte range whose size it carries, so a cursor is inside the root
+        /// exactly when it lands within that size. `PeByteRange` is the case: a `u8` literal
+        /// or a field-RVA blob knows how long it is.
+        | WithinKnownSize of size : int
+        /// Nothing bounds a cursor on this root: no stride to fold against, and no size to
+        /// check against either.
+        | Unbounded
+
+    let private rootCursorBound (root : ByrefRoot) : RootCursorBound =
+        match root with
+        | ByrefRoot.ArrayElement _
+        | ByrefRoot.StringCharAt _
+        | ByrefRoot.StackMemoryByte _
+        | ByrefRoot.NativeMemoryByte _ -> RootCursorBound.ResidualWithinCell
+        | ByrefRoot.PeByteRange range -> RootCursorBound.WithinKnownSize range.Size
+        | ByrefRoot.LocalVariable _
+        | ByrefRoot.Argument _
+        | ByrefRoot.HeapValue _
+        | ByrefRoot.HeapObjectField _
+        | ByrefRoot.StaticField _
+        | ByrefRoot.ExposedClassObject _ -> RootCursorBound.Unbounded
+
     /// Could this run of projections have moved the byref outside the extent of the root it
     /// names?
     ///
@@ -1098,62 +1145,48 @@ module ManagedPointerSource =
     /// makes two chains under **one** root hard to compare, but it cannot carry either of
     /// them out of the root. A `ReinterpretAs` changes the type view without moving at all.
     ///
-    /// Roots that `normaliseTrailingByteOffset` folds whole strides into: those with a fixed
-    /// cell size, listed by `tryGetCellSize` at each of the `normalise*ByteOffset` helpers
-    /// above. This distinction is load-bearing for `mayLeaveRootExtent` and must be kept in
-    /// step with them.
-    let private rootHasFoldedCursor (root : ByrefRoot) : bool =
-        match root with
-        | ByrefRoot.ArrayElement _
-        | ByrefRoot.StringCharAt _
-        | ByrefRoot.StackMemoryByte _
-        | ByrefRoot.NativeMemoryByte _ -> true
-        | ByrefRoot.LocalVariable _
-        | ByrefRoot.Argument _
-        | ByrefRoot.HeapValue _
-        | ByrefRoot.HeapObjectField _
-        | ByrefRoot.StaticField _
-        | ByrefRoot.PeByteRange _
-        | ByrefRoot.ExposedClassObject _ -> false
-
-    /// A cursor is the only step that can, and whether it is bounded depends on the root.
+    /// A cursor applied *after* a `Field`, though, starts from an offset this comparison
+    /// cannot see, so it cannot be placed within the root whatever the root is: that is how
+    /// `a[0].Y` advanced four bytes reaches `a[1]`.
     ///
-    /// For a root whose cursor has been folded, a cursor with no `Field` before it is a
-    /// residual within one element or character and by construction cannot have reached the
-    /// next one; only a `Field` in between defeats the folding and lets it walk out, which
-    /// is how `a[0].Y` advanced four bytes reaches `a[1]`.
-    ///
-    /// For every other root there is no stride to fold against — `normaliseTrailingByteOffset`
-    /// falls through and leaves the cursor untouched — so *any* non-zero cursor is unbounded.
-    /// That is not a hypothetical: `Unsafe.AddByteOffset` applies to a `LocalVariable` root
-    /// with no special-casing, and `Byref (local 0, [ReinterpretAs byte; ByteOffset 1000])`
-    /// against `Byref (local 1, [])` was measured *answering* `false` while this predicate
-    /// still justified itself by folding that had never happened.
+    /// For an `Unbounded` root any non-zero cursor is unbounded, and that is not a
+    /// hypothetical: `Unsafe.AddByteOffset` applies to a `LocalVariable` root with no
+    /// special-casing, and `Byref (local 0, [ReinterpretAs byte; ByteOffset 1000])` against
+    /// `Byref (local 1, [])` was measured *answering* `false` while the predicate here still
+    /// justified itself by folding that had never happened.
     ///
     /// Whether such a pair should be answered at all is a genuine policy question rather than
     /// a fact: ECMA-335 promises no relative address between two independently declared
     /// locals, so a real JIT could place them any distance apart. LLVM's alias analysis
     /// assumes distinct identified objects never alias however the arithmetic goes; CompCert
     /// declines to compare pointers from different blocks. This takes CompCert's side, per
-    /// this project's preference for crashing over quiet divergence.
+    /// this project's preference for crashing over quiet divergence. Note that a root which
+    /// knows its own size poses no such question — "did this cursor stay inside" is then a
+    /// fact, and answering it is not a policy choice.
     ///
     /// This is what makes root disjointness insufficient on its own: two byrefs on different
     /// roots are different addresses only while each stays within the root it started from.
     let private mayLeaveRootExtent (root : ByrefRoot) (projs : ByrefProjection list) : bool =
-        let folded = rootHasFoldedCursor root
+        // Canonically there is at most one `ByteOffset` and it is last, so this sum is that
+        // one cursor; summing rather than testing each step in turn keeps the answer right
+        // if that invariant is ever relaxed, since it is the total displacement that decides
+        // whether the root's extent was left.
+        let cursor = knownByteDisplacement projs
 
-        let rec go (seenField : bool) (rest : ByrefProjection list) : bool =
-            match rest with
-            | [] -> false
-            | ByrefProjection.Field _ :: tail -> go true tail
-            | ByrefProjection.ReinterpretAs _ :: tail -> go seenField tail
-            | ByrefProjection.ByteOffset n :: tail ->
-                if n <> 0 && (seenField || not folded) then
-                    true
-                else
-                    go seenField tail
-
-        go false projs
+        if cursor = 0 then
+            // Nothing displaced it, whatever else the chain navigates through.
+            false
+        elif containsField projs then
+            true
+        else
+            match rootCursorBound root with
+            | RootCursorBound.ResidualWithinCell -> false
+            | RootCursorBound.WithinKnownSize size ->
+                // A cursor landing strictly inside the range is still addressing this root.
+                // One landing exactly at `size` is the range's one-past-the-end address,
+                // which may well be the *next* range's base, so it is not inside.
+                not (cursor > 0 && cursor < size)
+            | RootCursorBound.Unbounded -> true
 
     /// Whether two byrefs sharing a root name the same address, or `None` when saying
     /// so would need field-offset layout that byref comparison does not carry.
@@ -1240,7 +1273,7 @@ module ManagedPointerSource =
             // distinct string characters — says nothing once a projection can leave the
             // root it started from.
             failwith
-                $"TODO (CEQ): %s{context} compares byrefs on different roots where at least one carries field or byte displacement, so it may have left its root's extent; deciding that needs layout this comparison does not carry. Got %O{raw1} vs %O{raw2}"
+                $"TODO (CEQ): %s{context} compares byrefs on different roots where at least one carries a byte cursor this comparison cannot place within its root, so it may have left that root's extent; deciding that needs layout this comparison does not carry. Got %O{raw1} vs %O{raw2}"
         | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (obj1, field1), _),
           ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (obj2, field2), _) when obj1 = obj2 && field1 <> field2 ->
             // Undisplaced, but two fields of one heap object are still *different roots* here

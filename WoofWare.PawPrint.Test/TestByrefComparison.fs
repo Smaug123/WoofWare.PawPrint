@@ -10,31 +10,44 @@ open WoofWare.PawPrint
 /// `ceqNormalised` is the single place three boundaries — `ceq` on byrefs,
 /// `Unsafe.AreSame`, and pointer comparison in `NativeIntSource` — decide whether two
 /// managed pointers name the same address. What it must never do is answer when it
-/// cannot tell, so these tests pin both halves: the shapes it decides, and the one
-/// shape it refuses.
+/// cannot tell, so these tests pin both halves: the shapes it decides, and the several
+/// distinct shapes it refuses.
 ///
-/// The refusal has no end-to-end coverage by construction. The guest that reaches it,
-/// `AreSameFirstFieldVersusReinterpretedWhole.cs`, is parked, and a parked guest is only
-/// ever run against real .NET — so nothing but this fixture asserts that PawPrint refuses
-/// rather than guessing.
+/// The refusals have no end-to-end coverage by construction. Every guest that reaches one
+/// is parked, and a parked guest is only ever run against real .NET — so nothing but this
+/// fixture asserts that PawPrint refuses rather than guessing.
+///
+/// That makes the *decidable* half at least as important to pin, and harder: a rule that
+/// refuses too much still passes every guest, because a guest that no longer runs simply
+/// moves to the parked list. `Utf8LiteralSpanEquality.cs` is the end-to-end guard against
+/// exactly that, and it exists because over-refusal did ship here once already.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestByrefComparison =
 
     /// Parsed once for all tests; DumpedAssembly is immutable, so sharing it under
     /// ParallelScope.All is safe. Only needed to name a real type for `ReinterpretAs`.
-    let private byteType : ConcreteType<ConcreteTypeHandle> =
-        let corelib =
-            let _, loggerFactory = LoggerFactory.makeTest ()
-            Assembly.readFile loggerFactory typeof<obj>.Assembly.Location
+    let private corelib =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        Assembly.readFile loggerFactory typeof<obj>.Assembly.Location
 
-        let typeInfo = (Corelib.getBaseTypes corelib).Byte
-
+    let private concreteType
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : ConcreteType<ConcreteTypeHandle>
+        =
         ConcreteType.makeFromIdentity
             typeInfo.Identity
             typeInfo.Namespace
             typeInfo.Name
             ImmutableArray<ConcreteTypeHandle>.Empty
+
+    let private byteType : ConcreteType<ConcreteTypeHandle> =
+        concreteType (Corelib.getBaseTypes corelib).Byte
+
+    /// A second type, so that a test can vary the *view* a chain takes without varying the
+    /// address it names.
+    let private int32Type : ConcreteType<ConcreteTypeHandle> =
+        concreteType (Corelib.getBaseTypes corelib).Int32
 
     let private thread = ThreadId 0
     let private frame = FrameId 0
@@ -153,6 +166,33 @@ module TestByrefComparison =
 
         exn.Message |> shouldContainText "root's extent"
 
+    /// Two field-free cursors on one root are pure arithmetic: the addresses differ exactly
+    /// when the displacements do. Both of these pin that arm, and each kills a different
+    /// wrong implementation of it that the rest of the suite tolerates.
+    ///
+    /// This one kills `Some true` — answering "same root, no fields, therefore same
+    /// address". Every other decidable test either has empty residuals, where that mutant
+    /// happens to agree, or takes a different arm entirely.
+    [<Test>]
+    let ``unequal cursors on one root are unequal`` () =
+        let at (n : int) =
+            byref (local 0us) [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset n ]
+
+        ceq (at 1) (at 5) |> shouldEqual false
+
+    /// And this one kills `Some (rest1 = rest2)` — deciding by structural equality of the
+    /// residuals rather than by their arithmetic. The two chains reach one byte by different
+    /// routes, differing only in a type view, which does not move the address.
+    [<Test>]
+    let ``equal cursors under different type views are equal`` () =
+        let viaByte =
+            byref (local 0us) [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 4 ]
+
+        let viaInt =
+            byref (local 0us) [ ByrefProjection.ReinterpretAs int32Type ; ByrefProjection.ByteOffset 4 ]
+
+        ceq viaByte viaInt |> shouldEqual true
+
     /// Selecting a field navigates *into* a value, so it cannot carry a byref out of the
     /// root it started from. `Unsafe.AreSame(ref left.X, ref right.X)` for two distinct
     /// local structs must therefore still decide — this is the ordinary comparison of one
@@ -204,15 +244,23 @@ module TestByrefComparison =
 
         exn.Message |> shouldContainText "root's extent"
 
-    /// The same cursor on an *array element* root is bounded by folding, so that one still
-    /// decides. The pair of tests is what pins the rule to the root kind rather than to the
-    /// projection list alone.
+    /// A cursor on an *array element* root is bounded by folding, so it still decides where
+    /// the identical projection list on a local root is refused. Paired with the test above,
+    /// this is what pins the rule to the root kind rather than to the projection list alone.
+    ///
+    /// The residual is deliberately small. `unsafeAssumeNormalisedForComparison` does not
+    /// validate it, so a residual of 1000 would be an input the real pipeline can never
+    /// produce — `normaliseTrailingByteOffset` would have folded whole strides of it into
+    /// the index — and asserting an answer on it would enshrine an impossible shape. Worse,
+    /// the asserted answer would be *wrong* in the only world where the input were canonical:
+    /// an element size above 1000 is what it would take, and then the address genuinely is
+    /// `a[1]`.
     [<Test>]
     let ``the same cursor on a fold-eligible root still decides`` () =
         let displaced =
             ManagedPointerSource.Byref (
                 ByrefRoot.ArrayElement (ManagedHeapAddress 1, 0),
-                [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 1000 ]
+                [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 2 ]
             )
             |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
 
@@ -390,13 +438,67 @@ module TestByrefComparison =
                 let shorter = byref (local 0us) prefix
                 let longer = byref (local 0us) (prefix @ extra)
 
-                let threw =
+                // Specifically the field-offset refusal, not merely *some* exception: a
+                // `MatchFailureException`, or a failure inside normalisation, would
+                // otherwise count as the rule working correctly.
+                let refused =
                     try
                         ceq shorter longer |> ignore
                         false
-                    with _ ->
-                        true
+                    with e ->
+                        e.Message.Contains "field offsets"
 
-                threw
+                refused
 
         Check.QuickThrowOnFailure property
+
+    /// A PE byte range knows its own size, so a cursor on one is not the open question that
+    /// a cursor on a local is: it either lands inside the range or it does not. This is the
+    /// shape a `u8` literal takes — `Utf8LiteralSpanEquality.cs` is the end-to-end guest —
+    /// and grouping it with the roots that carry no size was a measured regression, in which
+    /// `"abc"u8.Slice(1) == "xy"u8` began failing outright where both runtimes had agreed
+    /// on `false`.
+    let private peRange (rva : int) (size : int) : ByrefRoot =
+        ByrefRoot.PeByteRange
+            {
+                AssemblyFullName = "Test, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null"
+                Source = PeByteRangePointerSource.ManagedResource $"r%d{rva}"
+                RelativeVirtualAddress = rva
+                Size = size
+            }
+
+    [<Test>]
+    let ``a cursor inside a sized range still decides against another range`` () =
+        let sliced =
+            byref (peRange 16 4) [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 1 ]
+
+        ceq sliced (byref (peRange 32 3) []) |> shouldEqual false
+
+    /// One past the end is the case that must still refuse: that address may well be the
+    /// base of whatever the linker laid down next, so "inside my own range" is exactly the
+    /// claim that fails here.
+    [<Test>]
+    let ``a cursor at the end of a sized range is refused`` () =
+        let past =
+            byref (peRange 16 4) [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 4 ]
+
+        let exn = Assert.Throws (fun () -> ceq past (byref (peRange 32 3) []) |> ignore)
+
+        exn.Message |> shouldContainText "root's extent"
+
+    /// And a cursor applied after a `Field` is unplaceable whatever the root's size, because
+    /// the field's own offset is the part that is unknown.
+    [<Test>]
+    let ``a cursor after a field on a sized range is refused`` () =
+        let viaField =
+            byref
+                (peRange 16 4)
+                [
+                    fieldX
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset 1
+                ]
+
+        let exn = Assert.Throws (fun () -> ceq viaField (byref (peRange 32 3) []) |> ignore)
+
+        exn.Message |> shouldContainText "root's extent"
