@@ -23,9 +23,15 @@ public class Program
     public static int Main(string[] args)
     {
         // `ldarg.0; throw` rethrows whatever the caller handed in. Both opcodes are token-free,
-        // which is what makes this the available way to raise from inside a dynamic method: every
-        // more natural route needs a metadata token (`newobj` for the exception, `callvirt` for a
-        // member that throws), and a dynamic method carrying one is refused when it is minted.
+        // which is what makes this a *usable* way to raise from inside a dynamic method: the more
+        // natural routes need a metadata token (`newobj` for the exception, `callvirt` for a member
+        // that throws), and a dynamic method carrying one is refused when it is minted.
+        //
+        // Dividing by zero would also work now that #989 raises a guest `DivideByZeroException`
+        // rather than crashing the interpreter — an earlier draft of this file did exactly that,
+        // and stopped. Taking the exception as a parameter is kept because it depends on nothing
+        // but `throw`: which exception reaches the handler is then chosen by the caller rather
+        // than by arithmetic, so this stays a test about the *frame* and not about `div`.
         //
         // The parameter is typed `object` rather than `Exception` for the same class of reason:
         // `SignatureHelper` spells any type that is not a primitive, string or object as
