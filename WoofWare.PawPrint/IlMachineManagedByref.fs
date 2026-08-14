@@ -313,18 +313,8 @@ module IlMachineManagedByref =
         (this : IlMachineState)
         : IlMachineState
         =
-        let ownerStatics =
-            match this._Statics.TryGetValue owner with
-            | false, _ -> ImmutableDictionary.Empty
-            | true, v -> v
-
-        let ownerStatics =
-            match ownerStatics.TryGetValue ty with
-            | false, _ -> ownerStatics.Add (ty, Map.ofList [ field, value ])
-            | true, v -> ownerStatics.SetItem (ty, Map.add field value v)
-
         { this with
-            _Statics = this._Statics.SetItem (owner, ownerStatics)
+            Statics = StaticStorage.set owner ty field value this.Statics
         }
 
     let getStatic
@@ -334,13 +324,7 @@ module IlMachineManagedByref =
         (this : IlMachineState)
         : CliType option
         =
-        match this._Statics.TryGetValue owner with
-        | false, _ -> None
-        | true, ownerStatics ->
-
-        match ownerStatics.TryGetValue ty with
-        | false, _ -> None
-        | true, v -> Map.tryFind field v
+        StaticStorage.get owner ty field this.Statics
 
     let private tryReadInitializedStackMemoryBytes
         (state : IlMachineState)
