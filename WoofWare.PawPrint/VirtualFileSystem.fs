@@ -112,6 +112,195 @@ module SymlinkTarget =
     let toUtf8 (target : SymlinkTarget) : ImmutableArray<byte> =
         toString target |> UnixPathText.utf8.GetBytes |> ImmutableArray.CreateRange
 
+/// The permission, set-user-ID, set-group-ID and sticky bits of an inode's
+/// mode: `st_mode & 0o7777`, which is exactly `chmod(2)`'s domain.
+///
+/// Deliberately *not* the `S_IFMT` file-type band, which is derived from
+/// `InodeContent` by `VirtualFileSystem.fileTypeBits` instead. That split is
+/// not tidiness: `chmod(2)` cannot set the type band either, so keeping it out
+/// of the stored value makes "the recorded type disagrees with the content"
+/// unrepresentable rather than merely checked.
+[<Struct>]
+type PermissionBits =
+    private
+    | PermissionBits of bits : int
+
+    override this.ToString () : string =
+        match this with
+        | PermissionBits bits -> "0o" + System.Convert.ToString(bits, 8).PadLeft (4, '0')
+
+[<RequireQualifiedAccess>]
+module PermissionBits =
+    /// The widest `st_mode & 0o7777` can be: three rwx triples, plus setuid,
+    /// setgid and the sticky bit.
+    let private widest : int = 0o7777
+
+    let toInt (bits : PermissionBits) : int =
+        match bits with
+        | PermissionBits bits -> bits
+
+    /// Parse a raw mode word's permission bits, or `None` if it does not fit in
+    /// `0o7777`.
+    ///
+    /// An `option` rather than this module's usual `Result` + `describe` pair,
+    /// because there is exactly one way to fail and the offending value is the
+    /// caller's own input, so a single-case error DU would carry no information
+    /// the caller does not already hold. Note what this rejects: a caller
+    /// passing a whole `st_mode` (type band included) is committing precisely
+    /// the conflation this type exists to prevent, and is refused rather than
+    /// silently masked down.
+    let parse (candidate : int) : PermissionBits option =
+        if candidate < 0 || candidate > widest then
+            None
+        else
+            Some (PermissionBits candidate)
+
+    let parseOrFail (context : string) (candidate : int) : PermissionBits =
+        match parse candidate with
+        | Some bits -> bits
+        | None ->
+            failwith
+                $"%s{context}: 0o%s{System.Convert.ToString (candidate, 8)} is not a permission word; it must lie in [0, 0o7777]. If this is a whole st_mode, mask off the S_IFMT band — the file type is derived from InodeContent, never stored."
+
+    /// What a `umask 022` process gets from `open(2)` with the 0o666 that
+    /// CoreLib's `FileStream` passes: `0o666 &&& ~~~0o022`.
+    ///
+    /// Derived rather than invented, which is the point of writing it this way.
+    /// PawPrint models no umask yet — nothing can read or set one (CoreLib's
+    /// interop surface has no `SystemNative_UMask` at all) and no creating
+    /// native exists — so a `Umask` field today would have no consumer that
+    /// could make two inodes differ. It becomes correct at the first
+    /// `open(O_CREAT)`/`mkdir`, and this constant becomes its consequence.
+    let defaultForRegularFile : PermissionBits = PermissionBits (0o666 &&& ~~~0o022)
+
+    /// What a `umask 022` process gets from `mkdir(2)`'s 0o777:
+    /// `0o777 &&& ~~~0o022`. See `defaultForRegularFile`.
+    let defaultForDirectory : PermissionBits = PermissionBits (0o777 &&& ~~~0o022)
+
+/// A filesystem timestamp: `struct timespec`, whole seconds since the Unix
+/// epoch plus a nanosecond part in `[0, 1e9)`.
+///
+/// Two fields rather than one nanosecond count. `st_atim.tv_sec` is a 64-bit
+/// *second* count, so folding the pair into nanoseconds would cap the
+/// representable range at 1677–2262 — and `File.SetLastWriteTime` will happily
+/// be handed a `DateTime` outside it, which would then have to overflow or be
+/// clamped. Neither is a thing a filesystem does.
+///
+/// Negative seconds are permitted: a pre-1970 mtime is ordinary, and `tar`
+/// archives are full of them. A negative *nanosecond* part is not, matching the
+/// kernel's own normalisation, so the pair always compares in the obvious
+/// lexicographic order.
+///
+/// Note there is no `assertValid` counterpart to `FileName`'s: this type's
+/// `Unchecked.defaultof` is `(0L, 0)`, the Unix epoch, which is a perfectly
+/// legal timestamp. There is no forged value to catch.
+[<Struct>]
+type UnixTimestamp =
+    private
+    | UnixTimestamp of seconds : int64 * nanoseconds : int
+
+    override this.ToString () : string =
+        match this with
+        | UnixTimestamp (seconds, nanoseconds) ->
+
+        // A timespec is seconds *plus* nanoseconds, and the nanosecond part is
+        // never negative — so a pre-epoch instant is not the two fields printed
+        // adjacently with a minus in front. `(-1, 500_000_000)` is half a second
+        // *before* the epoch; writing it "-1.500000000" would name a moment a
+        // second earlier than the one it holds.
+        if seconds >= 0L || nanoseconds = 0 then
+            $"%d{seconds}.%09d{nanoseconds}"
+        else
+            // Carry the fraction the other way: s + n/1e9 = (s+1) - (1e9-n)/1e9.
+            let whole = seconds + 1L
+            let fraction = 1_000_000_000 - nanoseconds
+
+            // `whole` of zero has lost the sign, since "0" and "-0" are the same
+            // integer but only one of them is the right side of the epoch.
+            if whole = 0L then
+                $"-0.%09d{fraction}"
+            else
+                $"%d{whole}.%09d{fraction}"
+
+[<RequireQualifiedAccess>]
+module UnixTimestamp =
+    let private nanosecondsPerSecond : int = 1_000_000_000
+
+    let seconds (timestamp : UnixTimestamp) : int64 =
+        match timestamp with
+        | UnixTimestamp (seconds, _) -> seconds
+
+    let nanoseconds (timestamp : UnixTimestamp) : int =
+        match timestamp with
+        | UnixTimestamp (_, nanoseconds) -> nanoseconds
+
+    /// A timestamp, or `None` if the nanosecond part is not in `[0, 1e9)`.
+    /// Deliberately not normalising an out-of-range part by carrying into the
+    /// seconds: a caller who computed 1.5e9 nanoseconds has a unit bug, and
+    /// silently absorbing it would hide it.
+    let create (seconds : int64) (nanoseconds : int) : UnixTimestamp option =
+        if nanoseconds < 0 || nanoseconds >= nanosecondsPerSecond then
+            None
+        else
+            Some (UnixTimestamp (seconds, nanoseconds))
+
+    let createOrFail (context : string) (seconds : int64) (nanoseconds : int) : UnixTimestamp =
+        match create seconds nanoseconds with
+        | Some timestamp -> timestamp
+        | None ->
+            failwith
+                $"%s{context}: %d{nanoseconds} is not a nanosecond part; it must lie in [0, %d{nanosecondsPerSecond}). A whole-second count belongs in the seconds field."
+
+    let ofSeconds (seconds : int64) : UnixTimestamp = UnixTimestamp (seconds, 0)
+
+    /// The Unix epoch itself, which is also what a kernel booted at the default
+    /// `WallClockEpochMs` of 0 believes the time to be.
+    let epoch : UnixTimestamp = UnixTimestamp (0L, 0)
+
+/// The four times a kernel keeps for an inode.
+///
+/// All four are stored on every platform, including `Birth` — which Linux's
+/// `stat` does not report, but which *exists*: `pal_io.c` hard-zeroes it under
+/// `#else` with the comment "Linux path: until we use statx()", so the fact is
+/// real and merely unfetched. Modelling it here and gating only its *reporting*
+/// on the simulated platform keeps the graph honest and confines the platform
+/// flavour to the `stat` boundary where it belongs.
+type InodeTimes =
+    {
+        /// `st_atim`: last read.
+        Access : UnixTimestamp
+        /// `st_mtim`: last change to the *contents*.
+        Modification : UnixTimestamp
+        /// `st_ctim`: last change to the *inode* — which `chmod`, `link` and
+        /// `rename` all move even though they touch no content, and which is
+        /// why this is stored rather than derived from `Modification`.
+        StatusChange : UnixTimestamp
+        /// `st_birthtim`: when the inode was created. Never moves afterwards.
+        Birth : UnixTimestamp
+    }
+
+[<RequireQualifiedAccess>]
+module InodeTimes =
+    /// The times a freshly-created inode has: all four equal, because creation
+    /// is simultaneously its birth, its last content change, its last inode
+    /// change, and (vacuously) its last access.
+    let createdAt (now : UnixTimestamp) : InodeTimes =
+        {
+            Access = now
+            Modification = now
+            StatusChange = now
+            Birth = now
+        }
+
+    /// Record a change to the inode's contents: `mtime` and `ctime` both move,
+    /// because changing what a file or directory holds also changes the inode
+    /// that describes it. `atime` and `birth` do not.
+    let contentsChangedAt (now : UnixTimestamp) (times : InodeTimes) : InodeTimes =
+        { times with
+            Modification = now
+            StatusChange = now
+        }
+
 /// The contents of a directory: what it holds, and what contains it.
 ///
 /// `Entries` holds only *real* names. "." and ".." are genuine directory
@@ -129,18 +318,21 @@ type DirectoryContent =
         /// This is the *physical* parent, so it is still correct after a walk
         /// has crossed a symlink — the lexical predecessor in the path is not.
         Parent : InodeNumber
+        /// The `chmod`-able bits of this directory's mode.
+        Permissions : PermissionBits
     }
 
 /// What lives at an inode. The `S_IFMT` file-type bits a guest reads from
 /// `stat` are *derived* from which case this is, never stored, so the two can
 /// never disagree.
 ///
-/// Deliberately carries no metadata — no mode, owner, or timestamps. Those
-/// arrive with the `stat` family, which is also when the emulated kernel's
-/// clock becomes available to give timestamps a value that is not invented.
-/// Until then there is no field to read, so a caller that needs one fails to
-/// compile rather than silently observing a plausible-looking default that no
-/// real filesystem would have produced.
+/// Carries the metadata whose *existence* depends on which kind of thing this
+/// is, and only that. A regular file and a directory have `chmod`-able
+/// permission bits; a symbolic link does not, and the field is absent rather
+/// than present-and-ignored — see `InodePermissions.PlatformSymlinkDefault` for
+/// why a stored one could only ever describe a filesystem no kernel could
+/// produce. Metadata that every inode has regardless (the four timestamps)
+/// lives on `Inode` instead.
 ///
 /// Names are compared with F#'s ordinal string comparison, so the emulated
 /// filesystem is case-sensitive and normalisation-preserving. That is not a
@@ -150,18 +342,54 @@ type DirectoryContent =
 /// resembles a Linux default rather than a macOS one.
 [<RequireQualifiedAccess>]
 type InodeContent =
-    | RegularFile of contents : ImmutableArray<byte>
+    | RegularFile of contents : ImmutableArray<byte> * permissions : PermissionBits
     | Directory of directory : DirectoryContent
     /// The link's target, unresolved: a symlink's target is a *string* to the
     /// kernel, re-resolved on every traversal, not a reference to whatever it
     /// pointed at when it was made.
     | Symlink of target : SymlinkTarget
 
+/// One inode: what lives there, and the metadata every inode carries whatever
+/// kind of thing it is.
+type Inode =
+    {
+        Content : InodeContent
+        Times : InodeTimes
+    }
+
+/// An inode's permission bits as a caller must handle them, which is not always
+/// "here is a number".
+///
+/// A DU rather than an `option`, so that a caller cannot reach for a default
+/// and quietly get the wrong answer: the symlink case is not "no permissions",
+/// it is "the answer is a property of the platform, which this module cannot
+/// see". `SimulatedUnixPlatform` lives in `EmulatedKernel.fs`, which compiles
+/// after this file, and that layering is right rather than merely forced — the
+/// graph is the model, and platform-flavoured presentation is a `stat`
+/// concern.
+[<RequireQualifiedAccess>]
+type InodePermissions =
+    /// A regular file's or directory's stored, `chmod`-able bits.
+    | Stored of bits : PermissionBits
+    /// A symbolic link's bits, which are **not stored** because no syscall
+    /// PawPrint models can make two links differ: Linux has no `lchmod`,
+    /// `chmod(2)` follows the link, and `fchmodat(AT_SYMLINK_NOFOLLOW)` is
+    /// ENOTSUP there. Under Linux the answer is invariably 0o777, so a stored
+    /// field could only ever express a filesystem no kernel could have
+    /// produced.
+    ///
+    /// Platform-dependent, and measured rather than assumed: macOS applies the
+    /// creating process's **umask** to a symlink (probed on this box: `umask
+    /// 022` gives 0o755, `umask 077` gives 0o700, `umask 000` gives 0o777),
+    /// while Linux reports 0o777 whatever the umask. So the caller — which
+    /// knows the simulated platform — supplies the value.
+    | PlatformSymlinkDefault
+
 /// A whole emulated filesystem: an inode graph rooted at a single directory.
 type VirtualFileSystem =
     private
         {
-            Inodes : Map<InodeNumber, InodeContent>
+            Inodes : Map<InodeNumber, Inode>
             /// The directory absolute paths resolve from. Its `Parent` is
             /// itself.
             Root : InodeNumber
@@ -318,18 +546,50 @@ module VirtualFileSystem =
     /// allocated first.
     let private firstInode : InodeNumber = InodeNumber 1L
 
-    /// A filesystem containing nothing but an empty root directory.
-    let empty : VirtualFileSystem =
+    /// The `S_IFMT` band of `st_mode`: which kind of thing lives at an inode.
+    /// Derived from the content rather than stored, so the two cannot disagree.
+    ///
+    /// The values are `Interop.Sys.FileTypes`' (`Interop.Stat.cs`), which are in
+    /// turn the POSIX ones. `TestVirtualFileSystemAgainstHost` pins them against
+    /// that declaration *as read from the pinned runtime source*, rather than
+    /// against a second copy of the same literals, so a typo here cannot survive
+    /// as a plausible-looking lie.
+    let fileTypeBits (content : InodeContent) : int =
+        match content with
+        | InodeContent.RegularFile _ -> 0o100000
+        | InodeContent.Directory _ -> 0o40000
+        | InodeContent.Symlink _ -> 0o120000
+
+    /// An inode's permission bits, as something the caller must match rather
+    /// than a number it might default. See `InodePermissions`.
+    let permissions (inode : Inode) : InodePermissions =
+        match inode.Content with
+        | InodeContent.RegularFile (_, permissions) -> InodePermissions.Stored permissions
+        | InodeContent.Directory directory -> InodePermissions.Stored directory.Permissions
+        | InodeContent.Symlink _ -> InodePermissions.PlatformSymlinkDefault
+
+    /// A filesystem containing nothing but an empty root directory, created at
+    /// `now`.
+    ///
+    /// Takes the time rather than reading a clock: this file compiles before
+    /// `EmulatedKernel.fs`, and more to the point a filesystem that read the
+    /// host's clock would make a replay depend on when it was recorded.
+    let empty (now : UnixTimestamp) : VirtualFileSystem =
         {
             Inodes =
                 Map.ofList
                     [
                         firstInode,
-                        InodeContent.Directory
-                            {
-                                Entries = Map.empty
-                                Parent = firstInode
-                            }
+                        {
+                            Content =
+                                InodeContent.Directory
+                                    {
+                                        Entries = Map.empty
+                                        Parent = firstInode
+                                        Permissions = PermissionBits.defaultForDirectory
+                                    }
+                            Times = InodeTimes.createdAt now
+                        }
                     ]
             Root = firstInode
             NextInode = InodeNumber 2L
@@ -339,26 +599,44 @@ module VirtualFileSystem =
 
     let nextInode (vfs : VirtualFileSystem) : InodeNumber = vfs.NextInode
 
-    let inodes (vfs : VirtualFileSystem) : Map<InodeNumber, InodeContent> = vfs.Inodes
+    let inodes (vfs : VirtualFileSystem) : Map<InodeNumber, Inode> = vfs.Inodes
 
-    let tryGet (inode : InodeNumber) (vfs : VirtualFileSystem) : InodeContent option = Map.tryFind inode vfs.Inodes
+    let tryGet (inode : InodeNumber) (vfs : VirtualFileSystem) : Inode option = Map.tryFind inode vfs.Inodes
+
+    /// What lives at `inode`, discarding its metadata. A projection, for the
+    /// many callers that are asking a question about the *shape* of the graph;
+    /// `tryGet` is the one that answers about identity.
+    let tryGetContent (inode : InodeNumber) (vfs : VirtualFileSystem) : InodeContent option =
+        Map.tryFind inode vfs.Inodes |> Option.map (fun inode -> inode.Content)
 
     /// The directory at `inode`, or `None` if it is absent or is not a
     /// directory. Honest about which: callers that must distinguish ENOENT from
-    /// ENOTDIR use `tryGet` and match.
+    /// ENOTDIR use `tryGetContent` and match.
     let private tryGetDirectory (inode : InodeNumber) (vfs : VirtualFileSystem) : DirectoryContent option =
-        match Map.tryFind inode vfs.Inodes with
+        match tryGetContent inode vfs with
         | Some (InodeContent.Directory directory) -> Some directory
         | Some _
         | None -> None
 
-    let private allocate (content : InodeContent) (vfs : VirtualFileSystem) : InodeNumber * VirtualFileSystem =
+    let private allocate
+        (content : InodeContent)
+        (now : UnixTimestamp)
+        (vfs : VirtualFileSystem)
+        : InodeNumber * VirtualFileSystem
+        =
         let inode = vfs.NextInode
         let (InodeNumber raw) = inode
 
         let vfs =
             { vfs with
-                Inodes = Map.add inode content vfs.Inodes
+                Inodes =
+                    Map.add
+                        inode
+                        {
+                            Content = content
+                            Times = InodeTimes.createdAt now
+                        }
+                        vfs.Inodes
                 NextInode = InodeNumber (raw + 1L)
             }
 
@@ -379,7 +657,7 @@ module VirtualFileSystem =
         (vfs : VirtualFileSystem)
         : Result<unit, UnixError>
         =
-        match Map.tryFind directory vfs.Inodes with
+        match tryGetContent directory vfs with
         | None -> Error UnixError.ENOENT
         | Some (InodeContent.RegularFile _)
         | Some (InodeContent.Symlink _) -> Error UnixError.ENOTDIR
@@ -397,6 +675,7 @@ module VirtualFileSystem =
         (directory : InodeNumber)
         (name : FileName)
         (inode : InodeNumber)
+        (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
         : Result<VirtualFileSystem, UnixError>
         =
@@ -407,18 +686,32 @@ module VirtualFileSystem =
 
         match Map.tryFind directory vfs.Inodes with
         | None -> Error UnixError.ENOENT
-        | Some (InodeContent.RegularFile _)
-        | Some (InodeContent.Symlink _) -> Error UnixError.ENOTDIR
-        | Some (InodeContent.Directory content) ->
+        | Some ({
+                    Content = InodeContent.RegularFile _
+                })
+        | Some ({
+                    Content = InodeContent.Symlink _
+                }) -> Error UnixError.ENOTDIR
+        | Some ({
+                    Content = InodeContent.Directory content
+                } as existing) ->
             if Map.containsKey name content.Entries then
                 Error UnixError.EEXIST
             else
 
+            // Gaining an entry changes what the directory holds, so its `mtime`
+            // moves, and with it the `ctime` of the inode describing it. Done
+            // here because this is the single chokepoint through which a
+            // directory ever gains an entry, so no builder can forget it.
             let updated =
-                InodeContent.Directory
-                    { content with
-                        Entries = Map.add name inode content.Entries
-                    }
+                {
+                    Content =
+                        InodeContent.Directory
+                            { content with
+                                Entries = Map.add name inode content.Entries
+                            }
+                    Times = InodeTimes.contentsChangedAt now existing.Times
+                }
 
             Ok
                 { vfs with
@@ -430,6 +723,8 @@ module VirtualFileSystem =
     let createDirectory
         (directory : InodeNumber)
         (name : FileName)
+        (permissions : PermissionBits)
+        (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
         : Result<InodeNumber * VirtualFileSystem, UnixError>
         =
@@ -443,16 +738,20 @@ module VirtualFileSystem =
                     {
                         Entries = Map.empty
                         Parent = directory
+                        Permissions = permissions
                     })
+                now
                 vfs
 
-        bind directory name inode allocated |> Result.map (fun vfs -> inode, vfs)
+        bind directory name inode now allocated |> Result.map (fun vfs -> inode, vfs)
 
     /// Create a regular file with the given contents. Mirrors `open(2)` with
     /// `O_CREAT | O_EXCL`.
     let createFile
         (directory : InodeNumber)
         (name : FileName)
+        (permissions : PermissionBits)
+        (now : UnixTimestamp)
         (contents : ImmutableArray<byte>)
         (vfs : VirtualFileSystem)
         : Result<InodeNumber * VirtualFileSystem, UnixError>
@@ -472,17 +771,22 @@ module VirtualFileSystem =
         | Error error -> Error error
         | Ok () ->
 
-        let inode, allocated = allocate (InodeContent.RegularFile contents) vfs
-        bind directory name inode allocated |> Result.map (fun vfs -> inode, vfs)
+        let inode, allocated =
+            allocate (InodeContent.RegularFile (contents, permissions)) now vfs
+
+        bind directory name inode now allocated |> Result.map (fun vfs -> inode, vfs)
 
     /// Create a symbolic link holding `target` verbatim. Mirrors `symlink(2)`,
     /// including that the target is not resolved, need not exist, and may be
     /// relative. An empty target is unrepresentable by construction; see
     /// `SymlinkTargetError.Empty` for why that is a refusal rather than an
     /// omission.
+    /// Note there is no `permissions` parameter, and that is deliberate rather
+    /// than an omission: see `InodePermissions.PlatformSymlinkDefault`.
     let createSymlink
         (directory : InodeNumber)
         (name : FileName)
+        (now : UnixTimestamp)
         (target : SymlinkTarget)
         (vfs : VirtualFileSystem)
         : Result<InodeNumber * VirtualFileSystem, UnixError>
@@ -493,8 +797,8 @@ module VirtualFileSystem =
         | Error error -> Error error
         | Ok () ->
 
-        let inode, allocated = allocate (InodeContent.Symlink target) vfs
-        bind directory name inode allocated |> Result.map (fun vfs -> inode, vfs)
+        let inode, allocated = allocate (InodeContent.Symlink target) now vfs
+        bind directory name inode now allocated |> Result.map (fun vfs -> inode, vfs)
 
     /// Bind an existing inode under a second name. Mirrors `link(2)`, including
     /// its refusal to hard-link a directory (EPERM): that would make the graph
@@ -504,14 +808,41 @@ module VirtualFileSystem =
         (directory : InodeNumber)
         (name : FileName)
         (target : InodeNumber)
+        (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
         : Result<VirtualFileSystem, UnixError>
         =
         match Map.tryFind target vfs.Inodes with
         | None -> Error UnixError.ENOENT
-        | Some (InodeContent.Directory _) -> Error UnixError.EPERM
-        | Some (InodeContent.RegularFile _)
-        | Some (InodeContent.Symlink _) -> bind directory name target vfs
+        | Some {
+                   Content = InodeContent.Directory _
+               } -> Error UnixError.EPERM
+        | Some ({
+                    Content = InodeContent.RegularFile _
+                } as existing)
+        | Some ({
+                    Content = InodeContent.Symlink _
+                } as existing) ->
+            match bind directory name target now vfs with
+            | Error error -> Error error
+            | Ok bound ->
+                // The target's own `ctime` moves too: its link count changed,
+                // which is a change to the inode even though its contents are
+                // untouched. Its `mtime` does not. (`bind` has already moved the
+                // *directory's* pair.)
+                Ok
+                    { bound with
+                        Inodes =
+                            Map.add
+                                target
+                                { existing with
+                                    Times =
+                                        { existing.Times with
+                                            StatusChange = now
+                                        }
+                                }
+                                bound.Inodes
+                    }
 
     // ------------------------------------------------------------ resolution
 
@@ -560,7 +891,7 @@ module VirtualFileSystem =
                 Ok vfs.Root
             else
 
-            match Map.tryFind startDirectory vfs.Inodes with
+            match tryGetContent startDirectory vfs with
             | None -> Error UnixError.ENOENT
             | Some (InodeContent.Directory _) -> Ok startDirectory
             | Some (InodeContent.RegularFile _)
@@ -630,7 +961,7 @@ module VirtualFileSystem =
             | Some target ->
 
             let content =
-                match Map.tryFind target vfs.Inodes with
+                match tryGetContent target vfs with
                 | Some content -> content
                 | None ->
                     failwith
@@ -761,8 +1092,8 @@ module VirtualFileSystem =
     let private allBindings (vfs : VirtualFileSystem) : (InodeNumber * FileName * InodeNumber) list =
         vfs.Inodes
         |> Map.toList
-        |> List.collect (fun (inode, content) ->
-            match content with
+        |> List.collect (fun (inode, entry) ->
+            match entry.Content with
             | InodeContent.Directory directory ->
                 directory.Entries
                 |> Map.toList
@@ -835,7 +1166,7 @@ module VirtualFileSystem =
         let bindings = allBindings vfs
 
         let rootDefects =
-            match Map.tryFind vfs.Root vfs.Inodes with
+            match tryGetContent vfs.Root vfs with
             | None -> [ VirtualFileSystemDefect.RootMissing vfs.Root ]
             | Some (InodeContent.RegularFile _)
             | Some (InodeContent.Symlink _) -> [ VirtualFileSystemDefect.RootIsNotDirectory vfs.Root ]
@@ -870,8 +1201,8 @@ module VirtualFileSystem =
         let parentDefects =
             vfs.Inodes
             |> Map.toList
-            |> List.collect (fun (inode, content) ->
-                match content with
+            |> List.collect (fun (inode, entry) ->
+                match entry.Content with
                 | InodeContent.RegularFile _
                 | InodeContent.Symlink _ -> []
                 | InodeContent.Directory directory ->
@@ -885,7 +1216,7 @@ module VirtualFileSystem =
                 let recorded = directory.Parent
 
                 let structural =
-                    match Map.tryFind recorded vfs.Inodes with
+                    match tryGetContent recorded vfs with
                     | None -> [ VirtualFileSystemDefect.DanglingParent (inode, recorded) ]
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.Symlink _) ->
@@ -921,7 +1252,7 @@ module VirtualFileSystem =
                     else
 
                     let children =
-                        match Map.tryFind inode vfs.Inodes with
+                        match tryGetContent inode vfs with
                         | Some (InodeContent.Directory directory) -> directory.Entries |> Map.toList |> List.map snd
                         | Some _
                         | None -> []
@@ -973,7 +1304,7 @@ module VirtualFileSystem =
     [<RequireQualifiedAccess>]
     module Unchecked =
         let ofParts
-            (inodes : Map<InodeNumber, InodeContent>)
+            (inodes : Map<InodeNumber, Inode>)
             (root : InodeNumber)
             (nextInode : InodeNumber)
             : VirtualFileSystem
