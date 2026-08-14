@@ -24,6 +24,11 @@ module TestFileSystemSeed =
 
     let private path (s : string) : UnixPath = UnixPath.parseOrFail "test" s
 
+    /// None of these tests are about the resolution limits; Linux because that
+    /// is what `KernelConfig` defaults to.
+    let private limits : PathLimits =
+        SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
+
     let private bytes (s : string) : ImmutableArray<byte> =
         System.Text.Encoding.UTF8.GetBytes s |> ImmutableArray.CreateRange
 
@@ -65,7 +70,7 @@ module TestFileSystemSeed =
         let root = VirtualFileSystem.root vfs
 
         let contentAt (p : string) (policy : SymlinkPolicy) : InodeContent =
-            match VirtualFileSystem.resolveExisting root policy (path p) vfs with
+            match VirtualFileSystem.resolveExisting limits root policy (path p) vfs with
             | Error error -> failwith $"%s{p} did not resolve: %O{error}"
             | Ok inode ->
 
@@ -93,7 +98,7 @@ module TestFileSystemSeed =
         | other -> failwith $"expected a directory, got %A{other}"
 
         // ...and nothing the seed did not describe exists.
-        VirtualFileSystem.resolveExisting root SymlinkPolicy.Follow (path "/etc/passwd") vfs
+        VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow (path "/etc/passwd") vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
     [<Test>]
@@ -111,10 +116,10 @@ module TestFileSystemSeed =
         let vfs = realise seed
         let root = VirtualFileSystem.root vfs
 
-        VirtualFileSystem.resolveExisting root SymlinkPolicy.Follow (path "/a/b/..") vfs
-        |> shouldEqual (VirtualFileSystem.resolveExisting root SymlinkPolicy.Follow (path "/a") vfs)
+        VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow (path "/a/b/..") vfs
+        |> shouldEqual (VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow (path "/a") vfs)
 
-        VirtualFileSystem.resolveExisting root SymlinkPolicy.Follow (path "/a/b/../..") vfs
+        VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow (path "/a/b/../..") vfs
         |> shouldEqual (Ok root)
 
     [<Test>]
@@ -196,7 +201,12 @@ module TestFileSystemSeed =
                 // rather than whatever it happens to name.
                 let inode =
                     match
-                        VirtualFileSystem.resolveExisting root SymlinkPolicy.NoFollowFinal (path declaredPath) vfs
+                        VirtualFileSystem.resolveExisting
+                            limits
+                            root
+                            SymlinkPolicy.NoFollowFinal
+                            (path declaredPath)
+                            vfs
                     with
                     | Ok inode -> inode
                     | Error error -> failwith $"%s{declaredPath} was declared but did not resolve: %O{error}"

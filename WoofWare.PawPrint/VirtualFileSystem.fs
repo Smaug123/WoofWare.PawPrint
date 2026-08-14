@@ -543,30 +543,72 @@ type Resolution =
         FinalSymlinkFollowed : bool
     }
 
+/// The bounds a kernel puts on path resolution, which differ between the Unixes
+/// PawPrint models and so cannot be constants in the walk.
+///
+/// Deliberately not `SimulatedUnixPlatform` itself, which lives in
+/// `EmulatedKernel` and compiles later — the same split `RawErrnoNumbering`
+/// makes, and for the same reason: this file has no business knowing what a
+/// platform *is*, only that something has chosen limits.
+/// `SimulatedUnixPlatform.pathLimits` is the mapping, and is where the numbers
+/// are justified as measured facts about real kernels.
+///
+/// Deliberately *not* a field of `VirtualFileSystem` either, which would have
+/// saved threading it through every call. A `VirtualFileSystem` is a filesystem
+/// *image*: it comes from a seed, which has no platform and could not sensibly
+/// acquire one. `MAXSYMLINKS` is a property of the kernel doing the walking, not
+/// of the tree being walked, and storing it in the image would let two
+/// filesystems under one kernel disagree about it — a state no real system can
+/// be in.
+///
+/// A record rather than a bare `int` because it is known to grow: `PATH_MAX` and
+/// `NAME_MAX` are the same kind of fact and are the next slice.
+[<Struct>]
+type PathLimits =
+    private
+        {
+            /// How many symbolic links a single resolution may traverse before
+            /// the kernel gives up with ELOOP. macOS's `MAXSYMLINKS` is 32
+            /// (`sys/param.h`, and probed: a chain of 32 resolves, 33 gives
+            /// ELOOP); Linux's is 40 (`MAXSYMLINKS` in `include/linux/namei.h`,
+            /// a kernel-internal header rather than a UAPI one).
+            MaxSymlinkTraversals : int
+        }
+
+[<RequireQualifiedAccess>]
+module PathLimits =
+    /// Fails rather than returning an option: unlike `PermissionBits.parse`,
+    /// whose input is a guest's, every caller of this is the platform table
+    /// passing a literal, so a bad value is an interpreter bug and not something
+    /// a caller could handle.
+    let create (maxSymlinkTraversals : int) : PathLimits =
+        if maxSymlinkTraversals < 1 then
+            failwith
+                $"PathLimits.create: a kernel that permits %d{maxSymlinkTraversals} symlink traversals could not resolve a path through any symbolic link at all; every Unix PawPrint models permits at least one."
+
+        {
+            MaxSymlinkTraversals = maxSymlinkTraversals
+        }
+
+    let maxSymlinkTraversals (limits : PathLimits) : int = limits.MaxSymlinkTraversals
+
+    /// Re-check the invariant of a value that may not have come from `create`.
+    ///
+    /// Unlike `UnixTimestamp`, whose `Unchecked.defaultof` is the epoch and so
+    /// perfectly legal, this type's default is a zero traversal limit — which
+    /// `create` rejects, but which would otherwise make the *first* symlink on
+    /// any path report ELOOP. That is the failure worth catching: not a crash,
+    /// but a plausible-looking answer from a kernel that cannot exist, produced
+    /// silently for every path in the filesystem.
+    let assertValid (context : string) (limits : PathLimits) : PathLimits =
+        if limits.MaxSymlinkTraversals < 1 then
+            failwith
+                $"%s{context}: these path limits permit %d{limits.MaxSymlinkTraversals} symlink traversals, which no Unix does. A PathLimits that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; obtain one from SimulatedUnixPlatform.pathLimits instead."
+
+        limits
+
 [<RequireQualifiedAccess>]
 module VirtualFileSystem =
-    /// The number of symlink traversals below which every Unix PawPrint models
-    /// agrees the resolution should proceed. macOS's `MAXSYMLINKS` is 32
-    /// (`sys/param.h`, and probed: a chain of 32 resolves, 33 gives ELOOP);
-    /// Linux's is 40 (`MAXSYMLINKS` in `include/linux/namei.h`, a
-    /// kernel-internal header rather than a UAPI one).
-    [<Literal>]
-    let symlinksEveryPlatformAllows : int = 32
-
-    /// The number of symlink traversals at which every Unix PawPrint models
-    /// agrees the resolution fails with ELOOP. Linux permits 40 and fails the
-    /// 41st attempt.
-    ///
-    /// Also the bound that makes the walk terminate, which is why there is no
-    /// cycle detection here: a seen-state set is *not* sufficient, because a
-    /// link whose target names itself with a suffix ("l" with target "l/x")
-    /// grows the remaining component list forever without ever repeating a
-    /// state. Only a count stops that — and both real kernels use only a
-    /// counter too, so this is not an approximation of their behaviour but a
-    /// transcription of it.
-    [<Literal>]
-    let symlinksNoPlatformAllows : int = 41
-
     /// Inode 1, matching the convention that no real filesystem hands out inode
     /// 0. A zero default would otherwise silently alias whichever inode was
     /// allocated first.
@@ -899,12 +941,18 @@ module VirtualFileSystem =
     /// instead recorded on `Resolution` and enforced only where every platform
     /// agrees.
     let resolveFull
+        (limits : PathLimits)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
         : Result<Resolution, UnixError>
         =
+        // Checked here rather than trusted, because this is the boundary a
+        // forged value crosses: `create` refuses a zero limit, but a struct's
+        // `Unchecked.defaultof` carries one anyway.
+        let limits = PathLimits.assertValid "VirtualFileSystem.resolveFull" limits
+
         // POSIX gives the empty path ENOENT (probed on both). Walking zero
         // components would instead silently answer "the directory I started
         // from".
@@ -928,8 +976,10 @@ module VirtualFileSystem =
         | Ok start ->
 
         /// The walk returns the trailing-separator demand and whether it
-        /// followed a final symlink alongside its outcome, plus the running
-        /// symlink count that decides whether the answer is reportable at all.
+        /// followed a final symlink alongside its outcome. `symlinks` counts the
+        /// traversals so far, and is what `limits` bounds: it is a parameter
+        /// rather than a returned fact because the only question anyone asks of
+        /// it — has this kernel given up? — is answered here, in walk order.
         let rec walk
             (directory : InodeNumber)
             (remaining : PathComponent list)
@@ -937,7 +987,7 @@ module VirtualFileSystem =
             (finalSymlinkFollowed : bool)
             (lastNavigation : FinalNavigation)
             (symlinks : int)
-            : Result<Resolution, UnixError> * int
+            : Result<Resolution, UnixError>
             =
             match remaining with
             // Reached when the path has no name left to look up: after a "." or
@@ -948,8 +998,7 @@ module VirtualFileSystem =
                         Target = ResolvedTarget.Directory (directory, lastNavigation)
                         TrailingSeparatorDemanded = trailing
                         FinalSymlinkFollowed = finalSymlinkFollowed
-                    },
-                symlinks
+                    }
             | PathComponent.Current :: rest ->
                 walk directory rest trailing finalSymlinkFollowed FinalNavigation.Current symlinks
             | PathComponent.Parent :: rest ->
@@ -965,14 +1014,13 @@ module VirtualFileSystem =
 
             let isFinal = List.isEmpty rest
 
-            let finish (target : ResolvedTarget) =
+            let finish (target : ResolvedTarget) : Result<Resolution, UnixError> =
                 Ok
                     {
                         Target = target
                         TrailingSeparatorDemanded = trailing
                         FinalSymlinkFollowed = finalSymlinkFollowed
-                    },
-                symlinks
+                    }
 
             match Map.tryFind name entries with
             | None ->
@@ -983,7 +1031,7 @@ module VirtualFileSystem =
                     // creates on both platforms.
                     finish (ResolvedTarget.Entry (directory, name, None))
                 else
-                    Error UnixError.ENOENT, symlinks
+                    Error UnixError.ENOENT
             | Some target ->
 
             let content =
@@ -1003,10 +1051,21 @@ module VirtualFileSystem =
 
             match content with
             | InodeContent.Symlink linkTarget when not isFinal || followFinal ->
-                if symlinks + 1 >= symlinksNoPlatformAllows then
-                    // Every platform has given up by here, so this is an answer
-                    // rather than a divergence.
-                    Error UnixError.ELOOP, symlinks + 1
+                // Checked *before* the traversal happens, so a limit of 32 means
+                // the 33rd attempt is the one that fails, matching both probes
+                // (macOS resolves a chain of 32 and gives ELOOP at 33; Linux
+                // resolves 40 and gives ELOOP at 41).
+                //
+                // This is also the bound that makes the walk terminate, which is
+                // why there is no cycle detection: a seen-state set would *not*
+                // be sufficient, because a link whose target names itself with a
+                // suffix ("l" with target "l/x") grows the remaining component
+                // list forever without ever repeating a state. Only a count
+                // stops that — and both real kernels use only a counter too, so
+                // this is a transcription of their behaviour rather than an
+                // approximation of it.
+                if symlinks + 1 > PathLimits.maxSymlinkTraversals limits then
+                    Error UnixError.ELOOP
                 else
 
                 let linkPath = SymlinkTarget.toUnixPath linkTarget
@@ -1057,55 +1116,41 @@ module VirtualFileSystem =
                     // agrees on: "p/" where p exists and is not a directory is
                     // ENOTDIR.
                     if trailing then
-                        Error UnixError.ENOTDIR, symlinks
+                        Error UnixError.ENOTDIR
                     else
                         finish (ResolvedTarget.Entry (directory, name, Some target))
                 else
                     // A path cannot continue through a regular file.
-                    Error UnixError.ENOTDIR, symlinks
+                    Error UnixError.ENOTDIR
 
-        let outcome, symlinks =
-            walk start (UnixPath.components path) (UnixPath.hasTrailingSeparator path) false FinalNavigation.Root 0
-
-        if symlinks <= symlinksEveryPlatformAllows then
-            outcome
-        elif symlinks >= symlinksNoPlatformAllows then
-            // The walk stopped at the bound, so ELOOP is what every platform
-            // would have said, and `walk` has already returned it.
-            outcome
-        else
-            // Note this fires for a *failed* walk too, not only a successful
-            // one. A 35-link chain ending at a missing name gives ENOENT on
-            // Linux and ELOOP on macOS: once the 33rd traversal has happened,
-            // ELOOP is the only outcome any platform could still be made to
-            // agree on, so every other answer is a divergence.
-            failwith
-                $"VirtualFileSystem.resolveFull: resolving %s{UnixPath.toString path} traversed %d{symlinks} symlinks, which Linux permits (its MAXSYMLINKS is 40) and macOS does not (its MAXSYMLINKS is 32), so the two disagree about whether this call succeeds or fails with ELOOP. PawPrint refuses to pick one. Give the resolution limit a value derived from the emulated kernel's SimulatedUnixPlatform when a guest genuinely needs a symlink chain this deep."
+        walk start (UnixPath.components path) (UnixPath.hasTrailingSeparator path) false FinalNavigation.Root 0
 
     /// `resolveFull`, discarding the how-it-finished facts. For the lookup
     /// operations, which are unanimous across platforms and so need none of
     /// them.
     let resolve
+        (limits : PathLimits)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
         : Result<ResolvedTarget, UnixError>
         =
-        resolveFull startDirectory policy path vfs
+        resolveFull limits startDirectory policy path vfs
         |> Result.map (fun resolution -> resolution.Target)
 
     /// The inode a path names, which is what `stat` and `open` want. Turns a
     /// free final name into ENOENT, which is the one thing `resolve`
     /// deliberately does not do.
     let resolveExisting
+        (limits : PathLimits)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
         : Result<InodeNumber, UnixError>
         =
-        match resolve startDirectory policy path vfs with
+        match resolve limits startDirectory policy path vfs with
         | Error error -> Error error
         | Ok (ResolvedTarget.Directory (inode, _)) -> Ok inode
         | Ok (ResolvedTarget.Entry (_, _, Some inode)) -> Ok inode
