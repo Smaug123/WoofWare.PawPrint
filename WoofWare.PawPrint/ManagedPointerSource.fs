@@ -290,16 +290,17 @@ type ByrefRoot =
 /// Identity of a byte-addressable storage container. Offsets within the
 /// container are tracked separately.
 ///
-/// `HeapObject` and `HeapObjectField` are not literally "byte arrays" — they
-/// identify a managed heap allocation (or a particular class field within
-/// one) as the shared origin for byte-offset reasoning. Two byrefs into the
-/// same boxed value reach through the same `HeapObject addr` regardless of
-/// which interior field they project; two byrefs through the same class
-/// field reach through the same `HeapObjectField (addr, field)`. Disjoint
-/// fields of the same class instance get distinct `HeapObjectField` keys,
-/// and a boxed value and a class-field byref cannot coexist on the same
-/// address (each heap allocation has a single object kind), so the two
-/// heap kinds never need to be reconciled against each other.
+/// `HeapObject` is not literally a "byte array" — it identifies a managed
+/// heap allocation as the shared origin for byte-offset reasoning. Every
+/// byref into one heap allocation resolves to the same `HeapObject addr`,
+/// whether it reached its target through the whole boxed value or through a
+/// class field: a field is a view into its object's single storage at the
+/// field's layout offset, not a container of its own. There is deliberately
+/// no per-field heap identity, because under
+/// `[StructLayout(LayoutKind.Explicit)]` on a class two distinct fields can
+/// occupy overlapping bytes, so distinct per-field containers would assert a
+/// disjointness the layout does not guarantee; only the offsets (which
+/// consult field layout) can prove two fields of one object disjoint.
 [<RequireQualifiedAccess>]
 type ByteStorageIdentity =
     | Array of ManagedHeapAddress
@@ -313,7 +314,6 @@ type ByteStorageIdentity =
     | StackArgument of ThreadId * FrameId * uint16
     | NativeMemory of NativeMemoryBlockId
     | HeapObject of ManagedHeapAddress
-    | HeapObjectField of ManagedHeapAddress * FieldId
 
 [<RequireQualifiedAccess>]
 module ByteStorageIdentity =
@@ -328,7 +328,6 @@ module ByteStorageIdentity =
         | ByteStorageIdentity.StackArgument _ -> 6
         | ByteStorageIdentity.NativeMemory _ -> 7
         | ByteStorageIdentity.HeapObject _ -> 8
-        | ByteStorageIdentity.HeapObjectField _ -> 9
 
     let compare (left : ByteStorageIdentity) (right : ByteStorageIdentity) : int =
         match left, right with
@@ -349,9 +348,6 @@ module ByteStorageIdentity =
             Operators.compare (leftThread, leftFrame, leftArgument) (rightThread, rightFrame, rightArgument)
         | ByteStorageIdentity.NativeMemory left, ByteStorageIdentity.NativeMemory right -> Operators.compare left right
         | ByteStorageIdentity.HeapObject left, ByteStorageIdentity.HeapObject right -> Operators.compare left right
-        | ByteStorageIdentity.HeapObjectField (leftAddr, leftField),
-          ByteStorageIdentity.HeapObjectField (rightAddr, rightField) ->
-            Operators.compare (leftAddr, leftField) (rightAddr, rightField)
         | _ -> Operators.compare (rank left) (rank right)
 
 /// A navigation step applied after reaching the byref root.

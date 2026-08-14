@@ -3,12 +3,16 @@ using System.Runtime.InteropServices;
 
 public class Program
 {
-    // Two byrefs into different fields of the same class instance are
-    // disjoint by construction: `ref box.A` and `ref box.B` are
-    // `HeapObjectField (box, A)` / `HeapObjectField (box, B)` and cannot
-    // alias. The shared-storage discriminator must distinguish them rather
-    // than collapsing to a single per-instance bucket, or `Span<int>.CopyTo`
-    // over distinct heap fields would trip the undecidable-overlap fail-loud.
+    // Two byrefs into different fields of the same class instance —
+    // `ref box.A` and `ref box.B`, i.e. `HeapObjectField (box, A)` /
+    // `HeapObjectField (box, B)` — resolve into the *same* storage container
+    // (the one heap object), at the fields' layout offsets. They are not
+    // "disjoint by construction": under `LayoutKind.Explicit` two fields of
+    // one object can overlap, so disjointness here must be, and is, proved
+    // by offset arithmetic (offsets 0 and 4, four bytes each). This guest
+    // pins that the proof goes through: if field roots ever stop resolving
+    // to a flat byte coordinate, `Span<int>.CopyTo` over distinct heap
+    // fields would trip the undecidable-overlap fail-loud.
     class Box
     {
         public int A;
