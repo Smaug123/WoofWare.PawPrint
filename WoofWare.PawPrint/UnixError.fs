@@ -165,9 +165,11 @@ module UnixError =
 
     /// `Interop.Error.ENONSTANDARD`, which upstream's
     /// `ConvertErrorPlatformToPal` returns for any errno it does not recognise.
-    /// PawPrint does not currently return this — see `palOfRawErrno` for why —
-    /// but the value is here because that function's contract is stated in
-    /// terms of it.
+    /// PawPrint returns it in the one case where "unrecognised" is
+    /// platform-independent — a raw errno inside the portable range that the
+    /// PAL enum simply has no name for, today only `ENOTBLK`. Where
+    /// "unrecognised" instead means "means different things on different
+    /// Unixes", `palOfRawErrno` fails rather than answering this; see there.
     [<Literal>]
     let palNonStandard : int = 0x1FFFF
 
@@ -278,6 +280,32 @@ module UnixError =
     /// The error a raw `<errno.h>` number denotes, or `None` when this build
     /// cannot say. `None` means genuinely undecidable, not merely unmapped: see
     /// `palOfRawErrno`.
+    /// Is `raw` a number whose meaning PawPrint can state without first
+    /// deciding which Unix it is impersonating?
+    ///
+    /// Every value in 1-34 is defined on both Linux and Darwin, and they agree
+    /// on all of them except 11 (`EAGAIN` on Linux, `EDEADLK` on Darwin, and
+    /// vice versa at 35). From 35 up the two numbered independently, so nothing
+    /// there is answerable.
+    ///
+    /// Note this is deliberately conservative at the top end: a number above
+    /// *both* platforms' highest errno is in fact unambiguous — it is
+    /// nonstandard on either — but saying so would mean embedding both
+    /// platforms' maxima, which is more platform trivia than the honest answer
+    /// is worth. Such a value fails loudly instead, which is the safe direction.
+    ///
+    /// The bottom end is different, and is *not* left to fail: POSIX requires
+    /// errno values to be positive, so no platform defines a negative one and
+    /// both fall through to `ENONSTANDARD`. Establishing that needs no
+    /// per-platform table at all, which is exactly why it is answered here and
+    /// the top end is not. See `isUnambiguouslyNonStandardRawErrno`.
+    let private isPortableRawErrno (raw : int) : bool = raw >= 1 && raw <= 34 && raw <> 11
+
+    /// Raw values every Unix agrees are meaningless, and hence agrees convert to
+    /// `ENONSTANDARD`. POSIX errnos are positive, so a negative number names an
+    /// error on no platform we model and needs no platform choice to reject.
+    let private isUnambiguouslyNonStandardRawErrno (raw : int) : bool = raw < 0
+
     let ofRawErrno (raw : int) : UnixError option =
         all
         |> List.tryFind (fun error ->
@@ -289,23 +317,34 @@ module UnixError =
     /// PawPrint's `SystemNative_ConvertErrorPlatformToPal`: raw errno to PAL
     /// `Interop.Error`.
     ///
-    /// **Diverges from upstream, deliberately.** `ConvertErrorPlatformToPal` in
-    /// `pal_error_common.h` is total, falling back to `Error_ENONSTANDARD` for
-    /// anything it does not recognise. PawPrint cannot honestly do that for an
-    /// unrecognised value, because "unrecognised" here bundles together two very
-    /// different situations that we cannot tell apart without embedding both
-    /// platforms' complete errno tables:
+    /// Three outcomes, not two, because "not in the table" bundles together two
+    /// situations that must not be treated alike:
     ///
-    ///   * numbers that really are nonstandard on both platforms, where
-    ///     `ENONSTANDARD` is the right answer; and
-    ///   * numbers that name a perfectly ordinary error on each platform but a
-    ///     *different* one on each — every value from 35 up, plus 11. Answering
+    ///   * **Portable and named** — the ordinary case; answer its PAL value.
+    ///   * **Portable but unnamed** — the number means the same thing on every
+    ///     Unix we model, but the BCL's `Interop.Error` has no entry for it.
+    ///     `ENOTBLK` (15) is the only such value. Upstream's switch has no case
+    ///     for it either, so it falls through to `Error_ENONSTANDARD` — and that
+    ///     answer is platform-independent, so we can give it too. Crashing here
+    ///     would refuse a conversion that requires no choice at all.
+    ///   * **Negative** — POSIX errnos are positive, so every Unix we model
+    ///     falls through to `ENONSTANDARD` for these; that is unambiguous and
+    ///     needs no platform table, so we answer it. Reachable through
+    ///     `Marshal.SetLastSystemError`, and through the synthetic
+    ///     `EHOSTNOTFOUND` / `ESOCKETERROR` pseudo-errnos, which upstream
+    ///     defines as the fixed negatives `-0x20001` / `-0x20002`.
+    ///   * **Not portable** — 11, and everything from 35 up. Upstream answers
+    ///     these from whichever platform's `<errno.h>` it was compiled against;
+    ///     PawPrint has chosen no platform, so it cannot. Answering
     ///     `ENONSTANDARD` for raw 39 would be silently wrong on Linux, where
-    ///     upstream returns `Error_ENOTEMPTY`.
+    ///     upstream returns `Error_ENOTEMPTY`, so this fails loudly instead. A
+    ///     crash naming the value is recoverable; a guest that quietly took the
+    ///     wrong branch of `if (errorInfo.Error == Interop.Error.ENOTEMPTY)` is
+    ///     not.
     ///
-    /// So this fails instead. A crash naming the value is recoverable; a guest
-    /// that quietly took the wrong branch of `if (errorInfo.Error ==
-    /// Interop.Error.ENOTEMPTY)` is not.
+    /// Only the last case diverges from upstream; the others answer exactly what
+    /// the C does. The failure is confined to values whose meaning genuinely
+    /// depends on a platform PawPrint has not chosen.
     let palOfRawErrno (raw : int) : int =
         if raw = 0 then
             palSuccess
@@ -313,25 +352,10 @@ module UnixError =
 
         match ofRawErrno raw with
         | Some error -> toPal error
+        | None when isPortableRawErrno raw ->
+            // ENOTBLK, today the only member of this class.
+            palNonStandard
+        | None when isUnambiguouslyNonStandardRawErrno raw -> palNonStandard
         | None ->
             failwith
                 $"UnixError.palOfRawErrno: cannot convert raw errno %d{raw} to a PAL Interop.Error value. PawPrint only maps the errnos that name the same error on every Unix it models (1-34 except 11); outside that set a raw number is platform-dependent — 39 is ENOTEMPTY on Linux but EDESTADDRREQ on Darwin, and 11 is EAGAIN on Linux but EDEADLK on Darwin. Upstream's ConvertErrorPlatformToPal answers ENONSTANDARD here because it was compiled against one platform's <errno.h> and PawPrint has not chosen one. If a guest legitimately needs this errno, decide the numbering (see issue #956); if it reached here via Marshal.SetLastSystemError, the guest is asserting a platform PawPrint does not model."
-
-    /// PawPrint's `SystemNative_ConvertErrorPalToPlatform`: PAL `Interop.Error`
-    /// back to a raw errno.
-    ///
-    /// Upstream is explicit that this is *not* a round-trip inverse — its own
-    /// comment says "we should not use this function to round-trip platform ->
-    /// pal -> platform. It's here only to synthesize a platform number from the
-    /// fixed set above" — and it returns -1 (after a debug assert) for
-    /// `ENONSTANDARD` and for anything unrecognised. We match the -1, because
-    /// unlike the raw direction there is no ambiguity to hide: a PAL value we
-    /// do not map is one whose raw number we could not state anyway.
-    let rawErrnoOfPal (pal : int) : int =
-        if pal = palSuccess then
-            0
-        else
-
-        match all |> List.tryFind (fun error -> toPal error = pal) with
-        | Some error -> toRawErrno error
-        | None -> -1

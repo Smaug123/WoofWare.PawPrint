@@ -43,6 +43,27 @@ module NativeSystemNative =
                                       generics) when generics.IsEmpty -> Some ()
         | _ -> None
 
+    /// Matches the type `Interop.Sys.ConvertErrorPlatformToPal` *returns*.
+    ///
+    /// CoreLib declares it as the PAL `Interop.Error` enum, which lives nested
+    /// inside the `Interop` static class in the *global* namespace — so it
+    /// concretises with an empty namespace and the bare name "Error" (nesting is
+    /// not reflected in `ConcreteType`'s name). A guest hand-rolling the
+    /// P/Invoke may instead declare the return as a plain `int`, which is the
+    /// same thing at the ABI, so both are accepted.
+    ///
+    /// Deliberately not assembly-qualified, unlike `PosixSignalParam` above.
+    /// `Interop.Error` is `internal` to CoreLib, so a guest cannot name *that*
+    /// type; requiring it would leave this arm reachable only by real BCL code
+    /// and hence untestable. The entry-point name already identifies the call
+    /// uniquely, so the assembly adds no discrimination here — it would only
+    /// cost the ability to test the arm.
+    let private (|PalErrorReturn|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
+        match handle with
+        | ConcretePrimitive concreteTypes PrimitiveType.Int32 -> Some ()
+        | ConcreteType concreteTypes (_, "", "Error", generics) when generics.IsEmpty -> Some ()
+        | _ -> None
+
     /// Decode an `nint`-shaped Unix file-descriptor argument. CoreLib passes
     /// fds across the SystemNative boundary as plain `IntPtr` values (the low
     /// 32 bits of `SafeFileHandle.handle`); PawPrint represents these as
@@ -275,6 +296,32 @@ module NativeSystemNative =
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             pushInt32 state.Kernel.LastSystemError ctx |> Some
+        | Some "SystemNative_ConvertErrorPlatformToPal",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            // `int32_t SystemNative_ConvertErrorPlatformToPal(int32_t platformErrno)`
+            // (pal_errno.c:6) is a one-line wrapper around
+            // `ConvertErrorPlatformToPal` in `pal_error_common.h:146`, a pure
+            // switch from the host's raw `<errno.h>` number to the
+            // platform-independent `Interop.Error` value CoreLib switches on.
+            //
+            // Every BCL failure path goes through here: `Interop.Sys.
+            // GetLastErrorInfo()` builds `ErrorInfo(Marshal.GetLastPInvokeError())`,
+            // whose constructor calls this. So this is the single point at which
+            // PawPrint's raw errno vocabulary becomes something the BCL can
+            // branch on.
+            //
+            // `UnixError.palOfRawErrno` refuses errnos whose meaning is
+            // platform-dependent rather than answering `ENONSTANDARD` as the C
+            // does; see its doc comment for why that divergence is the honest
+            // one. In practice the only raw values reaching this are ones
+            // PawPrint itself stored via `UnixError.toRawErrno` (which admits
+            // only portable errnos) or ones a guest planted with
+            // `Marshal.SetLastSystemError`.
+            let raw =
+                NativeCall.int32Argument "SystemNative_ConvertErrorPlatformToPal" instruction.Arguments.[0]
+
+            pushInt32 (UnixError.palOfRawErrno raw) ctx |> Some
         | Some "SystemNative_GetCpuUtilization",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Double) ->
