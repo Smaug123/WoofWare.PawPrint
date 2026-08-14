@@ -380,9 +380,15 @@ module NullaryIlOp =
             (ilOffset >= filterOffset && ilOffset < offset.HandlerOffset)
             || isInHandlerBody offset
 
+    /// A zero divisor is a *guest* fault, not an interpreter one. `divUnValues` computes the
+    /// unsigned quotient the way the host's own `div.un` would, so it signals the fault the way
+    /// the host would too: by raising `System.DivideByZeroException`. `executeFaultingArithmetic`
+    /// converts that into the guest's `System.DivideByZeroException` at the opcode boundary — the
+    /// same treatment `div` and `rem` get, where the raise comes from the host instruction itself
+    /// rather than from a check written out here.
     let private checkDivUnZero (operation : string) (isZero : bool) : unit =
         if isZero then
-            failwith $"TODO: throw DivideByZeroException for %s{operation} by zero"
+            raise (DivideByZeroException $"%s{operation}: divisor was zero")
 
     let internal divUnValues (v1 : EvalStackValue) (v2 : EvalStackValue) : EvalStackValue =
         match v1, v2 with
@@ -425,6 +431,65 @@ module NullaryIlOp =
             |> NativeIntSource.Verbatim
             |> EvalStackValue.NativeInt
         | _ -> failwith $"TODO: Div_un for {v1} and {v2}"
+
+    /// Which operand-dependent faults an IL arithmetic instruction is *allowed* to raise. This is
+    /// load-bearing rather than decorative: `executeFaultingArithmetic` converts exactly the listed
+    /// faults into guest exceptions and lets anything else escape as an interpreter failure, so a
+    /// host `DivideByZeroException` arriving from somewhere that cannot divide still crashes loudly
+    /// instead of being handed to the guest as a plausible-looking `System.DivideByZeroException`.
+    [<RequireQualifiedAccess>]
+    type private ArithmeticFaults =
+        /// `div.un`, `rem.un`. Unsigned, so every quotient is representable and only a zero divisor
+        /// faults (ECMA-335 III.3.32, III.3.56).
+        | DivideByZero
+        /// `div`, `rem`. A zero divisor faults, and so does `MinValue op -1`, whose quotient has no
+        /// two's-complement representation (ECMA-335 III.3.31, III.3.55).
+        | DivideByZeroOrOverflow
+
+    /// Run one arithmetic instruction that can fault on its operands, and either push its result or
+    /// hand the guest the exception the CLR would have thrown.
+    ///
+    /// The host's own `div`/`rem` instructions are what actually detect these faults — PawPrint
+    /// delegates the arithmetic to them via `BinaryArithmetic`, so there is no separate table of
+    /// faulting operand values here that could drift from the semantics the host implements. The
+    /// cost is that the fault arrives as a host exception, so `compute` must stay as tight as
+    /// possible around the arithmetic itself: anything else caught in here would be silently
+    /// reinterpreted as a guest fault.
+    ///
+    /// On a fault the program counter deliberately does NOT advance: exception dispatch reads the
+    /// faulting instruction's offset to decide which handler regions are active and to build the
+    /// stack trace.
+    let private executeFaultingArithmetic
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (faults : ArithmeticFaults)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        (compute : unit -> EvalStackValue * IlMachineState)
+        : ExecutionResult
+        =
+        let outcome =
+            try
+                compute () |> Ok
+            with
+            | :? DivideByZeroException -> Error corelib.DivideByZeroException
+            | :? OverflowException when
+                (match faults with
+                 | ArithmeticFaults.DivideByZeroOrOverflow -> true
+                 | ArithmeticFaults.DivideByZero -> false)
+                ->
+                Error corelib.OverflowException
+
+        match outcome with
+        | Ok (result, state) ->
+            state
+            |> IlMachineState.pushToEvalStack' result currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.stepped
+        | Error exceptionType ->
+            IlMachineStateExecution.raiseRuntimeException loggerFactory corelib exceptionType currentThread state
+            |> ExecutionResult.stepped
 
     let private negInt32Unchecked (value : int32) : int32 =
         0u - uint32<int32> value |> int32<uint32>
@@ -1958,37 +2023,24 @@ module NullaryIlOp =
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
 
-            match
-                try
-                    BinaryArithmetic.execute corelib ArithmeticOperation.div state val1 val2 |> Ok
-                with :? OverflowException as e ->
-                    Error e
-            with
-            | Ok (result, state) ->
+            executeFaultingArithmetic
+                loggerFactory
+                corelib
+                ArithmeticFaults.DivideByZeroOrOverflow
+                currentThread
                 state
-                |> IlMachineState.pushToEvalStack' result currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
-                |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.stepped
-            | Error _ ->
-                IlMachineStateExecution.raiseRuntimeException
-                    loggerFactory
-                    corelib
-                    corelib.OverflowException
-                    currentThread
-                    state
-                |> ExecutionResult.stepped
+                (fun () -> BinaryArithmetic.execute corelib ArithmeticOperation.div state val1 val2)
         | Div_un ->
             let v2, state = IlMachineState.popEvalStack currentThread state
             let v1, state = IlMachineState.popEvalStack currentThread state
 
-            let result = divUnValues v1 v2
-
-            state
-            |> IlMachineState.pushToEvalStack' result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            executeFaultingArithmetic
+                loggerFactory
+                corelib
+                ArithmeticFaults.DivideByZero
+                currentThread
+                state
+                (fun () -> divUnValues v1 v2, state)
         | Shr ->
             let shift, state = IlMachineState.popEvalStack currentThread state
             let number, state = IlMachineState.popEvalStack currentThread state
@@ -2779,26 +2831,24 @@ module NullaryIlOp =
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
 
-            let result, state =
-                BinaryArithmetic.execute corelib ArithmeticOperation.rem state val1 val2
-
-            state
-            |> IlMachineState.pushToEvalStack' result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            executeFaultingArithmetic
+                loggerFactory
+                corelib
+                ArithmeticFaults.DivideByZeroOrOverflow
+                currentThread
+                state
+                (fun () -> BinaryArithmetic.execute corelib ArithmeticOperation.rem state val1 val2)
         | Rem_un ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
 
-            let result, state =
-                BinaryArithmetic.execute corelib ArithmeticOperation.remUn state val1 val2
-
-            state
-            |> IlMachineState.pushToEvalStack' result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            executeFaultingArithmetic
+                loggerFactory
+                corelib
+                ArithmeticFaults.DivideByZero
+                currentThread
+                state
+                (fun () -> BinaryArithmetic.execute corelib ArithmeticOperation.remUn state val1 val2)
         | Volatile ->
             // `volatile.` constrains host memory reordering. PawPrint's
             // deterministic execution model has no host reordering to model,
