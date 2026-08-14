@@ -24,12 +24,20 @@ type RawErrnoPortability =
     /// naming them is a one-liner, and so that the fact lives in the table
     /// rather than in a comment.
     ///
-    /// No `UnixError` case uses this today. It exists so that adding one is a
-    /// *compile-time* fork in the road: a future case for, say, `ENOTEMPTY`
-    /// cannot be given a raw number without either picking a platform (and
-    /// saying so) or landing here and inheriting the loud failure. Relying on
-    /// whoever adds it to remember the transposition would be relying on
-    /// discipline; this makes the machine ask.
+    /// `ELOOP` is the first case to use this, and shows why the fork is
+    /// worth having: raw 40 is `ELOOP` on Linux but `EMSGSIZE` on Darwin, and
+    /// raw 62 is `ELOOP` on Darwin but `ETIME` on Linux — so *either* choice
+    /// silently renames a different error on the other platform. A case landing
+    /// here keeps its PAL value (which is platform-independent, and is what
+    /// CoreLib actually switches on) while inheriting a loud failure from
+    /// `toRawErrno`, so the number can only reach a guest once someone decides
+    /// it.
+    ///
+    /// This also makes adding a case a *compile-time* fork in the road: a
+    /// future `ENOTEMPTY` cannot be given a raw number without either picking a
+    /// platform and saying so, or landing here. Relying on whoever adds it to
+    /// remember the transposition would be relying on discipline; this makes
+    /// the machine ask.
     | PlatformDependent of linux : int * darwin : int
 
 /// The errors PawPrint's emulated `SystemNative_*` shims can report, as a closed
@@ -46,12 +54,21 @@ type RawErrnoPortability =
 ///     up silently. This is what CoreLib actually switches on, after converting
 ///     via `SystemNative_ConvertErrorPlatformToPal`.
 ///
-/// Membership is not arbitrary: this is exactly the set of errors whose raw
-/// number is the same on every Unix we model *and* which the BCL's PAL enum has
-/// a name for. `ENOTBLK` (raw 15) is the sole error in the portable range that
-/// is excluded, because `Interop.Error` has no entry for it. Errors outside the
-/// portable range — `ENOTEMPTY`, `ELOOP`, `EAGAIN`, `EOVERFLOW`, and every other
-/// value from 35 up — are deliberately absent; see `RawErrnoPortability`.
+/// Membership is not arbitrary: a case earns its place by being an error
+/// PawPrint's own emulation actually raises, *and* by having a name in the
+/// BCL's PAL enum. `ENOTBLK` (raw 15) is excluded despite being portable,
+/// because `Interop.Error` has no entry for it, so there would be nothing for
+/// CoreLib to switch on.
+///
+/// Portability of the *raw* number is not a membership criterion — it is
+/// recorded per case, in `RawErrnoPortability`. Most cases are portable, which
+/// is why they could be added without deciding anything. `ELOOP` is the first
+/// that is not: it is what a resolution walk reports for a symlink chain, so
+/// the model needs to name it, but its raw number differs between the platforms
+/// PawPrint models. It therefore carries both candidates and refuses to yield
+/// either until the project picks one. `EAGAIN`, `ENOTEMPTY`, `ENAMETOOLONG`
+/// and the rest of the range from 35 up are still absent, simply because
+/// nothing here raises them yet; each will land the same way when it does.
 [<RequireQualifiedAccess>]
 type UnixError =
     /// `EPERM` — Operation not permitted.
@@ -142,6 +159,16 @@ type UnixError =
     /// `errno = ERANGE` and return -1 for negative sizes before the real
     /// `read(2)` / `write(2)` is invoked.
     | ERANGE
+    /// `ELOOP` — Too many levels of symbolic links.
+    ///
+    /// Reported by `VirtualFileSystem.resolve` when a path resolution traverses
+    /// more symlinks than any Unix PawPrint models would allow. The first case
+    /// whose raw number is *not* portable: Linux numbers it 40 and Darwin 62,
+    /// and each of those numbers names a different error on the other platform.
+    /// Its PAL value is unaffected by that, and is what CoreLib switches on, so
+    /// this is fully usable everywhere except `toRawErrno` — which fails loudly
+    /// rather than picking a platform. See `RawErrnoPortability`.
+    | ELOOP
 
 /// The raw and PAL numbering of one `UnixError`.
 type UnixErrorNumbering =
@@ -211,12 +238,19 @@ module UnixError =
             UnixError.EPIPE
             UnixError.EDOM
             UnixError.ERANGE
+            UnixError.ELOOP
         ]
 
     let private portable (pal : int) (raw : int) : UnixErrorNumbering =
         {
             Pal = pal
             Raw = RawErrnoPortability.Portable raw
+        }
+
+    let private platformDependent (pal : int) (linux : int) (darwin : int) : UnixErrorNumbering =
+        {
+            Pal = pal
+            Raw = RawErrnoPortability.PlatformDependent (linux, darwin)
         }
 
     /// The single table. Both conversion directions and both projections below
@@ -259,6 +293,9 @@ module UnixError =
         | UnixError.EPIPE -> portable 0x10043 32
         | UnixError.EDOM -> portable 0x10012 33
         | UnixError.ERANGE -> portable 0x10047 34
+        // Raw 40 is EMSGSIZE on Darwin, and raw 62 is ETIME on Linux, so either
+        // number would silently name a different error on the other platform.
+        | UnixError.ELOOP -> platformDependent 0x10020 40 62
 
     /// The `Interop.Error` value CoreLib switches on. Total: the PAL numbering is
     /// platform-independent, so it is always answerable.
@@ -266,10 +303,11 @@ module UnixError =
 
     /// The raw `<errno.h>` number to store in `EmulatedKernel.LastSystemError`.
     ///
-    /// Partial by design. Every case in the table today is `Portable`, so this
-    /// cannot fail as things stand; it fails loudly the moment someone adds a
-    /// case whose number PawPrint has not decided on, rather than letting a
-    /// Linux number reach a guest that was told it is running on Darwin.
+    /// Partial by design, and now genuinely partial: `ELOOP` is in the table
+    /// and has no platform-independent number, so this fails for it rather than
+    /// letting a Linux number reach a guest that was told it is running on
+    /// Darwin. Callers that only need the value CoreLib switches on should use
+    /// `toPal`, which is total.
     let toRawErrno (error : UnixError) : int =
         match (numbering error).Raw with
         | RawErrnoPortability.Portable value -> value
@@ -277,9 +315,6 @@ module UnixError =
             failwith
                 $"UnixError.toRawErrno: %O{error} has no platform-independent errno number (Linux reports %d{linux}, Darwin reports %d{darwin}), and PawPrint has not chosen which numbering its emulated kernel reports. Reporting either would make a guest that read Marshal.GetLastPInvokeError() observe a number its configured SimulatedUnixPlatform contradicts. Decide the numbering (see issue #956) before routing this error to a guest."
 
-    /// The error a raw `<errno.h>` number denotes, or `None` when this build
-    /// cannot say. `None` means genuinely undecidable, not merely unmapped: see
-    /// `palOfRawErrno`.
     /// Is `raw` a number whose meaning PawPrint can state without first
     /// deciding which Unix it is impersonating?
     ///
@@ -306,6 +341,17 @@ module UnixError =
     /// error on no platform we model and needs no platform choice to reject.
     let private isUnambiguouslyNonStandardRawErrno (raw : int) : bool = raw < 0
 
+    /// The error a raw `<errno.h>` number denotes, or `None` when this build
+    /// cannot say. `None` means genuinely undecidable, not merely unmapped: see
+    /// `palOfRawErrno`.
+    ///
+    /// A `PlatformDependent` case is deliberately *not* matched, even though
+    /// the table records both its candidate numbers. Matching raw 40 to `ELOOP`
+    /// would be right on Linux and wrong on Darwin, where 40 is `EMSGSIZE`;
+    /// matching 62 would be wrong the other way round. Since the direction this
+    /// function runs in is precisely "which error is this number", answering it
+    /// requires the platform choice PawPrint has not made — so both numbers
+    /// stay unmapped and reach `palOfRawErrno`'s loud failure.
     let ofRawErrno (raw : int) : UnixError option =
         all
         |> List.tryFind (fun error ->
