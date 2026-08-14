@@ -371,12 +371,16 @@ module AbstractMachine =
                 state.LoadedAssembly instruction.ExecutingMethod.DeclaringAssembly
 
             let executingInType =
-                match declaringAssembly with
-                | None -> "<unloaded assembly>"
-                | Some assy ->
-                    match
-                        assy.TypeDefs.TryGetValue instruction.ExecutingMethod.RequiredDeclaringType.Definition.Get
-                    with
+                match declaringAssembly, instruction.ExecutingMethod.TryDeclaringType with
+                | None, _ -> "<unloaded assembly>"
+                // A method minted by `Reflection.Emit` has no declaring type to name. This runs
+                // once per interpreted instruction of such a body, so it must not be the partial
+                // accessor: crashing exactly when someone turns tracing on to debug a dynamic
+                // method would be the worst possible place for it. `describe` renders the owner in
+                // a form no type could be confused with.
+                | Some _, None -> MethodOwner.describe instruction.ExecutingMethod.Owner
+                | Some assy, Some declaringType ->
+                    match assy.TypeDefs.TryGetValue declaringType.Definition.Get with
                     | true, v -> v.Name
                     | false, _ -> "<unrecognised type>"
 
