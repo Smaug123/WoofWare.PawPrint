@@ -1,10 +1,14 @@
 # Plan: one storage-location identity, shared by everything that asks "same location?"
 
 Status: **in progress.** Stage 1 merged (#982). Stage 2 merged (#984). Stage 3 withdrawn.
-Stage 3′ rewritten below, and **implemented** on `worktree-agent-abc0073d4449a881b` (`a8bbb1f`)
-by the investigation that confirmed the `Memmove` defect it predicted — option (a), both keys
-canonicalised, 3069 passing. Stage 4 unblocked by #916 merging as `55b7d9b`; §6's measurement is
-answered rather than pending.
+Stage 3′ rewritten below, and **implemented but not yet complete** on `explicit-layout-memmove`
+(`a8bbb1f`) by the investigation that confirmed the `Memmove` defect it predicted — option (a),
+both keys canonicalised, 3069 passing. Its coarse-key half is **untested**: that commit adds no
+resolver-level assertion, and its guest's fields are reference-free so both endpoints resolve
+precisely and `overlapVerdict` never consults the coarse key. Reverting `SharedStorageKey` alone
+would leave the suite green. Not to be treated as satisfying this stage until that mutation is
+killed. Stage 4 unblocked by #916 merging as `55b7d9b`; §6's measurement is answered rather than
+pending.
 
 Reviewed by Codex, which found four defects in the first draft. All four were confirmed against
 the tree and all four changed the plan: §5 Stage 2's type shape, the withdrawal of Stage 3, the
@@ -120,8 +124,16 @@ Two genuinely different ways to bridge that, to be decided before Stage 4 is wri
   `NullaryIlOp.fs:1731` and `Intrinsics.fs:745` — six. The 27 came from a grep that counted
   `state.PointerHashState` reads rather than `ceq` calls. Two further propagation points call
   `ceqNormalised` directly rather than through `ceq`: `Unsafe.AreSame` (`Intrinsics.fs:2475`) and
-  `NativeIntSourceComparison.fs:213`. So the honest figure is **six call sites plus two direct
-  callers**, which is a materially cheaper change than this plan assumed throughout.
+  `NativeIntSourceComparison.fs:213`. And a **seventh** propagation point that is neither:
+  `Interlocked.CompareExchange(ref IntPtr, ...)` at `Intrinsics.fs:810` calls
+  `NativeIntSourceComparison.equalsForCli` directly, so if comparison starts returning
+  `NeedsByteLocation` that CAS path must resolve or propagate it too. No `Unsafe.AreSame` guest
+  reaches it, so it needs an oracle of its own — a guest doing an `Interlocked.CompareExchange`
+  over a `ref IntPtr` whose operands are byrefs into one container.
+
+  So the honest figure is **six `ceq` call sites, two direct `ceqNormalised` callers, and the CAS
+  path** — still a materially cheaper change than this plan assumed throughout, but not the clean
+  six. Enumerate rather than grep: the 27 above came from grepping, and so did missing this one.
 - **(b) Eager resolution at the call sites.** Handlers resolve both operands to a
   `LocationResolution` *before* calling `ceq`, which takes them as parameters — mirroring how
   `ceq` is already handed `counters : PointerHashState`. Cost: resolution work on every `ceq`
@@ -348,7 +360,46 @@ past-the-end `PeByteRange` byrefs have the same shape.
 
 So the deferred result must carry the extent information — `mayLeaveRootExtent` already computes
 it in `ManagedPointerSource.fs` — and the distinct-container inference must be gated on both sides
-being in-extent. Note this does *not* affect `AreSameProjectionCrossesArrayElement`: array element
+being in-extent.
+
+**But `mayLeaveRootExtent` is not yet strong enough to be that gate** (Codex, round 3). For
+`[ReinterpretAs Big; Field F]` it computes a known byte displacement of 0 and returns `false`
+— "did not leave its root" — even when `F` lies beyond the original local or static slot, because
+only `ByteOffset` steps contribute to the displacement it sums. That is sound *today* purely
+because `hasNonTrailingReinterpret` refuses this shape earlier, so the predicate is never asked
+about it. Stage 4 would defer the shape instead of refusing it, at which point the predicate's
+answer becomes load-bearing and is wrong: two distinct precise containers, gate satisfied, silent
+`false`.
+
+This is the same defect shape as the two above — a classifier that is only accidentally truthful
+because a caller upstream filters its hard cases. So Stage 4 must either extend the extent
+description to account for a `Field` resolved against a reinterpreted (possibly larger) type, or
+conservatively classify any chain containing a non-trailing `ReinterpretAs` as
+possibly-out-of-extent. The conservative option keeps today's refusal for that shape, which is the
+right default: it loses nothing relative to `main`.
+
+#### The rule Stage 4 should actually be built on
+
+Three review rounds have now each found a *different* counterexample to "distinct containers ⇒
+distinct addresses": overlapping explicit-layout fields, byrefs displaced out of their root, and
+`Field` resolved against a reinterpreted larger type. Three independent falsifications of one
+shortcut is not three bugs to patch; it is evidence the shortcut is the wrong default.
+
+**So invert Stage 4's default. Refuse unless the pair is positively proved equal or unequal, rather
+than deciding unless a known exception fires.** Concretely, the only pairs it should decide are:
+
+1. both `Located` with `Some` precise, **equal** container → compare offsets. Sound because one
+   container means one flat coordinate system, which is the whole content of `ByteStorageIdentity`.
+2. `Unrelatable` on either side → unequal. Sound because a non-byref shares storage with nothing.
+
+Everything else refuses, including distinct containers. That is weaker than what this plan proposed
+three times over, and it still decides all four parked guests — because canonicalisation (Stage 3′)
+moves them into case 1 rather than relying on case-distinct reasoning. The distinct-container
+inference buys only pairs that are *already* answered correctly by `ceqNormalised`'s final arm on
+`main`, so declining to make it costs nothing and removes the entire class of error above.
+
+If a later change wants distinct-container inequality, it should arrive with its own extent proof
+and its own guests, as a separate decision. Note this does *not* affect `AreSameProjectionCrossesArrayElement`: array element
 roots already resolve to one canonical `ByteStorageIdentity.Array arr` with `arrayBytePosition`
 offsets, so that pair is an *equal*-container comparison and never reaches this arm. The gating
 matters for roots that stay distinct after canonicalisation — locals, arguments, statics, PE ranges.
