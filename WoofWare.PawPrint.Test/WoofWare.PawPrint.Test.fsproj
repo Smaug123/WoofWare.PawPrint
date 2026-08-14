@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <Compile Include="LoggerFactory.fs" />
+    <Compile Include="SynthesisedLayoutKind.fs" />
     <Compile Include="TestGcHeapHardLimit.fs" />
     <Compile Include="Assembly.fs" />
     <Compile Include="Roslyn.fs" />
@@ -64,6 +65,7 @@
     <Compile Include="TestAbsoluteUnixPath.fs" />
     <Compile Include="TestUnixPath.fs" />
     <Compile Include="TestVirtualFileSystem.fs" />
+    <Compile Include="TestFileSystemSeed.fs" />
     <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
     <Compile Include="TestRuntimeConfig.fs" />
     <Compile Include="TestDynamicCodeSupport.fs" />

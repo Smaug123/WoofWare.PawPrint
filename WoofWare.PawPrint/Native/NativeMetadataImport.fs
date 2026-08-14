@@ -739,6 +739,9 @@ module NativeMetadataImport =
                 baseClassTypes
                 state.ConcreteTypes
                 constArrayHandle
+                (TypeLayoutKind.applied
+                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
+                    typeInfo.TypeAttributes)
                 typeInfo.Layout
                 (CharSetMetadata.ofTypeAttributes typeInfo.TypeAttributes)
             |> CliType.ValueType

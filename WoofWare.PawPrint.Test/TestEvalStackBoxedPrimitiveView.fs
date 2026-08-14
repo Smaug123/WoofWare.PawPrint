@@ -55,7 +55,13 @@ module TestEvalStackBoxedPrimitiveView =
             MarshallingDescriptor = field.MarshallingDescriptor
         }
         |> List.singleton
-        |> CliValueType.OfFields bct allCt declared ti.Layout (CharSetMetadata.ofTypeAttributes ti.TypeAttributes)
+        |> CliValueType.OfFields
+            bct
+            allCt
+            declared
+            (TypeLayoutKind.applied true ti.TypeAttributes)
+            ti.Layout
+            (CharSetMetadata.ofTypeAttributes ti.TypeAttributes)
 
     /// Every primitive the CLI boxes into a single-field wrapper, paired with the
     /// `PrimitiveType` whose zero is the slot `ldind.<width>` asks the coercion for, and a
@@ -221,7 +227,13 @@ module TestEvalStackBoxedPrimitiveView =
         let declared = handleFor bct.TypedReference
 
         let vt =
-            CliValueType.OfFields bct allCt declared Layout.Default CharSet.Ansi [ field "a" 11L ; field "b" 22L ]
+            SynthesisedLayoutKind.ofFields
+                bct
+                allCt
+                declared
+                Layout.Default
+                CharSet.Ansi
+                [ field "a" 11L ; field "b" 22L ]
 
         let ldindI8Slot = CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
 
@@ -244,7 +256,7 @@ module TestEvalStackBoxedPrimitiveView =
             MarshallingDescriptor = None
         }
         |> List.singleton
-        |> CliValueType.OfFields
+        |> SynthesisedLayoutKind.ofFields
             bct
             allCt
             declared
@@ -363,7 +375,7 @@ module TestEvalStackBoxedPrimitiveView =
         let declared = handleFor bct.TypedReference
 
         let union =
-            CliValueType.OfFields
+            SynthesisedLayoutKind.ofFields
                 bct
                 allCt
                 declared
@@ -415,7 +427,7 @@ module TestEvalStackBoxedPrimitiveView =
         let declared = handleFor bct.TypedReference
 
         let union =
-            CliValueType.OfFields
+            SynthesisedLayoutKind.ofFields
                 bct
                 allCt
                 declared
@@ -461,7 +473,7 @@ module TestEvalStackBoxedPrimitiveView =
         let declared = handleFor bct.TypedReference
 
         let vt =
-            CliValueType.OfFields
+            SynthesisedLayoutKind.ofFields
                 bct
                 allCt
                 declared
@@ -513,7 +525,7 @@ module TestEvalStackBoxedPrimitiveView =
         let declared = handleFor bct.TypedReference
 
         let vt =
-            CliValueType.OfFields
+            SynthesisedLayoutKind.ofFields
                 bct
                 allCt
                 declared

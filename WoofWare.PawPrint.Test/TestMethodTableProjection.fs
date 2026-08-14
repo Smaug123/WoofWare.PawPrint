@@ -187,7 +187,7 @@ public interface IOpenInterface<T>
                     MarshallingDescriptor = None
                 }
             ]
-            |> CliValueType.OfFields bct state.ConcreteTypes intPtrHandle Layout.Default CharSet.Ansi
+            |> SynthesisedLayoutKind.ofFields bct state.ConcreteTypes intPtrHandle Layout.Default CharSet.Ansi
 
         IlMachineState.allocateManagedObject intPtrHandle valueType state
 
@@ -195,7 +195,7 @@ public interface IOpenInterface<T>
         let objectHandle = handleFor bct.Object
 
         let objectValue =
-            CliValueType.OfFields bct state.ConcreteTypes objectHandle Layout.Default CharSet.Ansi []
+            SynthesisedLayoutKind.ofFields bct state.ConcreteTypes objectHandle Layout.Default CharSet.Ansi []
 
         IlMachineState.allocateManagedObject objectHandle objectValue state
 
@@ -217,7 +217,7 @@ public interface IOpenInterface<T>
                     MarshallingDescriptor = None
                 }
             ]
-            |> CliValueType.OfFields
+            |> SynthesisedLayoutKind.ofFields
                 bct
                 state.ConcreteTypes
                 declared
@@ -242,7 +242,7 @@ public interface IOpenInterface<T>
                 MarshallingDescriptor = None
             }
         ]
-        |> CliValueType.OfFields
+        |> SynthesisedLayoutKind.ofFields
             bct
             state.ConcreteTypes
             declared
@@ -282,7 +282,7 @@ public interface IOpenInterface<T>
                     MarshallingDescriptor = None
                 }
             ]
-            |> CliValueType.OfFields
+            |> SynthesisedLayoutKind.ofFields
                 bct
                 state.ConcreteTypes
                 objectHandle
@@ -3492,7 +3492,7 @@ public unsafe struct PointerWrapper
                     MarshallingDescriptor = None
                 }
             ]
-            |> CliValueType.OfFields
+            |> SynthesisedLayoutKind.ofFields
                 bct
                 state.ConcreteTypes
                 (handleFor bct.TypedReference)
@@ -4181,7 +4181,7 @@ public unsafe struct PointerWrapper
                     MarshallingDescriptor = None
                 }
             ]
-            |> CliValueType.OfFields
+            |> SynthesisedLayoutKind.ofFields
                 bct
                 state.ConcreteTypes
                 objectHandle

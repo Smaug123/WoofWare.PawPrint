@@ -240,6 +240,7 @@ module MethodHandleRegistry =
             baseClassTypes
             allConcreteTypes
             (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeMethodHandleInternal)
+            (TypeLayoutKind.applied true baseClassTypes.RuntimeMethodHandleInternal.TypeAttributes)
             Layout.Default
             (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeMethodHandleInternal.TypeAttributes)
 
@@ -458,6 +459,7 @@ module MethodHandleRegistry =
             baseClassTypes
             allConcreteTypes
             runtimeMethodInfoStubHandle
+            (TypeLayoutKind.applied false baseClassTypes.RuntimeMethodInfoStub.TypeAttributes)
             Layout.Default
             (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeMethodInfoStub.TypeAttributes)
 
@@ -598,6 +600,7 @@ module MethodHandleRegistry =
                 baseClassTypes
                 allConcreteTypes
                 (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeMethodHandle)
+                (TypeLayoutKind.applied true baseClassTypes.RuntimeMethodHandle.TypeAttributes)
                 Layout.Default
                 (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeMethodHandle.TypeAttributes)
             |> CliType.ValueType

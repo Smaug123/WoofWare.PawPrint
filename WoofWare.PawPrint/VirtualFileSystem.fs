@@ -253,6 +253,32 @@ module UnixTimestamp =
 
     let ofSeconds (seconds : int64) : UnixTimestamp = UnixTimestamp (seconds, 0)
 
+    /// A timestamp from a count of milliseconds since the Unix epoch, which is
+    /// how the emulated kernel holds its wall clock.
+    ///
+    /// Floor division, so that a negative millisecond count keeps the
+    /// nanosecond part non-negative rather than producing a `timespec` no
+    /// kernel would write: -1 ms is (-1 s, 999 000 000 ns), not (0 s, -1e6 ns).
+    ///
+    /// Derived from the truncating quotient and remainder rather than by
+    /// biasing the dividend. `(milliseconds - 999L) / 1000L` is the obvious way
+    /// to floor a negative, and it silently overflows for the bottom 999 values
+    /// of `int64`: it does not throw, it hands back a *positive* second count
+    /// and a nanosecond part outside `[0, 1e9)` — a value that breaks the very
+    /// invariant `create` exists to enforce, while bypassing it. Neither `/`
+    /// nor `%` can overflow for any input here.
+    let ofMillisecondsSinceEpoch (milliseconds : int64) : UnixTimestamp =
+        let quotient = milliseconds / 1000L
+        let remainder = milliseconds % 1000L
+
+        if remainder >= 0L then
+            UnixTimestamp (quotient, int remainder * 1_000_000)
+        else
+            // The truncating quotient rounded towards zero, so it names a
+            // second later than the instant; the remainder is negative by
+            // exactly the difference.
+            UnixTimestamp (quotient - 1L, int (remainder + 1000L) * 1_000_000)
+
     /// The Unix epoch itself, which is also what a kernel booted at the default
     /// `WallClockEpochMs` of 0 believes the time to be.
     let epoch : UnixTimestamp = UnixTimestamp (0L, 0)

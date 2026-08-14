@@ -131,14 +131,20 @@ module TestCliTypeBytes =
         }
 
     let private rawSizedValueType (size : int) : CliType =
-        CliValueType.OfFields bct allCt declaredHandle (Layout.Custom (size = size, packingSize = 0)) CharSet.Ansi []
+        SynthesisedLayoutKind.ofFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = size, packingSize = 0))
+            CharSet.Ansi
+            []
         |> CliType.ValueType
 
     let private fieldBackedValueType (value : int32) : CliValueType =
         let field =
             cliField "Value" (CliType.Numeric (CliNumericType.Int32 value)) None int32Handle
 
-        CliValueType.OfFields bct allCt declaredHandle Layout.Default CharSet.Ansi [ field ]
+        SynthesisedLayoutKind.ofFields bct allCt declaredHandle Layout.Default CharSet.Ansi [ field ]
 
     let private explicitUnionValueType (asInt : int32) : CliValueType =
         let asIntField =
@@ -156,7 +162,7 @@ module TestCliTypeBytes =
         let byte3 =
             cliField "Byte3" (CliType.Numeric (CliNumericType.UInt8 0uy)) (Some 3) byteHandle
 
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             declaredHandle
@@ -171,7 +177,7 @@ module TestCliTypeBytes =
         let intField =
             cliField "Int" (CliType.Numeric (CliNumericType.Int32 0)) None int32Handle
 
-        CliValueType.OfFields bct allCt declaredHandle Layout.Default CharSet.Ansi [ byteField ; intField ]
+        SynthesisedLayoutKind.ofFields bct allCt declaredHandle Layout.Default CharSet.Ansi [ byteField ; intField ]
 
     let private nestedUnionValueType () : CliValueType =
         let inner =
@@ -183,7 +189,7 @@ module TestCliTypeBytes =
         let upper =
             cliField "UpperInt" (CliType.Numeric (CliNumericType.Int32 0)) (Some 4) int32Handle
 
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             declaredHandle
@@ -198,7 +204,7 @@ module TestCliTypeBytes =
         let other =
             cliField "Other" (CliType.Numeric (CliNumericType.UInt8 0uy)) (Some 1) byteHandle
 
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             declaredHandle
@@ -210,7 +216,7 @@ module TestCliTypeBytes =
         let prefix =
             cliField "Prefix" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
 
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             declaredHandle
@@ -225,7 +231,7 @@ module TestCliTypeBytes =
         let low =
             cliField "Low" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
 
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             declaredHandle
@@ -236,11 +242,11 @@ module TestCliTypeBytes =
     let private fieldBackedBoolValueType () : CliType =
         let field = cliField "Flag" (CliType.Bool 0uy) None boolHandle
 
-        CliValueType.OfFields bct allCt declaredHandle Layout.Default CharSet.Ansi [ field ]
+        SynthesisedLayoutKind.ofFields bct allCt declaredHandle Layout.Default CharSet.Ansi [ field ]
         |> CliType.ValueType
 
     let private objectReferenceValueType () : CliValueType =
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             declaredHandle
@@ -249,7 +255,7 @@ module TestCliTypeBytes =
             [ cliField "Obj" (CliType.ObjectRef None) (Some 0) objectHandle ]
 
     let private runtimePointerValueType () : CliValueType =
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             declaredHandle
@@ -266,7 +272,7 @@ module TestCliTypeBytes =
             ]
 
     let private taggedNativeIntValueType () : CliValueType =
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             declaredHandle
@@ -286,7 +292,7 @@ module TestCliTypeBytes =
         let innerField =
             cliField "Inner" (inner |> CliType.ValueType) (Some 0) inner.Declared
 
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             declaredHandle
@@ -299,10 +305,16 @@ module TestCliTypeBytes =
             let innerValueType = objectReferenceValueType ()
             cliField "Inner" (innerValueType |> CliType.ValueType) (Some 0) innerValueType.Declared
 
-        CliValueType.OfFields bct allCt int64Handle (Layout.Custom (size = 8, packingSize = 0)) CharSet.Ansi [ inner ]
+        SynthesisedLayoutKind.ofFields
+            bct
+            allCt
+            int64Handle
+            (Layout.Custom (size = 8, packingSize = 0))
+            CharSet.Ansi
+            [ inner ]
 
     let private objectAndRuntimePointerValueType () : CliValueType =
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             declaredHandle
@@ -325,7 +337,7 @@ module TestCliTypeBytes =
     /// This is the shape of `Dictionary<K,V>.Entry`, and the reason a pointer-slot walk over such
     /// an array has slots that contain no reference at all.
     let private mixedReferenceValueType () : CliValueType =
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             declaredHandle
@@ -339,7 +351,7 @@ module TestCliTypeBytes =
     /// A single-field wrapper around a reference. As a *field* this is a value class rather than
     /// a primitive, so auto layout places it after every size-class bucket instead of hoisting it.
     let private referenceWrapperValueType () : CliValueType =
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             declaredHandle
@@ -354,7 +366,7 @@ module TestCliTypeBytes =
     /// layout always hoists a directly-held reference to the front, so the reference has to be
     /// buried in a by-value field to keep it out of the low slots.
     let private referenceHighSlotValueType () : CliValueType =
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             declaredHandle
@@ -370,7 +382,7 @@ module TestCliTypeBytes =
     let private nestedMixedValueType () : CliValueType =
         let inner = mixedReferenceValueType ()
 
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             declaredHandle
@@ -385,7 +397,7 @@ module TestCliTypeBytes =
     /// field and purely interval-based, so a range covering the union must zero both members;
     /// this pins that rather than leaving it to argument.
     let private overlappingReferenceUnionValueType () : CliValueType =
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             declaredHandle
@@ -402,7 +414,7 @@ module TestCliTypeBytes =
     /// and does not, so the shape is representable here and any range rule has to cope with it
     /// rather than assume pointer alignment.
     let private misalignedReferenceValueType () : CliValueType =
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             declaredHandle
@@ -1614,7 +1626,7 @@ module TestCliTypeBytes =
 
         // Same story one level down, for a float field inside a struct.
         let structWithNegativeZero =
-            CliValueType.OfFields
+            SynthesisedLayoutKind.ofFields
                 bct
                 allCt
                 declaredHandle
@@ -1679,7 +1691,7 @@ module TestCliTypeBytes =
         // field at [8,16) that was written later. Zeroing [0,8) must not let the nested
         // struct's stale upper half overwrite the alias.
         let nested =
-            CliValueType.OfFields
+            SynthesisedLayoutKind.ofFields
                 bct
                 allCt
                 declaredHandle
@@ -1691,7 +1703,7 @@ module TestCliTypeBytes =
                 ]
 
         let outer =
-            CliValueType.OfFields
+            SynthesisedLayoutKind.ofFields
                 bct
                 allCt
                 declaredHandle
@@ -1747,7 +1759,7 @@ module TestCliTypeBytes =
             CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed int32Handle))
 
         let vt =
-            CliValueType.OfFields
+            SynthesisedLayoutKind.ofFields
                 bct
                 allCt
                 declaredHandle

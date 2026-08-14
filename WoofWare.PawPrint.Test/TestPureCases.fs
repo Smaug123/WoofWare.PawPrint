@@ -30,7 +30,8 @@ module TestPureCases =
             "ReinterpretReadNestedFieldThroughIndex.cs" // Reading a field of a nested struct directly through an inline-array index (`buf[k].I.P`), one step deeper than the `buf[k].Field` shape that works. Not the cell resolver: `CliType.CellPathsExactlyCovering` descends to any depth and `TestCliTypeCellPaths` covers depth 3. Nor, any longer, the projection walk: `walkProjectionByteOffset` folds `ByteOffset` followed by `Field` since the guard relaxation, so the peeled chain `[ByteOffset k*sizeof(Elem); Field I; Field P]` resolves fine. The one remaining blocker is routing in `readManagedByrefField`, whose reinterpret-aware arms only fire when `ReinterpretAs` is last (or last-but-a-`ByteOffset`); with a trailing `Field` the chain falls through to `readProjectedValue`, which cannot cross a reinterpret. Un-park when that dispatcher learns to route a chain that contains but does not end at a `ReinterpretAs` to the byte-view reader.
             "ActivatorCreateInstanceStructCtor.cs" // `Activator.CreateInstance` on a value type declaring an explicit parameterless ctor. `RuntimeTypeHandle_GetActivationInfo` is implemented and covered by `ActivatorCreateInstance.cs`, but CoreCLR returns that ctor's *boxed* entry point in `ppfnRefCtor` (reflectioninvocation.cpp:1665, `forceBoxedEntryPoint = isValueType`) and `CreateInstanceDefaultCtor` calls exactly that one. `NativeIntSource.FunctionPointer` carries a target with no entry-point flavour, so the boxed entry point is unrepresentable and the QCall fails loudly instead of invoking the ctor with an ObjectRef receiver — which would risk constructing into a copy of the box's payload. Un-park when function pointers can name a boxed entry point.
             "MarshalStructureToPtrDecimalField.cs" // `StructMarshalStub.isBlittableField` rejects Decimal fields (CoreCLR routes them through `NFT_DECIMAL` stub synthesis because native `DECIMAL` is 8-byte aligned while managed `Decimal` is 4-byte aligned), so the struct reaches the has-layout-non-blittable arm and `tryComputePlan` then declines it. The stub machinery a Decimal field would run on now exists — it is what marshals a `DateTime` field — so what remains is Decimal-specific. (1) `Marshal.SizeOf&lt;{int; decimal}&gt;()` returns 20 instead of 24 because the marshal-layout walk in `CliValueType.TryComputeMarshalLayout` does not bump Decimal's field alignment to 8, so the placement handed to the stub is already wrong. (2) There is no `StructMarshalFieldKind` for it. Native `DECIMAL` is one contiguous 16-byte range like any other struct member, so the step's one-range-per-field shape is fine; what differs is the *interior*, since `DECIMAL` orders its members (`wReserved`, `scale`, `sign`, `Hi32`, `Lo64`) differently from managed `System.Decimal`'s `flags`/`hi`/`lo`/`mid`. That is a richer `Kind`, not a richer step.
-            "StructLayoutAutoWithoutReferences.cs" // CoreCLR reaches `HandleAutoLayout` either because the type declares `LayoutKind.Auto` or because it holds GC references and is promoted (`PlaceInstanceFields`, methodtablebuilder.cpp:8212). PawPrint implements the promotion route only, and cannot implement the other: `Layout` (TypeInfo.fs:47) is built from the `ClassLayout` table, which carries only `Pack` and `Size`, while the LayoutKind lives in `TypeAttributes.LayoutMask` and is discarded — so a reference-free type declared `LayoutKind.Auto` is indistinguishable from a sequential one where fields are laid out. The file's sequential controls pass, which is what makes this a LayoutKind gap rather than a bucketing one. Closing it means widening `Layout` to carry the kind and threading it through every construction site, so it is its own change.
+            "AutoLayoutStructNamedLikeEnum.cs" // `CliValueType.IsEnumStructural` calls any value type with one integral instance field named `value__` at offset 0 an enum, and `value__` is a legal C# identifier — so an ordinary `struct Fake { public int value__; }` is classified `PrimitiveLikeKind.EnumLike`. Auto layout then buckets it as its underlying primitive, where CoreCLR treats it as a value class and places it after every size-class bucket: `[Auto] struct { byte B; Fake F; }` is `B@0, F@4` on real .NET and `F@0, B@4` here. The real-enum control in the same file passes on both runtimes, so the divergence is the classification rather than auto layout. Pre-existing rather than new — it also drives eval-stack flattening, and the GC-promotion route already reached it — but honouring a declared `LayoutKind.Auto` gives it a second, reference-free way in. Closing it means deciding enum-ness nominally (base type is `System.Enum`), which needs `LoadedAssemblies` at `CliValueType.OfFields`, a site that has only `BaseClassTypes` and `AllConcreteTypes` and is called from ~21 places. Tracked as issue #996.
+            "AutoInlineArrayElementSizeRounding.cs" // `[InlineArray(N)]` on a type that declares `LayoutKind.Auto`, where the element's own size is not already its rounded size. CoreCLR lays such a type out as its *one* declared field and multiplies the resulting instance size by N (`PlaceInstanceFields`, methodtablebuilder.cpp:8612), so the auto route's size rounding applies to one element: three 3-byte elements are 12 bytes, not 9. PawPrint materialises N storage slots (`InlineArrayStorage.expand`) and lays them out together, so the rounding would apply once to the whole run and give 16 for a run of three ints — wrong in the *other* direction, and wrong for the common case. `CliValueType.AutoLayoutGoverns` therefore keeps inline-array expansions on the sequential route, which is exactly right for every element whose size equals its rounded size (all primitives, hence every shape a guest is likely to write) and leaves this one case short. Closing it needs the repeat count to reach the sizing code, which today sees only the expanded slots; the file's other three cases pass and pin what that change must not disturb.
             "StructLayoutInt128Alignment.cs" // `Int128`/`UInt128` carry a nominal 16-byte alignment requirement that CoreCLR stores on the type (`MethodTable::GetFieldAlignmentRequirement`, methodtable.cpp:8853, fed by the `IsInt128OrHasInt128Fields` flag) rather than deriving from the fields. PawPrint derives a value type's alignment structurally, so `Int128` — two `ulong`s — comes out 8-aligned and every type embedding it is under-sized. This is orthogonal to the GC auto-layout rule: the first case in the file holds no reference at all and diverges identically. Fixing it needs a nominal required-alignment concept covering `Int128`, `UInt128` and the `Vector` family, which reaches non-GC sequential layout too and so wants its own change.
             "MakeGenericMethodOpenArgument.cs" //`RuntimeMethodHandle_GetStubIfNeededSlow` (issue #743) handles `MakeGenericMethod` with closed type arguments, which is what every reachable path needs, but an argument that still contains generic parameters — `MakeGenericMethod(typeof(G<>))` or `MakeGenericMethod(someTypeParameter)` — cannot be represented. Both are legal: real .NET returns a MethodInfo with `ContainsGenericParameters = true`, inspectable but not invokable. PawPrint's `MethodHandle.MethodGenerics` is a `ConcreteTypeHandle list`, and `ConcreteTypeHandle` indexes `AllConcreteTypes`, whose entries carry only *closed* generic arguments, so the QCall fails with a precise TODO. Widening that representation reaches concretization and every other MethodHandle consumer, so it is its own change rather than part of the QCall.
             "ComparerDefaultEnumCompare.cs" // `Comparer<TEnum>.Default` *selection* works and is asserted by the sibling `ComparerDefault.cs`; what is parked here is calling the comparer it returns. `EnumComparer<T>.Compare` delegates to `RuntimeHelpers.EnumCompareTo<T>` (Comparer.CoreCLR.cs:19), a distinct [Intrinsic] which PawPrint has not reviewed for the safe-intrinsic allowlist, so it stops at the `TODO: implement JIT intrinsic` failure in `callMethod` (IlMachineStateExecution.fs:1931). An allowlist entry alone is not enough: its IL body is `ldarga.s 0; ldarg.1; box T; constrained. T; callvirt Enum::CompareTo(object); ret`, so un-parking needs `Enum.CompareTo(object)` to be reachable under a `constrained.` callvirt on a boxed enum.
@@ -69,12 +70,47 @@ module TestPureCases =
         )
         |> Set.ofSeq
 
+    /// Guests that need a filesystem to look at, with the seed each one wants.
+    ///
+    /// The *same* seed configures both sides of the differential comparison:
+    /// PawPrint realises it into a `VirtualFileSystem` rooted at `/`, and
+    /// `RealRuntime.executeWithSeed` materialises it into the scratch directory
+    /// the real guest runs in. One description, two interpreters — which is
+    /// what makes the agreement worth something, rather than two hand-kept
+    /// copies of a tree that might have drifted apart.
+    ///
+    /// Excluded from `simpleCases` because they need a non-default
+    /// `KernelConfig`.
+    let seededCases : Map<string, Map<FileName, SeedEntry>> =
+        let name (s : string) = FileName.parseOrFail "test seed" s
+        let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
+
+        let file (contents : string) =
+            SeedEntry.File (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
+
+        [
+            "FileExistsSeeded.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    name "d", SeedEntry.Directory (Map.ofList [ name "g", file "nested" ])
+                    name "lf", SeedEntry.Symlink (target "f")
+                    name "ld", SeedEntry.Symlink (target "d")
+                    name "dang", SeedEntry.Symlink (target "nx")
+                    name "cyc", SeedEntry.Symlink (target "cyc")
+                ]
+        ]
+        |> Map.ofList
+
+    let seededCaseNames : string list = seededCases |> Map.toList |> List.map fst
+
     let simpleCases : string list =
         allPure
         |> Seq.filter (fun s ->
             (customExitCodes.ContainsKey s
              || unimplemented.Contains s
-             || expectsUnhandledException.Contains s)
+             || expectsUnhandledException.Contains s
+             || seededCases.ContainsKey s)
             |> not
         )
         |> Seq.toList
@@ -136,7 +172,11 @@ module TestPureCases =
             source
             case.KernelConfig
             (fun image pawPrintResult ->
-                let realResult = RealRuntime.executeWithRealRuntime [||] image
+                // The case's own seed drives the oracle too, so both runtimes
+                // are looking at one description of a filesystem. An unseeded
+                // case passes `FileSystemSeed.empty`, which materialises
+                // nothing and leaves the oracle exactly as it was.
+                let realResult = RealRuntime.executeWithSeed case.KernelConfig.FileSystem [||] image
 
                 // NormalExit and ProcessExit both represent a clean process termination with
                 // an exit code on the terminating thread's eval stack; the only difference is
@@ -642,6 +682,21 @@ class Program
             FileName = fileName
             ExpectedReturnCode = 0
             KernelConfig = KernelConfig.Default
+            AppContext = AppContextProperties.empty
+            ExpectsUnhandledException = false
+            AssertTerminalState = None
+        }
+        |> runTest
+
+    [<TestCaseSource(nameof seededCaseNames)>]
+    let ``Seeded filesystem tests`` (fileName : string) =
+        {
+            FileName = fileName
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    FileSystem = seededCases.[fileName]
+                }
             AppContext = AppContextProperties.empty
             ExpectsUnhandledException = false
             AssertTerminalState = None

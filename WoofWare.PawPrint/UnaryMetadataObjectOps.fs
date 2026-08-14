@@ -378,6 +378,9 @@ module internal UnaryMetadataObjectOps =
                 baseClassTypes
                 state.ConcreteTypes
                 declaringTypeHandle
+                (TypeLayoutKind.applied
+                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ctorType)
+                    ctorType.TypeAttributes)
                 ctorType.Layout
                 (CharSetMetadata.ofTypeAttributes ctorType.TypeAttributes)
                 allFields
@@ -512,6 +515,9 @@ module internal UnaryMetadataObjectOps =
                         baseClassTypes
                         state.ConcreteTypes
                         typeHandle
+                        (TypeLayoutKind.applied
+                            (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn)
+                            defn.TypeAttributes)
                         defn.Layout
                         (CharSetMetadata.ofTypeAttributes defn.TypeAttributes)
 
@@ -674,6 +680,12 @@ module internal UnaryMetadataObjectOps =
                                     baseClassTypes
                                     state.ConcreteTypes
                                     underlyingTypeHandle
+                                    (TypeLayoutKind.applied
+                                        (DumpedAssembly.isValueType
+                                            baseClassTypes
+                                            state._LoadedAssemblies
+                                            underlyingDefn)
+                                        underlyingDefn.TypeAttributes)
                                     underlyingDefn.Layout
                                     (CharSetMetadata.ofTypeAttributes underlyingDefn.TypeAttributes),
                                 state

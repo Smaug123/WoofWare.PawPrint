@@ -201,6 +201,45 @@ module TestImpureCases =
             currentDirectoryCase "/"
             currentDirectoryCase "/home/pawprint/work"
             {
+                // Reads every field `SystemNative_Stat`/`LStat` write, through a
+                // hand-rolled P/Invoke. Impure because most of those fields
+                // *cannot* agree with a real filesystem: a real file's owner is
+                // whoever ran the suite, and its timestamps are "just now",
+                // whereas the emulated kernel's are its boot instant. The
+                // cross-runtime half of the story — which paths exist, and what
+                // kind of thing lives at each — is `sourcesPure/FileExistsSeeded.cs`.
+                FileName = "StatFieldsSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        // Deliberately *not* the defaults. A boot clock of 0
+                        // would make "the seed recorded the configured instant"
+                        // indistinguishable from "the seed left a zero in
+                        // place", and equal uid and gid would let the two be
+                        // swapped without any test noticing. The awkward
+                        // millisecond count also forces the seconds/nanoseconds
+                        // split to be done rather than guessed.
+                        WallClockEpochMs = 1_700_000_123L
+                        UserId = 1000u
+                        GroupId = 2000u
+                        FileSystem =
+                            let name (s : string) = FileName.parseOrFail "test seed" s
+                            let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
+
+                            Map.ofList
+                                [
+                                    name "f",
+                                    SeedEntry.File (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                                    name "d", SeedEntry.Directory Map.empty
+                                    name "lf", SeedEntry.Symlink (target "f")
+                                    name "dang", SeedEntry.Symlink (target "nx")
+                                ]
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The motivating case for host-seeded AppContext: a BCL feature switch,
                 // declared in `runtimeconfig.json` and latched by `EventSource` on first
                 // read. Impure for the same reason as the case below.

@@ -549,6 +549,9 @@ module IlMachineRuntimeMetadata =
                 baseClassTypes
                 state.ConcreteTypes
                 concreteType
+                (TypeLayoutKind.applied
+                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
+                    typeInfo.TypeAttributes)
                 typeInfo.Layout
                 (CharSetMetadata.ofTypeAttributes typeInfo.TypeAttributes)
                 allFields
@@ -622,6 +625,7 @@ module IlMachineRuntimeMetadata =
                 baseClassTypes
                 state.ConcreteTypes
                 stringType
+                (TypeLayoutKind.applied false baseClassTypes.String.TypeAttributes)
                 Layout.Default
                 (CharSetMetadata.ofTypeAttributes baseClassTypes.String.TypeAttributes)
 
@@ -1202,6 +1206,9 @@ module IlMachineRuntimeMetadata =
                 baseClassTypes
                 state.ConcreteTypes
                 threadTypeHandle
+                (TypeLayoutKind.applied
+                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies threadTypeInfo)
+                    threadTypeInfo.TypeAttributes)
                 threadTypeInfo.Layout
                 (CharSetMetadata.ofTypeAttributes threadTypeInfo.TypeAttributes)
                 allFields
@@ -1332,6 +1339,9 @@ module IlMachineRuntimeMetadata =
                 baseClassTypes
                 state.ConcreteTypes
                 tieHandle
+                (TypeLayoutKind.applied
+                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies tieTypeInfo)
+                    tieTypeInfo.TypeAttributes)
                 tieTypeInfo.Layout
                 (CharSetMetadata.ofTypeAttributes tieTypeInfo.TypeAttributes)
                 allFields
@@ -1414,6 +1424,9 @@ module IlMachineRuntimeMetadata =
                 baseClassTypes
                 state.ConcreteTypes
                 tieHandle
+                (TypeLayoutKind.applied
+                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies tieTypeInfo)
+                    tieTypeInfo.TypeAttributes)
                 tieTypeInfo.Layout
                 (CharSetMetadata.ofTypeAttributes tieTypeInfo.TypeAttributes)
                 allFields
