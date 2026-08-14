@@ -105,6 +105,8 @@ module NativeCall =
         : ConcreteTypeHandle
         =
         match qCallTypeHandleToRuntimeTypeHandleTarget operation state arg with
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
         | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
             failwith
                 $"TODO: open constructed types are not handled at Native/NativeCall.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -610,6 +612,10 @@ module NativeCall =
         match typeHandleTarget with
         // An instantiation lives in the assembly that declares its definition, exactly as a
         // closed one does (`typeof(List<int>).Assembly` is corelib, not the caller's).
+        // `CreateMinimalMethodTable` calls `SetModule(pContainingModule)` (methodtable.cpp:687), so
+        // the containing module -- and hence the assembly -- is one of the few facts the synthetic
+        // type genuinely carries, rather than one it would need a metadata row to answer.
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly -> System.Reflection.AssemblyName scopeAssembly
         | RuntimeTypeHandleTarget.OpenConstructed (identity, _)
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> identity.Assembly
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, _)

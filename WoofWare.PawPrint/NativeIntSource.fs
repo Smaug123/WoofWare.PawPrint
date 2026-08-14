@@ -423,6 +423,9 @@ module TypeHandleTag =
         // `RuntimeType.IsActualInterface` (RuntimeType.CoreCLR.cs:3488-3498) answer for one:
         // it short-circuits to false on a TypeDesc before ever reading `MethodTable::IsInterface`.
         | RuntimeTypeHandleTarget.OpenConstructed _ -> 0L
+        // CoreCLR's `CreateMinimalMethodTable` produces a MethodTable, not a TypeDesc
+        // (methodtable.cpp:663), so a handle to one carries no TypeDesc tag.
+        | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> 0L
         // Generic parameters in CoreCLR are TypeVarTypeDesc, a TypeDesc subclass, so the
         // tagged-pointer encoding sets the second-lowest bit. Reflection paths such as
         // `RuntimeType.get_IsInterface` rely on `TypeHandle.IsTypeDesc` to short-circuit

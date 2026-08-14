@@ -86,6 +86,8 @@ module FieldHandleRegistry =
         : CliType * FieldHandleRegistry * 'allocState
         =
         match declaringType with
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery "FieldHandleRegistry.getOrAllocate" scopeAssembly
         | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
             failwith
                 $"TODO: open constructed types are not handled at FieldHandleRegistry.fs:%s{__LINE__}; got %O{openConstructed}"

@@ -21,6 +21,8 @@ module NativeEnum =
 
         let concreteTypeHandle =
             match NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state arg with
+            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
             | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                 failwith
                     $"TODO: open constructed types are not handled at Native/NativeEnum.fs:%s{__LINE__}; got %O{openConstructed}"

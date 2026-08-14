@@ -55,6 +55,8 @@ module NativeGc =
         : ConcreteTypeHandle * ConcreteTypeHandle
         =
         match target with
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero element as arrayType) -> arrayType, element
         | RuntimeTypeHandleTarget.Closed other ->
             failwith

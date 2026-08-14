@@ -12,40 +12,54 @@ module TestFileDescriptorRegistry =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
+    let private standardStream (role : FileDescriptorRole) : OpenFileDescription =
+        OpenFileDescription.StandardStream role
+
     [<Test>]
-    let ``initial seeds stdin, stdout, stderr with OwnsResource = false`` () : unit =
+    let ``initial seeds stdin, stdout, stderr`` () : unit =
         FileDescriptorRegistry.tryFind 0 FileDescriptorRegistry.initial
-        |> shouldEqual (
-            Some
-                {
-                    Role = FileDescriptorRole.StandardInput
-                    OwnsResource = false
-                }
-        )
+        |> shouldEqual (Some (standardStream FileDescriptorRole.StandardInput))
 
         FileDescriptorRegistry.tryFind 1 FileDescriptorRegistry.initial
-        |> shouldEqual (
-            Some
-                {
-                    Role = FileDescriptorRole.StandardOutput
-                    OwnsResource = false
-                }
-        )
+        |> shouldEqual (Some (standardStream FileDescriptorRole.StandardOutput))
 
         FileDescriptorRegistry.tryFind 2 FileDescriptorRegistry.initial
-        |> shouldEqual (
-            Some
-                {
-                    Role = FileDescriptorRole.StandardError
-                    OwnsResource = false
-                }
-        )
+        |> shouldEqual (Some (standardStream FileDescriptorRole.StandardError))
+
+    /// Load-bearing, not decorative: an implementation that pointed every file
+    /// descriptor at a single shared open file description would satisfy the
+    /// dup-sharing property below, and only this test would notice. PawPrint
+    /// models a process launched with each standard stream separately
+    /// redirected, so the three inherited descriptors name three descriptions.
+    /// (Under a tty they would genuinely share one — measured with `forkpty` —
+    /// but PawPrint has committed against the tty model elsewhere; see the
+    /// comment on `FileDescriptorRegistry.initial`.)
+    [<Test>]
+    let ``initial seeds three distinct open file descriptions`` () : unit =
+        let ids =
+            [ 0 ; 1 ; 2 ]
+            |> List.map (fun fd ->
+                match FileDescriptorRegistry.tryFindId fd FileDescriptorRegistry.initial with
+                | Some id -> id
+                | None -> failwith $"fd %d{fd} should be live in the initial table"
+            )
+
+        ids |> List.distinct |> List.length |> shouldEqual 3
+
+        FileDescriptorRegistry.descriptions FileDescriptorRegistry.initial
+        |> Map.count
+        |> shouldEqual 3
 
     [<Test>]
     let ``initial has no entries outside 0/1/2`` () : unit =
         for fd in [ -2 ; -1 ; 3 ; 4 ; 100 ; System.Int32.MaxValue ] do
             FileDescriptorRegistry.tryFind fd FileDescriptorRegistry.initial
             |> shouldEqual None
+
+    [<Test>]
+    let ``initial is sound`` () : unit =
+        FileDescriptorRegistry.checkInvariants FileDescriptorRegistry.initial
+        |> shouldEqual []
 
     [<Test>]
     let ``dup of unknown fd returns BadFd`` () : unit =
@@ -59,30 +73,32 @@ module TestFileDescriptorRegistry =
         |> shouldEqual (Error FileDescriptorDupError.BadFd)
 
     [<Test>]
-    let ``dup of stdin/stdout/stderr returns fresh fd 3 with matching role`` () : unit =
-        let assertDupAllocatesFd3WithRole (sourceFd : int) (expectedRole : FileDescriptorRole) : unit =
+    let ``dup of stdin/stdout/stderr returns fresh fd 3 sharing the description`` () : unit =
+        let assertDupAllocatesFd3 (sourceFd : int) (expectedRole : FileDescriptorRole) : unit =
             match FileDescriptorRegistry.dup sourceFd FileDescriptorRegistry.initial with
             | Ok (newFd, registry) ->
                 newFd |> shouldEqual 3
 
                 FileDescriptorRegistry.tryFind newFd registry
-                |> shouldEqual (
-                    Some
-                        {
-                            Role = expectedRole
-                            OwnsResource = true
-                        }
-                )
+                |> shouldEqual (Some (standardStream expectedRole))
+
+                // The point of the indirection: the new descriptor names the
+                // *same* description, not an equal copy of it.
+                FileDescriptorRegistry.tryFindId newFd registry
+                |> shouldEqual (FileDescriptorRegistry.tryFindId sourceFd registry)
+
+                // dup creates no new description.
+                FileDescriptorRegistry.descriptions registry |> Map.count |> shouldEqual 3
 
                 // Source fd is unaffected — the table still resolves it to its
-                // original entry. dup is non-destructive on the source.
+                // original description. dup is non-destructive on the source.
                 FileDescriptorRegistry.tryFind sourceFd registry
                 |> shouldEqual (FileDescriptorRegistry.tryFind sourceFd FileDescriptorRegistry.initial)
             | Error e -> failwith $"unexpected dup error: %O{e}"
 
-        assertDupAllocatesFd3WithRole 0 FileDescriptorRole.StandardInput
-        assertDupAllocatesFd3WithRole 1 FileDescriptorRole.StandardOutput
-        assertDupAllocatesFd3WithRole 2 FileDescriptorRole.StandardError
+        assertDupAllocatesFd3 0 FileDescriptorRole.StandardInput
+        assertDupAllocatesFd3 1 FileDescriptorRole.StandardOutput
+        assertDupAllocatesFd3 2 FileDescriptorRole.StandardError
 
     [<Test>]
     let ``repeated dup allocates strictly increasing fds starting at 3`` () : unit =
@@ -99,6 +115,89 @@ module TestFileDescriptorRegistry =
         |> fun r -> assertDupYields r 5
         |> fun r -> assertDupYields r 6
         |> ignore
+
+    [<Test>]
+    let ``closing one descriptor of a dup pair leaves the other intact`` () : unit =
+        match FileDescriptorRegistry.dup 1 FileDescriptorRegistry.initial with
+        | Error e -> failwith $"unexpected dup error: %O{e}"
+        | Ok (duped, registry) ->
+
+        let sharedId = FileDescriptorRegistry.tryFindId duped registry
+
+        match FileDescriptorRegistry.close duped registry with
+        | Error e -> failwith $"unexpected close error: %O{e}"
+        | Ok afterClose ->
+
+        FileDescriptorRegistry.tryFind duped afterClose |> shouldEqual None
+
+        // The description outlives the descriptor that closed, because fd 1
+        // still names it.
+        FileDescriptorRegistry.tryFindId 1 afterClose |> shouldEqual sharedId
+
+        FileDescriptorRegistry.tryFind 1 afterClose
+        |> shouldEqual (Some (standardStream FileDescriptorRole.StandardOutput))
+
+        FileDescriptorRegistry.descriptions afterClose |> Map.count |> shouldEqual 3
+        FileDescriptorRegistry.checkInvariants afterClose |> shouldEqual []
+
+    [<Test>]
+    let ``the last close of a description destroys it`` () : unit =
+        // Close stdout with no dup outstanding: nothing names its description
+        // afterwards, so the kernel would destroy it.
+        match FileDescriptorRegistry.close 1 FileDescriptorRegistry.initial with
+        | Error e -> failwith $"unexpected close error: %O{e}"
+        | Ok afterClose ->
+
+        FileDescriptorRegistry.descriptions afterClose |> Map.count |> shouldEqual 2
+
+        FileDescriptorRegistry.descriptions afterClose
+        |> Map.toList
+        |> List.map snd
+        |> shouldEqual
+            [
+                standardStream FileDescriptorRole.StandardInput
+                standardStream FileDescriptorRole.StandardError
+            ]
+
+        FileDescriptorRegistry.checkInvariants afterClose |> shouldEqual []
+
+    [<Test>]
+    let ``a description survives until its last descriptor closes`` () : unit =
+        // dup stdout twice, then close all three descriptors naming it. The
+        // description must survive exactly until the final close.
+        let registry = FileDescriptorRegistry.initial
+
+        let dupOf (fd : int) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
+            match FileDescriptorRegistry.dup fd registry with
+            | Ok result -> result
+            | Error e -> failwith $"unexpected dup error: %O{e}"
+
+        let a, registry = dupOf 1 registry
+        let b, registry = dupOf 1 registry
+
+        let closeOf (fd : int) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
+            match FileDescriptorRegistry.close fd registry with
+            | Ok result -> result
+            | Error e -> failwith $"unexpected close error: %O{e}"
+
+        let registry = closeOf 1 registry
+        FileDescriptorRegistry.descriptions registry |> Map.count |> shouldEqual 3
+
+        let registry = closeOf a registry
+        FileDescriptorRegistry.descriptions registry |> Map.count |> shouldEqual 3
+
+        let registry = closeOf b registry
+        FileDescriptorRegistry.descriptions registry |> Map.count |> shouldEqual 2
+
+        FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
+
+    [<Test>]
+    let ``close of unknown fd returns BadFd`` () : unit =
+        FileDescriptorRegistry.close 3 FileDescriptorRegistry.initial
+        |> shouldEqual (Error FileDescriptorCloseError.BadFd)
+
+        FileDescriptorRegistry.close -1 FileDescriptorRegistry.initial
+        |> shouldEqual (Error FileDescriptorCloseError.BadFd)
 
     /// Reference implementation: the lowest non-negative integer not in `used`.
     let private referenceLowestFree (used : Set<int>) : int =
@@ -181,38 +280,130 @@ module TestFileDescriptorRegistry =
         observedCloses |> shouldBeGreaterThan 0
         observedHoleFills |> shouldBeGreaterThan 30
 
+    /// The central contract of the descriptor/description split, stated as an
+    /// equivalence rather than a one-way implication: two live descriptors name
+    /// the same open file description *exactly* when they are related by
+    /// dup-ancestry. The "only if" half kills an implementation that points
+    /// every descriptor at one shared description; the "if" half kills one that
+    /// mints a fresh description per `dup` (i.e. today's copying behaviour).
+    ///
+    /// `origin` tracks that equivalence independently of the registry: each
+    /// descriptor is labelled with the inherited standard-stream fd its dup
+    /// chain descends from.
     [<Test>]
-    let ``dup preserves the role of the source fd across the new fd`` () : unit =
+    let ``descriptors share a description exactly when dup-related`` () : unit =
+        let mutable observedSharingPairs = 0
+        let mutable observedDistinctPairs = 0
+
         let property (NonNegativeInt seed : NonNegativeInt) : unit =
             let rng = System.Random (seed)
-            let steps = rng.Next (1, 15)
+            let steps = rng.Next (1, 30)
 
             let mutable registry = FileDescriptorRegistry.initial
+            let mutable origin : Map<int, int> = Map.ofList [ 0, 0 ; 1, 1 ; 2, 2 ]
 
             for _ in 1..steps do
-                let liveList =
-                    [ 0 ; 1 ; 2 ; 3 ; 4 ; 5 ; 6 ; 7 ; 8 ; 9 ]
-                    |> List.choose (fun fd ->
-                        FileDescriptorRegistry.tryFind fd registry
-                        |> Option.map (fun entry -> fd, entry)
-                    )
+                let liveList = origin |> Map.toList |> List.map fst
+                let chosen = liveList.[rng.Next (liveList.Length)]
+                let doClose = rng.Next 10 < 3 && liveList.Length > 3
 
-                let pickIndex = rng.Next (liveList.Length)
-                let sourceFd, sourceEntry = liveList.[pickIndex]
+                if doClose then
+                    match FileDescriptorRegistry.close chosen registry with
+                    | Ok registry' ->
+                        origin <- Map.remove chosen origin
+                        registry <- registry'
+                    | Error e -> failwith $"unexpected close error: %O{e}"
+                else
+                    match FileDescriptorRegistry.dup chosen registry with
+                    | Ok (newFd, registry') ->
+                        origin <- Map.add newFd (Map.find chosen origin) origin
+                        registry <- registry'
+                    | Error e -> failwith $"unexpected dup error: %O{e}"
 
-                match FileDescriptorRegistry.dup sourceFd registry with
-                | Ok (newFd, registry') ->
-                    match FileDescriptorRegistry.tryFind newFd registry' with
-                    | Some newEntry ->
-                        newEntry.Role |> shouldEqual sourceEntry.Role
-                        // Any fd minted by SystemNative_Dup is owned by the
-                        // simulated process and must be closed (when Close
-                        // lands) to reclaim the slot. Inherited fds 0/1/2 are
-                        // the only un-owned entries.
-                        newEntry.OwnsResource |> shouldEqual true
-                    | None -> failwith $"newly-allocated fd %d{newFd} not findable"
+                // The registry never drifts from a table a kernel could produce.
+                FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
 
-                    registry <- registry'
-                | Error e -> failwith $"unexpected dup error: %O{e}"
+                let live = origin |> Map.toList
+
+                for a, originA in live do
+                    for b, originB in live do
+                        let idA = FileDescriptorRegistry.tryFindId a registry
+                        let idB = FileDescriptorRegistry.tryFindId b registry
+
+                        idA |> shouldNotEqual None
+                        idB |> shouldNotEqual None
+
+                        if originA = originB then
+                            idA |> shouldEqual idB
+
+                            if a <> b then
+                                observedSharingPairs <- observedSharingPairs + 1
+                        else
+                            idA |> shouldNotEqual idB
+                            observedDistinctPairs <- observedDistinctPairs + 1
+
+                // A description exists for exactly the set of origins still
+                // reachable: nothing leaks, nothing is destroyed early.
+                let expectedDescriptions = live |> List.map snd |> Set.ofList |> Set.count
+
+                FileDescriptorRegistry.descriptions registry
+                |> Map.count
+                |> shouldEqual expectedDescriptions
 
         Check.One (propertyConfig, property)
+
+        // Both halves of the equivalence must actually be exercised: without
+        // sharing pairs the "if" half is vacuous, and without distinct pairs
+        // the "only if" half is.
+        observedSharingPairs |> shouldBeGreaterThan 100
+        observedDistinctPairs |> shouldBeGreaterThan 100
+
+    [<Test>]
+    let ``checkInvariants rejects a descriptor naming an absent description`` () : unit =
+        let registry =
+            FileDescriptorRegistry.Unchecked.ofParts (Map.ofList [ 0, OpenFileDescriptionId 7L ]) Map.empty
+
+        FileDescriptorRegistry.checkInvariants registry
+        |> shouldEqual [ FileDescriptorRegistryDefect.DanglingFd (0, OpenFileDescriptionId 7L) ]
+
+    [<Test>]
+    let ``checkInvariants rejects a description no descriptor names`` () : unit =
+        let registry =
+            FileDescriptorRegistry.Unchecked.ofParts
+                Map.empty
+                (Map.ofList [ OpenFileDescriptionId 7L, standardStream FileDescriptorRole.StandardOutput ])
+
+        FileDescriptorRegistry.checkInvariants registry
+        |> shouldEqual
+            [
+                FileDescriptorRegistryDefect.UnreferencedDescription (OpenFileDescriptionId 7L)
+            ]
+
+    [<Test>]
+    let ``assertInvariants passes a sound table and fails an unsound one`` () : unit =
+        FileDescriptorRegistry.assertInvariants "sound" FileDescriptorRegistry.initial
+        |> shouldEqual FileDescriptorRegistry.initial
+
+        let unsound =
+            FileDescriptorRegistry.Unchecked.ofParts (Map.ofList [ 0, OpenFileDescriptionId 7L ]) Map.empty
+
+        let exc =
+            Assert.Throws<System.Exception> (fun () ->
+                FileDescriptorRegistry.assertInvariants "context here" unsound |> ignore
+            )
+
+        exc.Message |> shouldContainText "context here"
+        exc.Message |> shouldContainText "DanglingFd"
+
+    [<Test>]
+    let ``tryFind crashes rather than inventing a description for a dangling fd`` () : unit =
+        // `tryFind` is total over sound tables; on an unsound one it must fail
+        // loudly rather than report the descriptor as closed, which would let a
+        // corrupt table masquerade as EBADF.
+        let registry =
+            FileDescriptorRegistry.Unchecked.ofParts (Map.ofList [ 0, OpenFileDescriptionId 7L ]) Map.empty
+
+        let exc =
+            Assert.Throws<System.Exception> (fun () -> FileDescriptorRegistry.tryFind 0 registry |> ignore)
+
+        exc.Message |> shouldContainText "not present in the table"
