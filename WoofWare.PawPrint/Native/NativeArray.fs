@@ -32,6 +32,8 @@ module NativeArray =
         : ConcreteTypeHandle * ConcreteTypeHandle
         =
         match target with
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
         | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
             failwith
                 $"TODO: open constructed types are not handled at Native/NativeArray.fs:%s{__LINE__}; got %O{openConstructed}"

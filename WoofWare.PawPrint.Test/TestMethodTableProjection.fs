@@ -2233,17 +2233,27 @@ public unsafe struct PointerWrapper
                 (CliType.Numeric (CliNumericType.UInt8 0xBBuy))
 
         let pool = IlMachineState.getStackMemoryPool thread frame state
-        let blockBeforeTypedWrite = StackMemoryPool.getBlock block pool
-        Map.count blockBeforeTypedWrite.Bytes |> shouldEqual 2
+
+        // Arming: the two byte-view writes must have been routed to the raw byte overlay
+        // rather than installed as one-byte typed cells, since that routing is what the rest
+        // of the test is about. An overlay byte is not a cell, so `tryReadCell` refusing
+        // both offsets is exactly the claim; `readBytes` then confirms they are readable.
+        StackMemoryPool.tryReadCell block 1 pool |> shouldEqual None
+        StackMemoryPool.tryReadCell block 2 pool |> shouldEqual None
+
+        StackMemoryPool.readBytes block 1 2 pool |> shouldEqual [| 0xAAuy ; 0xBBuy |]
 
         let updated = CliType.Numeric (CliNumericType.Int32 0x11223344)
         let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr updated
 
         let pool = IlMachineState.getStackMemoryPool thread frame state
-        let blockAfterTypedWrite = StackMemoryPool.getBlock block pool
 
-        Map.isEmpty blockAfterTypedWrite.Bytes |> shouldEqual true
-        blockAfterTypedWrite.Cells |> Map.tryFind 0 |> shouldEqual (Some updated)
+        // The typed write installs a cell over the whole block prefix, which is what this
+        // integration test can see. That the overlay bytes underneath were *evicted* rather
+        // than merely shadowed by the new cell is not observable from here — a covering cell
+        // wins over the overlay on every read — so it is pinned at the pool level instead,
+        // by `writeCell evicts the overlay bytes it covers` in `TestStackMemoryPool`.
+        StackMemoryPool.tryReadCell block 0 pool |> shouldEqual (Some updated)
 
     [<Test>]
     let ``Reinterpret read of same-width primitive cells reconstructs the requested shape`` () : unit =

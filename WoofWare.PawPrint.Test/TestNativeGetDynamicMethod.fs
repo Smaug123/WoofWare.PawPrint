@@ -353,6 +353,42 @@ public static class Entry
         | Some result -> failwith $"unexpected IsDynamicMethod execution result: %O{result}"
         | None -> failwith "IsDynamicMethod did not match any native handler"
 
+    /// Drives the `RuntimeMethodHandle.GetMethodTable` FCall and hands back what it pushed.
+    let private invokeGetMethodTable
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (internalHandle : CliType)
+        (state : IlMachineState)
+        : EvalStackValue
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let state, declaringTypeInfo, method =
+            fcallMethod loggerFactory baseClassTypes runtimeMethodHandle "GetMethodTable" state
+
+        let instruction =
+            { state.ThreadState.[prepared.EntryThread].MethodState with
+                ExecutingMethod = method
+                Arguments = ImmutableArray.CreateRange [ internalHandle ]
+            }
+
+        let ctx : NativeCallContext =
+            {
+                LoggerFactory = loggerFactory
+                BaseClassTypes = baseClassTypes
+                Thread = prepared.EntryThread
+                State = state
+                Instruction = instruction
+                TargetAssembly = baseClassTypes.Corelib
+                TargetType = declaringTypeInfo
+            }
+
+        match NativeDispatch.tryExecute ctx with
+        | Some (NativeHandlerResult.Completed (state, _)) ->
+            IlMachineState.popEvalStack prepared.EntryThread state |> fst
+        | Some result -> failwith $"unexpected GetMethodTable execution result: %O{result}"
+        | None -> failwith "GetMethodTable did not match any native handler"
+
     /// A signature blob deliberately containing interior zero bytes. A real method signature does:
     /// `void` is `ELEMENT_TYPE_VOID` = 0x01, but `ELEMENT_TYPE_END` is 0x00 and padded blobs and
     /// nested type tokens routinely carry zeroes, so a handler that read `sig` with a
@@ -981,3 +1017,123 @@ public static class Entry
         message |> shouldContainText "InitLocals"
         message |> shouldContainText "Localloc"
         message |> shouldContainText "IL_0001"
+
+    /// The `<Module>` type of the entry assembly, concretised the way the handler concretises it.
+    let private moduleTypeHandle
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        : ConcreteTypeHandle * IlMachineState
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let assembly =
+            state.LoadedAssembly state.EntryAssembly
+            |> Option.defaultWith (fun () -> failwith "entry assembly is not loaded")
+
+        let moduleTypeInfo =
+            assembly.TypeDefs.Values
+            |> Seq.tryFind (fun (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) ->
+                typeInfo.Namespace = "" && typeInfo.Name = "<Module>"
+            )
+            |> Option.defaultWith (fun () -> failwith "entry assembly has no <Module> type")
+
+        let stk =
+            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies moduleTypeInfo
+
+        let state, handle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                moduleTypeInfo.Assembly
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (moduleTypeInfo.Identity, stk))
+
+        handle, state
+
+    /// `RuntimeMethodHandle.GetMethodTable` is legal on a dynamic method — CoreCLR answers with the
+    /// `DynamicMethodTable`'s synthetic MethodTable — and is what `Delegate.CreateDelegate` reaches
+    /// through `GetDeclaringType` (Delegate.CoreCLR.cs:381-391) before binding.
+    [<Test>]
+    let ``GetMethodTable answers with the scope assembly's dynamic-methods class`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" [| 0x01uy |] doublingBody state
+
+        let expected =
+            RuntimeTypeHandleTarget.DynamicMethodsClass state.EntryAssembly.FullName
+
+        invokeGetMethodTable loggerFactory prepared (internalHandleOfStub state stubAddress) state
+        |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr expected))
+
+    /// Why the synthetic case has to exist at all, rather than the scope module's `<Module>` type
+    /// standing in for it: `TypeHandleRegistry` keys guest `Type` object identity on
+    /// `RuntimeTypeHandleTarget`, so under that design a global (`<Module>`-declared) method and a
+    /// dynamic method in one assembly would come back as the *same* `Type`, where CoreCLR keeps them
+    /// distinct.
+    ///
+    /// Read precisely: the test above is what rejects that design — mutating the handler to answer
+    /// with `Closed <Module>` fails it, and was measured doing so. This one guards the *consequence*
+    /// that made the design wrong, and so is the test that would fail if someone later reintroduced
+    /// the collapse further down — by resolving the synthetic target to `<Module>` inside
+    /// `getOrAllocateType`, say, which is the shape the mistake would most naturally take once the
+    /// producer is correct.
+    [<Test>]
+    let ``the dynamic-methods class is distinct from the module type`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let moduleType, state = moduleTypeHandle loggerFactory prepared state
+
+        let dynamicClass =
+            RuntimeTypeHandleTarget.DynamicMethodsClass state.EntryAssembly.FullName
+
+        let moduleTarget = RuntimeTypeHandleTarget.Closed moduleType
+
+        // Distinct as targets...
+        dynamicClass |> shouldNotEqual moduleTarget
+
+        // ...and therefore distinct as guest `Type` objects, which is the consequence that matters:
+        // this registry is what `RuntimeTypeHandle.GetRuntimeType` hands the guest.
+        let dynamicType, state =
+            IlMachineState.getOrAllocateType loggerFactory prepared.BaseClassTypes dynamicClass state
+
+        let moduleTypeObj, _state =
+            IlMachineState.getOrAllocateType loggerFactory prepared.BaseClassTypes moduleTarget state
+
+        dynamicType |> shouldNotEqual moduleTypeObj
+
+    /// CoreCLR's answer is a property of the scope *module* and of nothing else, so two dynamic
+    /// methods minted against the same module share one declaring type however they differ
+    /// otherwise.
+    ///
+    /// Read precisely, this pins invariance across the two things a mint can vary here — the name
+    /// and the signature blob — and nothing stronger. The owner cannot be varied and so cannot be
+    /// tested: `ModuleHandle_GetDynamicMethod` receives only a `QCall::ModuleHandle`, and
+    /// `DynamicMethod._typeOwner` never crosses that boundary, so PawPrint's registry never learns
+    /// it (`DynamicMethodDefinition` carries only the scope assembly). An owner-keyed answer is
+    /// unrepresentable rather than merely untested, which is the reason it is safe to leave
+    /// unasserted.
+    [<Test>]
+    let ``two dynamic methods in one module share a declaring type`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let firstStub, _, state =
+            mintOne loggerFactory prepared "First" [| 0x01uy |] doublingBody state
+
+        let secondStub, _, state =
+            mintOne loggerFactory prepared "Second" signatureWithInteriorNuls doublingBody state
+
+        // Distinct methods, as `two mints with identical inputs are distinct methods` pins...
+        firstStub |> shouldNotEqual secondStub
+
+        // ...but one declaring type.
+        let first =
+            invokeGetMethodTable loggerFactory prepared (internalHandleOfStub state firstStub) state
+
+        let second =
+            invokeGetMethodTable loggerFactory prepared (internalHandleOfStub state secondStub) state
+
+        first |> shouldEqual second

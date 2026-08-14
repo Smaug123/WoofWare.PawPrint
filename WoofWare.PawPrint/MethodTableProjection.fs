@@ -295,6 +295,9 @@ module internal MethodTableProjection =
         : int32
         =
         match methodTableFor with
+        // `CreateMinimalMethodTable` sets no category flag at all, leaving the default: a plain
+        // class. It is emphatically not an interface, a value type or a nullable.
+        | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> 0
         | RuntimeTypeHandleTarget.Closed handle -> categoryFlags baseClassTypes state handle
         // An open constructed type's category is its definition's: instantiating
         // `IComparable`1` over a type variable does not stop it being an interface. This is
@@ -753,6 +756,8 @@ module internal MethodTableProjection =
         : bool * IlMachineState
         =
         match methodTableFor with
+        // A minimal MethodTable has no fields, so nothing to trace.
+        | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> false, state
         | RuntimeTypeHandleTarget.Closed handle -> containsGcPointers loggerFactory baseClassTypes state handle
         // Answered from the definition's fields, without substituting the instantiation's
         // arguments. That is exact for a bare definition, but an approximation for a partial
@@ -778,6 +783,8 @@ module internal MethodTableProjection =
 
     let private genericsFlags (state : IlMachineState) (methodTableFor : RuntimeTypeHandleTarget) : int32 =
         match methodTableFor with
+        // Not generic: `DynamicMethodTable` mints one MethodTable per module, never instantiated.
+        | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> genericsMaskNonGeneric
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> genericsMaskTypicalInst
         // Not `TypicalInst`: the typical instantiation is the definition applied to its own
         // formals, which `RuntimeTypeHandleTarget.openConstructed` collapses to
@@ -809,6 +816,7 @@ module internal MethodTableProjection =
         : bool
         =
         match methodTableFor with
+        | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> false
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
             let typeInfo = openGenericTypeInfoOrFail state identity
 
@@ -846,6 +854,8 @@ module internal MethodTableProjection =
         =
         let hasComponentSize =
             match methodTableFor with
+            // Neither an array nor a string, so no component size.
+            | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> false
             | RuntimeTypeHandleTarget.Closed handle ->
                 Option.isSome (tryArrayElement handle)
                 || isStringType baseClassTypes state handle
@@ -873,6 +883,8 @@ module internal MethodTableProjection =
         let isByRefLike =
             let identity =
                 match methodTableFor with
+                // No declaring identity to consult, and a minimal MethodTable is never ref-like.
+                | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> None
                 | RuntimeTypeHandleTarget.Closed handle ->
                     AllConcreteTypes.lookup handle state.ConcreteTypes
                     |> Option.map (fun concreteType -> concreteType.Identity)
@@ -896,6 +908,7 @@ module internal MethodTableProjection =
 
         let componentSizeBits, state =
             match methodTableFor with
+            | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> 0, state
             | RuntimeTypeHandleTarget.Closed handle when hasComponentSize ->
                 // CoreCLR overlaps ComponentSize with the low 16 bits of Flags for component MethodTables.
                 let componentSize, state = componentSize baseClassTypes state handle
@@ -970,6 +983,10 @@ module internal MethodTableProjection =
                 Some (uint32Field (uint32 flags), state)
             | "BaseSize" ->
                 match methodTableFor with
+                // `CreateMinimalMethodTable` calls `SetBaseSize(OBJECT_BASESIZE)`
+                // (methodtable.cpp:704): a header and nothing else, since the class has no fields.
+                | RuntimeTypeHandleTarget.DynamicMethodsClass _ ->
+                    Some (uint32Field (uint32 (2 * NATIVE_INT_SIZE)), state)
                 | RuntimeTypeHandleTarget.Closed handle -> Some (uint32Field (uint32 (baseSize handle)), state)
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                 | RuntimeTypeHandleTarget.OpenConstructed _ ->
@@ -979,6 +996,8 @@ module internal MethodTableProjection =
                     failwith $"TODO: MethodTable::BaseSize projection for %O{methodTableFor}"
             | "ComponentSize" ->
                 match methodTableFor with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass _ ->
+                    Some (CliType.Numeric (CliNumericType.UInt16 0us), state)
                 | RuntimeTypeHandleTarget.Closed handle ->
                     let componentSize, state = componentSize baseClassTypes state handle
                     Some (CliType.Numeric (CliNumericType.UInt16 componentSize), state)
@@ -990,6 +1009,9 @@ module internal MethodTableProjection =
                     failwith $"TODO: MethodTable::ComponentSize projection for %O{methodTableFor}"
             | "ElementType" ->
                 match methodTableFor with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass _ ->
+                    failwith
+                        $"MethodTable::ElementType projection refused for %O{methodTableFor}: the dynamic-methods class is not an array, so it has no element type"
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match tryArrayElement handle with
                     | Some (element, _) ->
@@ -1012,6 +1034,7 @@ module internal MethodTableProjection =
                 // only the MethodTable-shaped targets carry one — which, per
                 // `TypeHandleTag.forTarget`, includes an open constructed type.
                 match methodTableFor with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass _
                 | RuntimeTypeHandleTarget.Closed _
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                 | RuntimeTypeHandleTarget.OpenConstructed _ ->
@@ -1022,6 +1045,11 @@ module internal MethodTableProjection =
                         $"MethodTable::AuxiliaryData projection refused for TypeDesc target %O{methodTableFor}: generic parameters have no MethodTable in CoreCLR"
             | "ParentMethodTable" ->
                 match methodTableFor with
+                // `CreateMinimalMethodTable` calls `SetParentMethodTable(NULL)` explicitly
+                // (methodtable.cpp:701) -- the dynamic-methods class does not even derive from
+                // `object`, which its own comment notes it shares with the global type.
+                | RuntimeTypeHandleTarget.DynamicMethodsClass _ ->
+                    Some (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)), state)
                 // Reached for real: `Type.BaseType` on a returned class constraint (say
                 // `Comparer<T>` from `where T : Comparer<T>`) reads this.
                 | RuntimeTypeHandleTarget.Closed _
@@ -1063,6 +1091,9 @@ module internal MethodTableProjection =
                 // explicit dictionary-index modelling before this can be
                 // broadened.
                 match methodTableFor with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass _ ->
+                    failwith
+                        $"MethodTable::PerInstInfo projection refused for %O{methodTableFor}: the dynamic-methods class is not generic, so it has no per-instantiation info"
                 | RuntimeTypeHandleTarget.OpenConstructed (definition, _) ->
                     failwith
                         $"TODO: MethodTable::PerInstInfo projection for open constructed %O{definition.TypeDefinition.Get}: the projection is deliberately gated to System.Nullable`1 (see above)"
@@ -1157,6 +1188,7 @@ module internal MethodTableProjection =
             match field.Name with
             | "ExposedClassObjectRaw" ->
                 match methodTableFor with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass _
                 | RuntimeTypeHandleTarget.Closed _
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                 | RuntimeTypeHandleTarget.OpenConstructed _ ->

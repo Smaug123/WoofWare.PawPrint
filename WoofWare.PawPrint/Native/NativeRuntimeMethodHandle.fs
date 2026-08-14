@@ -2,6 +2,7 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 open System.Reflection
+open Microsoft.Extensions.Logging
 
 /// The properties of a MethodTable-backed declaring type that CoreCLR's
 /// `MethodDesc::FindOrCreateAssociatedMethodDescForReflection` (genmeth.cpp:1233) and its
@@ -348,6 +349,8 @@ module NativeRuntimeMethodHandle =
             assembly.TypeDefs.[identity.TypeDefinition.Get]
 
         match target with
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
         | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
             failwith
                 $"TODO: open constructed types are not handled at Native/NativeRuntimeMethodHandle.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -494,6 +497,8 @@ module NativeRuntimeMethodHandle =
             assembly, typeInfo
 
         match target with
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
         | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
             failwith
                 $"TODO: open constructed types are not handled at Native/NativeRuntimeMethodHandle.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -903,6 +908,8 @@ module NativeRuntimeMethodHandle =
                 instantiationTargets
                 |> List.mapi (fun index target ->
                     match target with
+                    | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                        RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                     | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
                         failwith
                             $"TODO: open constructed types are not handled at Native/NativeRuntimeMethodHandle.fs:%s{__LINE__}; got %O{openConstructed}"
@@ -1235,13 +1242,30 @@ module NativeRuntimeMethodHandle =
             // that accessor never fires, which is what lets this hand back a bare pointer identity.
             let operation = "RuntimeMethodHandle.GetMethodTable"
 
-            let identity =
-                resolveMetadataIdentityFromArg operation state instruction.Arguments.[0]
-
+            // Legal on a dynamic method, and this is the FCall that makes `CreateDelegate` work on
+            // one: `Delegate.CreateDelegate` reaches it through `RuntimeMethodHandle.GetDeclaringType`
+            // (Delegate.CoreCLR.cs:381-391) before handing the result to `Delegate_BindToMethodInfo`.
+            //
+            // A dynamic method's answer is the synthetic per-module class CoreCLR allocates its
+            // `DynamicMethodDesc` from, and PawPrint models it as such rather than standing a real
+            // type in for it — see `RuntimeTypeHandleTarget.DynamicMethodsClass`. Note it is
+            // produced straight from the scope assembly recorded at mint time: no assembly needs
+            // loading and no type needs concretising, because there is no metadata behind it.
             let target =
-                match methodTableOfDeclaringType (identity.GetDeclaringType ()) with
-                | Ok target -> target
-                | Error reason -> failwith $"%s{operation}: %s{reason}"
+                match resolveMethodHandleFromArg operation state instruction.Arguments.[0] with
+                | MethodHandle.FromMetadata identity ->
+                    match methodTableOfDeclaringType (identity.GetDeclaringType ()) with
+                    | Ok target -> target
+                    | Error reason -> failwith $"%s{operation}: %s{reason}"
+                | MethodHandle.FromDynamic dynamicHandle ->
+                    let definition =
+                        MethodHandleRegistry.resolveDynamicMethod dynamicHandle state.MethodHandles
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"%s{operation}: %O{dynamicHandle} is not registered in the method-handle registry"
+                        )
+
+                    RuntimeTypeHandleTarget.DynamicMethodsClass (definition.GetScopeAssemblyFullName ())
 
             let state =
                 IlMachineState.pushToEvalStack'

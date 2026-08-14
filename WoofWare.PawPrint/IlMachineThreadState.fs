@@ -985,8 +985,9 @@ module IlMachineThreadState =
         ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (blockId, 0), []), state
 
     /// Free a previously-allocated native-heap block. Throws on double free.
-    /// Use-after-free is caught later by `NativeMemoryPool.getBlock` when any
-    /// retained byref into the block is dereferenced.
+    /// Use-after-free is caught later by whichever `NativeMemoryPool` accessor the
+    /// dereference of a retained byref into the block goes through: every one of them
+    /// resolves the block first, and a freed block has no entry to resolve.
     let freeNativeMemory (blockId : NativeMemoryBlockId) (state : IlMachineState) : IlMachineState =
         state.MapKernel (fun kernel ->
             { kernel with
