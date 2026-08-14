@@ -474,6 +474,19 @@ module ByteOffsetNormalisationContext =
 [<NoComparison>]
 type NormalisedManagedPointerSource = private | NormalisedManagedPointerSource of ManagedPointerSource
 
+/// What structural byref comparison concluded. `Decided` is an answer; `NeedsByteLocation`
+/// is the honest statement that the two chains name addresses only field-offset layout can
+/// separate, and this file is too early in the build to consult it (`StorageLocation` needs
+/// `IlMachineState`). The caller — an opcode handler, which does have state — resolves it.
+///
+/// The `Diagnostic` is the message the comparison would have failed with, carried so a caller
+/// that *cannot* resolve reproduces today's failure verbatim rather than inventing a worse one.
+[<RequireQualifiedAccess>]
+[<NoComparison>]
+type CeqOutcome =
+    | Decided of bool
+    | NeedsByteLocation of left : ManagedPointerSource * right : ManagedPointerSource * diagnostic : string
+
 [<RequireQualifiedAccess>]
 module ManagedPointerSource =
     /// A *bit-pattern byref* is one that carries a raw native-int value rather
@@ -1257,18 +1270,22 @@ module ManagedPointerSource =
     /// layout could settle; `tryDecideResiduals` is where that line is drawn. Structural
     /// inequality is *not* address inequality — two chains reaching one byte by different
     /// routes are equal — so anything it cannot prove is refused rather than answered.
-    let ceqNormalised
+    let ceqNormalisedDeferred
         (context : string)
         (p1 : NormalisedManagedPointerSource)
         (p2 : NormalisedManagedPointerSource)
-        : bool
+        : CeqOutcome
         =
         let (NormalisedManagedPointerSource raw1) = p1
         let (NormalisedManagedPointerSource raw2) = p2
 
         if hasNonTrailingReinterpret p1 || hasNonTrailingReinterpret p2 then
-            failwith
+            CeqOutcome.NeedsByteLocation (
+                raw1,
+                raw2,
                 $"TODO (CEQ): %s{context} with `ReinterpretAs` followed by `Field` needs a bytewise layout comparison; got %O{raw1} vs %O{raw2}"
+            )
+        else
 
         let stripped1 = stripTrailingReinterprets p1
         let stripped2 = stripTrailingReinterprets p2
@@ -1278,10 +1295,13 @@ module ManagedPointerSource =
             let rest1, rest2 = stripCommonProjectionPrefix projs1 projs2
 
             match tryDecideResiduals rest1 rest2 with
-            | Some answer -> answer
+            | Some answer -> CeqOutcome.Decided answer
             | None ->
-                failwith
+                CeqOutcome.NeedsByteLocation (
+                    raw1,
+                    raw2,
                     $"TODO (CEQ): %s{context} compares byrefs whose projection chains differ by field steps, so whether they alias depends on field offsets within their declaring types — layout that byref comparison does not carry. Got %O{raw1} vs %O{raw2}"
+                )
         | ManagedPointerSource.Byref (root1, projs1), ManagedPointerSource.Byref (root2, projs2) when
             mayLeaveRootExtent root1 projs1 || mayLeaveRootExtent root2 projs2
             ->
@@ -1295,8 +1315,11 @@ module ManagedPointerSource =
             // Disjointness of the *roots* — separate locals, distinct array elements,
             // distinct string characters — says nothing once a projection can leave the
             // root it started from.
-            failwith
+            CeqOutcome.NeedsByteLocation (
+                raw1,
+                raw2,
                 $"TODO (CEQ): %s{context} compares byrefs on different roots where at least one carries a byte cursor this comparison cannot place within its root, so it may have left that root's extent; deciding that needs layout this comparison does not carry. Got %O{raw1} vs %O{raw2}"
+            )
         | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (obj1, field1), _),
           ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (obj2, field2), _) when obj1 = obj2 && field1 <> field2 ->
             // Undisplaced, but two fields of one heap object are still *different roots* here
@@ -1304,8 +1327,11 @@ module ManagedPointerSource =
             // Under `[StructLayout(LayoutKind.Explicit)]` on a class, two fields share an
             // address: measured, `Unsafe.AreSame(ref c.A, ref c.B)` for two `[FieldOffset(0)]`
             // fields is `true` on real .NET and was answering `false` here.
-            failwith
+            CeqOutcome.NeedsByteLocation (
+                raw1,
+                raw2,
                 $"TODO (CEQ): %s{context} compares byrefs to two fields of one heap object, which alias iff those fields share an offset — layout that byref comparison does not carry. Got %O{raw1} vs %O{raw2}"
+            )
         | _, _ ->
             // Distinct roots, neither byref displaced from the root it names, and not two
             // fields of one object. Each byref is then exactly its root's base address, and
@@ -1314,7 +1340,20 @@ module ManagedPointerSource =
             // a slot each, and a heap allocation has a single object kind so a boxed value
             // and a class-field byref never name one address. The non-byref sources (`Null`,
             // bit-pattern placeholders) carry their whole identity in the value itself.
-            stripped1 = stripped2
+            CeqOutcome.Decided (stripped1 = stripped2)
+
+    /// `ceqNormalisedDeferred` for callers too early in the build to resolve a byte location,
+    /// or which have no `IlMachineState` to hand. Behaviour is exactly as before the deferral
+    /// existed: an undecidable pair fails loudly, with the same message.
+    let ceqNormalised
+        (context : string)
+        (p1 : NormalisedManagedPointerSource)
+        (p2 : NormalisedManagedPointerSource)
+        : bool
+        =
+        match ceqNormalisedDeferred context p1 p2 with
+        | CeqOutcome.Decided answer -> answer
+        | CeqOutcome.NeedsByteLocation (_, _, diagnostic) -> failwith diagnostic
 
 [<RequireQualifiedAccess>]
 module NormalisedManagedPointerSource =

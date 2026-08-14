@@ -484,3 +484,19 @@ module EvalStackValueComparisons =
                 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1))
                 (EvalStackValue.NativeInt var2)
         | EvalStackValue.ManagedPointer _, _ -> failwith $"bad ceq: ManagedPointer vs {var2}"
+
+    /// `ceq`, but returning the byref case's deferral rather than failing on it, so a caller
+    /// with `IlMachineState` can resolve it to byte coordinates (`StorageLocation.resolveCeq`).
+    ///
+    /// Only the byref-vs-byref arm defers. Note the limit: a byref compared against a
+    /// `NativeInt` re-enters `ceq` proper and so still fails loudly on an undecidable pair,
+    /// because that recursion routes through `NativeIntSourceComparison` rather than through
+    /// this function. Widening that is its own change.
+    let ceqDeferred (counters : PointerHashState) (var1 : EvalStackValue) (var2 : EvalStackValue) : CeqOutcome =
+        match var1, var2 with
+        | EvalStackValue.ManagedPointer p1, EvalStackValue.ManagedPointer p2 ->
+            ManagedPointerSource.ceqNormalisedDeferred
+                "byref"
+                (ManagedPointerSource.unsafeAssumeNormalisedForComparison p1)
+                (ManagedPointerSource.unsafeAssumeNormalisedForComparison p2)
+        | _ -> CeqOutcome.Decided (ceq counters var1 var2)

@@ -2470,9 +2470,12 @@ module Intrinsics =
 
             // `AreSame` *is* byref CEQ — the JIT lowers it to exactly that — so it shares
             // `ceqNormalised` rather than keeping a second copy of the stripping rules and
-            // the shapes they must refuse.
+            // the shapes they must refuse. Where structural comparison cannot answer, this
+            // site has state in hand, so it resolves the deferral to byte coordinates rather
+            // than propagating the refusal.
             let areSame =
-                ManagedPointerSource.ceqNormalised "Unsafe.AreSame" leftNormalised rightNormalised
+                ManagedPointerSource.ceqNormalisedDeferred "Unsafe.AreSame" leftNormalised rightNormalised
+                |> StorageLocation.resolveCeq baseClassTypes state
 
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool areSame) currentThread

@@ -62,7 +62,13 @@ module internal UnaryConstIlOp =
             },
             WhatWeDid.Executed
 
-    let execute (state : IlMachineState) (currentThread : ThreadId) (op : UnaryConstIlOp) : IlMachineState * WhatWeDid =
+    let execute
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (currentThread : ThreadId)
+        (op : UnaryConstIlOp)
+        : IlMachineState * WhatWeDid
+        =
         match op with
         | Stloc s ->
             state
@@ -215,7 +221,10 @@ module internal UnaryConstIlOp =
             // Spec III.3.5: beq is identical to ceq followed by brtrue.
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isEq = EvalStackValueComparisons.ceq state.PointerHashState value1 value2
+
+            let isEq =
+                EvalStackValueComparisons.ceqDeferred state.PointerHashState value1 value2
+                |> StorageLocation.resolveCeq baseClassTypes state
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -278,7 +287,10 @@ module internal UnaryConstIlOp =
             // Spec III.3.5: beq is identical to ceq followed by brtrue.
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isEq = EvalStackValueComparisons.ceq state.PointerHashState value1 value2
+
+            let isEq =
+                EvalStackValueComparisons.ceqDeferred state.PointerHashState value1 value2
+                |> StorageLocation.resolveCeq baseClassTypes state
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
