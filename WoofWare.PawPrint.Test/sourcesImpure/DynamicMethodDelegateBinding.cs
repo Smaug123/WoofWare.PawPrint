@@ -64,6 +64,33 @@ public class Program
         return dm;
     }
 
+    /// `(int, int) -> int`. One argument wider than `Func&lt;int, int&gt;`, like
+    /// <see cref="StringIntToInt" />, but with a first parameter that is *not* an object
+    /// reference — which is the only thing that stops it binding.
+    private static DynamicMethod IntIntToInt()
+    {
+        DynamicMethod dm = new DynamicMethod(
+            "Probe",
+            typeof(int),
+            new Type[] { typeof(int), typeof(int) },
+            typeof(Program).Module);
+        ILGenerator il = dm.GetILGenerator();
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ret);
+        return dm;
+    }
+
+    /// `(object) -> int`. Its parameter is wider than anything a delegate can supply without
+    /// boxing, which is what makes it the probe for the objref-ness rule.
+    private static DynamicMethod ObjectToInt()
+    {
+        DynamicMethod dm = new DynamicMethod("Probe", typeof(int), new Type[] { typeof(object) }, typeof(Program).Module);
+        ILGenerator il = dm.GetILGenerator();
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Ret);
+        return dm;
+    }
+
     /// `(int) -> string`. The return type is narrower than `Func&lt;int, object&gt;`'s, which is
     /// legal: return types are matched callee-to-caller, the opposite direction from arguments.
     private static DynamicMethod IntToString()
@@ -83,6 +110,20 @@ public class Program
         try
         {
             dm.CreateDelegate(delegateType);
+            return false;
+        }
+        catch (ArgumentException)
+        {
+            return true;
+        }
+    }
+
+    /// As above, for the overload that supplies a bound first argument.
+    private static bool Rejects(DynamicMethod dm, Type delegateType, object target)
+    {
+        try
+        {
+            dm.CreateDelegate(delegateType, target);
             return false;
         }
         catch (ArgumentException)
@@ -151,36 +192,82 @@ public class Program
             return 7;
         }
 
+        // Closed over a *boxed value type*, again where the target declares `object`. This is the
+        // case that distinguishes "the bound argument arrived boxed" from "the two types are both
+        // object references": `int` is not an object reference, so an implementation that dropped
+        // the boxed flag and compared objref-ness would refuse this binding, which real .NET
+        // accepts.
+        object boxed = 42;
+        Delegate closedOverBoxed = ObjectIntToInt().CreateDelegate(typeof(Func<int, int>), boxed);
+        if (!ReferenceEquals(closedOverBoxed.Target, boxed))
+        {
+            return 8;
+        }
+
         // Covariant return: the target returns `string` where `Invoke` returns `object`.
         if (IntToString().CreateDelegate(typeof(Func<int, object>)) == null)
         {
-            return 8;
+            return 9;
+        }
+
+        // An enum on the delegate's side against the underlying integer on the target's, in both
+        // argument and return position. Neither is a cast: they are admitted by the rule that two
+        // types with the same *verifier* element type are interchangeable when either is an enum.
+        // A dynamic method cannot declare an enum parameter itself — `SignatureHelper` would spell
+        // it `ELEMENT_TYPE_INTERNAL`, which is refused when the method is minted — so the enum can
+        // only ever be on the delegate's side, which is exactly where these put it.
+        if (intToInt.CreateDelegate(typeof(Func<DayOfWeek, int>)) == null)
+        {
+            return 10;
+        }
+
+        if (intToInt.CreateDelegate(typeof(Func<int, DayOfWeek>)) == null)
+        {
+            return 11;
         }
 
         // Arity out of whack: three arguments supplied, one taken. Neither open nor closed, which
         // is a different rejection from the two below and worth having on its own.
         if (!Rejects(intToInt, typeof(Func<int, int, int, int>)))
         {
-            return 9;
+            return 12;
         }
 
-        // One argument taken, none supplied, so this classifies as *closed* — and is then rejected
-        // by the rule that a delegate closed over a static method's first argument needs that
-        // argument to be an object reference, which `int` is not.
+        // The arity says open — `Invoke` supplies the one argument the target takes — but a target
+        // object was handed in, so there is nothing for it to bind to.
+        if (!Rejects(intToInt, typeof(Func<int, int>), bound))
+        {
+            return 13;
+        }
+
+        // One argument taken, none supplied, so this classifies as *closed* rather than as an
+        // arity mismatch — and is then rejected on its return type, `Action` returning void where
+        // the target returns `int`. (Measured, not assumed: an earlier version of this comment
+        // claimed the objref rule below rejected it, and mutating that rule out left this check
+        // passing. Void-versus-value is decided first.)
         if (!Rejects(intToInt, typeof(Action)))
         {
-            return 10;
+            return 14;
         }
 
         // Argument type mismatch, both directions of the assignability check.
         if (!Rejects(intToInt, typeof(Func<string, int>)))
         {
-            return 11;
+            return 15;
         }
 
         if (!Rejects(intToInt, typeof(Func<int, string>)))
         {
-            return 12;
+            return 16;
+        }
+
+        // No primitive widening: `long` and `int` have different verifier element types and
+        // neither is an enum, so relaxed matching does not admit the one into the other even
+        // though the conversion is lossless. This is the pair the enum rule above must *not*
+        // accidentally let through.
+        if (!Rejects(intToInt, typeof(Func<long, int>)))
+        {
+            return 17;
         }
 
         // `int&` supplied where the target declares `int`. The byref is on the delegate's side,
@@ -189,7 +276,50 @@ public class Program
         // implemented (measured — it is where an earlier draft of this file stopped).
         if (!Rejects(intToInt, typeof(RefIntToInt)))
         {
-            return 13;
+            return 18;
+        }
+
+        // The objref-ness rule, in argument and then in return position. Both of these are casts
+        // that *succeed* — an `int` is castable to `object` — and are still refused, because
+        // nothing boxes the value on the way through a delegate. This is the one rule that a bare
+        // "are they identical, or is one castable to the other" implementation gets wrong, and it
+        // gets it wrong in the unsafe direction.
+        DynamicMethod objectToInt = ObjectToInt();
+        if (!Rejects(objectToInt, typeof(Func<int, int>)))
+        {
+            return 19;
+        }
+
+        if (!Rejects(intToInt, typeof(Func<int, object>)))
+        {
+            return 20;
+        }
+
+        // The control for both: the identical shape with an object *reference* on the narrow side
+        // is accepted. Without this, 19 and 20 are also satisfied by an implementation that simply
+        // refuses every widening.
+        if (objectToInt.CreateDelegate(typeof(Func<string, int>)) == null)
+        {
+            return 21;
+        }
+
+        // The closed-over-static objref rule, isolated. `(int, int) -> int` against
+        // `Func<int, int>` classifies as closed on arity, its remaining argument and its return
+        // type both match, and no target is supplied — so the *only* thing left to reject it is
+        // that a delegate closed over a static method's first argument requires that argument to
+        // be an object reference. `int` is not one. Check 14 does not cover this: it is rejected
+        // earlier, on its return type.
+        DynamicMethod intIntToInt = IntIntToInt();
+        if (!Rejects(intIntToInt, typeof(Func<int, int>)))
+        {
+            return 22;
+        }
+
+        // The same with a target supplied, which cannot help: the rule is about the parameter's
+        // declared type, not about what was passed.
+        if (!Rejects(intIntToInt, typeof(Func<int, int>), boxed))
+        {
+            return 23;
         }
 
         return 0;

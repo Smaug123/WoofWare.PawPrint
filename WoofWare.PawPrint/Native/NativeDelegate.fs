@@ -163,19 +163,43 @@ module NativeDelegate =
             state, true
         else
 
-        // "Byref parameters can never be allowed relaxed matching since type safety will always be
-        // violated in one of the two directions (in or out)." Checking one side suffices, because
-        // a byref is never compatible with a non-byref.
-        let relaxedMatch =
-            match fromHandle with
-            | ConcreteTypeHandle.Byref _ -> false
-            | ConcreteTypeHandle.Concrete _
-            | ConcreteTypeHandle.OneDimArrayZero _
-            | ConcreteTypeHandle.Array _
-            | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _ -> relaxedMatch
+        // CoreCLR spells this as "byref parameters can never be allowed relaxed matching since type
+        // safety will always be violated in one of the two directions (in or out)", and implements
+        // it by clearing `relaxedMatch` when the source is a byref. Stated here as a direct
+        // refusal instead, which is the same answer: with relaxation off the only remaining path
+        // is the enum arm, every byref has verifier element type BYREF and none is an enum, so two
+        // distinct byrefs fail on enum-ness and a byref against a non-byref fails on element type.
+        //
+        // Written as a guard rather than transcribed because the transcription would be *inert*
+        // here and this is not: `isConcreteTypeAssignableTo` refuses a byref structurally (a byref
+        // has no base type, no interfaces and no array shape, IlMachineRuntimeMetadata.fs), so
+        // clearing a flag that only gates a call which already answers false would change nothing.
+        // The hazard the guard exists against is the day that stops being true: if assignability
+        // ever learns byref variance, the objref-ness check below would then decide the pair, and
+        // it answers "both are non-objref, so they match" — silently admitting `string&` where an
+        // `object&` was wanted.
+        //
+        // No test kills this, and none can today: reaching it from the target side needs a dynamic
+        // method with a byref parameter, which needs `typeof(int).MakeByRefType()`, and
+        // `RuntimeTypeHandle_MakeByRef` is unimplemented (measured). The delegate-side direction is
+        // reachable and `DynamicMethodDelegateBinding.cs` exercises it, but the enum arm gives the
+        // same answer there, so the check survives mutation. That is recorded rather than resolved
+        // by deletion: a type-safety guard that the current suite cannot reach is still a guard.
+        let eitherIsByref =
+            let isByref (handle : ConcreteTypeHandle) : bool =
+                match handle with
+                | ConcreteTypeHandle.Byref _ -> true
+                | ConcreteTypeHandle.Concrete _
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ -> false
 
-        if not relaxedMatch then
+            isByref fromHandle || isByref toHandle
+
+        if eitherIsByref then
+            state, false
+        elif not relaxedMatch then
             enumArm state
         else
 
@@ -307,8 +331,9 @@ module NativeDelegate =
         // "Check that there is no vararg mismatch." A vararg dynamic method is not constructible
         // (`DynamicMethod`'s constructors pass `CallingConventions.Standard`), and neither is a
         // vararg delegate type from any language PawPrint's tests compile, so this is checked
-        // rather than exercised. It is checked because the alternative is to assume it, and the
-        // assumption is not one this function is in a position to make: it is handed two
+        // rather than exercised — no test kills it, and none can until something can produce a
+        // vararg signature on either side. It is checked because the alternative is to assume it,
+        // and the assumption is not one this function is in a position to make: it is handed two
         // signatures, and the headers say.
         if
             invokeSignature.Header.Get.CallingConvention
@@ -681,17 +706,28 @@ module NativeDelegate =
                         FieldIdentity.requiredOwnInstanceField ctx.BaseClassTypes.DelegateType fieldName
                         |> FieldIdentity.fieldId delegateTypeHandle
 
-                    let boundTarget =
-                        match shape with
-                        | DelegateBindingShape.Open -> None
-                        | DelegateBindingShape.Closed -> targetAddr
+                    // `_target` is the supplied object for both shapes, because an open binding
+                    // cannot have one: `isCompatible` refuses `isOpen && firstArgType.IsSome`, and
+                    // `firstArgType` is exactly `targetAddr` mapped. So this is a postcondition to
+                    // assert rather than a case to branch on — CoreCLR asserts the same thing at
+                    // the top of its open path, `_ASSERTE(pRefFirstArg == NULL || *pRefFirstArg ==
+                    // NULL)` (comdelegate.cpp:1215). Written as a branch it would be a third arm
+                    // no test could distinguish from this one, which is how a stale invariant
+                    // hides; written as an assertion it fails loudly if the guard above is ever
+                    // weakened.
+                    match shape, targetAddr with
+                    | DelegateBindingShape.Open, Some _ ->
+                        failwith
+                            $"%s{operation}: internal error: classified the binding as open but a target object was supplied; the compatibility check rejects that combination"
+                    | DelegateBindingShape.Open, None
+                    | DelegateBindingShape.Closed, _ -> ()
 
                     let heap =
                         state.ManagedHeap
                         |> ManagedHeap.setFieldById
                             delegateAddr
                             (delegateField "_target")
-                            (CliType.ObjectRef boundTarget)
+                            (CliType.ObjectRef targetAddr)
                         |> ManagedHeap.setFieldById
                             delegateAddr
                             (delegateField "_methodPtr")
