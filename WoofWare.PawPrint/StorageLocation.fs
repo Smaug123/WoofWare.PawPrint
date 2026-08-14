@@ -124,9 +124,30 @@ module internal StorageLocation =
         | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr as root, projs) ->
             tryProjectionByteOffset baseClassTypes state root projs
             |> Option.map (fun byteOffset -> ByteStorageIdentity.HeapObject addr, byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, field) as root, projs) ->
-            tryProjectionByteOffset baseClassTypes state root projs
-            |> Option.map (fun byteOffset -> ByteStorageIdentity.HeapObjectField (addr, field), byteOffset)
+        | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, field), projs) ->
+            // One heap object is one storage container; a field root is a
+            // *view* into it at the field's layout offset, not its own
+            // container. Under `[StructLayout(LayoutKind.Explicit)]` on a
+            // class, two distinct fields can overlap, so a per-field identity
+            // would falsely assert disjointness — measured as a live
+            // wrong-direction `Memmove` (forward loop re-reading bytes it had
+            // overwritten) in
+            // `SpanMemmoveOverlappingExplicitLayoutClassFields.cs`.
+            //
+            // Resolving as if the byref were rooted at the whole object with
+            // a leading `Field` projection folds the field's offset within
+            // the object into the flat byte coordinate. The projection walk
+            // is unchanged in what it computes: `rootTemplate` for
+            // `HeapValue` yields the object's `Contents`, and the `Field`
+            // step's `getFieldById` is exactly the `DereferenceFieldById`
+            // the per-field root used to start from, so this resolves
+            // whenever the old shape did.
+            tryProjectionByteOffset
+                baseClassTypes
+                state
+                (ByrefRoot.HeapValue addr)
+                (ByrefProjection.Field field :: projs)
+            |> Option.map (fun byteOffset -> ByteStorageIdentity.HeapObject addr, byteOffset)
         // The MethodTable auxiliary cell is a single object reference;
         // `Field` projections are nonsensical on it, and overlap reasoning
         // through it has no flat byte coordinate.
@@ -144,17 +165,22 @@ module internal StorageLocation =
     ///
     /// Indexed flat roots (array element, string char) carry their index so
     /// that disjoint cross-element copies like `arr[0].A` ↔ `arr[1].A` get
-    /// distinct keys. `HeapObjectField` carries its `FieldId` for the same
-    /// reason. `HeapValue` (a whole boxed value) is its own bucket keyed by
-    /// address; a boxed value and a class-instance field byref cannot share
-    /// an address (each heap allocation has a single object kind).
+    /// distinct keys. `HeapObjectField` deliberately does *not* carry its
+    /// `FieldId`: two distinct fields of one object can genuinely share bytes
+    /// under `[StructLayout(LayoutKind.Explicit)]` on a class, so "could
+    /// these share storage" is answered per-object, and only the precise
+    /// byte offsets (which consult field layout) may prove two fields of one
+    /// object disjoint. `HeapValue` (a whole boxed value) is its own bucket
+    /// keyed by address; a boxed value and a class-instance field byref
+    /// cannot share an address (each heap allocation has a single object
+    /// kind), so the two heap kinds never need reconciling.
     [<RequireQualifiedAccess>]
     type SharedStorageKey =
         | ArrayCell of arr : ManagedHeapAddress * index : int
         | StringChar of str : ManagedHeapAddress * charIndex : int
         | Flat of ByteStorageIdentity
         | HeapValue of ManagedHeapAddress
-        | HeapObjectField of obj : ManagedHeapAddress * field : FieldId
+        | HeapObjectField of obj : ManagedHeapAddress
         | RuntimeTypeAux of RuntimeTypeHandleTarget
 
     let private sharedStorageKeyOfRoot (root : ByrefRoot) : SharedStorageKey =
@@ -172,7 +198,7 @@ module internal StorageLocation =
         | ByrefRoot.StaticField (declaringType, field, owner) ->
             SharedStorageKey.Flat (ByteStorageIdentity.StaticField (declaringType, field, owner))
         | ByrefRoot.HeapValue addr -> SharedStorageKey.HeapValue addr
-        | ByrefRoot.HeapObjectField (addr, field) -> SharedStorageKey.HeapObjectField (addr, field)
+        | ByrefRoot.HeapObjectField (addr, _) -> SharedStorageKey.HeapObjectField addr
         | ByrefRoot.ExposedClassObject decl -> SharedStorageKey.RuntimeTypeAux decl
 
     /// Storage discriminator of a byref. Returns `None` for non-byref pointers

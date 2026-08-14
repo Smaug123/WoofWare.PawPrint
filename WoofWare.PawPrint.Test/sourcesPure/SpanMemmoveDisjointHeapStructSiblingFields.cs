@@ -7,12 +7,13 @@ public class Program
     // into distinct interior fields of the contained struct `S`. Before
     // `CellAwareCopy`'s overlap analyser folded `Field` projections into
     // a flat byte offset, both byrefs collapsed onto the same coarse
-    // `SharedStorageKey.HeapObjectField (box, s)` bucket and the
-    // undecidable-overlap fail-loud rejected this disjoint sibling-field
-    // copy. After folding, `byteLocation` resolves precise byte offsets
-    // (`offsetof(A within S)` vs `offsetof(B within S)`) under the
-    // `ByteStorageIdentity.HeapObjectField (box, s)` storage, so overlap
-    // is determined by offset arithmetic and the forward copy proceeds.
+    // per-object `SharedStorageKey` bucket and the undecidable-overlap
+    // fail-loud rejected this disjoint sibling-field copy. After folding,
+    // `byteLocation` resolves precise byte offsets (the field's offset
+    // within the object, plus `offsetof(A within S)` vs
+    // `offsetof(B within S)`) under the object's single
+    // `ByteStorageIdentity.HeapObject box` storage, so overlap is
+    // determined by offset arithmetic and the forward copy proceeds.
     [StructLayout(LayoutKind.Sequential)]
     struct S
     {
