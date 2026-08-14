@@ -742,10 +742,11 @@ module Intrinsics =
                     // operands to the signedness/width of the overload before comparing and writing.
                     let state =
                         if
-                            EvalStackValueComparisons.ceq
+                            EvalStackValueComparisons.ceqDeferred
                                 state.PointerHashState
                                 currentEval
                                 (EvalStackValue.ofCliType comparandCli)
+                            |> StorageLocation.resolveCeq baseClassTypes state
                         then
                             IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
                         else

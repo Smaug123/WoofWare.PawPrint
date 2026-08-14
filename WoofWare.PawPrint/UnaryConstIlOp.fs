@@ -355,7 +355,9 @@ module internal UnaryConstIlOp =
             let value1, state = IlMachineState.popEvalStack currentThread state
 
             let isNotEqual =
-                not (EvalStackValueComparisons.ceq state.PointerHashState value1 value2)
+                EvalStackValueComparisons.ceqDeferred state.PointerHashState value1 value2
+                |> StorageLocation.resolveCeq baseClassTypes state
+                |> not
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -418,7 +420,9 @@ module internal UnaryConstIlOp =
             let value1, state = IlMachineState.popEvalStack currentThread state
 
             let isNotEqual =
-                not (EvalStackValueComparisons.ceq state.PointerHashState value1 value2)
+                EvalStackValueComparisons.ceqDeferred state.PointerHashState value1 value2
+                |> StorageLocation.resolveCeq baseClassTypes state
+                |> not
 
             state
             |> IlMachineState.advanceProgramCounter currentThread

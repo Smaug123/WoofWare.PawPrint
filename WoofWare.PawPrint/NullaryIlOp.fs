@@ -1793,7 +1793,10 @@ module NullaryIlOp =
             let var1, state = state |> IlMachineState.popEvalStack currentThread
 
             let comparisonResult =
-                if EvalStackValueComparisons.ceq state.PointerHashState var1 var2 then
+                if
+                    EvalStackValueComparisons.ceqDeferred state.PointerHashState var1 var2
+                    |> StorageLocation.resolveCeq corelib state
+                then
                     1
                 else
                     0
