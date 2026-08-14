@@ -2,10 +2,113 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 open System.Reflection
+open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module ExecutionConcretization =
+
+    /// <summary>
+    /// The method a <c>DynamicMethodHandle</c> names, in the form a frame can be pushed for.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Built here rather than read out of a table because there is nothing to read: what
+    /// <c>ModuleHandle_GetDynamicMethod</c> recorded is a name, a signature *blob*, and an IL body
+    /// whose local types are <see cref="TypeDefn"/>s. Turning those into the
+    /// <c>ConcreteTypeHandle</c>-flavoured <see cref="MethodInfo"/> the interpreter runs on is
+    /// this function's whole job, and it is the same decode-then-concretise pair
+    /// <c>NativeDelegate</c> performs when it decides whether a delegate may bind at all.
+    /// </para>
+    /// <para>
+    /// Built at *invocation* rather than at bind time, deliberately. CoreCLR reads a dynamic
+    /// method's <c>initLocals</c> once, at first JIT, and latches it; PawPrint records it when the
+    /// method is minted, which is earlier still, and <c>DynamicMethodBody</c> refuses the one
+    /// instruction that could observe the difference. Building here keeps the shape that a future
+    /// first-execution latch would need, where a bind-time build would have to be undone first.
+    /// </para>
+    /// <para>
+    /// No generics, and no `this`: a <c>DynamicMethod</c> is always static and never generic
+    /// (its constructors set <c>mdStatic</c> unconditionally and offer no way to declare a type
+    /// parameter), so both instantiations are empty and the signature is concretised in an empty
+    /// generic context.
+    /// </para>
+    /// </remarks>
+    let concretizeDynamicMethod
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (handle : DynamicMethodHandle)
+        (state : IlMachineState)
+        : IlMachineState * WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        let definition =
+            MethodHandleRegistry.resolveDynamicMethod handle state.MethodHandles
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: %O{handle} is not registered in the method-handle registry"
+            )
+
+        let scopeAssemblyFullName = definition.GetScopeAssemblyFullName ()
+
+        let scopeAssembly =
+            state.LoadedAssembly' scopeAssemblyFullName
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: the scope assembly %s{scopeAssemblyFullName} is not loaded"
+            )
+
+        let concretise (state : IlMachineState) (typeDefn : TypeDefn) : IlMachineState * ConcreteTypeHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                scopeAssembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                typeDefn
+
+        let state, signature =
+            MethodSignatureDecoding.decode
+                scopeAssembly.Name
+                (scopeAssembly.PeReader.GetMetadataReader ())
+                (definition.GetSignature () |> Seq.toArray)
+            |> TypeMethodSignature.make (fun ty ->
+                match ty with
+                | TypeDefn.Void -> MethodReturnType.Void
+                | ret -> MethodReturnType.Returns ret
+            )
+            |> TypeMethodSignature.map state concretise
+
+        let body = definition.GetBody ()
+
+        // The locals were decoded at mint time by `LocalSignatureDecoding`, in the same token
+        // universe as the signature; concretise them the same way. `None` means the method
+        // declared none, which is distinct from declaring zero of them only in that the frame has
+        // no locals array to build.
+        let state, localVars =
+            match body.LocalVars with
+            | None -> state, None
+            | Some vars ->
+                let mutable state = state
+                let handles = ImmutableArray.CreateBuilder vars.Length
+
+                for var in vars do
+                    let newState, handle = concretise state var
+                    state <- newState
+                    handles.Add handle
+
+                state, Some (handles.ToImmutable ())
+
+        let core =
+            {
+                Owner = MethodOwner.DynamicMethodsClass scopeAssembly.Name
+                Name = definition.GetName ()
+                Body = MethodBody.Il (MethodInstructions.setLocalVars localVars body)
+                Generics = ImmutableArray.Empty
+                Signature = signature
+                IsStatic = true
+            }
+
+        state, MethodInfo.Synthesised (core, SynthesisedMethod.DynamicMethod handle)
 
     let concretizeMethodWithAllGenerics
         (loggerFactory : ILoggerFactory)
