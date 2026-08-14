@@ -390,6 +390,53 @@ module NativeCall =
 
             loop 0 []
 
+    /// `readNullTerminatedBytes`, but scanning at most `maxBytes` bytes of guest
+    /// memory — for callers whose own boundary imposes a limit.
+    ///
+    /// Returns the bytes before the terminator when one is found within that
+    /// span, and otherwise exactly `maxBytes` bytes: "at least this long", which
+    /// is all a caller needs to know to refuse it, and which keeps the *rule*
+    /// about what is too long with the caller rather than duplicated here.
+    ///
+    /// This exists because a real `stat` does not scan for a terminator
+    /// indefinitely either. `getname()` on Linux and `copyinstr` on Darwin copy
+    /// at most `PATH_MAX` bytes and report ENAMETOOLONG if no NUL appears in
+    /// them — so an unterminated buffer is an ordinary error a guest can
+    /// provoke, not the interpreter abort that reading past it would give.
+    let readNullTerminatedBytesWithin
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        (maxBytes : int)
+        : byte array
+        =
+        if maxBytes < 1 then
+            failwith $"%s{operation}: cannot scan %d{maxBytes} bytes for a terminator; the bound must be positive."
+
+        match ptr with
+        | ManagedPointerSource.Null ->
+            failwith $"TODO: %s{operation} with null UTF-8 pointer should throw ArgumentNullException"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"%s{operation}: cannot read UTF-8 string from fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
+        | ManagedPointerSource.Byref _ ->
+            let byteConcreteType = requiredByteConcreteType operation baseClassTypes state
+
+            let rec loop (byteIndex : int) (bytes : byte list) : byte array =
+                if byteIndex >= maxBytes then
+                    bytes |> List.rev |> Array.ofList
+                else
+
+                let b = readUtf8Byte operation baseClassTypes state byteConcreteType ptr byteIndex
+
+                if b = 0uy then
+                    bytes |> List.rev |> Array.ofList
+                else
+                    loop (byteIndex + 1) (b :: bytes)
+
+            loop 0 []
+
     let readNullTerminatedUtf8
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

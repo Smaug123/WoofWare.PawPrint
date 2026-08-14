@@ -561,8 +561,50 @@ type Resolution =
 /// filesystems under one kernel disagree about it — a state no real system can
 /// be in.
 ///
-/// A record rather than a bare `int` because it is known to grow: `PATH_MAX` and
-/// `NAME_MAX` are the same kind of fact and are the next slice.
+/// The longest a single path component may be, *and the unit that length is
+/// measured in* — which is not the same on every Unix, so the two travel
+/// together as one value rather than as a number beside a unit that could
+/// disagree with it.
+///
+/// Both platforms say "255". Measured, they mean different things by it:
+///
+/// | name | UTF-8 bytes | UTF-16 units | APFS | ext4 |
+/// |---|---|---|---|---|
+/// | `a`×255 / `a`×256 | 255 / 256 | 255 / 256 | ok / too long | ok / too long |
+/// | `中`×85 / `中`×86 | 255 / 258 | 85 / 86 | ok / ok | **ok / too long** |
+/// | `中`×255 | 765 | 255 | **ok** | **too long** |
+/// | emoji×127 + `a` | 509 | 255 | **ok** | too long |
+/// | emoji×127 + `aa` | 510 | 256 | **too long** | too long |
+///
+/// The last two rows are what separate "UTF-16 code units" from "characters":
+/// an emoji is one character but two units, and APFS's boundary tracks the
+/// units. APFS also counts the name *as given* — `é`×255 in NFC is permitted,
+/// where counting its NFD expansion would give 510 units and refuse it.
+///
+/// This is really a property of the *filesystem* rather than the kernel
+/// (`_PC_NAME_MAX` varies per mount on Linux too); PawPrint models one
+/// filesystem per flavour, which is the same simplification it makes elsewhere.
+/// A struct, deliberately: `PathLimits` is one too, so a reference DU here would
+/// make a forged `Unchecked.defaultof<PathLimits>` carry a *null* limit, and
+/// `assertValid` would then have to match on it to reject it — which is exactly
+/// the operation that would throw. As a struct the forged default is
+/// `Utf8Bytes 0`, which reads as an ordinary case carrying a zero, and the zero
+/// is what `assertValid` rejects.
+[<RequireQualifiedAccess>]
+[<Struct>]
+type NameLengthLimit =
+    /// ext4, and Linux filesystems generally: a raw byte count, which is what
+    /// the kernel stores and compares.
+    | Utf8Bytes of bytes : int
+    /// APFS (and HFS+ before it), which stores names as UTF-16 and bounds the
+    /// count of code units. Conveniently exactly `String.Length`, because .NET
+    /// strings are UTF-16 — a coincidence worth naming, since it makes the
+    /// *wrong* implementation look right on a Mac.
+    | Utf16CodeUnits of units : int
+
+/// A record rather than a bare `int`: `MAXSYMLINKS`, `PATH_MAX` and `NAME_MAX`
+/// are the same kind of fact, and a caller that needs one generally needs the
+/// others.
 [<Struct>]
 type PathLimits =
     private
@@ -573,6 +615,24 @@ type PathLimits =
             /// ELOOP); Linux's is 40 (`MAXSYMLINKS` in `include/linux/namei.h`,
             /// a kernel-internal header rather than a UAPI one).
             MaxSymlinkTraversals : int
+            /// The longest pathname the kernel will accept as a syscall
+            /// *argument*, **including its NUL terminator** — so a usable path
+            /// is one byte shorter. Darwin 1024, Linux 4096 (measured: an
+            /// argument of 1023 bytes resolves on macOS and 1024 does not; 4095
+            /// and 4096 respectively on Linux).
+            ///
+            /// Binds the argument as passed, *not* the resolved path: a
+            /// 1023-byte relative path resolved from a long working directory is
+            /// fine, and Linux will happily `chdir` into a tree 4250 bytes deep
+            /// so long as it is built one component at a time. That is why this
+            /// is enforced at the syscall boundary rather than in the walk.
+            PathMaxBytes : int
+            /// The longest single component, with its unit.
+            ///
+            /// Read only through `nameWithinLimit`, which is why there is no
+            /// accessor for it: the number is meaningless without the unit, and
+            /// a caller holding both could still measure with the wrong one.
+            NameMax : NameLengthLimit
         }
 
 [<RequireQualifiedAccess>]
@@ -581,16 +641,55 @@ module PathLimits =
     /// whose input is a guest's, every caller of this is the platform table
     /// passing a literal, so a bad value is an interpreter bug and not something
     /// a caller could handle.
-    let create (maxSymlinkTraversals : int) : PathLimits =
+    let create (maxSymlinkTraversals : int) (pathMaxBytes : int) (nameMax : NameLengthLimit) : PathLimits =
         if maxSymlinkTraversals < 1 then
             failwith
                 $"PathLimits.create: a kernel that permits %d{maxSymlinkTraversals} symlink traversals could not resolve a path through any symbolic link at all; every Unix PawPrint models permits at least one."
 
+        // Two adjacent `int` parameters are an argument-order hazard, so the
+        // bounds are chosen to make a swap a loud failure rather than a subtly
+        // wrong kernel: no Unix has a PATH_MAX below 256 (POSIX's floor,
+        // _POSIX_PATH_MAX, is 256) and none permits anywhere near 256 symlink
+        // traversals, so `create 1024 32 ...` cannot pass both checks.
+        if maxSymlinkTraversals > 255 then
+            failwith
+                $"PathLimits.create: %d{maxSymlinkTraversals} symlink traversals is far beyond any Unix PawPrint models (Linux permits 40, Darwin 32). Are the first two arguments the wrong way round?"
+
+        if pathMaxBytes < 256 then
+            failwith
+                $"PathLimits.create: a PATH_MAX of %d{pathMaxBytes} bytes is below POSIX's _POSIX_PATH_MAX floor of 256. Are the first two arguments the wrong way round?"
+
+        match nameMax with
+        | NameLengthLimit.Utf8Bytes bytes when bytes < 1 ->
+            failwith $"PathLimits.create: a NAME_MAX of %d{bytes} bytes would forbid every filename."
+        | NameLengthLimit.Utf16CodeUnits units when units < 1 ->
+            failwith $"PathLimits.create: a NAME_MAX of %d{units} UTF-16 code units would forbid every filename."
+        | NameLengthLimit.Utf8Bytes _
+        | NameLengthLimit.Utf16CodeUnits _ -> ()
+
         {
             MaxSymlinkTraversals = maxSymlinkTraversals
+            PathMaxBytes = pathMaxBytes
+            NameMax = nameMax
         }
 
     let maxSymlinkTraversals (limits : PathLimits) : int = limits.MaxSymlinkTraversals
+
+    /// The longest pathname this kernel accepts as a syscall argument,
+    /// *including* the NUL terminator — so a usable path is one byte shorter.
+    let pathMaxBytes (limits : PathLimits) : int = limits.PathMaxBytes
+
+    /// Whether a single path component is short enough for this kernel, measured
+    /// in whichever unit that kernel counts in.
+    ///
+    /// The only way to read `NameMax`, on purpose. Handing out the number and
+    /// the unit separately would let a caller measure a name with the wrong one
+    /// — and on a Mac the wrong one (`String.Length`) is right often enough to
+    /// look correct, which is precisely the bug this shape prevents.
+    let nameWithinLimit (limits : PathLimits) (name : FileName) : bool =
+        match limits.NameMax with
+        | NameLengthLimit.Utf8Bytes bytes -> UnixPathText.utf8.GetByteCount (FileName.toString name) <= bytes
+        | NameLengthLimit.Utf16CodeUnits units -> (FileName.toString name).Length <= units
 
     /// Re-check the invariant of a value that may not have come from `create`.
     ///
@@ -601,9 +700,22 @@ module PathLimits =
     /// but a plausible-looking answer from a kernel that cannot exist, produced
     /// silently for every path in the filesystem.
     let assertValid (context : string) (limits : PathLimits) : PathLimits =
-        if limits.MaxSymlinkTraversals < 1 then
+        // The integer checks come first, and the `NameMax` one is written to
+        // avoid needing the unit: on a forged default every field is zero at
+        // once, and this must report that rather than depend on which field
+        // happens to be examined first.
+        if limits.MaxSymlinkTraversals < 1 || limits.PathMaxBytes < 1 then
             failwith
-                $"%s{context}: these path limits permit %d{limits.MaxSymlinkTraversals} symlink traversals, which no Unix does. A PathLimits that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; obtain one from SimulatedUnixPlatform.pathLimits instead."
+                $"%s{context}: these path limits permit %d{limits.MaxSymlinkTraversals} symlink traversals and a PATH_MAX of %d{limits.PathMaxBytes} bytes, which no Unix does. A PathLimits that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; obtain one from SimulatedUnixPlatform.pathLimits instead."
+
+        let nameMax =
+            match limits.NameMax with
+            | NameLengthLimit.Utf8Bytes bytes -> bytes
+            | NameLengthLimit.Utf16CodeUnits units -> units
+
+        if nameMax < 1 then
+            failwith
+                $"%s{context}: these path limits permit a NAME_MAX of %d{nameMax}, which would forbid every filename. A PathLimits that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; obtain one from SimulatedUnixPlatform.pathLimits instead."
 
         limits
 
@@ -1004,6 +1116,21 @@ module VirtualFileSystem =
             | PathComponent.Parent :: rest ->
                 walk (parentOf directory vfs) rest trailing finalSymlinkFollowed FinalNavigation.Parent symlinks
             | PathComponent.Name name :: rest ->
+
+            // Before the lookup, and before anything notices whether the name
+            // exists — which is what reproduces the measured precedence on both
+            // kernels: "<300 bytes>/x" is ENAMETOOLONG (the over-long component
+            // is reached and rejected) while "nxdir/<300 bytes>" is ENOENT (the
+            // walk fails at the missing parent and never reaches it). Checking
+            // after the lookup would report ENOENT for an over-long name that
+            // does not exist, which is exactly what `stat` on a fresh long name
+            // does *not* do.
+            //
+            // This is also the only place that sees components spliced in from a
+            // symlink target, which a check at the syscall boundary could not.
+            if not (PathLimits.nameWithinLimit limits name) then
+                Error UnixError.ENAMETOOLONG
+            else
 
             let entries =
                 match tryGetDirectory directory vfs with
