@@ -254,6 +254,16 @@ The two options, stated explicitly per AGENTS.md:
   byte-addressability. Needs the field's offset within the object, which `rootTemplate` currently
   discards (it calls `AllocatedNonArrayObject.DereferenceFieldById`, yielding the template but not
   the offset) — check whether a layout accessor exists there or must be added.
+
+  **Both keys must be canonicalised, not just the precise one** (Codex, on this revision — a real
+  hole in the first draft of it). `sharedStorageKeyOfRoot` maps the root to
+  `SharedStorageKey.HeapObjectField (addr, field)` (`StorageLocation.fs:175`), which also carries
+  the `FieldId`. Canonicalising only `ByteStorageIdentity` fixes nothing whenever precision is
+  *unavailable*: `overlapVerdict` then compares coarse keys, finds two fields of one object
+  unequal, and falls through to `CopyForwards` — exactly the silent-corruption path this stage
+  exists to close, merely moved from the precise branch to the coarse one. So the coarse key for a
+  heap-object field must become per-*object* too. Note that this widens what `Undecidable` covers,
+  which is correct: two fields of one object genuinely might overlap.
 - **(b) Refuse.** Resolve to `Located (coarse, None)` for a `HeapObjectField` root, so consumers
   degrade to `Undecidable` and fail loudly. Smallest possible change, trivially reversible, and
   consistent with what `ceqNormalised` just did. But it converts a wrong answer into a crash rather
@@ -268,9 +278,21 @@ fields of one object to distinct containers and copies **forwards**. That is the
 pattern this repo keeps hitting. Under investigation on its own branch; if it reproduces it is a
 live wrong-direction copy on `main` today, and fixing it via (a) subsumes this stage.
 
-**Correctness oracle**: `AreSameHeapFieldsOverlappingExplicitLayout.cs` un-parks (real .NET says
-`true`), plus a `Memmove` guest with overlapping heap fields as endpoints. Mutation: reverting the
-container to per-field must fail exactly those two and nothing else.
+**Correctness oracle**: *not* the `AreSame` unpark — that is a Stage 4 result and this stage cannot
+reach it (Codex). `Unsafe.AreSame` calls `ceqNormalised` directly and does not consume
+`StorageLocation.resolve` until the §4 inversion lands, so `AreSameHeapFieldsOverlappingExplicitLayout.cs`
+stays parked however correct the canonicalisation is. Claiming it here would have made the stage
+unsatisfiable in isolation. Instead:
+
+- **Resolver-level assertions**, in the `TestStorageLocation.fs` style: two `HeapObjectField` roots
+  on one object resolve to one `ByteStorageIdentity` and one `SharedStorageKey`, with offsets that
+  differ exactly when the declared `FieldOffset`s differ.
+- **The `Memmove` guest**, which *does* consume this — `shouldCopyBackwards` is a direct caller of
+  `resolve`, so the direction change is observable end-to-end at this stage.
+
+Mutation: reverting the precise container to per-field must fail the precise assertion and the
+`Memmove` guest; reverting only the *coarse* key must still fail an assertion, or the coarse hole
+above is untested.
 
 ### Stage 4 — Give byref comparison access to the resolution
 
@@ -308,6 +330,22 @@ expected answer taken from real .NET (they are parked, so the harness runs them 
 else; see `park-a-test-to-validate-its-oracle`). Mutation-check both directions as #916 did:
 disabling the new decision must fail only the newly-decided tests, and widening it past the
 `None`-precise case must fail the containment tests.
+
+**Those four are not a sufficient oracle on their own** (Codex). All four expect `true`, so an
+implementation that called any two precise locations in one `ByteStorageIdentity` equal — ignoring
+their offsets entirely — would pass every one of them, while misreporting every non-overlapping
+pair of fields. The oracle needs at least one **same-container, different-offset** case whose
+answer is `false`.
+
+Conveniently one already exists and needs no exotic type: `Unsafe.AreSame(ref s.X, ref s.Y)` on an
+ordinary **sequential** two-field struct is *currently refused*, because both residuals contain a
+`Field` and `tryDecideResiduals` falls to its final arm. Real .NET answers `false`. So it is a new
+decision (not a pre-existing pass that could go green vacuously), it is the direct negative of the
+explicit-layout guest, and the pair of them together pins that offsets are actually compared.
+
+Worth noting what that implies for §6's payoff figure: the refusal is not confined to exotic
+layouts. Comparing byrefs to two different fields of *any* struct is refused today. The four parked
+guests are what the corpus happens to contain, not the extent of the shape.
 
 Note what each of the four needs, since they do not all fall to the same change and the stage
 should not be declared done on a subset:
@@ -364,7 +402,9 @@ stage a guest.
   `ceqNormalised` at slot 32 provably cannot see the layout and no smaller change reaches it.
   Second, zero-frequency-on-the-suite is a statement about the *guest corpus*, not about real
   programs: the corpus contains what has been written, and these shapes are refused precisely
-  because nobody could write a passing guest that used them. The count is endogenous.
+  because nobody could write a passing guest that used them. The count is endogenous. Concretely:
+  `Unsafe.AreSame(ref s.X, ref s.Y)` on an ordinary sequential struct — no explicit layout, no
+  reinterpretation — is refused today. The shape is not exotic; the *corpus* is.
 
   What would genuinely falsify it: if the inversion's 27 call sites turn out not to be mechanical —
   if `Decided | NeedsByteLocation` cannot be threaded without restructuring the handlers. That is
