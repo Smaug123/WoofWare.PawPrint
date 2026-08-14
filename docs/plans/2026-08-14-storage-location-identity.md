@@ -1,8 +1,10 @@
 # Plan: one storage-location identity, shared by everything that asks "same location?"
 
-Status: **in progress.** Stage 1 merged (#982). Stage 2 merged/merging (#984, 3027 passing).
-Stage 3 withdrawn. Stage 3′ rewritten and Stage 4 unblocked by #916 merging as `55b7d9b`; §6's
-measurement is now answered rather than pending.
+Status: **in progress.** Stage 1 merged (#982). Stage 2 merged (#984). Stage 3 withdrawn.
+Stage 3′ rewritten below, and **implemented** on `worktree-agent-abc0073d4449a881b` (`a8bbb1f`)
+by the investigation that confirmed the `Memmove` defect it predicted — option (a), both keys
+canonicalised, 3069 passing. Stage 4 unblocked by #916 merging as `55b7d9b`; §6's measurement is
+answered rather than pending.
 
 Reviewed by Codex, which found four defects in the first draft. All four were confirmed against
 the tree and all four changed the plan: §5 Stage 2's type shape, the withdrawal of Stage 3, the
@@ -109,10 +111,17 @@ reach the opcode handlers — `UnaryConstIlOp.fs` (20 `ceq` call sites), `Nullar
 Two genuinely different ways to bridge that, to be decided before Stage 4 is written:
 
 - **(a) Dependency rejection.** `ceq`'s byref arm returns a description rather than a verdict:
-  `Decided of bool | NeedsByteLocation of ManagedPointerSource * ManagedPointerSource`, and the 27
+  `Decided of bool | NeedsByteLocation of ManagedPointerSource * ManagedPointerSource`, and the
   handler call sites interpret it. Matches the gospel's "compute a description, then do it", keeps
-  the partiality visible in the type, and only the one arm that needs state defers. Cost: 27 call
-  sites change shape.
+  the partiality visible in the type, and only the one arm that needs state defers.
+
+  **Cost: six sites, not the 27 first written here** (Codex; recounted). Direct
+  `EvalStackValueComparisons.ceq` callers are `UnaryConstIlOp.fs:218, 281, 346, 409`,
+  `NullaryIlOp.fs:1731` and `Intrinsics.fs:745` — six. The 27 came from a grep that counted
+  `state.PointerHashState` reads rather than `ceq` calls. Two further propagation points call
+  `ceqNormalised` directly rather than through `ceq`: `Unsafe.AreSame` (`Intrinsics.fs:2475`) and
+  `NativeIntSourceComparison.fs:213`. So the honest figure is **six call sites plus two direct
+  callers**, which is a materially cheaper change than this plan assumed throughout.
 - **(b) Eager resolution at the call sites.** Handlers resolve both operands to a
   `LocationResolution` *before* calling `ceq`, which takes them as parameters — mirroring how
   `ceq` is already handed `counters : PointerHashState`. Cost: resolution work on every `ceq`
@@ -319,9 +328,30 @@ to what this plan assumed of it:
   a future bisector; the code and §2 agree, the message is the outlier.
 
 Resolve the §4 (a)/(b) choice first. Then the refusal becomes a deferral, and the handler resolves
-it: `Located` on both sides with `Some` precise on each and equal container decides by comparing
-offsets; distinct containers decide unequal **only when Stage 3′ has ruled out cross-field
-aliasing**; `Unrelatable` decides unequal; anything with `None` precise keeps refusing.
+it:
+
+- both sides `Located` with `Some` precise and **equal** container → decide by comparing offsets;
+- `Unrelatable` on either side → decide unequal;
+- anything with `None` precise → keep refusing;
+- **distinct** containers → decide unequal **only when both byrefs are known to remain within
+  their roots**. See below; this is the arm that is easy to get wrong.
+
+**A precise offset is only meaningful relative to a root the byref has not left** (Codex — this
+caught a real unsoundness in the rule as first written here). `ByteStorageIdentity.StackLocal
+local0` with offset 1000 does not mean "1000 bytes into local0" if local0 is smaller than that; the
+byref has walked out, and the container name is then a statement about how it was *built*, not
+where it points. ECMA-335 promises no relative placement between two independently declared locals, so
+`local0 + 1000` may well *be* `local1` — which is exactly why `TestByrefComparison.fs`'s
+"an unbounded cursor on a local root is refused" exists. A naive distinct-container rule would
+answer `false` there and silently regress a deliberate refusal into a possibly-wrong answer. One-
+past-the-end `PeByteRange` byrefs have the same shape.
+
+So the deferred result must carry the extent information — `mayLeaveRootExtent` already computes
+it in `ManagedPointerSource.fs` — and the distinct-container inference must be gated on both sides
+being in-extent. Note this does *not* affect `AreSameProjectionCrossesArrayElement`: array element
+roots already resolve to one canonical `ByteStorageIdentity.Array arr` with `arrayBytePosition`
+offsets, so that pair is an *equal*-container comparison and never reaches this arm. The gating
+matters for roots that stay distinct after canonicalisation — locals, arguments, statics, PE ranges.
 
 **Correctness oracle**: the four guests #916 parks — `AreSameExplicitLayoutOverlappingFields.cs`,
 `AreSameHeapFieldsOverlappingExplicitLayout.cs`, `AreSameFirstFieldVersusReinterpretedWhole.cs`,
@@ -396,7 +426,7 @@ stage a guest.
   which fall out of the inversion alone (see the Stage 4 table).
 
   Whether that falsifies the plan is a judgement call, and worth stating plainly rather than
-  burying: four guests is a modest return for a 27-call-site inversion. Two things argue it is
+  burying: four guests is a modest return for an inversion. Two things argue it is
   still worth doing. First, the alternative to deciding these shapes is not "answer them cheaply
   elsewhere" — it is leaving four known-divergent behaviours permanently refused, since
   `ceqNormalised` at slot 32 provably cannot see the layout and no smaller change reaches it.
@@ -406,10 +436,11 @@ stage a guest.
   `Unsafe.AreSame(ref s.X, ref s.Y)` on an ordinary sequential struct — no explicit layout, no
   reinterpretation — is refused today. The shape is not exotic; the *corpus* is.
 
-  What would genuinely falsify it: if the inversion's 27 call sites turn out not to be mechanical —
-  if `Decided | NeedsByteLocation` cannot be threaded without restructuring the handlers. That is
-  cheap to test on two or three sites before committing to all 27, and should be the first thing
-  Stage 4 does.
+  And the recount above cuts the other way on cost: six call sites plus two direct callers is a
+  small change, so the return does not need to be large to justify it. What would genuinely
+  falsify it is if `Decided | NeedsByteLocation` cannot be threaded without restructuring the
+  handlers — cheap to test on two sites before committing, and still the first thing Stage 4
+  should do.
 - **If Stage 3′ finds cross-field aliasing is unreachable in practice**, Stage 4's distinct-container
   rule needs no guard and Stage 3′ collapses to a documentation note. **Resolved: it is reachable**,
   and the tree records it as measured on both runtimes — see the merged `tryDecideResiduals` and
