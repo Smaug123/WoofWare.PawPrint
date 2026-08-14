@@ -50,6 +50,7 @@
     <Compile Include="TestStructLayout.fs" />
     <Compile Include="TestMarshalLayout.fs" />
     <Compile Include="TestManagedHeap.fs" />
+    <Compile Include="TestStaticStorage.fs" />
     <Compile Include="TestEmptyArrayByrefWalks.fs" />
     <Compile Include="TestBinaryArithmetic.fs" />
     <Compile Include="TestNarrowByrefAccess.fs" />
@@ -60,6 +61,8 @@
     <Compile Include="TestNativeMemoryPool.fs" />
     <Compile Include="TestAbsoluteUnixPath.fs" />
     <Compile Include="TestUnixPath.fs" />
+    <Compile Include="TestVirtualFileSystem.fs" />
+    <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
     <Compile Include="TestRuntimeConfig.fs" />
     <Compile Include="TestDynamicCodeSupport.fs" />
     <Compile Include="TestSwitchIlOp.fs" />
@@ -87,6 +90,7 @@
     <Compile Include="TestManifestResources.fs" />
     <Compile Include="TestAssemblyNativeQCalls.fs" />
     <Compile Include="TestInternalAllocNoChecks.fs" />
+    <Compile Include="TestInternalAlloc.fs" />
     <Compile Include="TestNativeEnum.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
     <Compile Include="TestNativeGetDynamicMethod.fs" />

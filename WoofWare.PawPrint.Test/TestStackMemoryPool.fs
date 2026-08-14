@@ -420,3 +420,88 @@ module TestStackMemoryPool =
             StackMemoryPool.writeBytes block 0 [| 1uy ; 2uy ; 3uy ; 4uy |] pool |> ignore
         )
         |> ignore
+
+    [<Test>]
+    let ``writeCell evicts the overlay bytes it covers`` () : unit =
+        // The eviction in `writeCell` is invisible for as long as the new cell survives:
+        // reads consult cells before the byte overlay, so a covering cell shadows a stale
+        // byte underneath it whatever its value. To observe eviction at all, the covering
+        // cell has to be removed again without the replacement covering the stale offset —
+        // which is what the one-byte cell below does, since a cell is evicted wholesale on
+        // any intersection.
+        //
+        // `writeCell evicts overlapping cells and bytes` above does not cover this: its
+        // `tryReadCell block 4 |> shouldEqual None` holds whether or not the overlay byte at
+        // 4 was evicted, because an overlay byte is never reported as a cell.
+        let block, pool = allocateZeroInitialized 8 StackMemoryPool.empty
+
+        let pool = StackMemoryPool.writeBytes block 1 [| 0xAAuy |] pool
+
+        let pool =
+            StackMemoryPool.writeCell block 0 (CliType.Numeric (CliNumericType.Int32 0x11223344)) pool
+
+        // Evicts the Int32 cell wholesale (it intersects offset 0), but covers only byte 0,
+        // so byte 1 is now backed by neither a cell nor — if eviction worked — the overlay.
+        let pool =
+            StackMemoryPool.writeCell block 0 (CliType.Numeric (CliNumericType.UInt8 0x55uy)) pool
+
+        // Zero from the block's zero-initialisation. Without the eviction, 0xAA resurfaces.
+        StackMemoryPool.readBytes block 1 1 pool |> shouldEqual [| 0uy |]
+
+    /// Cells are confined to aligned four-byte slots so that a new cell either replaces an
+    /// existing one exactly or does not touch it. Partially overlapping cells are evicted
+    /// *wholesale*, which loses the bytes of the old cell outside the new one — correct
+    /// behaviour, but not last-write-wins, so a byte-level model could not describe it.
+    type private MemOp =
+        | WriteCell of slot : int * value : int
+        | WriteRawBytes of offset : int * bytes : byte[]
+
+    let private blockLength : int = 16
+
+    let private genMemOp : Gen<MemOp> =
+        let genCell =
+            gen {
+                let! slot = Gen.choose (0, (blockLength / 4) - 1)
+                let! value = ArbMap.defaults |> ArbMap.generate<int>
+                return MemOp.WriteCell (slot, value)
+            }
+
+        let genBytes =
+            gen {
+                let! offset = Gen.choose (0, blockLength - 1)
+                let! count = Gen.choose (1, blockLength - offset)
+                let! bytes = Gen.arrayOfLength count (ArbMap.defaults |> ArbMap.generate<byte>)
+                return MemOp.WriteRawBytes (offset, bytes)
+            }
+
+        Gen.oneof [ genCell ; genBytes ]
+
+    [<Test>]
+    let ``Mixed cell and byte writes read back as a last-write-wins byte array`` () : unit =
+        let property (ops : MemOp list) : unit =
+            let pool =
+                (snd (allocateZeroInitialized blockLength StackMemoryPool.empty), ops)
+                ||> List.fold (fun pool op ->
+                    let block = StackMemoryBlockId 0
+
+                    match op with
+                    | MemOp.WriteCell (slot, value) ->
+                        StackMemoryPool.writeCell block (slot * 4) (CliType.Numeric (CliNumericType.Int32 value)) pool
+                    | MemOp.WriteRawBytes (offset, bytes) -> StackMemoryPool.writeBytes block offset bytes pool
+                )
+
+            // The model encodes with `BitConverter` rather than with the interpreter's own
+            // `CliType` byte helpers, so it is an independent oracle for the layout and not
+            // merely a restatement of it.
+            let expected : byte[] = Array.zeroCreate blockLength
+
+            for op in ops do
+                match op with
+                | MemOp.WriteCell (slot, value) ->
+                    System.Array.Copy (System.BitConverter.GetBytes value, 0, expected, slot * 4, 4)
+                | MemOp.WriteRawBytes (offset, bytes) -> System.Array.Copy (bytes, 0, expected, offset, bytes.Length)
+
+            StackMemoryPool.readBytes (StackMemoryBlockId 0) 0 blockLength pool
+            |> shouldEqual expected
+
+        Check.One (config, Prop.forAll (Arb.fromGen (Gen.listOf genMemOp)) property)

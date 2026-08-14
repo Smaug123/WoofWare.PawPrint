@@ -85,6 +85,27 @@ module FileName =
         | Ok name -> name
         | Error error -> failwith $"%s{context}: %s{describe error} (got %s{candidate})"
 
+    /// Re-check the invariant of a value that may not have come from `parse`.
+    /// Returns it unchanged if it is sound, and fails loudly naming `context`
+    /// if it is not.
+    ///
+    /// Only for boundaries that accept a `FileName` from outside the library.
+    /// The only value this can reject is `Unchecked.defaultof` / C# `default`,
+    /// whose payload is null; catching it turns a name no parsed path could
+    /// ever produce into an error at the point it enters the model, rather than
+    /// a directory entry that `checkInvariants` happily calls sound. Interior
+    /// consumers must *not* call this: re-validating a proof everywhere is
+    /// precisely what the type exists to avoid.
+    let assertValid (context : string) (name : FileName) : FileName =
+        match name with
+        | FileName raw ->
+
+        match parse raw with
+        | Ok _ -> name
+        | Error error ->
+            failwith
+                $"%s{context}: %s{describe error}. A FileName that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; construct one with FileName.parse instead."
+
     /// The name as the NUL-free byte string a Unix kernel would hand back from
     /// `readdir`. Without a terminator; callers that need a C string append
     /// the NUL themselves.
