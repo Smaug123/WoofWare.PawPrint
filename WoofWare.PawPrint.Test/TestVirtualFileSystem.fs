@@ -313,8 +313,131 @@ module TestVirtualFileSystem =
 
     [<Test>]
     let ``create refuses a limit no Unix has`` () : unit =
-        Assert.Throws<Exception> (fun () -> PathLimits.create 0 |> ignore<PathLimits>)
+        Assert.Throws<Exception> (fun () ->
+            PathLimits.create 0 4096 (NameLengthLimit.Utf8Bytes 255) |> ignore<PathLimits>
+        )
         |> ignore<Exception>
+
+        Assert.Throws<Exception> (fun () ->
+            PathLimits.create 40 4096 (NameLengthLimit.Utf8Bytes 0) |> ignore<PathLimits>
+        )
+        |> ignore<Exception>
+
+    [<Test>]
+    let ``create refuses its two int arguments the wrong way round`` () : unit =
+        // The one shape a type cannot catch: `MaxSymlinkTraversals` and
+        // `PathMaxBytes` are both `int`, adjacent, and a swap would give a
+        // kernel that permits 1024 traversals and a 32-byte PATH_MAX — wrong in
+        // a way no test of *resolution* would obviously report.
+        let exn =
+            Assert.Throws<Exception> (fun () ->
+                PathLimits.create 4096 40 (NameLengthLimit.Utf8Bytes 255) |> ignore<PathLimits>
+            )
+
+        exn.Message |> shouldContainText "wrong way round"
+
+    // ------------------------------------------------------------- NAME_MAX
+
+    let private darwinLimits : PathLimits =
+        SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.macOsArm64
+
+    let private linuxLimits : PathLimits =
+        SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
+
+    /// Resolve a bare name in the root of an otherwise empty filesystem, so the
+    /// only thing that can be reported is the name's own length.
+    let private resolveName (limits : PathLimits) (candidate : string) : Result<InodeNumber, UnixError> =
+        VirtualFileSystem.resolveExisting limits (rootOf emptyFs) SymlinkPolicy.Follow (path ("/" + candidate)) emptyFs
+
+    [<Test>]
+    let ``a name of 255 ASCII characters is permitted and 256 is not, on both`` () : unit =
+        // The row both platforms agree on. On its own it is satisfied by a
+        // byte-counting implementation *and* by a UTF-16-counting one, which is
+        // why the multi-byte test below exists.
+        for limits in [ darwinLimits ; linuxLimits ] do
+            resolveName limits (String.replicate 255 "a")
+            |> shouldEqual (Error UnixError.ENOENT)
+
+            resolveName limits (String.replicate 256 "a")
+            |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+    [<Test>]
+    let ``NAME_MAX counts bytes on Linux and UTF-16 code units on Darwin`` () : unit =
+        // The measured divergence, in the one case that separates the two
+        // implementations. "中" is three UTF-8 bytes and one UTF-16 unit, so 255
+        // of them are 765 bytes and 255 units:
+        //
+        //   * APFS permits it (probed: it resolves, and `creat` agrees), so a
+        //     byte-counting implementation is wrong on macOS;
+        //   * ext4 refuses it (probed), so a `String.Length` implementation is
+        //     wrong on Linux — and `String.Length` is exactly the UTF-16 count,
+        //     which is what makes that mistake invisible on a Mac.
+        //
+        // Both halves are needed. The Darwin half alone would also pass with no
+        // NAME_MAX enforcement at all.
+        let name255 = String.replicate 255 "中"
+
+        resolveName darwinLimits name255 |> shouldEqual (Error UnixError.ENOENT)
+        resolveName linuxLimits name255 |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+        // ...and the Linux boundary in its own unit: 85 of them are exactly 255
+        // bytes, 86 are 258.
+        resolveName linuxLimits (String.replicate 85 "中")
+        |> shouldEqual (Error UnixError.ENOENT)
+
+        resolveName linuxLimits (String.replicate 86 "中")
+        |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+    [<Test>]
+    let ``the Darwin boundary is UTF-16 code units, not characters`` () : unit =
+        // An emoji is one character but two UTF-16 units, so this separates
+        // "255 units" from "255 characters" — the latter would permit both.
+        // Probed on APFS: 127 emoji + one ASCII (255 units) resolves, and one
+        // more ASCII (256 units) is ENAMETOOLONG, though both are ~510 bytes.
+        let emoji = "\U0001F600"
+
+        resolveName darwinLimits (String.replicate 127 emoji + "a")
+        |> shouldEqual (Error UnixError.ENOENT)
+
+        resolveName darwinLimits (String.replicate 127 emoji + "aa")
+        |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+    [<Test>]
+    let ``an over-long component under a missing parent is ENOENT, not ENAMETOOLONG`` () : unit =
+        // Precedence, measured identically on both kernels: the walk fails at
+        // the missing parent before it ever reaches the long name. An
+        // implementation that screened the whole path for over-long components
+        // up front would report ENAMETOOLONG here.
+        let tooLong = String.replicate 300 "a"
+
+        VirtualFileSystem.resolveExisting
+            linuxLimits
+            (rootOf emptyFs)
+            SymlinkPolicy.Follow
+            (path ("/nxdir/" + tooLong))
+            emptyFs
+        |> shouldEqual (Error UnixError.ENOENT)
+
+        // ...whereas with the long component *first*, it is reached and refused.
+        VirtualFileSystem.resolveExisting
+            linuxLimits
+            (rootOf emptyFs)
+            SymlinkPolicy.Follow
+            (path ("/" + tooLong + "/x"))
+            emptyFs
+        |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+    [<Test>]
+    let ``NAME_MAX applies to a component spliced in from a symlink target`` () : unit =
+        // The reason this check lives in the walk rather than at the syscall
+        // boundary: the guest's own path is short, and the over-long component
+        // only exists after the link is expanded. A check on the incoming
+        // pathname could not see this at all.
+        let tooLong = String.replicate 300 "a"
+        let vfs = build [ mklink (rootOf emptyFs) "l" tooLong ]
+
+        VirtualFileSystem.resolveExisting linuxLimits (rootOf vfs) SymlinkPolicy.Follow (path "/l") vfs
+        |> shouldEqual (Error UnixError.ENAMETOOLONG)
 
     [<Test>]
     let ``a symlink chain exactly at a platform's limit resolves`` () : unit =

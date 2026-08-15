@@ -285,6 +285,22 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // Pins PATH_MAX and NAME_MAX end to end. Needs no seed: every
+                // path it passes is refused before anything is looked up, and
+                // the controls are ENOENT in an empty filesystem.
+                //
+                // Impure because the raw errno it reads is the *Linux* one, and
+                // ENAMETOOLONG is numbered differently on Darwin (63) — so this
+                // is a claim about the kernel PawPrint is configured to be, not
+                // a cross-runtime fact.
+                FileName = "PathLengthLimitsSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The motivating case for host-seeded AppContext: a BCL feature switch,
                 // declared in `runtimeconfig.json` and latched by `EventSource` on first
                 // read. Impure for the same reason as the case below.
@@ -431,6 +447,26 @@ module TestImpureCases =
                 // read (after the first execution). Registered with the dynamic-code switch
                 // overridden, like its siblings.
                 FileName = "DynamicMethodInitLocals.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `ldstr` whose operand names a `DynamicScope` entry rather than a UserString row,
+                // and the object identity that comes with it: interning by value, with the
+                // emitting guest's own string as the candidate on a miss, decided at first
+                // execution rather than at mint. Registered with the dynamic-code switch
+                // overridden, like its siblings. Every expectation was measured against the host's
+                // real .NET, which returns 0 for this program.
+                FileName = "DynamicMethodStringLiteral.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext =

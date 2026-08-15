@@ -400,6 +400,124 @@ module TestVirtualFileSystemAgainstHost =
             with _ ->
                 ()
 
+    /// Names whose treatment separates the three implementations anyone might
+    /// write: counting bytes, counting characters, and counting UTF-16 units.
+    ///
+    /// `中` is 3 bytes and 1 unit; an emoji is 4 bytes, 1 character and 2 units.
+    /// So 255 `中` distinguishes bytes from units, and 127 emoji + one ASCII
+    /// distinguishes characters from units.
+    let private nameProbes : (string * string) list =
+        [
+            "255 ASCII", String.replicate 255 "a"
+            "256 ASCII", String.replicate 256 "a"
+            "85 CJK (255 bytes)", String.replicate 85 "中"
+            "86 CJK (258 bytes)", String.replicate 86 "中"
+            "255 CJK (765 bytes, 255 units)", String.replicate 255 "中"
+            "127 emoji + 1 ASCII (255 units)", String.replicate 127 "\U0001F600" + "a"
+            "127 emoji + 2 ASCII (256 units)", String.replicate 127 "\U0001F600" + "aa"
+            "255 e-acute in NFC (510 bytes, 255 units)", String.replicate 255 "é"
+        ]
+
+    [<Test>]
+    let ``pathLimits agrees with this kernel about which names are too long`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // Compares the *predicate* rather than the number, which is the only
+        // thing `PathLimits` exposes — deliberately, since a number without its
+        // unit is meaningless. It is also the stronger comparison: it fails for
+        // any name the model and the kernel disagree about, whatever arithmetic
+        // produced the disagreement.
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-namemax-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+        let limits = limits ()
+
+        try
+            for label, candidate in nameProbes do
+                // ENAMETOOLONG rather than ENOENT is how the kernel says "too
+                // long"; nothing here exists, so ENOENT means "would have been
+                // allowed to exist".
+                let hostPermits =
+                    match access (Path.Combine (root, candidate), F_OK) with
+                    | 0 -> failwith $"%s{label}: the probe name unexpectedly exists"
+                    | _ ->
+
+                    match errno () with
+                    | e when e = hostErrno UnixError.ENOENT -> true
+                    | e when e = hostErrno UnixError.ENAMETOOLONG -> false
+                    | e -> failwith $"%s{label}: unexpected errno %d{e} from access(2)"
+
+                let modelPermits =
+                    PathLimits.nameWithinLimit limits (FileName.parseOrFail "name probe" candidate)
+
+                if hostPermits <> modelPermits then
+                    let verb (permits : bool) =
+                        if permits then "permits" else "refuses"
+
+                    failwith
+                        $"%s{label} (%d{Text.Encoding.UTF8.GetByteCount candidate} UTF-8 bytes, %d{candidate.Length} UTF-16 units): this kernel %s{verb hostPermits} it, but PathLimits for %O{hostPlatform ()} %s{verb modelPermits} it."
+        finally
+            try
+                Directory.Delete (root, true)
+            with _ ->
+                ()
+
+    /// The longest pathname argument this kernel accepts, in bytes. Every
+    /// component is "." so that `NAME_MAX` cannot be what refuses it, and the
+    /// path resolves whenever it is short enough.
+    let private hostPathMax (root : string) : int =
+        let accepts (n : int) : bool =
+            let filler = String.replicate ((n / 2) + 1) "./"
+            let candidate = filler.Substring (0, n)
+
+            match access (Path.Combine (root, candidate), F_OK) with
+            | 0 -> true
+            | _ -> errno () <> hostErrno UnixError.ENAMETOOLONG
+
+        // Bisect rather than scan: the two plausible answers are ~1024 apart on
+        // one platform and ~4096 on the other.
+        let mutable low = 1
+        let mutable high = 65536
+
+        while high - low > 1 do
+            let mid = low + (high - low) / 2
+
+            if accepts mid then low <- mid else high <- mid
+
+        low
+
+    [<Test>]
+    let ``pathLimits states this kernel's real PATH_MAX exactly`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-pathmax-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            // The probe passes an *absolute* path, so the root's own bytes count
+            // toward the limit; the usable length of a bare argument is that
+            // plus what the prefix consumed.
+            let prefix = root.Length + 1
+            let usable = hostPathMax root + prefix
+
+            let modelled = PathLimits.pathMaxBytes (limits ())
+
+            // PATH_MAX counts the NUL, so the longest usable argument is one
+            // less than it.
+            if usable + 1 <> modelled then
+                failwith
+                    $"This kernel accepts a pathname argument of %d{usable} bytes and refuses %d{usable + 1}, so its PATH_MAX is %d{usable + 1}; SimulatedUnixPlatform.pathLimits says %O{hostPlatform ()} has %d{modelled}."
+        finally
+            try
+                Directory.Delete (root, true)
+            with _ ->
+                ()
+
     // ------------------------------------------------------------------ the test
 
     [<Test>]

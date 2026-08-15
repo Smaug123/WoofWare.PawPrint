@@ -511,10 +511,17 @@ module SimulatedUnixPlatform =
     /// pins the value for whichever flavour it is running on against that
     /// kernel's *measured* behaviour, so macOS locally and Linux in CI each
     /// check one column.
+    /// `PATH_MAX` counts the NUL, so the usable lengths are one less: measured,
+    /// an argument of 1023 bytes resolves on macOS and 1024 does not, and 4095
+    /// and 4096 respectively on Linux.
+    ///
+    /// `NAME_MAX` is 255 on both — but *of different things*, which is why it
+    /// carries its unit. See `NameLengthLimit`: `中`×255 is 765 bytes and 255
+    /// UTF-16 units, and APFS resolves it where ext4 refuses it.
     let pathLimits (platform : SimulatedUnixPlatform) : PathLimits =
         match flavour platform with
-        | SimulatedUnixFlavour.Linux -> PathLimits.create 40
-        | SimulatedUnixFlavour.Darwin -> PathLimits.create 32
+        | SimulatedUnixFlavour.Linux -> PathLimits.create 40 4096 (NameLengthLimit.Utf8Bytes 255)
+        | SimulatedUnixFlavour.Darwin -> PathLimits.create 32 1024 (NameLengthLimit.Utf16CodeUnits 255)
 
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
 /// syscall-emulation state: process-wide last-error registers, the native

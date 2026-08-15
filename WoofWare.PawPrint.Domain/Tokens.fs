@@ -230,3 +230,55 @@ module SourcedStringToken =
 
     let ofInt (sourceAssembly : AssemblyName) (value : int32) : SourcedStringToken =
         StringToken.ofInt value |> make sourceAssembly
+
+/// The operand of an `ldstr`. A body read from a PE image draws it from its module's user-string
+/// heap; a body minted by `Reflection.Emit` draws it from the `DynamicScope` attached to the
+/// method's `DynamicResolver`, which is a `List&lt;object&gt;` and not metadata at all.
+///
+/// These are two cases rather than one because the token forms are *indistinguishable*: a scope
+/// operand is `index ||| 0x70000000`, which is a perfectly well-formed UserString token naming some
+/// unrelated real row in whatever module the dynamic method is scoped to. Nothing about the bits
+/// says which universe they belong to, so the universe has to be settled when the body is decoded
+/// and recorded here, rather than guessed at by whoever executes the instruction.
+[<RequireQualifiedAccess>]
+[<NoEquality ; NoComparison>]
+type StringOperand =
+    /// A token into the user-string heap of the assembly that owns it.
+    | FromMetadata of SourcedStringToken
+    /// Entry <paramref name="scopeIndex"/> of the emitting method's `DynamicScope`.
+    ///
+    /// The index and nothing else. Not the guest `string` object that holds the characters: an
+    /// `IlOp` is a description of code, and a heap address would tie it to one machine's heap. And
+    /// not the characters either, though they are known when the body is decoded — a guest can
+    /// mutate a `System.String`'s data in place through an unsafe pointer after emitting it, and
+    /// real .NET reads the contents at first JIT rather than at emit, so a value captured here
+    /// would be a snapshot that can go stale. Both the characters and the object are resolved when
+    /// the instruction executes, through the executing method's own
+    /// `MintedDynamicMethodBody.ScopeStrings`.
+    | FromDynamicScope of scopeIndex : int
+
+/// What a `DynamicScope` entry is, so far as decoding a method body needs to care.
+///
+/// `Unsupported` is not a decoding failure and must not be treated as one. `DynamicILGenerator`'s
+/// constructor calls `m_scope.GetTokenFor(methodSignature)` before any user code runs, so *every*
+/// dynamic method's scope has a signature blob at index 1 that no instruction ever names —
+/// `GetCallableMethod` reads it out directly. A reader that insisted every entry be of a supported
+/// kind would therefore refuse every dynamic method in existence. Entries are classified totally
+/// here and only rejected if an instruction actually names one.
+[<RequireQualifiedAccess>]
+type DynamicScopeEntry =
+    | String of string
+    /// Some entry kind whose resolution is not yet implemented — a signature blob, a
+    /// `RuntimeTypeHandle`, a nested `DynamicMethod`. The description names the kind, for the
+    /// refusal message an instruction naming it would produce.
+    | Unsupported of description : string
+
+/// Which token universe a method body's operands index into.
+[<RequireQualifiedAccess>]
+[<NoEquality ; NoComparison>]
+type IlTokenUniverse =
+    /// The metadata tables and heaps of the named assembly, as for any body read from a PE image.
+    | Metadata of AssemblyName
+    /// The `DynamicScope` of a method minted by `Reflection.Emit`, keyed by the index a token's low
+    /// 24 bits carry.
+    | DynamicScope of entries : Map<int, DynamicScopeEntry>

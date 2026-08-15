@@ -185,6 +185,20 @@ type UnixError =
     /// this is fully usable everywhere except `toRawErrno` — which fails loudly
     /// rather than picking a platform. See `RawErrnoPortability`.
     | ELOOP
+    /// `ENAMETOOLONG` — Filename too long.
+    ///
+    /// Reported for a pathname argument longer than the platform's `PATH_MAX`,
+    /// and for any single component longer than its `NAME_MAX`. Both limits, and
+    /// the *unit* the second is measured in, come from `PathLimits`: measured,
+    /// APFS permits 255 UTF-16 code units where ext4 permits 255 bytes, so the
+    /// same name can be legal on one and too long on the other.
+    ///
+    /// Platform-dependent like `ELOOP`, and for the same reason: raw 36 is
+    /// `ENAMETOOLONG` on Linux but `EINPROGRESS` on Darwin, and raw 63 is
+    /// `ENAMETOOLONG` on Darwin but `ENOSR` on Linux (both checked against the
+    /// two `<errno.h>`s), so either choice would rename a different error on the
+    /// other platform.
+    | ENAMETOOLONG
 
 /// The raw and PAL numbering of one `UnixError`.
 type UnixErrorNumbering =
@@ -255,6 +269,7 @@ module UnixError =
             UnixError.EDOM
             UnixError.ERANGE
             UnixError.ELOOP
+            UnixError.ENAMETOOLONG
         ]
 
     let private portable (pal : int) (raw : int) : UnixErrorNumbering =
@@ -312,6 +327,9 @@ module UnixError =
         // Raw 40 is EMSGSIZE on Darwin, and raw 62 is ETIME on Linux, so either
         // number would silently name a different error on the other platform.
         | UnixError.ELOOP -> platformDependent 0x10020 40 62
+        // Likewise: raw 36 is EINPROGRESS on Darwin, and raw 63 is ENOSR on
+        // Linux.
+        | UnixError.ENAMETOOLONG -> platformDependent 0x10025 36 63
 
     /// The `Interop.Error` value CoreLib switches on. Total: the PAL numbering is
     /// platform-independent, so it is always answerable.

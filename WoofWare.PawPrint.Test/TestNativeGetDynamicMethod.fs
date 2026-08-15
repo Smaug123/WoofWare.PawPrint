@@ -426,10 +426,29 @@ public static class Entry
             handle, definition
         | other -> failwith $"registry id %d{registryId} did not resolve to a dynamic method: %O{other}"
 
+    /// One entry of a synthetic `DynamicScope`. The scope is `List&lt;object?&gt; m_tokens`, so an
+    /// entry is any object at all; these are the shapes the tests need to put in one.
+    type private ScopeEntry =
+        /// A null slot. Index 0 of every real scope is one, because `DynamicScope` initialises
+        /// `m_tokens` as `new List&lt;object?&gt; { null }`.
+        | Null
+        /// A string, as `GetTokenFor(string literal)` adds for `Emit(OpCodes.Ldstr, string)`.
+        | Str of string
+        /// A `byte[]`, as `GetTokenFor(byte[] signature)` adds. Index 1 of every real scope is one:
+        /// `DynamicILGenerator`'s constructor puts the method's own signature there before any user
+        /// code runs, and no instruction ever names it.
+        | Blob of byte[]
+
     /// What a `DynamicResolver`'s fields will be made to say. Everything here is a field the
     /// resolver's constructor assigns and `DynamicMethodBody` reads back.
     type private ResolverBody =
         {
+            /// `m_scope.m_tokens`, in index order starting at 0.
+            Scope : ScopeEntry list
+            /// How many slots the backing `object[]` has beyond `Scope`'s length. `List&lt;T&gt;`
+            /// over-allocates, so a reader that walked `_items.Length` rather than `_size` would
+            /// see stale slots; a non-zero value here is what catches that.
+            ScopeSpareCapacity : int
             /// `m_code`: the baked IL.
             Code : byte[]
             /// `m_localSignature`: a LocalVarSig blob (0x07, then a count, then that many types).
@@ -443,8 +462,14 @@ public static class Entry
             ExceptionHeader : byte[] option
         }
 
+    /// The scope every `DynamicILGenerator` starts with and no body can avoid: the seeded null at
+    /// index 0, and at index 1 the method's own signature blob, which `GetCallableMethod` reads out
+    /// by field and no instruction ever names.
+    let private baselineScope =
+        [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy ; 0x00uy |] ]
+
     /// `ldarg.0; ldarg.0; add; ret` — the smallest body that computes something, and deliberately
-    /// operand-free, since a body carrying a token cannot yet be stored.
+    /// operand-free.
     let private doublingBody =
         {
             Code = [| 0x02uy ; 0x02uy ; 0x58uy ; 0x2Auy |]
@@ -453,13 +478,28 @@ public static class Entry
             InitLocals = true
             ExceptionCount = None
             ExceptionHeader = None
+            Scope = baselineScope
+            ScopeSpareCapacity = 0
+        }
+
+    /// A `ldstr` naming scope entry <paramref name="index"/>, then `ret`. The tag is the one
+    /// `GetTokenFor(string)` applies; `scopeToken` builds others.
+    let private ldstrBody (index : int) (scope : ScopeEntry list) =
+        { doublingBody with
+            Code =
+                Array.append
+                    (Array.append [| 0x72uy |] (System.BitConverter.GetBytes (index ||| 0x70000000)))
+                    [| 0x2Auy |]
+            Scope = scope
         }
 
     /// Allocate an instance of `typeInfo` with every instance field zeroed, as `newobj` would
-    /// before running a constructor.
-    let private allocateZeroed
+    /// before running a constructor. <paramref name="typeDefn"/> is how the type is spelled for
+    /// concretization, which differs from `typeInfo.Identity` alone for a generic instantiation.
+    let private allocateZeroedAs
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (typeDefn : TypeDefn)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
@@ -472,7 +512,7 @@ public static class Entry
                 baseClassTypes.Corelib.Name
                 ImmutableArray.Empty
                 ImmutableArray.Empty
-                (TypeDefn.FromDefinition (typeInfo.Identity, SignatureTypeKind.Class))
+                typeDefn
 
         let state, allFields =
             IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state handle
@@ -486,6 +526,114 @@ public static class Entry
                 allFields
 
         IlMachineState.allocateManagedObject handle fields state
+
+    let private allocateZeroed
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        allocateZeroedAs
+            loggerFactory
+            baseClassTypes
+            (TypeDefn.FromDefinition (typeInfo.Identity, SignatureTypeKind.Class))
+            typeInfo
+            state
+
+    /// A `System.Reflection.Emit.DynamicScope` whose `m_tokens` holds <paramref name="entries"/>.
+    ///
+    /// Built as a real `List&lt;object&gt;` — a genuine generic instantiation with a real `_items`
+    /// and `_size` — rather than as any object that happens to have fields of those names, because
+    /// the over-allocation `_size` exists to describe is exactly what one of the tests below is for.
+    let private allocateScope
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (entries : ScopeEntry list)
+        (spareCapacity : int)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let objectHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.PrimitiveType PrimitiveType.Object)
+
+        let state, objectHandle = objectHandle
+
+        let itemsAddr, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero objectHandle)
+                (fun () -> CliType.ObjectRef None)
+                (List.length entries + spareCapacity)
+                state
+
+        let state =
+            (state, List.indexed entries)
+            ||> List.fold (fun state (i, entry) ->
+                let value, state =
+                    match entry with
+                    | ScopeEntry.Null -> CliType.ObjectRef None, state
+                    | ScopeEntry.Str s ->
+                        let addr, state =
+                            IlMachineState.allocateManagedString loggerFactory baseClassTypes s state
+
+                        CliType.ObjectRef (Some addr), state
+                    | ScopeEntry.Blob bytes ->
+                        let addr, state = NativeCall.allocateManagedByteArray baseClassTypes bytes state
+
+                        CliType.ObjectRef (Some addr), state
+
+                IlMachineState.setArrayValue itemsAddr value i state
+            )
+
+        // Fill the spare capacity with something a reader that ignored `_size` would trip over: a
+        // string, so it would be classified as a resolvable entry rather than merely refused.
+        let state =
+            (state, [ List.length entries .. List.length entries + spareCapacity - 1 ])
+            ||> List.fold (fun state i ->
+                let addr, state =
+                    IlMachineState.allocateManagedString loggerFactory baseClassTypes $"stale-%d{i}" state
+
+                IlMachineState.setArrayValue itemsAddr (CliType.ObjectRef (Some addr)) i state
+            )
+
+        let listType =
+            requiredTopLevelType baseClassTypes.Corelib "System.Collections.Generic" "List`1"
+
+        let listDefn =
+            TypeDefn.GenericInstantiation (
+                TypeDefn.FromDefinition (listType.Identity, SignatureTypeKind.Class),
+                ImmutableArray.Create (TypeDefn.PrimitiveType PrimitiveType.Object)
+            )
+
+        let listAddr, state =
+            allocateZeroedAs loggerFactory baseClassTypes listDefn listType state
+
+        let state =
+            state
+            |> IlMachineState.setOwnInstanceField listAddr "_items" (CliType.ObjectRef (Some itemsAddr))
+            |> IlMachineState.setOwnInstanceField
+                listAddr
+                "_size"
+                (CliType.Numeric (CliNumericType.Int32 (List.length entries)))
+
+        let scopeAddr, state =
+            allocateZeroed
+                loggerFactory
+                baseClassTypes
+                (requiredTopLevelType baseClassTypes.Corelib "System.Reflection.Emit" "DynamicScope")
+                state
+
+        let state =
+            IlMachineState.setOwnInstanceField scopeAddr "m_tokens" (CliType.ObjectRef (Some listAddr)) state
+
+        scopeAddr, state
 
     /// A `System.Reflection.Emit.DynamicResolver` whose fields say what `body` says.
     ///
@@ -532,6 +680,12 @@ public static class Entry
                 "m_localSignature"
                 (CliType.ObjectRef (Some localSigAddr))
             |> IlMachineState.setOwnInstanceField resolverAddr "m_method" (CliType.ObjectRef (Some methodAddr))
+
+        let scopeAddr, state =
+            allocateScope loggerFactory baseClassTypes body.Scope body.ScopeSpareCapacity state
+
+        let state =
+            IlMachineState.setOwnInstanceField resolverAddr "m_scope" (CliType.ObjectRef (Some scopeAddr)) state
 
         let state =
             match body.ExceptionHeader with
@@ -921,14 +1075,29 @@ public static class Entry
         let _, definition = definitionBehindStub state stubAddress
         definition.GetLatchedLocalsInit () |> shouldEqual (Some false)
 
-    /// The refusal the whole design turns on. A `DynamicScope` operand is a well-formed
-    /// `MethodDef`/`TypeDef`/`String` token that names an unrelated *real* row, so a body carrying
-    /// one must not be stored: decoded as-is it would execute against whatever happened to sit at
-    /// that index in the scope assembly.
+    /// The `DynamicScope` index every `ldstr` in a body names.
     ///
-    /// `ldstr` and a metadata token are checked separately because they are separate `IlOp` cases
-    /// reached through separate decoder paths, and a `carriesToken` that had lost either arm would
-    /// still pass the other's test.
+    /// Projected rather than compared as a `StringOperand`, which has no equality: its other case
+    /// carries a `SourcedStringToken`, hence an `AssemblyName`, which has none. The projection is
+    /// not a workaround — an `ldstr` that had decoded to the metadata case here would fail this
+    /// rather than silently compare unequal.
+    let private scopeStringOperands (body : MintedDynamicMethodBody) : int list =
+        body.Instructions
+        |> List.map fst
+        |> List.choose (fun op ->
+            match op with
+            | IlOp.UnaryStringToken (UnaryStringTokenIlOp.Ldstr, operand) ->
+                match operand with
+                | StringOperand.FromDynamicScope index -> Some index
+                | StringOperand.FromMetadata token ->
+                    failwith $"expected a dynamic-scope operand, got the metadata token %O{token.Token}"
+            | _ -> None
+        )
+
+    /// The refusal the design still turns on for every operand kind but `ldstr`. A `DynamicScope`
+    /// operand is a well-formed `MethodDef`/`TypeDef` token that names an unrelated *real* row, so
+    /// a body carrying one must not be stored: decoded as-is it would execute against whatever
+    /// happened to sit at that index in the scope assembly.
     [<Test>]
     let ``a body carrying a metadata token is refused`` () : unit =
         // ldnull; call 0x06000001; ret
@@ -939,23 +1108,117 @@ public static class Entry
 
         let message = mintExpectingFailure body
 
-        message |> shouldContainText "token operand"
         message |> shouldContainText "DynamicScope"
-        // Names the offending instruction, so a failing run says which one to look at.
-        message |> shouldContainText "IL_0001"
+        message |> shouldContainText "0x06000001"
 
+    /// The scope entry an `ldstr` names becomes the operand's value.
     [<Test>]
-    let ``a body carrying a string token is refused`` () : unit =
-        // ldstr 0x70000001; pop; ret
+    let ``an ldstr resolves against the DynamicScope`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let body =
+            ldstrBody 2 [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; ScopeEntry.Str "hello" ]
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let _, definition = definitionBehindStub state stubAddress
+
+        scopeStringOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
+
+    /// The finding that forces demand-driven resolution: `DynamicILGenerator`'s constructor puts the
+    /// method's own signature blob in the scope before any user code runs, and nothing ever names
+    /// it. A reader that required every entry to be resolvable would refuse *every* dynamic method,
+    /// including this one, whose body is nothing but `ldstr; ret`.
+    [<Test>]
+    let ``an unreferenced entry of an unsupported kind does not prevent minting`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let body =
+            ldstrBody
+                2
+                [
+                    ScopeEntry.Null
+                    // Exactly the shape `GetTokenFor(byte[] signature)` leaves at index 1.
+                    ScopeEntry.Blob [| 0x00uy ; 0x01uy ; 0x08uy ; 0x08uy |]
+                    ScopeEntry.Str "fine"
+                ]
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let _, definition = definitionBehindStub state stubAddress
+
+        scopeStringOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
+
+    /// `DynamicScope`'s indexer masks the tag off and never looks at it again
+    /// (`DynamicILGenerator.cs:976-987`), so a token tagged `MethodDef` whose low bits name a string
+    /// entry resolves happily on real .NET. Refusing it on the strength of its tag would reject a
+    /// program the real runtime runs — the *entry* is authoritative, not the tag.
+    [<Test>]
+    let ``the tag bits of a scope token are not consulted`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        // ldstr 0x06000002; ret -- a MethodDef tag over an index that holds a string.
         let body =
             { doublingBody with
-                Code = [| 0x72uy ; 0x01uy ; 0x00uy ; 0x00uy ; 0x70uy ; 0x26uy ; 0x2Auy |]
+                Code = [| 0x72uy ; 0x02uy ; 0x00uy ; 0x00uy ; 0x06uy ; 0x2Auy |]
+                Scope = [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; ScopeEntry.Str "tagged" ]
+            }
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let _, definition = definitionBehindStub state stubAddress
+
+        scopeStringOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
+
+    /// `List<T>` over-allocates, so `_items` is longer than the list. A reader that walked the
+    /// backing array rather than `_size` would see slots holding whatever was last there — here,
+    /// strings, so they would be classified as perfectly good entries rather than merely refused.
+    [<Test>]
+    let ``scope entries past _size are not read`` () : unit =
+        let body =
+            { ldstrBody 3 [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; ScopeEntry.Str "real" ] with
+                ScopeSpareCapacity = 4
             }
 
         let message = mintExpectingFailure body
 
-        message |> shouldContainText "token operand"
-        message |> shouldContainText "IL_0000"
+        message |> shouldContainText "does not exist"
+        message |> shouldContainText "entry 3"
+
+    [<Test>]
+    let ``an ldstr naming an entry of an unsupported kind is refused`` () : unit =
+        let body =
+            ldstrBody 1 [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; ScopeEntry.Str "unused" ]
+
+        let message = mintExpectingFailure body
+
+        message |> shouldContainText "entry 1"
+        message |> shouldContainText "System.Byte"
+        message |> shouldContainText "rather than a string"
+
+    /// Index 0 is the `null` `DynamicScope` seeds `m_tokens` with. Distinguishable in the message
+    /// from "no such entry", because the two mean different things about the emitted IL.
+    [<Test>]
+    let ``an ldstr naming the scope's seeded null is refused`` () : unit =
+        let body =
+            ldstrBody 0 [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; ScopeEntry.Str "unused" ]
+
+        let message = mintExpectingFailure body
+
+        message |> shouldContainText "entry 0"
+        message |> shouldContainText "null"
+
+    [<Test>]
+    let ``an ldstr naming a nonexistent entry is refused`` () : unit =
+        let body = ldstrBody 7 baselineScope
+
+        let message = mintExpectingFailure body
+
+        message |> shouldContainText "entry 7"
+        message |> shouldContainText "does not exist"
 
     /// A `catch` clause's type arrives as a `DynamicScope` index in `ClassTokenOrFilterOffset`,
     /// which `ExceptionRegion.Catch` has nowhere to put; so clauses are refused as a body, rather

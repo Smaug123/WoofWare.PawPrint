@@ -53,9 +53,9 @@ module internal DynamicMethodExecution =
         // Only read the guest's field if the answer is not already fixed. Not an optimisation:
         // once latched, the resolver is no longer consulted at all, so a method whose resolver had
         // somehow gone is still executable on its second invocation, exactly as a JITted one is.
-        let localsInit, methodHandles =
+        let localsInit, state =
             match definition.GetLatchedLocalsInit () with
-            | Some latched -> latched, state.MethodHandles
+            | Some latched -> latched, state
             | None ->
                 let resolver =
                     definition.GetResolver ()
@@ -66,11 +66,14 @@ module internal DynamicMethodExecution =
 
                 let observed = DynamicMethodBody.readInitLocals operation state resolver
 
-                MethodHandleRegistry.latchInitLocals handle observed state.MethodHandles
+                let localsInit, methodHandles =
+                    MethodHandleRegistry.latchInitLocals handle observed state.MethodHandles
 
-        let state =
-            { state with
-                MethodHandles = methodHandles
-            }
+                let state =
+                    { state with
+                        MethodHandles = methodHandles
+                    }
+
+                localsInit, state
 
         ExecutionConcretization.concretizeDynamicMethod loggerFactory baseClassTypes operation handle localsInit state
