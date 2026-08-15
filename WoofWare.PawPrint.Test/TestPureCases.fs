@@ -87,6 +87,18 @@ module TestPureCases =
             SeedEntry.File (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
 
         [
+            "FileMetadataSeeded.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    name "d", SeedEntry.Directory (Map.ofList [ name "g", file "nested" ])
+                    name "lf", SeedEntry.Symlink (target "f")
+                    name "ld", SeedEntry.Symlink (target "d")
+                    name "dang", SeedEntry.Symlink (target "nx")
+                    // A leading dot, which is the whole of what "hidden" means
+                    // on Unix.
+                    name ".hidden", file "x"
+                ]
             "FileExistsSeeded.cs",
             Map.ofList
                 [
