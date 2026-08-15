@@ -81,6 +81,20 @@ module internal UnaryMetadataArrayOps =
                 state, DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies elementDefn
 
         if elementIsByRefLike then
+            // The exception *type* is reproduced; its message and `TypeName` are not. CoreCLR's
+            // message is "Could not create array type 'System.Span`1[System.Int32][]' from assembly
+            // 'System.Private.CoreLib, Version=…, PublicKeyToken=…' because the element type is
+            // ByRef-like", and `TypeName` is that same mangled array-type name (both measured).
+            // Reproducing them means a CLR-mangled type-name formatter *and* the ability to set
+            // `_className`, which the runtime-synthesised-exception channel cannot do — it calls a
+            // parameterless constructor and then writes `_message` and `_HResult` only.
+            //
+            // Setting the message alone would be worse than leaving both: `.Message` would name the
+            // type while `.TypeName` stayed null, which is the disagreement `Intrinsics.fs` declines
+            // to create for `ArgumentException._paramName` (lines 1908-1910, 3325-3326), and which
+            // `ScopeEntryLookup.PastEnd` records for the same reason. Whether that channel should
+            // grow structured-field support at all is a question for its own change.
+            //
             // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
