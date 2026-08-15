@@ -44,9 +44,12 @@ type DeclaredTypeFacts =
         /// would imply; `None` for the overwhelming majority of types, whose demand is derived.
         /// See `DeclaredTypeFacts.nominalAlignment`.
         NominalAlignment : int option
-        /// Which field-placement algorithm governs the type, as `TypeLayoutKind.applied` reports
-        /// it — i.e. after the correction that a reference type declaring `Auto` is laid out
-        /// sequentially by PawPrint today (issue #994).
+        /// Which field-placement algorithm the type's metadata declares, before the promotion
+        /// rule that can move a `Sequential` type onto the auto-layout path
+        /// (`CliValueType.AutoLayoutGoverns`). Reference types report their declared kind just as
+        /// value types do: PawPrint used to suppress declared `Auto` for them, because it laid a
+        /// whole base chain out in one pass and would have sorted inherited fields in among the
+        /// derived type's own, but layout is per-level now (issue #994) so the suppression is gone.
         LayoutKind : TypeLayoutKind
         /// The `ClassLayout` table's `Pack`/`Size` for the type, which only `Sequential` and
         /// `Explicit` placement read.
@@ -108,7 +111,7 @@ module DeclaredTypeFacts =
             IsValueType = isValueType
             IsEnum = DumpedAssembly.isEnum bct assemblies ti
             NominalAlignment = nominalAlignment bct ti
-            LayoutKind = TypeLayoutKind.applied isValueType ti.TypeAttributes
+            LayoutKind = TypeLayoutKind.ofTypeAttributes ti.TypeAttributes
             Layout = ti.Layout
             CharSet = CharSetMetadata.ofTypeAttributes ti.TypeAttributes
         }
