@@ -437,19 +437,25 @@ module IlMachineRuntimeMetadata =
             failwith
                 $"resolveBaseRuntimeTypeHandleTarget: refused for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}: TypeDescs have no MethodTable in CoreCLR"
 
-    /// Collect ALL instance fields from the entire type hierarchy for a given ConcreteTypeHandle,
-    /// walking from base to derived (base class fields appear first in the returned list).
-    let rec collectAllInstanceFields
+    /// Collect the whole base chain as layout levels, base first: each entry carries the fields
+    /// *that* type declares, together with the facts that govern how they are placed.
+    ///
+    /// The chain rather than a flat list is what makes layout faithful. CoreCLR lays each type out
+    /// separately, starting a derived type's own fields at the parent's instance size
+    /// (`HandleAutoLayout`, methodtablebuilder.cpp:8283-8296), and the per-level `Pack`, declared
+    /// kind and declared `Size` all feed that -- none of which survives flattening (issue #994).
+    let rec collectInstanceFieldChain
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (concreteType : ConcreteTypeHandle)
-        : IlMachineState * CliField list
+        : IlMachineState * TypeLayoutLevel list
         =
         let ct =
             AllConcreteTypes.lookup concreteType state.ConcreteTypes
             |> Option.defaultWith (fun () ->
-                failwith $"collectAllInstanceFields: ConcreteTypeHandle %O{concreteType} not found in AllConcreteTypes"
+                failwith
+                    $"collectInstanceFieldChain: ConcreteTypeHandle %O{concreteType} not found in AllConcreteTypes"
             )
 
         let assy = state._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName
@@ -501,17 +507,69 @@ module IlMachineRuntimeMetadata =
                     (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
                     typeInfo.InlineArrayLength)
 
+        // `hasNonTrivialParent` (methodtablebuilder.cpp:8132) treats a type deriving directly from
+        // `System.Object` or `System.ValueType` as having no parent at all. Marked rather than
+        // dropped, so that the chain still describes `System.Object` itself.
+        //
+        // `System.Enum` is deliberately absent: it is a *reference* type deriving from `ValueType`
+        // and declaring no instance fields, so CoreCLR treats it as an ordinary zero-sized parent
+        // -- which is exactly why an enum's `value__` still lands at offset 0.
+        let isTrivialParent =
+            ct.Identity = baseClassTypes.Object.Identity
+            || ct.Identity = baseClassTypes.ValueType.Identity
+
+        let level : TypeLayoutLevel =
+            {
+                Declared = concreteType
+                Facts = DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies typeInfo
+                OwnFields = ownFields
+                IsTrivialParent = isTrivialParent
+            }
+
         // Recurse into base type
         let state, baseHandle =
             resolveBaseConcreteType loggerFactory baseClassTypes state concreteType
 
         match baseHandle with
-        | None -> state, ownFields
+        | None -> state, [ level ]
         | Some parentHandle ->
-            let state, baseFields =
-                collectAllInstanceFields loggerFactory baseClassTypes state parentHandle
+            let state, baseLevels =
+                collectInstanceFieldChain loggerFactory baseClassTypes state parentHandle
 
-            state, baseFields @ ownFields
+            state, baseLevels @ [ level ]
+
+    /// The whole chain's fields as one list, base first. For callers that want to know *which*
+    /// fields an object has rather than where they sit; anything laying storage out wants
+    /// `collectInstanceFieldChain`, because the flat list cannot say where one type's fields end.
+    let collectAllInstanceFields
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (concreteType : ConcreteTypeHandle)
+        : IlMachineState * CliField list
+        =
+        let state, chain =
+            collectInstanceFieldChain loggerFactory baseClassTypes state concreteType
+
+        state, chain |> List.collect _.OwnFields
+
+    /// Build the field-block storage for a heap instance of `concreteType`: its whole base chain,
+    /// laid out per-declaring-type.
+    ///
+    /// The one way to build an object's storage. Every allocation site used to pair
+    /// `collectAllInstanceFields` with `CliValueType.OfFields` itself, which meant six copies of
+    /// the same two lines and six chances to forget the chain.
+    let buildInstanceStorage
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (concreteType : ConcreteTypeHandle)
+        : IlMachineState * CliValueType
+        =
+        let state, chain =
+            collectInstanceFieldChain loggerFactory baseClassTypes state concreteType
+
+        state, CliValueType.OfFieldChain baseClassTypes state.ConcreteTypes concreteType chain
 
     /// Allocate a zeroed heap instance of <paramref name="concreteType"/> and return its address.
     /// No constructor runs, and — deliberately — no class initialiser either: callers that need
@@ -519,8 +577,9 @@ module IlMachineRuntimeMetadata =
     ///
     /// For a value type this is the *boxed* representation, structurally identical to what
     /// `Box` writes for `default(T)`: both route the type's own non-static fields through
-    /// `InlineArrayStorage.expand` and the same `CliValueType.OfFields`, and the base-chain walk
-    /// contributes nothing for a value type (`ValueType`/`Object` declare no instance fields).
+    /// `InlineArrayStorage.expand` and the same layout pass, and the base chain contributes
+    /// nothing for a value type -- `ValueType` and `Object` declare no instance fields, and both
+    /// are `IsTrivialParent`, so a struct's chain is one level starting at offset 0.
     /// `TestBoxedAllocationParity` pins that parity.
     let allocateUninitialisedInstance
         (loggerFactory : ILoggerFactory)
@@ -529,28 +588,8 @@ module IlMachineRuntimeMetadata =
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
         =
-        let ct =
-            AllConcreteTypes.lookup concreteType state.ConcreteTypes
-            |> Option.defaultWith (fun () ->
-                failwith
-                    $"allocateUninitialisedInstance: ConcreteTypeHandle %O{concreteType} not found in AllConcreteTypes"
-            )
-
-        let typeInfo =
-            state._LoadedAssemblies
-                .ByDefinitionName(ct.Identity.AssemblyFullName)
-                .TypeDefs.[ct.Identity.TypeDefinition.Get]
-
-        let state, allFields =
-            collectAllInstanceFields loggerFactory baseClassTypes state concreteType
-
-        let fields =
-            CliValueType.OfFields
-                baseClassTypes
-                state.ConcreteTypes
-                concreteType
-                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies typeInfo)
-                allFields
+        let state, fields =
+            buildInstanceStorage loggerFactory baseClassTypes state concreteType
 
         IlMachineThreadState.allocateManagedObject concreteType fields state
 
@@ -1192,16 +1231,8 @@ module IlMachineRuntimeMetadata =
                 ImmutableArray.Empty
                 ImmutableArray.Empty
 
-        let state, allFields =
-            collectAllInstanceFields loggerFactory baseClassTypes state threadTypeHandle
-
-        let fields =
-            CliValueType.OfFields
-                baseClassTypes
-                state.ConcreteTypes
-                threadTypeHandle
-                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies threadTypeInfo)
-                allFields
+        let state, fields =
+            buildInstanceStorage loggerFactory baseClassTypes state threadTypeHandle
 
         let addr, state =
             IlMachineThreadState.allocateManagedObject threadTypeHandle fields state
@@ -1321,16 +1352,8 @@ module IlMachineRuntimeMetadata =
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (tieTypeInfo.Identity, stk))
 
-        let state, allFields =
-            collectAllInstanceFields loggerFactory baseClassTypes state tieHandle
-
-        let fields =
-            CliValueType.OfFields
-                baseClassTypes
-                state.ConcreteTypes
-                tieHandle
-                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies tieTypeInfo)
-                allFields
+        let state, fields =
+            buildInstanceStorage loggerFactory baseClassTypes state tieHandle
 
         let addr, state = IlMachineThreadState.allocateManagedObject tieHandle fields state
 
@@ -1402,16 +1425,8 @@ module IlMachineRuntimeMetadata =
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (tieTypeInfo.Identity, stk))
 
-        let state, allFields =
-            collectAllInstanceFields loggerFactory baseClassTypes state tieHandle
-
-        let fields =
-            CliValueType.OfFields
-                baseClassTypes
-                state.ConcreteTypes
-                tieHandle
-                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies tieTypeInfo)
-                allFields
+        let state, fields =
+            buildInstanceStorage loggerFactory baseClassTypes state tieHandle
 
         let addr, state = IlMachineThreadState.allocateManagedObject tieHandle fields state
 

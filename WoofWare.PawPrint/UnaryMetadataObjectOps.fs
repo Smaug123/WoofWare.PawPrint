@@ -370,16 +370,8 @@ module internal UnaryMetadataObjectOps =
             WhatWeDid.Executed
         else
 
-        let state, allFields =
-            IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state declaringTypeHandle
-
-        let fields =
-            CliValueType.OfFields
-                baseClassTypes
-                state.ConcreteTypes
-                declaringTypeHandle
-                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies ctorType)
-                allFields
+        let state, fields =
+            IlMachineState.buildInstanceStorage loggerFactory baseClassTypes state declaringTypeHandle
 
         // Note: this is a bit unorthodox for value types, which *aren't* heap-allocated.
         // We'll perform their construction on the heap, though, to keep the interface
