@@ -244,13 +244,20 @@ class Program
         Marshal.SetLastSystemError(0);
         if (PRead(new IntPtr(4242), buf, 5, -1) != -1) return 1;
         if (Marshal.GetLastSystemError() != 9) return 2;      // EBADF
-        // ...and an unseekable one likewise: fd 1 is a pipe.
+        // ...and an unseekable one likewise. fd 0 rather than fd 1: stdin is the *read* end
+        // of its pipe, so it fails only the seekability test. fd 1 is a write end, which
+        // Darwin rejects as unreadable before it gets that far -- see the sibling test.
         Marshal.SetLastSystemError(0);
-        if (PRead(new IntPtr(1), buf, 5, -1) != -1) return 3;
+        if (PRead(new IntPtr(0), buf, 5, -1) != -1) return 3;
         // ESPIPE is 29 on *both* platforms -- it sits in the portable 1-34 band, unlike
         // EAGAIN, which is the one errno the two Unixes transpose (11 against 35). So the
         // divergence being pinned here is purely the check *order*, not the numbering.
         if (Marshal.GetLastSystemError() != 29) return 4;
+        // The write end under Darwin: unreadable beats unseekable, so EBADF -- and it still
+        // beats the negative offset, which is the ordering this test is about.
+        Marshal.SetLastSystemError(0);
+        if (PRead(new IntPtr(1), buf, 5, -1) != -1) return 9;
+        if (Marshal.GetLastSystemError() != 9) return 10;
         // A negative offset on a good descriptor is still EINVAL...
         Marshal.SetLastSystemError(0);
         if (PRead(f, buf, 5, -1) != -1) return 5;
@@ -306,3 +313,35 @@ class Program
 
             runOn darwin "PReadDarwinOrdinary.cs" source |> exitCodeOf |> shouldEqual 0
             run "PReadLinuxOrdinary.cs" source |> exitCodeOf |> shouldEqual 0
+
+        /// A standard stream fails two tests at once for stdout and stderr — neither seekable nor
+        /// open for reading — and the platforms break that tie differently. Measured
+        /// (scratchpad/preaddir.c): the write end of a pipe is ESPIPE on Linux and EBADF on
+        /// Darwin, while a *seekable* write-only descriptor is EBADF on both, so the divergence is
+        /// about the tie rather than about readability generally.
+        [<Test>]
+        let ``an output stream is ESPIPE under Linux and EBADF under Darwin`` () : unit =
+            let source =
+                guest
+                    """
+        // fd 0 is the read end: unseekable but readable, so ESPIPE on both.
+        Marshal.SetLastSystemError(0);
+        if (PRead(new IntPtr(0), buf, 5, 0) != -1) return 1;
+        if (Marshal.GetLastSystemError() != 29) return 2;
+        // fds 1 and 2 are write ends: unseekable *and* unreadable.
+        Marshal.SetLastSystemError(0);
+        if (PRead(new IntPtr(1), buf, 5, 0) != -1) return 3;
+        int outErrno = Marshal.GetLastSystemError();
+        Marshal.SetLastSystemError(0);
+        if (PRead(new IntPtr(2), buf, 5, 0) != -1) return 4;
+        int errErrno = Marshal.GetLastSystemError();
+        // stdout and stderr must agree with each other whatever the platform says.
+        if (outErrno != errErrno) return 5;
+        // The exit code carries the errno so the caller can assert the platform's answer.
+        return outErrno;
+"""
+
+            // Linux lets unseekability win, so all three streams answer ESPIPE.
+            run "PReadStreamLinux.cs" source |> exitCodeOf |> shouldEqual 29
+            // Darwin lets unreadability win for the two write ends.
+            runOn darwin "PReadStreamDarwin.cs" source |> exitCodeOf |> shouldEqual 9

@@ -1638,9 +1638,23 @@ module NativeSystemNative =
 
             match FileDescriptorRegistry.tryFindObject fd state.Kernel.FileDescriptors with
             | None -> fail UnixError.EBADF
-            | Some (OpenFileObject.StandardStream _) ->
+            | Some (OpenFileObject.StandardStream role) ->
                 // `pread` needs a seekable object, and PawPrint models the
-                // standard streams as pipes. ESPIPE on both platforms.
+                // standard streams as pipes — stdin the read end, stdout and
+                // stderr write ends (which is why `SystemNative_Write` to fd 0
+                // is EBADF). Such a descriptor fails two different tests at
+                // once for stdout and stderr: it is neither seekable nor open
+                // for reading. Measured, the platforms break that tie
+                // differently:
+                //
+                //   descriptor                        Linux    Darwin
+                //   pipe read end (unseekable)        ESPIPE   ESPIPE
+                //   pipe write end (also unreadable)  ESPIPE   EBADF
+                //   regular file O_WRONLY (seekable)  EBADF    EBADF
+                //
+                // So Linux lets unseekability win for a pipe while Darwin lets
+                // unreadability win; the third row is the control showing this
+                // is about the tie rather than about readability generally.
                 //
                 // Reachable from the BCL, and handled by it:
                 // `RandomAccess.ReadAtOffset` catches ESPIPE (and ENXIO), clears
@@ -1648,8 +1662,19 @@ module NativeSystemNative =
                 // `SystemNative_Read`. So a `FileStream` over a pipe gets one
                 // step further than it used to and then stops at that
                 // unimplemented handler, which is the honest outcome — the
-                // sequential read path is not this slice.
-                fail UnixError.ESPIPE
+                // sequential read path is not this slice. Note the Darwin answer
+                // for stdout/stderr does *not* get that retry, EBADF not being
+                // one of the errnos that clears the flag.
+                let unreadable =
+                    match role with
+                    | FileDescriptorRole.StandardInput -> false
+                    | FileDescriptorRole.StandardOutput
+                    | FileDescriptorRole.StandardError -> true
+
+                match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+                | SimulatedUnixFlavour.Darwin when unreadable -> fail UnixError.EBADF
+                | SimulatedUnixFlavour.Darwin
+                | SimulatedUnixFlavour.Linux -> fail UnixError.ESPIPE
             | Some (OpenFileObject.File inode) ->
 
             // Darwin's turn to validate the offset: it has now resolved the
