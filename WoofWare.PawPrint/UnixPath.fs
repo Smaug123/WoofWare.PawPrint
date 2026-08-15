@@ -477,33 +477,3 @@ module UnixPath =
         | Error error ->
             failwith
                 $"UnixPath.ofAbsolute: %s{describe error} (got %s{rendered}). Every AbsoluteUnixPath satisfies UnixPath's invariant, so this value cannot have come from AbsoluteUnixPath.parse."
-
-    /// The path obtained by resolving `relative` against `basePath`: `relative`
-    /// itself when it is rooted, and otherwise `basePath`'s components followed
-    /// by `relative`'s.
-    ///
-    /// This is *lexical* concatenation, not resolution — no "." or ".."
-    /// component is interpreted, and no symlink is followed.
-    ///
-    /// Note this is **not** what the resolution walk does to splice a symbolic
-    /// link's target, despite the shape: `PathCursor.splice` joins the target to
-    /// the *unconsumed remainder* of the buffer, keeping the separator run the
-    /// kernel would keep. This joins two whole paths with exactly one separator
-    /// between them, which is what a caller composing paths wants. Do not
-    /// substitute one for the other.
-    let concat (basePath : UnixPath) (relative : UnixPath) : UnixPath =
-        if isRooted relative then
-            relative
-        elif basePath.Raw.Length = 0 || relative.Raw.Length = 0 then
-            // Either half being empty leaves the other unchanged, separator and
-            // all: "a/" ++ "" is "a/", not "a".
-            if relative.Raw.Length = 0 then basePath else relative
-        else
-
-        // A separator between the two halves absorbs any that trailed the base,
-        // so exactly one survives: "a/" ++ "b" is "a/b", and so is "a//" ++ "b".
-        let trimmed = basePath.Raw.TrimEnd UnixPathText.separator
-
-        {
-            Raw = trimmed + string UnixPathText.separator + relative.Raw
-        }
