@@ -104,6 +104,15 @@ module Corelib =
         let arrayTypeMismatchException =
             findCorelibType corelib "System" "ArrayTypeMismatchException"
 
+        let invalidProgramException =
+            findCorelibType corelib "System" "InvalidProgramException"
+
+        let badImageFormatException =
+            findCorelibType corelib "System" "BadImageFormatException"
+
+        let argumentOutOfRangeException =
+            findCorelibType corelib "System" "ArgumentOutOfRangeException"
+
         let missingFieldException = findCorelibType corelib "System" "MissingFieldException"
 
         let missingMethodException =
@@ -197,6 +206,9 @@ module Corelib =
             IndexOutOfRangeException = indexOutOfRangeException
             InvalidCastException = invalidCastException
             ArrayTypeMismatchException = arrayTypeMismatchException
+            InvalidProgramException = invalidProgramException
+            BadImageFormatException = badImageFormatException
+            ArgumentOutOfRangeException = argumentOutOfRangeException
             MissingFieldException = missingFieldException
             MissingMethodException = missingMethodException
             NotSupportedException = notSupportedException

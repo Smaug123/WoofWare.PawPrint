@@ -410,9 +410,14 @@ module IlFormatting =
     /// </summary>
     let formatIlOp (assembly : DumpedAssembly) (scope : GenericScope) (ilOp : IlOp) (offset : int) : string =
         match ilOp with
-        | IlOp.UnaryMetadataToken (op, token) ->
+        | IlOp.UnaryMetadataToken (op, MetadataOperand.FromMetadata token) ->
             let tokenStr = formatMetadataToken assembly scope token.Token
             $"    IL_%04X{offset}: %-20O{op} %s{tokenStr}"
+        | IlOp.UnaryMetadataToken (op, MetadataOperand.FromDynamicScope scopeIndex) ->
+            // As for `ldstr` below: the entry lives in the guest heap, which this formatter cannot
+            // reach, and is read when the instruction executes rather than when the body was
+            // decoded.
+            $"    IL_%04X{offset}: %-20O{op} DynamicScope[%d{scopeIndex}]"
         | IlOp.UnaryStringToken (op, StringOperand.FromMetadata token) ->
             let str = assembly.Strings token.Token |> escapeStringLiteral
             $"    IL_%04X{offset}: %-20O{op} \"%s{str}\""

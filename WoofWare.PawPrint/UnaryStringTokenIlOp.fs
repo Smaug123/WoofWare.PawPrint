@@ -34,41 +34,6 @@ open Microsoft.Extensions.Logging
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module internal UnaryStringTokenIlOp =
 
-    /// <summary>
-    /// The guest <c>System.String</c> object that entry <paramref name="scopeIndex"/> of the
-    /// executing method's <c>DynamicScope</c> holds.
-    /// </summary>
-    /// <remarks>
-    /// Reached through the executing method rather than through the operand, because the operand is
-    /// an <see cref="IlOp"/> and must not carry a heap address. A dynamic method's
-    /// <c>MethodInfo</c> is <c>Synthesised</c> with a <c>SynthesisedMethod.DynamicMethod</c> kind
-    /// carrying its <c>DynamicMethodHandle</c> — that handle is the method's identity precisely
-    /// because every dynamic method in a module shares one owner — so the body, and with it the
-    /// scope's string objects, is one registry lookup away.
-    /// </remarks>
-    let private scopeStringObject (scopeIndex : int) (state : IlMachineState) (thread : ThreadId) : ManagedHeapAddress =
-        let executing = state.ThreadState.[thread].MethodState.ExecutingMethod
-
-        let handle =
-            match executing.SynthesisedKind with
-            | Some (SynthesisedMethod.DynamicMethod handle) -> handle
-            | _ ->
-                failwith
-                    $"ldstr names DynamicScope entry %d{scopeIndex}, but the executing method %s{executing.Name} is not a dynamic method; only a body read off a DynamicResolver can carry a scope operand"
-
-        let definition =
-            MethodHandleRegistry.resolveDynamicMethod handle state.MethodHandles
-            |> Option.defaultWith (fun () ->
-                failwith $"ldstr: %O{handle} is executing but is not registered in the method-handle registry"
-            )
-
-        (definition.GetBody ()).ScopeStrings
-        |> Map.tryFind scopeIndex
-        |> Option.defaultWith (fun () ->
-            failwith
-                $"ldstr: %O{handle} names DynamicScope entry %d{scopeIndex}, but no string object was recorded for it; the decoder builds this operand only for entries the scope reader classified as strings, so the two have gone out of step"
-        )
-
     let execute
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -88,7 +53,7 @@ module internal UnaryStringTokenIlOp =
             // `AddInternedString` (line 431), where the metadata path beside it
             // (`AddStringLiteral(EEStringData*)`, line 396) allocates. So `ReferenceEquals` in the
             // guest can tell the two apart, and this is the difference between them.
-            let value, candidate =
+            let resolved =
                 match operand with
                 | StringOperand.FromMetadata sh ->
                     let value =
@@ -100,23 +65,80 @@ module internal UnaryStringTokenIlOp =
                             failwith
                                 $"Tried to resolve ldstr token %O{sh.Token} from assembly {sh.SourceAssembly.FullName}, but only had the following available: {available}"
 
-                    value, None
+                    Ok (value, None)
                 | StringOperand.FromDynamicScope scopeIndex ->
-                    let addr = scopeStringObject scopeIndex state thread
+                    // The decoder established at mint that this index held a string, so anything
+                    // else here means the guest rewrote `m_scope.m_tokens` afterwards, and real
+                    // .NET's answer is a *catchable* exception rather than a rejected method.
+                    //
+                    // Which exception is measured for `ldstr` specifically, and it is *not* the
+                    // type path's answer. `DynamicScope.GetString` is `this[token] as string`
+                    // (`DynamicILGenerator.cs:994`), so a null slot and a slot holding something
+                    // that is not a string are indistinguishable — both come back null — and the
+                    // JIT then embeds an indirection through a null handle. Measured, against an
+                    // untouched control that returns "abcd": a null slot, a `byte[]` and a
+                    // `RuntimeTypeHandle` all give NullReferenceException, and only an index
+                    // exactly at the list's length gives ArgumentOutOfRangeException.
+                    //
+                    // The literal has to be *used* to measure this at all: `ldstr; pop` is never
+                    // materialised by real .NET (the divergence documented above), so a probe that
+                    // discards the value reads every rewrite as a pass.
+                    match DynamicScopeOperand.entryObject "ldstr" scopeIndex state thread with
+                    | ScopeEntryLookup.PastEnd ->
+                        Error (
+                            baseClassTypes.ArgumentOutOfRangeException,
+                            $"DynamicScope entry %d{scopeIndex} is exactly at the end of the scope's token list"
+                        )
+                    | ScopeEntryLookup.Absent ->
+                        Error (
+                            baseClassTypes.NullReferenceException,
+                            $"DynamicScope entry %d{scopeIndex} is null, so it names no string"
+                        )
+                    | ScopeEntryLookup.Found addr ->
+
+                    match ManagedHeap.tryGetObjectConcreteType addr state.ManagedHeap with
+                    | None ->
+                        // A live slot pointing off the heap is interpreter corruption, not a state
+                        // any guest can arrange.
+                        failwith $"ldstr: DynamicScope entry %d{scopeIndex} is at %O{addr}, which is not on the heap"
+                    | Some concreteType when
+                        not (DynamicScopeOperand.isCorelibType baseClassTypes.String state concreteType)
+                        ->
+                        Error (
+                            baseClassTypes.NullReferenceException,
+                            $"DynamicScope entry %d{scopeIndex} is not a string"
+                        )
+                    | Some _ ->
 
                     // Read now, not when the method was minted. Real .NET reads the scope entry's
                     // characters when it materialises the literal, and a guest can mutate a
                     // `System.String`'s data in place through an unsafe pointer between emitting it
                     // and running the method; measured on real .NET, the mutated value is the one
                     // that gets interned.
-                    let value =
-                        ManagedHeap.getStringContents addr state.ManagedHeap
-                        |> Option.defaultWith (fun () ->
-                            failwith
-                                $"ldstr: the DynamicScope string at %O{addr} has no recorded contents; every string a guest can hand to ILGenerator.Emit was allocated through allocateManagedString, which records them"
-                        )
+                    match ManagedHeap.getStringContents addr state.ManagedHeap with
+                    | None ->
+                        // The entry *is* a `System.String` but has no recorded contents, which
+                        // breaches the invariant `allocateManagedString` maintains. Kept distinct
+                        // from "not a string" above, which is a state a guest can arrange.
+                        failwith
+                            $"ldstr: DynamicScope entry %d{scopeIndex} is a System.String at %O{addr} whose contents were never recorded; every string reaching the heap goes through allocateManagedString, which records them"
+                    | Some value -> Ok (value, Some addr)
 
-                    value, Some addr
+            match resolved with
+            | Error (exceptionType, why) ->
+                // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
+                // As in `UnaryMetadataIlOp`: `why` is a PawPrint diagnostic for the log, and the
+                // guest's exception carries CoreCLR's own message.
+                loggerFactory.CreateLogger("Ldstr").LogWarning ("ldstr refused a DynamicScope operand: {Reason}", why)
+
+                IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                    loggerFactory
+                    baseClassTypes
+                    exceptionType
+                    (DynamicScopeOperand.clrMessageFor baseClassTypes exceptionType)
+                    thread
+                    state
+            | Ok (value, candidate) ->
 
             let addressToLoad, state =
                 match state.InternedStrings.TryGetValue value with

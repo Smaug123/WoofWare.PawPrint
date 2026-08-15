@@ -41,23 +41,6 @@ type MintedDynamicMethodBody =
         Locations : Map<int, IlOp>
         LocalVars : ImmutableArray<TypeDefn> option
         ExceptionRegions : ImmutableArray<WoofWare.PawPrint.ExceptionRegion>
-        /// The guest `System.String` objects held by this method's `DynamicScope`, by scope index:
-        /// the ones a `StringOperand.FromDynamicScope` operand names.
-        ///
-        /// The object, not its characters, and both matter. Real .NET interns a dynamic method's
-        /// literals by value, and on a miss the object it interns is the one the emitting guest
-        /// handed to `ILGenerator.Emit` (`GlobalStringLiteralMap::GetInternedString` takes a
-        /// `STRINGREF*` and stores it via `AddInternedString`, `vm/stringliteralmap.cpp:403,431` —
-        /// unlike the metadata-literal path beside it, which allocates). So `ldstr` in an emitted
-        /// body can return the very object the guest passed in, and a `ReferenceEquals` in the
-        /// guest can see it. The *characters* are then read from that object when the instruction
-        /// executes, because a guest can mutate a string's data in place after emitting it.
-        ///
-        /// Lives here rather than in the operand because an `IlOp` is a description of code and
-        /// must not be tied to one machine's heap. `UnaryStringTokenIlOp` reaches it through the
-        /// executing method's `SynthesisedMethod.DynamicMethod` handle. Not carried into
-        /// `MethodInstructions`, which is a Domain type and has no business holding an address.
-        ScopeStrings : Map<int, ManagedHeapAddress>
     }
 
 [<RequireQualifiedAccess>]
@@ -67,7 +50,6 @@ module MintedDynamicMethodBody =
         (instructions : (IlOp * int) list)
         (localVars : ImmutableArray<TypeDefn> option)
         (exceptionRegions : ImmutableArray<WoofWare.PawPrint.ExceptionRegion>)
-        (scopeStrings : Map<int, ManagedHeapAddress>)
         : MintedDynamicMethodBody
         =
         {
@@ -75,7 +57,6 @@ module MintedDynamicMethodBody =
             Locations = instructions |> List.map (fun (a, b) -> b, a) |> Map.ofList
             LocalVars = localVars
             ExceptionRegions = exceptionRegions
-            ScopeStrings = scopeStrings
         }
 
     /// Complete the body with the `initLocals` that was latched at first execution.
