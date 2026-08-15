@@ -1049,6 +1049,24 @@ module TestImpureCases =
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
+            {
+                // `Unsafe.ByteOffset` between byrefs more than 2^31 bytes apart, which is the
+                // guest-visible face of the projection walk's byte-offset accumulation.
+                //
+                // Impure not because the two runtimes disagree — they agree exactly, and the
+                // expected values were measured on real .NET — but because displacing a byref
+                // that far past a stack local is undefined behaviour, so the *oracle* is
+                // non-deterministic: measured, this guest died with an AccessViolationException
+                // roughly one run in ten on real .NET while never returning a different answer.
+                // A differential registration would be flaky for a reason unrelated to the code
+                // under test. The guest's own comment carries the measurement.
+                FileName = "UnsafeByteOffsetInt32Overflow.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
         ]
 
     let runTest (case : EndToEndTestCase) : unit =

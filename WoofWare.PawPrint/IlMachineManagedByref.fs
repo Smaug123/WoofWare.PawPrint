@@ -1180,11 +1180,28 @@ module IlMachineManagedByref =
     /// reaching here with it means a chain was built directly and got it
     /// wrong; this raises a descriptive `failwith` so the caller can decide
     /// whether to propagate the bug or degrade.
+    ///
+    /// The accumulator is `int64` because a byref's displacement from its root
+    /// is native-int arithmetic in the real runtime, and a chain's *total* is
+    /// not bounded by the `int` each individual `ByteOffset` step is stored in:
+    /// `Unsafe.AddByteOffset (ref s.B, Int32.MaxValue)` gives
+    /// `[Field B; ReinterpretAs byte; ByteOffset Int32.MaxValue]`, whose true
+    /// coordinate is 2147483648. An `int` accumulator wrapped that onto
+    /// `ref s.A` displaced by `Int32.MinValue` — two genuinely different
+    /// addresses on one coordinate (issue #993), which `Unsafe.ByteOffset`
+    /// then reported to the guest as a distance of zero.
+    ///
+    /// `int64` needs no overflow check of its own: every step is an `int32`, so
+    /// overflowing it would take ~2^32 projections in a single chain. Callers
+    /// that need an in-container `int` offset narrow at their own boundary,
+    /// where a coordinate that does not fit is outside every container PawPrint
+    /// can allocate and so is refused rather than truncated — see
+    /// `byteViewOffsetWithinInt32`.
     let internal walkProjectionByteOffset
         (templateFor : ConcreteType<ConcreteTypeHandle> -> CliType)
         (rootTemplate : unit -> CliType)
         (projs : ByrefProjection list)
-        : int
+        : int64
         =
         // Structural precondition, checked once up front rather than woven
         // through the fold: it is a property of the chain alone, and keeping
@@ -1199,18 +1216,58 @@ module IlMachineManagedByref =
 
         checkAnchored projs
 
-        let rec walk (templateThunk : unit -> CliType) (offset : int) (remaining : ByrefProjection list) : int =
+        let rec walk (templateThunk : unit -> CliType) (offset : int64) (remaining : ByrefProjection list) : int64 =
             match remaining with
             | [] -> offset
             | ByrefProjection.Field field :: rest ->
                 let template = templateThunk ()
                 let fieldOffset, _ = CliType.getFieldLayoutById field template
                 let fieldTemplate = CliType.getFieldById field template
-                walk (fun () -> fieldTemplate) (offset + fieldOffset) rest
+                walk (fun () -> fieldTemplate) (offset + int64<int> fieldOffset) rest
             | ByrefProjection.ReinterpretAs newReinTy :: rest -> walk (fun () -> templateFor newReinTy) offset rest
-            | ByrefProjection.ByteOffset n :: rest -> walk templateThunk (offset + n) rest
+            | ByrefProjection.ByteOffset n :: rest -> walk templateThunk (offset + int64<int> n) rest
 
-        walk rootTemplate 0 projs
+        walk rootTemplate 0L projs
+
+    /// Narrow a byte coordinate produced by `walkProjectionByteOffset` to the in-container `int`
+    /// offset the byte read/write paths index with.
+    ///
+    /// This is the boundary between two different questions. A *coordinate* is address arithmetic
+    /// and is 64-bit; an *access offset* names a byte inside one container, and no container
+    /// PawPrint can allocate is 2^31 bytes long. So a coordinate that does not fit an `int` is not
+    /// a narrowing problem to be solved, it is an access outside every container — refused here,
+    /// naming the chain, rather than truncated into a plausible-looking in-range offset.
+    let private byteViewOffsetWithinInt32 (projs : ByrefProjection list) (offset : int64) : int =
+        if offset < int64<int> Int32.MinValue || offset > int64<int> Int32.MaxValue then
+            failwith
+                $"byte-view access at byte coordinate %d{offset} in projection chain %A{projs} is more than 2^31 bytes from its root, which is outside any storage container PawPrint can allocate; refusing rather than truncating to an in-range offset"
+
+        int32<int64> offset
+
+    /// Combine a base offset within a container — a byte-only root's own offset, or the layout
+    /// offset of the field a chain starts at — with the coordinate peeled off its projection
+    /// chain.
+    ///
+    /// Both operands are `int` and each is separately in range, but their sum need not be — and
+    /// an `int32` addition here could wrap a coordinate that `byteViewOffsetWithinInt32` has just
+    /// refused back into a plausible in-container offset, which is exactly the failure that
+    /// narrowing was meant to prevent. So the sum is taken in `int64` and re-narrowed.
+    ///
+    /// Said plainly, because a reviewer should not have to guess how load-bearing this is:
+    /// **no test kills a mutation of this back to `rootByteOffset + viewByteOffset`**, and that
+    /// is not a coverage gap so much as a fact about the operands. The peel result is already
+    /// bounded by `int32`, and a root's own byte offset is bounded by the block or object it
+    /// indexes, so reaching the wrap would take a container of nearly 2^31 bytes. This exists so
+    /// that the *only* thing standing between a 64-bit coordinate and an in-container `int` is
+    /// one explicit check, rather than a check followed by an unchecked addition.
+    let private rootRelativeByteOffset
+        (projs : ByrefProjection list)
+        (containerBaseOffset : int)
+        (viewByteOffset : int)
+        : int
+        =
+        int64<int> containerBaseOffset + int64<int> viewByteOffset
+        |> byteViewOffsetWithinInt32 projs
 
     /// Split a projection chain at the first `ReinterpretAs` and collapse
     /// everything beyond that point into an accumulated byte offset. Once a
@@ -1235,6 +1292,15 @@ module IlMachineManagedByref =
     /// off a `Field` navigation, with no reinterpret to anchor it, is a
     /// construction-site invariant violation and is raised by the walk; see
     /// `walkProjectionByteOffset`.
+    ///
+    /// The `offset` is an `int`, and that narrowing from the walk's `int64`
+    /// coordinate is deliberate rather than incidental: this function serves
+    /// the byte read/write paths, which index *inside one container*, and no
+    /// container PawPrint can allocate is 2^31 bytes long. A chain whose
+    /// coordinate exceeds that is refused by `byteViewOffsetWithinInt32`, not
+    /// truncated. Callers wanting the coordinate itself — `StorageLocation`,
+    /// which compares two byrefs by arithmetic rather than dereferencing
+    /// either — call the walk directly and keep the `int64`.
     ///
     /// `baseClassTypes` is required only when the byte-view suffix navigates
     /// through a `Field` projection (Field layout is resolved against the
@@ -1281,6 +1347,7 @@ module IlMachineManagedByref =
 
             let totalOffset =
                 walkProjectionByteOffset templateFor (fun () -> templateFor firstReinTy) afterReinterpret
+                |> byteViewOffsetWithinInt32 projs
 
             ValueSome (structuralPrefix, totalOffset)
 
@@ -1329,9 +1396,19 @@ module IlMachineManagedByref =
             | ValueSome (prefixProjs, byteOffset) ->
                 match outerRoot, prefixProjs with
                 | ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset), [] ->
-                    readStackMemoryBytesAs state thread frame block (rootByteOffset + byteOffset) targetTemplate
+                    readStackMemoryBytesAs
+                        state
+                        thread
+                        frame
+                        block
+                        (rootRelativeByteOffset outerProjs rootByteOffset byteOffset)
+                        targetTemplate
                 | ByrefRoot.NativeMemoryByte (block, rootByteOffset), [] ->
-                    readNativeMemoryBytesAs state block (rootByteOffset + byteOffset) targetTemplate
+                    readNativeMemoryBytesAs
+                        state
+                        block
+                        (rootRelativeByteOffset outerProjs rootByteOffset byteOffset)
+                        targetTemplate
                 | ByrefRoot.ArrayElement (arr, index), [] -> readArrayBytesAs state arr index byteOffset targetTemplate
                 | ByrefRoot.PeByteRange peByteRange, [] ->
                     readPeByteRangeBytesAs state peByteRange byteOffset targetTemplate
@@ -2214,7 +2291,7 @@ module IlMachineManagedByref =
                 // non-byte-addressable payload).
                 match peelTrailingByteView baseClassTypes state projs with
                 | ValueSome ([], viewByteOffset) ->
-                    let byteOffset = rootByteOffset + viewByteOffset
+                    let byteOffset = rootRelativeByteOffset projs rootByteOffset viewByteOffset
 
                     match CliType.ByteAddressability newValue with
                     | CliByteAddressability.Rejected _ -> ValueSome (thread, frame, block, byteOffset)
@@ -2266,7 +2343,7 @@ module IlMachineManagedByref =
             | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, rootByteOffset), projs) ->
                 match peelTrailingByteView baseClassTypes state projs with
                 | ValueSome ([], viewByteOffset) ->
-                    let byteOffset = rootByteOffset + viewByteOffset
+                    let byteOffset = rootRelativeByteOffset projs rootByteOffset viewByteOffset
 
                     match CliType.ByteAddressability newValue with
                     | CliByteAddressability.Rejected _ -> ValueSome (block, byteOffset)
@@ -2335,7 +2412,12 @@ module IlMachineManagedByref =
                     // identity for object-reference and runtime-pointer cells.
                     let obj = ManagedHeap.get addr state.ManagedHeap
                     let fieldOffset, _ = CliValueType.GetFieldLayoutById field obj.Contents
-                    tryWriteHeapValueFieldPrecise state addr (fieldOffset + byteOffset) newValue
+
+                    tryWriteHeapValueFieldPrecise
+                        state
+                        addr
+                        (rootRelativeByteOffset projs fieldOffset byteOffset)
+                        newValue
                 | ValueSome (_ :: _, _)
                 | ValueNone -> None
             | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
@@ -2494,11 +2576,21 @@ module IlMachineManagedByref =
                     // above declines them so that the `Bytes` overlay
                     // representation is preserved for `stind.i1`-style partial
                     // updates).
-                    writeStackMemoryBytesAt state thread frame block (rootByteOffset + byteOffset) bytes
+                    writeStackMemoryBytesAt
+                        state
+                        thread
+                        frame
+                        block
+                        (rootRelativeByteOffset outerProjs rootByteOffset byteOffset)
+                        bytes
                 | ByrefRoot.NativeMemoryByte (block, rootByteOffset), [] ->
                     // Same reasoning as the StackMemoryByte case above, but
                     // routed through the global NativeMemoryPool.
-                    writeNativeMemoryBytesAt state block (rootByteOffset + byteOffset) bytes
+                    writeNativeMemoryBytesAt
+                        state
+                        block
+                        (rootRelativeByteOffset outerProjs rootByteOffset byteOffset)
+                        bytes
                 | ByrefRoot.ArrayElement (arr, index), [] -> writeArrayBytes state arr index byteOffset bytes
                 | ByrefRoot.StringCharAt (str, charIndex), [] -> writeStringBytes state str charIndex byteOffset bytes
                 | ByrefRoot.HeapValue addr, [] -> writeHeapValueBytes state addr byteOffset bytes
@@ -3304,7 +3396,7 @@ module IlMachineManagedByref =
         | [] -> ValueSome rootByteOffset
         | _ ->
             match peelTrailingByteView (Some baseClassTypes) state projs with
-            | ValueSome ([], viewByteOffset) -> ValueSome (rootByteOffset + viewByteOffset)
+            | ValueSome ([], viewByteOffset) -> ValueSome (rootRelativeByteOffset projs rootByteOffset viewByteOffset)
             | ValueSome _
             | ValueNone -> ValueNone
 

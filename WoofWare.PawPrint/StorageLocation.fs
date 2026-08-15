@@ -67,6 +67,13 @@ module internal StorageLocation =
     /// computed (missing template, unsupported projection shape, missing
     /// concrete type for a `ReinterpretAs` target, etc.); the caller
     /// degrades to the coarse `SharedStorageKey` path.
+    ///
+    /// The walk's coordinate is `int64` and is taken as-is. It is not an
+    /// access offset — nothing here dereferences either byref — so a
+    /// coordinate beyond `int32` is a perfectly good answer, and one that
+    /// `Unsafe.ByteOffset` reports to the guest. Narrowing it (as this used to)
+    /// wrapped `ref s.B` displaced by `Int32.MaxValue` onto `ref s.A`
+    /// displaced by `Int32.MinValue`: issue #993.
     let private tryProjectionByteOffset
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -80,7 +87,7 @@ module internal StorageLocation =
         let rootTemplateThunk () = rootTemplate state root
 
         try
-            Some (int64 (IlMachineManagedByref.walkProjectionByteOffset templateFor rootTemplateThunk projs))
+            Some (IlMachineManagedByref.walkProjectionByteOffset templateFor rootTemplateThunk projs)
         with _ ->
             None
 

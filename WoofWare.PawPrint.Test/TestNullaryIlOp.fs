@@ -1529,6 +1529,36 @@ module TestNullaryIlOp =
         runBinary NullaryIlOp.And (narrowed 6) (EvalStackValue.Int32 (Int32Source.Verbatim -1))
         |> shouldEqual (narrowed 6)
 
+    /// The in-block offset is folded in `int64`, so a chain of byte cursors totalling more than
+    /// `int32` produces the address it names rather than aborting on a limit the address model
+    /// does not have. A synthetic address is 64 bits wide; the `int` that each `ByteOffset` step
+    /// is stored in is a limit on the *step*, not on the total (issue #993).
+    ///
+    /// The chain is built directly because `appendProjection` coalesces adjacent `ByteOffset`s,
+    /// and its coalesce now refuses a total this size — which is the right answer *there*,
+    /// because a single `ByteOffset` genuinely cannot hold it.
+    [<Test>]
+    let ``a stable address folds several cursors without a 32-bit limit`` () : unit =
+        let byteConcreteType : ConcreteType<ConcreteTypeHandle> =
+            ConcreteType.makeFromIdentity
+                baseClassTypes.Byte.Identity
+                baseClassTypes.Byte.Namespace
+                baseClassTypes.Byte.Name
+                System.Collections.Immutable.ImmutableArray<ConcreteTypeHandle>.Empty
+
+        let cursors =
+            [ Int32.MaxValue ; Int32.MaxValue ; 2 ]
+            |> List.collect (fun n ->
+                [
+                    ByrefProjection.ReinterpretAs byteConcreteType
+                    ByrefProjection.ByteOffset n
+                ]
+            )
+
+        ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId 0, 6), cursors)
+        |> ManagedPointerSource.tryStableAddressBits
+        |> shouldEqual (Some 4294967302L)
+
     [<Test>]
     let ``a mask reaching past the guaranteed alignment is refused`` () : unit =
         // `malloc` promises 8-byte alignment and no more, so bit 3 is a question
