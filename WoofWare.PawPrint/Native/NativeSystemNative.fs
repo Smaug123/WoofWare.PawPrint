@@ -1723,6 +1723,26 @@ module NativeSystemNative =
                 |> Some
             else
 
+            // Only the *base* of the buffer is validated here, which is all
+            // `dereferenceablePointerArgument` can say. A guest that asks to
+            // read more bytes than its buffer holds — `pread(fd, stackalloc
+            // byte[1], 5, 0)` — therefore gets as far as the write and then
+            // fails inside `MemoryBlock.writeBytes`, naming the block rather
+            // than the syscall.
+            //
+            // Left as it is, deliberately. That is a property of the shared
+            // `writeBytesThrough` seam rather than of this handler: measured,
+            // `SystemNative_ReadLink` fails identically for a target longer than
+            // the buffer it was given, and `Stat`/`LStat`/`FStat` write through
+            // the same helper. Fixing it means giving that seam a "is this whole
+            // range writable" query, which has to understand every
+            // `ManagedPointerSource` shape — its own change, and one that should
+            // improve every caller at once rather than this one quietly.
+            //
+            // Nor is the behaviour wrong, exactly: the guest has overflowed its
+            // own buffer, which a real kernel services by corrupting whatever
+            // follows it. Detecting that is more useful than reproducing it.
+            // What is missing is a message that names the syscall.
             match dereferenceablePointerArgument operation "buffer" instruction.Arguments.[1] with
             | None -> fail UnixError.EFAULT
             | Some buffer ->
