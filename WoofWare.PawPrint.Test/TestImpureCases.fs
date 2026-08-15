@@ -305,6 +305,40 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The three parts of `SystemNative_ReadLink`'s contract the
+                // differential oracle cannot be asked about; the guest's own
+                // header says why each one is here rather than in the pure
+                // sibling `SystemNativeReadLink.cs`.
+                FileName = "ReadLinkRawSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        FileSystem =
+                            let name (s : string) = FileName.parseOrFail "test seed" s
+                            let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
+
+                            Map.ofList
+                                [
+                                    name "f",
+                                    SeedEntry.File (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                                    name "lf", SeedEntry.Symlink (target "f")
+                                    // U+00DF then 'x': three UTF-8 bytes,
+                                    // C3 9F 78, so that a one- or two-byte
+                                    // truncation lands *inside* the first
+                                    // character. That is the whole point of
+                                    // the seed — a handler measuring .NET
+                                    // characters rather than bytes agrees with
+                                    // a correct one on every ASCII target, and
+                                    // ASCII is all the oracle's seed validator
+                                    // permits.
+                                    name "mb", SeedEntry.Symlink (target "ßx")
+                                ]
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // Pins the emulated kernel's MAXSYMLINKS end to end, which is
                 // the one part of `pathLimits` that unit tests cannot reach:
                 // they call the resolver directly, so a `resolveGuestPath` that

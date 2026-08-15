@@ -1124,6 +1124,178 @@ module NativeSystemNative =
           [ ConcretePointer _ ; ConcretePointer fileStatusHandle ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             statLike ctx "SystemNative_LStat" SymlinkPolicy.NoFollowFinal fileStatusHandle state
+        | Some "SystemNative_ReadLink",
+          [ ConcretePointer _ ; ConcretePointer _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_ReadLink(const char* path, char* buffer,
+            // int32_t bufferSize)` (pal_io.c:1183): a `bufferSize <= 0` guard,
+            // then `readlink(2)` verbatim.
+            //
+            // Both pointers are matched loosely, as `Stat`'s are: CoreLib
+            // declares this `(ref byte, ref byte, int)` and a guest
+            // hand-rolling the P/Invoke writes `(byte*, byte*, int)`, which
+            // generate the same stub.
+            //
+            // **Truncation is not an error path.** `Interop.Sys.ReadLink`
+            // starts with a 256-byte `stackalloc` and doubles through
+            // `ArrayPool` while `result == buffer.Length`, so a short buffer is
+            // how the BCL *sizes* its allocation; a handler that refused to
+            // truncate would break `FileInfo.LinkTarget` for every target of
+            // 256 bytes or more. `SymlinkTarget.toUtf8` is already the bytes
+            // this hands back, and already documented as such.
+            //
+            // The order below is the C's, and every step of it is observable
+            // — `sourcesPure/SystemNativeReadLink.cs` passes inputs that two
+            // adjacent checks would reject differently, so the errno names
+            // which one ran first.
+            let operation = "SystemNative_ReadLink"
+            let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
+
+            /// Set errno and return -1, as the C does on every failure path.
+            let fail (error : UnixError) : NativeHandlerResult option =
+                // `toRawErrnoUnder` rather than `toRawErrno`, for the reason
+                // `statLike`'s twin gives: a resolution can fail with ELOOP,
+                // which has no platform-independent number.
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        LastSystemError = UnixError.toRawErrnoUnder numbering error
+                    }
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            if bufferSize <= 0 then
+                // The shim's own guard, before `readlink` is called at all —
+                // so this is EINVAL whatever the path is, including a path
+                // that addresses nothing. It is also the *only* reason this
+                // entry point is cross-platform here: measured, the raw
+                // syscall answers 0 on macOS and EINVAL on Linux for
+                // `bufsiz == 0`, and the guard means neither answer escapes.
+                //
+                // Note the C `assert`s `bufferSize >= 0` first, so a checked
+                // build would abort on a negative size rather than reach this;
+                // EINVAL is what a guest running against a retail runtime can
+                // observe, exactly as for `SystemNative_GetCwd`.
+                fail UnixError.EINVAL
+            else
+
+            // Read before anything else looks at it, because a real kernel
+            // copies the pathname in before it resolves anything: a path that
+            // addresses nothing is EFAULT whatever the buffer is.
+            match dereferenceablePointerArgument operation "path" instruction.Arguments.[0] with
+            | None -> fail UnixError.EFAULT
+            | Some pathPtr ->
+
+            let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
+
+            let bytes =
+                NativeCall.readNullTerminatedBytesWithin
+                    operation
+                    ctx.BaseClassTypes
+                    state
+                    pathPtr
+                    (PathLimits.pathMaxBytes limits)
+
+            match parseGuestPathBytes operation limits bytes with
+            | Error error -> fail error
+            | Ok path ->
+
+            // `NoFollowFinal` plus "and then it had better be a symlink" is
+            // the same composition `TestVirtualFileSystemAgainstHost`'s
+            // `modelOutcome` already checks against a real kernel over
+            // generated symlink trees, which is why it is composed here rather
+            // than extracted into `VirtualFileSystem`: the rule is verified
+            // where it lives, and this arm's own job is the wire format.
+            //
+            // `NoFollowFinal`, which is what makes this `readlink` rather than
+            // an expensive way of asking about the target: a final symlink is
+            // the thing being read, not something to step through. A trailing
+            // separator still overrides that — "lf/" demands that `lf` be a
+            // directory — and the resolver owns that rule, answering ENOTDIR.
+            match resolveGuestPath operation SymlinkPolicy.NoFollowFinal state.Kernel path with
+            | Error error -> fail error
+            | Ok inode ->
+
+            match VirtualFileSystem.tryGetContent inode state.Kernel.FileSystem with
+            | None ->
+                failwith
+                    $"%s{operation}: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
+            | Some (InodeContent.Directory _)
+            | Some (InodeContent.RegularFile _) ->
+                // Not a link. EINVAL rather than any other errno is
+                // load-bearing rather than cosmetic: `FileSystem.ResolveLinkTarget`
+                // (FileSystem.Unix.cs:679) answers *null* for EINVAL and
+                // rethrows every other errno as an exception, so this single
+                // choice is the difference between `File.ResolveLinkTarget`
+                // reporting "not a link" and it throwing.
+                //
+                // Decided here, before the output pointer is looked at, which
+                // is what a real kernel does — `vfs_readlink` refuses on the
+                // inode's operations before it copies anything out. Measured
+                // on the host: `readlink("f", (char*)8, 16)` is EINVAL, not
+                // EFAULT.
+                fail UnixError.EINVAL
+            | Some (InodeContent.Symlink target) ->
+
+            // The output pointer is only decoded here, on the path that
+            // actually writes through it.
+            match dereferenceablePointerArgument operation "buffer" instruction.Arguments.[1] with
+            | None -> fail UnixError.EFAULT
+            | Some buffer ->
+
+            let all = SymlinkTarget.toUtf8 target
+            let count = min all.Length bufferSize
+
+            // Truncated in *bytes*, not in characters: a symlink target is a
+            // byte string, and truncating a .NET string by `String.Length`
+            // would write two bytes where the caller allowed one for any
+            // non-ASCII target. `sourcesImpure/ReadLinkRawSeeded.cs` is the
+            // only test that can tell the two apart, because the differential
+            // oracle's seed validator permits only ASCII targets.
+            let written =
+                if count = all.Length then
+                    all
+                else
+                    ImmutableArray.CreateRange (Seq.truncate count all)
+
+            // **Known omission: the link's `atime` does not move**, though
+            // POSIX says a successful `readlink` marks it for update. This is
+            // deferred rather than overlooked, and it is not dead state: the
+            // virtual clock advances as the driver loop runs, so a guest that
+            // `LStat`s a link before and after reading it really could see the
+            // difference.
+            //
+            // It is deferred because it cannot be settled *here*. Whether the
+            // access time moves is a property of the mount, not of this
+            // syscall, and the two platforms modelled disagree: measured on
+            // macOS — lstat, sleep, readlink, lstat — `st_atime` does not
+            // move, while Linux's default `relatime` updates whenever `mtime`
+            // or `ctime` is at or after the old `atime`, or it is a day stale
+            // (`relatime_need_update`, fs/inode.c) — and a freshly seeded
+            // inode has all three equal, so the first read *would* move it.
+            // Deciding that inside one entry point would set mount semantics
+            // for every future read by accident, and would make `readlink` the
+            // only syscall obeying them.
+            //
+            // It would also be the first mutation of the emulated filesystem
+            // in the interpreter: the graph is built once from the seed
+            // (`EmulatedKernel.fs`) and no handler writes back
+            // `Kernel.FileSystem` today, so there is no write-back seam to
+            // reuse. Note the divergence is also not something the differential
+            // oracle can arbitrate, since the answer depends on which host ran
+            // it.
+            //
+            // No terminator, and errno left alone: `readlink` writes exactly
+            // the bytes it reports and reports success by a non-negative
+            // count, so a NUL here would corrupt the byte after a target that
+            // exactly fits.
+            writeBytesThrough ctx operation buffer written state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim count)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_SetErrNo",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
