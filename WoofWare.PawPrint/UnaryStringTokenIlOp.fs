@@ -68,16 +68,25 @@ module internal UnaryStringTokenIlOp =
                     Ok (value, None)
                 | StringOperand.FromDynamicScope scopeIndex ->
                     // The decoder established at mint that this index held a string, so anything
-                    // else here means the guest rewrote `m_scope.m_tokens` afterwards — nulled the
-                    // slot, truncated the list, or put something that is not a string there. Real
-                    // .NET rejects such a method at JIT with a *catchable*
-                    // `InvalidProgramException`, so this is a guest exception rather than an
-                    // interpreter failure.
+                    // else here means the guest rewrote `m_scope.m_tokens` afterwards. Real .NET
+                    // rejects such a method at JIT with a *catchable* exception, so these are guest
+                    // exceptions rather than interpreter failures — and which one is measured, by
+                    // rewriting the scope after `CreateDelegate`: a null slot is
+                    // InvalidProgramException, a slot holding something that is not a string is
+                    // BadImageFormatException, and an index exactly at the list's length is
+                    // ArgumentOutOfRangeException.
                     match DynamicScopeOperand.entryObject "ldstr" scopeIndex state thread with
-                    | None ->
-                        Error
-                            $"DynamicScope entry %d{scopeIndex} is null or beyond the end of the scope, so it names no string"
-                    | Some addr ->
+                    | ScopeEntryLookup.PastEnd ->
+                        Error (
+                            baseClassTypes.ArgumentOutOfRangeException,
+                            $"DynamicScope entry %d{scopeIndex} is exactly at the end of the scope's token list"
+                        )
+                    | ScopeEntryLookup.Absent ->
+                        Error (
+                            baseClassTypes.InvalidProgramException,
+                            $"DynamicScope entry %d{scopeIndex} is null, so it names no string"
+                        )
+                    | ScopeEntryLookup.Found addr ->
 
                     // Read now, not when the method was minted. Real .NET reads the scope entry's
                     // characters when it materialises the literal, and a guest can mutate a
@@ -85,16 +94,20 @@ module internal UnaryStringTokenIlOp =
                     // and running the method; measured on real .NET, the mutated value is the one
                     // that gets interned.
                     match ManagedHeap.getStringContents addr state.ManagedHeap with
-                    | None -> Error $"DynamicScope entry %d{scopeIndex} is not a string"
+                    | None ->
+                        Error (
+                            baseClassTypes.BadImageFormatException,
+                            $"DynamicScope entry %d{scopeIndex} is not a string"
+                        )
                     | Some value -> Ok (value, Some addr)
 
             match resolved with
-            | Error why ->
+            | Error (exceptionType, why) ->
                 // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
                 IlMachineStateExecution.raiseRuntimeExceptionWithMessage
                     loggerFactory
                     baseClassTypes
-                    baseClassTypes.InvalidProgramException
+                    exceptionType
                     (Some $"ldstr: %s{why}")
                     thread
                     state

@@ -62,7 +62,7 @@ module internal UnaryMetadataIlOp =
                 |> Result.map ResolvedMetadataOperand.ScopeType
 
         match resolved with
-        | Error why ->
+        | Error (exceptionType, why) ->
             // Measured on real .NET: an open generic definition, a bare generic parameter and an
             // open constructed type all make the method throw InvalidProgramException when it is
             // compiled, against a closed control that runs. `Emit` accepts all of them, because
@@ -77,7 +77,7 @@ module internal UnaryMetadataIlOp =
             IlMachineStateExecution.raiseRuntimeExceptionWithMessage
                 loggerFactory
                 baseClassTypes
-                baseClassTypes.InvalidProgramException
+                exceptionType
                 (Some $"%O{op}: %s{why}")
                 thread
                 state

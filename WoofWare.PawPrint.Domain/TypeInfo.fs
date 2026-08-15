@@ -349,6 +349,11 @@ type BaseClassTypes<'corelib> =
         /// among other things, when a type operand does not name a closed type, which is
         /// reachable from `Reflection.Emit` because `ILGenerator.Emit` accepts any `RuntimeType`.
         InvalidProgramException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// Reported by the JIT — not the BCL — when a token resolves to something of the wrong
+        /// shape ("Bad class token"). Reachable from `Reflection.Emit` by rewriting a
+        /// `DynamicScope` entry to a different kind after the method was minted.
+        BadImageFormatException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        ArgumentOutOfRangeException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingFieldException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingMethodException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         NotSupportedException : TypeInfo<GenericParamFromMetadata, TypeDefn>

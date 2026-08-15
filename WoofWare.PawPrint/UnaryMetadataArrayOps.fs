@@ -231,7 +231,7 @@ module internal UnaryMetadataArrayOps =
                             typeGenerics
                             metadataToken
 
-                    // `cliTypeZeroOf` minus the zero, which this path never used.
+                    // `cliTypeZeroOf` split into its two halves (IlMachineTypeResolution.fs:586-607).
                     let state = state.WithLoadedAssembly elementAssy
 
                     IlMachineState.concretizeType
@@ -242,6 +242,14 @@ module internal UnaryMetadataArrayOps =
                         typeGenerics
                         methodGenerics
                         elementType
+
+            // The zero itself is discarded — this path only wants the handle — but computing it is
+            // not: laying a type out reads its field types, which can bind assembly references
+            // nothing else in the run names, and `cliTypeZeroOfHandle` returns those bindings in the
+            // state. Dropping the call would drop the bindings, and would turn a type that cannot be
+            // laid out into a silent ArrayTypeMismatchException below instead of the failure it is.
+            let _zeroOfType, state =
+                IlMachineState.cliTypeZeroOfHandle state baseClassTypes tokenElementHandle
 
             if tokenElementHandle <> arrayElementHandle then
                 // Don't advance the PC: exception dispatch needs the faulting instruction's

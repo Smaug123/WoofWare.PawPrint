@@ -30,6 +30,21 @@ namespace WoofWare.PawPrint
 /// <c>UnaryStringTokenIlOp</c> already documents for <c>ldstr</c>, and deferred with it.
 /// </para>
 /// </remarks>
+/// <summary>
+/// What looking an index up in a live <c>DynamicScope</c> found, at the granularity the guest can
+/// tell apart. Every distinction here is measured on real .NET, by rewriting the scope through
+/// private reflection after <c>CreateDelegate</c> and before the first invocation.
+/// </summary>
+[<RequireQualifiedAccess>]
+type internal ScopeEntryLookup =
+    | Found of ManagedHeapAddress
+    /// The slot is null, or the index is past the end and so reads as null. Real .NET rejects the
+    /// method with <c>InvalidProgramException</c>.
+    | Absent
+    /// The index is exactly the list's length, which `DynamicScope`'s indexer lets through its own
+    /// bound check and then faults on. Real .NET surfaces <c>ArgumentOutOfRangeException</c>.
+    | PastEnd
+
 [<RequireQualifiedAccess>]
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module internal DynamicScopeOperand =
@@ -140,7 +155,7 @@ module internal DynamicScopeOperand =
         (scopeIndex : int)
         (state : IlMachineState)
         (thread : ThreadId)
-        : ManagedHeapAddress option
+        : ScopeEntryLookup
         =
         let executing = state.ThreadState.[thread].MethodState.ExecutingMethod
 
@@ -166,11 +181,27 @@ module internal DynamicScopeOperand =
 
         let items, size = tokenList operation state resolver
 
-        if scopeIndex < 0 || scopeIndex >= size then
-            None
+        // `DynamicScope`'s indexer is
+        //     if (token < 0 || token > m_tokens.Count) return null; return m_tokens[token];
+        // (`DynamicILGenerator.cs:976-987`), whose bound check is off by one against its own
+        // indexing. So an index *past* the end reads as null, and an index exactly *at* the end
+        // gets through the check and faults the list. Mirrored rather than tidied, because the
+        // difference is guest-visible: measured on real .NET, truncating the list so the operand
+        // index equals `Count` gives ArgumentOutOfRangeException where a larger index gives
+        // InvalidProgramException. This is the same "mirror the indexer, do not second-guess it"
+        // rule that makes the token's tag non-authoritative.
+        if scopeIndex = size then
+            ScopeEntryLookup.PastEnd
+        elif scopeIndex < 0 || scopeIndex > size then
+            ScopeEntryLookup.Absent
         else
+
+        match
             ManagedHeap.getArrayValue items scopeIndex state.ManagedHeap
             |> requireObject operation $"DynamicScope entry %d{scopeIndex}"
+        with
+        | None -> ScopeEntryLookup.Absent
+        | Some addr -> ScopeEntryLookup.Found addr
 
     /// True when <paramref name="handle"/> is the given corelib type, by identity rather than by
     /// displayed name: a guest can define its own `System.RuntimeTypeHandle`, and CoreCLR's own test
@@ -239,16 +270,33 @@ module internal DynamicScopeOperand =
         (scopeIndex : int)
         (state : IlMachineState)
         (thread : ThreadId)
-        : Result<ConcreteTypeHandle, string>
+        : Result<ConcreteTypeHandle, TypeInfo<GenericParamFromMetadata, TypeDefn> * string>
         =
+        // Which exception each refusal carries is measured, not chosen: rewrite a type slot after
+        // `CreateDelegate` and before the first invocation, and real .NET answers
+        // InvalidProgramException for a null slot, BadImageFormatException ("Bad class token") for a
+        // slot holding the wrong kind of thing -- including a `default(RuntimeTypeHandle)`, whose
+        // `m_type` is null -- and ArgumentOutOfRangeException for an index exactly at the list's
+        // length. All three are catchable, so a guest can tell them apart.
+        let badImage (why : string) =
+            Error (baseClassTypes.BadImageFormatException, why)
+
+        let invalidProgram (why : string) =
+            Error (baseClassTypes.InvalidProgramException, why)
+
         match entryObject operation scopeIndex state thread with
-        | None -> Error $"DynamicScope entry %d{scopeIndex} is null or beyond the end of the scope, so it names no type"
-        | Some entry ->
+        | ScopeEntryLookup.PastEnd ->
+            Error (
+                baseClassTypes.ArgumentOutOfRangeException,
+                $"DynamicScope entry %d{scopeIndex} is exactly at the end of the scope's token list"
+            )
+        | ScopeEntryLookup.Absent -> invalidProgram $"DynamicScope entry %d{scopeIndex} is null, so it names no type"
+        | ScopeEntryLookup.Found entry ->
 
         let boxed = ManagedHeap.get entry state.ManagedHeap
 
         if not (isCorelibType baseClassTypes.RuntimeTypeHandle state boxed.ConcreteType) then
-            Error $"DynamicScope entry %d{scopeIndex} is not a System.RuntimeTypeHandle"
+            badImage $"DynamicScope entry %d{scopeIndex} is not a System.RuntimeTypeHandle"
         else
 
         let mTypeField =
@@ -263,8 +311,10 @@ module internal DynamicScopeOperand =
                 Ok (runtimeTypeHandleTargetOfRuntimeType operation state runtimeType)
             | CliType.ObjectRef None ->
                 // `default(RuntimeTypeHandle)`. `Emit(OpCode, Type)` rejects a null `Type` and
-                // demands a `RuntimeType`, so this is reachable only by writing the scope directly.
-                Error $"DynamicScope entry %d{scopeIndex} is a RuntimeTypeHandle whose m_type is null"
+                // demands a `RuntimeType`, so this is reachable only by writing the scope directly —
+                // and measured to be BadImageFormatException rather than InvalidProgramException,
+                // because the token resolves to a null type handle rather than to nothing at all.
+                badImage $"DynamicScope entry %d{scopeIndex} is a RuntimeTypeHandle whose m_type is null"
             | other ->
                 failwith
                     $"%s{operation}: expected DynamicScope entry %d{scopeIndex}'s RuntimeTypeHandle.m_type to be a reference to a RuntimeType, got %O{other}"
@@ -272,8 +322,9 @@ module internal DynamicScopeOperand =
         match target with
         | Error e -> Error e
         | Ok (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _ as handle)) ->
-            Error $"DynamicScope entry %d{scopeIndex} names the byref type %O{handle}"
+            invalidProgram $"DynamicScope entry %d{scopeIndex} names the byref type %O{handle}"
         | Ok (RuntimeTypeHandleTarget.Closed handle) when isCorelibType baseClassTypes.Void state handle ->
-            Error $"DynamicScope entry %d{scopeIndex} names System.Void"
+            invalidProgram $"DynamicScope entry %d{scopeIndex} names System.Void"
         | Ok (RuntimeTypeHandleTarget.Closed handle) -> Ok handle
-        | Ok notClosed -> Error $"DynamicScope entry %d{scopeIndex} names %O{notClosed}, which is not a closed type"
+        | Ok notClosed ->
+            invalidProgram $"DynamicScope entry %d{scopeIndex} names %O{notClosed}, which is not a closed type"
