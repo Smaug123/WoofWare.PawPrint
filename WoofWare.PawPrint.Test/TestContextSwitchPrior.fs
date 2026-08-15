@@ -434,15 +434,21 @@ module TestContextSwitchPrior =
 
     [<Test>]
     let ``ofIlOp dispatches to unary-metadata classifier`` () : unit =
-        ContextSwitchPrior.ofIlOp (IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token))
+        ContextSwitchPrior.ofIlOp (
+            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, MetadataOperand.FromMetadata token)
+        )
         |> shouldEqual ContextSwitchPrior.AlwaysGuestVisible
 
-        ContextSwitchPrior.ofIlOp (IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Sizeof, token))
+        ContextSwitchPrior.ofIlOp (
+            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Sizeof, MetadataOperand.FromMetadata token)
+        )
         |> shouldEqual ContextSwitchPrior.InterpreterOnly
 
     [<Test>]
     let ``ofIlOp dispatches to unary-string classifier`` () : unit =
-        ContextSwitchPrior.ofIlOp (IlOp.UnaryStringToken (UnaryStringTokenIlOp.Ldstr, stringToken))
+        ContextSwitchPrior.ofIlOp (
+            IlOp.UnaryStringToken (UnaryStringTokenIlOp.Ldstr, StringOperand.FromMetadata stringToken)
+        )
         |> shouldEqual ContextSwitchPrior.InterpreterOnly
 
     [<Test>]

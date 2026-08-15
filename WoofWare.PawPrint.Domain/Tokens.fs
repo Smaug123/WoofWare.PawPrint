@@ -210,6 +210,32 @@ module SourcedMetadataToken =
     let ofInt (sourceAssembly : AssemblyName) (value : int32) : SourcedMetadataToken =
         MetadataToken.ofInt value |> make sourceAssembly
 
+/// The operand of an instruction that names a type, method or field. A body read from a PE image
+/// draws it from its module's metadata tables; a body minted by `Reflection.Emit` draws it from the
+/// `DynamicScope` attached to the method's `DynamicResolver`, which is a `List&lt;object&gt;` of
+/// already-resolved runtime handles and not metadata at all.
+///
+/// Two cases rather than one for the same reason `StringOperand` has two: the token forms are
+/// *indistinguishable*. A scope operand is `index ||| someTag`, which is a perfectly well-formed
+/// TypeDef/MethodDef/FieldDef token naming some unrelated real row in whatever module the dynamic
+/// method is scoped to, and `DynamicScope`'s own indexer masks the tag off and ignores it entirely
+/// (`DynamicILGenerator.cs:976-987`), so not even the tag is authoritative about what the entry is.
+/// The universe is therefore settled when the body is decoded and recorded here.
+[<RequireQualifiedAccess>]
+[<NoEquality ; NoComparison>]
+type MetadataOperand =
+    /// A token into the metadata tables of the assembly that owns it.
+    | FromMetadata of SourcedMetadataToken
+    /// Entry <paramref name="scopeIndex"/> of the emitting method's `DynamicScope`.
+    ///
+    /// The index and nothing else, as for `StringOperand.FromDynamicScope`: an `IlOp` is a
+    /// description of code, so it must not carry a heap address, and the entry's contents are read
+    /// when the instruction executes rather than when the body is decoded. That deferral is
+    /// measured, not stylistic — CoreCLR's `DynamicResolver.ResolveToken`
+    /// (`DynamicILGenerator.cs:772`) reads `m_scope[token]` at JIT, and a guest that replaces the
+    /// entry between minting the method and first invoking it sees the *new* type.
+    | FromDynamicScope of scopeIndex : int
+
 /// A string token operand together with the assembly whose string heap owns it.
 /// CLI string tokens are only meaningful relative to a module, so executable IL
 /// operands should carry this context rather than consulting ambient thread state.
@@ -230,3 +256,86 @@ module SourcedStringToken =
 
     let ofInt (sourceAssembly : AssemblyName) (value : int32) : SourcedStringToken =
         StringToken.ofInt value |> make sourceAssembly
+
+/// The operand of an `ldstr`. A body read from a PE image draws it from its module's user-string
+/// heap; a body minted by `Reflection.Emit` draws it from the `DynamicScope` attached to the
+/// method's `DynamicResolver`, which is a `List&lt;object&gt;` and not metadata at all.
+///
+/// These are two cases rather than one because the token forms are *indistinguishable*: a scope
+/// operand is `index ||| 0x70000000`, which is a perfectly well-formed UserString token naming some
+/// unrelated real row in whatever module the dynamic method is scoped to. Nothing about the bits
+/// says which universe they belong to, so the universe has to be settled when the body is decoded
+/// and recorded here, rather than guessed at by whoever executes the instruction.
+[<RequireQualifiedAccess>]
+[<NoEquality ; NoComparison>]
+type StringOperand =
+    /// A token into the user-string heap of the assembly that owns it.
+    | FromMetadata of SourcedStringToken
+    /// Entry <paramref name="scopeIndex"/> of the emitting method's `DynamicScope`.
+    ///
+    /// The index and nothing else. Not the guest `string` object that holds the characters: an
+    /// `IlOp` is a description of code, and a heap address would tie it to one machine's heap. And
+    /// not the characters either, though they are known when the body is decoded — a guest can
+    /// mutate a `System.String`'s data in place through an unsafe pointer after emitting it, and
+    /// real .NET reads the contents at first JIT rather than at emit, so a value captured here
+    /// would be a snapshot that can go stale. Both the characters and the object are resolved when
+    /// the instruction executes, by reading the entry out of the executing method's live
+    /// `DynamicScope` — nothing about it is captured when the method is minted, because a guest can
+    /// replace the whole slot as well as mutate what is in it.
+    | FromDynamicScope of scopeIndex : int
+
+/// What a `DynamicScope` entry is, so far as decoding a method body needs to care.
+///
+/// `Unsupported` is not a decoding failure and must not be treated as one. `DynamicILGenerator`'s
+/// constructor calls `m_scope.GetTokenFor(methodSignature)` before any user code runs, so *every*
+/// dynamic method's scope has a signature blob at index 1 that no instruction ever names —
+/// `GetCallableMethod` reads it out directly. A reader that insisted every entry be of a supported
+/// kind would therefore refuse every dynamic method in existence. Entries are classified totally
+/// here and only rejected if an instruction actually names one.
+[<RequireQualifiedAccess>]
+type DynamicScopeEntry =
+    | String of string
+    /// A boxed `System.RuntimeTypeHandle`, which is what `DynamicILGenerator.Emit(OpCode, Type)`
+    /// stores: `GetTokenFor(RuntimeType)` is `m_scope.GetTokenFor(rtType.TypeHandle)`
+    /// (`DynamicILGenerator.cs:496`).
+    ///
+    /// Carries no payload on purpose. Which type it names is read from the guest heap when the
+    /// instruction executes, not now — see `MetadataOperand.FromDynamicScope`.
+    | TypeHandle
+    /// A guest `System.Reflection.Emit.DynamicMethod`, which is what
+    /// `DynamicILGenerator.Emit(OpCode, MethodInfo)` stores when the operand is itself a dynamic
+    /// method: that overload has a dedicated branch for the case, and `GetTokenFor(DynamicMethod)`
+    /// appends the builder object rather than a handle (`DynamicILGenerator.cs:531-534`).
+    ///
+    /// Carries no payload, as `TypeHandle` does, and here the deferral is doing more than mirroring
+    /// CoreCLR. The method this entry names is identified by the object's `_methodHandle`, which is
+    /// null until the target is minted — so at the moment a body is decoded, a self-referential
+    /// entry names nothing at all. It is precisely because the read happens later that
+    /// `il.Emit(OpCodes.Call, dm)` inside `dm` works.
+    | DynamicMethod
+    /// CoreLib's `System.Reflection.Emit.VarArgMethod`, the wrapper `ILGenerator.EmitCall` stores
+    /// (`GetMemberRefToken`, `DynamicILGenerator.cs:396-443`) — *unconditionally*, whether or not
+    /// the caller passed any `optionalParameterTypes`, so it is what an ordinary
+    /// `EmitCall(OpCodes.Call, dm, null)` produces rather than an exotic vararg-only case.
+    ///
+    /// Payload-free for the same reason `DynamicMethod` is: the wrapper's `m_dynamicMethod` is
+    /// followed when the instruction runs. The wrapper's `m_signature` is deliberately *not* part of
+    /// the answer, matching `ResolveToken`, which ignores it for the dynamic case: a `DynamicMethod`
+    /// is always `CallingConventions.Standard` (its constructors reject anything else,
+    /// `DynamicMethod.cs:227`), so `GetMemberRefToken` would have thrown had a call site tried to
+    /// add optional parameters, and the signature is therefore always the callee's own.
+    | VarArgMethod
+    /// Some entry kind whose resolution is not yet implemented — a signature blob, a
+    /// `RuntimeMethodHandle`, a `GenericMethodInfo`. The description names the kind, for the
+    /// refusal message an instruction naming it would produce.
+    | Unsupported of description : string
+
+/// Which token universe a method body's operands index into.
+[<RequireQualifiedAccess>]
+[<NoEquality ; NoComparison>]
+type IlTokenUniverse =
+    /// The metadata tables and heaps of the named assembly, as for any body read from a PE image.
+    | Metadata of AssemblyName
+    /// The `DynamicScope` of a method minted by `Reflection.Emit`, keyed by the index a token's low
+    /// 24 bits carry.
+    | DynamicScope of entries : Map<int, DynamicScopeEntry>

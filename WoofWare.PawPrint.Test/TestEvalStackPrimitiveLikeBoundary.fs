@@ -55,7 +55,7 @@ module TestEvalStackPrimitiveLikeBoundary =
             MarshallingDescriptor = None
         }
         |> List.singleton
-        |> CliValueType.OfFields bct allCt declared Layout.Default CharSet.Ansi
+        |> SynthesisedLayoutKind.ofFields bct allCt declared Layout.Default CharSet.Ansi
 
     let private wrapSingleField
         (ti : TypeInfo<GenericParamFromMetadata, TypeDefn>)

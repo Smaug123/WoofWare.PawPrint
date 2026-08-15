@@ -468,21 +468,8 @@ module NativeCustomAttribute =
                         namedArgsSlot
                         (CliType.Numeric (CliNumericType.Int32 namedArgCount))
 
-                let state, allFields =
-                    IlMachineState.collectAllInstanceFields
-                        ctx.LoggerFactory
-                        ctx.BaseClassTypes
-                        state
-                        instantiatedHandle
-
-                let instanceFields =
-                    CliValueType.OfFields
-                        ctx.BaseClassTypes
-                        state.ConcreteTypes
-                        instantiatedHandle
-                        attrTypeInfo.Layout
-                        (CharSetMetadata.ofTypeAttributes attrTypeInfo.TypeAttributes)
-                        allFields
+                let state, instanceFields =
+                    IlMachineState.buildInstanceStorage ctx.LoggerFactory ctx.BaseClassTypes state instantiatedHandle
 
                 let instanceAddr, state =
                     IlMachineState.allocateManagedObject instantiatedHandle instanceFields state

@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+open System
+open System.Buffers.Binary
 open System.Collections.Immutable
 
 [<RequireQualifiedAccess>]
@@ -214,6 +216,359 @@ module NativeSystemNative =
 
         state
 
+    /// Turn the NUL-terminated bytes a guest passed as a pathname into a
+    /// `UnixPath`, applying the length rule a kernel applies at *its* boundary.
+    ///
+    /// Deliberately takes bytes rather than machine state, so the boundary — the
+    /// one part of the length rules that the resolver can never see — is
+    /// testable without a heap. `readGuestPathBytes` is the half that needs a
+    /// machine.
+    ///
+    /// The **order** of the three stages is load-bearing, not incidental:
+    ///
+    ///  1. **Length first.** `PATH_MAX` is enforced by `getname()`/`copyinstr`
+    ///     when the kernel copies the string in, before anything looks at what
+    ///     it says. So an over-long path that also contains an invalid UTF-8
+    ///     byte must be ENAMETOOLONG — if the strict decode ran first it would
+    ///     abort the interpreter over a path a real kernel rejects cheaply.
+    ///  2. **Strict decode.** Not `readNullTerminatedUtf8`, which substitutes
+    ///     U+FFFD: a kernel looks up raw bytes, so byte 0xFF names a file no
+    ///     valid UTF-8 name can, and decoding leniently would silently resolve a
+    ///     *different* inode — a seeded file literally called "&#65533;". PawPrint models
+    ///     a filename as a .NET string and cannot represent such a path at all;
+    ///     it should say so rather than answer about the wrong file.
+    ///  3. **Parse.**
+    ///
+    /// Note the limit counts the NUL, and `readNullTerminatedBytes` has already
+    /// dropped it, so the comparison is against `pathMaxBytes - 1`. Measured:
+    /// 1023 bytes resolves on macOS and 1024 does not.
+    let internal parseGuestPathBytes
+        (operation : string)
+        (limits : PathLimits)
+        (bytes : byte[])
+        : Result<UnixPath, UnixError>
+        =
+        if bytes.Length > PathLimits.pathMaxBytes limits - 1 then
+            Error UnixError.ENAMETOOLONG
+        else
+
+        let decoded =
+            try
+                Some (Text.UTF8Encoding(false, true).GetString bytes)
+            with :? Text.DecoderFallbackException ->
+                None
+
+        match decoded with
+        | None ->
+            let rendered = bytes |> Array.map (sprintf "%02X") |> String.concat " "
+
+            failwith
+                $"%s{operation}: the guest passed a path that is not valid UTF-8 (bytes: %s{rendered}). A Unix kernel looks up the raw bytes, but PawPrint models a filename as a .NET string, so this path has no representation in the emulated filesystem; decoding it leniently would silently resolve a different file. CoreLib never produces such a path — it encodes from a string — so this can only come from a hand-rolled P/Invoke."
+        | Some decoded ->
+
+        match UnixPath.parse decoded with
+        | Error error ->
+            // Unreachable from a guest today: the only rejections are a null
+            // candidate (impossible — we have just decoded a string) and text
+            // that cannot survive the `char*` boundary, which a string decoded
+            // *from* that boundary cannot contain.
+            failwith
+                $"%s{operation}: the guest's path did not survive parsing: %s{UnixPath.describe error}. This is an interpreter bug: the value was decoded from a NUL-terminated byte string, so it cannot contain an embedded NUL and cannot be null."
+        | Ok path -> Ok path
+
+    /// The inode a path names, or the errno the lookup owes the guest.
+    ///
+    /// A relative path resolves against the simulated process's current
+    /// directory, which — unlike a real kernel's, which is an inode the process
+    /// holds open — is configuration, and so might name nothing in the seeded
+    /// filesystem. That is a host mistake rather than anything a guest did, and
+    /// it has no honest errno: ENOENT would blame the guest's path, and any
+    /// other answer would invent a directory. Crash, naming both knobs.
+    ///
+    /// Note the common case never reaches it: CoreLib `Path.GetFullPath`s
+    /// before every `Stat`/`LStat`, so the path arriving here is normally
+    /// already absolute and the current directory is not consulted at all.
+    ///
+    /// **Known limitation: no length re-check when a symlink is spliced.**
+    /// Darwin re-checks the total length each time it expands a symbolic link
+    /// (XNU `namei`: `linklen + ni_pathlen > MAXPATHLEN`), so a *short* argument
+    /// can still be ENAMETOOLONG through a long target — measured, a 206-byte
+    /// argument through an 885-byte target. Linux does not: measured, a
+    /// 3842-byte target with an 806-byte remainder resolves, 4648 spliced.
+    /// PawPrint implements neither, so it answers as Linux does on both.
+    ///
+    /// Reproducing Darwin's rule needs the byte length of the *unconsumed*
+    /// remainder, which this walk no longer has: it holds a `PathComponent
+    /// list`. Threading a length through it is its own change, and the trigger
+    /// has to be designed against measurement rather than arithmetic — a first
+    /// attempt reasoned that collapsed `//` runs would make a rendered length an
+    /// unsound under-estimate, and probing showed XNU consumes such runs before
+    /// splicing, so the sound-looking argument was simply wrong about the
+    /// kernel.
+    ///
+    /// Only a hand-written seed reaches it: symlinks enter the filesystem only
+    /// through seeds, and the differential oracle's validator permits only
+    /// single-component targets.
+    let private resolveGuestPath
+        (operation : string)
+        (policy : SymlinkPolicy)
+        (kernel : EmulatedKernel)
+        (path : UnixPath)
+        : Result<InodeNumber, UnixError>
+        =
+        let vfs = kernel.FileSystem
+        let root = VirtualFileSystem.root vfs
+        let limits = SimulatedUnixPlatform.pathLimits kernel.UnixPlatform
+
+        let startDirectory =
+            if UnixPath.isRooted path then
+                root
+            else
+
+            let cwd = UnixPath.ofAbsolute kernel.CurrentDirectory
+
+            match VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow cwd vfs with
+            | Ok inode -> inode
+            | Error UnixError.ENAMETOOLONG ->
+                // Distinguished because the remedy is different, and the
+                // message below would send the reader looking for a missing
+                // directory that is in fact present.
+                failwith
+                    $"%s{operation}: the configured current directory \"%s{AbsoluteUnixPath.toString kernel.CurrentDirectory}\" contains a component longer than %O{SimulatedUnixPlatform.flavour kernel.UnixPlatform}'s NAME_MAX, so no process could have been started in it. Shorten KernelConfig.CurrentDirectory."
+            | Error error ->
+                failwith
+                    $"%s{operation}: the guest passed the relative path \"%s{UnixPath.toString path}\", but the configured current directory \"%s{AbsoluteUnixPath.toString kernel.CurrentDirectory}\" does not resolve in the seeded filesystem (%O{error}). A process cannot be started in a directory that does not exist; make KernelConfig.FileSystem contain KernelConfig.CurrentDirectory."
+
+        VirtualFileSystem.resolveExisting limits startDirectory policy path vfs
+
+    /// `sizeof(FileStatus)`: four 32-bit fields, then twelve 64-bit ones, then
+    /// a trailing `uint32_t`, rounded up to the struct's 8-byte alignment.
+    let private fileStatusSize : int = 120
+
+    /// How much of `FileStatus` is fields rather than trailing padding. The C
+    /// shim writes exactly this much — `ConvertFileStatus` assigns fields and
+    /// never touches the four bytes after `UserFlags` — so neither does
+    /// PawPrint.
+    let private fileStatusDataSize : int = 116
+
+    /// Fill in a guest's `Interop.Sys.FileStatus` from an inode, and hand back
+    /// the zero that says the call succeeded.
+    ///
+    /// Shared by `SystemNative_Stat`/`LStat`, which reach the inode from a
+    /// path, and by `SystemNative_FStat`, which reaches it from a file
+    /// descriptor. One encoder rather than two: the 120-byte layout *is* the
+    /// contract with the guest, and two copies of it could disagree — a
+    /// disagreement no differential test could catch, since the real runtime
+    /// would agree with itself either way.
+    ///
+    /// The output struct is written as a **byte image at ABI offsets**, not by
+    /// setting fields on the pointee type by name. That is what the C does — it
+    /// receives a `FileStatus*` and writes through it, and the guest's own
+    /// declaration is merely its view of the same bytes. Deriving the offsets
+    /// from the pointee instead would honour whatever names and order *that*
+    /// declaration happened to use, so a guest whose layout-identical struct
+    /// named its fields differently would abort the interpreter, and one that
+    /// reordered them would be handed a struct no real kernel would have
+    /// written. The pointee handle is still used, for the one thing it is
+    /// authoritative about: how much room the caller actually provided.
+    let private writeFileStatus
+        (ctx : NativeCallContext)
+        (operation : string)
+        (fileStatusHandle : ConcreteTypeHandle)
+        (inode : InodeNumber)
+        (entry : Inode)
+        (output : ManagedPointerSource)
+        (state : IlMachineState)
+        : NativeHandlerResult option
+        =
+        let permissions =
+            match VirtualFileSystem.permissions entry with
+            | InodePermissions.Stored bits -> bits
+            | InodePermissions.PlatformSymlinkDefault ->
+                SimulatedUnixPlatform.symlinkPermissions state.Kernel.UnixPlatform
+
+        let size =
+            match entry.Content with
+            | InodeContent.RegularFile (contents, _) -> int64 contents.Length
+            // `readlink` reports the target's byte length as the link's size,
+            // and a guest can see it through `FileInfo.Length`.
+            | InodeContent.Symlink target -> int64 (SymlinkTarget.toUtf8 target).Length
+            // Invented, and the only field here that is: PawPrint has no block
+            // allocator, so a directory has no natural size. 4096 is what ext4
+            // reports for a small directory, i.e. the least surprising answer a
+            // guest could read.
+            | InodeContent.Directory _ -> 4096L
+
+        let reportsBirthTime =
+            SimulatedUnixPlatform.reportsBirthTime state.Kernel.UnixPlatform
+
+        // How much room the guest gave us. Derived from the pointee handle
+        // rather than assumed, because a too-small buffer would otherwise be
+        // written past: `MemoryBlock`'s own bounds check bounds the whole
+        // backing block, not this struct's extent, so an overflow could land in
+        // adjacent memory rather than failing.
+        let buffer, state =
+            IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes fileStatusHandle
+
+        if CliType.sizeOf buffer <> fileStatusSize then
+            failwith
+                $"%s{operation}: the output struct is %d{CliType.sizeOf buffer} bytes, but `FileStatus` is %d{fileStatusSize}. Either the guest hand-rolled this P/Invoke with a struct that is not layout-identical to `Interop.Sys.FileStatus`, or upstream has changed the layout — check `ConvertFileStatus` in pal_io.c against `Interop.Stat.cs`."
+
+        let times = entry.Times
+
+        let birthTime =
+            // Zeroed rather than reported when the platform has no
+            // `st_birthtime`, exactly as `pal_io.c` does under `#else`. The
+            // inode knows its birth either way; this governs only what the
+            // guest is told.
+            if reportsBirthTime then
+                times.Birth
+            else
+                UnixTimestamp.epoch
+
+        let image : byte array = Array.zeroCreate fileStatusDataSize
+
+        let putInt32 (offset : int) (value : int32) : unit =
+            BinaryPrimitives.WriteInt32LittleEndian (Span<byte> (image, offset, 4), value)
+
+        let putUInt32 (offset : int) (value : uint32) : unit =
+            BinaryPrimitives.WriteUInt32LittleEndian (Span<byte> (image, offset, 4), value)
+
+        let putInt64 (offset : int) (value : int64) : unit =
+            BinaryPrimitives.WriteInt64LittleEndian (Span<byte> (image, offset, 8), value)
+
+        let putTime (offset : int) (timestamp : UnixTimestamp) : unit =
+            putInt64 offset (UnixTimestamp.seconds timestamp)
+            putInt64 (offset + 8) (int64 (UnixTimestamp.nanoseconds timestamp))
+
+        // `FileStatusFlags.HasBirthTime = 1`; nothing else is defined.
+        putInt32 0 (if reportsBirthTime then 1 else 0)
+
+        putInt32
+            4
+            (VirtualFileSystem.fileTypeBits entry.Content
+             ||| PermissionBits.toInt permissions)
+
+        putUInt32 8 state.Kernel.UserId
+        putUInt32 12 state.Kernel.GroupId
+        putInt64 16 size
+        putTime 24 times.Access
+        putTime 40 times.Modification
+        putTime 56 times.StatusChange
+        putTime 72 birthTime
+        putInt64 88 EmulatedKernel.simulatedDeviceId
+        // Non-zero only for device nodes, which `InodeContent` cannot represent.
+        putInt64 96 0L
+
+        putInt64
+            104
+            (match inode with
+             | InodeNumber value -> value)
+
+        // macOS's `UF_HIDDEN`, gated on `HAVE_STAT_FLAGS`. PawPrint models no
+        // BSD file flags, and nothing in the emulated filesystem is hidden, so
+        // zero is the honest answer on either platform.
+        putUInt32 112 0u
+
+        writeBytesThrough ctx operation output (ImmutableArray.CreateRange image) state
+        |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+        |> NativeHandlerResult.completed
+        |> Some
+
+    /// Shared body of `SystemNative_Stat` and `SystemNative_LStat`, which
+    /// differ only in whether a symbolic link in the final position is
+    /// followed.
+    ///
+    /// The output struct is written as a **byte image at ABI offsets**, not by
+    /// setting fields on the pointee type by name. That is what the C does — it
+    /// receives a `FileStatus*` and writes through it, and the guest's own
+    /// declaration is merely its view of the same bytes. Deriving the offsets
+    /// from the pointee instead would honour whatever names and order *that*
+    /// declaration happened to use, so a guest whose layout-identical struct
+    /// named its fields differently would abort the interpreter, and one that
+    /// reordered them would be handed a struct no real kernel would have
+    /// written. The pointee handle is still used, for the one thing it is
+    /// authoritative about: how much room the caller actually provided.
+    ///
+    /// `ConvertFileStatus` in `pal_io.c` writes the output struct only when the
+    /// underlying `stat_`/`lstat_` succeeded, so every failure path here must
+    /// leave the guest's buffer untouched — a caller that checked the return
+    /// value would otherwise read fields nobody wrote.
+    let private statLike
+        (ctx : NativeCallContext)
+        (operation : string)
+        (policy : SymlinkPolicy)
+        (fileStatusHandle : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : NativeHandlerResult option
+        =
+        let instruction = ctx.Instruction
+
+        let fail (error : UnixError) : NativeHandlerResult option =
+            // `toRawErrnoUnder` rather than `toRawErrno`, because a resolution
+            // can fail with ELOOP — a symlink cycle needs no more than
+            // `l -> l` — and that error has no platform-independent number.
+            // The emulated kernel knows which Unix it is impersonating, so it
+            // can answer where the bare conversion refuses to.
+            let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    LastSystemError = UnixError.toRawErrnoUnder numbering error
+                }
+            )
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+
+        // Both pointers are dereferenced by the C on the success path, and
+        // neither is inspected before the lookup — but the path is read first,
+        // so an unmapped `path` is EFAULT whatever the output pointer is.
+        match dereferenceablePointerArgument operation "path" instruction.Arguments.[0] with
+        | None -> fail UnixError.EFAULT
+        | Some pathPtr ->
+
+        let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
+
+        // Bounded by PATH_MAX, because that is where a real kernel stops
+        // looking: an unterminated buffer must be ENAMETOOLONG rather than a
+        // scan that walks off the end of the guest's allocation. On overrun this
+        // hands back exactly `pathMaxBytes` bytes, which `parseGuestPathBytes`
+        // then refuses by its ordinary length rule — so "too long" is still
+        // decided in exactly one place.
+        let bytes =
+            NativeCall.readNullTerminatedBytesWithin
+                operation
+                ctx.BaseClassTypes
+                state
+                pathPtr
+                (PathLimits.pathMaxBytes limits)
+
+        match parseGuestPathBytes operation limits bytes with
+        | Error error -> fail error
+        | Ok path ->
+
+        match resolveGuestPath operation policy state.Kernel path with
+        | Error error -> fail error
+        | Ok inode ->
+
+        let vfs = state.Kernel.FileSystem
+
+        let entry =
+            match VirtualFileSystem.tryGet inode vfs with
+            | Some entry -> entry
+            | None ->
+                failwith
+                    $"%s{operation}: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
+
+        // The output pointer is only decoded here, on the path that actually
+        // writes through it.
+        match dereferenceablePointerArgument operation "output" instruction.Arguments.[1] with
+        | None -> fail UnixError.EFAULT
+        | Some output ->
+
+        writeFileStatus ctx operation fileStatusHandle inode entry output state
+
     /// Shared body of `SystemNative_GetNonCryptographicallySecureRandomBytes`
     /// and `SystemNative_GetCryptographicallySecureRandomBytes`. The two entry
     /// points declare the identical `(byte* buffer, int32 bufferLength)`
@@ -321,7 +676,15 @@ module NativeSystemNative =
             let raw =
                 NativeCall.int32Argument "SystemNative_ConvertErrorPlatformToPal" instruction.Arguments.[0]
 
-            pushInt32 (UnixError.palOfRawErrno raw) ctx |> Some
+            // Under the numbering the kernel actually reports, not the portable
+            // subset: the errnos this handler is handed are the ones PawPrint's
+            // own syscalls stored, so a `stat` that failed with ELOOP puts raw
+            // 40 here on Linux and CoreLib must get `Interop.Error.ELOOP` back.
+            // Converting it without the platform is exactly the round trip the
+            // bare `palOfRawErrno` refuses to complete.
+            let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+            pushInt32 (UnixError.palOfRawErrnoUnder numbering raw) ctx |> Some
         | Some "SystemNative_GetCpuUtilization",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Double) ->
@@ -740,6 +1103,464 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer buffer) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_GetEUid",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->
+            // `uint32_t SystemNative_GetEUid(void)` (pal_uid.c:91) is
+            // `return geteuid();` — infallible, as `geteuid(2)` is.
+            //
+            // The same `UserId` `Stat`/`LStat` below report as every inode's
+            // `st_uid`, because the emulated process has one identity: no
+            // reachable syscall can give an inode an owner of its own
+            // (`SystemNative_ChOwn` is not in the interop surface at all), so
+            // there is nothing for a second source of truth to disagree with.
+            //
+            // That equality is why its `GetEGid` and `GetGroups` neighbours are
+            // *not* implemented here. Within CoreLib the only route to them is
+            // `Interop.Sys.IsMemberOfGroup` — managed code, not an entry point —
+            // whose sole caller is `FileStatus.IsModeReadOnlyCore` behind
+            // `if (_fileCache.Uid == Interop.Sys.GetEUid())`
+            // (FileStatus.Unix.cs:106). With one identity that guard always
+            // holds, so the group path is dead by construction and a
+            // supplementary-group list would be state no syscall could vary.
+            // Implementing `GetEGid` alone would be worse than either: it
+            // short-circuits `IsMemberOfGroup` on `gid == GetEGid()`
+            // (Interop.IsMemberOfGroup.cs:13), which under one identity is also
+            // always true — so the branch would start *succeeding*, on the
+            // strength of the very invariant that must have broken for it to be
+            // reachable. Leaving them unimplemented means a guest that gets
+            // there stops loudly instead, naming the entry point.
+            // `sourcesImpure/EffectiveUserIdConfigured.cs` pins the premise.
+            state
+            |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 state.Kernel.UserId) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        // `int32_t SystemNative_Stat(const char* path, FileStatus* output)` and
+        // its `LStat` twin, from `pal_io.c`. CoreLib declares each of them
+        // twice — `Interop.Stat.cs` takes a `string`, `Interop.Stat.Span.cs` a
+        // `ref byte` filled by `ValueUtf8Converter` — but both generate the same
+        // `(byte*, FileStatus*)` stub, so one arm serves both. `File.Exists` and
+        // `Directory.Exists` reach the span form.
+        //
+        // The output parameter is matched loosely, as `PalErrorReturn` is and
+        // for the same reason: `Interop.Sys.FileStatus` is internal to CoreLib,
+        // so a `sourcesPure` guest exercising this handler must declare its own
+        // layout-identical struct, and a tight match would put the arm out of
+        // its reach. The pointee handle is still bound, because it is what the
+        // field layout is derived from.
+        | Some "SystemNative_Stat",
+          [ ConcretePointer _ ; ConcretePointer fileStatusHandle ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            statLike ctx "SystemNative_Stat" SymlinkPolicy.Follow fileStatusHandle state
+        | Some "SystemNative_LStat",
+          [ ConcretePointer _ ; ConcretePointer fileStatusHandle ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            statLike ctx "SystemNative_LStat" SymlinkPolicy.NoFollowFinal fileStatusHandle state
+        // `intptr_t SystemNative_Open(const char* path, int32_t flags, int32_t mode)`
+        // (pal_io.c:319). The flags parameter is matched loosely because
+        // CoreLib declares it as the `Interop.Sys.OpenFlags` enum while a guest
+        // hand-rolling the P/Invoke writes `int`; `int32Argument` peels enum
+        // boxing, so both reach the same decode.
+        | Some "SystemNative_Open",
+          [ ConcretePointer _ ; _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcreteIntPtr state.ConcreteTypes) ->
+            let operation = "SystemNative_Open"
+            let flags = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            // `Interop.Sys.OpenFlags`, which is a **PAL** enum: `ConvertOpenFlags`
+            // (pal_io.c:275) translates these to the platform's own `<fcntl.h>`
+            // bits, so PawPrint consumes portable values and has no platform
+            // question to answer at this boundary.
+            let palAccessMask = 0x0003
+            let palRdOnly = 0x0000
+            let palWrOnly = 0x0001
+            let palRdWr = 0x0002
+            let palCloExec = 0x0010
+            let palCreat = 0x0020
+            let palExcl = 0x0040
+            let palTrunc = 0x0080
+            let palSync = 0x0100
+            let palNoFollow = 0x0200
+
+            let fail (error : UnixError) : NativeHandlerResult option =
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        LastSystemError = UnixError.toRawErrnoUnder numbering error
+                    }
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim -1L)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            let known =
+                palAccessMask
+                ||| palCloExec
+                ||| palCreat
+                ||| palExcl
+                ||| palTrunc
+                ||| palSync
+                ||| palNoFollow
+
+            // The shim's own rejection, in the order the C makes it: an
+            // unrecognised *bit* is EINVAL (it `assert`s first, so a checked
+            // build aborts instead — the same retail-behaviour-only reasoning
+            // `SystemNative_GetCwd` records), and so is an access mode that is
+            // none of the three.
+            if flags &&& ~~~known <> 0 then
+                fail UnixError.EINVAL
+            else
+
+            let accessMode = flags &&& palAccessMask
+
+            if accessMode <> palRdOnly && accessMode <> palWrOnly && accessMode <> palRdWr then
+                fail UnixError.EINVAL
+            else
+
+            // Everything that would *write* is refused loudly rather than
+            // answered. PawPrint has no write path: there is no syscall that
+            // can change a byte of the emulated filesystem, so an `O_TRUNC`
+            // honoured as a no-op, or an `O_WRONLY` handle that silently reads,
+            // would hand a guest a descriptor whose contract PawPrint cannot
+            // keep. The crash names the flag, which is more use than the
+            // generic "unimplemented native" this replaces.
+            //
+            // Known over-refusal, recorded because a green suite cannot show
+            // it: `FileMode.OpenOrCreate` with `FileAccess.Read` on a file that
+            // *exists* sets `O_CREAT`, and is a case this handler could answer
+            // correctly.
+            let refuse (flag : string) : NativeHandlerResult option =
+                failwith
+                    $"%s{operation}: the guest asked for %s{flag}, but PawPrint has no write path — nothing can yet modify the emulated filesystem, so a descriptor opened for writing could not honour its contract. Implement the write path (issue #956) before opening one."
+
+            if accessMode = palWrOnly then
+                refuse "O_WRONLY"
+            elif accessMode = palRdWr then
+                refuse "O_RDWR"
+            elif flags &&& palCreat <> 0 then
+                refuse "O_CREAT"
+            elif flags &&& palExcl <> 0 then
+                refuse "O_EXCL"
+            elif flags &&& palTrunc <> 0 then
+                refuse "O_TRUNC"
+            else
+
+            // `O_CLOEXEC` is accepted and ignored: it sets `FD_CLOEXEC`, which
+            // matters only across `exec`, and PawPrint models neither `fork`
+            // nor `exec` (see `FileDescriptorRegistry`). `O_SYNC` likewise —
+            // it governs when *writes* reach storage, and there are none.
+            //
+            // The `mode` argument is ignored rather than validated, and must
+            // be: `SafeFileHandle.OpenReadOnly` passes `DefaultCreateMode`
+            // (0666) even for a read-only open of an existing file
+            // (SafeFileHandle.Unix.cs:168), so a handler that refused a nonzero
+            // mode without `O_CREAT` would refuse the BCL's own read path.
+            let policy =
+                if flags &&& palNoFollow <> 0 then
+                    SymlinkPolicy.NoFollowFinal
+                else
+                    SymlinkPolicy.Follow
+
+            match dereferenceablePointerArgument operation "path" instruction.Arguments.[0] with
+            | None -> fail UnixError.EFAULT
+            | Some pathPtr ->
+
+            let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
+
+            let bytes =
+                NativeCall.readNullTerminatedBytesWithin
+                    operation
+                    ctx.BaseClassTypes
+                    state
+                    pathPtr
+                    (PathLimits.pathMaxBytes limits)
+
+            match parseGuestPathBytes operation limits bytes with
+            | Error error -> fail error
+            | Ok path ->
+
+            match resolveGuestPath operation policy state.Kernel path with
+            | Error error -> fail error
+            | Ok inode ->
+
+            match VirtualFileSystem.tryGetContent inode state.Kernel.FileSystem with
+            | None ->
+                failwith
+                    $"%s{operation}: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
+            | Some (InodeContent.Symlink _) ->
+                // Only reachable under `O_NOFOLLOW`, which is what
+                // `NoFollowFinal` above selects: without it the resolver would
+                // have followed the link (or failed ENOENT on a dangling one).
+                // ELOOP rather than anything more specific is what both Unixes
+                // answer, and is what `SafeFileHandle.OpenNoFollowSymlink`
+                // reads back to decide a path was a symlink without racing.
+                fail UnixError.ELOOP
+            | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.Directory _) ->
+
+            // A directory opens perfectly well for reading, and CoreLib
+            // *depends* on that: `SafeFileHandle.Init` opens, then `FStat`s,
+            // and raises `UnauthorizedAccessException` on seeing `S_IFDIR`, so
+            // refusing here would give `File.ReadAllBytes("d")` the wrong
+            // exception. The type check belongs in what `FStat` reports.
+            //
+            // **No permission check, deliberately.** A real `open(O_RDONLY)`
+            // owes EACCES for a file whose owner-read bit is clear, and the
+            // resolution owes it for a directory whose owner-search bit is —
+            // and neither state is reachable. `SeedEntry.File` carries contents
+            // and nothing else, so every seeded file is
+            // `PermissionBits.defaultForRegularFile` (0644) and every directory
+            // `defaultForDirectory` (0755); no `SystemNative_ChMod` exists to
+            // change them, and the emulated process has the single identity
+            // that owns them all. So the owner bits are set by construction,
+            // and an EACCES arm here would be a branch no guest could take and
+            // no seed could provoke — dead code of exactly the kind #1008
+            // declined to write for the supplementary-group path.
+            //
+            // When permissions do become expressible, the *search* half belongs
+            // in the resolver rather than here: every component of every path
+            // needs it, so `Stat`, `LStat` and `ReadLink` would owe the same
+            // answer, and only the final-file read check would be this arm's.
+            let fd, registry =
+                FileDescriptorRegistry.openFile inode state.Kernel.FileDescriptors
+
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    FileDescriptors = registry
+                }
+            )
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64 fd)))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        | Some "SystemNative_FStat",
+          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer fileStatusHandle ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_FStat(intptr_t fd, FileStatus* output)`
+            // (pal_io.c). The same struct `Stat`/`LStat` fill in, from a
+            // descriptor rather than a path — so it shares their encoder, and
+            // the output parameter is matched loosely for the same reason
+            // theirs is.
+            let operation = "SystemNative_FStat"
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            let fail (error : UnixError) : NativeHandlerResult option =
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        LastSystemError = UnixError.toRawErrno error
+                    }
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+            | None -> fail UnixError.EBADF
+            | Some (OpenFileDescription.StandardStream role) ->
+                // PawPrint models the standard streams as pipes, and a pipe's
+                // `fstat` is a real answer a real kernel gives — `S_IFIFO`, a
+                // zero size, a device number. Every one of those would be
+                // invented here: the emulated kernel holds no inode for a
+                // stream, so there is nothing to report and no way for a test
+                // to say the invention was wrong. Refuse loudly instead; the
+                // BCL reaches `FStat` only through a `SafeFileHandle` it opened
+                // itself, so this is a hand-rolled P/Invoke or a genuinely new
+                // code path, and either wants a decision rather than a guess.
+                failwith
+                    $"%s{operation}: fd %d{fd} is the standard stream %O{role}, and PawPrint holds no inode for one. Every field `fstat` owes a pipe would be invented here; decide what a stream's `struct stat` is (issue #956) rather than guessing."
+            | Some (OpenFileDescription.File inode) ->
+
+            let entry =
+                match VirtualFileSystem.tryGet inode state.Kernel.FileSystem with
+                | Some entry -> entry
+                | None ->
+                    // Not reachable today — nothing unlinks — but stated so
+                    // that the write path finds a decision rather than a crash:
+                    // a descriptor keeps its inode alive after the last link is
+                    // gone, so `unlink` must not remove the inode from the
+                    // graph while a descriptor still names it.
+                    failwith
+                        $"%s{operation}: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink removed a still-open file; the open file description must keep it alive."
+
+            match dereferenceablePointerArgument operation "output" instruction.Arguments.[1] with
+            | None -> fail UnixError.EFAULT
+            | Some output ->
+
+            writeFileStatus ctx operation fileStatusHandle inode entry output state
+        | Some "SystemNative_ReadLink",
+          [ ConcretePointer _ ; ConcretePointer _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_ReadLink(const char* path, char* buffer,
+            // int32_t bufferSize)` (pal_io.c:1183): a `bufferSize <= 0` guard,
+            // then `readlink(2)` verbatim.
+            //
+            // Both pointers are matched loosely, as `Stat`'s are: CoreLib
+            // declares this `(ref byte, ref byte, int)` and a guest
+            // hand-rolling the P/Invoke writes `(byte*, byte*, int)`, which
+            // generate the same stub.
+            //
+            // **Truncation is not an error path.** `Interop.Sys.ReadLink`
+            // starts with a 256-byte `stackalloc` and doubles through
+            // `ArrayPool` while `result == buffer.Length`, so a short buffer is
+            // how the BCL *sizes* its allocation; a handler that refused to
+            // truncate would break `FileInfo.LinkTarget` for every target of
+            // 256 bytes or more. `SymlinkTarget.toUtf8` is already the bytes
+            // this hands back, and already documented as such.
+            //
+            // The order below is the C's, and every step of it is observable
+            // — `sourcesPure/SystemNativeReadLink.cs` passes inputs that two
+            // adjacent checks would reject differently, so the errno names
+            // which one ran first.
+            let operation = "SystemNative_ReadLink"
+            let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
+
+            /// Set errno and return -1, as the C does on every failure path.
+            let fail (error : UnixError) : NativeHandlerResult option =
+                // `toRawErrnoUnder` rather than `toRawErrno`, for the reason
+                // `statLike`'s twin gives: a resolution can fail with ELOOP,
+                // which has no platform-independent number.
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        LastSystemError = UnixError.toRawErrnoUnder numbering error
+                    }
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            if bufferSize <= 0 then
+                // The shim's own guard, before `readlink` is called at all —
+                // so this is EINVAL whatever the path is, including a path
+                // that addresses nothing. It is also the *only* reason this
+                // entry point is cross-platform here: measured, the raw
+                // syscall answers 0 on macOS and EINVAL on Linux for
+                // `bufsiz == 0`, and the guard means neither answer escapes.
+                //
+                // Note the C `assert`s `bufferSize >= 0` first, so a checked
+                // build would abort on a negative size rather than reach this;
+                // EINVAL is what a guest running against a retail runtime can
+                // observe, exactly as for `SystemNative_GetCwd`.
+                fail UnixError.EINVAL
+            else
+
+            // Read before anything else looks at it, because a real kernel
+            // copies the pathname in before it resolves anything: a path that
+            // addresses nothing is EFAULT whatever the buffer is.
+            match dereferenceablePointerArgument operation "path" instruction.Arguments.[0] with
+            | None -> fail UnixError.EFAULT
+            | Some pathPtr ->
+
+            let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
+
+            let bytes =
+                NativeCall.readNullTerminatedBytesWithin
+                    operation
+                    ctx.BaseClassTypes
+                    state
+                    pathPtr
+                    (PathLimits.pathMaxBytes limits)
+
+            match parseGuestPathBytes operation limits bytes with
+            | Error error -> fail error
+            | Ok path ->
+
+            // `NoFollowFinal` plus "and then it had better be a symlink" is
+            // the same composition `TestVirtualFileSystemAgainstHost`'s
+            // `modelOutcome` already checks against a real kernel over
+            // generated symlink trees, which is why it is composed here rather
+            // than extracted into `VirtualFileSystem`: the rule is verified
+            // where it lives, and this arm's own job is the wire format.
+            //
+            // `NoFollowFinal`, which is what makes this `readlink` rather than
+            // an expensive way of asking about the target: a final symlink is
+            // the thing being read, not something to step through. A trailing
+            // separator still overrides that — "lf/" demands that `lf` be a
+            // directory — and the resolver owns that rule, answering ENOTDIR.
+            match resolveGuestPath operation SymlinkPolicy.NoFollowFinal state.Kernel path with
+            | Error error -> fail error
+            | Ok inode ->
+
+            match VirtualFileSystem.tryGetContent inode state.Kernel.FileSystem with
+            | None ->
+                failwith
+                    $"%s{operation}: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
+            | Some (InodeContent.Directory _)
+            | Some (InodeContent.RegularFile _) ->
+                // Not a link. EINVAL rather than any other errno is
+                // load-bearing rather than cosmetic: `FileSystem.ResolveLinkTarget`
+                // (FileSystem.Unix.cs:679) answers *null* for EINVAL and
+                // rethrows every other errno as an exception, so this single
+                // choice is the difference between `File.ResolveLinkTarget`
+                // reporting "not a link" and it throwing.
+                //
+                // Decided here, before the output pointer is looked at, which
+                // is what a real kernel does — `vfs_readlink` refuses on the
+                // inode's operations before it copies anything out. Measured
+                // on the host: `readlink("f", (char*)8, 16)` is EINVAL, not
+                // EFAULT.
+                fail UnixError.EINVAL
+            | Some (InodeContent.Symlink target) ->
+
+            // The output pointer is only decoded here, on the path that
+            // actually writes through it.
+            match dereferenceablePointerArgument operation "buffer" instruction.Arguments.[1] with
+            | None -> fail UnixError.EFAULT
+            | Some buffer ->
+
+            let all = SymlinkTarget.toUtf8 target
+            let count = min all.Length bufferSize
+
+            // Truncated in *bytes*, not in characters: a symlink target is a
+            // byte string, and truncating a .NET string by `String.Length`
+            // would write two bytes where the caller allowed one for any
+            // non-ASCII target. `sourcesImpure/ReadLinkRawSeeded.cs` is the
+            // only test that can tell the two apart, because the differential
+            // oracle's seed validator permits only ASCII targets.
+            let written =
+                if count = all.Length then
+                    all
+                else
+                    ImmutableArray.CreateRange (Seq.truncate count all)
+
+            // **Known omission: the link's `atime` does not move**, though
+            // POSIX says a successful `readlink` marks it for update. This is
+            // deferred rather than overlooked, and it is not dead state: the
+            // virtual clock advances as the driver loop runs, so a guest that
+            // `LStat`s a link before and after reading it really could see the
+            // difference.
+            //
+            // It is deferred because it cannot be settled *here*. Whether the
+            // access time moves is a property of the mount, not of this
+            // syscall, and the two platforms modelled disagree: measured on
+            // macOS — lstat, sleep, readlink, lstat — `st_atime` does not
+            // move, while Linux's default `relatime` updates whenever `mtime`
+            // or `ctime` is at or after the old `atime`, or it is a day stale
+            // (`relatime_need_update`, fs/inode.c) — and a freshly seeded
+            // inode has all three equal, so the first read *would* move it.
+            // Deciding that inside one entry point would set mount semantics
+            // for every future read by accident, and would make `readlink` the
+            // only syscall obeying them.
+            //
+            // It would also be the first mutation of the emulated filesystem
+            // in the interpreter: the graph is built once from the seed
+            // (`EmulatedKernel.fs`) and no handler writes back
+            // `Kernel.FileSystem` today, so there is no write-back seam to
+            // reuse. Note the divergence is also not something the differential
+            // oracle can arbitrate, since the answer depends on which host ran
+            // it.
+            //
+            // No terminator, and errno left alone: `readlink` writes exactly
+            // the bytes it reports and reports success by a non-negative
+            // count, so a NUL here would corrupt the byte after a target that
+            // exactly fits.
+            writeBytesThrough ctx operation buffer written state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim count)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_SetErrNo",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
@@ -978,6 +1799,22 @@ module NativeSystemNative =
                         // Unknown fd: report EBADF the same way `write(2)`
                         // would.
                         -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
+                    | Some (OpenFileDescription.File inode) ->
+                        // A descriptor on a real file. EBADF is what a real
+                        // kernel answers for a write to an `O_RDONLY`
+                        // descriptor, and every descriptor PawPrint hands out
+                        // today is one — `SystemNative_Open` refuses every
+                        // write flag loudly, so no other kind can exist. That
+                        // makes this arm honest rather than a stand-in: it is
+                        // not "writing is unimplemented", it is "this
+                        // descriptor is read-only", which is a true statement
+                        // about every descriptor that can reach it.
+                        //
+                        // When the write path lands, the open file description
+                        // gains an access mode and this arm must consult it
+                        // instead of assuming.
+                        ignore<InodeNumber> inode
+                        -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
                     | Some (OpenFileDescription.StandardStream role) ->
                         match role with
                         | FileDescriptorRole.StandardInput ->
@@ -1105,11 +1942,16 @@ module NativeSystemNative =
             // by `malloc`/`calloc`/`realloc` (or null). Interior pointers like
             // `base + 4` must be rejected — silently freeing the whole block
             // would mask guest memory-corruption bugs.
-            let rec projectionByteOffset (acc : int) (ps : ByrefProjection list) : Result<int, ByrefProjection> =
+            //
+            // Accumulated in `int64`: this file is not `Checked`, so an `int` fold could wrap a
+            // genuinely interior pointer back onto zero and free a block from the middle of it,
+            // which is precisely the guest memory-corruption bug the check exists to expose
+            // (issue #993).
+            let rec projectionByteOffset (acc : int64) (ps : ByrefProjection list) : Result<int64, ByrefProjection> =
                 match ps with
                 | [] -> Ok acc
                 | ByrefProjection.ReinterpretAs _ :: rest -> projectionByteOffset acc rest
-                | ByrefProjection.ByteOffset n :: rest -> projectionByteOffset (acc + n) rest
+                | ByrefProjection.ByteOffset n :: rest -> projectionByteOffset (acc + int64<int> n) rest
                 | (ByrefProjection.Field _ as field) :: _ -> Error field
 
             let state =
@@ -1120,8 +1962,8 @@ module NativeSystemNative =
                 // C semantics here too.
                 | ManagedPointerSource.Null -> state
                 | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, rootByteOffset), projs) ->
-                    match projectionByteOffset rootByteOffset projs with
-                    | Ok 0 -> IlMachineState.freeNativeMemory block state
+                    match projectionByteOffset (int64<int> rootByteOffset) projs with
+                    | Ok 0L -> IlMachineState.freeNativeMemory block state
                     | Ok offset ->
                         failwith
                             $"SystemNative_Free: refusing to free interior native-heap pointer at byte offset %d{offset} into %O{block} (only the allocation base address returned by SystemNative_Malloc/Calloc may be freed)"

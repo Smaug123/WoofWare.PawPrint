@@ -114,7 +114,7 @@ module ExceptionDispatching =
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, 'methodVar>)
         : DumpedAssembly
         =
-        let name = method.DeclaringType.Assembly
+        let name = method.DeclaringAssembly
 
         match state.LoadedAssembly name with
         | Some assy -> assy
@@ -180,7 +180,7 @@ module ExceptionDispatching =
                                 baseClassTypes
                                 state
                                 activeAssy
-                                method.DeclaringType.Generics
+                                method.DeclaringTypeGenerics
                                 method.Generics
                                 exceptionType
                                 typeToken
@@ -1272,6 +1272,12 @@ module ExceptionDispatching =
             ExceptionHResults.lookup "System.NotSupportedException"
         elif id = baseClassTypes.DuplicateWaitObjectException.Identity then
             ExceptionHResults.lookup "System.DuplicateWaitObjectException"
+        elif id = baseClassTypes.InvalidProgramException.Identity then
+            ExceptionHResults.lookup "System.InvalidProgramException"
+        elif id = baseClassTypes.BadImageFormatException.Identity then
+            ExceptionHResults.lookup "System.BadImageFormatException"
+        elif id = baseClassTypes.ArgumentOutOfRangeException.Identity then
+            ExceptionHResults.lookup "System.ArgumentOutOfRangeException"
         else
             ExceptionHResults.corEException
 
@@ -1306,17 +1312,8 @@ module ExceptionDispatching =
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (exceptionTypeInfo.Identity, stk))
 
-        let state, allFields =
-            IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state exnHandle
-
-        let fields =
-            CliValueType.OfFields
-                baseClassTypes
-                state.ConcreteTypes
-                exnHandle
-                exceptionTypeInfo.Layout
-                (CharSetMetadata.ofTypeAttributes exceptionTypeInfo.TypeAttributes)
-                allFields
+        let state, fields =
+            IlMachineState.buildInstanceStorage loggerFactory baseClassTypes state exnHandle
 
         let addr, state = IlMachineState.allocateManagedObject exnHandle fields state
 

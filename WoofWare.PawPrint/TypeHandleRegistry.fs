@@ -76,8 +76,7 @@ module TypeHandleRegistry =
                 corelib
                 allConcreteTypes
                 runtimeTypeHandle
-                Layout.Default
-                (CharSetMetadata.ofTypeAttributes corelib.RuntimeType.TypeAttributes)
+                (DeclaredTypeFacts.ofCorelibType corelib corelib.RuntimeType)
 
         let alloc, state = allocate fields allocState
 

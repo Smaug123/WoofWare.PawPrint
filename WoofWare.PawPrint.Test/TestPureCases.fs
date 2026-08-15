@@ -30,8 +30,6 @@ module TestPureCases =
             "ReinterpretReadNestedFieldThroughIndex.cs" // Reading a field of a nested struct directly through an inline-array index (`buf[k].I.P`), one step deeper than the `buf[k].Field` shape that works. Not the cell resolver: `CliType.CellPathsExactlyCovering` descends to any depth and `TestCliTypeCellPaths` covers depth 3. Nor, any longer, the projection walk: `walkProjectionByteOffset` folds `ByteOffset` followed by `Field` since the guard relaxation, so the peeled chain `[ByteOffset k*sizeof(Elem); Field I; Field P]` resolves fine. The one remaining blocker is routing in `readManagedByrefField`, whose reinterpret-aware arms only fire when `ReinterpretAs` is last (or last-but-a-`ByteOffset`); with a trailing `Field` the chain falls through to `readProjectedValue`, which cannot cross a reinterpret. Un-park when that dispatcher learns to route a chain that contains but does not end at a `ReinterpretAs` to the byte-view reader.
             "ActivatorCreateInstanceStructCtor.cs" // `Activator.CreateInstance` on a value type declaring an explicit parameterless ctor. `RuntimeTypeHandle_GetActivationInfo` is implemented and covered by `ActivatorCreateInstance.cs`, but CoreCLR returns that ctor's *boxed* entry point in `ppfnRefCtor` (reflectioninvocation.cpp:1665, `forceBoxedEntryPoint = isValueType`) and `CreateInstanceDefaultCtor` calls exactly that one. `NativeIntSource.FunctionPointer` carries a target with no entry-point flavour, so the boxed entry point is unrepresentable and the QCall fails loudly instead of invoking the ctor with an ObjectRef receiver — which would risk constructing into a copy of the box's payload. Un-park when function pointers can name a boxed entry point.
             "MarshalStructureToPtrDecimalField.cs" // `StructMarshalStub.isBlittableField` rejects Decimal fields (CoreCLR routes them through `NFT_DECIMAL` stub synthesis because native `DECIMAL` is 8-byte aligned while managed `Decimal` is 4-byte aligned), so the struct reaches the has-layout-non-blittable arm and `tryComputePlan` then declines it. The stub machinery a Decimal field would run on now exists — it is what marshals a `DateTime` field — so what remains is Decimal-specific. (1) `Marshal.SizeOf&lt;{int; decimal}&gt;()` returns 20 instead of 24 because the marshal-layout walk in `CliValueType.TryComputeMarshalLayout` does not bump Decimal's field alignment to 8, so the placement handed to the stub is already wrong. (2) There is no `StructMarshalFieldKind` for it. Native `DECIMAL` is one contiguous 16-byte range like any other struct member, so the step's one-range-per-field shape is fine; what differs is the *interior*, since `DECIMAL` orders its members (`wReserved`, `scale`, `sign`, `Hi32`, `Lo64`) differently from managed `System.Decimal`'s `flags`/`hi`/`lo`/`mid`. That is a richer `Kind`, not a richer step.
-            "StructLayoutAutoWithoutReferences.cs" // CoreCLR reaches `HandleAutoLayout` either because the type declares `LayoutKind.Auto` or because it holds GC references and is promoted (`PlaceInstanceFields`, methodtablebuilder.cpp:8212). PawPrint implements the promotion route only, and cannot implement the other: `Layout` (TypeInfo.fs:47) is built from the `ClassLayout` table, which carries only `Pack` and `Size`, while the LayoutKind lives in `TypeAttributes.LayoutMask` and is discarded — so a reference-free type declared `LayoutKind.Auto` is indistinguishable from a sequential one where fields are laid out. The file's sequential controls pass, which is what makes this a LayoutKind gap rather than a bucketing one. Closing it means widening `Layout` to carry the kind and threading it through every construction site, so it is its own change.
-            "StructLayoutInt128Alignment.cs" // `Int128`/`UInt128` carry a nominal 16-byte alignment requirement that CoreCLR stores on the type (`MethodTable::GetFieldAlignmentRequirement`, methodtable.cpp:8853, fed by the `IsInt128OrHasInt128Fields` flag) rather than deriving from the fields. PawPrint derives a value type's alignment structurally, so `Int128` — two `ulong`s — comes out 8-aligned and every type embedding it is under-sized. This is orthogonal to the GC auto-layout rule: the first case in the file holds no reference at all and diverges identically. Fixing it needs a nominal required-alignment concept covering `Int128`, `UInt128` and the `Vector` family, which reaches non-GC sequential layout too and so wants its own change.
             "MakeGenericMethodOpenArgument.cs" //`RuntimeMethodHandle_GetStubIfNeededSlow` (issue #743) handles `MakeGenericMethod` with closed type arguments, which is what every reachable path needs, but an argument that still contains generic parameters — `MakeGenericMethod(typeof(G<>))` or `MakeGenericMethod(someTypeParameter)` — cannot be represented. Both are legal: real .NET returns a MethodInfo with `ContainsGenericParameters = true`, inspectable but not invokable. PawPrint's `MethodHandle.MethodGenerics` is a `ConcreteTypeHandle list`, and `ConcreteTypeHandle` indexes `AllConcreteTypes`, whose entries carry only *closed* generic arguments, so the QCall fails with a precise TODO. Widening that representation reaches concretization and every other MethodHandle consumer, so it is its own change rather than part of the QCall.
             "ComparerDefaultEnumCompare.cs" // `Comparer<TEnum>.Default` *selection* works and is asserted by the sibling `ComparerDefault.cs`; what is parked here is calling the comparer it returns. `EnumComparer<T>.Compare` delegates to `RuntimeHelpers.EnumCompareTo<T>` (Comparer.CoreCLR.cs:19), a distinct [Intrinsic] which PawPrint has not reviewed for the safe-intrinsic allowlist, so it stops at the `TODO: implement JIT intrinsic` failure in `callMethod` (IlMachineStateExecution.fs:1931). An allowlist entry alone is not enough: its IL body is `ldarga.s 0; ldarg.1; box T; constrained. T; callvirt Enum::CompareTo(object); ret`, so un-parking needs `Enum.CompareTo(object)` to be reachable under a `constrained.` callvirt on a boxed enum.
             "ReflectionInvokeIntrinsicTarget.cs" // `MethodBase.Invoke` on a method PawPrint services as a JIT intrinsic rather than by interpreting IL (`Unsafe.SizeOf<long>()`; real .NET treats it as an ordinary reflectable method and answers 8). The blocker is in the call path, not in the `RuntimeMethodHandle_InvokeMethod` QCall's own bookkeeping: `callMethodWithCommitment` services such a method inline, computing the result and then advancing the *caller's* program counter — right for a `call` opcode, but here the caller is the native QCall frame, which has no IL. It also reports `CallCommitment.Committed`, so the QCall's commitment check cannot catch it; the QCall therefore rejects the shape up front, so the failure names the method instead of aborting inside `advanceProgramCounter`. Un-parking means letting `Intrinsics.call` honour `advanceProgramCounterOfCaller = false`, which reaches every intrinsic's completion path (~70 sites across `Intrinsics.fs` and `IntrinsicHelpers.fs`).
@@ -69,12 +67,105 @@ module TestPureCases =
         )
         |> Set.ofSeq
 
+    /// Guests that need a filesystem to look at, with the seed each one wants.
+    ///
+    /// The *same* seed configures both sides of the differential comparison:
+    /// PawPrint realises it into a `VirtualFileSystem` rooted at `/`, and
+    /// `RealRuntime.executeWithSeed` materialises it into the scratch directory
+    /// the real guest runs in. One description, two interpreters — which is
+    /// what makes the agreement worth something, rather than two hand-kept
+    /// copies of a tree that might have drifted apart.
+    ///
+    /// Excluded from `simpleCases` because they need a non-default
+    /// `KernelConfig`.
+    let seededCases : Map<string, Map<FileName, SeedEntry>> =
+        let name (s : string) = FileName.parseOrFail "test seed" s
+        let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
+
+        let file (contents : string) =
+            SeedEntry.File (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
+
+        let openSeed =
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    name "d", SeedEntry.Directory (Map.ofList [ name "g", file "nested" ])
+                    name "lf", SeedEntry.Symlink (target "f")
+                    name "ld", SeedEntry.Symlink (target "d")
+                ]
+
+        [
+            "FileMetadataSeeded.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    name "d", SeedEntry.Directory (Map.ofList [ name "g", file "nested" ])
+                    name "lf", SeedEntry.Symlink (target "f")
+                    name "ld", SeedEntry.Symlink (target "d")
+                    name "dang", SeedEntry.Symlink (target "nx")
+                    // A leading dot, which is the whole of what "hidden" means
+                    // on Unix.
+                    name ".hidden", file "x"
+                ]
+            "FileExistsSeeded.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    name "d", SeedEntry.Directory (Map.ofList [ name "g", file "nested" ])
+                    name "lf", SeedEntry.Symlink (target "f")
+                    name "ld", SeedEntry.Symlink (target "d")
+                    name "dang", SeedEntry.Symlink (target "nx")
+                    name "cyc", SeedEntry.Symlink (target "cyc")
+                ]
+            "SystemNativeReadLink.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    name "d", SeedEntry.Directory Map.empty
+                    name "lf", SeedEntry.Symlink (target "f")
+                    // Six bytes, so that "exactly the target", "one byte more"
+                    // and "one byte less" are three different buffer sizes.
+                    // Dangling on purpose: `readlink` reports a target without
+                    // resolving it, and a target that existed would let a
+                    // handler that answered from the *resolved* file pass.
+                    name "five", SeedEntry.Symlink (target "hello5")
+                ]
+            // Both open-path guests want the same tree, and deliberately share
+            // one: the raw guest pins the syscall contract and the managed one
+            // pins which exception each errno becomes, so a divergence between
+            // them is a divergence about one filesystem rather than two.
+            "SystemNativeOpen.cs", openSeed
+            "OpenMissingFile.cs", openSeed
+            "LinkTargetSeeded.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    name "d", SeedEntry.Directory Map.empty
+                    name "lf", SeedEntry.Symlink (target "f")
+                    name "ld", SeedEntry.Symlink (target "d")
+                    // A link to a link, so that following to the final target
+                    // has to iterate rather than merely dereference once.
+                    name "l2", SeedEntry.Symlink (target "lf")
+                    name "dang", SeedEntry.Symlink (target "nx")
+                    name "cyc", SeedEntry.Symlink (target "cyc")
+                    // Longer than the 256-byte stackalloc `Interop.Sys.ReadLink`
+                    // starts with, so reading it at all requires the truncating
+                    // first call and the grown retry. NAME_MAX does not apply:
+                    // this is a link's *target*, not anything's name.
+                    name "long", SeedEntry.Symlink (target (String.replicate 300 "a"))
+                ]
+        ]
+        |> Map.ofList
+
+    let seededCaseNames : string list = seededCases |> Map.toList |> List.map fst
+
     let simpleCases : string list =
         allPure
         |> Seq.filter (fun s ->
             (customExitCodes.ContainsKey s
              || unimplemented.Contains s
-             || expectsUnhandledException.Contains s)
+             || expectsUnhandledException.Contains s
+             || seededCases.ContainsKey s)
             |> not
         )
         |> Seq.toList
@@ -136,7 +227,11 @@ module TestPureCases =
             source
             case.KernelConfig
             (fun image pawPrintResult ->
-                let realResult = RealRuntime.executeWithRealRuntime [||] image
+                // The case's own seed drives the oracle too, so both runtimes
+                // are looking at one description of a filesystem. An unseeded
+                // case passes `FileSystemSeed.empty`, which materialises
+                // nothing and leaves the oracle exactly as it was.
+                let realResult = RealRuntime.executeWithSeed case.KernelConfig.FileSystem [||] image
 
                 // NormalExit and ProcessExit both represent a clean process termination with
                 // an exit code on the terminating thread's eval stack; the only difference is
@@ -642,6 +737,21 @@ class Program
             FileName = fileName
             ExpectedReturnCode = 0
             KernelConfig = KernelConfig.Default
+            AppContext = AppContextProperties.empty
+            ExpectsUnhandledException = false
+            AssertTerminalState = None
+        }
+        |> runTest
+
+    [<TestCaseSource(nameof seededCaseNames)>]
+    let ``Seeded filesystem tests`` (fileName : string) =
+        {
+            FileName = fileName
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    FileSystem = seededCases.[fileName]
+                }
             AppContext = AppContextProperties.empty
             ExpectsUnhandledException = false
             AssertTerminalState = None

@@ -50,7 +50,7 @@ module TestFieldIdDiagnostics =
                 MarshallingDescriptor = None
             }
         ]
-        |> CliValueType.OfFields bct concreteTypes (handleFor bct.IntPtr) Layout.Default CharSet.Ansi
+        |> SynthesisedLayoutKind.ofFields bct concreteTypes (handleFor bct.IntPtr) Layout.Default CharSet.Ansi
 
     [<Test>]
     let ``a declaring-type mismatch is reported as such, not as a bare "not found"`` () : unit =
@@ -122,7 +122,7 @@ module TestFieldIdDiagnostics =
 
         let stored =
             [ slot 0 ; slot 1 ]
-            |> CliValueType.OfFields bct concreteTypes declaringType Layout.Default CharSet.Ansi
+            |> SynthesisedLayoutKind.ofFields bct concreteTypes declaringType Layout.Default CharSet.Ansi
 
         let requested =
             FieldId.inlineArrayElement

@@ -351,12 +351,20 @@ module NativeCall =
         | CliType.Numeric (CliNumericType.UInt8 b) -> b
         | other -> failwith $"%s{operation}: UTF-8 byte read returned non-byte value %O{other}"
 
-    let readNullTerminatedUtf8
+    /// The bytes of a NUL-terminated C string, without the terminator and
+    /// without interpreting them.
+    ///
+    /// Separate from `readNullTerminatedUtf8` because not every caller wants
+    /// the lenient decode: `Encoding.UTF8.GetString` silently replaces an
+    /// invalid sequence with U+FFFD, which for a *filename* means quietly
+    /// naming a different file than the guest asked for. A caller that must not
+    /// alias reads the bytes and decodes them strictly.
+    let readNullTerminatedBytes
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ptr : ManagedPointerSource)
-        : string
+        : byte array
         =
         match ptr with
         | ManagedPointerSource.Null ->
@@ -367,7 +375,7 @@ module NativeCall =
         | ManagedPointerSource.Byref _ ->
             let byteConcreteType = requiredByteConcreteType operation baseClassTypes state
 
-            let rec loop (byteIndex : int) (bytes : byte list) : string =
+            let rec loop (byteIndex : int) (bytes : byte list) : byte array =
                 if byteIndex > 65535 then
                     // Defensive PawPrint bound against scanning guest memory
                     // forever for unterminated strings.
@@ -376,11 +384,68 @@ module NativeCall =
                 let b = readUtf8Byte operation baseClassTypes state byteConcreteType ptr byteIndex
 
                 if b = 0uy then
-                    bytes |> List.rev |> Array.ofList |> System.Text.Encoding.UTF8.GetString
+                    bytes |> List.rev |> Array.ofList
                 else
                     loop (byteIndex + 1) (b :: bytes)
 
             loop 0 []
+
+    /// `readNullTerminatedBytes`, but scanning at most `maxBytes` bytes of guest
+    /// memory — for callers whose own boundary imposes a limit.
+    ///
+    /// Returns the bytes before the terminator when one is found within that
+    /// span, and otherwise exactly `maxBytes` bytes: "at least this long", which
+    /// is all a caller needs to know to refuse it, and which keeps the *rule*
+    /// about what is too long with the caller rather than duplicated here.
+    ///
+    /// This exists because a real `stat` does not scan for a terminator
+    /// indefinitely either. `getname()` on Linux and `copyinstr` on Darwin copy
+    /// at most `PATH_MAX` bytes and report ENAMETOOLONG if no NUL appears in
+    /// them — so an unterminated buffer is an ordinary error a guest can
+    /// provoke, not the interpreter abort that reading past it would give.
+    let readNullTerminatedBytesWithin
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        (maxBytes : int)
+        : byte array
+        =
+        if maxBytes < 1 then
+            failwith $"%s{operation}: cannot scan %d{maxBytes} bytes for a terminator; the bound must be positive."
+
+        match ptr with
+        | ManagedPointerSource.Null ->
+            failwith $"TODO: %s{operation} with null UTF-8 pointer should throw ArgumentNullException"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"%s{operation}: cannot read UTF-8 string from fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
+        | ManagedPointerSource.Byref _ ->
+            let byteConcreteType = requiredByteConcreteType operation baseClassTypes state
+
+            let rec loop (byteIndex : int) (bytes : byte list) : byte array =
+                if byteIndex >= maxBytes then
+                    bytes |> List.rev |> Array.ofList
+                else
+
+                let b = readUtf8Byte operation baseClassTypes state byteConcreteType ptr byteIndex
+
+                if b = 0uy then
+                    bytes |> List.rev |> Array.ofList
+                else
+                    loop (byteIndex + 1) (b :: bytes)
+
+            loop 0 []
+
+    let readNullTerminatedUtf8
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : string
+        =
+        readNullTerminatedBytes operation baseClassTypes state ptr
+        |> System.Text.Encoding.UTF8.GetString
 
     /// Read exactly <paramref name="byteCount"/> bytes of raw UTF-8 from the guest, without
     /// looking for a null terminator. CoreCLR's metadata strings are counted rather than
@@ -589,18 +654,7 @@ module NativeCall =
             | EvalStackValue.ObjectRef addr -> addr
             | other -> failwith $"%s{operation}: expected ObjectRef for RuntimeType argument, got %O{other}"
 
-        let heapObj = ManagedHeap.get runtimeTypeAddr state.ManagedHeap
-
-        // RuntimeType.m_handle is typed as IntPtr (primitive-like); unwrap to reach the inner NativeInt.
-        let handleField =
-            IlMachineState.requiredOwnInstanceFieldId state heapObj.ConcreteType "m_handle"
-
-        match
-            AllocatedNonArrayObject.DereferenceFieldById handleField heapObj
-            |> CliType.unwrapPrimitiveLike
-        with
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
-        | other -> failwith $"%s{operation}: expected TypeHandlePtr in RuntimeType.m_handle, got %O{other}"
+        DynamicScopeOperand.runtimeTypeHandleTargetOfRuntimeType operation state runtimeTypeAddr
 
     let typeAssemblyName
         (operation : string)

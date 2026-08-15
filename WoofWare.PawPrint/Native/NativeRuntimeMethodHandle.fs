@@ -781,7 +781,7 @@ module NativeRuntimeMethodHandle =
             let targets =
                 methodInstantiationTargets
                     operation
-                    methodInfo.DeclaringType.Identity
+                    methodInfo.RequiredDeclaringType.Identity
                     (identity.GetMethodDefinitionHandle ())
                     methodInfo.Generics.Length
                     (identity.GetMethodGenerics ())
@@ -981,8 +981,8 @@ module NativeRuntimeMethodHandle =
                     ctx.LoggerFactory
                     ctx.BaseClassTypes
                     state
-                    $"%s{methodInfo.DeclaringType.Namespace}.%s{methodInfo.DeclaringType.Name}.%s{methodInfo.Name}"
-                    methodInfo.DeclaringType.Assembly
+                    $"%s{MethodOwner.describe methodInfo.Owner}.%s{methodInfo.Name}"
+                    methodInfo.DeclaringAssembly
                     declaringTypeGenerics
                     (ImmutableArray.CreateRange methodInstantiation)
                     methodInfo.Generics

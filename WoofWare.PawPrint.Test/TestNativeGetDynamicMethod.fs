@@ -426,10 +426,45 @@ public static class Entry
             handle, definition
         | other -> failwith $"registry id %d{registryId} did not resolve to a dynamic method: %O{other}"
 
+    /// One entry of a synthetic `DynamicScope`. The scope is `List&lt;object?&gt; m_tokens`, so an
+    /// entry is any object at all; these are the shapes the tests need to put in one.
+    type private ScopeEntry =
+        /// A null slot. Index 0 of every real scope is one, because `DynamicScope` initialises
+        /// `m_tokens` as `new List&lt;object?&gt; { null }`.
+        | Null
+        /// A string, as `GetTokenFor(string literal)` adds for `Emit(OpCodes.Ldstr, string)`.
+        | Str of string
+        /// A `byte[]`, as `GetTokenFor(byte[] signature)` adds. Index 1 of every real scope is one:
+        /// `DynamicILGenerator`'s constructor puts the method's own signature there before any user
+        /// code runs, and no instruction ever names it.
+        | Blob of byte[]
+        /// A boxed `System.RuntimeTypeHandle` naming <paramref name="target"/>, as
+        /// `GetTokenFor(RuntimeTypeHandle)` adds for `Emit(OpCode, Type)`.
+        | TypeHandle of target : RuntimeTypeHandleTarget
+        /// A `System.Reflection.Emit.VarArgMethod`, as `GetMemberRefToken` adds for *every*
+        /// `EmitCall`, vararg call site or not. Every field zeroed, `m_dynamicMethod` included,
+        /// which is all decoding needs: decoding classifies by type and unwrapping happens when the
+        /// instruction runs.
+        | VarArgMethodObject
+        /// A `System.Reflection.Emit.DynamicMethod`, as `GetTokenFor(DynamicMethod)` adds for
+        /// `Emit(OpCode, MethodInfo)` when the operand is itself a dynamic method.
+        ///
+        /// Every field zeroed, `_methodHandle` included, which is what a target that has not been
+        /// minted looks like — and is all decoding needs, since decoding classifies the entry by its
+        /// *type* and reads nothing out of it. Which method it names is read when the instruction
+        /// runs, by which time `GetMethodDescriptor` has assigned that field.
+        | DynamicMethodObject
+
     /// What a `DynamicResolver`'s fields will be made to say. Everything here is a field the
     /// resolver's constructor assigns and `DynamicMethodBody` reads back.
     type private ResolverBody =
         {
+            /// `m_scope.m_tokens`, in index order starting at 0.
+            Scope : ScopeEntry list
+            /// How many slots the backing `object[]` has beyond `Scope`'s length. `List&lt;T&gt;`
+            /// over-allocates, so a reader that walked `_items.Length` rather than `_size` would
+            /// see stale slots; a non-zero value here is what catches that.
+            ScopeSpareCapacity : int
             /// `m_code`: the baked IL.
             Code : byte[]
             /// `m_localSignature`: a LocalVarSig blob (0x07, then a count, then that many types).
@@ -443,8 +478,14 @@ public static class Entry
             ExceptionHeader : byte[] option
         }
 
+    /// The scope every `DynamicILGenerator` starts with and no body can avoid: the seeded null at
+    /// index 0, and at index 1 the method's own signature blob, which `GetCallableMethod` reads out
+    /// by field and no instruction ever names.
+    let private baselineScope =
+        [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy ; 0x00uy |] ]
+
     /// `ldarg.0; ldarg.0; add; ret` — the smallest body that computes something, and deliberately
-    /// operand-free, since a body carrying a token cannot yet be stored.
+    /// operand-free.
     let private doublingBody =
         {
             Code = [| 0x02uy ; 0x02uy ; 0x58uy ; 0x2Auy |]
@@ -453,13 +494,44 @@ public static class Entry
             InitLocals = true
             ExceptionCount = None
             ExceptionHeader = None
+            Scope = baselineScope
+            ScopeSpareCapacity = 0
+        }
+
+    /// A `ldstr` naming scope entry <paramref name="index"/>, then `ret`. The tag is the one
+    /// `GetTokenFor(string)` applies; `scopeToken` builds others.
+    let private ldstrBody (index : int) (scope : ScopeEntry list) =
+        { doublingBody with
+            Code =
+                Array.append
+                    (Array.append [| 0x72uy |] (System.BitConverter.GetBytes (index ||| 0x70000000)))
+                    [| 0x2Auy |]
+            Scope = scope
+        }
+
+    /// A `newarr` naming scope entry <paramref name="index"/>, then `ret`. The tag is the one
+    /// `GetTokenFor(RuntimeTypeHandle)` applies, which `DynamicScope`'s indexer masks off and
+    /// ignores; the entry is what decides whether this resolves.
+    let private newarrBody (index : int) (scope : ScopeEntry list) =
+        { doublingBody with
+            Code =
+                Array.concat
+                    [
+                        [| 0x17uy |]
+                        [| 0x8Duy |]
+                        System.BitConverter.GetBytes (index ||| 0x02000000)
+                        [| 0x2Auy |]
+                    ]
+            Scope = scope
         }
 
     /// Allocate an instance of `typeInfo` with every instance field zeroed, as `newobj` would
-    /// before running a constructor.
-    let private allocateZeroed
+    /// before running a constructor. <paramref name="typeDefn"/> is how the type is spelled for
+    /// concretization, which differs from `typeInfo.Identity` alone for a generic instantiation.
+    let private allocateZeroedAs
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (typeDefn : TypeDefn)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
@@ -472,7 +544,7 @@ public static class Entry
                 baseClassTypes.Corelib.Name
                 ImmutableArray.Empty
                 ImmutableArray.Empty
-                (TypeDefn.FromDefinition (typeInfo.Identity, SignatureTypeKind.Class))
+                typeDefn
 
         let state, allFields =
             IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state handle
@@ -482,11 +554,162 @@ public static class Entry
                 baseClassTypes
                 state.ConcreteTypes
                 handle
-                typeInfo.Layout
-                (CharSetMetadata.ofTypeAttributes typeInfo.TypeAttributes)
+                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies typeInfo)
                 allFields
 
         IlMachineState.allocateManagedObject handle fields state
+
+    let private allocateZeroed
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        allocateZeroedAs
+            loggerFactory
+            baseClassTypes
+            (TypeDefn.FromDefinition (typeInfo.Identity, SignatureTypeKind.Class))
+            typeInfo
+            state
+
+    /// A `System.Reflection.Emit.DynamicScope` whose `m_tokens` holds <paramref name="entries"/>.
+    ///
+    /// Built as a real `List&lt;object&gt;` — a genuine generic instantiation with a real `_items`
+    /// and `_size` — rather than as any object that happens to have fields of those names, because
+    /// the over-allocation `_size` exists to describe is exactly what one of the tests below is for.
+    let private allocateScope
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (entries : ScopeEntry list)
+        (spareCapacity : int)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let objectHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.PrimitiveType PrimitiveType.Object)
+
+        let state, objectHandle = objectHandle
+
+        let itemsAddr, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero objectHandle)
+                (fun () -> CliType.ObjectRef None)
+                (List.length entries + spareCapacity)
+                state
+
+        let state =
+            (state, List.indexed entries)
+            ||> List.fold (fun state (i, entry) ->
+                let value, state =
+                    match entry with
+                    | ScopeEntry.Null -> CliType.ObjectRef None, state
+                    | ScopeEntry.Str s ->
+                        let addr, state =
+                            IlMachineState.allocateManagedString loggerFactory baseClassTypes s state
+
+                        CliType.ObjectRef (Some addr), state
+                    | ScopeEntry.Blob bytes ->
+                        let addr, state = NativeCall.allocateManagedByteArray baseClassTypes bytes state
+
+                        CliType.ObjectRef (Some addr), state
+                    | ScopeEntry.DynamicMethodObject ->
+                        let addr, state =
+                            allocateZeroed loggerFactory baseClassTypes baseClassTypes.DynamicMethod state
+
+                        CliType.ObjectRef (Some addr), state
+                    | ScopeEntry.VarArgMethodObject ->
+                        let addr, state =
+                            allocateZeroed loggerFactory baseClassTypes baseClassTypes.VarArgMethod state
+
+                        CliType.ObjectRef (Some addr), state
+                    | ScopeEntry.TypeHandle target ->
+                        // A real boxed `RuntimeTypeHandle` pointing at the registry's canonical
+                        // `RuntimeType` for the target, rather than any object with an `m_type`
+                        // field: the walk under test is entry -> m_type -> RuntimeType -> m_handle,
+                        // and `getOrAllocateType` is the same choke point through which a guest's
+                        // own `typeof(T).TypeHandle` would have reached the scope.
+                        let runtimeType, state =
+                            IlMachineState.getOrAllocateType loggerFactory baseClassTypes target state
+
+                        let addr, state =
+                            allocateZeroedAs
+                                loggerFactory
+                                baseClassTypes
+                                (TypeDefn.FromDefinition (
+                                    baseClassTypes.RuntimeTypeHandle.Identity,
+                                    SignatureTypeKind.ValueType
+                                ))
+                                baseClassTypes.RuntimeTypeHandle
+                                state
+
+                        let heapObj = ManagedHeap.get addr state.ManagedHeap
+
+                        let fieldId =
+                            IlMachineState.requiredOwnInstanceFieldId state heapObj.ConcreteType "m_type"
+
+                        let heapObj =
+                            AllocatedNonArrayObject.SetFieldById fieldId (CliType.ObjectRef (Some runtimeType)) heapObj
+
+                        let state =
+                            { state with
+                                ManagedHeap = ManagedHeap.set addr heapObj state.ManagedHeap
+                            }
+
+                        CliType.ObjectRef (Some addr), state
+
+                IlMachineState.setArrayValue itemsAddr value i state
+            )
+
+        // Fill the spare capacity with something a reader that ignored `_size` would trip over: a
+        // string, so it would be classified as a resolvable entry rather than merely refused.
+        let state =
+            (state, [ List.length entries .. List.length entries + spareCapacity - 1 ])
+            ||> List.fold (fun state i ->
+                let addr, state =
+                    IlMachineState.allocateManagedString loggerFactory baseClassTypes $"stale-%d{i}" state
+
+                IlMachineState.setArrayValue itemsAddr (CliType.ObjectRef (Some addr)) i state
+            )
+
+        let listType =
+            requiredTopLevelType baseClassTypes.Corelib "System.Collections.Generic" "List`1"
+
+        let listDefn =
+            TypeDefn.GenericInstantiation (
+                TypeDefn.FromDefinition (listType.Identity, SignatureTypeKind.Class),
+                ImmutableArray.Create (TypeDefn.PrimitiveType PrimitiveType.Object)
+            )
+
+        let listAddr, state =
+            allocateZeroedAs loggerFactory baseClassTypes listDefn listType state
+
+        let state =
+            state
+            |> IlMachineState.setOwnInstanceField listAddr "_items" (CliType.ObjectRef (Some itemsAddr))
+            |> IlMachineState.setOwnInstanceField
+                listAddr
+                "_size"
+                (CliType.Numeric (CliNumericType.Int32 (List.length entries)))
+
+        let scopeAddr, state =
+            allocateZeroed
+                loggerFactory
+                baseClassTypes
+                (requiredTopLevelType baseClassTypes.Corelib "System.Reflection.Emit" "DynamicScope")
+                state
+
+        let state =
+            IlMachineState.setOwnInstanceField scopeAddr "m_tokens" (CliType.ObjectRef (Some listAddr)) state
+
+        scopeAddr, state
 
     /// A `System.Reflection.Emit.DynamicResolver` whose fields say what `body` says.
     ///
@@ -533,6 +756,12 @@ public static class Entry
                 "m_localSignature"
                 (CliType.ObjectRef (Some localSigAddr))
             |> IlMachineState.setOwnInstanceField resolverAddr "m_method" (CliType.ObjectRef (Some methodAddr))
+
+        let scopeAddr, state =
+            allocateScope loggerFactory baseClassTypes body.Scope body.ScopeSpareCapacity state
+
+        let state =
+            IlMachineState.setOwnInstanceField resolverAddr "m_scope" (CliType.ObjectRef (Some scopeAddr)) state
 
         let state =
             match body.ExceptionHeader with
@@ -735,11 +964,17 @@ public static class Entry
         ex.Message |> shouldContainText "no MethodDef token to read"
         ex.Message |> shouldContainText "Probe"
 
-    /// Mints with the given body and returns whatever the handler threw, so that each refusal can
-    /// be checked to fire for its own reason rather than for whichever one happens to come first.
-    let private mintExpectingFailure (body : ResolverBody) : string =
-        let loggerFactory, prepared, state = loadFixture ()
-
+    /// Mints with the given body in an existing state, and returns whatever the handler threw, so
+    /// that each refusal can be checked to fire for its own reason rather than for whichever one
+    /// happens to come first. Takes the state because a test whose scope holds a `TypeHandle` entry
+    /// has to concretize that entry's target somewhere before it can build the body.
+    let private mintExpectingFailureIn
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (body : ResolverBody)
+        (state : IlMachineState)
+        : string
+        =
         let ex =
             Assert.Throws<System.Exception> (fun () ->
                 mintOne loggerFactory prepared "Probe" [| 0x01uy |] body state
@@ -747,6 +982,11 @@ public static class Entry
             )
 
         ex.Message
+
+    /// `mintExpectingFailureIn` against a fresh fixture, for the tests that need no prior state.
+    let private mintExpectingFailure (body : ResolverBody) : string =
+        let loggerFactory, prepared, state = loadFixture ()
+        mintExpectingFailureIn loggerFactory prepared body state
 
     [<Test>]
     let ``the body is read back from the resolver`` () : unit =
@@ -791,11 +1031,17 @@ public static class Entry
         instructions.ExceptionRegions |> Seq.toList |> shouldEqual []
 
     /// `initLocals` is not cosmetic: `MethodInstructions.LocalsInit` is what `localloc` reads to
-    /// choose zero-initialised over uninitialised stack memory. `DynamicMethod.InitLocals` defaults
-    /// to true and is settable, so both values are reachable and both must survive the trip.
+    /// choose zero-initialised over uninitialised stack memory. But minting must not decide it, in
+    /// either direction: `DynamicMethod.InitLocals` has a setter that never latches, and CoreCLR
+    /// does not read it until the method's first JIT (`DynamicILGenerator.cs:729`, reached from
+    /// `LCGMethodResolver::GetCodeInfo`). A mint that recorded the current value would capture one
+    /// the guest is still entitled to change.
+    ///
+    /// Both `TestCase`s assert the *same* thing — that nothing was decided — precisely because the
+    /// field's value at mint must make no difference at all.
     [<TestCase(true)>]
     [<TestCase(false)>]
-    let ``initLocals is read from the DynamicMethod`` (initLocals : bool) : unit =
+    let ``initLocals is not read when the method is minted`` (initLocals : bool) : unit =
         let loggerFactory, prepared, state = loadFixture ()
 
         let body =
@@ -807,16 +1053,138 @@ public static class Entry
             mintOne loggerFactory prepared "Probe" [| 0x01uy |] body state
 
         let _, definition = definitionBehindStub state stubAddress
-        (definition.GetBody ()).LocalsInit |> shouldEqual initLocals
+        definition.GetLatchedLocalsInit () |> shouldEqual None
 
-    /// The refusal the whole design turns on. A `DynamicScope` operand is a well-formed
-    /// `MethodDef`/`TypeDef`/`String` token that names an unrelated *real* row, so a body carrying
-    /// one must not be stored: decoded as-is it would execute against whatever happened to sit at
-    /// that index in the scope assembly.
+    /// A well-formed `MethodDefSig` for `(int32) -> int32`, which is what `doublingBody` computes:
+    /// default calling convention, one parameter, `ELEMENT_TYPE_I4` for the return and again for
+    /// the parameter. The other tests here can hand the QCall arbitrary bytes because minting
+    /// stores the blob without looking at it; anything that *executes* the method decodes it.
+    let private doublingSignature = [| 0x00uy ; 0x01uy ; 0x08uy ; 0x08uy |]
+
+    /// The `DynamicMethod` a resolver was built for: the object whose `_initLocals` a guest goes on
+    /// mutating after the method has been minted, and which `readInitLocals` reaches through.
+    let private methodBehindResolver (state : IlMachineState) (resolver : ManagedHeapAddress) : ManagedHeapAddress =
+        match
+            ManagedHeap.get resolver state.ManagedHeap
+            |> AllocatedNonArrayObject.DereferenceField "m_method"
+            |> CliType.unwrapPrimitiveLikeDeep
+        with
+        | CliType.ObjectRef (Some addr) -> addr
+        | other -> failwith $"expected the resolver's m_method to be an object reference, got %O{other}"
+
+    /// Assign `DynamicMethod.InitLocals`, as the guest's property setter does.
+    let private setInitLocals (resolver : ManagedHeapAddress) (value : bool) (state : IlMachineState) : IlMachineState =
+        IlMachineState.setOwnInstanceField
+            (methodBehindResolver state resolver)
+            "_initLocals"
+            (CliType.ofBool value)
+            state
+
+    /// The `initLocals` a concretised dynamic method will run under.
+    let private localsInitOf (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>) : bool =
+        MethodInfo.tryIlBody method
+        |> Option.defaultWith (fun () -> failwith $"%s{method.Name} was concretised without an IL body")
+        |> fun instructions -> instructions.LocalsInit
+
+    /// Minted while the guest said `true`, executed after it changed its mind. CoreCLR reads
+    /// `InitLocals` when it first compiles the method, not when the method is created, so the value
+    /// in force is the later one.
+    [<Test>]
+    let ``initLocals is read at first execution, not at mint`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let body =
+            { doublingBody with
+                InitLocals = true
+            }
+
+        let stubAddress, resolver, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let handle, _ = definitionBehindStub state stubAddress
+
+        let state = setInitLocals resolver false state
+
+        let _, method =
+            DynamicMethodExecution.concretize loggerFactory prepared.BaseClassTypes "test" handle state
+
+        localsInitOf method |> shouldEqual false
+
+    /// ...and never read again. `LCGMethodResolver::GetCodeInfo` computes `m_Options` only under
+    /// `if (!m_Code)`, so the first compilation fixes the flag for the method's whole life; a guest
+    /// that assigns `InitLocals` afterwards is not refused, it is simply ignored.
+    [<Test>]
+    let ``initLocals is latched by the first execution`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let body =
+            { doublingBody with
+                InitLocals = true
+            }
+
+        let stubAddress, resolver, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let handle, _ = definitionBehindStub state stubAddress
+
+        let state, first =
+            DynamicMethodExecution.concretize loggerFactory prepared.BaseClassTypes "test" handle state
+
+        localsInitOf first |> shouldEqual true
+
+        let state = setInitLocals resolver false state
+
+        let _, second =
+            DynamicMethodExecution.concretize loggerFactory prepared.BaseClassTypes "test" handle state
+
+        localsInitOf second |> shouldEqual true
+
+    /// The latch has to survive in the *state*, not merely in the method that was handed back. A
+    /// build that computed the right flag and dropped the updated registry would satisfy both tests
+    /// above on its first call and quietly re-read the guest's field on every later one.
+    [<Test>]
+    let ``the latch is written back into the returned state`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let body =
+            { doublingBody with
+                InitLocals = false
+            }
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let handle, _ = definitionBehindStub state stubAddress
+
+        let state, _ =
+            DynamicMethodExecution.concretize loggerFactory prepared.BaseClassTypes "test" handle state
+
+        let _, definition = definitionBehindStub state stubAddress
+        definition.GetLatchedLocalsInit () |> shouldEqual (Some false)
+
+    /// The `DynamicScope` index every `ldstr` in a body names.
     ///
-    /// `ldstr` and a metadata token are checked separately because they are separate `IlOp` cases
-    /// reached through separate decoder paths, and a `carriesToken` that had lost either arm would
-    /// still pass the other's test.
+    /// Projected rather than compared as a `StringOperand`, which has no equality: its other case
+    /// carries a `SourcedStringToken`, hence an `AssemblyName`, which has none. The projection is
+    /// not a workaround — an `ldstr` that had decoded to the metadata case here would fail this
+    /// rather than silently compare unequal.
+    let private scopeStringOperands (body : MintedDynamicMethodBody) : int list =
+        body.Instructions
+        |> List.map fst
+        |> List.choose (fun op ->
+            match op with
+            | IlOp.UnaryStringToken (UnaryStringTokenIlOp.Ldstr, operand) ->
+                match operand with
+                | StringOperand.FromDynamicScope index -> Some index
+                | StringOperand.FromMetadata token ->
+                    failwith $"expected a dynamic-scope operand, got the metadata token %O{token.Token}"
+            | _ -> None
+        )
+
+    /// The refusal the design still turns on for every operand kind but `ldstr`. A `DynamicScope`
+    /// operand is a well-formed `MethodDef`/`TypeDef` token that names an unrelated *real* row, so
+    /// a body carrying one must not be stored: decoded as-is it would execute against whatever
+    /// happened to sit at that index in the scope assembly.
     [<Test>]
     let ``a body carrying a metadata token is refused`` () : unit =
         // ldnull; call 0x06000001; ret
@@ -827,23 +1195,407 @@ public static class Entry
 
         let message = mintExpectingFailure body
 
-        message |> shouldContainText "token operand"
         message |> shouldContainText "DynamicScope"
-        // Names the offending instruction, so a failing run says which one to look at.
-        message |> shouldContainText "IL_0001"
+        message |> shouldContainText "0x06000001"
 
+    /// The scope entry an `ldstr` names becomes the operand's value.
     [<Test>]
-    let ``a body carrying a string token is refused`` () : unit =
-        // ldstr 0x70000001; pop; ret
+    let ``an ldstr resolves against the DynamicScope`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let body =
+            ldstrBody 2 [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; ScopeEntry.Str "hello" ]
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let _, definition = definitionBehindStub state stubAddress
+
+        scopeStringOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
+
+    /// The finding that forces demand-driven resolution: `DynamicILGenerator`'s constructor puts the
+    /// method's own signature blob in the scope before any user code runs, and nothing ever names
+    /// it. A reader that required every entry to be resolvable would refuse *every* dynamic method,
+    /// including this one, whose body is nothing but `ldstr; ret`.
+    [<Test>]
+    let ``an unreferenced entry of an unsupported kind does not prevent minting`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let body =
+            ldstrBody
+                2
+                [
+                    ScopeEntry.Null
+                    // Exactly the shape `GetTokenFor(byte[] signature)` leaves at index 1.
+                    ScopeEntry.Blob [| 0x00uy ; 0x01uy ; 0x08uy ; 0x08uy |]
+                    ScopeEntry.Str "fine"
+                ]
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let _, definition = definitionBehindStub state stubAddress
+
+        scopeStringOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
+
+    /// `DynamicScope`'s indexer masks the tag off and never looks at it again
+    /// (`DynamicILGenerator.cs:976-987`), so a token tagged `MethodDef` whose low bits name a string
+    /// entry resolves happily on real .NET. Refusing it on the strength of its tag would reject a
+    /// program the real runtime runs — the *entry* is authoritative, not the tag.
+    [<Test>]
+    let ``the tag bits of a scope token are not consulted`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        // ldstr 0x06000002; ret -- a MethodDef tag over an index that holds a string.
         let body =
             { doublingBody with
-                Code = [| 0x72uy ; 0x01uy ; 0x00uy ; 0x00uy ; 0x70uy ; 0x26uy ; 0x2Auy |]
+                Code = [| 0x72uy ; 0x02uy ; 0x00uy ; 0x00uy ; 0x06uy ; 0x2Auy |]
+                Scope = [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; ScopeEntry.Str "tagged" ]
+            }
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let _, definition = definitionBehindStub state stubAddress
+
+        scopeStringOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
+
+    /// `List<T>` over-allocates, so `_items` is longer than the list. A reader that walked the
+    /// backing array rather than `_size` would see slots holding whatever was last there — here,
+    /// strings, so they would be classified as perfectly good entries rather than merely refused.
+    [<Test>]
+    let ``scope entries past _size are not read`` () : unit =
+        let body =
+            { ldstrBody 3 [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; ScopeEntry.Str "real" ] with
+                ScopeSpareCapacity = 4
             }
 
         let message = mintExpectingFailure body
 
-        message |> shouldContainText "token operand"
-        message |> shouldContainText "IL_0000"
+        message |> shouldContainText "does not exist"
+        message |> shouldContainText "entry 3"
+
+    [<Test>]
+    let ``an ldstr naming an entry of an unsupported kind is refused`` () : unit =
+        let body =
+            ldstrBody 1 [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; ScopeEntry.Str "unused" ]
+
+        let message = mintExpectingFailure body
+
+        message |> shouldContainText "entry 1"
+        message |> shouldContainText "System.Byte"
+        message |> shouldContainText "rather than a string"
+
+    /// Index 0 is the `null` `DynamicScope` seeds `m_tokens` with. Distinguishable in the message
+    /// from "no such entry", because the two mean different things about the emitted IL.
+    [<Test>]
+    let ``an ldstr naming the scope's seeded null is refused`` () : unit =
+        let body =
+            ldstrBody 0 [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; ScopeEntry.Str "unused" ]
+
+        let message = mintExpectingFailure body
+
+        message |> shouldContainText "entry 0"
+        message |> shouldContainText "null"
+
+    [<Test>]
+    let ``an ldstr naming a nonexistent entry is refused`` () : unit =
+        let body = ldstrBody 7 baselineScope
+
+        let message = mintExpectingFailure body
+
+        message |> shouldContainText "entry 7"
+        message |> shouldContainText "does not exist"
+
+    /// The `DynamicScope` index every `newarr` in a body names. Projected rather than compared as a
+    /// `MetadataOperand`, for the same reason `scopeStringOperands` is: the other case carries an
+    /// `AssemblyName`, which has no equality. A `newarr` that had decoded to the metadata case fails
+    /// here rather than silently comparing unequal.
+    let private scopeTypeOperands (body : MintedDynamicMethodBody) : int list =
+        body.Instructions
+        |> List.map fst
+        |> List.choose (fun op ->
+            match op with
+            | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newarr, operand) ->
+                match operand with
+                | MetadataOperand.FromDynamicScope index -> Some index
+                | MetadataOperand.FromMetadata token ->
+                    failwith $"expected a dynamic-scope operand, got the metadata token %O{token.Token}"
+            | _ -> None
+        )
+
+    /// The scope indices this body's `call`s name, in order. The sibling of `scopeTypeOperands`, and
+    /// separate from it so that a `call` decoded as a metadata token fails here loudly rather than
+    /// being silently dropped.
+    let private scopeMethodOperands (body : MintedDynamicMethodBody) : int list =
+        body.Instructions
+        |> List.map fst
+        |> List.choose (fun op ->
+            match op with
+            | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, operand) ->
+                match operand with
+                | MetadataOperand.FromDynamicScope index -> Some index
+                | MetadataOperand.FromMetadata token ->
+                    failwith $"expected a dynamic-scope operand, got the metadata token %O{token.Token}"
+            | _ -> None
+        )
+
+    /// A closed `RuntimeTypeHandleTarget` to hang a scope entry on. `System.Int32` rather than
+    /// anything more exotic because what is under test is the walk to the target, not the target.
+    let private closedInt32
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        : RuntimeTypeHandleTarget * IlMachineState
+        =
+        let state, handle =
+            IlMachineState.concretizeType
+                loggerFactory
+                prepared.BaseClassTypes
+                state
+                prepared.BaseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.PrimitiveType PrimitiveType.Int32)
+
+        RuntimeTypeHandleTarget.Closed handle, state
+
+    /// The scope entry a `newarr` names becomes the operand, exactly as an `ldstr`'s does — the
+    /// point being that the *tag* in the token (0x02, TypeDef) is not what decided it. `DynamicScope`
+    /// masks the tag off and ignores it, so the entry is the only authority on what an index holds.
+    [<Test>]
+    let ``a newarr resolves against the DynamicScope`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+        let target, state = closedInt32 loggerFactory prepared state
+
+        let body =
+            newarrBody
+                2
+                [
+                    ScopeEntry.Null
+                    ScopeEntry.Blob [| 0x00uy |]
+                    ScopeEntry.TypeHandle target
+                ]
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let _, definition = definitionBehindStub state stubAddress
+        let minted = definition.GetBody ()
+
+        scopeTypeOperands minted |> shouldEqual [ 2 ]
+
+        // Nothing about *where* the entry lives is recorded, deliberately: the object is read out of
+        // the live `m_scope.m_tokens` when the instruction runs, because a guest can replace a slot
+        // between minting and first invocation and real .NET compiles against the replacement. There
+        // is no captured address here to go stale, which is a stronger guarantee than a test for one.
+        minted.LocalVars |> Option.map Seq.toList |> shouldEqual (Some [])
+
+    /// The kind check is real, and it is the entry that supplies it. A `newarr` whose index holds a
+    /// string is a program CoreCLR would reject at JIT; PawPrint rejects it when the method is
+    /// minted, as it already does for the mirror-image `ldstr`.
+    [<Test>]
+    let ``a newarr naming a string entry is refused`` () : unit =
+        let body =
+            newarrBody 2 [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; ScopeEntry.Str "not a type" ]
+
+        let message = mintExpectingFailure body
+
+        message |> shouldContainText "Newarr"
+        message |> shouldContainText "entry 2"
+        message |> shouldContainText "rather than a type handle"
+
+    [<Test>]
+    let ``a newarr naming the method's own signature blob is refused`` () : unit =
+        let body = newarrBody 1 baselineScope
+
+        let message = mintExpectingFailure body
+
+        message |> shouldContainText "entry 1"
+        message |> shouldContainText "System.Byte[]"
+        message |> shouldContainText "rather than a type handle"
+
+    [<Test>]
+    let ``a newarr naming a nonexistent entry is refused`` () : unit =
+        let body = newarrBody 7 baselineScope
+
+        let message = mintExpectingFailure body
+
+        message |> shouldContainText "entry 7"
+        message |> shouldContainText "does not exist"
+
+    /// The mirror image of the check above: `ldstr` must not accept a type entry either.
+    [<Test>]
+    let ``an ldstr naming a type entry is refused`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+        let target, state = closedInt32 loggerFactory prepared state
+
+        let body =
+            ldstrBody
+                2
+                [
+                    ScopeEntry.Null
+                    ScopeEntry.Blob [| 0x00uy |]
+                    ScopeEntry.TypeHandle target
+                ]
+
+        let message = mintExpectingFailureIn loggerFactory prepared body state
+
+        message |> shouldContainText "entry 2"
+        message |> shouldContainText "type handle rather than a string"
+
+    /// "This opcode is not wired for scope operands yet" and "this entry is the wrong kind" are
+    /// different facts and must read differently: a guest that trips either just gets parked, so the
+    /// message is the only diagnostic anyone gets. A method-shaped opcode naming a perfectly good
+    /// *method* entry is the case that separates them, and `callvirt` is the one to use now that
+    /// `call` is wired: a `DynamicMethod` is always static, so real .NET answers a `callvirt` naming
+    /// one with MissingMethodException (measured) rather than by resolving it.
+    [<Test>]
+    let ``a callvirt naming a dynamic-method entry is refused as unsupported rather than as wrong-kind`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        // ldnull; callvirt <scope 2>; ret
+        let body =
+            { doublingBody with
+                Code =
+                    Array.concat
+                        [
+                            [| 0x14uy ; 0x6Fuy |]
+                            System.BitConverter.GetBytes (2 ||| 0x0A000000)
+                            [| 0x2Auy |]
+                        ]
+                Scope =
+                    [
+                        ScopeEntry.Null
+                        ScopeEntry.Blob [| 0x00uy |]
+                        ScopeEntry.DynamicMethodObject
+                    ]
+            }
+
+        let message = mintExpectingFailureIn loggerFactory prepared body state
+
+        message |> shouldContainText "Callvirt"
+        message |> shouldContainText "MissingMethodException"
+        // Not the wrong-kind wording ("... which holds X rather than Y"): the entry is fine, the
+        // opcode is what is missing.
+        message |> shouldNotContainText "which holds"
+
+    /// The other half of that distinction, and the case the previous slice pinned the opposite way:
+    /// now that `call` *is* wired, a `call` naming a type entry is a wrong-kind refusal rather than
+    /// an unsupported-opcode one.
+    [<Test>]
+    let ``a call naming a type entry is refused as wrong-kind`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+        let target, state = closedInt32 loggerFactory prepared state
+
+        // ldnull; call <scope 2>; ret
+        let body =
+            { doublingBody with
+                Code =
+                    Array.concat
+                        [
+                            [| 0x14uy ; 0x28uy |]
+                            System.BitConverter.GetBytes (2 ||| 0x0A000000)
+                            [| 0x2Auy |]
+                        ]
+                Scope =
+                    [
+                        ScopeEntry.Null
+                        ScopeEntry.Blob [| 0x00uy |]
+                        ScopeEntry.TypeHandle target
+                    ]
+            }
+
+        let message = mintExpectingFailureIn loggerFactory prepared body state
+
+        message |> shouldContainText "Call"
+        message |> shouldContainText "entry 2"
+        message |> shouldContainText "a type handle rather than a method"
+
+    /// The accepting direction, which is what this slice adds: a `call` naming a `DynamicMethod`
+    /// entry is a body PawPrint will mint. Nothing is read out of the entry here — the method it
+    /// names lives in its `_methodHandle`, which is still null at this point precisely because a
+    /// dynamic method may name *itself* and so cannot be minted before its own body is decoded.
+    [<Test>]
+    let ``a call naming a dynamic-method entry is minted`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        // ldnull; call <scope 2>; ret
+        let body =
+            { doublingBody with
+                Code =
+                    Array.concat
+                        [
+                            [| 0x14uy ; 0x28uy |]
+                            System.BitConverter.GetBytes (2 ||| 0x06000000)
+                            [| 0x2Auy |]
+                        ]
+                Scope =
+                    [
+                        ScopeEntry.Null
+                        ScopeEntry.Blob [| 0x00uy |]
+                        ScopeEntry.DynamicMethodObject
+                    ]
+            }
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let _, definition = definitionBehindStub state stubAddress
+
+        scopeMethodOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
+
+    /// `EmitCall` spells the same call as `Emit(OpCode, MethodInfo)` but stores a `VarArgMethod`
+    /// wrapper rather than the bare `DynamicMethod` — unconditionally, so this is what an ordinary
+    /// `EmitCall(OpCodes.Call, dm, null)` produces rather than a vararg-only curiosity. Both must be
+    /// minted, or a guest that used the other overload would be refused a program real .NET runs.
+    [<Test>]
+    let ``a call naming a vararg-wrapped dynamic method is minted`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        // ldnull; call <scope 2>; ret
+        let body =
+            { doublingBody with
+                Code =
+                    Array.concat
+                        [
+                            [| 0x14uy ; 0x28uy |]
+                            System.BitConverter.GetBytes (2 ||| 0x0A000000)
+                            [| 0x2Auy |]
+                        ]
+                Scope =
+                    [
+                        ScopeEntry.Null
+                        ScopeEntry.Blob [| 0x00uy |]
+                        ScopeEntry.VarArgMethodObject
+                    ]
+            }
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let _, definition = definitionBehindStub state stubAddress
+
+        scopeMethodOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
+
+    /// The mirror image, as for type entries: `ldstr` must not accept a method entry either.
+    [<Test>]
+    let ``an ldstr naming a dynamic-method entry is refused`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let body =
+            ldstrBody
+                2
+                [
+                    ScopeEntry.Null
+                    ScopeEntry.Blob [| 0x00uy |]
+                    ScopeEntry.DynamicMethodObject
+                ]
+
+        let message = mintExpectingFailureIn loggerFactory prepared body state
+
+        message |> shouldContainText "entry 2"
+        message |> shouldContainText "a dynamic method rather than a string"
 
     /// A `catch` clause's type arrives as a `DynamicScope` index in `ClassTokenOrFilterOffset`,
     /// which `ExceptionRegion.Catch` has nowhere to put; so clauses are refused as a body, rather
@@ -997,26 +1749,44 @@ public static class Entry
         message |> shouldContainText "LOCAL_SIG"
         message |> shouldContainText "Field"
 
-    /// `DynamicMethod.InitLocals` is settable right up until the method is first executed, and
-    /// CoreCLR reads it late — `GetCodeInfo` runs during the first JIT, not during this QCall. So a
-    /// guest may `CreateDelegate`, then assign `InitLocals`, then invoke, and get the assigned
-    /// value; the flag recorded here is the earlier one.
-    ///
-    /// `localloc` is the only instruction that consults it, so refusing `localloc` is what makes
-    /// the difference unobservable rather than merely unlikely to be hit.
+    /// A body containing `localloc` used to be refused here, because `localloc` is the one
+    /// instruction whose behaviour depends on `initLocals` and the flag was being snapshotted at
+    /// mint. Now that the flag is read late and latched at first execution, there is nothing to
+    /// refuse: such a body stores like any other, and the flag it will run under is not decided
+    /// yet.
     [<Test>]
-    let ``a body whose behaviour depends on InitLocals is refused`` () : unit =
+    let ``a body containing localloc is stored`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
         // ldc.i4.1; localloc; pop; ret
         let body =
             { doublingBody with
                 Code = [| 0x17uy ; 0xFEuy ; 0x0Fuy ; 0x26uy ; 0x2Auy |]
             }
 
-        let message = mintExpectingFailure body
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" [| 0x01uy |] body state
 
-        message |> shouldContainText "InitLocals"
-        message |> shouldContainText "Localloc"
-        message |> shouldContainText "IL_0001"
+        let _, definition = definitionBehindStub state stubAddress
+
+        // Unwrapped to the nullary payload for the same reason as `the body is read back from the
+        // resolver`: `IlOp` carries a `SourcedMetadataToken` and so has no equality.
+        (definition.GetBody ()).Instructions
+        |> List.map (fun (op, offset) ->
+            match op with
+            | IlOp.Nullary op -> op, offset
+            | other -> failwith $"expected only nullary instructions, got %O{other} at IL_%04x{offset}"
+        )
+        |> shouldEqual
+            [
+                NullaryIlOp.LdcI4_1, 0
+                // Two bytes wide (0xFE 0x0F), which is why `pop` lands at 3 and not at 2.
+                NullaryIlOp.Localloc, 1
+                NullaryIlOp.Pop, 3
+                NullaryIlOp.Ret, 4
+            ]
+
+        definition.GetLatchedLocalsInit () |> shouldEqual None
 
     /// The `<Module>` type of the entry assembly, concretised the way the handler concretises it.
     let private moduleTypeHandle

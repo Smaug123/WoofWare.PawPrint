@@ -246,7 +246,7 @@ module TestFSharpPureCases =
             assy.TypeDefs.Values
             |> Seq.collect (fun typeInfo -> typeInfo.Methods)
             |> Seq.filter (fun methodInfo ->
-                methodInfo.DeclaringType.Name = "TailCall"
+                methodInfo.RequiredDeclaringType.Name = "TailCall"
                 && match MethodInfo.tryIlBody methodInfo with
                    | None -> false
                    | Some instructions ->
@@ -285,7 +285,9 @@ module TestFSharpPureCases =
         let combine =
             assy.TypeDefs.Values
             |> Seq.collect (fun typeInfo -> typeInfo.Methods)
-            |> Seq.filter (fun methodInfo -> methodInfo.DeclaringType.Name = "Base" && methodInfo.Name = "Combine")
+            |> Seq.filter (fun methodInfo ->
+                methodInfo.RequiredDeclaringType.Name = "Base" && methodInfo.Name = "Combine"
+            )
             |> Seq.toList
             |> function
                 | [ m ] -> m
@@ -322,7 +324,7 @@ module TestFSharpPureCases =
         let bump =
             assy.TypeDefs.Values
             |> Seq.collect (fun typeInfo -> typeInfo.Methods)
-            |> Seq.filter (fun methodInfo -> methodInfo.DeclaringType.Name = "Base" && methodInfo.Name = "Bump")
+            |> Seq.filter (fun methodInfo -> methodInfo.RequiredDeclaringType.Name = "Base" && methodInfo.Name = "Bump")
             |> Seq.toList
             |> function
                 | [ m ] -> m

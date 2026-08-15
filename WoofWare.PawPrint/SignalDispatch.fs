@@ -133,18 +133,18 @@ module SignalDispatch =
         =
         if MethodInfo.arity mi <> 2 then
             failwith
-                $"SignalDispatch.trySpawnHandler: registered handler %s{mi.Name} on type %s{mi.DeclaringType.Name} declares %d{MethodInfo.arity mi} parameters; expected exactly 2 ((int signo, PosixSignal signal) -> int)."
+                $"SignalDispatch.trySpawnHandler: registered handler %s{mi.Name} on type %s{MethodOwner.describe mi.Owner} declares %d{MethodInfo.arity mi} parameters; expected exactly 2 ((int signo, PosixSignal signal) -> int)."
 
         match mi.Signature.ReturnType with
         | MethodReturnType.Void ->
             failwith
-                $"SignalDispatch.trySpawnHandler: registered handler %s{mi.Name} on type %s{mi.DeclaringType.Name} returns void; expected Int32 (the 'should run default disposition?' flag)."
+                $"SignalDispatch.trySpawnHandler: registered handler %s{mi.Name} on type %s{MethodOwner.describe mi.Owner} returns void; expected Int32 (the 'should run default disposition?' flag)."
         | MethodReturnType.Returns ret ->
             match ret with
             | ConcretePrimitive concreteTypes PrimitiveType.Int32 -> ()
             | _ ->
                 failwith
-                    $"SignalDispatch.trySpawnHandler: registered handler %s{mi.Name} on type %s{mi.DeclaringType.Name} returns a non-Int32 type; expected Int32 (the 'should run default disposition?' flag)."
+                    $"SignalDispatch.trySpawnHandler: registered handler %s{mi.Name} on type %s{MethodOwner.describe mi.Owner} returns a non-Int32 type; expected Int32 (the 'should run default disposition?' flag)."
 
     /// Polled once per tick by `Program.stepPrepared` immediately before the
     /// scheduler picks its next thread. If a pending signal is deliverable
@@ -206,10 +206,10 @@ module SignalDispatch =
         validateHandlerSignature state.ConcreteTypes mi
 
         let containingAssembly =
-            state.LoadedAssembly mi.DeclaringType.Assembly
+            state.LoadedAssembly mi.DeclaringAssembly
             |> Option.defaultWith (fun () ->
                 failwith
-                    $"SignalDispatch.trySpawnHandler: assembly %s{mi.DeclaringType.Assembly.Name} for handler %s{mi.Name} is not loaded; the SetPosixSignalHandler QCall should have loaded it."
+                    $"SignalDispatch.trySpawnHandler: assembly %s{mi.DeclaringAssembly.Name} for handler %s{mi.Name} is not loaded; the SetPosixSignalHandler QCall should have loaded it."
             )
 
         let args = buildArgs entry.Signal
@@ -234,7 +234,7 @@ module SignalDispatch =
             | Ok ms -> ms
             | Error _ ->
                 failwith
-                    $"SignalDispatch.trySpawnHandler: failed to build MethodState for handler %s{mi.Name} on type %s{mi.DeclaringType.Name}."
+                    $"SignalDispatch.trySpawnHandler: failed to build MethodState for handler %s{mi.Name} on type %s{MethodOwner.describe mi.Owner}."
 
         let state =
             state.MapKernel (fun kernel ->

@@ -65,7 +65,7 @@ module TestInlineArrayStorage =
     let private refField = declaredField "_item" (CliType.ObjectRef None) objectHandle
 
     let private ofFields (fields : CliField list) : CliValueType =
-        CliValueType.OfFields bct allCt declaredHandle Layout.Default CharSet.Ansi fields
+        SynthesisedLayoutKind.ofFields bct allCt declaredHandle Layout.Default CharSet.Ansi fields
 
     [<Test>]
     let ``a type with no inline-array attribute is untouched`` () : unit =
@@ -310,4 +310,246 @@ module TestInlineArrayStorage =
                             Id = FieldId.named "_item"
                         }
                     ]
+            )
+
+    /// A synthesised element whose own size is *not* a multiple of its own alignment: a declared
+    /// `ClassLayout.Size` is a floor, and the alignment rounding is its alternative rather than its
+    /// sequel (`CalculateSizeWithMetadataSize`, classlayoutinfo.cpp:326-341). Five bytes,
+    /// four-aligned.
+    ///
+    /// That is the shape which separates the two questions below, and no primitive element can:
+    /// where the slots sit, and how big the aggregate is.
+    let private floorElementType : CliValueType =
+        SynthesisedLayoutKind.ofFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (5, 0))
+            CharSet.Ansi
+            [ declaredField "I" (CliType.Numeric (CliNumericType.Int32 0)) int32Handle ]
+
+    let private floorField : CliField =
+        declaredField "_item" (CliType.ValueType floorElementType) declaredHandle
+
+    /// Three bytes, one-aligned: the element whose *auto-route* rounding is what
+    /// `sourcesPure/InlineArrayElementSizeRounding.cs` measures against the real runtime.
+    let private narrowElementType : CliValueType =
+        SynthesisedLayoutKind.ofFields
+            bct
+            allCt
+            declaredHandle
+            Layout.Default
+            CharSet.Ansi
+            [
+                declaredField "A" (CliType.Numeric (CliNumericType.UInt8 0uy)) int32Handle
+                declaredField "B" (CliType.Numeric (CliNumericType.UInt8 0uy)) int32Handle
+                declaredField "C" (CliType.Numeric (CliNumericType.UInt8 0uy)) int32Handle
+            ]
+
+    let private narrowField : CliField =
+        declaredField "_item" (CliType.ValueType narrowElementType) declaredHandle
+
+    let private buffer (kind : TypeLayoutKind) (repeat : int) (element : CliField) : CliValueType =
+        let facts : DeclaredTypeFacts =
+            {
+                IsValueType = true
+                IsEnum = false
+                NominalAlignment = None
+                LayoutKind = kind
+                Layout = Layout.Default
+                CharSet = CharSet.Ansi
+            }
+
+        InlineArrayStorage.expand describe Layout.Default (Some repeat) [ element ]
+        |> CliValueType.OfFields bct allCt declaredHandle facts
+
+    /// The offsets at which a field of exactly `size` bytes lives, read back through the public
+    /// API: `DereferenceFieldAt` answers only for a cell that occupies the requested range exactly.
+    let private slotOffsets (size : int) (vt : CliValueType) : int list =
+        [
+            for offset in 0 .. (CliValueType.SizeOf vt).Size - 1 do
+                match
+                    (try
+                        CliValueType.DereferenceFieldAt offset size vt |> Some
+                     with _ ->
+                         None)
+                with
+                | Some _ -> yield offset
+                | None -> ()
+        ]
+
+    /// The sweep in `TestInlineArrayLayout` checks sizes against the real runtime, and
+    /// `sourcesPure/InlineArrayElementSizeRounding.cs` checks the strides a guest can *observe* —
+    /// but a guest observes them through `Unsafe.Add(ref Unsafe.As<TBuffer, TElement>(ref buf), i)`,
+    /// which is `sizeof(TElement)` arithmetic that never consults PawPrint's storage. So neither
+    /// can see where the slot cells actually are, which is what these pin.
+    ///
+    /// The two answers genuinely differ. The *size* is N copies of the element after its rounding,
+    /// because CoreCLR sizes the single declared field completely and then multiplies. The *slots*
+    /// stride by the element's own size, because CoreCLR keeps one `FieldDesc` at offset 0 and
+    /// leaves element addressing to that `Unsafe.Add`. A rounded element therefore leaves its slack
+    /// after the last slot rather than between the slots.
+    [<Test>]
+    let ``slots stride by the element's own size, not by the rounded one`` () : unit =
+        // Sequential: the element is 5 bytes and 4-aligned, so it sizes as 8 and three of them are
+        // 24 bytes — but the slots are five apart, ending at 15 with nine bytes of slack.
+        let sequential = buffer TypeLayoutKind.Sequential 3 floorField
+
+        CliValueType.SizeOf sequential
+        |> shouldEqual
+            {
+                Size = 24
+                Alignment = 4
+            }
+
+        slotOffsets 5 sequential |> shouldEqual [ 0 ; 5 ; 10 ]
+
+        // Auto over the same element: 5 rounds up to the next power of two rather than to the
+        // element's own alignment, which happens to give the same 24 — and a different alignment.
+        let auto = buffer TypeLayoutKind.Auto 3 floorField
+
+        CliValueType.SizeOf auto
+        |> shouldEqual
+            {
+                Size = 24
+                Alignment = 8
+            }
+
+        slotOffsets 5 auto |> shouldEqual [ 0 ; 5 ; 10 ]
+
+        // The three-byte element, where the two routes disagree on the size: 9 against 12.
+        let narrowSequential = buffer TypeLayoutKind.Sequential 3 narrowField
+
+        CliValueType.SizeOf narrowSequential
+        |> shouldEqual
+            {
+                Size = 9
+                Alignment = 1
+            }
+
+        slotOffsets 3 narrowSequential |> shouldEqual [ 0 ; 3 ; 6 ]
+
+        let narrowAuto = buffer TypeLayoutKind.Auto 3 narrowField
+
+        CliValueType.SizeOf narrowAuto
+        |> shouldEqual
+            {
+                Size = 12
+                Alignment = 4
+            }
+
+        slotOffsets 3 narrowAuto |> shouldEqual [ 0 ; 3 ; 6 ]
+
+    /// `N = 1` mints no extra slot, so it is not an expansion and takes the ordinary one-field
+    /// path — but the element's own rounding still applies, so the sizes must agree with the
+    /// `N = 3` cases above divided by three.
+    [<Test>]
+    let ``a single-slot inline array still rounds its element`` () : unit =
+        CliValueType.SizeOf (buffer TypeLayoutKind.Auto 1 narrowField)
+        |> shouldEqual
+            {
+                Size = 4
+                Alignment = 4
+            }
+
+        CliValueType.SizeOf (buffer TypeLayoutKind.Sequential 1 narrowField)
+        |> shouldEqual
+            {
+                Size = 3
+                Alignment = 1
+            }
+
+        CliValueType.SizeOf (buffer TypeLayoutKind.Auto 1 floorField)
+        |> shouldEqual
+            {
+                Size = 8
+                Alignment = 8
+            }
+
+    /// Three assumptions the striding above makes about the slot list it is handed. `expand` builds
+    /// a list that satisfies all three, so nothing in the interpreter can reach these — but F#'s
+    /// `private` is assembly-scoped and `CliValueType.OfFields` is public, so a future construction
+    /// site could. Each is asserted rather than assumed, and each is fired here, so that "no test
+    /// covers this" never becomes "and it turns out it never worked".
+    [<Test>]
+    let ``the striding assumptions are asserted rather than assumed`` () : unit =
+        let expectFailure (contains : string) (f : unit -> unit) : unit =
+            let exn = Assert.Throws<exn> (fun () -> f ())
+            exn.Message |> shouldContainText contains
+
+        let slotId (index : int) : FieldId =
+            FieldId.inlineArrayElement
+                declaredHandle
+                (ComparableFieldDefinitionHandle.Make someFieldHandle)
+                "_item"
+                index
+
+        let facts (kind : TypeLayoutKind) (layout : Layout) : DeclaredTypeFacts =
+            {
+                IsValueType = true
+                IsEnum = false
+                NominalAlignment = None
+                LayoutKind = kind
+                Layout = layout
+                CharSet = CharSet.Ansi
+            }
+
+        let slots (second : CliField) : CliField list =
+            [
+                narrowField
+                { second with
+                    Id = slotId 1
+                    Name = "_item[1]"
+                }
+            ]
+
+        // Slots that are not copies of one field: the stride is taken from the first, so a wider
+        // second slot would silently overlap the third.
+        expectFailure
+            "copies of one declared field"
+            (fun () ->
+                slots intField
+                |> CliValueType.OfFields bct allCt declaredHandle (facts TypeLayoutKind.Sequential Layout.Default)
+                |> ignore
+            )
+
+        // A declared `ClassLayout.Size` alongside slots. CoreCLR refuses to load such a type
+        // outright (`IDS_CLASSLOAD_INLINE_ARRAY_EXPLICIT_SIZE`) and so does `expand`; reaching the
+        // layout with one would mean the floor and the multiplication both claim to set the size.
+        expectFailure
+            "declared ClassLayout.Size"
+            (fun () ->
+                slots narrowField
+                |> CliValueType.OfFields
+                    bct
+                    allCt
+                    declaredHandle
+                    (facts TypeLayoutKind.Sequential (Layout.Custom (32, 0)))
+                |> ignore
+            )
+
+        // Slots inheriting bytes from a base chain. CoreCLR reads `[InlineArray]` only inside the
+        // value-type branch of `PlaceInstanceFields`, so no such type has a non-trivial parent.
+        expectFailure
+            "no non-trivial parent"
+            (fun () ->
+                CliValueType.OfFieldChain
+                    bct
+                    allCt
+                    declaredHandle
+                    [
+                        {
+                            Declared = declaredHandle
+                            Facts = facts TypeLayoutKind.Sequential Layout.Default
+                            OwnFields = [ intField ]
+                            IsTrivialParent = false
+                        }
+                        {
+                            Declared = declaredHandle
+                            Facts = facts TypeLayoutKind.Sequential Layout.Default
+                            OwnFields = slots narrowField
+                            IsTrivialParent = false
+                        }
+                    ]
+                |> ignore
             )

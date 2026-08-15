@@ -114,7 +114,7 @@ module internal UnaryMetadataTokenOps =
                                     baseClassTypes
                                     state
                                     activeAssy.Name
-                                    currentMethod.DeclaringType.Generics
+                                    currentMethod.DeclaringTypeGenerics
                                     currentMethod.Generics
                                     typeDefn
 
@@ -223,8 +223,8 @@ module internal UnaryMetadataTokenOps =
 
         logger.LogDebug (
             "Pushed pointer to function {LdFtnAssembly}.{LdFtnType}.{LdFtnMethodName}",
-            method.DeclaringType.Assembly.Name,
-            method.DeclaringType.Name,
+            method.DeclaringAssembly.Name,
+            method.RequiredDeclaringType.Name,
             method.Name
         )
 
@@ -267,8 +267,8 @@ module internal UnaryMetadataTokenOps =
 
             logger.LogDebug (
                 "Pushed pointer to non-virtual function {LdVirtFtnAssembly}.{LdVirtFtnType}.{LdVirtFtnMethodName}",
-                method.DeclaringType.Assembly.Name,
-                method.DeclaringType.Name,
+                method.DeclaringAssembly.Name,
+                method.RequiredDeclaringType.Name,
                 method.Name
             )
 
@@ -289,12 +289,12 @@ module internal UnaryMetadataTokenOps =
         // never have raised. `callvirt` needs no such guard: it null-checks unconditionally, so the
         // omission is unobservable there.
         let declaringTypeIsSealed =
-            match state.LoadedAssembly callSiteMethod.DeclaringType.Assembly with
+            match state.LoadedAssembly callSiteMethod.DeclaringAssembly with
             | None ->
                 failwith
-                    $"Ldvirtftn: declaring assembly for %O{callSiteMethod} is not loaded: %O{callSiteMethod.DeclaringType.Assembly}"
+                    $"Ldvirtftn: declaring assembly for %O{callSiteMethod} is not loaded: %O{callSiteMethod.DeclaringAssembly}"
             | Some declaringAssy ->
-                declaringAssy.TypeDefs.[callSiteMethod.DeclaringType.Definition.Get].TypeAttributes.HasFlag
+                declaringAssy.TypeDefs.[callSiteMethod.RequiredDeclaringType.Definition.Get].TypeAttributes.HasFlag
                     TypeAttributes.Sealed
 
         if declaringTypeIsSealed then
@@ -366,8 +366,8 @@ module internal UnaryMetadataTokenOps =
             // both consumers close together when `FunctionPointerTarget` can name one.
             logger.LogDebug (
                 "Pushed pointer to virtual function {LdVirtFtnAssembly}.{LdVirtFtnType}.{LdVirtFtnMethodName}, dispatched from {LdVirtFtnCallSite}",
-                target.DeclaringType.Assembly.Name,
-                target.DeclaringType.Name,
+                target.DeclaringAssembly.Name,
+                target.RequiredDeclaringType.Name,
                 target.Name,
                 method.Name
             )
@@ -398,7 +398,7 @@ module internal UnaryMetadataTokenOps =
                 failwith $"unexpected field name ${field.Name} for BCL type RuntimeTypeHandle"
 
             let methodGenerics = currentMethod.Generics
-            let typeGenerics = currentMethod.DeclaringType.Generics
+            let typeGenerics = currentMethod.DeclaringTypeGenerics
 
             let state, target =
                 IlMachineState.runtimeTypeHandleTargetForTypeToken
@@ -442,8 +442,10 @@ module internal UnaryMetadataTokenOps =
                     baseClassTypes
                     state.ConcreteTypes
                     runtimeTypeHandleHandle
-                    Layout.Default
-                    (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeTypeHandle.TypeAttributes)
+                    (DeclaredTypeFacts.ofTypeInfo
+                        baseClassTypes
+                        state._LoadedAssemblies
+                        baseClassTypes.RuntimeTypeHandle)
 
             IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
 
@@ -492,7 +494,7 @@ module internal UnaryMetadataTokenOps =
                     activeAssy.Methods.[h]
                     |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
-                if not method.DeclaringType.Generics.IsEmpty then
+                if not method.DeclaringTypeGenerics.IsEmpty then
                     failwith
                         $"TODO: ldtoken MethodDef for methods on generic declaring types requires open generic RuntimeMethodHandle support; got %O{method}"
 
@@ -522,7 +524,7 @@ module internal UnaryMetadataTokenOps =
                 let sign = activeAssy.TypeSpecs.[h].Signature
                 handleTypeToken activeAssy false sign state
             | MetadataToken.TypeReference h ->
-                let typeGenerics = currentMethod.DeclaringType.Generics
+                let typeGenerics = currentMethod.DeclaringTypeGenerics
 
                 let state, typeDefn, assy =
                     IlMachineState.lookupTypeRef loggerFactory baseClassTypes state activeAssy typeGenerics h

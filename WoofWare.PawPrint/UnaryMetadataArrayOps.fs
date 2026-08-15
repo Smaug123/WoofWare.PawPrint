@@ -10,8 +10,6 @@ module internal UnaryMetadataArrayOps =
     let executeNewarr (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
@@ -36,26 +34,75 @@ module internal UnaryMetadataArrayOps =
                 failwith
                     $"unexpectedly popped value %O{popped} to serve as array len for Newarr. ECMA-335 III.4.13 also permits a native int here — Roslyn emits `conv.ovf.i; newarr` for `new T[someLong]` — which PawPrint does not yet decode."
 
-        let typeGenerics = currentMethod.DeclaringType.Generics
+        let typeGenerics = currentMethod.DeclaringTypeGenerics
 
-        let state, elementType, assy =
-            IlMachineState.resolveTypeMetadataToken
+        let state, concreteTypeHandle =
+            match ctx.TypeOperand with
+            | ResolvedTypeOperand.FromScope handle -> state, handle
+            | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
+                let state, elementType, assy =
+                    IlMachineState.resolveTypeMetadataToken
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        currentMethod.DeclaringTypeGenerics
+                        metadataToken
+
+                // `cliTypeZeroOf` split into its two halves (IlMachineTypeResolution.fs:586-607)
+                // so that the zero below is computed the same way for both universes.
+                let state = state.WithLoadedAssembly assy
+
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    assy.Name
+                    typeGenerics
+                    methodState.Generics
+                    elementType
+
+        let zeroOfType, state =
+            IlMachineState.cliTypeZeroOfHandle state baseClassTypes concreteTypeHandle
+
+        // A byref-like element type is refused before anything is allocated: `Span<int>` and
+        // `TypedReference` are stack-only, so CoreCLR fails to load `Span<int>[]` at all and never
+        // reaches the allocation. Measured on real .NET, against a control (`sizeof Span<int>` is
+        // perfectly legal and answers 16, so this is a fact about `newarr`, not about the type).
+        //
+        // Universe-independent on purpose: the same IL is illegal whether its token came from
+        // metadata or from a `DynamicScope`. It is only *reachable* from the latter, because no
+        // compiler emits it, which is why this was silently allocating a stack-only type on the
+        // heap until now.
+        let state, elementIsByRefLike =
+            match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes concreteTypeHandle with
+            | None -> state, false
+            | Some (_, elementDefn) ->
+                state, DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies elementDefn
+
+        if elementIsByRefLike then
+            // The exception *type* is reproduced; its message and `TypeName` are not. CoreCLR's
+            // message is "Could not create array type 'System.Span`1[System.Int32][]' from assembly
+            // 'System.Private.CoreLib, Version=…, PublicKeyToken=…' because the element type is
+            // ByRef-like", and `TypeName` is that same mangled array-type name (both measured).
+            // Reproducing them means a CLR-mangled type-name formatter *and* the ability to set
+            // `_className`, which the runtime-synthesised-exception channel cannot do — it calls a
+            // parameterless constructor and then writes `_message` and `_HResult` only.
+            //
+            // Setting the message alone would be worse than leaving both: `.Message` would name the
+            // type while `.TypeName` stayed null, which is the disagreement `Intrinsics.fs` declines
+            // to create for `ArgumentException._paramName` (lines 1908-1910, 3325-3326), and which
+            // `ScopeEntryLookup.PastEnd` records for the same reason. Whether that channel should
+            // grow structured-field support at all is a question for its own change.
+            //
+            // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
+            IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
+                baseClassTypes.TypeLoadException
+                thread
                 state
-                activeAssy
-                currentMethod.DeclaringType.Generics
-                metadataToken
-
-        let state, zeroOfType, concreteTypeHandle =
-            IlMachineState.cliTypeZeroOf
-                loggerFactory
-                baseClassTypes
-                assy
-                elementType
-                typeGenerics
-                methodState.Generics
-                state
+        else
 
         // The length is checked *after* the element type has been resolved, as CoreCLR does:
         // the array MethodTable is in hand before `AllocateSzArray` is reached, so a type that
@@ -133,12 +180,10 @@ module internal UnaryMetadataArrayOps =
     let executeLdelema (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let typeGenerics = currentMethod.DeclaringType.Generics
+        let typeGenerics = currentMethod.DeclaringTypeGenerics
         let methodGenerics = currentMethod.Generics
 
         // ECMA-335 III.2.2: capture and consume the `readonly.` prefix that may have
@@ -212,24 +257,38 @@ module internal UnaryMetadataArrayOps =
             // The exact-equality semantics — not assignment-compatibility — match CoreCLR
             // (interpexec.cpp INTOP_LDELEMA_REF, where the JIT-resolved expectedMT is
             // compared with `arr->GetArrayElementTypeHandle()`).
-            let state, elementType, elementAssy =
-                IlMachineState.resolveTypeMetadataToken
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    activeAssy
-                    typeGenerics
-                    metadataToken
+            let state, tokenElementHandle =
+                match ctx.TypeOperand with
+                | ResolvedTypeOperand.FromScope handle -> state, handle
+                | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
+                    let state, elementType, elementAssy =
+                        IlMachineState.resolveTypeMetadataToken
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            activeAssy
+                            typeGenerics
+                            metadataToken
 
-            let state, _zeroOfType, tokenElementHandle =
-                IlMachineState.cliTypeZeroOf
-                    loggerFactory
-                    baseClassTypes
-                    elementAssy
-                    elementType
-                    typeGenerics
-                    methodGenerics
-                    state
+                    // `cliTypeZeroOf` split into its two halves (IlMachineTypeResolution.fs:586-607).
+                    let state = state.WithLoadedAssembly elementAssy
+
+                    IlMachineState.concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        elementAssy.Name
+                        typeGenerics
+                        methodGenerics
+                        elementType
+
+            // The zero itself is discarded — this path only wants the handle — but computing it is
+            // not: laying a type out reads its field types, which can bind assembly references
+            // nothing else in the run names, and `cliTypeZeroOfHandle` returns those bindings in the
+            // state. Dropping the call would drop the bindings, and would turn a type that cannot be
+            // laid out into a silent ArrayTypeMismatchException below instead of the failure it is.
+            let _zeroOfType, state =
+                IlMachineState.cliTypeZeroOfHandle state baseClassTypes tokenElementHandle
 
             if tokenElementHandle <> arrayElementHandle then
                 // Don't advance the PC: exception dispatch needs the faulting instruction's
@@ -251,7 +310,7 @@ module internal UnaryMetadataArrayOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let declaringTypeGenerics = currentMethod.DeclaringType.Generics
+        let declaringTypeGenerics = currentMethod.DeclaringTypeGenerics
 
         let state, assy, elementType =
             resolveElementTypeToken
@@ -332,7 +391,7 @@ module internal UnaryMetadataArrayOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let declaringTypeGenerics = currentMethod.DeclaringType.Generics
+        let declaringTypeGenerics = currentMethod.DeclaringTypeGenerics
 
         let state, assy, elementType =
             resolveElementTypeToken

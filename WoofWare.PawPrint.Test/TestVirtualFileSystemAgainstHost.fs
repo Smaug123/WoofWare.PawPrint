@@ -46,6 +46,25 @@ module TestVirtualFileSystemAgainstHost =
     [<Literal>]
     let private F_OK = 0
 
+    /// Which simulated platform this test host actually is, so the model is
+    /// asked to resolve as a kernel of the flavour it is being compared against.
+    ///
+    /// A function rather than a value so that the `failwith` cannot fire during
+    /// module initialisation on a host where every test here `Assert.Ignore`s.
+    /// Only the *flavour* of the result is ever consumed, so `macOsArm64` is the
+    /// right answer on an Intel Mac too.
+    let private hostPlatform () : SimulatedUnixPlatform =
+        if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
+            SimulatedUnixPlatform.macOsArm64
+        elif RuntimeInformation.IsOSPlatform OSPlatform.Linux then
+            SimulatedUnixPlatform.linuxX64
+        else
+            failwith
+                "TestVirtualFileSystemAgainstHost: this host is neither macOS nor Linux, so there is no SimulatedUnixPlatform to compare it against. Every test in this fixture is supposed to Assert.Ignore before reaching here."
+
+    let private limits () : PathLimits =
+        SimulatedUnixPlatform.pathLimits (hostPlatform ())
+
     /// How a path resolution finished, in terms both the model and the kernel
     /// can express without needing `struct stat`.
     [<RequireQualifiedAccess>]
@@ -240,6 +259,7 @@ module TestVirtualFileSystemAgainstHost =
         let resolveDirectory (relative : string) : InodeNumber =
             match
                 VirtualFileSystem.resolveExisting
+                    (limits ())
                     (VirtualFileSystem.root vfs)
                     SymlinkPolicy.Follow
                     (UnixPath.parseOrFail "test" relative)
@@ -303,6 +323,7 @@ module TestVirtualFileSystemAgainstHost =
         // NoFollowFinal — and a trailing separator overrides that on both sides.
         match
             VirtualFileSystem.resolveExisting
+                (limits ())
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.NoFollowFinal
                 (UnixPath.parseOrFail "test" relative)
@@ -345,15 +366,16 @@ module TestVirtualFileSystemAgainstHost =
         n - 1
 
     [<Test>]
-    let ``the traversal bounds bracket this kernel's real symlink limit`` () : unit =
+    let ``pathLimits states this kernel's real symlink limit exactly`` () : unit =
         if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
             Assert.Ignore "This oracle compares against a Unix kernel."
 
-        // Pins the band arithmetic against the kernel rather than against a
-        // header or a recollection. A review of this code claimed macOS fails
-        // at 32 rather than 33; measuring settled it, and this test keeps the
-        // answer from drifting. Runs on whichever platform CI uses, so the two
-        // halves of the band are each pinned somewhere.
+        // Pins `SimulatedUnixPlatform.pathLimits` against the kernel rather than
+        // against a header or a recollection. A review of this code claimed
+        // macOS fails at 32 rather than 33; measuring settled it, and this test
+        // keeps the answer from drifting. macOS locally and Linux in CI, so each
+        // flavour's entry is checked on the machine that can actually falsify
+        // it — and neither rests on my say-so.
         let unique = Guid.NewGuid().ToString "N"
         let root = Path.Combine (Path.GetTempPath (), $"pawprint-loop-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
@@ -366,13 +388,256 @@ module TestVirtualFileSystemAgainstHost =
             limit |> shouldBeGreaterThan 7
             limit |> shouldBeSmallerThan 99
 
-            if limit < VirtualFileSystem.symlinksEveryPlatformAllows then
-                failwith
-                    $"This kernel allows only %d{limit} symlink traversals, but VirtualFileSystem treats up to %d{VirtualFileSystem.symlinksEveryPlatformAllows} as unanimously permitted — so the model would return success where this platform returns ELOOP."
+            let modelled =
+                PathLimits.maxSymlinkTraversals (SimulatedUnixPlatform.pathLimits (hostPlatform ()))
 
-            if limit >= VirtualFileSystem.symlinksNoPlatformAllows then
+            if limit <> modelled then
                 failwith
-                    $"This kernel allows %d{limit} symlink traversals, but VirtualFileSystem treats %d{VirtualFileSystem.symlinksNoPlatformAllows} as unanimously refused — so the model would return ELOOP where this platform succeeds."
+                    $"This kernel resolves a chain of %d{limit} symlinks and refuses %d{limit + 1}, but SimulatedUnixPlatform.pathLimits says %O{hostPlatform ()} permits %d{modelled}. The model would disagree with a real kernel of the flavour it claims to be; %d{limit} is the measured answer."
+        finally
+            try
+                Directory.Delete (root, true)
+            with _ ->
+                ()
+
+    /// Names whose treatment separates the three implementations anyone might
+    /// write: counting bytes, counting characters, and counting UTF-16 units.
+    ///
+    /// `中` is 3 bytes and 1 unit; an emoji is 4 bytes, 1 character and 2 units.
+    /// So 255 `中` distinguishes bytes from units, and 127 emoji + one ASCII
+    /// distinguishes characters from units.
+    let private nameProbes : (string * string) list =
+        [
+            "255 ASCII", String.replicate 255 "a"
+            "256 ASCII", String.replicate 256 "a"
+            "85 CJK (255 bytes)", String.replicate 85 "中"
+            "86 CJK (258 bytes)", String.replicate 86 "中"
+            "255 CJK (765 bytes, 255 units)", String.replicate 255 "中"
+            "127 emoji + 1 ASCII (255 units)", String.replicate 127 "\U0001F600" + "a"
+            "127 emoji + 2 ASCII (256 units)", String.replicate 127 "\U0001F600" + "aa"
+            "255 e-acute in NFC (510 bytes, 255 units)", String.replicate 255 "é"
+        ]
+
+    [<Test>]
+    let ``pathLimits agrees with this kernel about which names are too long`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // Compares the *predicate* rather than the number, which is the only
+        // thing `PathLimits` exposes — deliberately, since a number without its
+        // unit is meaningless. It is also the stronger comparison: it fails for
+        // any name the model and the kernel disagree about, whatever arithmetic
+        // produced the disagreement.
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-namemax-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+        let limits = limits ()
+
+        try
+            for label, candidate in nameProbes do
+                // ENAMETOOLONG rather than ENOENT is how the kernel says "too
+                // long"; nothing here exists, so ENOENT means "would have been
+                // allowed to exist".
+                let hostPermits =
+                    match access (Path.Combine (root, candidate), F_OK) with
+                    | 0 -> failwith $"%s{label}: the probe name unexpectedly exists"
+                    | _ ->
+
+                    match errno () with
+                    | e when e = hostErrno UnixError.ENOENT -> true
+                    | e when e = hostErrno UnixError.ENAMETOOLONG -> false
+                    | e -> failwith $"%s{label}: unexpected errno %d{e} from access(2)"
+
+                let modelPermits =
+                    PathLimits.nameWithinLimit limits (FileName.parseOrFail "name probe" candidate)
+
+                if hostPermits <> modelPermits then
+                    let verb (permits : bool) =
+                        if permits then "permits" else "refuses"
+
+                    failwith
+                        $"%s{label} (%d{Text.Encoding.UTF8.GetByteCount candidate} UTF-8 bytes, %d{candidate.Length} UTF-16 units): this kernel %s{verb hostPermits} it, but PathLimits for %O{hostPlatform ()} %s{verb modelPermits} it."
+        finally
+            try
+                Directory.Delete (root, true)
+            with _ ->
+                ()
+
+    /// The longest pathname argument this kernel accepts, in bytes. Every
+    /// component is "." so that `NAME_MAX` cannot be what refuses it, and the
+    /// path resolves whenever it is short enough.
+    let private hostPathMax (root : string) : int =
+        let accepts (n : int) : bool =
+            let filler = String.replicate ((n / 2) + 1) "./"
+            let candidate = filler.Substring (0, n)
+
+            match access (Path.Combine (root, candidate), F_OK) with
+            | 0 -> true
+            | _ -> errno () <> hostErrno UnixError.ENAMETOOLONG
+
+        // Bisect rather than scan: the two plausible answers are ~1024 apart on
+        // one platform and ~4096 on the other.
+        let mutable low = 1
+        let mutable high = 65536
+
+        while high - low > 1 do
+            let mid = low + (high - low) / 2
+
+            if accepts mid then low <- mid else high <- mid
+
+        low
+
+    [<Test>]
+    let ``pathLimits states this kernel's real PATH_MAX exactly`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-pathmax-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            // The probe passes an *absolute* path, so the root's own bytes count
+            // toward the limit; the usable length of a bare argument is that
+            // plus what the prefix consumed.
+            let prefix = root.Length + 1
+            let usable = hostPathMax root + prefix
+
+            let modelled = PathLimits.pathMaxBytes (limits ())
+
+            // PATH_MAX counts the NUL, so the longest usable argument is one
+            // less than it.
+            if usable + 1 <> modelled then
+                failwith
+                    $"This kernel accepts a pathname argument of %d{usable} bytes and refuses %d{usable + 1}, so its PATH_MAX is %d{usable + 1}; SimulatedUnixPlatform.pathLimits says %O{hostPlatform ()} has %d{modelled}."
+        finally
+            try
+                Directory.Delete (root, true)
+            with _ ->
+                ()
+
+    // ------------------------------------------------- symlink splice length
+
+    /// An absolute path of exactly `bytes` bytes naming nothing, in components
+    /// of 200 so that NAME_MAX cannot be what refuses it on either flavour.
+    let private danglingTarget (bytes : int) : string =
+        let component_ = "/" + String.replicate 200 "z"
+        let repeated = String.replicate (bytes / component_.Length + 1) component_
+        repeated.Substring (0, bytes)
+
+    [<Test>]
+    let ``the model splices symlink targets exactly as this kernel does`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // Darwin re-checks the total length whenever it expands a symbolic link
+        // and Linux does not, so this pins whichever of the two the host is —
+        // macOS locally, Linux in CI, and neither column rests on my say-so.
+        //
+        // Outcomes are compared pointwise rather than boundaries, so the same
+        // test is meaningful on a kernel that has no boundary at all: on Linux
+        // every probe below must resolve, and a model that wrongly re-checked
+        // would fail here rather than silently agreeing.
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-splice-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            let pathMax = PathLimits.pathMaxBytes (limits ())
+            let mutable index = 0
+            let mutable compared = 0
+
+            // The suffix table from the probes, including the rows that
+            // separate a raw-byte model from a canonical one: "//a" costs what
+            // "/a" costs, but "/a//b" costs one byte more than "/a/b".
+            let suffixes =
+                [
+                    ""
+                    "/"
+                    "//"
+                    "/a"
+                    "/a/"
+                    "//a"
+                    "///a"
+                    "/a/b"
+                    "/a//b"
+                    "/a///b"
+                    "/./a"
+                    "/.."
+                    "/a/../b"
+                ]
+
+            for suffix in suffixes do
+                // Where the *model* would put the boundary. Used only to choose
+                // probe points; every assertion below compares the host's
+                // outcome against the model's, so a wrong PATH_MAX here would
+                // move the probes rather than excuse a disagreement — and the
+                // PATH_MAX oracle above is what pins that number.
+                let predicted = pathMax - Text.Encoding.UTF8.GetByteCount suffix - 1
+
+                for candidate in [ predicted - 1 ; predicted ; predicted + 1 ] do
+                    // `symlink(2)` will not create a target of PATH_MAX bytes or
+                    // more, so that cell is not reachable on a live kernel at
+                    // all; the unit tests state the extrapolation instead.
+                    if candidate >= 1 && candidate <= pathMax - 1 then
+                        index <- index + 1
+                        let linkName = $"L%d{index}"
+                        let linkPath = Path.Combine (root, linkName)
+                        let targetText = danglingTarget candidate
+
+                        if symlink (targetText, linkPath) <> 0 then
+                            failwith
+                                $"could not create a probe symlink with a %d{candidate}-byte target: errno %d{errno ()}"
+
+                        let hostOutcome =
+                            match access (linkPath + suffix, F_OK) with
+                            | 0 -> Ok ()
+                            | _ -> Error (errno ())
+
+                        let vfs =
+                            VirtualFileSystem.createSymlink
+                                (VirtualFileSystem.root (VirtualFileSystem.empty buildTime))
+                                (FileName.parseOrFail "test" linkName)
+                                buildTime
+                                (SymlinkTarget.parseOrFail "test" targetText)
+                                (VirtualFileSystem.empty buildTime)
+                            |> function
+                                | Ok (_, vfs) -> vfs
+                                | Error error -> failwith $"building the model link: %O{error}"
+
+                        let modelOutcome =
+                            match
+                                VirtualFileSystem.resolve
+                                    (limits ())
+                                    (VirtualFileSystem.root vfs)
+                                    SymlinkPolicy.Follow
+                                    (UnixPath.parseOrFail "test" ("/" + linkName + suffix))
+                                    vfs
+                            with
+                            | Ok _ -> Ok ()
+                            | Error error -> Error (hostErrno error)
+
+                        compared <- compared + 1
+
+                        if hostOutcome <> modelOutcome then
+                            let describe (outcome : Result<unit, int>) : string =
+                                match outcome with
+                                | Ok () -> "resolved"
+                                | Error e when e = hostErrno UnixError.ENOENT -> "ENOENT"
+                                | Error e when e = hostErrno UnixError.ENAMETOOLONG -> "ENAMETOOLONG"
+                                | Error e when e = hostErrno UnixError.ELOOP -> "ELOOP"
+                                | Error e -> $"errno %d{e}"
+
+                            failwith
+                                $"Resolving \"%s{linkName}%s{suffix}\" through a symlink whose target is %d{candidate} bytes: this kernel says %s{describe hostOutcome}, but the model says %s{describe modelOutcome}. %O{hostPlatform ()} either re-checks the spliced length or does not, and the kernel is the authority."
+
+            // Guards against a silently empty sweep: if `symlink` or the probe
+            // loop stopped producing candidates, every comparison above would
+            // vacuously hold.
+            compared |> shouldBeGreaterThan 30
         finally
             try
                 Directory.Delete (root, true)

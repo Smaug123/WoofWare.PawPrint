@@ -23,29 +23,89 @@ module internal UnaryMetadataIlOp =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (op : UnaryMetadataTokenIlOp)
-        (sourcedMetadataToken : SourcedMetadataToken)
+        (operand : MetadataOperand)
         (state : IlMachineState)
         (thread : ThreadId)
         : IlMachineState * WhatWeDid
         =
         let logger = logger loggerFactory op
 
-        let activeAssy =
-            state.LoadedAssembly sourcedMetadataToken.SourceAssembly
-            |> Option.defaultWith (fun () ->
-                let available = state._LoadedAssemblies.DefinitionNames |> String.concat " ; "
+        // Resolving a `DynamicScope` operand here rather than in each op is what keeps the
+        // "not a closed type" refusal in one place. Which *kind* of entry to read it as comes from
+        // `IlDecoding.scopeOperandKind`, the same function the decoder consulted when it accepted
+        // the body — so this cannot disagree with what the body was admitted on, and there is no
+        // second copy of the classification to drift.
+        //
+        // Doing it before the op runs also matches CoreCLR, which resolves every token when it JITs
+        // the method — i.e. before any of its instructions execute. Nothing observable turns on the
+        // ordering here in any case: a scope type is already resolved, so reading it loads no type
+        // and runs no `.cctor`, unlike the metadata path each op still performs for itself.
+        let resolved =
+            match operand with
+            | MetadataOperand.FromMetadata sourced ->
+                let activeAssy =
+                    state.LoadedAssembly sourced.SourceAssembly
+                    |> Option.defaultWith (fun () ->
+                        let available = state._LoadedAssemblies.DefinitionNames |> String.concat " ; "
 
-                failwith
-                    $"Metadata token source assembly %O{sourcedMetadataToken.SourceAssembly} is not loaded; available assemblies: {available}"
-            )
+                        failwith
+                            $"Metadata token source assembly %O{sourced.SourceAssembly} is not loaded; available assemblies: {available}"
+                    )
+
+                Ok (ResolvedMetadataOperand.FromMetadata (activeAssy, sourced.Token))
+            | MetadataOperand.FromDynamicScope scopeIndex ->
+                let operation = string<UnaryMetadataTokenIlOp> op
+
+                match IlDecoding.scopeOperandKind op with
+                | IlDecoding.ScopeOperandKind.Type ->
+                    DynamicScopeOperand.closedType baseClassTypes operation scopeIndex state thread
+                    |> Result.map ResolvedMetadataOperand.ScopeType
+                | IlDecoding.ScopeOperandKind.Method ->
+                    // No `Error` arm: every way a method-position entry can be wrong is unreachable
+                    // from a guest today, so `dynamicMethod` crashes rather than fabricating the
+                    // exception real .NET would raise. See its docs for the measurements.
+                    DynamicScopeOperand.dynamicMethod baseClassTypes operation scopeIndex state thread
+                    |> ResolvedMetadataOperand.ScopeMethod
+                    |> Ok
+                | IlDecoding.ScopeOperandKind.NotYetSupported missing ->
+                    // Unreachable: the decoder refuses such a body when the method is minted, so no
+                    // `IlOp` carrying a scope operand for this opcode exists to be executed.
+                    failwith
+                        $"BUG: %O{op} is executing a DynamicScope operand naming entry %d{scopeIndex}, but IlDecoding.scopeOperandKind says %s{missing}, so the decoder should have refused this body at mint"
+
+        match resolved with
+        | Error (exceptionType, why) ->
+            // Measured on real .NET: an open generic definition, a bare generic parameter and an
+            // open constructed type all make the method throw InvalidProgramException when it is
+            // compiled, against a closed control that runs. `Emit` accepts all of them, because
+            // each is a perfectly good `RuntimeType`.
+            //
+            // The residual divergence is *when*: real .NET compiles the whole body before running
+            // any of it, so nothing the method would have done first happens; PawPrint throws when
+            // this instruction is reached. That is inherent to interpreting rather than JITting and
+            // is already true of every invalid metadata operand.
+            //
+            // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
+            // `why` is a PawPrint diagnostic and goes to the log; the exception the guest catches
+            // carries the message CoreCLR gives it, which for these types is either their own
+            // default or a fixed string (see `clrMessageFor`).
+            logger.LogWarning ("{Op} refused a DynamicScope operand: {Reason}", op, why)
+
+            IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                loggerFactory
+                baseClassTypes
+                exceptionType
+                (DynamicScopeOperand.clrMessageFor baseClassTypes exceptionType)
+                thread
+                state
+        | Ok operand ->
 
         let ctx : UnaryMetadataIlOpContext =
             {
                 LoggerFactory = loggerFactory
                 BaseClassTypes = baseClassTypes
                 Op = op
-                ActiveAssembly = activeAssy
-                MetadataToken = sourcedMetadataToken.Token
+                Operand = operand
                 CurrentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
                 Thread = thread
                 Logger = logger

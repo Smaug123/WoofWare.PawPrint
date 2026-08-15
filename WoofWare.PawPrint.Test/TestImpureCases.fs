@@ -14,6 +14,58 @@ open WoofWare.PawPrint.Test
 module TestImpureCases =
     let assy = typeof<RunResult>.Assembly
 
+    /// Build one registration of `EffectiveUserIdConfigured.cs`. The guest
+    /// echoes the effective uid it observed to stdout as four little-endian
+    /// bytes, so the assertion is that those bytes are the identity we
+    /// configured — which lets one source file pin `SystemNative_GetEUid` at
+    /// several distinct identities.
+    ///
+    /// Through stdout rather than through the exit code, because an exit code
+    /// is eight bits and a uid is a `uint32`. Every identity below 2^16 leaves
+    /// a truncating handler indistinguishable from a correct one, and every
+    /// identity below 2^31 leaves a sign-confusing one indistinguishable too —
+    /// so the registrations include `nobody`, which is neither.
+    ///
+    /// `gid` is always different from `uid`, so a handler reading `GroupId`
+    /// fails; the registrations below also swap the pair, so it fails in both
+    /// directions. None of them is `EmulatedKernel.defaultUserId`, so a handler
+    /// answering with a constant fails too.
+    let private effectiveUserIdCase (uid : uint32) (gid : uint32) : EndToEndTestCase =
+        {
+            FileName = "EffectiveUserIdConfigured.cs"
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    UserId = uid
+                    GroupId = gid
+                    // One file, for the guest's `st_uid == GetEUid()` check.
+                    FileSystem =
+                        Map.ofList
+                            [
+                                FileName.parseOrFail "test seed" "f",
+                                SeedEntry.File (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                            ]
+                }
+            AppContext = AppContextProperties.empty
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    // Spelled out rather than taken from `BitConverter`, which
+                    // would make this expectation and the guest's own
+                    // byte-shifting agree only because the host is
+                    // little-endian.
+                    OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                    |> Seq.toArray
+                    |> shouldEqual
+                        [|
+                            byte (uid &&& 0xFFu)
+                            byte ((uid >>> 8) &&& 0xFFu)
+                            byte ((uid >>> 16) &&& 0xFFu)
+                            byte ((uid >>> 24) &&& 0xFFu)
+                        |]
+                )
+        }
+
     /// Build one registration of `CurrentDirectoryConfigured.cs`. The guest
     /// echoes the directory it observed to stdout, so the assertion is simply
     /// that the bytes it printed are the UTF-8 of the path we configured —
@@ -200,6 +252,216 @@ module TestImpureCases =
             // fails a test that says so.
             currentDirectoryCase "/"
             currentDirectoryCase "/home/pawprint/work"
+            // Root, which is the identity `defaultUserId` deliberately avoids:
+            // `Environment.IsPrivilegedProcess` is exactly `GetEUid() == 0`, so
+            // this is the only case in the suite that observes a guest taking
+            // its privileged branch.
+            effectiveUserIdCase 0u 200u
+            // An ordinary unprivileged identity, and the same pair swapped, so
+            // that reporting the gid fails whichever way round it is.
+            effectiveUserIdCase 37u 200u
+            effectiveUserIdCase 200u 37u
+            // `nobody` on Linux, and the `nogroup` beside it. Both have their
+            // high bit set and neither fits in sixteen bits, which is what
+            // makes a truncating or sign-confusing handler visible at all.
+            effectiveUserIdCase 4294967294u 4294967293u
+            {
+                // Reads every field `SystemNative_Stat`/`LStat` write, through a
+                // hand-rolled P/Invoke. Impure because most of those fields
+                // *cannot* agree with a real filesystem: a real file's owner is
+                // whoever ran the suite, and its timestamps are "just now",
+                // whereas the emulated kernel's are its boot instant. The
+                // cross-runtime half of the story — which paths exist, and what
+                // kind of thing lives at each — is `sourcesPure/FileExistsSeeded.cs`.
+                FileName = "StatFieldsSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        // Deliberately *not* the defaults. A boot clock of 0
+                        // would make "the seed recorded the configured instant"
+                        // indistinguishable from "the seed left a zero in
+                        // place", and equal uid and gid would let the two be
+                        // swapped without any test noticing. The awkward
+                        // millisecond count also forces the seconds/nanoseconds
+                        // split to be done rather than guessed.
+                        WallClockEpochMs = 1_700_000_123L
+                        UserId = 1000u
+                        GroupId = 2000u
+                        FileSystem =
+                            let name (s : string) = FileName.parseOrFail "test seed" s
+                            let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
+
+                            Map.ofList
+                                [
+                                    name "f",
+                                    SeedEntry.File (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                                    name "d", SeedEntry.Directory Map.empty
+                                    name "lf", SeedEntry.Symlink (target "f")
+                                    name "dang", SeedEntry.Symlink (target "nx")
+                                ]
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The three parts of `SystemNative_ReadLink`'s contract the
+                // differential oracle cannot be asked about; the guest's own
+                // header says why each one is here rather than in the pure
+                // sibling `SystemNativeReadLink.cs`.
+                FileName = "ReadLinkRawSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        FileSystem =
+                            let name (s : string) = FileName.parseOrFail "test seed" s
+                            let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
+
+                            Map.ofList
+                                [
+                                    name "f",
+                                    SeedEntry.File (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                                    name "lf", SeedEntry.Symlink (target "f")
+                                    // U+00DF then 'x': three UTF-8 bytes,
+                                    // C3 9F 78, so that a one- or two-byte
+                                    // truncation lands *inside* the first
+                                    // character. That is the whole point of
+                                    // the seed — a handler measuring .NET
+                                    // characters rather than bytes agrees with
+                                    // a correct one on every ASCII target, and
+                                    // ASCII is all the oracle's seed validator
+                                    // permits.
+                                    name "mb", SeedEntry.Symlink (target "ßx")
+                                ]
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Pins `open(2)`'s lowest-free-descriptor rule against the
+                // emulated kernel's own table. Impure because the *numbers*
+                // are not cross-runtime: the oracle's process holds the
+                // runtime's own descriptors, so its first open is not 3, and a
+                // differential guest could assert only ">= 0" — which no wrong
+                // allocator fails.
+                FileName = "OpenFdNumbering.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        FileSystem =
+                            let name (s : string) = FileName.parseOrFail "test seed" s
+
+                            let file (contents : string) =
+                                SeedEntry.File (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
+
+                            Map.ofList [ name "f", file "one" ; name "g", file "two" ; name "h", file "three" ]
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Pins the emulated kernel's MAXSYMLINKS end to end, which is
+                // the one part of `pathLimits` that unit tests cannot reach:
+                // they call the resolver directly, so a `resolveGuestPath` that
+                // hardcoded a platform would satisfy every one of them.
+                //
+                // Impure because its subject is a 33-link chain — precisely the
+                // length Linux resolves and macOS refuses — so it is not a
+                // cross-runtime fact and must not be handed to the oracle.
+                FileName = "SymlinkLimitSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        FileSystem =
+                            let name (s : string) = FileName.parseOrFail "test seed" s
+                            let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
+
+                            /// A chain of `length` links under `prefix`, ending
+                            /// at a regular file, so resolving its head performs
+                            /// exactly `length` traversals.
+                            let chain (prefix : string) (length : int) =
+                                [
+                                    for i in 1..length do
+                                        let next =
+                                            if i = length then
+                                                $"%s{prefix}target"
+                                            else
+                                                $"%s{prefix}%d{i + 1}"
+
+                                        yield name $"%s{prefix}%d{i}", SeedEntry.Symlink (target next)
+
+                                    yield name $"%s{prefix}target", SeedEntry.File ImmutableArray<byte>.Empty
+                                ]
+
+                            // 32 is below every platform's limit, 41 above every
+                            // platform's limit, and 33 is the disputed band.
+                            // Written as literals rather than derived from
+                            // `pathLimits`, so that this test disagrees with a
+                            // wrong `pathLimits` instead of agreeing with it.
+                            [ chain "a" 32 ; chain "b" 33 ; chain "c" 41 ] |> List.concat |> Map.ofList
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Pins Darwin's symlink-splice length re-check end to end. The
+                // unit tests call the resolver directly, so a `resolveGuestPath`
+                // passing hardcoded limits would satisfy all of them; only a
+                // guest sees that the configured platform reaches the syscall
+                // boundary.
+                //
+                // Configured as **macOS**, unusually for these tests, because
+                // Linux performs no such check at any length — on the default
+                // kernel every path in this guest would simply resolve. That
+                // also makes the raw errno Darwin's 63.
+                FileName = "SpliceLengthSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        FileSystem =
+                            /// An absolute path of exactly `bytes` bytes naming
+                            /// nothing, in components of 200 so that NAME_MAX
+                            /// cannot be what refuses it.
+                            let dangling (bytes : int) : SymlinkTarget =
+                                let component_ = "/" + String.replicate 200 "z"
+
+                                String.replicate (bytes / component_.Length + 1) component_
+                                |> fun s -> s.Substring (0, bytes)
+                                |> SymlinkTarget.parseOrFail "test seed"
+
+                            // Written as literals rather than derived from
+                            // `pathLimits`, so that this test disagrees with a
+                            // wrong PATH_MAX instead of agreeing with it.
+                            [
+                                FileName.parseOrFail "test seed" "atMax", SeedEntry.Symlink (dangling 1021)
+                                FileName.parseOrFail "test seed" "overMax", SeedEntry.Symlink (dangling 1022)
+                            ]
+                            |> Map.ofList
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Pins PATH_MAX and NAME_MAX end to end. Needs no seed: every
+                // path it passes is refused before anything is looked up, and
+                // the controls are ENOENT in an empty filesystem.
+                //
+                // Impure because the raw errno it reads is the *Linux* one, and
+                // ENAMETOOLONG is numbered differently on Darwin (63) — so this
+                // is a claim about the kernel PawPrint is configured to be, not
+                // a cross-runtime fact.
+                FileName = "PathLengthLimitsSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
             {
                 // The motivating case for host-seeded AppContext: a BCL feature switch,
                 // declared in `runtimeconfig.json` and latched by `EventSource` on first
@@ -295,6 +557,117 @@ module TestImpureCases =
                 // The guest's comment explains why the QCall's effect is observable without
                 // executing the dynamic method, and what each non-zero exit code means.
                 FileName = "DynamicMethodStubFromModule.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // What a `Reflection.Emit` method's frame looks like in a rendered stack trace:
+                // no qualifying type name, because it has no declaring type. The guest-visible
+                // consequence of #988's representation choice, and the one thing that would have
+                // caught a fabricated owner.
+                FileName = "DynamicMethodStackTrace.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Executing the body of a `Reflection.Emit` method: the first slice that runs the
+                // IL rather than only minting, describing or binding it. Registered with the
+                // dynamic-code switch overridden, like its siblings.
+                FileName = "DynamicMethodInvoke.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // When `DynamicMethod.InitLocals` is read (after minting) and when it stops being
+                // read (after the first execution). Registered with the dynamic-code switch
+                // overridden, like its siblings.
+                FileName = "DynamicMethodInitLocals.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `ldstr` whose operand names a `DynamicScope` entry rather than a UserString row,
+                // and the object identity that comes with it: interning by value, with the
+                // emitting guest's own string as the candidate on a miss, decided at first
+                // execution rather than at mint. Registered with the dynamic-code switch
+                // overridden, like its siblings. Every expectation was measured against the host's
+                // real .NET, which returns 0 for this program.
+                FileName = "DynamicMethodStringLiteral.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Type-shaped operands resolved against a `DynamicScope` rather than against
+                // metadata: `newarr`, `sizeof`, `isinst`, `castclass`, `box`/`unbox`/`unbox.any`,
+                // `initobj`, `ldobj`/`stobj` and `ldelema`, plus the `InvalidProgramException` an
+                // operand that does not name a closed type produces. Registered with the
+                // dynamic-code switch overridden, like its siblings. Every expectation was measured
+                // against the host's real .NET, which returns 0 for this program.
+                FileName = "DynamicMethodTypeToken.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Method-shaped operands resolved against a `DynamicScope` rather than against
+                // metadata: `call` naming a scope entry that is itself a `DynamicMethod`, including
+                // a method naming *itself*. Registered with the dynamic-code switch overridden, like
+                // its siblings. Every expectation was measured against the host's real .NET, which
+                // returns 0 for this program.
+                FileName = "DynamicMethodMethodToken.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext =
@@ -689,6 +1062,24 @@ module TestImpureCases =
                 // runtimes agree on, is asserted differentially in
                 // `sourcesPure/NewarrLengthValidation.cs`. Recorded in docs/divergences.md.
                 FileName = "NewarrNegativeLengthMessage.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `Unsafe.ByteOffset` between byrefs more than 2^31 bytes apart, which is the
+                // guest-visible face of the projection walk's byte-offset accumulation.
+                //
+                // Impure not because the two runtimes disagree — they agree exactly, and the
+                // expected values were measured on real .NET — but because displacing a byref
+                // that far past a stack local is undefined behaviour, so the *oracle* is
+                // non-deterministic: measured, this guest died with an AccessViolationException
+                // roughly one run in ten on real .NET while never returning a different answer.
+                // A differential registration would be flaky for a reason unrelated to the code
+                // under test. The guest's own comment carries the measurement.
+                FileName = "UnsafeByteOffsetInt32Overflow.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty

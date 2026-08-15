@@ -1378,9 +1378,9 @@ module NativeRuntimeTypeQCall =
                     // methods; faithfully representing the open form is not yet supported.
                     let method = assembly.Methods.[h]
 
-                    if method.DeclaringType.Generics.Length > 0 then
+                    if method.DeclaringTypeGenerics.Length > 0 then
                         failwith
-                            $"TODO: %s{operation}: MethodDef token 0x%08x{methodToken} declared on generic type %s{method.DeclaringType.Namespace}.%s{method.DeclaringType.Name} (%d{method.DeclaringType.Generics.Length} type generic parameter(s)); CoreCLR returns the open metadata definition without consuming the caller's typeInstantiation, but the MethodHandle registry only supports fully concretised methods."
+                            $"TODO: %s{operation}: MethodDef token 0x%08x{methodToken} declared on generic type %s{MethodOwner.describe method.Owner} (%d{method.DeclaringTypeGenerics.Length} type generic parameter(s)); CoreCLR returns the open metadata definition without consuming the caller's typeInstantiation, but the MethodHandle registry only supports fully concretised methods."
 
                     if method.Generics.Length > 0 then
                         failwith
@@ -1461,7 +1461,7 @@ module NativeRuntimeTypeQCall =
                                     ctx.LoggerFactory
                                     ctx.BaseClassTypes
                                     state
-                                    method.DeclaringType.Assembly
+                                    method.DeclaringAssembly
                                     ImmutableArray.Empty
                                     ImmutableArray.Empty
                                     ty

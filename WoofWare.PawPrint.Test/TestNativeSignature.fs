@@ -282,8 +282,7 @@ public sealed class MethodSignatureHost
                 fixture.BaseClassTypes
                 state.ConcreteTypes
                 typeHandle
-                typeInfo.Layout
-                (CharSetMetadata.ofTypeAttributes typeInfo.TypeAttributes)
+                (DeclaredTypeFacts.ofTypeInfo fixture.BaseClassTypes state._LoadedAssemblies typeInfo)
 
         IlMachineState.allocateManagedObject typeHandle contents state
 

@@ -777,6 +777,63 @@ and CliField =
         MarshallingDescriptor : FieldMarshalDescriptor option
     }
 
+/// One type in a base chain, together with the fields *it* declares and the facts that govern
+/// how they are placed.
+///
+/// CoreCLR lays each type in a chain out separately, starting a derived type's own fields at the
+/// parent's instance size (`HandleAutoLayout`, methodtablebuilder.cpp:8283-8296), so an inherited
+/// field's offset is a property of the type that declares it and of nothing below. Layout
+/// therefore consumes a chain rather than one flattened field list: the flat list cannot say
+/// where one type's fields end and the next type's begin, and — more importantly — it has thrown
+/// away the per-level `Pack`, declared kind and declared `Size` that placement reads.
+and TypeLayoutLevel =
+    {
+        /// The type declaring `OwnFields`.
+        Declared : ConcreteTypeHandle
+        /// How *this* type's own fields are placed.
+        Facts : DeclaredTypeFacts
+        /// Only the fields this type declares; inherited ones belong to the level that declares
+        /// them.
+        OwnFields : CliField list
+        /// True for `System.Object` and `System.ValueType`, and for those two only.
+        ///
+        /// CoreCLR's `hasNonTrivialParent` (`PlaceInstanceFields`, methodtablebuilder.cpp:8132)
+        /// is `pParentMT && !IsObjectClass() && !IsValueTypeClass()`, so a type deriving directly
+        /// from either is treated as having no parent at all. That is load-bearing rather than an
+        /// optimisation: the promotion rule below demotes a `Sequential` type whose parent is not
+        /// managed-sequential, and neither `Object` nor `ValueType` is, so without this every
+        /// plain `[StructLayout(Sequential)] struct` would be promoted to auto layout.
+        ///
+        /// Note `System.Enum` is deliberately *not* in this set: it is a reference type deriving
+        /// from `ValueType`, it declares no instance fields, and CoreCLR treats it as an ordinary
+        /// zero-sized parent — which is why an enum's `value__` still lands at offset 0.
+        IsTrivialParent : bool
+    }
+
+/// What one level of a base chain needs to know about the level below it. `None` where
+/// `TypeLayoutLevel.IsTrivialParent` says there is effectively no parent.
+and ParentLayout =
+    {
+        /// Where this level's own fields start: the parent's `GetNumInstanceFieldBytes()`
+        /// (methodtable.inl:151).
+        InstanceSize : int
+        /// True when the parent ended up on the sequential path — declared `Sequential` *and* not
+        /// promoted. CoreCLR's `MethodTable::IsManagedSequential`, which the promotion rule and
+        /// `TryGetParentLayoutInfo` (classlayoutinfo.cpp:20-45) both read.
+        IsManagedSequential : bool
+        /// The parent's alignment requirement, contributed to a sequential or explicit child but
+        /// only when the parent is managed-sequential or blittable-explicit (ibid).
+        AlignmentRequirement : int
+        /// True when the parent was bumped from a computed size of 0 up to 1. Such a parent
+        /// contributes 0 to a derived type rather than its padded size, "but ONLY for inheritance
+        /// situations" (`TryGetParentLayoutInfo`).
+        IsZeroSized : bool
+        /// True when the parent, or anything above it in the chain, holds an object reference.
+        /// The promotion rule reads the *parent's* GC-ness as well as the type's own
+        /// (`hasGCFields`, methodtablebuilder.cpp:8179).
+        ContainsReferences : bool
+    }
+
 and CliConcreteField =
     private
         {
@@ -852,12 +909,41 @@ and CliValueType =
             /// Cached primitive-like classification for `_Declared`. `Some kind` for any value type
             /// whose storage form is a single-field wrapper that the eval stack flattens: the
             /// closed set of BCL wrapper structs (IntPtr, RuntimeTypeHandle, ...) plus every CLR
-            /// enum (detected structurally by the reserved `value__` field at offset 0). `None`
-            /// for user-defined structs and non-primitive BCL structs. Populated at construction
+            /// enum over a fixed-width integer. `None` for user-defined structs and non-primitive
+            /// BCL structs. Enum-ness is decided nominally, by the constructing caller, and
+            /// arrives as `DeclaredTypeFacts.IsEnum`. Populated at construction
             /// time so the context-free `EvalStackValue.ofCliType` can flatten without threading
             /// `BaseClassTypes`/`AllConcreteTypes` through every push site.
             _PrimitiveLikeKind : PrimitiveLikeKind option
+            /// The alignment CoreCLR stamps on the declared type by name, overriding the one its
+            /// fields imply; `None` for every type whose demand is derived, which is almost all of
+            /// them. Arrives as `DeclaredTypeFacts.NominalAlignment`, and is cached here for the
+            /// same reason `_PrimitiveLikeKind` is: answering it needs metadata, and `SizeOf` is
+            /// deliberately context-free.
+            ///
+            /// It governs only what a *container* must do to place a field of this type. The
+            /// type's own size is still derived (see `SizeOf`), which is faithful: CoreCLR stamps
+            /// the alignment after the size has been computed and never recomputes it.
+            _NominalAlignment : int option
+            /// The instance size and alignment the layout pass produced, cached because it cannot
+            /// be recovered from the placements.
+            ///
+            /// Two facts make recomputation impossible rather than merely wasteful. A declared
+            /// `ClassLayout.Size` is a floor *relative to the parent*, so a type can be wider than
+            /// its own last field ends -- `[Sequential] PB { long }` -> `[Sequential, Size = 12]
+            /// PD { int }` is 20 bytes with its fields ending at 12. And the alignment requirement
+            /// mixes each level's own `Pack` with its parent's, which a flat field list has thrown
+            /// away.
+            ///
+            /// `DeclaredTypeFacts.NominalAlignment` is already folded in here, so `SizeOf` is a
+            /// field read.
+            _InstanceSize : SizeofResult
             _Storage : CliValueTypeStorage
+            /// Which field-placement algorithm governs this type, as
+            /// `TypeLayoutKind.applied` reports it for the declaring type. Stored alongside
+            /// `Layout` because sizing needs both and neither determines the other: `Layout` is
+            /// the `ClassLayout` table's `Pack`/`Size`, and this says whether anything reads them.
+            LayoutKind : TypeLayoutKind
             Layout : Layout
             /// Marshalling string-encoding hint, derived from the declaring type's
             /// `TypeAttributes.StringFormatMask` (Ansi/Unicode/Auto). Stage 3 of the field-marshal
@@ -872,11 +958,24 @@ and CliValueType =
     member this.Declared : ConcreteTypeHandle = this._Declared
     member this.PrimitiveLikeKind : PrimitiveLikeKind option = this._PrimitiveLikeKind
 
-    /// Structural detection of CLR enums: exactly one instance field at offset 0 named `value__`
-    /// with an integral underlying type. The `value__` name is CLR-reserved for enums, so this
-    /// matches the nominal "has base type `System.Enum`" check without threading assembly lookup
-    /// through every construction site.
-    static member private IsEnumStructural (fields : CliConcreteField list) : bool =
+    /// Is an enum with this field shape one whose storage PawPrint flattens?
+    ///
+    /// True only for enums over the fixed-width integers. ECMA-335 II.14.3 also permits an enum
+    /// over `bool`, `char` or a native int — C# cannot declare one but Reflection.Emit can, and
+    /// the CLR loads them — and those deliberately answer false, so their storage stays a wrapped
+    /// `CliValueType`. `IlMachineRuntimeMetadata.unboxMaterialisesFlattened` depends on that:
+    /// it decides whether a boxed value materialises flattened, and if this widened to cover them,
+    /// `unboxPermitted` would start refusing a legal unbox that works today.
+    ///
+    /// This is the *structural* half of the enum question, and it is structural on purpose: it
+    /// asks which `CliNumericType` cell the value actually holds, which is a fact about the storage
+    /// in hand rather than about metadata. The nominal half — is the declared type an enum at all —
+    /// cannot be answered from the fields and arrives as `DeclaredTypeFacts.IsEnum`.
+    ///
+    /// The `value__`/offset-0/single-field conditions are retained as a guard rather than as the
+    /// test: for a genuine enum ECMA-335 II.14.3 guarantees them, so failing them means the caller
+    /// misidentified the type, and answering "not flattenable" is the safe direction.
+    static member private EnumUnderlyingIsFlattenable (fields : CliConcreteField list) : bool =
         match fields with
         | [ f ] when f.Name = "value__" && f.Offset = 0 ->
             match f.Contents with
@@ -899,20 +998,28 @@ and CliValueType =
             | CliType.ValueType _ -> false
         | _ -> false
 
-    /// Combine the nominal BCL-wrapper classification with the structural enum detection.
+    /// Combine the nominal BCL-wrapper classification with the enum classification.
     /// Returns the BCL kind if `declared` is one of the wrapper structs; otherwise returns
-    /// `Some EnumLike` if `fields` has the structural shape of a CLR enum; otherwise `None`.
+    /// `Some EnumLike` if the declared type is a CLR enum whose underlying integer we flatten;
+    /// otherwise `None`.
+    ///
+    /// Both halves of the enum test are load-bearing and neither implies the other. `isEnum` is
+    /// nominal and comes from the caller's metadata; `EnumUnderlyingIsFlattenable` is structural
+    /// and reads the storage in hand. Dropping the first classifies `struct Fake { int value__; }`
+    /// as an enum (issue #996); dropping the second flattens enums over `bool`/`char`/native int,
+    /// which `unboxMaterialisesFlattened` requires stay wrapped.
     static member private ClassifyPrimitiveLike
         (bct : BaseClassTypes<DumpedAssembly>)
         (allCt : AllConcreteTypes)
         (declared : ConcreteTypeHandle)
+        (isEnum : bool)
         (fields : CliConcreteField list)
         : PrimitiveLikeKind option
         =
         match PrimitiveLikeStruct.kindFromHandle bct allCt declared with
         | Some k -> Some k
         | None ->
-            if CliValueType.IsEnumStructural fields then
+            if isEnum && CliValueType.EnumUnderlyingIsFlattenable fields then
                 Some PrimitiveLikeKind.EnumLike
             else
                 None
@@ -964,10 +1071,15 @@ and CliValueType =
     /// `Size`. Bucketing is not cosmetic — a declared-order walk cannot fit `{byte; object; byte}`
     /// into the 16 bytes CoreCLR gives it, because it has no way to make the two bytes adjacent,
     /// and the resulting size is visible to `sizeof` and to array element stride.
-    static member private ComputeAutoLayoutFields (fields : CliField list) : CliConcreteField list =
+    static member private ComputeAutoLayoutFields
+        (startOffset : int)
+        (fields : CliField list)
+        : CliConcreteField list * int
+        =
         let classified =
             fields
             |> List.map (fun field -> field, CliValueType.ClassifyForAutoLayout field.Contents)
+            |> Array.ofList
 
         // Object references share the pointer-sized class with other pointer-sized primitives,
         // so they are counted into it here and split back out below.
@@ -983,16 +1095,92 @@ and CliValueType =
                     objectReferenceCount <- objectReferenceCount + 1
             | AutoLayoutFieldClass.ValueClass -> ()
 
+        // Fields the back-fill pass below places out of band, by index into `classified`.
+        let backFilled : int option array = Array.create classified.Length None
+
+        let mutable cursor = startOffset
+
+        // "Place small fields first if the parent has a number of field bytes that is not aligned"
+        // (methodtablebuilder.cpp:8347-8428). A derived type whose parent ends mid-word tries to
+        // fill that gap with its own small fields before starting the largest-first regions, so
+        // `class B { byte A; } class D : B { long L; byte C; int N; }` really does put `C` at 1.
+        //
+        // Only a chain reaches this: with no parent the cursor starts at 0, which is aligned.
+        //
+        // Note what this pass can *never* move: an object reference. The loop is bounded by
+        // `i < MAX_LOG2_PRIMITIVE_FIELD_SIZE` and only ever narrows `i` downwards, so it considers
+        // the byte, short and int classes and never the pointer-sized one. CoreCLR has two pieces
+        // of machinery guarding exactly that case -- an `i == LOG2SLOT` check that aborts the whole
+        // pass rather than reordering GC fields (:8391-8402), and an in-tree `TODO` at :8370-8379
+        // about the class scan counting references it may not then use -- and on a 64-bit target
+        // both are unreachable, because `LOG2SLOT` is `LOG2_PTRSIZE` = 3 and the loop bound is also
+        // 3. They matter only where `LOG2SLOT < MAX_LOG2_PRIMITIVE_FIELD_SIZE`, i.e. on 32-bit.
+        // Neither is ported: an unreachable branch is one no test can hold honest.
+        if cursor % NATIVE_INT_SIZE <> 0 then
+            let mutable i = 0
+            let mutable exhausted = false
+
+            while not exhausted && i < LOG2_NATIVE_INT_SIZE do
+                if cursor % (1 <<< (i + 1)) = 0 then
+                    i <- i + 1
+                else
+
+                // Nothing to gain unless some *bigger* field would otherwise be placed first.
+                let mutable bigger = i + 1
+
+                while bigger <= LOG2_NATIVE_INT_SIZE && slotsInClass.[bigger] = 0 do
+                    bigger <- bigger + 1
+
+                if bigger > LOG2_NATIVE_INT_SIZE then
+                    exhausted <- true
+                else
+
+                // Fall back to the largest class that still fits in the gap.
+                let mutable smaller = i
+
+                while smaller >= 0 && slotsInClass.[smaller] = 0 do
+                    smaller <- smaller - 1
+
+                if smaller < 0 then
+                    exhausted <- true
+                else
+
+                i <- smaller
+
+                // The first unplaced field of that class. One exists: `slotsInClass` counts
+                // exactly the unplaced ones, and the scan above chose `i` because that count is
+                // non-zero -- so a miss here means the counter and the array have drifted apart,
+                // which is a bug in this function rather than a shape to tolerate.
+                let mutable chosen = -1
+                let mutable candidate = 0
+
+                while chosen < 0 && candidate < classified.Length do
+                    if backFilled.[candidate].IsNone then
+                        match snd classified.[candidate] with
+                        | AutoLayoutFieldClass.Primitive (log2Size, _) when log2Size = i -> chosen <- candidate
+                        | _ -> ()
+
+                    candidate <- candidate + 1
+
+                if chosen < 0 then
+                    failwith
+                        $"CliValueType.ComputeAutoLayoutFields: back-filling wanted a field of size class %d{i}, of which %d{slotsInClass.[i]} are recorded as unplaced, but none was found among the %d{classified.Length} fields"
+
+                cursor <- roundUpToAlignment (1 <<< i) cursor
+                backFilled.[chosen] <- Some cursor
+                cursor <- cursor + (1 <<< i)
+                slotsInClass.[i] <- slotsInClass.[i] - 1
+                i <- i + 1
+
         // Each size class gets one contiguous region, largest class first.
         let nextInClass = Array.zeroCreate<int> (LOG2_NATIVE_INT_SIZE + 1)
-        let mutable regionEnd = 0
 
         for log2Size in LOG2_NATIVE_INT_SIZE .. -1 .. 0 do
             if slotsInClass.[log2Size] > 0 then
                 let slotSize = 1 <<< log2Size
-                let start = roundUpToAlignment slotSize regionEnd
+                let start = roundUpToAlignment slotSize cursor
                 nextInClass.[log2Size] <- start
-                regionEnd <- start + (slotsInClass.[log2Size] * slotSize)
+                cursor <- start + (slotsInClass.[log2Size] * slotSize)
 
         // Object references take the front of the pointer-sized region; any non-GC pointer-sized
         // primitives follow them.
@@ -1002,36 +1190,40 @@ and CliValueType =
             nextInClass.[LOG2_NATIVE_INT_SIZE] + (objectReferenceCount * NATIVE_INT_SIZE)
 
         // Value-class fields follow every bucket, in declaration order.
-        let mutable nextValueClass = regionEnd
+        let mutable nextValueClass = cursor
 
-        classified
-        |> List.map (fun (field, cls) ->
-            let size = CliType.SizeOf field.Contents
+        let placed =
+            classified
+            |> Array.mapi (fun index (field, cls) ->
+                let size = CliType.SizeOf field.Contents
 
-            let offset =
-                match cls with
-                | AutoLayoutFieldClass.Primitive (_, true) ->
-                    let offset = nextObjectReference
-                    nextObjectReference <- offset + NATIVE_INT_SIZE
-                    offset
-                | AutoLayoutFieldClass.Primitive (log2Size, false) ->
-                    let offset = nextInClass.[log2Size]
-                    nextInClass.[log2Size] <- offset + (1 <<< log2Size)
-                    offset
-                | AutoLayoutFieldClass.ValueClass ->
+                let offset =
+                    match backFilled.[index] with
+                    | Some offset -> offset
+                    | None ->
+
+                    match cls with
+                    | AutoLayoutFieldClass.Primitive (_, true) ->
+                        let offset = nextObjectReference
+                        nextObjectReference <- offset + NATIVE_INT_SIZE
+                        offset
+                    | AutoLayoutFieldClass.Primitive (log2Size, false) ->
+                        let offset = nextInClass.[log2Size]
+                        nextInClass.[log2Size] <- offset + (1 <<< log2Size)
+                        offset
+                    | AutoLayoutFieldClass.ValueClass ->
                     // A value class that itself contains GC references is placed at pointer
                     // alignment rather than at its own, possibly wider, alignment
                     // (methodtablebuilder.cpp:8523). That is what keeps a struct holding both a
                     // reference and an `Int128` on an 8-byte rather than 16-byte boundary inside
                     // its enclosing type.
                     //
-                    // The two arms cannot currently disagree: `SizeOfFieldStorage` reports
-                    // pointer alignment for every GC-containing value type, and no PawPrint value
-                    // type yet demands more than pointer alignment — `Int128`'s 16-byte
-                    // requirement is nominal on the type rather than derived from its two
-                    // `ulong`s, and is a separate gap (parked as `StructLayoutInt128Alignment.cs`).
-                    // Stated explicitly all the same, so that landing that gap does not silently
-                    // start over-aligning by inheriting the wider field's alignment here.
+                    // The two arms now genuinely disagree, and the cap is load-bearing:
+                    // `Int128` demands 16 (`DeclaredTypeFacts.nominalAlignment`), so a struct
+                    // holding both a reference and an `Int128` would land at 16 rather than 8 if
+                    // this inherited the field's own alignment. `GcWideOuter` in
+                    // `sourcesPure/StructLayoutInt128Alignment.cs` is 40 bytes on real .NET
+                    // precisely because of this arm, and would be 48 without it.
                     let alignment =
                         if CliType.ContainsObjectReferences field.Contents then
                             NATIVE_INT_SIZE
@@ -1042,87 +1234,11 @@ and CliValueType =
                     nextValueClass <- offset + size.Size
                     offset
 
-            {
-                Id = field.Id
-                Name = field.Name
-                Contents = field.Contents
-                Offset = offset
-                Size = size.Size
-                Alignment = size.Alignment
-                ConfiguredOffset = field.Offset
-                EditedAtTime = 0UL
-                Type = field.Type
-                MarshallingDescriptor = field.MarshallingDescriptor
-            }
-        )
-
-    static member private ComputeConcreteFields (layout : Layout) (fields : CliField list) : CliConcreteField list =
-        // Minimum size only matters for `sizeof` computation
-        let _minimumSize, packingSize =
-            match layout with
-            | Layout.Custom (size = size ; packingSize = packing) ->
-                size, if packing = 0 then DEFAULT_STRUCT_ALIGNMENT else packing
-            | Layout.Default -> 0, DEFAULT_STRUCT_ALIGNMENT
-
-        let seqFields, nonSeqFields =
-            fields |> List.partition (fun field -> field.Offset.IsNone)
-
-        match seqFields, nonSeqFields with
-        | [], [] -> []
-        | _ :: _, [] when
-            seqFields
-            |> List.exists (fun field -> CliType.ContainsObjectReferences field.Contents)
-            ->
-            // A value type containing GC references is laid out by CoreCLR's auto layout even
-            // when the metadata declares `LayoutKind.Sequential`, so declared field order and
-            // any `Pack`/`Size` request are both discarded here. Explicit layout is *not*
-            // switched over, so it falls through to the branch below.
-            CliValueType.ComputeAutoLayoutFields seqFields
-        | _ :: _, [] ->
-            // Sequential layout: compute offsets respecting alignment
-            let _, concreteFields =
-                ((0, []), seqFields)
-                ||> List.fold (fun (currentOffset, acc) field ->
-                    let size = CliType.SizeOf field.Contents
-                    let alignmentCap = min size.Alignment packingSize
-                    let error = currentOffset % alignmentCap
-
-                    let alignedOffset =
-                        if error > 0 then
-                            currentOffset + (alignmentCap - error)
-                        else
-                            currentOffset
-
-                    let concreteField =
-                        {
-                            Id = field.Id
-                            Name = field.Name
-                            Contents = field.Contents
-                            Offset = alignedOffset
-                            Size = size.Size
-                            Alignment = size.Alignment
-                            ConfiguredOffset = field.Offset
-                            EditedAtTime = 0UL
-                            Type = field.Type
-                            MarshallingDescriptor = field.MarshallingDescriptor
-                        }
-
-                    alignedOffset + size.Size, concreteField :: acc
-                )
-
-            List.rev concreteFields
-
-        | [], _ :: _ ->
-            // Explicit layout: use provided offsets
-            nonSeqFields
-            |> List.map (fun field ->
-                let size = CliType.SizeOf field.Contents
-
                 {
                     Id = field.Id
                     Name = field.Name
                     Contents = field.Contents
-                    Offset = field.Offset.Value
+                    Offset = offset
                     Size = size.Size
                     Alignment = size.Alignment
                     ConfiguredOffset = field.Offset
@@ -1132,93 +1248,587 @@ and CliValueType =
                 }
             )
 
-        | _ :: _, _ :: _ -> failwith "unexpectedly mixed explicit and automatic layout of fields"
+        // `dwNumInstanceFieldBytes` before any value-class rounding (methodtablebuilder.cpp:8566):
+        // the cursor after the last value class, or after the last primitive region if there are
+        // none. Back-filled fields sit in a gap below it and so never extend it. Returned rather
+        // than recomputed from the placements because a level that declares no fields of its own
+        // must report its parent's size, and `max (offset + size)` over an empty list is 0.
+        placed |> List.ofArray, nextValueClass
 
-    static member private SizeOfFieldStorage (layout : Layout) (fields : CliConcreteField list) : SizeofResult =
+    /// True when these fields are an `[InlineArray(N)]` type's storage slots rather than a
+    /// plain field list: `InlineArrayStorage.expand` mints `FieldId.InlineArrayElement` for
+    /// every slot from 1 upwards, so the marker is present exactly when `N >= 2`.
+    ///
+    /// `N = 1` is deliberately *not* an expansion: the list is then the single declared field,
+    /// unchanged, and the ordinary one-field layout is already what CoreCLR computes for it.
+    static member private IsInlineArrayExpansion (fieldIds : FieldId seq) : bool =
+        fieldIds
+        |> Seq.exists (fun id ->
+            match id with
+            | FieldId.InlineArrayElement _ -> true
+            | FieldId.Metadata _
+            | FieldId.Named _ -> false
+        )
+
+    /// The size and alignment CoreCLR gives an `[InlineArray(N)]` type, from the layout its one
+    /// element received.
+    ///
+    /// CoreCLR never lays the slots out together. It lays out the single declared field, sizes
+    /// *that* completely — the value-class rounding at the tail of `HandleAutoLayout` on the auto
+    /// route (methodtablebuilder.cpp:8574-8607), `AlignSize` on the sequential one
+    /// (classlayoutinfo.cpp) — and only then multiplies by N (`PlaceInstanceFields` :8612 and
+    /// `HandleSequentialLayout` :8663). The size is therefore N copies of the *rounded* element,
+    /// which differs from rounding the run once exactly when an element's size is not already a
+    /// multiple of its alignment: three 3-byte elements are 12 bytes on the auto route rather than
+    /// 9, and three of a `[StructLayout(Sequential, Size = 5)]` element are 24 rather than 15.
+    ///
+    /// Note this is the *size* only. Where the elements sit is a separate question with a different
+    /// answer — `sizeof(element)` apart, so the last element can end well short of the size; see
+    /// the striding in `LayoutLevel`.
+    ///
+    /// The alignment is the subtler half, and only the auto route has anything to decide. A
+    /// sequential type `HasLayout()`, so `MethodTable::GetFieldAlignmentRequirement`
+    /// (methodtable.cpp:8853) answers from its `EEClassLayoutInfo` — derived from the one field,
+    /// and untouched by the multiplication. An auto type has no layout metadata, so the same
+    /// function answers from the *class*: the custom alignment if one was recorded, and otherwise
+    /// `min(GetNumInstanceFieldBytes(), TARGET_POINTER_SIZE)`. Both halves of that are load-bearing
+    /// here, because the recording test is `minAlign != min(elementSize, TARGET_POINTER_SIZE)`
+    /// (:8598) and runs *before* the multiplication while the fallback reads the size *after* it:
+    ///
+    /// * `[Auto, InlineArray(3)] struct { S3 }` — element 3 bytes, `minAlign` 4, so 4 != 3 and the
+    ///   custom alignment is recorded. The type is 4-aligned.
+    /// * `[Auto, InlineArray(3)] struct { int }` — element 4 bytes, `minAlign` 4, so nothing is
+    ///   recorded and the answer is `min(12, 8)` = 8. The type is 8-aligned despite every element
+    ///   in it being 4-aligned, which moves it inside a containing struct.
+    ///
+    /// The fallback is not always a power of two: `[Auto, InlineArray(3)] struct { byte }` reports
+    /// 3, and `{ short }` reports 6. Those really are the numbers real .NET computes — it then
+    /// fails to *use* such a type, with `InvalidProgramException` from the JIT — so they are
+    /// modelled rather than rounded away, and `roundUpToAlignment` is modular arithmetic and copes.
+    /// PawPrint has no JIT to refuse them, so a guest that declares one gets the layout CoreCLR
+    /// computed instead of the crash CoreCLR would produce; see `docs/divergences.md`.
+    static member private InlineArraySize
+        (governedByAuto : bool)
+        (elementUnrounded : int)
+        (elementSize : int)
+        (elementAlignment : int)
+        (repeat : int)
+        : int * int
+        =
+        let total = elementSize * repeat
+
+        let alignment =
+            if not governedByAuto then
+                elementAlignment
+            elif elementAlignment <> min elementUnrounded NATIVE_INT_SIZE then
+                elementAlignment
+            else
+                min total NATIVE_INT_SIZE
+
+        total, alignment
+
+    /// Whether CoreCLR's auto-layout algorithm governs a type, given the layout kind PawPrint
+    /// applies to it (`TypeLayoutKind.applied`) and three facts about its fields.
+    ///
+    /// Two routes reach auto layout (`MethodTableBuilder::PlaceInstanceFields`,
+    /// methodtablebuilder.cpp:8212): the type declares it, or the type declares `Sequential` and
+    /// holds GC references, which promotes it. Explicit layout is never promoted.
+    ///
+    /// Explicit layout is recognised from the fields rather than from the declared kind, and that
+    /// is not a shortcut: a *reference* type's field list here is its whole base chain flattened
+    /// (issue #994), so it routinely mixes fields governed by different kinds. An explicit-layout
+    /// class with no instance fields of its own presents only its sequential base's offset-free
+    /// fields, and a sequential class deriving from an explicit-layout base presents only
+    /// offset-carrying ones — both load on real .NET (`LayoutKindAcrossInheritance.cs`). So "the
+    /// declared kind and the field shape agree" is simply false as a property of this list, and
+    /// the kind is load-bearing only for the choice this function exists to make: among fields
+    /// that carry no offsets, auto placement or sequential.
+    ///
+    /// An `[InlineArray(N)]` type is routed by this function like any other, because CoreCLR routes
+    /// it like any other: the repeat count is applied to the size the chosen route computes for the
+    /// type's *one* declared field (`CliValueType.InlineArraySize`), not to the choice of route.
+    ///
+    /// `containsReferences` is the *chain's* answer, not the level's: CoreCLR's `hasGCFields` is
+    /// `(pParentMT && pParentMT->ContainsGCPointers()) || <own fields hold one>`
+    /// (methodtablebuilder.cpp:8179), so a reference anywhere below promotes this level too.
+    /// `parentIsNonSequential` is the other half of the same rule and has no counterpart in the
+    /// fields at all: a `Sequential` type whose parent is not managed-sequential is promoted
+    /// however blittable it is (:8213). `[Explicit] XB` -> `[Sequential] XD` is the shape, and it
+    /// is the only route into that arm with no GC reference in sight.
+    static member private AutoLayoutGoverns
+        (layoutKind : TypeLayoutKind)
+        (hasFieldOffsets : bool)
+        (containsReferences : bool)
+        (parentIsNonSequential : bool)
+        : bool
+        =
+        if hasFieldOffsets then
+            false
+        else
+
+        match layoutKind with
+        | TypeLayoutKind.Auto -> true
+        // A declared-`Explicit` type whose fields carry no offsets is the inheritance shape above;
+        // it keeps the promotion rule, which is what it got before the kind was modelled at all.
+        | TypeLayoutKind.Sequential -> containsReferences || parentIsNonSequential
+        | TypeLayoutKind.Explicit -> containsReferences
+
+    /// Place one level of a base chain, starting at the parent's instance size, and report what
+    /// the *next* level down needs to know.
+    ///
+    /// This is the whole of the base-chain fix: layout is per-declaring-type, so an inherited
+    /// field's offset depends on the type that declares it and on the chain below it, never on
+    /// what derives from it (issue #994).
+    static member private LayoutLevel
+        (parent : ParentLayout option)
+        (level : TypeLayoutLevel)
+        : CliConcreteField list * ParentLayout
+        =
+        let layoutKind = level.Facts.LayoutKind
+        let layout = level.Facts.Layout
+        let fields = level.OwnFields
+
         let minimumSize, packingSize =
             match layout with
             | Layout.Custom (size = size ; packingSize = packing) ->
-                size, if packing = 0 then DEFAULT_STRUCT_ALIGNMENT else packing
-            | Layout.Default -> 0, DEFAULT_STRUCT_ALIGNMENT
+                size, if packing = 0 then DEFAULT_PACKING_SIZE else packing
+            | Layout.Default -> 0, DEFAULT_PACKING_SIZE
 
-        // An empty field list cannot contain references, so this is decided before the GC cases.
-        if fields.IsEmpty then
-            {
-                // CoreCLR: "Like C++ we enforce that there can be no 0 length structures. Thus for
-                // a value class with no fields, we 'pad' the length to be 1"
-                // (methodtablebuilder.cpp:8568, the auto-layout path). Sequential and explicit
-                // layout reach the same floor via `EEClassLayoutInfo::SetInstanceBytesSize`
-                // (class.h:497), which is `return size == 0 ? 1 : size;` — so the floor is
-                // universal across layout kinds, and applies whether the 0 came from having no
-                // fields or from a declared `Size = 0`.
+        // Where this level's own fields begin. A parent that was bumped from a computed size of 0
+        // up to 1 contributes 0 instead, "but ONLY for inheritance situations"
+        // (`TryGetParentLayoutInfo`, classlayoutinfo.cpp:20-45).
+        let startOffset =
+            match parent with
+            | None -> 0
+            | Some parent -> if parent.IsZeroSized then 0 else parent.InstanceSize
+
+        let parentReferences =
+            match parent with
+            | None -> false
+            | Some parent -> parent.ContainsReferences
+
+        let parentIsNonSequential =
+            match parent with
+            | None -> false
+            | Some parent -> not parent.IsManagedSequential
+
+        // `TryGetParentLayoutInfo` (classlayoutinfo.cpp:20-45) hands the parent's alignment on only
+        // when the parent `IsManagedSequential() || (HasExplicitFieldOffsetLayout() &&
+        // IsBlittable())`. "Has layout metadata" is *not* the test: a type that declared
+        // `Sequential` but was promoted to auto layout for holding references keeps its layout
+        // metadata and still contributes nothing, because auto layout gave it no alignment
+        // requirement to give.
+        //
+        // The blittable-explicit half is not modelled -- PawPrint has no blittability notion -- and
+        // is unreachable from here anyway: a sequential or explicit child of an explicit parent is
+        // promoted to auto (the parent is not managed-sequential), and auto layout never reads
+        // this.
+        //
+        // As with `containsReferences` above, no test tells `IsManagedSequential` here apart from
+        // "has layout metadata", and again it is the rule's shape rather than the corpus: reaching
+        // the sequential path from a declared-`Sequential` level *requires* the parent to be
+        // managed-sequential, so the two agree wherever this is read. They diverge only for a
+        // declared-`Explicit` level over a promoted parent, which needs a three-level chain and a
+        // measurement this branch does not have. `IsManagedSequential` is what CoreCLR tests.
+        let parentAlignment =
+            match parent with
+            | None -> 0
+            | Some parent ->
+                if parent.IsManagedSequential then
+                    parent.AlignmentRequirement
+                else
+                    0
+
+        let seqFields, nonSeqFields =
+            fields |> List.partition (fun field -> field.Offset.IsNone)
+
+        // A declared-`Auto` type may not carry `FieldOffset` rows: the router below reads the
+        // offsets structurally, so such a type would silently get explicit layout instead of the
+        // auto layout its caller asked for. This list is one type's *own* fields, so unlike
+        // before there is no way for an inherited field to make the two disagree innocently: it
+        // means malformed metadata (Roslyn rejects `FieldOffset` outside an explicit-layout type)
+        // or a synthetic construction site contradicting itself.
+        match nonSeqFields with
+        | _ :: _ when layoutKind = TypeLayoutKind.Auto ->
+            failwith
+                $"CliValueType.LayoutLevel: type declares LayoutKind.Auto but %d{nonSeqFields.Length} of its %d{fields.Length} fields carry a FieldOffset (first: %O{nonSeqFields.Head.Id})"
+        | _ -> ()
+
+        // `hasGCFields = (pParentMT && pParentMT->ContainsGCPointers()) || <own>`
+        // (methodtablebuilder.cpp:8179).
+        //
+        // No test kills the `parentReferences` disjunct, and that is a property of the rule rather
+        // than a gap in the corpus. For a declared-`Sequential` level it is strictly redundant: a
+        // parent holding references was itself promoted to auto layout, so it is not
+        // managed-sequential, so `parentIsNonSequential` below already fires. For a
+        // declared-`Explicit` level it does decide the route (`ExpD` in `TestBaseChainLayout`
+        // takes the auto path because of it) -- but the sequential fallback happens to compute the
+        // same size there, because such a parent contributes no alignment either. It is kept
+        // because it is what the rule says, and it becomes load-bearing the moment either of those
+        // coincidences stops holding.
+        let containsReferences =
+            parentReferences
+            || (fields
+                |> List.exists (fun field -> CliType.ContainsObjectReferences field.Contents))
+
+        let governedByAuto =
+            CliValueType.AutoLayoutGoverns
+                layoutKind
+                (not nonSeqFields.IsEmpty)
+                containsReferences
+                parentIsNonSequential
+
+        // An `[InlineArray(N)]` type's storage slots are N copies of its one declared field
+        // (`InlineArrayStorage.expand`), and CoreCLR lays out only the first of them: see
+        // `CliValueType.InlineArraySize`. So the fields placed below are the element alone, and the
+        // slots are struck from its placement afterwards.
+        //
+        // The repeat count is read back off the field list rather than carried alongside it. The
+        // slots *are* the count, so a second copy of N would be a second thing to keep in step with
+        // the first -- and every route into this function, including the eval-stack rewrap in
+        // `OfFieldsLike`, would have to carry it.
+        let inlineArraySlots : CliField list option =
+            if CliValueType.IsInlineArrayExpansion (seqFields |> Seq.map _.Id) then
+                Some seqFields
+            else
+                None
+
+        match inlineArraySlots with
+        | None -> ()
+        | Some slots ->
+            // Everything below assumes the slots are interchangeable copies of one field, which is
+            // what `expand` builds and what CoreCLR's single `FieldDesc` means. Same concrete type
+            // means same size, which is all the striding needs.
+            let element = List.head slots
+
+            match slots |> List.tryFind (fun slot -> slot.Type <> element.Type) with
+            | Some odd ->
+                failwith
+                    $"CliValueType.LayoutLevel: %O{level.Declared} carries %d{slots.Length} inline-array storage slots, but slot %s{odd.Name} has concrete type %O{odd.Type} where the first slot %s{element.Name} has %O{element.Type}; the slots of an inline array are copies of one declared field"
+            | None -> ()
+
+            // A value type has no non-trivial parent, and `expand` refuses a declared `ClassSize`
+            // (CoreCLR's `IDS_CLASSLOAD_INLINE_ARRAY_EXPLICIT_SIZE`). Both would otherwise silently
+            // change what the multiplication is applied to.
+            if startOffset <> 0 then
+                failwith
+                    $"CliValueType.LayoutLevel: %O{level.Declared} carries inline-array storage slots but inherits %d{startOffset} bytes from a base chain; CoreCLR reads `[InlineArray]` only inside the value-type branch of PlaceInstanceFields, so such a type has no non-trivial parent"
+
+            if minimumSize > 0 then
+                failwith
+                    $"CliValueType.LayoutLevel: %O{level.Declared} carries inline-array storage slots and a declared ClassLayout.Size of %d{minimumSize}; CoreCLR refuses to load such a type (IDS_CLASSLOAD_INLINE_ARRAY_EXPLICIT_SIZE), so `InlineArrayStorage.expand` should already have rejected it"
+
+        // The fields actually placed: an inline array's one element, or every field of an ordinary
+        // level. Empty exactly when `seqFields` is, so it can carry the routing match below.
+        let placementFields =
+            match inlineArraySlots with
+            | None -> seqFields
+            | Some slots -> [ List.head slots ]
+
+        let placed, unrounded =
+            match placementFields, nonSeqFields with
+            | _, [] when governedByAuto ->
+                // Either the type declares `LayoutKind.Auto`, or it declares `Sequential` and is
+                // promoted -- for holding GC references, or for having a parent that is not
+                // managed-sequential. Declared field order and any `Pack`/`Size` request are both
+                // discarded here; explicit layout is never promoted.
+                CliValueType.ComputeAutoLayoutFields startOffset placementFields
+            | _, [] ->
+                // Sequential layout: declared order, each field at its own alignment capped by
+                // `Pack`, continuing from where the parent's fields ended.
+                let finalOffset, concreteFields =
+                    ((startOffset, []), placementFields)
+                    ||> List.fold (fun (currentOffset, acc) field ->
+                        let size = CliType.SizeOf field.Contents
+                        let alignmentCap = min size.Alignment packingSize
+                        let error = currentOffset % alignmentCap
+
+                        let alignedOffset =
+                            if error > 0 then
+                                currentOffset + (alignmentCap - error)
+                            else
+                                currentOffset
+
+                        let concreteField =
+                            {
+                                Id = field.Id
+                                Name = field.Name
+                                Contents = field.Contents
+                                Offset = alignedOffset
+                                Size = size.Size
+                                Alignment = size.Alignment
+                                ConfiguredOffset = field.Offset
+                                EditedAtTime = 0UL
+                                Type = field.Type
+                                MarshallingDescriptor = field.MarshallingDescriptor
+                            }
+
+                        alignedOffset + size.Size, concreteField :: acc
+                    )
+
+                List.rev concreteFields, finalOffset
+
+            | [], _ :: _ ->
+                // Explicit layout. A declared `FieldOffset` is relative to this type's own
+                // *instance slice*, so with a non-trivial parent it is biased -- but not by the
+                // parent's size, which is what the obvious reading of
+                // `ReadOffsetsForExplicitLayout` (classlayoutinfo.cpp) would give. Measured on
+                // real .NET, `[Explicit] class D : P { [FieldOffset(0)] int A; }` puts `A` at
+                // *twice* the parent's instance size:
                 //
-                // This is not merely a hand-written-IL concern. Roslyn hides it for a plain
-                // `struct Empty {}` by emitting a `ClassLayout` row of `Size = 1` itself, but an
-                // explicit `[StructLayout(LayoutKind.Sequential)]` or `[StructLayout(
-                // LayoutKind.Explicit)]` on a fieldless struct emits *no* `ClassLayout` row, so
-                // the type arrives here as `Layout.Default` and the floor has to be applied.
-                Size = max 1 minimumSize
-                Alignment = 1
-            }
-        else
+                //     parent 4 bytes  -> A@8       parent 8 bytes  -> A@16
+                //     parent 16 bytes -> A@32      no parent       -> A@0
+                //
+                // and a further level below sees twice that again. CoreCLR appears to apply the
+                // bias twice: once in `ReadOffsetsForExplicitLayout`, which adds
+                // `cbAdjustedParentLayoutSize` to each declared offset, and again in
+                // `ValidateExplicitLayout`'s "fixup the offset to include parent as current
+                // offsets are relative to instance slice" (methodtablebuilder.cpp:9053-9125),
+                // by which point they are already absolute.
+                //
+                // That is very likely an upstream bug, and reproducing a suspected upstream bug
+                // from four data points -- in a shape no guest has ever reached here -- would be
+                // guessing. Refuse instead: this is strictly better than what came before, which
+                // silently used the unbiased offsets and so was wrong for every such type.
+                if startOffset <> 0 then
+                    failwith
+                        $"CliValueType.LayoutLevel: refusing to lay out explicit-layout type %O{level.Declared}, which declares %d{nonSeqFields.Length} field offset(s) of its own and inherits %d{startOffset} bytes from its base chain. Real .NET biases such a type's declared offsets by *twice* the parent's instance size (measured: parent 4 -> first field at 8, parent 8 -> 16, parent 16 -> 32), which looks like a double-application of `cbAdjustedParentLayoutSize` between `ReadOffsetsForExplicitLayout` and `ValidateExplicitLayout`'s fixup (methodtablebuilder.cpp:9053-9125). PawPrint does not model that; see issue #994"
 
-        let containsObjectReferences =
+                let concreteFields =
+                    nonSeqFields
+                    |> List.map (fun field ->
+                        let size = CliType.SizeOf field.Contents
+
+                        {
+                            Id = field.Id
+                            Name = field.Name
+                            Contents = field.Contents
+                            Offset = field.Offset.Value
+                            Size = size.Size
+                            Alignment = size.Alignment
+                            ConfiguredOffset = field.Offset
+                            EditedAtTime = 0UL
+                            Type = field.Type
+                            MarshallingDescriptor = field.MarshallingDescriptor
+                        }
+                    )
+
+                let finalOffset =
+                    concreteFields
+                    |> List.fold (fun maxEnd field -> max maxEnd (field.Offset + field.Size)) startOffset
+
+                concreteFields, finalOffset
+
+            | _ :: _, _ :: _ -> failwith "unexpectedly mixed explicit and automatic layout of fields"
+
+        let size, alignment, isZeroSized =
+            if governedByAuto then
+                let size, alignment =
+                    CliValueType.AutoLayoutSize level.Facts.IsValueType unrounded placed
+
+                size, alignment, false
+            else
+
+            // `alignmentRequirement = max(max(1, min(packingSize, parentAlignmentRequirement)),
+            // fieldsAlignmentRequirement)` (classlayoutinfo.cpp), shared by the sequential and
+            // explicit paths.
+            let alignment =
+                placed
+                |> List.fold (fun maxAlign field -> max maxAlign (min field.Alignment packingSize)) 1
+                |> max (min packingSize parentAlignment)
+
+            // A declared `ClassLayout.Size` and the alignment rounding are alternatives, and the
+            // declared size is a floor *relative to the parent*:
+            // `max(classSizeInMetadata + parentSize, lastFieldEnd)` (:326-341).
+            let withFloor =
+                if minimumSize > 0 then
+                    max (minimumSize + startOffset) unrounded
+                else
+                    roundUpToAlignment alignment unrounded
+
+            // "The GC requires that all valuetypes containing orefs be sized to a multiple of
+            // TARGET_POINTER_SIZE" (`ValidateExplicitLayout`, methodtablebuilder.cpp:9104), which
+            // recomputes the size after layout and so applies on top of the floor. Only explicit
+            // layout reaches this holding references: a sequential type that does is promoted.
+            let sized, alignment =
+                if containsReferences then
+                    roundUpToAlignment NATIVE_INT_SIZE withFloor, max alignment NATIVE_INT_SIZE
+                else
+                    withFloor, alignment
+
+            // `SetInstanceBytesSize` (class.h:497) is `size == 0 ? 1 : size`, and a type that was
+            // bumped this way is the `IsZeroSized` a derived type must discount.
+            if sized = 0 then
+                1, alignment, true
+            else
+                sized, alignment, false
+
+        // Everything above sized the element. Strike the remaining slots off its placement and
+        // multiply.
+        let placed, size, alignment =
+            match inlineArraySlots with
+            | None -> placed, size, alignment
+            | Some slots ->
+                let element =
+                    match placed with
+                    | [ element ] -> element
+                    | _ ->
+                        failwith
+                            $"CliValueType.LayoutLevel: laying out the single element of inline array %O{level.Declared} produced %d{placed.Length} placements"
+
+                if element.Offset <> 0 then
+                    failwith
+                        $"CliValueType.LayoutLevel: the single element of inline array %O{level.Declared} was placed at offset %d{element.Offset} rather than 0"
+
+                // `alignment` here is the *type's* -- `minAlign` on the auto route, the layout
+                // info's on the sequential one -- not the element field's own demand.
+                let total, alignment =
+                    CliValueType.InlineArraySize governedByAuto unrounded size alignment slots.Length
+
+                // The slots stride by the element's *own* size, not by the rounded one the total is
+                // built from, and the two differ exactly where the rounding bites. Nothing lays
+                // these out: CoreCLR has a single `FieldDesc` at offset 0, and an element access is
+                // `InlineArrayElementRef` -> `Unsafe.Add(ref Unsafe.As<TBuffer, TElement>(ref
+                // buffer), index)`, which is `sizeof(TElement)` arithmetic that never consults the
+                // aggregate. So `[Auto, InlineArray(3)] struct { S3 }` really is 12 bytes with its
+                // three 3-byte elements at 0, 3 and 6 and three bytes of slack after them --
+                // measured on real .NET, and inconsistent-looking upstream rather than here.
+                let placed =
+                    slots
+                    |> List.mapi (fun index slot ->
+                        { element with
+                            Id = slot.Id
+                            Name = slot.Name
+                            Offset = index * element.Size
+                        }
+                    )
+
+                placed, total, alignment
+
+        let next =
+            {
+                InstanceSize = size
+                // `IsManagedSequential` is the kind after promotion, not the declared one.
+                IsManagedSequential = layoutKind = TypeLayoutKind.Sequential && not governedByAuto
+                AlignmentRequirement = alignment
+                IsZeroSized = isZeroSized
+                ContainsReferences = containsReferences
+            }
+
+        placed, next
+
+    /// The size and alignment CoreCLR's auto layout gives a value class, from the tail of
+    /// `MethodTableBuilder::HandleAutoLayout` (methodtablebuilder.cpp:8500-8605).
+    ///
+    /// `Pack` and `Size` are not parameters because auto layout reads neither.
+    ///
+    /// <code>
+    /// largestAlignmentRequirement = max over fields of
+    ///     value class holding references -> TARGET_POINTER_SIZE   (:8523)
+    ///     value class otherwise          -> its own alignment     (:8532)
+    ///     anything else                  -> TARGET_POINTER_SIZE   (:8554, "non-value-type
+    ///                                                              fields always require
+    ///                                                              pointer alignment")
+    /// size = max 1 (end of the last field)                        (:8572)
+    /// minAlign = if size > POINTER then (holdsReferences ? POINTER : largestAlignmentRequirement)
+    ///            else the smallest power of two >= size           (:8586)
+    /// size = roundUp minAlign size                                (:8602)
+    /// </code>
+    ///
+    /// The reported alignment is `minAlign`. `MethodTable::GetFieldAlignmentRequirement`
+    /// (methodtable.cpp:8853) reads the recorded custom alignment when there is one and otherwise
+    /// `min(size, POINTER)` — but the custom one is recorded exactly when those two differ
+    /// (:8596), so `minAlign` is the answer either way. That first branch of
+    /// `GetFieldAlignmentRequirement` — `HasLayout()` — never applies here: a type reaching auto
+    /// layout by declaring it has no layout metadata at all (`HasLayoutMetadata` is false for
+    /// `IsTdAutoLayout`, methodtablebuilder.cpp:12546), and one reaching it by GC promotion is
+    /// sized by this same rule.
+    ///
+    /// The `largestAlignmentRequirement` value-class arm is the reason a type of all-value-class
+    /// fields can stay narrowly aligned: `[Auto] struct { S3 x, y, z; }` over a 3-byte sequential
+    /// `S3` is 9 bytes with alignment 1 on real .NET, where the same shape with a single `byte`
+    /// field in it would be 16 with alignment 8.
+    ///
+    /// All of that rounding is inside `if (IsValueClass())` (:8574-8607), so a *reference* type's
+    /// instance size is the raw cursor: `class B { byte A; } class M : B { int I; } class D : M {
+    /// object O; byte Z; }` really is 17 bytes, and `M` really is 8 rather than 16. That is not a
+    /// curiosity -- it is the number a derived type starts its own fields at, so rounding it would
+    /// move every inherited field in the chain.
+    static member private AutoLayoutSize
+        (isValueType : bool)
+        (unrounded : int)
+        (fields : CliConcreteField list)
+        : int * int
+        =
+        let largestAlignmentRequirement =
+            (1, fields)
+            ||> List.fold (fun acc field ->
+                let required =
+                    match CliValueType.ClassifyForAutoLayout field.Contents with
+                    | AutoLayoutFieldClass.ValueClass ->
+                        if CliType.ContainsObjectReferences field.Contents then
+                            NATIVE_INT_SIZE
+                        else
+                            field.Alignment
+                    | AutoLayoutFieldClass.Primitive _ -> NATIVE_INT_SIZE
+
+                max acc required
+            )
+
+        let holdsReferences =
             fields
             |> List.exists (fun field -> CliType.ContainsObjectReferences field.Contents)
 
-        let isExplicitLayout =
-            fields |> List.exists (fun field -> field.ConfiguredOffset.IsSome)
-
-        let finalOffset =
-            fields
-            |> List.fold (fun maxEnd field -> max maxEnd (field.Offset + field.Size)) 0
-
-        if containsObjectReferences && not isExplicitLayout then
-            // CoreCLR's auto-layout finalisation for a value class (methodtablebuilder.cpp:8568)
-            // takes `minAlign = containsGCPointers ? TARGET_POINTER_SIZE : largestAlignmentRequirement`
-            // once the type is larger than a pointer, and a type holding a reference always is.
-            // So both the size rounding and the alignment this type presents to an enclosing type
-            // are the pointer size — notably *not* the widest field's alignment, which is what
-            // keeps a struct holding both a reference and an `Int128` from demanding 16-byte
-            // alignment of whatever contains it. `Pack` and `Size` are discarded, as in
-            // `ComputeAutoLayoutFields`.
-            {
-                Size = roundUpToAlignment NATIVE_INT_SIZE finalOffset
-                Alignment = NATIVE_INT_SIZE
-            }
+        if not isValueType then
+            unrounded, max 1 largestAlignmentRequirement
         else
 
-        let alignment =
-            fields
-            |> List.fold (fun maxAlign field -> max maxAlign (min field.Alignment packingSize)) 0
+        // "Like C++ we enforce that there can be no 0 length structures. Thus for a value class
+        // with no fields, we 'pad' the length to be 1" (methodtablebuilder.cpp:8572).
+        let unrounded = max 1 unrounded
 
-        // Explicit layout is not switched to auto layout, so an explicit `Size` still applies as a
-        // floor. A GC-containing type nevertheless ends on a pointer boundary, so the floor is
-        // applied first and the pointer rounding second: `[Explicit, Size = 9] { object }` is 16
-        // bytes, while the same `Size = 9` over a `long` field is 9.
-        let withFloor = max (roundUpToAlignment alignment finalOffset) minimumSize
+        let minAlign =
+            if unrounded > NATIVE_INT_SIZE then
+                if holdsReferences then
+                    NATIVE_INT_SIZE
+                else
+                    largestAlignmentRequirement
+            else
+                // "if the size is smaller than void* round it up to next power of two"
+                let mutable candidate = 1
 
-        if containsObjectReferences then
-            {
-                Size = roundUpToAlignment NATIVE_INT_SIZE withFloor
-                Alignment = max alignment NATIVE_INT_SIZE
-            }
-        else
-            {
-                Size = withFloor
-                Alignment = alignment
-            }
+                while candidate < unrounded do
+                    candidate <- candidate * 2
 
-    static member private StorageFromFields (layout : Layout) (fields : CliConcreteField list) : CliValueTypeStorage =
-        match fields, layout with
-        | [], Layout.Custom (size = size) when size > 0 -> CliValueTypeStorage.RawBytes (Array.zeroCreate<byte> size)
+                candidate
+
+        roundUpToAlignment minAlign unrounded, minAlign
+
+    /// The storage for one type's laid-out fields, with the instance size the layout produced.
+    ///
+    /// The size is passed in rather than recomputed because it is not recoverable from the
+    /// placements: a level's declared `ClassLayout.Size` is a floor relative to its parent, so
+    /// `[Sequential] PB { long }` -> `[Sequential, Size = 12] PD { int }` makes `PD` 20 bytes
+    /// while its fields end at 12. Anything derived from `PD` starts at 20, so the discrepancy is
+    /// observable rather than academic.
+    static member private StorageFromFields
+        (layoutKind : TypeLayoutKind)
+        (layout : Layout)
+        (size : int)
+        (fields : CliConcreteField list)
+        : CliValueTypeStorage
+        =
+        match fields, layoutKind, layout with
+        // A fieldless type whose declared `Size` is read gets that many bytes of storage and no
+        // field cells. Auto layout does not read `Size`, so such a type is one byte and takes the
+        // ordinary field-backed path rather than this one.
+        | [], (TypeLayoutKind.Sequential | TypeLayoutKind.Explicit), Layout.Custom (size = declared) when declared > 0 ->
+            CliValueTypeStorage.RawBytes (Array.zeroCreate<byte> size)
         | _ ->
-            let size = CliValueType.SizeOfFieldStorage layout fields
-
             CliValueTypeStorage.Fields
                 {
                     Fields = fields
-                    PreservedBytes = Array.zeroCreate<byte> size.Size
+                    PreservedBytes = Array.zeroCreate<byte> size
                 }
 
     static member private FieldStorage (operation : string) (cvt : CliValueType) : CliConcreteField list =
@@ -1804,42 +2414,175 @@ and CliValueType =
         | None -> cvt
         | Some updated -> updated
 
+    /// Lay out a whole base chain, base first, and build the storage it produces.
+    ///
+    /// The last level must be the type being built; every level before it is an ancestor, with the
+    /// fields *it* declares. `OfFields` is the one-level case.
+    static member OfFieldChain
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (allCt : AllConcreteTypes)
+        (declared : ConcreteTypeHandle)
+        (chain : TypeLayoutLevel list)
+        : CliValueType
+        =
+        let outermost =
+            match List.tryLast chain with
+            | Some level -> level
+            | None -> failwith $"CliValueType.OfFieldChain: empty base chain for %O{declared}"
+
+        if outermost.Declared <> declared then
+            failwith
+                $"CliValueType.OfFieldChain: the outermost level of the chain is %O{outermost.Declared}, but the value being built is declared %O{declared}; the chain must end at the type it lays out"
+
+        let facts = outermost.Facts
+
+        // Fold from the base outwards. Each level is placed from the previous level's instance
+        // size, and hands on what the next one needs (`ParentLayout`). A level flagged
+        // `IsTrivialParent` -- `System.Object` and `System.ValueType`, and only those -- passes
+        // `None` on, which is CoreCLR's `hasNonTrivialParent` and is what stops every plain
+        // `[StructLayout(Sequential)] struct` being promoted to auto layout for having a parent
+        // that is not managed-sequential.
+        let placedByLevel, _, lastLevel =
+            ((([] : CliConcreteField list list), (None : ParentLayout option), (None : ParentLayout option)), chain)
+            ||> List.fold (fun (acc, parent, _) level ->
+                let placed, next = CliValueType.LayoutLevel parent level
+
+                // What the *next* level sees. The outermost level's own result is kept separately
+                // as the type's size, because a trivial level passes `None` on and would otherwise
+                // discard it.
+                let parentForNext = if level.IsTrivialParent then None else Some next
+
+                placed :: acc, parentForNext, Some next
+            )
+
+        let fields = placedByLevel |> List.rev |> List.concat
+
+        let instanceSize =
+            match lastLevel with
+            | Some level -> level
+            | None -> failwith $"CliValueType.OfFieldChain: empty base chain for %O{declared}"
+
+        // ECMA-335 II.14.3: an enum has exactly one instance field, named `value__`, at offset 0.
+        // Any loadable enum satisfies this, so a violation means `facts` describes some other type
+        // than the one whose fields these are -- a caller error, and one worth catching here rather
+        // than several opcodes later when the misclassified value is flattened or refused.
+        if facts.IsEnum then
+            match fields with
+            | [ single ] when single.Name = "value__" && single.Offset = 0 -> ()
+            | _ ->
+                let described =
+                    fields
+                    |> List.map (fun field -> $"%s{field.Name}@%d{field.Offset}")
+                    |> String.concat ", "
+
+                failwith
+                    $"CliValueType.OfFields: %O{declared} is described as an enum, but its %d{fields.Length} instance field(s) are [%s{described}] rather than the single `value__` at offset 0 that ECMA-335 II.14.3 requires of one"
+
+        // A stamped alignment replaces the derived one but leaves the size alone: CoreCLR applies
+        // it after sizing and never revisits the size (`CheckForSystemTypes`).
+        let size =
+            match facts.NominalAlignment with
+            | None ->
+                {
+                    Size = instanceSize.InstanceSize
+                    Alignment = instanceSize.AlignmentRequirement
+                }
+            | Some alignment ->
+                // Every type CoreCLR stamps happens to be a whole number of its stamp wide, so
+                // "round the size to the stamp" and "leave the size alone" agree on all of them and
+                // no test could distinguish the two. Rather than leave that a silent coin-flip,
+                // require the coincidence: where it holds the choice does not matter, and a stamped
+                // type that broke it would need this code to make a decision it has no evidence for.
+                if instanceSize.InstanceSize % alignment <> 0 then
+                    failwith
+                        $"CliValueType.OfFieldChain: %O{declared} carries a nominal alignment of %d{alignment} but its fields derive a size of %d{instanceSize.InstanceSize}, which is not a multiple of it"
+
+                {
+                    Size = instanceSize.InstanceSize
+                    Alignment = alignment
+                }
+
+        {
+            _Declared = declared
+            _PrimitiveLikeKind = CliValueType.ClassifyPrimitiveLike bct allCt declared facts.IsEnum fields
+            _NominalAlignment = facts.NominalAlignment
+            _InstanceSize = size
+            _Storage = CliValueType.StorageFromFields facts.LayoutKind facts.Layout size.Size fields
+            LayoutKind = facts.LayoutKind
+            Layout = facts.Layout
+            CharSet = facts.CharSet
+            NextTimestamp = 1UL
+        }
+
+    /// Lay out a type with no inherited instance fields: every value type, and the synthetic
+    /// construction sites that build a single type's field block directly.
     static member OfFields
         (bct : BaseClassTypes<DumpedAssembly>)
         (allCt : AllConcreteTypes)
         (declared : ConcreteTypeHandle)
-        (layout : Layout)
-        (charSet : CharSet)
+        (facts : DeclaredTypeFacts)
         (f : CliField list)
         : CliValueType
         =
-        let fields = CliValueType.ComputeConcreteFields layout f
-
-        {
-            _Declared = declared
-            _PrimitiveLikeKind = CliValueType.ClassifyPrimitiveLike bct allCt declared fields
-            _Storage = CliValueType.StorageFromFields layout fields
-            Layout = layout
-            CharSet = charSet
-            NextTimestamp = 1UL
-        }
+        CliValueType.OfFieldChain
+            bct
+            allCt
+            declared
+            [
+                {
+                    Declared = declared
+                    Facts = facts
+                    OwnFields = f
+                    IsTrivialParent = false
+                }
+            ]
 
     /// Rebuild with the same declared type and primitive-like classification as `source`. Used by
     /// the eval-stack rewrap path, which pops an already-classified value and reconstructs its
     /// stored form without needing `BaseClassTypes`/`AllConcreteTypes` in scope.
     /// This intentionally drops preserved bytes: do not call it for values whose padding or
     /// fixed-buffer trailing storage must be preserved.
+    ///
+    /// Single-level by contract. Everything it reconstructs is a value type off the eval stack, so
+    /// there is no base chain to lose -- but nothing in the types enforces that, so it checks: a
+    /// multi-level value would silently have its inherited fields re-placed from 0.
     static member OfFieldsLike (source : CliValueType) (layout : Layout) (f : CliField list) : CliValueType =
         if not (CliValueType.IsTightlyPacked source) then
             failwith
                 $"CliValueType.OfFieldsLike: refusing to drop preserved bytes for non-tightly-packed value type %O{source.Declared}"
 
-        let fields = CliValueType.ComputeConcreteFields layout f
+        let placed, next =
+            CliValueType.LayoutLevel
+                None
+                {
+                    Declared = source._Declared
+                    Facts =
+                        {
+                            IsValueType = true
+                            IsEnum = false
+                            NominalAlignment = source._NominalAlignment
+                            LayoutKind = source.LayoutKind
+                            Layout = layout
+                            CharSet = source.CharSet
+                        }
+                    OwnFields = f
+                    IsTrivialParent = false
+                }
 
         {
             _Declared = source._Declared
             _PrimitiveLikeKind = source._PrimitiveLikeKind
-            _Storage = CliValueType.StorageFromFields layout fields
+            _NominalAlignment = source._NominalAlignment
+            _InstanceSize =
+                {
+                    Size = next.InstanceSize
+                    Alignment =
+                        match source._NominalAlignment with
+                        | Some alignment -> alignment
+                        | None -> next.AlignmentRequirement
+                }
+            _Storage = CliValueType.StorageFromFields source.LayoutKind layout next.InstanceSize placed
+            LayoutKind = source.LayoutKind
             Layout = layout
             CharSet = source.CharSet
             NextTimestamp = 1UL
@@ -2056,14 +2799,17 @@ and CliValueType =
             failwith
                 $"cannot view %O{cvt._Declared} as a %d{size}-byte value at offset %d{offset}: %s{describeCandidates}"
 
-    static member SizeOf (vt : CliValueType) : SizeofResult =
-        match vt._Storage with
-        | CliValueTypeStorage.RawBytes bytes ->
-            {
-                Size = bytes.Length
-                Alignment = 1
-            }
-        | CliValueTypeStorage.Fields storage -> CliValueType.SizeOfFieldStorage vt.Layout storage.Fields
+    /// The type's instance size and the alignment it demands of a container.
+    ///
+    /// A field read rather than a computation: layout is per-declaring-type, so the answer depends
+    /// on facts (each level's `Pack`, declared kind and declared `Size`) that the flat field list
+    /// this value holds has thrown away. See `_InstanceSize`.
+    ///
+    /// The `Alignment` here is read by containers, through `CliType.SizeOf` on a field's contents
+    /// -- which is exactly the `GetFieldAlignmentRequirement()` call CoreCLR makes at
+    /// classlayoutinfo.cpp:112 and methodtablebuilder.cpp:8532. That is the whole propagation
+    /// mechanism: no separate walk is needed to make a struct embedding an `Int128` 16-aligned.
+    static member SizeOf (vt : CliValueType) : SizeofResult = vt._InstanceSize
 
     static member ContainsObjectReferences (vt : CliValueType) : bool =
         match vt._Storage with
@@ -2518,8 +3264,8 @@ and CliValueType =
             let minimumSize, packingSize =
                 match vt.Layout with
                 | Layout.Custom (size = size ; packingSize = packing) ->
-                    size, if packing = 0 then DEFAULT_STRUCT_ALIGNMENT else packing
-                | Layout.Default -> 0, DEFAULT_STRUCT_ALIGNMENT
+                    size, if packing = 0 then DEFAULT_PACKING_SIZE else packing
+                | Layout.Default -> 0, DEFAULT_PACKING_SIZE
 
             // CoreCLR's `EEClassNativeLayoutInfo::CollectNativeLayoutFieldMetadataThrowing`
             // (classlayoutinfo.cpp:984-988) bumps a computed native layout size of 0 to 1
@@ -2536,19 +3282,24 @@ and CliValueType =
                 else
                     size
 
+            // Native layout takes a declared `Size` by exactly the same rule the managed layout
+            // does, through the same helper: `CollectNativeLayoutFieldMetadataThrowing` calls
+            // `CalculateSizeWithMetadataSize` when the type `HasExplicitSize()` and `AlignSize`
+            // otherwise (classlayoutinfo.cpp:939-977). So the floor and the rounding are
+            // alternatives here too -- `Marshal.SizeOf` of `[Sequential, Size = 13] { long; int }`
+            // is 13, and of the same type with `Size = 4` is 12.
             let computeFinal (currentEnd : int) (maxAlign : int) : SizeofResult =
                 let alignment = max maxAlign 1
-                let error = currentEnd % alignment
 
                 let totalSize =
-                    if error = 0 then
-                        currentEnd
+                    if minimumSize > 0 then
+                        max minimumSize currentEnd
                     else
-                        currentEnd + (alignment - error)
+                        roundUpToAlignment alignment currentEnd
 
                 bumpZeroSized
                     {
-                        Size = max totalSize minimumSize
+                        Size = totalSize
                         Alignment = alignment
                     }
 
@@ -2662,6 +3413,9 @@ and CliValueType =
         {
             _Declared = cvt._Declared
             _PrimitiveLikeKind = cvt._PrimitiveLikeKind
+            _NominalAlignment = cvt._NominalAlignment
+            _InstanceSize = cvt._InstanceSize
+            LayoutKind = cvt.LayoutKind
             Layout = cvt.Layout
             CharSet = cvt.CharSet
             _Storage =
@@ -2742,7 +3496,10 @@ and CliValueType =
             {
                 _Declared = target._Declared
                 _PrimitiveLikeKind = target._PrimitiveLikeKind
+                _NominalAlignment = target._NominalAlignment
+                _InstanceSize = target._InstanceSize
                 _Storage = CliValueTypeStorage.RawBytes (Array.copy sourceBytes)
+                LayoutKind = target.LayoutKind
                 Layout = target.Layout
                 CharSet = target.CharSet
                 NextTimestamp = source.NextTimestamp
@@ -2781,12 +3538,15 @@ and CliValueType =
             {
                 _Declared = target._Declared
                 _PrimitiveLikeKind = target._PrimitiveLikeKind
+                _NominalAlignment = target._NominalAlignment
+                _InstanceSize = target._InstanceSize
                 _Storage =
                     CliValueTypeStorage.Fields
                         {
                             Fields = merged
                             PreservedBytes = Array.copy sourceStorage.PreservedBytes
                         }
+                LayoutKind = target.LayoutKind
                 Layout = target.Layout
                 CharSet = target.CharSet
                 NextTimestamp = source.NextTimestamp
@@ -2853,7 +3613,10 @@ and CliValueType =
                 {
                     _Declared = template._Declared
                     _PrimitiveLikeKind = template._PrimitiveLikeKind
+                    _NominalAlignment = template._NominalAlignment
+                    _InstanceSize = template._InstanceSize
                     _Storage = CliValueTypeStorage.RawBytes (Array.copy bytes)
+                    LayoutKind = template.LayoutKind
                     Layout = template.Layout
                     CharSet = template.CharSet
                     NextTimestamp = template.NextTimestamp
@@ -2897,12 +3660,15 @@ and CliValueType =
                     {
                         _Declared = template._Declared
                         _PrimitiveLikeKind = template._PrimitiveLikeKind
+                        _NominalAlignment = template._NominalAlignment
+                        _InstanceSize = template._InstanceSize
                         _Storage =
                             CliValueTypeStorage.Fields
                                 {
                                     Fields = fields
                                     PreservedBytes = Array.copy bytes
                                 }
+                        LayoutKind = template.LayoutKind
                         Layout = template.Layout
                         CharSet = template.CharSet
                         NextTimestamp = max 1UL (uint64 fields.Length)
@@ -3110,8 +3876,7 @@ module CliType =
                 corelib
                 concreteTypes
                 intPtrHandle
-                Layout.Default
-                (CharSetMetadata.ofTypeAttributes corelib.IntPtr.TypeAttributes)
+                (DeclaredTypeFacts.ofCorelibType corelib corelib.IntPtr)
             |> CliType.ValueType
         | PrimitiveType.UIntPtr ->
             let uintPtrHandle =
@@ -3139,8 +3904,7 @@ module CliType =
                 corelib
                 concreteTypes
                 uintPtrHandle
-                Layout.Default
-                (CharSetMetadata.ofTypeAttributes corelib.UIntPtr.TypeAttributes)
+                (DeclaredTypeFacts.ofCorelibType corelib corelib.UIntPtr)
             |> CliType.ValueType
         | PrimitiveType.Object -> CliType.ObjectRef None
 
@@ -3380,8 +4144,7 @@ module CliType =
                     corelib
                     currentConcreteTypes
                     handle
-                    typeDef.Layout
-                    (CharSetMetadata.ofTypeAttributes typeDef.TypeAttributes)
+                    (DeclaredTypeFacts.ofTypeInfo corelib currentAssemblies typeDef)
 
             CliType.ValueType vt, currentConcreteTypes, currentAssemblies
         else

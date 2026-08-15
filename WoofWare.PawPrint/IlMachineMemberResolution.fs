@@ -214,7 +214,7 @@ module IlMachineMemberResolution =
             Concretization.concreteHandleToTypeDefn baseClassTypes handle state.ConcreteTypes state._LoadedAssemblies
 
         let typeGenerics =
-            executing.DeclaringType.Generics
+            executing.DeclaringTypeGenerics
             |> Seq.map toTypeDefn
             |> ImmutableArray.CreateRange
 

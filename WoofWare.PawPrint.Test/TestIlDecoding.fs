@@ -221,13 +221,16 @@ module TestIlDecoding =
             |> Result.map (fun op ->
                 IlOp.UnaryMetadataToken (
                     unbox<UnaryMetadataTokenIlOp> op,
-                    SourcedMetadataToken.ofInt sourceAssembly token
+                    MetadataOperand.FromMetadata (SourcedMetadataToken.ofInt sourceAssembly token)
                 )
             )
         | Operand.StringToken token, t when t = typeof<UnaryStringTokenIlOp> ->
             inner None [||]
             |> Result.map (fun op ->
-                IlOp.UnaryStringToken (unbox<UnaryStringTokenIlOp> op, SourcedStringToken.ofInt sourceAssembly token)
+                IlOp.UnaryStringToken (
+                    unbox<UnaryStringTokenIlOp> op,
+                    StringOperand.FromMetadata (SourcedStringToken.ofInt sourceAssembly token)
+                )
             )
         | Operand.Switch targets, t when t = typeof<IlOp> -> IlOp.Switch (ImmutableArray.CreateRange targets) |> Ok
         | _, t when t = typeof<NullaryIlOp> ->
@@ -245,14 +248,20 @@ module TestIlDecoding =
         | IlOp.Nullary a, IlOp.Nullary b -> a = b
         | IlOp.UnaryConst a, IlOp.UnaryConst b -> a = b
         | IlOp.Switch a, IlOp.Switch b -> List.ofSeq a = List.ofSeq b
-        | IlOp.UnaryMetadataToken (a, ta), IlOp.UnaryMetadataToken (b, tb) ->
+        | IlOp.UnaryMetadataToken (a, MetadataOperand.FromMetadata ta),
+          IlOp.UnaryMetadataToken (b, MetadataOperand.FromMetadata tb) ->
             a = b
             && ta.Token = tb.Token
             && ta.SourceAssembly.FullName = tb.SourceAssembly.FullName
-        | IlOp.UnaryStringToken (a, ta), IlOp.UnaryStringToken (b, tb) ->
+        | IlOp.UnaryMetadataToken (a, MetadataOperand.FromDynamicScope ia),
+          IlOp.UnaryMetadataToken (b, MetadataOperand.FromDynamicScope ib) -> a = b && ia = ib
+        | IlOp.UnaryStringToken (a, StringOperand.FromMetadata ta),
+          IlOp.UnaryStringToken (b, StringOperand.FromMetadata tb) ->
             a = b
             && ta.Token = tb.Token
             && ta.SourceAssembly.FullName = tb.SourceAssembly.FullName
+        | IlOp.UnaryStringToken (a, StringOperand.FromDynamicScope ia),
+          IlOp.UnaryStringToken (b, StringOperand.FromDynamicScope ib) -> a = b && ia = ib
         | _, _ -> false
 
     let private allCases : UnionCaseInfo list =
@@ -294,7 +303,7 @@ module TestIlDecoding =
 
                         let bytes = encode opCode operand
 
-                        match IlDecoding.decodeInstructions sourceAssembly bytes with
+                        match IlDecoding.decodeInstructions (IlTokenUniverse.Metadata sourceAssembly) bytes with
                         | [ (actual, 0) ] when opsEqual expected actual ->
                             let declaredSize = IlOp.NumberOfBytes actual
 
@@ -321,7 +330,7 @@ module TestIlDecoding =
 
     [<Test>]
     let ``an empty body decodes to no instructions`` () =
-        IlDecoding.decodeInstructions sourceAssembly [||]
+        IlDecoding.decodeInstructions (IlTokenUniverse.Metadata sourceAssembly) [||]
         |> List.isEmpty
         |> shouldEqual true
 
@@ -338,7 +347,8 @@ module TestIlDecoding =
                 IlOp.Nullary NullaryIlOp.Ret, 2
             ]
 
-        let actual = IlDecoding.decodeInstructions sourceAssembly bytes
+        let actual =
+            IlDecoding.decodeInstructions (IlTokenUniverse.Metadata sourceAssembly) bytes
 
         List.length actual |> shouldEqual (List.length expected)
 
@@ -369,7 +379,9 @@ module TestIlDecoding =
             if methodDef.RelativeVirtualAddress <> 0 then
                 let body = peReader.GetMethodBody methodDef.RelativeVirtualAddress
                 let ilBytes = body.GetILBytes ()
-                let decoded = IlDecoding.decodeInstructions assemblyName ilBytes
+
+                let decoded =
+                    IlDecoding.decodeInstructions (IlTokenUniverse.Metadata assemblyName) ilBytes
 
                 let describe () =
                     let name = metadataReader.GetString methodDef.Name

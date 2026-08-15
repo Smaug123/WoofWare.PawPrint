@@ -739,8 +739,7 @@ module NativeMetadataImport =
                 baseClassTypes
                 state.ConcreteTypes
                 constArrayHandle
-                typeInfo.Layout
-                (CharSetMetadata.ofTypeAttributes typeInfo.TypeAttributes)
+                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies typeInfo)
             |> CliType.ValueType
 
         valueType, state
@@ -1593,7 +1592,7 @@ module NativeMetadataImport =
                     if assembly.Methods.TryGetValue (methodDefHandle, &methodInfo) then
                         let parentHandle : System.Reflection.Metadata.EntityHandle =
                             System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit
-                                methodInfo.DeclaringType.Definition.Get
+                                methodInfo.RequiredDeclaringType.Definition.Get
 
                         System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken parentHandle
                     else

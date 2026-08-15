@@ -10,32 +10,40 @@ module internal UnaryMetadataMemoryOps =
     let executeInitobj (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
         let popped, state = IlMachineState.popEvalStack thread state
-        let declaringTypeGenerics = currentMethod.DeclaringType.Generics
+        let declaringTypeGenerics = currentMethod.DeclaringTypeGenerics
 
-        let state, targetType, assy =
-            IlMachineState.resolveTypeMetadataToken
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy
-                declaringTypeGenerics
-                metadataToken
+        let state, concreteTypeHandle =
+            match ctx.TypeOperand with
+            | ResolvedTypeOperand.FromScope handle -> state, handle
+            | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
+                let state, targetType, assy =
+                    IlMachineState.resolveTypeMetadataToken
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        declaringTypeGenerics
+                        metadataToken
 
-        let state, zeroOfType, concreteTypeHandle =
-            IlMachineState.cliTypeZeroOf
-                loggerFactory
-                baseClassTypes
-                assy
-                targetType
-                declaringTypeGenerics
-                currentMethod.Generics
-                state
+                // `cliTypeZeroOf` split into its two halves (IlMachineTypeResolution.fs:586-607)
+                // so that the zero below is computed the same way for both universes.
+                let state = state.WithLoadedAssembly assy
+
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    assy.Name
+                    declaringTypeGenerics
+                    currentMethod.Generics
+                    targetType
+
+        let zeroOfType, state =
+            IlMachineState.cliTypeZeroOfHandle state baseClassTypes concreteTypeHandle
 
         let state =
             match popped with
@@ -56,29 +64,30 @@ module internal UnaryMetadataMemoryOps =
     let executeStobj (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let state, ty, assy =
-            IlMachineState.resolveTypeMetadataToken
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy
-                currentMethod.DeclaringType.Generics
-                metadataToken
-
         let state, typeHandle =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                assy.Name
-                currentMethod.DeclaringType.Generics
-                currentMethod.Generics
-                ty
+            match ctx.TypeOperand with
+            | ResolvedTypeOperand.FromScope handle -> state, handle
+            | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
+                let state, ty, assy =
+                    IlMachineState.resolveTypeMetadataToken
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        currentMethod.DeclaringTypeGenerics
+                        metadataToken
+
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    assy.Name
+                    currentMethod.DeclaringTypeGenerics
+                    currentMethod.Generics
+                    ty
 
         let targetZero, state =
             IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
@@ -130,29 +139,30 @@ module internal UnaryMetadataMemoryOps =
     let executeLdobj (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let state, ty, assy =
-            IlMachineState.resolveTypeMetadataToken
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy
-                currentMethod.DeclaringType.Generics
-                metadataToken
-
         let state, typeHandle =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                assy.Name
-                currentMethod.DeclaringType.Generics
-                currentMethod.Generics
-                ty
+            match ctx.TypeOperand with
+            | ResolvedTypeOperand.FromScope handle -> state, handle
+            | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
+                let state, ty, assy =
+                    IlMachineState.resolveTypeMetadataToken
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        currentMethod.DeclaringTypeGenerics
+                        metadataToken
+
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    assy.Name
+                    currentMethod.DeclaringTypeGenerics
+                    currentMethod.Generics
+                    ty
 
         let addr, state = state |> IlMachineState.popEvalStack thread
 
@@ -254,29 +264,30 @@ module internal UnaryMetadataMemoryOps =
     let executeSizeof (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let state, ty, assy =
-            IlMachineState.resolveTypeMetadataToken
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy
-                currentMethod.DeclaringType.Generics
-                metadataToken
-
         let state, typeHandle =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                assy.Name
-                currentMethod.DeclaringType.Generics
-                currentMethod.Generics
-                ty
+            match ctx.TypeOperand with
+            | ResolvedTypeOperand.FromScope handle -> state, handle
+            | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
+                let state, ty, assy =
+                    IlMachineState.resolveTypeMetadataToken
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        currentMethod.DeclaringTypeGenerics
+                        metadataToken
+
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    assy.Name
+                    currentMethod.DeclaringTypeGenerics
+                    currentMethod.Generics
+                    ty
 
         let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
 

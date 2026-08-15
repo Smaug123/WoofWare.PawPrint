@@ -24,14 +24,36 @@ type OpenFileDescriptionId =
 
 /// The kernel object a file descriptor points at: POSIX's "open file
 /// description". Everything shared between file descriptors that `dup(2)`
-/// produced belongs here — the file offset and the status flags (`O_APPEND`,
-/// `O_NONBLOCK`) will live in this type when the read path lands.
+/// produced belongs here.
 ///
-/// Only the inherited standard streams exist so far. They carry no offset:
-/// PawPrint models them as pipes (see `FileDescriptorRegistry.initial`), and
-/// a pipe is not seekable.
+/// **`File` carries an inode and nothing else, deliberately.** The two pieces
+/// of state a real open file description also holds are absent because no
+/// modelled syscall can yet make them differ:
+///
+///  - The **file offset**. `pread(2)` — the only reader CoreLib's
+///    `RandomAccess` uses on a seekable handle — takes its offset as an
+///    argument and leaves the description's alone, so an offset stored here
+///    would be written once at `open` and never read. It becomes real with
+///    `SystemNative_LSeek` and `SystemNative_Read`, which is where it belongs.
+///  - The **access mode and status flags** (`O_APPEND`, `O_NONBLOCK`). PawPrint
+///    refuses every write flag at `open` today, so the mode has exactly one
+///    inhabitant, and a field with one inhabitant records a decision nothing
+///    made. It becomes real with the write path.
+///
+/// Inodes, by contrast, are load-bearing immediately: an fd must keep naming
+/// the file it was opened on, not the path it was opened by.
+///
+/// The standard streams carry no offset either, and for a different reason:
+/// PawPrint models them as pipes (see `FileDescriptorRegistry.initial`), and a
+/// pipe is not seekable at all.
 [<RequireQualifiedAccess>]
-type OpenFileDescription = | StandardStream of FileDescriptorRole
+type OpenFileDescription =
+    | StandardStream of FileDescriptorRole
+    /// A regular file, directory, or anything else `open(2)` returned a
+    /// descriptor for, identified by the inode it resolved to at open time.
+    /// Not by path: renaming or deleting the path leaves this description
+    /// naming the same file, which is what a real kernel does.
+    | File of inode : InodeNumber
 
 /// In-memory model of a Unix per-process file descriptor table, and of the
 /// open file descriptions those descriptors point at.
@@ -65,6 +87,16 @@ type FileDescriptorRegistry =
             /// the references that would make liveness more than reachability
             /// (`SCM_RIGHTS` descriptor passing, `mmap`).
             Descriptions : Map<OpenFileDescriptionId, OpenFileDescription>
+            /// The identity the next `open` will allocate. Stored and
+            /// monotonic rather than derived as one past the highest live id,
+            /// which would reuse the identity of a description that has been
+            /// closed. Nothing guest-visible could tell the difference — the
+            /// id is never reported by any syscall — but a replay trace could,
+            /// and "the same id names two different files at two different
+            /// times" is exactly the ambiguity a time-travel debugger must not
+            /// have. `VirtualFileSystem.NextInode` is stored for the stronger
+            /// version of this reason, inode reuse being guest-visible.
+            NextId : OpenFileDescriptionId
         }
 
 [<RequireQualifiedAccess>]
@@ -90,6 +122,13 @@ type FileDescriptorRegistryDefect =
     /// A description survives that no descriptor names. The kernel destroys a
     /// description when its last descriptor closes, so this is a leak.
     | UnreferencedDescription of description : OpenFileDescriptionId
+    /// A live description's identity is at or above the next one to allocate,
+    /// so some future `open` would collide with it — silently retargeting
+    /// every descriptor that named it. Note "at or above" rather than "equal
+    /// to": a cursor *below* a live id is just as unsound, it merely takes a
+    /// few more opens to do the damage. `VirtualFileSystem`'s
+    /// `NextInodeNotFresh` is the same check for the same reason.
+    | NextIdNotFresh of nextId : OpenFileDescriptionId * existing : OpenFileDescriptionId
 
 [<RequireQualifiedAccess>]
 module FileDescriptorRegistry =
@@ -121,6 +160,7 @@ module FileDescriptorRegistry =
                 |> Map.add stdinId (OpenFileDescription.StandardStream FileDescriptorRole.StandardInput)
                 |> Map.add stdoutId (OpenFileDescription.StandardStream FileDescriptorRole.StandardOutput)
                 |> Map.add stderrId (OpenFileDescription.StandardStream FileDescriptorRole.StandardError)
+            NextId = OpenFileDescriptionId 3L
         }
 
     /// Which description `fd` names, if `fd` is live. Callers that need to know
@@ -212,7 +252,7 @@ module FileDescriptorRegistry =
                 fds |> Map.exists (fun _ (other : OpenFileDescriptionId) -> other = id)
 
             Ok
-                {
+                { registry with
                     Fds = fds
                     Descriptions =
                         if stillNamed then
@@ -220,6 +260,31 @@ module FileDescriptorRegistry =
                         else
                             Map.remove id registry.Descriptions
                 }
+
+    /// Mirrors the descriptor half of `open(2)`: allocate a *fresh* open file
+    /// description naming `inode`, and the lowest non-negative descriptor not
+    /// in use to point at it.
+    ///
+    /// Fresh, unlike `dup`: two `open` calls on one path give two descriptions,
+    /// which is why they can hold separate offsets and separate `flock` locks.
+    /// Sharing here would make the second open silently alias the first.
+    ///
+    /// Total — there is no failure mode at this level. Whether the path
+    /// resolves, whether the flags are ones PawPrint honours, and whether the
+    /// process may open the file at all are decided before this is reached; a
+    /// real kernel's `EMFILE`/`ENFILE` would belong here, but PawPrint models
+    /// no descriptor limit (`RLIMIT_NOFILE` is not in the interop surface).
+    let openFile (inode : InodeNumber) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
+        let id = registry.NextId
+        let (OpenFileDescriptionId raw) = id
+        let fd = lowestFree registry.Fds
+
+        fd,
+        { registry with
+            Fds = Map.add fd id registry.Fds
+            Descriptions = Map.add id (OpenFileDescription.File inode) registry.Descriptions
+            NextId = OpenFileDescriptionId (raw + 1L)
+        }
 
     /// Every way in which `registry` fails to be a descriptor table a kernel
     /// could produce. Empty for any registry built out of `initial`, `dup` and
@@ -240,7 +305,14 @@ module FileDescriptorRegistry =
             |> List.filter (fun id -> not (Set.contains id named))
             |> List.map FileDescriptorRegistryDefect.UnreferencedDescription
 
-        dangling @ unreferenced
+        let freshness =
+            registry.Descriptions
+            |> Map.toList
+            |> List.map fst
+            |> List.filter (fun id -> id >= registry.NextId)
+            |> List.map (fun id -> FileDescriptorRegistryDefect.NextIdNotFresh (registry.NextId, id))
+
+        dangling @ unreferenced @ freshness
 
     /// Fail loudly if `registry` is not sound, naming `context`.
     let assertInvariants (context : string) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
@@ -262,9 +334,11 @@ module FileDescriptorRegistry =
         let ofParts
             (fds : Map<int, OpenFileDescriptionId>)
             (descriptions : Map<OpenFileDescriptionId, OpenFileDescription>)
+            (nextId : OpenFileDescriptionId)
             : FileDescriptorRegistry
             =
             {
                 Fds = fds
                 Descriptions = descriptions
+                NextId = nextId
             }

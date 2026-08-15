@@ -75,8 +75,14 @@ module TestManagedHeap =
             baseClassTypes
             concreteTypes
             (ConcreteTypeHandle.Concrete 1)
-            (Layout.Custom (size, 1))
-            CharSet.Ansi
+            {
+                IsValueType = true
+                IsEnum = false
+                NominalAlignment = None
+                LayoutKind = TypeLayoutKind.Sequential
+                Layout = Layout.Custom (size, 1)
+                CharSet = CharSet.Ansi
+            }
             []
         |> CliType.ValueType
 
@@ -721,8 +727,15 @@ module TestManagedHeap =
                 baseClassTypes
                 state.ConcreteTypes
                 objectHandle
-                (Layout.Custom (size = 8, packingSize = 0))
-                CharSet.Ansi
+                {
+                    IsValueType = true
+                    IsEnum = false
+                    NominalAlignment = None
+                    // Both fields carry a `FieldOffset`, so this is an explicit-layout type.
+                    LayoutKind = TypeLayoutKind.Explicit
+                    Layout = Layout.Custom (size = 8, packingSize = 0)
+                    CharSet = CharSet.Ansi
+                }
 
         IlMachineState.allocateManagedObject objectHandle contents state
 

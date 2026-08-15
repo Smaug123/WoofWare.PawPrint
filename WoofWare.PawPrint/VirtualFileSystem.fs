@@ -35,13 +35,14 @@ type SymlinkTargetError =
 /// The target of a symbolic link, held exactly as it was created.
 ///
 /// Verbatim rather than parsed, which matters: `readlink(2)` returns the stored
-/// bytes unchanged, and `lstat` reports their length as the link's `st_size`.
-/// `UnixPath.parse` deliberately collapses repeated separators, so a link
-/// created with target "a//b/" would read back as "a/b" — a difference a guest
-/// really can see, through `FileInfo.LinkTarget` and `ResolveLinkTarget`.
+/// bytes unchanged, and `lstat` reports their length as the link's `st_size`, so
+/// a link created with target "a//b/" must read back as "a//b/" — a difference a
+/// guest really can see, through `FileInfo.LinkTarget` and `ResolveLinkTarget`.
 ///
 /// The path structure is recovered by parsing at traversal time, which is
-/// cheap, total, and keeps the stored form authoritative.
+/// cheap, total, and keeps the stored form authoritative. `UnixPath` is kept
+/// the same way and for a related reason (a kernel measures the bytes it was
+/// handed), so converting a target to one loses nothing.
 [<Struct>]
 type SymlinkTarget =
     private
@@ -252,6 +253,32 @@ module UnixTimestamp =
                 $"%s{context}: %d{nanoseconds} is not a nanosecond part; it must lie in [0, %d{nanosecondsPerSecond}). A whole-second count belongs in the seconds field."
 
     let ofSeconds (seconds : int64) : UnixTimestamp = UnixTimestamp (seconds, 0)
+
+    /// A timestamp from a count of milliseconds since the Unix epoch, which is
+    /// how the emulated kernel holds its wall clock.
+    ///
+    /// Floor division, so that a negative millisecond count keeps the
+    /// nanosecond part non-negative rather than producing a `timespec` no
+    /// kernel would write: -1 ms is (-1 s, 999 000 000 ns), not (0 s, -1e6 ns).
+    ///
+    /// Derived from the truncating quotient and remainder rather than by
+    /// biasing the dividend. `(milliseconds - 999L) / 1000L` is the obvious way
+    /// to floor a negative, and it silently overflows for the bottom 999 values
+    /// of `int64`: it does not throw, it hands back a *positive* second count
+    /// and a nanosecond part outside `[0, 1e9)` — a value that breaks the very
+    /// invariant `create` exists to enforce, while bypassing it. Neither `/`
+    /// nor `%` can overflow for any input here.
+    let ofMillisecondsSinceEpoch (milliseconds : int64) : UnixTimestamp =
+        let quotient = milliseconds / 1000L
+        let remainder = milliseconds % 1000L
+
+        if remainder >= 0L then
+            UnixTimestamp (quotient, int remainder * 1_000_000)
+        else
+            // The truncating quotient rounded towards zero, so it names a
+            // second later than the instant; the remainder is negative by
+            // exactly the difference.
+            UnixTimestamp (quotient - 1L, int (remainder + 1000L) * 1_000_000)
 
     /// The Unix epoch itself, which is also what a kernel booted at the default
     /// `WallClockEpochMs` of 0 believes the time to be.
@@ -517,30 +544,257 @@ type Resolution =
         FinalSymlinkFollowed : bool
     }
 
+/// The bounds a kernel puts on path resolution, which differ between the Unixes
+/// PawPrint models and so cannot be constants in the walk.
+///
+/// Deliberately not `SimulatedUnixPlatform` itself, which lives in
+/// `EmulatedKernel` and compiles later — the same split `RawErrnoNumbering`
+/// makes, and for the same reason: this file has no business knowing what a
+/// platform *is*, only that something has chosen limits.
+/// `SimulatedUnixPlatform.pathLimits` is the mapping, and is where the numbers
+/// are justified as measured facts about real kernels.
+///
+/// Deliberately *not* a field of `VirtualFileSystem` either, which would have
+/// saved threading it through every call. A `VirtualFileSystem` is a filesystem
+/// *image*: it comes from a seed, which has no platform and could not sensibly
+/// acquire one. `MAXSYMLINKS` is a property of the kernel doing the walking, not
+/// of the tree being walked, and storing it in the image would let two
+/// filesystems under one kernel disagree about it — a state no real system can
+/// be in.
+///
+/// The longest a single path component may be, *and the unit that length is
+/// measured in* — which is not the same on every Unix, so the two travel
+/// together as one value rather than as a number beside a unit that could
+/// disagree with it.
+///
+/// Both platforms say "255". Measured, they mean different things by it:
+///
+/// | name | UTF-8 bytes | UTF-16 units | APFS | ext4 |
+/// |---|---|---|---|---|
+/// | `a`×255 / `a`×256 | 255 / 256 | 255 / 256 | ok / too long | ok / too long |
+/// | `中`×85 / `中`×86 | 255 / 258 | 85 / 86 | ok / ok | **ok / too long** |
+/// | `中`×255 | 765 | 255 | **ok** | **too long** |
+/// | emoji×127 + `a` | 509 | 255 | **ok** | too long |
+/// | emoji×127 + `aa` | 510 | 256 | **too long** | too long |
+///
+/// The last two rows are what separate "UTF-16 code units" from "characters":
+/// an emoji is one character but two units, and APFS's boundary tracks the
+/// units. APFS also counts the name *as given* — `é`×255 in NFC is permitted,
+/// where counting its NFD expansion would give 510 units and refuse it.
+///
+/// This is really a property of the *filesystem* rather than the kernel
+/// (`_PC_NAME_MAX` varies per mount on Linux too); PawPrint models one
+/// filesystem per flavour, which is the same simplification it makes elsewhere.
+/// A struct, deliberately: `PathLimits` is one too, so a reference DU here would
+/// make a forged `Unchecked.defaultof<PathLimits>` carry a *null* limit, and
+/// `assertValid` would then have to match on it to reject it — which is exactly
+/// the operation that would throw. As a struct the forged default is
+/// `Utf8Bytes 0`, which reads as an ordinary case carrying a zero, and the zero
+/// is what `assertValid` rejects.
+[<RequireQualifiedAccess>]
+[<Struct>]
+type NameLengthLimit =
+    /// ext4, and Linux filesystems generally: a raw byte count, which is what
+    /// the kernel stores and compares.
+    | Utf8Bytes of bytes : int
+    /// APFS (and HFS+ before it), which stores names as UTF-16 and bounds the
+    /// count of code units. Conveniently exactly `String.Length`, because .NET
+    /// strings are UTF-16 — a coincidence worth naming, since it makes the
+    /// *wrong* implementation look right on a Mac.
+    | Utf16CodeUnits of units : int
+
+/// Whether expanding a symbolic link re-checks that the path still fits in
+/// `PATH_MAX`.
+///
+/// Measured, by bisecting the symlink-target length at which a dangling link
+/// flips ENOENT → ENAMETOOLONG (Darwin 25.6.0 / macOS 26.6 and Linux 6.18.5).
+/// Darwin refuses when `linklen + ni_pathlen > MAXPATHLEN` — XNU's `lookup`
+/// splices by copying the target and the unconsumed remainder into a fresh
+/// `MAXPATHLEN` buffer, so the rule is simply that the new buffer must fit.
+/// Linux has no such check *at all*: measured, a 3842-byte target with an
+/// 806-byte remainder resolves at 4648 bytes spliced, well past its own
+/// `PATH_MAX`.
+///
+/// So this is not a difference of degree that a number could express. One
+/// kernel performs a check the other does not perform at any threshold, which
+/// is why it is a DU and not, say, a nullable limit.
+///
+/// A struct for the reason `NameLengthLimit` gives. Its forged default is
+/// `Recheck`, and that ordering is deliberate: `PathLimits.assertValid` is what
+/// actually rejects a forged value (via the integer fields, which are zero),
+/// but were that guard ever weakened, a spurious ENAMETOOLONG is a visible
+/// wrong answer where a silently skipped check is an invisible one.
+[<RequireQualifiedAccess>]
+[<Struct>]
+type SpliceLengthRecheck =
+    /// Darwin. The spliced path — target bytes, unconsumed remainder, and the
+    /// NUL — must still fit in `PATH_MAX`.
+    | Recheck
+    /// Linux. A path may grow without bound as links are expanded, so long as
+    /// each *component* is within `NAME_MAX` and the original argument was
+    /// within `PATH_MAX`.
+    | NoRecheck
+
+/// A record rather than a bare `int`: `MAXSYMLINKS`, `PATH_MAX` and `NAME_MAX`
+/// are the same kind of fact, and a caller that needs one generally needs the
+/// others.
+[<Struct>]
+type PathLimits =
+    private
+        {
+            /// How many symbolic links a single resolution may traverse before
+            /// the kernel gives up with ELOOP. macOS's `MAXSYMLINKS` is 32
+            /// (`sys/param.h`, and probed: a chain of 32 resolves, 33 gives
+            /// ELOOP); Linux's is 40 (`MAXSYMLINKS` in `include/linux/namei.h`,
+            /// a kernel-internal header rather than a UAPI one).
+            MaxSymlinkTraversals : int
+            /// The longest pathname the kernel will accept as a syscall
+            /// *argument*, **including its NUL terminator** — so a usable path
+            /// is one byte shorter. Darwin 1024, Linux 4096 (measured: an
+            /// argument of 1023 bytes resolves on macOS and 1024 does not; 4095
+            /// and 4096 respectively on Linux).
+            ///
+            /// Binds the argument as passed, *not* the resolved path: a
+            /// 1023-byte relative path resolved from a long working directory is
+            /// fine, and Linux will happily `chdir` into a tree 4250 bytes deep
+            /// so long as it is built one component at a time. That is why this
+            /// is enforced at the syscall boundary rather than in the walk.
+            PathMaxBytes : int
+            /// The longest single component, with its unit.
+            ///
+            /// Read only through `nameWithinLimit`, which is why there is no
+            /// accessor for it: the number is meaningless without the unit, and
+            /// a caller holding both could still measure with the wrong one.
+            NameMax : NameLengthLimit
+            /// Whether expanding a symbolic link re-checks the total length.
+            /// Read only through `spliceWithinLimit`, for the same reason
+            /// `NameMax` is read only through `nameWithinLimit`.
+            SpliceRecheck : SpliceLengthRecheck
+        }
+
+[<RequireQualifiedAccess>]
+module PathLimits =
+    /// Fails rather than returning an option: unlike `PermissionBits.parse`,
+    /// whose input is a guest's, every caller of this is the platform table
+    /// passing a literal, so a bad value is an interpreter bug and not something
+    /// a caller could handle.
+    let create
+        (maxSymlinkTraversals : int)
+        (pathMaxBytes : int)
+        (nameMax : NameLengthLimit)
+        (spliceRecheck : SpliceLengthRecheck)
+        : PathLimits
+        =
+        if maxSymlinkTraversals < 1 then
+            failwith
+                $"PathLimits.create: a kernel that permits %d{maxSymlinkTraversals} symlink traversals could not resolve a path through any symbolic link at all; every Unix PawPrint models permits at least one."
+
+        // Two adjacent `int` parameters are an argument-order hazard, so the
+        // bounds are chosen to make a swap a loud failure rather than a subtly
+        // wrong kernel: no Unix has a PATH_MAX below 256 (POSIX's floor,
+        // _POSIX_PATH_MAX, is 256) and none permits anywhere near 256 symlink
+        // traversals, so `create 1024 32 ...` cannot pass both checks.
+        if maxSymlinkTraversals > 255 then
+            failwith
+                $"PathLimits.create: %d{maxSymlinkTraversals} symlink traversals is far beyond any Unix PawPrint models (Linux permits 40, Darwin 32). Are the first two arguments the wrong way round?"
+
+        if pathMaxBytes < 256 then
+            failwith
+                $"PathLimits.create: a PATH_MAX of %d{pathMaxBytes} bytes is below POSIX's _POSIX_PATH_MAX floor of 256. Are the first two arguments the wrong way round?"
+
+        match nameMax with
+        | NameLengthLimit.Utf8Bytes bytes when bytes < 1 ->
+            failwith $"PathLimits.create: a NAME_MAX of %d{bytes} bytes would forbid every filename."
+        | NameLengthLimit.Utf16CodeUnits units when units < 1 ->
+            failwith $"PathLimits.create: a NAME_MAX of %d{units} UTF-16 code units would forbid every filename."
+        | NameLengthLimit.Utf8Bytes _
+        | NameLengthLimit.Utf16CodeUnits _ -> ()
+
+        {
+            MaxSymlinkTraversals = maxSymlinkTraversals
+            PathMaxBytes = pathMaxBytes
+            NameMax = nameMax
+            SpliceRecheck = spliceRecheck
+        }
+
+    let maxSymlinkTraversals (limits : PathLimits) : int = limits.MaxSymlinkTraversals
+
+    /// The longest pathname this kernel accepts as a syscall argument,
+    /// *including* the NUL terminator — so a usable path is one byte shorter.
+    let pathMaxBytes (limits : PathLimits) : int = limits.PathMaxBytes
+
+    /// Whether a single path component is short enough for this kernel, measured
+    /// in whichever unit that kernel counts in.
+    ///
+    /// The only way to read `NameMax`, on purpose. Handing out the number and
+    /// the unit separately would let a caller measure a name with the wrong one
+    /// — and on a Mac the wrong one (`String.Length`) is right often enough to
+    /// look correct, which is precisely the bug this shape prevents.
+    let nameWithinLimit (limits : PathLimits) (name : FileName) : bool =
+        match limits.NameMax with
+        | NameLengthLimit.Utf8Bytes bytes -> UnixPathText.utf8.GetByteCount (FileName.toString name) <= bytes
+        | NameLengthLimit.Utf16CodeUnits units -> (FileName.toString name).Length <= units
+
+    /// Whether this kernel will still resolve the path that results from
+    /// expanding `target` here — or, on a kernel that does not re-check,
+    /// unconditionally true.
+    ///
+    /// The only way to read `SpliceRecheck`, on purpose, for the reason
+    /// `nameWithinLimit` is the only way to read `NameMax`: the caller would
+    /// otherwise have to reconstruct the arithmetic, and the arithmetic is
+    /// where the mistakes are. Takes the target and the cursor rather than two
+    /// byte counts, so that neither can be measured with the wrong function nor
+    /// passed in the wrong order.
+    ///
+    /// The rule transcribes XNU's `linklen + ni_pathlen > MAXPATHLEN`, where
+    /// `linklen` is the target's raw byte length and `ni_pathlen` counts the
+    /// unconsumed remainder *including* the NUL — hence the `+ 1`, and hence
+    /// `<=` rather than `<`. Measured on Darwin 25.6.0: through a remainder of
+    /// "/a", a 1021-byte target resolves (1021 + 2 + 1 = 1024) and a 1022-byte
+    /// one does not.
+    ///
+    /// Bytes throughout, never UTF-16 code units — measured with CJK, and the
+    /// distinction matters because `nameWithinLimit` next door legitimately
+    /// *does* count code units on Darwin.
+    let spliceWithinLimit (limits : PathLimits) (target : SymlinkTarget) (remaining : PathCursor) : bool =
+        match limits.SpliceRecheck with
+        | SpliceLengthRecheck.NoRecheck -> true
+        | SpliceLengthRecheck.Recheck ->
+
+        let targetBytes = UnixPathText.utf8.GetByteCount (SymlinkTarget.toString target)
+
+        targetBytes + PathCursor.remainingBytes remaining + 1 <= limits.PathMaxBytes
+
+    /// Re-check the invariant of a value that may not have come from `create`.
+    ///
+    /// Unlike `UnixTimestamp`, whose `Unchecked.defaultof` is the epoch and so
+    /// perfectly legal, this type's default is a zero traversal limit — which
+    /// `create` rejects, but which would otherwise make the *first* symlink on
+    /// any path report ELOOP. That is the failure worth catching: not a crash,
+    /// but a plausible-looking answer from a kernel that cannot exist, produced
+    /// silently for every path in the filesystem.
+    let assertValid (context : string) (limits : PathLimits) : PathLimits =
+        // The integer checks come first, and the `NameMax` one is written to
+        // avoid needing the unit: on a forged default every field is zero at
+        // once, and this must report that rather than depend on which field
+        // happens to be examined first.
+        if limits.MaxSymlinkTraversals < 1 || limits.PathMaxBytes < 1 then
+            failwith
+                $"%s{context}: these path limits permit %d{limits.MaxSymlinkTraversals} symlink traversals and a PATH_MAX of %d{limits.PathMaxBytes} bytes, which no Unix does. A PathLimits that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; obtain one from SimulatedUnixPlatform.pathLimits instead."
+
+        let nameMax =
+            match limits.NameMax with
+            | NameLengthLimit.Utf8Bytes bytes -> bytes
+            | NameLengthLimit.Utf16CodeUnits units -> units
+
+        if nameMax < 1 then
+            failwith
+                $"%s{context}: these path limits permit a NAME_MAX of %d{nameMax}, which would forbid every filename. A PathLimits that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; obtain one from SimulatedUnixPlatform.pathLimits instead."
+
+        limits
+
 [<RequireQualifiedAccess>]
 module VirtualFileSystem =
-    /// The number of symlink traversals below which every Unix PawPrint models
-    /// agrees the resolution should proceed. macOS's `MAXSYMLINKS` is 32
-    /// (`sys/param.h`, and probed: a chain of 32 resolves, 33 gives ELOOP);
-    /// Linux's is 40 (`MAXSYMLINKS` in `include/linux/namei.h`, a
-    /// kernel-internal header rather than a UAPI one).
-    [<Literal>]
-    let symlinksEveryPlatformAllows : int = 32
-
-    /// The number of symlink traversals at which every Unix PawPrint models
-    /// agrees the resolution fails with ELOOP. Linux permits 40 and fails the
-    /// 41st attempt.
-    ///
-    /// Also the bound that makes the walk terminate, which is why there is no
-    /// cycle detection here: a seen-state set is *not* sufficient, because a
-    /// link whose target names itself with a suffix ("l" with target "l/x")
-    /// grows the remaining component list forever without ever repeating a
-    /// state. Only a count stops that — and both real kernels use only a
-    /// counter too, so this is not an approximation of their behaviour but a
-    /// transcription of it.
-    [<Literal>]
-    let symlinksNoPlatformAllows : int = 41
-
     /// Inode 1, matching the convention that no real filesystem hands out inode
     /// 0. A zero default would otherwise silently alias whichever inode was
     /// allocated first.
@@ -873,12 +1127,18 @@ module VirtualFileSystem =
     /// instead recorded on `Resolution` and enforced only where every platform
     /// agrees.
     let resolveFull
+        (limits : PathLimits)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
         : Result<Resolution, UnixError>
         =
+        // Checked here rather than trusted, because this is the boundary a
+        // forged value crosses: `create` refuses a zero limit, but a struct's
+        // `Unchecked.defaultof` carries one anyway.
+        let limits = PathLimits.assertValid "VirtualFileSystem.resolveFull" limits
+
         // POSIX gives the empty path ENOENT (probed on both). Walking zero
         // components would instead silently answer "the directory I started
         // from".
@@ -902,33 +1162,49 @@ module VirtualFileSystem =
         | Ok start ->
 
         /// The walk returns the trailing-separator demand and whether it
-        /// followed a final symlink alongside its outcome, plus the running
-        /// symlink count that decides whether the answer is reportable at all.
+        /// followed a final symlink alongside its outcome. `symlinks` counts the
+        /// traversals so far, and is what `limits` bounds: it is a parameter
+        /// rather than a returned fact because the only question anyone asks of
+        /// it — has this kernel given up? — is answered here, in walk order.
         let rec walk
             (directory : InodeNumber)
-            (remaining : PathComponent list)
+            (remaining : PathCursor)
             (trailing : bool)
             (finalSymlinkFollowed : bool)
             (lastNavigation : FinalNavigation)
             (symlinks : int)
-            : Result<Resolution, UnixError> * int
+            : Result<Resolution, UnixError>
             =
-            match remaining with
+            match PathCursor.next remaining with
             // Reached when the path has no name left to look up: after a "." or
             // "..", or immediately for a path that named no component at all.
-            | [] ->
+            | None ->
                 Ok
                     {
                         Target = ResolvedTarget.Directory (directory, lastNavigation)
                         TrailingSeparatorDemanded = trailing
                         FinalSymlinkFollowed = finalSymlinkFollowed
-                    },
-                symlinks
-            | PathComponent.Current :: rest ->
+                    }
+            | Some (PathComponent.Current, rest) ->
                 walk directory rest trailing finalSymlinkFollowed FinalNavigation.Current symlinks
-            | PathComponent.Parent :: rest ->
+            | Some (PathComponent.Parent, rest) ->
                 walk (parentOf directory vfs) rest trailing finalSymlinkFollowed FinalNavigation.Parent symlinks
-            | PathComponent.Name name :: rest ->
+            | Some (PathComponent.Name name, rest) ->
+
+            // Before the lookup, and before anything notices whether the name
+            // exists — which is what reproduces the measured precedence on both
+            // kernels: "<300 bytes>/x" is ENAMETOOLONG (the over-long component
+            // is reached and rejected) while "nxdir/<300 bytes>" is ENOENT (the
+            // walk fails at the missing parent and never reaches it). Checking
+            // after the lookup would report ENOENT for an over-long name that
+            // does not exist, which is exactly what `stat` on a fresh long name
+            // does *not* do.
+            //
+            // This is also the only place that sees components spliced in from a
+            // symlink target, which a check at the syscall boundary could not.
+            if not (PathLimits.nameWithinLimit limits name) then
+                Error UnixError.ENAMETOOLONG
+            else
 
             let entries =
                 match tryGetDirectory directory vfs with
@@ -937,16 +1213,15 @@ module VirtualFileSystem =
                     failwith
                         $"VirtualFileSystem: looking up \"%s{FileName.toString name}\" in inode %O{directory}, which the walk had already established was a directory, but it is now absent or not a directory. The inode graph is inconsistent; run VirtualFileSystem.checkInvariants."
 
-            let isFinal = List.isEmpty rest
+            let isFinal = PathCursor.isExhausted rest
 
-            let finish (target : ResolvedTarget) =
+            let finish (target : ResolvedTarget) : Result<Resolution, UnixError> =
                 Ok
                     {
                         Target = target
                         TrailingSeparatorDemanded = trailing
                         FinalSymlinkFollowed = finalSymlinkFollowed
-                    },
-                symlinks
+                    }
 
             match Map.tryFind name entries with
             | None ->
@@ -957,7 +1232,7 @@ module VirtualFileSystem =
                     // creates on both platforms.
                     finish (ResolvedTarget.Entry (directory, name, None))
                 else
-                    Error UnixError.ENOENT, symlinks
+                    Error UnixError.ENOENT
             | Some target ->
 
             let content =
@@ -977,10 +1252,38 @@ module VirtualFileSystem =
 
             match content with
             | InodeContent.Symlink linkTarget when not isFinal || followFinal ->
-                if symlinks + 1 >= symlinksNoPlatformAllows then
-                    // Every platform has given up by here, so this is an answer
-                    // rather than a divergence.
-                    Error UnixError.ELOOP, symlinks + 1
+                // Checked *before* the traversal happens, so a limit of 32 means
+                // the 33rd attempt is the one that fails, matching both probes
+                // (macOS resolves a chain of 32 and gives ELOOP at 33; Linux
+                // resolves 40 and gives ELOOP at 41).
+                //
+                // This is also the bound that makes the walk terminate, which is
+                // why there is no cycle detection: a seen-state set would *not*
+                // be sufficient, because a link whose target names itself with a
+                // suffix ("l" with target "l/x") grows the pathname buffer
+                // forever without ever repeating a state. Only a count stops
+                // that — and both real kernels use only a counter too, so this
+                // is a transcription of their behaviour rather than an
+                // approximation of it.
+                if symlinks + 1 > PathLimits.maxSymlinkTraversals limits then
+                    Error UnixError.ELOOP
+                else if
+
+                    // *After* the traversal count, because that is the order a
+                    // kernel checks them in and the two disagree. Measured on
+                    // Darwin: a chain whose last link both exhausts the budget and
+                    // would overflow the length reports ELOOP, while the same chain
+                    // one link shorter reports ENAMETOOLONG. XNU tests
+                    // `ni_loopcnt` in `namei` before it ever reads the target.
+                    //
+                    // Before the splice rather than after, so an overflowing
+                    // expansion is refused rather than performed — and note this
+                    // sees `rest`, whose cursor already sits past the separator run
+                    // the kernel collapsed, which is the whole reason the walk
+                    // carries a cursor.
+                    not (PathLimits.spliceWithinLimit limits linkTarget rest)
+                then
+                    Error UnixError.ENAMETOOLONG
                 else
 
                 let linkPath = SymlinkTarget.toUnixPath linkTarget
@@ -988,28 +1291,41 @@ module VirtualFileSystem =
                 let next = if UnixPath.isRooted linkPath then vfs.Root else directory
 
                 // The link's own trailing separator only takes effect when
-                // nothing follows it: a separator between the target and the
-                // remainder absorbs it, exactly as `UnixPath.concat` describes.
+                // nothing follows it: when the walk has more to resolve, the
+                // separator joining the target to the remainder absorbs it.
                 //
                 // It *adds to* the outer demand rather than replacing it. The
                 // separator in "ld/" applies to whatever ld expands to, so a
                 // link with target "d" still has to land on a directory; and a
                 // link with target "d/" imposes the demand even when the
                 // guest's own path carried none.
+                //
+                // This demand is threaded rather than read back off the spliced
+                // buffer, and must be: resolving "ld/" consumes the trailing
+                // separator into the cursor (that is what the kernel's own
+                // collapse does), so the spliced buffer is just the target and
+                // has forgotten it. A kernel remembers the same fact the same
+                // way — XNU latches `TRAILINGSLASH` on the component rather than
+                // re-reading the buffer.
                 let trailing =
                     if isFinal then
                         trailing || UnixPath.hasTrailingSeparator linkPath
                     else
                         trailing
 
-                let spliced = UnixPath.components linkPath @ rest
+                // Exactly what a kernel does to its pathname buffer: the target,
+                // then whatever was left to resolve. Note this consumes `rest`,
+                // whose cursor already sits past the separator run the kernel
+                // collapsed — so the spliced buffer holds the same bytes the
+                // kernel's would.
+                let spliced = PathCursor.splice linkPath rest
 
                 // An empty splice can only mean the target was "/", that being
                 // the one path with no components; the effective path is then
                 // the root itself rather than whatever navigation preceded the
                 // link.
                 let lastNavigation =
-                    if List.isEmpty spliced then
+                    if PathCursor.isExhausted spliced then
                         FinalNavigation.Root
                     else
                         lastNavigation
@@ -1031,55 +1347,41 @@ module VirtualFileSystem =
                     // agrees on: "p/" where p exists and is not a directory is
                     // ENOTDIR.
                     if trailing then
-                        Error UnixError.ENOTDIR, symlinks
+                        Error UnixError.ENOTDIR
                     else
                         finish (ResolvedTarget.Entry (directory, name, Some target))
                 else
                     // A path cannot continue through a regular file.
-                    Error UnixError.ENOTDIR, symlinks
+                    Error UnixError.ENOTDIR
 
-        let outcome, symlinks =
-            walk start (UnixPath.components path) (UnixPath.hasTrailingSeparator path) false FinalNavigation.Root 0
-
-        if symlinks <= symlinksEveryPlatformAllows then
-            outcome
-        elif symlinks >= symlinksNoPlatformAllows then
-            // The walk stopped at the bound, so ELOOP is what every platform
-            // would have said, and `walk` has already returned it.
-            outcome
-        else
-            // Note this fires for a *failed* walk too, not only a successful
-            // one. A 35-link chain ending at a missing name gives ENOENT on
-            // Linux and ELOOP on macOS: once the 33rd traversal has happened,
-            // ELOOP is the only outcome any platform could still be made to
-            // agree on, so every other answer is a divergence.
-            failwith
-                $"VirtualFileSystem.resolveFull: resolving %s{UnixPath.toString path} traversed %d{symlinks} symlinks, which Linux permits (its MAXSYMLINKS is 40) and macOS does not (its MAXSYMLINKS is 32), so the two disagree about whether this call succeeds or fails with ELOOP. PawPrint refuses to pick one. Give the resolution limit a value derived from the emulated kernel's SimulatedUnixPlatform when a guest genuinely needs a symlink chain this deep."
+        walk start (PathCursor.ofPath path) (UnixPath.hasTrailingSeparator path) false FinalNavigation.Root 0
 
     /// `resolveFull`, discarding the how-it-finished facts. For the lookup
     /// operations, which are unanimous across platforms and so need none of
     /// them.
     let resolve
+        (limits : PathLimits)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
         : Result<ResolvedTarget, UnixError>
         =
-        resolveFull startDirectory policy path vfs
+        resolveFull limits startDirectory policy path vfs
         |> Result.map (fun resolution -> resolution.Target)
 
     /// The inode a path names, which is what `stat` and `open` want. Turns a
     /// free final name into ENOENT, which is the one thing `resolve`
     /// deliberately does not do.
     let resolveExisting
+        (limits : PathLimits)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
         : Result<InodeNumber, UnixError>
         =
-        match resolve startDirectory policy path vfs with
+        match resolve limits startDirectory policy path vfs with
         | Error error -> Error error
         | Ok (ResolvedTarget.Directory (inode, _)) -> Ok inode
         | Ok (ResolvedTarget.Entry (_, _, Some inode)) -> Ok inode

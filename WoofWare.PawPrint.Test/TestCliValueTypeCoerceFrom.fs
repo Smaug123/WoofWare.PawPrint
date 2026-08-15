@@ -65,7 +65,7 @@ module TestCliValueTypeCoerceFrom =
                     MarshallingDescriptor = None
                 }
             ]
-            |> CliValueType.OfFields bct allCt declaredHandle Layout.Default CharSet.Ansi
+            |> SynthesisedLayoutKind.ofFields bct allCt declaredHandle Layout.Default CharSet.Ansi
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
@@ -101,7 +101,17 @@ module TestCliValueTypeCoerceFrom =
 
         let layout : Layout = Layout.Custom (size = 8, packingSize = 0)
 
-        CliValueType.OfFields bct allCt declaredHandle layout CharSet.Ansi [ a ; b ]
+        let facts : DeclaredTypeFacts =
+            {
+                IsValueType = true
+                IsEnum = false
+                NominalAlignment = None
+                LayoutKind = TypeLayoutKind.Explicit
+                Layout = layout
+                CharSet = CharSet.Ansi
+            }
+
+        CliValueType.OfFields bct allCt declaredHandle facts [ a ; b ]
 
     [<Test>]
     let ``CoerceFrom preserves overlap write order for explicit-layout unions`` () : unit =

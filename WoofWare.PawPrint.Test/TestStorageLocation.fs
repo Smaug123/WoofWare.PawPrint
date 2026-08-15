@@ -228,3 +228,322 @@ module TestStorageLocation =
 
         if observedForwards = 0 then
             failwith "never observed a both-precise non-overlapping pair"
+
+/// Resolution of real byrefs through `StorageLocation.resolve`, on a real machine state.
+///
+/// The pure laws above take `LocationResolution` values as given; these tests pin what
+/// `resolve` actually *produces* for the shape whose mis-resolution was a measured bug:
+/// two `ByrefRoot.HeapObjectField` roots on one heap object. Under
+/// `[StructLayout(LayoutKind.Explicit)]` on a class two such fields can genuinely
+/// overlap, so they must resolve into the *same* storage container (the precise half)
+/// and carry *equal* coarse keys (the coarse half).
+///
+/// The two halves fail independently, which is why both are asserted here. The guest
+/// `SpanMemmoveOverlappingExplicitLayoutClassFields.cs` catches only the precise half:
+/// its reference-free fields resolve precisely on both sides, so `overlapVerdict` takes
+/// the both-precise arm and never consults a coarse key. Reverting only
+/// `SharedStorageKey.HeapObjectField` to a per-field key would leave every guest green
+/// while restoring the original defect's shape on the degradation path — the case most
+/// likely to be silently wrong, because it fires exactly when precision is unavailable.
+[<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
+module TestStorageLocationResolve =
+
+    /// Parsed once for all tests; DumpedAssembly is immutable, so sharing it
+    /// under ParallelScope.All is safe.
+    let private corelib : DumpedAssembly =
+        let corelibPath = typeof<obj>.Assembly.Location
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        Assembly.readFile loggerFactory corelibPath
+
+    let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
+        Corelib.getBaseTypes corelib
+
+    let private loadedAssemblies : LoadedAssemblies =
+        LoadedAssemblies.ofAssemblies [ corelib ]
+
+    let private concreteTypes : AllConcreteTypes =
+        Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty
+
+    let private int32Handle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Int32
+
+    let private objectHandle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Object
+
+    let private freshState () : IlMachineState =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        { IlMachineState.initial loggerFactory System.Collections.Immutable.ImmutableArray.Empty corelib with
+            ConcreteTypes = concreteTypes
+        }
+
+    let private intField (name : string) (offset : int) (value : int) : CliField =
+        {
+            Id = FieldId.Named name
+            Name = name
+            Contents = CliType.Numeric (CliNumericType.Int32 value)
+            Offset = Some offset
+            Type = int32Handle
+            MarshallingDescriptor = None
+        }
+
+    /// Allocate a heap object whose two int fields sit at explicit offsets 0 and 2 —
+    /// the explicit-layout-class shape in which two distinct fields genuinely share
+    /// bytes 2..4.
+    let private allocateOverlappingFieldObject (state : IlMachineState) : IlMachineState * ManagedHeapAddress =
+        let contents =
+            CliValueType.OfFields
+                baseClassTypes
+                concreteTypes
+                objectHandle
+                {
+                    IsValueType = true
+                    IsEnum = false
+                    NominalAlignment = None
+                    // Every field carries a `FieldOffset`, which is what explicit layout means; the
+                    // two deliberately overlap.
+                    LayoutKind = TypeLayoutKind.Explicit
+                    Layout = Layout.Default
+                    CharSet = CharSetMetadata.ofTypeAttributes baseClassTypes.Object.TypeAttributes
+                }
+                [ intField "A" 0 7 ; intField "B" 2 9 ]
+
+        let obj : AllocatedNonArrayObject =
+            {
+                Contents = contents
+                ConcreteType = objectHandle
+            }
+
+        let addr, heap = ManagedHeap.allocateNonArray obj state.ManagedHeap
+
+        { state with
+            ManagedHeap = heap
+        },
+        addr
+
+    let private fieldByref (addr : ManagedHeapAddress) (name : string) : ManagedPointerSource =
+        ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, FieldId.Named name), [])
+
+    [<Test>]
+    let ``two field roots on one object share one storage container at their layout offsets`` () : unit =
+        let state, addr = allocateOverlappingFieldObject (freshState ())
+
+        let resolvedA = StorageLocation.resolve baseClassTypes state (fieldByref addr "A")
+        let resolvedB = StorageLocation.resolve baseClassTypes state (fieldByref addr "B")
+
+        match resolvedA, resolvedB with
+        | StorageLocation.LocationResolution.Located (coarseA, Some (containerA, offsetA)),
+          StorageLocation.LocationResolution.Located (coarseB, Some (containerB, offsetB)) ->
+            // The coarse half: "could these share storage" is answered per-object,
+            // because field layout — the only thing that could prove two fields of one
+            // object disjoint — is exactly what the coarse key cannot consult.
+            coarseA |> shouldEqual coarseB
+            coarseA |> shouldEqual (StorageLocation.SharedStorageKey.HeapObjectField addr)
+
+            // The precise half: one heap object is one container, and each field is a
+            // view into it at its layout offset.
+            containerA |> shouldEqual (ByteStorageIdentity.HeapObject addr)
+            containerB |> shouldEqual (ByteStorageIdentity.HeapObject addr)
+            offsetA |> shouldEqual 0L
+            offsetB |> shouldEqual 2L
+        | other -> failwith $"expected both byrefs to resolve precisely, got %A{other}"
+
+        // End-to-end at this level: a four-byte copy from A to B overlaps (src 0 < dest 2
+        // < src + 4), so the verdict must be the backwards loop. Before the fix the two
+        // sides carried distinct per-field containers and this was CopyForwards — the
+        // measured corruption in SpanMemmoveOverlappingExplicitLayoutClassFields.cs.
+        StorageLocation.overlapVerdict resolvedA resolvedB 4
+        |> shouldEqual StorageLocation.OverlapVerdict.CopyBackwards
+
+    [<Test>]
+    let ``field roots on different objects stay distinct`` () : unit =
+        let state, addr1 = allocateOverlappingFieldObject (freshState ())
+        let state, addr2 = allocateOverlappingFieldObject state
+
+        let resolved1 = StorageLocation.resolve baseClassTypes state (fieldByref addr1 "A")
+        let resolved2 = StorageLocation.resolve baseClassTypes state (fieldByref addr2 "A")
+
+        match resolved1, resolved2 with
+        | StorageLocation.LocationResolution.Located (coarse1, Some (container1, _)),
+          StorageLocation.LocationResolution.Located (coarse2, Some (container2, _)) ->
+            // Collapsing per-field keys to per-object must not over-collapse: separate
+            // allocations remain separate storage.
+            (coarse1 = coarse2) |> shouldEqual false
+            (container1 = container2) |> shouldEqual false
+        | other -> failwith $"expected both byrefs to resolve precisely, got %A{other}"
+
+        StorageLocation.overlapVerdict resolved1 resolved2 4
+        |> shouldEqual StorageLocation.OverlapVerdict.CopyForwards
+
+    [<Test>]
+    let ``an unresolvable projection degrades to the shared coarse key, not to disjointness`` () : unit =
+        let state, addr = allocateOverlappingFieldObject (freshState ())
+
+        // A projection to a field the object does not have defeats
+        // `tryProjectionByteOffset`, exercising the documented degradation: the walk
+        // raises, the resolver catches, and the resolution keeps its coarse key with no
+        // precise coordinate. No guest-constructible shape is known to defeat precision
+        // for a heap-field root (field chains resolve against real templates, and
+        // `ReinterpretAs` targets are concretized by construction), so the degradation
+        // path is driven directly here rather than through a guest that would be
+        // vacuous.
+        let degraded =
+            ManagedPointerSource.Byref (
+                ByrefRoot.HeapObjectField (addr, FieldId.Named "A"),
+                [ ByrefProjection.Field (FieldId.Named "NoSuchField") ]
+            )
+
+        let resolvedDegraded = StorageLocation.resolve baseClassTypes state degraded
+        let resolvedB = StorageLocation.resolve baseClassTypes state (fieldByref addr "B")
+
+        // Precondition: the projection really did defeat precision. If resolution ever
+        // learns to answer it, this test must fail loudly here rather than silently
+        // asserting nothing about the degradation path.
+        match resolvedDegraded with
+        | StorageLocation.LocationResolution.Located (coarse, None) ->
+            coarse |> shouldEqual (StorageLocation.SharedStorageKey.HeapObjectField addr)
+        | other -> failwith $"expected the bad projection to lose precision but keep its coarse key, got %A{other}"
+
+        // The verdict the coarse keys exist to force: same object, cross-field, no
+        // precise coordinate on one side — undecidable, so the caller fails loud. With
+        // per-field coarse keys this arm answered CopyForwards, silently reasserting the
+        // disjointness the layout does not guarantee.
+        StorageLocation.overlapVerdict resolvedDegraded resolvedB 4
+        |> shouldEqual (
+            StorageLocation.OverlapVerdict.Undecidable (StorageLocation.SharedStorageKey.HeapObjectField addr)
+        )
+
+    let private byteHandle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Byte
+
+    let private byteType : ConcreteType<ConcreteTypeHandle> =
+        AllConcreteTypes.lookup byteHandle concreteTypes |> Option.get
+
+    let private byteField (name : string) (offset : int) : CliField =
+        {
+            Id = FieldId.Named name
+            Name = name
+            Contents = CliType.Numeric (CliNumericType.UInt8 0uy)
+            Offset = Some offset
+            Type = byteHandle
+            MarshallingDescriptor = None
+        }
+
+    /// The issue's repro type: two byte fields one byte apart.
+    let private allocateAdjacentByteFieldObject (state : IlMachineState) : IlMachineState * ManagedHeapAddress =
+        let contents =
+            CliValueType.OfFields
+                baseClassTypes
+                concreteTypes
+                objectHandle
+                {
+                    IsValueType = true
+                    IsEnum = false
+                    NominalAlignment = None
+                    LayoutKind = TypeLayoutKind.Explicit
+                    Layout = Layout.Default
+                    CharSet = CharSetMetadata.ofTypeAttributes baseClassTypes.Object.TypeAttributes
+                }
+                [ byteField "A" 0 ; byteField "B" 1 ]
+
+        let obj : AllocatedNonArrayObject =
+            {
+                Contents = contents
+                ConcreteType = objectHandle
+            }
+
+        let addr, heap = ManagedHeap.allocateNonArray obj state.ManagedHeap
+
+        { state with
+            ManagedHeap = heap
+        },
+        addr
+
+    /// Issue #993, at the level of the thing that actually resolves it.
+    ///
+    /// `Unsafe.AddByteOffset (ref o.B, Int32.MaxValue)` and
+    /// `Unsafe.AddByteOffset (ref o.A, Int32.MinValue)` are `Int32.MaxValue + 1` and
+    /// `Int32.MinValue` bytes from the object base — 2^32 apart, and real .NET reports them as
+    /// different addresses. Folded into an `int`, `B`'s coordinate wrapped onto exactly
+    /// `Int32.MinValue`, so the two resolved to *one* coordinate in *one* container: an
+    /// arbitrarily strong claim of aliasing, from arithmetic that had silently lost a bit.
+    [<Test>]
+    let ``two byrefs 2^32 bytes apart do not resolve to one coordinate`` () : unit =
+        let state, addr = allocateAdjacentByteFieldObject (freshState ())
+
+        let displaced (name : string) (byteOffset : int) : ManagedPointerSource =
+            ManagedPointerSource.Byref (
+                ByrefRoot.HeapObjectField (addr, FieldId.Named name),
+                [
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset byteOffset
+                ]
+            )
+
+        let resolvedA =
+            StorageLocation.resolve baseClassTypes state (displaced "A" System.Int32.MinValue)
+
+        let resolvedB =
+            StorageLocation.resolve baseClassTypes state (displaced "B" System.Int32.MaxValue)
+
+        match resolvedA, resolvedB with
+        | StorageLocation.LocationResolution.Located (_, Some (containerA, offsetA)),
+          StorageLocation.LocationResolution.Located (_, Some (containerB, offsetB)) ->
+            // One object is one container, so the *container* halves agreeing is correct and is
+            // not what was wrong; asserting it keeps the test honest about which half moved.
+            containerA |> shouldEqual (ByteStorageIdentity.HeapObject addr)
+            containerB |> shouldEqual (ByteStorageIdentity.HeapObject addr)
+
+            offsetA |> shouldEqual -2147483648L
+            offsetB |> shouldEqual 2147483648L
+        | other -> failwith $"expected both byrefs to resolve precisely, got %A{other}"
+
+    /// The consequence for the consumer that reads these coordinates to choose a copy direction.
+    ///
+    /// The destination here is 2^32 + 2 bytes past the source, so the two ranges are nowhere
+    /// near each other and a forward loop is correct. Folded into an `int` the destination
+    /// landed at *2*, two bytes inside a four-byte source range, and `overlapVerdict` claimed
+    /// the backwards loop — a copy run in the wrong direction, which is the shape that corrupts
+    /// data rather than merely reporting a wrong number.
+    ///
+    /// The chain is constructed directly because `appendProjection` coalesces adjacent
+    /// `ByteOffset`s, so no sequence of `Unsafe.AddByteOffset` calls produces this exact shape;
+    /// the shape a guest *does* produce (offsets separated by a `Field`, which does not
+    /// coalesce) is covered end to end by `sourcesImpure/UnsafeByteOffsetInt32Overflow.cs`. What
+    /// is being tested here is the resolver, and it sees chains from both routes.
+    [<Test>]
+    let ``a copy whose endpoints are 2^32 bytes apart is not an overlap`` () : unit =
+        let state, addr = allocateAdjacentByteFieldObject (freshState ())
+
+        let source =
+            ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, FieldId.Named "A"), [])
+
+        let destination =
+            ManagedPointerSource.Byref (
+                ByrefRoot.HeapObjectField (addr, FieldId.Named "A"),
+                [
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset System.Int32.MaxValue
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset System.Int32.MaxValue
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset 4
+                ]
+            )
+
+        let resolvedSource = StorageLocation.resolve baseClassTypes state source
+
+        let resolvedDestination = StorageLocation.resolve baseClassTypes state destination
+
+        // Premise, so a failure says which half broke: the destination really is 2^32 + 2 bytes
+        // along. (`A` sits at offset 0, and the three cursors total 2^32 + 2.)
+        match resolvedSource, resolvedDestination with
+        | StorageLocation.LocationResolution.Located (_, Some (_, sourceOffset)),
+          StorageLocation.LocationResolution.Located (_, Some (_, destinationOffset)) ->
+            sourceOffset |> shouldEqual 0L
+            destinationOffset |> shouldEqual 4294967298L
+        | other -> failwith $"expected both byrefs to resolve precisely, got %A{other}"
+
+        StorageLocation.overlapVerdict resolvedSource resolvedDestination 4
+        |> shouldEqual StorageLocation.OverlapVerdict.CopyForwards

@@ -155,7 +155,7 @@ module Intrinsics =
 
         // In general, some implementations are in:
         // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L192
-        match methodToCall.DeclaringType.Assembly.Name, methodToCall.DeclaringType.Name, methodToCall.Name with
+        match methodToCall.DeclaringAssembly.Name, methodToCall.RequiredDeclaringType.Name, methodToCall.Name with
         | "System.Private.CoreLib", _, "get_IsSupported" when
             scalarOnlyFalseIsSupportedIntrinsics.Contains intrinsicKey.DeclaringTypeFullName
             ->
@@ -199,17 +199,17 @@ module Intrinsics =
             // models a deterministic virtual CPU profile; the default scalar-only profile reports
             // them unavailable without consulting the host. The fully-qualified-name guard on the
             // "Vector" arm rejects any unrelated CoreLib type that happens to share the short name.
-            methodToCall.DeclaringType.Name <> "Vector"
+            methodToCall.RequiredDeclaringType.Name <> "Vector"
             || intrinsicKey.DeclaringTypeFullName = "System.Numerics.Vector"
             ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ ->
                 failwith
-                    $"bad signature for System.Private.CoreLib.%s{methodToCall.DeclaringType.Name}.get_IsHardwareAccelerated"
+                    $"bad signature for System.Private.CoreLib.%s{MethodOwner.describe methodToCall.Owner}.get_IsHardwareAccelerated"
 
             let isAccelerated =
-                vectorAccelerationAvailable methodToCall.DeclaringType.Name state.HardwareIntrinsics
+                vectorAccelerationAvailable methodToCall.RequiredDeclaringType.Name state.HardwareIntrinsics
 
             IlMachineState.pushToEvalStack (CliType.ofBool isAccelerated) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -2809,59 +2809,44 @@ module Intrinsics =
                 |> IntrinsicResult.Completed
             | _ ->
 
-            // ByteOffset measures the byte distance between two byref address
-            // targets. The generic T on the method is only the static view
-            // through which each byref was declared; reinterpreting a byref
-            // doesn't move it. Trailing `ByteOffset` projections contribute
-            // to the absolute byte address; `ReinterpretAs` projections are
-            // address-preserving.
-            let extractByteLocation (v : EvalStackValue) : ByteStorageIdentity * int64 =
-                let src =
-                    match v with
-                    | EvalStackValue.ManagedPointer p -> p
-                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer p) -> p
-                    | _ -> failwith $"TODO: Unsafe.ByteOffset on non-ManagedPointer: %O{v}"
+            // ByteOffset measures the byte distance between two byref address targets. The
+            // generic `T` is only the static view through which each byref was declared;
+            // reinterpreting a byref does not move it.
+            //
+            // `StorageLocation.resolve` is the one place that turns a byref into a flat byte
+            // coordinate, and it is deliberately the only way in: it hands back the coarse
+            // storage key alongside the precise coordinate, so a caller cannot obtain a distance
+            // without also holding the answer to "could these two share storage at all".
+            //
+            // This used to carry a cut-down copy of that walk, which knew about every `ByrefRoot`
+            // except the two heap ones and rejected `Field` projections outright. The gap was
+            // not academic: a byref into a heap object's field is the *only* route by which a
+            // guest can observe a reference type's layout at all, so nothing in `sourcesPure`
+            // could see the base-chain fix of issue #994.
+            let locate (v : EvalStackValue) : StorageLocation.LocationResolution =
+                match v with
+                | EvalStackValue.ManagedPointer p -> StorageLocation.resolve baseClassTypes state p
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer p) ->
+                    StorageLocation.resolve baseClassTypes state p
+                | _ -> failwith $"TODO: Unsafe.ByteOffset on non-ManagedPointer: %O{v}"
 
-                let projectionByteOffset (projs : ByrefProjection list) : int64 =
-                    let mutable byteOff = 0L
+            let originLocation = locate origin
+            let targetLocation = locate target
 
-                    for p in projs do
-                        match p with
-                        | ByrefProjection.ReinterpretAs _ -> ()
-                        | ByrefProjection.ByteOffset n -> byteOff <- byteOff + int64 n
-                        | _ -> failwith $"TODO: Unsafe.ByteOffset on byref with non-ReinterpretAs projection: %O{p}"
+            let storage1, originOffset, storage2, targetOffset =
+                match originLocation, targetLocation with
+                | StorageLocation.LocationResolution.Located (_, Some (storage1, originOffset)),
+                  StorageLocation.LocationResolution.Located (_, Some (storage2, targetOffset)) ->
+                    storage1, originOffset, storage2, targetOffset
+                | _ ->
+                    // One side named no storage at all, or named one whose projection chain has
+                    // no flat byte coordinate (a reference-containing value has no byte image, and
+                    // explicit layout can put two fields at one address). Neither a distance nor
+                    // the cross-storage sentinel would be honest, because without coordinates we
+                    // cannot even tell which of the two this is.
+                    failwith
+                        $"TODO: Unsafe.ByteOffset needs a flat byte coordinate for both byrefs, and at least one has none: origin %O{origin} resolved to %O{originLocation}, target %O{target} resolved to %O{targetLocation}"
 
-                    byteOff
-
-                match src with
-                | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), projs) ->
-                    ByteStorageIdentity.StackMemory (thread, frame, block),
-                    int64 byteOffset + projectionByteOffset projs
-                | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), projs) ->
-                    ByteStorageIdentity.NativeMemory block, int64 byteOffset + projectionByteOffset projs
-                | ManagedPointerSource.Byref (ByrefRoot.LocalVariable (thread, frame, local), projs) ->
-                    ByteStorageIdentity.StackLocal (thread, frame, local), projectionByteOffset projs
-                | ManagedPointerSource.Byref (ByrefRoot.Argument (thread, frame, arg), projs) ->
-                    ByteStorageIdentity.StackArgument (thread, frame, arg), projectionByteOffset projs
-                | ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringType, field, owner), projs) ->
-                    ByteStorageIdentity.StaticField (declaringType, field, owner), projectionByteOffset projs
-                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
-                    // The cell index is a position in *this array's* layout, so the array's
-                    // stride is what converts it to bytes — not `sizeof(T)` from the calling
-                    // method, which is only the same number when `T` is the element type.
-                    // `Array.Empty<T>()` needs no special case: it has no stored element to
-                    // measure, but it has a recorded stride like any other array.
-                    let elementSize = (ManagedHeap.getArrayShape arr state.ManagedHeap).ElementStride
-
-                    ByteStorageIdentity.Array arr, int64 i * int64 elementSize + projectionByteOffset projs
-                | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
-                    ByteStorageIdentity.String str, int64 charIndex * 2L + projectionByteOffset projs
-                | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, projs) ->
-                    ByteStorageIdentity.PeByteRange peByteRange, projectionByteOffset projs
-                | _ -> failwith $"TODO: Unsafe.ByteOffset on unsupported byref: %O{v}"
-
-            let storage1, originOffset = extractByteLocation origin
-            let storage2, targetOffset = extractByteLocation target
 
             // Same-storage ByteOffset is an honest byte delta and composes
             // correctly with Unsafe.Add / further arithmetic. Cross-storage
@@ -2893,10 +2878,10 @@ module Intrinsics =
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L141
             // The source-level body returns `ref Unsafe.Add(ref _reference, index)`;
             // the method is intrinsic so we model that primitive boundary directly.
-            let spanTypeName : string = methodToCall.DeclaringType.Name
+            let spanTypeName : string = methodToCall.RequiredDeclaringType.Name
 
             let elementType : ConcreteTypeHandle =
-                methodToCall.DeclaringType.Generics |> Seq.exactlyOne
+                methodToCall.DeclaringTypeGenerics |> Seq.exactlyOne
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteByref ret) when ret = elementType ->
@@ -2979,7 +2964,7 @@ module Intrinsics =
             // same byref-projection helpers as get_Item. That is also the more direct
             // model — it needs no byte-count derivation at all.
             let elementType : ConcreteTypeHandle =
-                methodToCall.DeclaringType.Generics |> Seq.exactlyOne
+                methodToCall.DeclaringTypeGenerics |> Seq.exactlyOne
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Void -> ()

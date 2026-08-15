@@ -23,6 +23,41 @@ module CharSetMetadata =
         | TypeAttributes.AutoClass -> CharSet.Auto
         | _ -> CharSet.None
 
+/// Which of CoreCLR's three field-placement algorithms governs a type.
+///
+/// This is the <c>TypeAttributes.LayoutMask</c> classification (ECMA §II.10.1.2), and is a
+/// *different* fact from <c>Layout</c>: that models the <c>ClassLayout</c> metadata table
+/// (<c>Pack</c>/<c>Size</c>) and says nothing about which algorithm reads it. Auto layout reads
+/// neither, so the two must travel together to size a type.
+[<RequireQualifiedAccess>]
+type TypeLayoutKind =
+    /// Fields are placed by `MethodTableBuilder::HandleAutoLayout`: bucketed by size class,
+    /// references first, `Pack` and `Size` both ignored.
+    | Auto
+    /// Fields are placed in declared order, respecting `Pack`, with `Size` as a floor.
+    | Sequential
+    /// Every field carries its own `FieldOffset`.
+    | Explicit
+
+[<RequireQualifiedAccess>]
+module TypeLayoutKind =
+    /// Project a `TypeAttributes` value's `LayoutMask` bits onto the layout kind they denote.
+    /// `LayoutMask = 0x18`; `AutoLayout = 0x00`, `SequentialLayout = 0x08`, `ExplicitLayout = 0x10`.
+    /// The zero-valued bits are AutoLayout by ECMA §II.10.1.2, which is why a type carrying no
+    /// `[StructLayout]` at all — every C# class — reports `Auto`.
+    let ofTypeAttributes (attrs : TypeAttributes) : TypeLayoutKind =
+        match attrs &&& TypeAttributes.LayoutMask with
+        | TypeAttributes.AutoLayout -> TypeLayoutKind.Auto
+        | TypeAttributes.SequentialLayout -> TypeLayoutKind.Sequential
+        | TypeAttributes.ExplicitLayout -> TypeLayoutKind.Explicit
+        | other ->
+            // 0x18 is the one remaining bit pattern, and it is not a legal LayoutMask value.
+            // CoreCLR rejects it at type load: `(dwAttrClass & tdLayoutMask) == tdLayoutMask`
+            // yields `COR_E_TYPELOAD` in `MethodTableBuilder::CreateClass`
+            // (methodtablebuilder.cpp:144). Roslyn cannot emit it; only hand-crafted metadata can.
+            failwith
+                $"TypeLayoutKind.ofTypeAttributes: TypeAttributes.LayoutMask is %O{other}, which is not one of AutoLayout, SequentialLayout or ExplicitLayout (CoreCLR rejects this at type load with COR_E_TYPELOAD)"
+
 [<RequireQualifiedAccess>]
 type BaseTypeInfo =
     | TypeDef of TypeDefinitionHandle
@@ -257,6 +292,17 @@ type BaseClassTypes<'corelib> =
         Object : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeMethodHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeMethodInfoStub : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// <c>System.Reflection.Emit.DynamicMethod</c>, the builder object a guest holds while it
+        /// emits IL. Carried here so that a <c>DynamicScope</c> entry can be recognised as one by
+        /// *identity* rather than by displayed name: CoreCLR's own test is <c>handle as
+        /// DynamicMethod</c>, which a guest-defined lookalike does not satisfy.
+        DynamicMethod : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// <c>System.Reflection.Emit.VarArgMethod</c>, the wrapper <c>ILGenerator.EmitCall</c> puts
+        /// round whatever method it was given. Recognised by identity for the same reason
+        /// <see cref="DynamicMethod"/> is, even though it is an internal type a guest could not
+        /// plausibly counterfeit: the strength of the check should not depend on who happens to be
+        /// able to reach it today.
+        VarArgMethod : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeMethodHandleInternal : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeFieldHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeTypeHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
@@ -285,6 +331,15 @@ type BaseClassTypes<'corelib> =
         IndexOutOfRangeException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         InvalidCastException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         ArrayTypeMismatchException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// Thrown by the runtime — not the BCL — when a method body is not a valid program:
+        /// among other things, when a type operand does not name a closed type, which is
+        /// reachable from `Reflection.Emit` because `ILGenerator.Emit` accepts any `RuntimeType`.
+        InvalidProgramException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// Reported by the JIT — not the BCL — when a token resolves to something of the wrong
+        /// shape ("Bad class token"). Reachable from `Reflection.Emit` by rewriting a
+        /// `DynamicScope` entry to a different kind after the method was minted.
+        BadImageFormatException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        ArgumentOutOfRangeException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingFieldException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingMethodException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         NotSupportedException : TypeInfo<GenericParamFromMetadata, TypeDefn>

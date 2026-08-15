@@ -89,7 +89,7 @@ module TestMarshalLayout =
     /// A `System.DateTime`-typed field: structurally one `ulong _dateData`, but declared as
     /// corelib's `DateTime`, which is what `IsHostKnownDateTime` keys on.
     let private dateTimeValue : CliType =
-        CliValueType.OfFields
+        SynthesisedLayoutKind.ofFields
             bct
             allCt
             dateTimeHandle
@@ -185,7 +185,7 @@ module TestMarshalLayout =
             ]
 
     let private ofFields (layout : Layout) (fields : CliField list) : CliValueType =
-        CliValueType.OfFields bct allCt declaredHandle layout CharSet.Ansi fields
+        SynthesisedLayoutKind.ofFields bct allCt declaredHandle layout CharSet.Ansi fields
 
     let private layoutOf (layout : Layout) (fields : GeneratedField list) : SizeofResult * MarshalFieldPlacement list =
         let vt = ofFields layout (fields |> List.map _.Field)
@@ -311,6 +311,41 @@ module TestMarshalLayout =
 
         Prop.forAll (Arb.fromGen (Gen.zip genFields genLayout)) (fun (f, l) -> property f l)
         |> Check.QuickThrowOnFailure
+
+    [<Test>]
+    let ``A declared Size suppresses the native alignment rounding`` () : unit =
+        // Native layout takes a declared `ClassLayout.Size` through the *same* helper the managed
+        // layout does: `CollectNativeLayoutFieldMetadataThrowing` calls
+        // `CalculateSizeWithMetadataSize` when the type `HasExplicitSize()` and `AlignSize`
+        // otherwise (classlayoutinfo.cpp:939-977). So the floor and the rounding are alternatives
+        // here too, and the sweep above cannot see it: `genLayout` only ever draws a `Size` that
+        // is either 0 or larger than the fields need, where the two orderings agree.
+        let fields =
+            [
+                {
+                    Field =
+                        cliField
+                            "l"
+                            (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 1L)))
+                            (handleOf bct.Int64)
+                    NativeWidth = 8
+                }
+                {
+                    Field = cliField "i" (CliType.Numeric (CliNumericType.Int32 2)) (handleOf bct.Int32)
+                    NativeWidth = 4
+                }
+            ]
+
+        // Fields end at 12 and demand 8-byte alignment, so with no declared size this rounds to 16.
+        (fst (layoutOf Layout.Default fields)).Size |> shouldEqual 16
+
+        // A declared size between the two suppresses the rounding entirely.
+        (fst (layoutOf (Layout.Custom (size = 13, packingSize = 0)) fields)).Size
+        |> shouldEqual 13
+
+        // One below the fields loses to them rather than truncating them.
+        (fst (layoutOf (Layout.Custom (size = 4, packingSize = 0)) fields)).Size
+        |> shouldEqual 12
 
     [<Test>]
     let ``A DateTime field claims eight bytes at eight-byte alignment`` () : unit =

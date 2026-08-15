@@ -290,16 +290,17 @@ type ByrefRoot =
 /// Identity of a byte-addressable storage container. Offsets within the
 /// container are tracked separately.
 ///
-/// `HeapObject` and `HeapObjectField` are not literally "byte arrays" — they
-/// identify a managed heap allocation (or a particular class field within
-/// one) as the shared origin for byte-offset reasoning. Two byrefs into the
-/// same boxed value reach through the same `HeapObject addr` regardless of
-/// which interior field they project; two byrefs through the same class
-/// field reach through the same `HeapObjectField (addr, field)`. Disjoint
-/// fields of the same class instance get distinct `HeapObjectField` keys,
-/// and a boxed value and a class-field byref cannot coexist on the same
-/// address (each heap allocation has a single object kind), so the two
-/// heap kinds never need to be reconciled against each other.
+/// `HeapObject` is not literally a "byte array" — it identifies a managed
+/// heap allocation as the shared origin for byte-offset reasoning. Every
+/// byref into one heap allocation resolves to the same `HeapObject addr`,
+/// whether it reached its target through the whole boxed value or through a
+/// class field: a field is a view into its object's single storage at the
+/// field's layout offset, not a container of its own. There is deliberately
+/// no per-field heap identity, because under
+/// `[StructLayout(LayoutKind.Explicit)]` on a class two distinct fields can
+/// occupy overlapping bytes, so distinct per-field containers would assert a
+/// disjointness the layout does not guarantee; only the offsets (which
+/// consult field layout) can prove two fields of one object disjoint.
 [<RequireQualifiedAccess>]
 type ByteStorageIdentity =
     | Array of ManagedHeapAddress
@@ -313,7 +314,6 @@ type ByteStorageIdentity =
     | StackArgument of ThreadId * FrameId * uint16
     | NativeMemory of NativeMemoryBlockId
     | HeapObject of ManagedHeapAddress
-    | HeapObjectField of ManagedHeapAddress * FieldId
 
 [<RequireQualifiedAccess>]
 module ByteStorageIdentity =
@@ -328,7 +328,6 @@ module ByteStorageIdentity =
         | ByteStorageIdentity.StackArgument _ -> 6
         | ByteStorageIdentity.NativeMemory _ -> 7
         | ByteStorageIdentity.HeapObject _ -> 8
-        | ByteStorageIdentity.HeapObjectField _ -> 9
 
     let compare (left : ByteStorageIdentity) (right : ByteStorageIdentity) : int =
         match left, right with
@@ -349,9 +348,6 @@ module ByteStorageIdentity =
             Operators.compare (leftThread, leftFrame, leftArgument) (rightThread, rightFrame, rightArgument)
         | ByteStorageIdentity.NativeMemory left, ByteStorageIdentity.NativeMemory right -> Operators.compare left right
         | ByteStorageIdentity.HeapObject left, ByteStorageIdentity.HeapObject right -> Operators.compare left right
-        | ByteStorageIdentity.HeapObjectField (leftAddr, leftField),
-          ByteStorageIdentity.HeapObjectField (rightAddr, rightField) ->
-            Operators.compare (leftAddr, leftField) (rightAddr, rightField)
         | _ -> Operators.compare (rank left) (rank right)
 
 /// A navigation step applied after reaching the byref root.
@@ -672,40 +668,33 @@ module ManagedPointerSource =
     /// synthetic address model. For PE byte ranges this is `RVA + byteOffset`,
     /// not a real loaded module address; callers may use it only for low-bit
     /// alignment masks where the unknown image base contributes zero low bits.
+    ///
+    /// The cursor fold below accumulates in `int64`, matching the result type.
+    /// It used to fold in `int32` and widen only at the end, which was a limit
+    /// the address model does not have: a synthetic address is 64-bit, so the
+    /// displacement folded into it is too. Because this file is `Checked`, a
+    /// chain carrying several large cursors aborted the guest on that limit
+    /// rather than answering (issue #993).
     let tryStableAddressBits (src : ManagedPointerSource) : int64 option =
+        let rec foldCursor (byteOffset : int64) (projs : ByrefProjection list) : int64 option =
+            match projs with
+            | [] -> Some byteOffset
+            | ByrefProjection.ReinterpretAs _ :: rest -> foldCursor byteOffset rest
+            | ByrefProjection.ByteOffset n :: rest -> foldCursor (byteOffset + int64<int> n) rest
+            | ByrefProjection.Field _ :: _ -> None
+
         match src with
         | ManagedPointerSource.Null -> Some 0L
         | ManagedPointerSource.NativeIntPlaceholder bits -> Some bits
         | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (_, _, _, rootByteOffset), projs) ->
-            let rec loop (byteOffset : int) (projs : ByrefProjection list) : int64 option =
-                match projs with
-                | [] -> Some (int64 rootByteOffset + int64 byteOffset)
-                | ByrefProjection.ReinterpretAs _ :: rest -> loop byteOffset rest
-                | ByrefProjection.ByteOffset n :: rest -> loop (byteOffset + n) rest
-                | ByrefProjection.Field _ :: _ -> None
-
-            loop 0 projs
+            foldCursor (int64<int> rootByteOffset) projs
         | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (_, rootByteOffset), projs) ->
             // Native-heap blocks are modelled as being allocated at unknown
             // (but well-aligned) base addresses; only the in-block byte offset
             // contributes to the low bits visible to alignment masks.
-            let rec loop (byteOffset : int) (projs : ByrefProjection list) : int64 option =
-                match projs with
-                | [] -> Some (int64 rootByteOffset + int64 byteOffset)
-                | ByrefProjection.ReinterpretAs _ :: rest -> loop byteOffset rest
-                | ByrefProjection.ByteOffset n :: rest -> loop (byteOffset + n) rest
-                | ByrefProjection.Field _ :: _ -> None
-
-            loop 0 projs
+            foldCursor (int64<int> rootByteOffset) projs
         | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, projs) ->
-            let rec loop (byteOffset : int) (projs : ByrefProjection list) : int64 option =
-                match projs with
-                | [] -> Some (int64 peByteRange.RelativeVirtualAddress + int64 byteOffset)
-                | ByrefProjection.ReinterpretAs _ :: rest -> loop byteOffset rest
-                | ByrefProjection.ByteOffset n :: rest -> loop (byteOffset + n) rest
-                | ByrefProjection.Field _ :: _ -> None
-
-            loop 0 projs
+            foldCursor (int64<int> peByteRange.RelativeVirtualAddress) projs
         | ManagedPointerSource.Byref _ -> None
 
     /// How many low bits of a byref's *container start* address the real runtime
@@ -791,17 +780,30 @@ module ManagedPointerSource =
                 | ByrefProjection.ReinterpretAs _, (ByrefProjection.ReinterpretAs _) :: revRest ->
                     List.rev revRest @ [ projection ]
                 | ByrefProjection.ByteOffset n, ByrefProjection.ByteOffset m :: revRest ->
-                    // Test the sum for zero rather than `n = -m`: this module is `Checked`, so
-                    // negating `Int32.MinValue` throws a *host* OverflowException even when the
-                    // sum is perfectly representable (`Int32.MinValue + 1`). The two conditions
-                    // are equivalent — offsets cancel exactly when their sum is zero, which
-                    // cannot itself overflow — so the sum is the total one.
-                    let total = m + n
+                    // Test the sum for zero rather than `n = -m`: negating `Int32.MinValue`
+                    // overflows even when the sum is perfectly representable
+                    // (`Int32.MinValue + 1`). The two conditions are equivalent — offsets cancel
+                    // exactly when their sum is zero — so the sum is the total one.
+                    //
+                    // Summed in `int64` and then checked for representability, rather than left
+                    // to this file's `open Checked`. Both spellings refuse, but a bare
+                    // `OverflowException` names neither the byref nor the offsets, and it is
+                    // *catchable in the wrong place*: `add.ovf`/`sub.ovf` (`NullaryIlOp.fs`)
+                    // wrap `BinaryArithmetic.execute` in `with :? OverflowException` and turn it
+                    // into a guest `System.OverflowException`, so PawPrint's inability to store
+                    // a cursor wider than `int32` would surface to the guest as a CLI arithmetic
+                    // overflow that real .NET's 64-bit `add.ovf` does not raise. A `failwith` is
+                    // the honest refusal: this is a representational limit of `ByteOffset`, not
+                    // an overflow in the guest's arithmetic.
+                    let total = int64<int> m + int64<int> n
 
-                    if total = 0 then
+                    if total = 0L then
                         List.rev revRest
+                    elif total < int64<int> Int32.MinValue || total > int64<int> Int32.MaxValue then
+                        failwith
+                            $"cannot append ByteOffset %d{n} to a byref already carrying ByteOffset %d{m}: the total %d{total} does not fit in the int32 PawPrint stores for a byte cursor, so a byref this far from its root is not modelled. Byref: %O{src}"
                     else
-                        List.rev revRest @ [ ByrefProjection.ByteOffset total ]
+                        List.rev revRest @ [ ByrefProjection.ByteOffset (int32<int64> total) ]
                 | ByrefProjection.ByteOffset 0, _ -> projs
                 | ByrefProjection.ByteOffset _, ByrefProjection.ReinterpretAs _ :: _ -> projs @ [ projection ]
                 | ByrefProjection.ByteOffset n, _ ->
@@ -1081,13 +1083,24 @@ module ManagedPointerSource =
     /// `ReinterpretAs` is address-preserving and contributes nothing; `Field` steps
     /// contribute an unknown non-negative amount and are counted by `containsField`
     /// instead.
-    let private knownByteDisplacement (projs : ByrefProjection list) : int =
+    ///
+    /// Summed in `int64`, because a byref's displacement is address arithmetic and that is
+    /// 64-bit: two cursors of `Int32.MaxValue` and `1` put a byref 2147483648 bytes along, which
+    /// no `int` can hold however the addition behaves.
+    ///
+    /// It is worth saying what the `int` version actually did, because this file used to say —
+    /// and issue #993 repeated — that it wrapped. Measured, it did not: `List.sumBy` over `int`
+    /// is `Checked.(+)` inside FSharp.Core, independently of this file's `open Checked`. So the
+    /// old sum *threw* `System.OverflowException`, aborting the guest out of a byref comparison
+    /// whose answer is perfectly well defined. Wrapping would have been a wrong answer and this
+    /// was a crash, but neither is the answer, and `int64` gives it.
+    let private knownByteDisplacement (projs : ByrefProjection list) : int64 =
         projs
         |> List.sumBy (fun p ->
             match p with
-            | ByrefProjection.ByteOffset n -> n
+            | ByrefProjection.ByteOffset n -> int64<int> n
             | ByrefProjection.Field _
-            | ByrefProjection.ReinterpretAs _ -> 0
+            | ByrefProjection.ReinterpretAs _ -> 0L
         )
 
     /// What, if anything, bounds a byte cursor sitting on this root — that is, what stops a
@@ -1174,13 +1187,16 @@ module ManagedPointerSource =
         //
         // It is written as a sum anyway, because it is the *total* displacement that decides
         // whether the root's extent was left, and testing each step in turn gets that wrong:
-        // two offsets each inside a range can sum to one outside it. Note the limit of that
-        // robustness — `knownByteDisplacement` sums with `List.sumBy`, which is unchecked
-        // whatever this file's `open Checked` says, so a chain that really did carry several
-        // offsets would need that made checked before this could be trusted on it.
+        // two offsets each inside a range can sum to one outside it. That robustness now holds
+        // for a chain carrying several offsets too, which it did not when this comment claimed
+        // it: `knownByteDisplacement` sums in `int64` (issue #993), so a total that leaves the
+        // range can neither wrap back inside it nor abort the guest on the way. The caveat this
+        // comment used to carry — that `List.sumBy` was unchecked whatever the file's
+        // `open Checked` said — was wrong on the facts; it is `Checked.(+)` inside FSharp.Core,
+        // so the failure mode was a host `OverflowException`, not a wrap.
         let cursor = knownByteDisplacement projs
 
-        if cursor = 0 then
+        if cursor = 0L then
             // Nothing displaced it, whatever else the chain navigates through.
             false
         elif containsField projs then
@@ -1192,7 +1208,7 @@ module ManagedPointerSource =
                 // A cursor landing strictly inside the range is still addressing this root.
                 // One landing exactly at `size` is the range's one-past-the-end address,
                 // which may well be the *next* range's base, so it is not inside.
-                not (cursor > 0 && cursor < size)
+                not (cursor > 0L && cursor < int64<int> size)
             | RootCursorBound.Unbounded -> true
 
     /// Whether two byrefs sharing a root name the same address, or `None` when saying

@@ -76,7 +76,7 @@ module GenericScope =
         : GenericScope
         =
         {
-            TypeParameters = names method.DeclaringType.Generics
+            TypeParameters = names method.DeclaringTypeGenerics
             MethodParameters = names method.Generics
         }
 
@@ -331,7 +331,10 @@ module IlFormatting =
                 // renderTypeDefinition also covers the case where the declaring type is somehow
                 // absent from the TypeDef index; ConcreteType's own ToString would render each
                 // of its generic parameters as a raw metadata record.
-                let typeName = renderTypeDefinition assembly m.DeclaringType.Identity
+                let typeName =
+                    renderTypeDefinition
+                        assembly
+                        (MethodOwner.requireDeclaringType "rendering a MethodDef token" m.Owner).Identity
 
                 $"%s{typeName}::%s{m.Name}"
             | false, _ -> $"MethodDef(%O{handle})"
@@ -407,12 +410,21 @@ module IlFormatting =
     /// </summary>
     let formatIlOp (assembly : DumpedAssembly) (scope : GenericScope) (ilOp : IlOp) (offset : int) : string =
         match ilOp with
-        | IlOp.UnaryMetadataToken (op, token) ->
+        | IlOp.UnaryMetadataToken (op, MetadataOperand.FromMetadata token) ->
             let tokenStr = formatMetadataToken assembly scope token.Token
             $"    IL_%04X{offset}: %-20O{op} %s{tokenStr}"
-        | IlOp.UnaryStringToken (op, token) ->
+        | IlOp.UnaryMetadataToken (op, MetadataOperand.FromDynamicScope scopeIndex) ->
+            // As for `ldstr` below: the entry lives in the guest heap, which this formatter cannot
+            // reach, and is read when the instruction executes rather than when the body was
+            // decoded.
+            $"    IL_%04X{offset}: %-20O{op} DynamicScope[%d{scopeIndex}]"
+        | IlOp.UnaryStringToken (op, StringOperand.FromMetadata token) ->
             let str = assembly.Strings token.Token |> escapeStringLiteral
             $"    IL_%04X{offset}: %-20O{op} \"%s{str}\""
+        | IlOp.UnaryStringToken (op, StringOperand.FromDynamicScope scopeIndex) ->
+            // No value to show: it lives in the guest heap, which this formatter has no access to,
+            // and is read when the instruction executes rather than when the body was decoded.
+            $"    IL_%04X{offset}: %-20O{op} DynamicScope[%d{scopeIndex}]"
         | _ -> IlOp.Format ilOp offset
 
     /// <remarks>

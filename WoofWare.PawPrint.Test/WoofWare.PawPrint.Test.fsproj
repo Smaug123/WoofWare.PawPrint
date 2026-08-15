@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <Compile Include="LoggerFactory.fs" />
+    <Compile Include="SynthesisedLayoutKind.fs" />
     <Compile Include="TestGcHeapHardLimit.fs" />
     <Compile Include="Assembly.fs" />
     <Compile Include="Roslyn.fs" />
@@ -35,6 +36,7 @@
     <Compile Include="AssemblyGraphShape.fs" />
     <Compile Include="TestTypeResolution.fs" />
     <Compile Include="TestTypeIdentityProperties.fs" />
+    <Compile Include="TestEnumClassification.fs" />
     <Compile Include="TestEvalStack.fs" />
     <Compile Include="TestIntrinsicValueArguments.fs" />
     <Compile Include="TestTaggedPointerBits.fs" />
@@ -48,6 +50,8 @@
     <Compile Include="TestProjectionByteOffset.fs" />
     <Compile Include="TestInlineArrayStorage.fs" />
     <Compile Include="TestStructLayout.fs" />
+    <Compile Include="TestNominalAlignment.fs" />
+    <Compile Include="TestBaseChainLayout.fs" />
     <Compile Include="TestMarshalLayout.fs" />
     <Compile Include="TestManagedHeap.fs" />
     <Compile Include="TestStaticStorage.fs" />
@@ -63,8 +67,11 @@
     <Compile Include="TestNativeMemoryPool.fs" />
     <Compile Include="TestAbsoluteUnixPath.fs" />
     <Compile Include="TestUnixPath.fs" />
+    <Compile Include="TestPathCursor.fs" />
     <Compile Include="TestVirtualFileSystem.fs" />
+    <Compile Include="TestFileSystemSeed.fs" />
     <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
+    <Compile Include="TestGuestPathBytes.fs" />
     <Compile Include="TestRuntimeConfig.fs" />
     <Compile Include="TestDynamicCodeSupport.fs" />
     <Compile Include="TestSwitchIlOp.fs" />
@@ -96,8 +103,11 @@
     <Compile Include="TestInternalAllocNoChecks.fs" />
     <Compile Include="TestInternalAlloc.fs" />
     <Compile Include="TestNativeEnum.fs" />
+    <Compile Include="TestMethodOwner.fs" />
+    <Compile Include="TestDynamicMethodTracing.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
     <Compile Include="TestNativeGetDynamicMethod.fs" />
+    <Compile Include="TestDynamicMethodMethodToken.fs" />
     <Compile Include="TestMethodReturnType.fs" />
     <Compile Include="TestFunctionPointerConcretization.fs" />
     <Compile Include="Netstandard21FSharpCore.fs" />
