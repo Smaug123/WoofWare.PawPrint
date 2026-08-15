@@ -413,3 +413,137 @@ module TestStorageLocationResolve =
         |> shouldEqual (
             StorageLocation.OverlapVerdict.Undecidable (StorageLocation.SharedStorageKey.HeapObjectField addr)
         )
+
+    let private byteHandle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Byte
+
+    let private byteType : ConcreteType<ConcreteTypeHandle> =
+        AllConcreteTypes.lookup byteHandle concreteTypes |> Option.get
+
+    let private byteField (name : string) (offset : int) : CliField =
+        {
+            Id = FieldId.Named name
+            Name = name
+            Contents = CliType.Numeric (CliNumericType.UInt8 0uy)
+            Offset = Some offset
+            Type = byteHandle
+            MarshallingDescriptor = None
+        }
+
+    /// The issue's repro type: two byte fields one byte apart.
+    let private allocateAdjacentByteFieldObject (state : IlMachineState) : IlMachineState * ManagedHeapAddress =
+        let contents =
+            CliValueType.OfFields
+                baseClassTypes
+                concreteTypes
+                objectHandle
+                {
+                    IsValueType = true
+                    IsEnum = false
+                    NominalAlignment = None
+                    LayoutKind = TypeLayoutKind.Explicit
+                    Layout = Layout.Default
+                    CharSet = CharSetMetadata.ofTypeAttributes baseClassTypes.Object.TypeAttributes
+                }
+                [ byteField "A" 0 ; byteField "B" 1 ]
+
+        let obj : AllocatedNonArrayObject =
+            {
+                Contents = contents
+                ConcreteType = objectHandle
+            }
+
+        let addr, heap = ManagedHeap.allocateNonArray obj state.ManagedHeap
+
+        { state with
+            ManagedHeap = heap
+        },
+        addr
+
+    /// Issue #993, at the level of the thing that actually resolves it.
+    ///
+    /// `Unsafe.AddByteOffset (ref o.B, Int32.MaxValue)` and
+    /// `Unsafe.AddByteOffset (ref o.A, Int32.MinValue)` are `Int32.MaxValue + 1` and
+    /// `Int32.MinValue` bytes from the object base — 2^32 apart, and real .NET reports them as
+    /// different addresses. Folded into an `int`, `B`'s coordinate wrapped onto exactly
+    /// `Int32.MinValue`, so the two resolved to *one* coordinate in *one* container: an
+    /// arbitrarily strong claim of aliasing, from arithmetic that had silently lost a bit.
+    [<Test>]
+    let ``two byrefs 2^32 bytes apart do not resolve to one coordinate`` () : unit =
+        let state, addr = allocateAdjacentByteFieldObject (freshState ())
+
+        let displaced (name : string) (byteOffset : int) : ManagedPointerSource =
+            ManagedPointerSource.Byref (
+                ByrefRoot.HeapObjectField (addr, FieldId.Named name),
+                [
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset byteOffset
+                ]
+            )
+
+        let resolvedA =
+            StorageLocation.resolve baseClassTypes state (displaced "A" System.Int32.MinValue)
+
+        let resolvedB =
+            StorageLocation.resolve baseClassTypes state (displaced "B" System.Int32.MaxValue)
+
+        match resolvedA, resolvedB with
+        | StorageLocation.LocationResolution.Located (_, Some (containerA, offsetA)),
+          StorageLocation.LocationResolution.Located (_, Some (containerB, offsetB)) ->
+            // One object is one container, so the *container* halves agreeing is correct and is
+            // not what was wrong; asserting it keeps the test honest about which half moved.
+            containerA |> shouldEqual (ByteStorageIdentity.HeapObject addr)
+            containerB |> shouldEqual (ByteStorageIdentity.HeapObject addr)
+
+            offsetA |> shouldEqual -2147483648L
+            offsetB |> shouldEqual 2147483648L
+        | other -> failwith $"expected both byrefs to resolve precisely, got %A{other}"
+
+    /// The consequence for the consumer that reads these coordinates to choose a copy direction.
+    ///
+    /// The destination here is 2^32 + 2 bytes past the source, so the two ranges are nowhere
+    /// near each other and a forward loop is correct. Folded into an `int` the destination
+    /// landed at *2*, two bytes inside a four-byte source range, and `overlapVerdict` claimed
+    /// the backwards loop — a copy run in the wrong direction, which is the shape that corrupts
+    /// data rather than merely reporting a wrong number.
+    ///
+    /// The chain is constructed directly because `appendProjection` coalesces adjacent
+    /// `ByteOffset`s, so no sequence of `Unsafe.AddByteOffset` calls produces this exact shape;
+    /// the shape a guest *does* produce (offsets separated by a `Field`, which does not
+    /// coalesce) is covered end to end by `sourcesImpure/UnsafeByteOffsetInt32Overflow.cs`. What
+    /// is being tested here is the resolver, and it sees chains from both routes.
+    [<Test>]
+    let ``a copy whose endpoints are 2^32 bytes apart is not an overlap`` () : unit =
+        let state, addr = allocateAdjacentByteFieldObject (freshState ())
+
+        let source =
+            ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, FieldId.Named "A"), [])
+
+        let destination =
+            ManagedPointerSource.Byref (
+                ByrefRoot.HeapObjectField (addr, FieldId.Named "A"),
+                [
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset System.Int32.MaxValue
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset System.Int32.MaxValue
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset 4
+                ]
+            )
+
+        let resolvedSource = StorageLocation.resolve baseClassTypes state source
+
+        let resolvedDestination = StorageLocation.resolve baseClassTypes state destination
+
+        // Premise, so a failure says which half broke: the destination really is 2^32 + 2 bytes
+        // along. (`A` sits at offset 0, and the three cursors total 2^32 + 2.)
+        match resolvedSource, resolvedDestination with
+        | StorageLocation.LocationResolution.Located (_, Some (_, sourceOffset)),
+          StorageLocation.LocationResolution.Located (_, Some (_, destinationOffset)) ->
+            sourceOffset |> shouldEqual 0L
+            destinationOffset |> shouldEqual 4294967298L
+        | other -> failwith $"expected both byrefs to resolve precisely, got %A{other}"
+
+        StorageLocation.overlapVerdict resolvedSource resolvedDestination 4
+        |> shouldEqual StorageLocation.OverlapVerdict.CopyForwards

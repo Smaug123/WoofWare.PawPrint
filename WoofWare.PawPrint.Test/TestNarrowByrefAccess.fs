@@ -374,3 +374,62 @@ module TestNarrowByrefAccess =
             && after.Declared = wide.Declared
 
         Check.QuickThrowOnFailure property
+
+    /// Two `int`s, so that byte 0 and byte 4 hold distinguishable values.
+    let private twoWords () : CliValueType =
+        [
+            field "A" int32Handle (CliType.Numeric (CliNumericType.Int32 0x11111111))
+            field "B" int32Handle (CliType.Numeric (CliNumericType.Int32 0x22222222))
+        ]
+        |> structOf int64Handle
+
+    /// A chain of byte cursors totalling `n` bytes from the root. Built directly, because
+    /// `appendProjection` coalesces adjacent `ByteOffset`s and would refuse a total this size;
+    /// the shape a guest reaches by putting a `Field` between two cursors is covered end to end
+    /// by `sourcesImpure/UnsafeByteOffsetInt32Overflow.cs`.
+    let private cursors (offsets : int list) : ByrefProjection list =
+        offsets
+        |> List.collect (fun n -> [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset n ])
+
+    /// The control for the test below: an ordinary multi-cursor chain, whose total is a real
+    /// in-container offset, still reads the byte it names. Without this the refusal could be
+    /// "any chain carrying two cursors fails", which would be a much bigger and quite wrong
+    /// change.
+    [<Test>]
+    let ``a byte-view read through several cursors reads the byte they total to`` () : unit =
+        let state, addr = storageAt (twoWords ())
+
+        let src = ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, cursors [ 6 ; -2 ])
+
+        IlMachineState.readManagedByrefBytesAs baseClassTypes state src (CliType.Numeric (CliNumericType.Int32 0))
+        |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x22222222))
+
+    /// Issue #993 on the read path, and the sharpest form of it: a coordinate of exactly 2^32.
+    ///
+    /// Narrowed into an `int` that is *zero*, so the read did not fail — it succeeded, quietly
+    /// serving the first four bytes of the object to a byref pointing 4 GiB past it. That is the
+    /// failure mode the walk's `int64` accumulator plus an explicit range check at this boundary
+    /// exists to prevent: a coordinate that no container can hold is refused, not folded into
+    /// one that plausibly can.
+    [<Test>]
+    let ``a byte-view read whose coordinate is 2^32 is refused, not served from byte zero`` () : unit =
+        let state, addr = storageAt (twoWords ())
+
+        let src =
+            ManagedPointerSource.Byref (
+                ByrefRoot.HeapValue addr,
+                cursors [ System.Int32.MaxValue ; System.Int32.MaxValue ; 2 ]
+            )
+
+        let exn =
+            Assert.Throws (fun () ->
+                IlMachineState.readManagedByrefBytesAs
+                    baseClassTypes
+                    state
+                    src
+                    (CliType.Numeric (CliNumericType.Int32 0))
+                |> ignore
+            )
+
+        exn.Message
+        |> shouldContainText "outside any storage container PawPrint can allocate"
