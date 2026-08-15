@@ -659,6 +659,39 @@ module TestStructLayout =
         |> shouldEqual (Some (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 7L))))
 
     [<Test>]
+    let ``A declared Size suppresses the alignment rounding`` () : unit =
+        // A declared `ClassLayout.Size` and the alignment rounding are alternatives, not a
+        // sequence: `managedSize = classSizeInMetadata <> 0 ? max(classSizeInMetadata, lastFieldEnd)
+        // : AlignSize(lastFieldEnd, alignmentRequirement)` (classlayoutinfo.cpp:543-550).
+        //
+        // The two sibling tests here only ever exercise a floor *above* the rounded size, where
+        // "round then floor" and "floor instead of round" agree, which is how the bug survived.
+        // These are the cases where they disagree, in both directions.
+        let fields =
+            [
+                cliField "l" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 1L))) None
+                cliField "i" (CliType.Numeric (CliNumericType.Int32 2)) None
+            ]
+
+        // Fields end at 12 and demand 8-byte alignment, so with no declared size this rounds to 16.
+        (CliValueType.SizeOf (ofFields Layout.Default fields)).Size |> shouldEqual 16
+
+        // A declared size between the two suppresses the rounding entirely.
+        (CliValueType.SizeOf (ofFields (Layout.Custom (size = 13, packingSize = 0)) fields)).Size
+        |> shouldEqual 13
+
+        // One below the fields loses to them, rather than truncating them or reinstating the
+        // rounding: `max` picks the field extent, which is not a multiple of the alignment.
+        (CliValueType.SizeOf (ofFields (Layout.Custom (size = 4, packingSize = 0)) fields)).Size
+        |> shouldEqual 12
+
+        // The alignment requirement is untouched by any of this, so a container still places one
+        // of these on an 8-byte boundary however wide it turned out to be.
+        for size in [ 0 ; 4 ; 13 ] do
+            (CliValueType.SizeOf (ofFields (Layout.Custom (size = size, packingSize = 0)) fields)).Alignment
+            |> shouldEqual 8
+
+    [<Test>]
     let ``An explicit Size floor applies before the pointer rounding`` () : unit =
         // Explicit layout is not switched to auto layout, so `Size` is honoured — but a
         // GC-containing type still ends on a pointer boundary, which makes the order of the two
