@@ -70,6 +70,7 @@
     <Compile Include="TestPathCursor.fs" />
     <Compile Include="TestVirtualFileSystem.fs" />
     <Compile Include="TestFileSystemSeed.fs" />
+    <Compile Include="TestRealRuntimeCleanup.fs" />
     <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
     <Compile Include="TestGuestPathBytes.fs" />
     <Compile Include="TestRuntimeConfig.fs" />

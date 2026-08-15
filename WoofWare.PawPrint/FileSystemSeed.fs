@@ -17,20 +17,43 @@ open System.Collections.Immutable
 /// container here. `VirtualFileSystem` can, so the day something needs a
 /// seeded hard link this type grows a case; it is not a limit of the model.
 ///
-/// Nor does it carry permission bits: every seeded inode gets
-/// `PermissionBits.defaultForRegularFile` / `defaultForDirectory`, which is the
-/// tree a `umask 022` process would have created. Nothing can observe the
-/// difference yet — the only reader is `stat`, and `File.Exists` and
-/// `Directory.Exists` consult solely the `S_IFMT` band — so a per-entry mode
-/// would today be a knob no test could turn.
+/// A file's or directory's **permission bits are part of the seed**, and are
+/// required rather than optional. Silence would not be neutrality: the realiser
+/// has to give every inode *some* mode, so an absent field is an undeclared
+/// decision rather than the absence of one. Naming it has a concrete payoff —
+/// the differential oracle chmods the host tree to the same bits, which makes
+/// the mode a cross-runtime fact. Before this, `File.GetUnixFileMode` had to be
+/// excluded from `FileMetadataSeeded.cs`, because PawPrint answered 0644 while
+/// the host answered whatever its umask produced.
+///
+/// `SeedEntry.file` and `SeedEntry.directory` supply the modes a `umask 022`
+/// process would have created, for the many seeds that only care about shape.
+///
+/// A symlink has no such field, and must not: Linux ignores a symlink's own
+/// mode entirely, `lchmod` is not portable, and `VirtualFileSystem` already
+/// models this with `InodePermissions.PlatformSymlinkDefault`. A field here
+/// would be a value no filesystem could honour.
 [<RequireQualifiedAccess>]
 type SeedEntry =
-    | File of contents : ImmutableArray<byte>
-    | Directory of entries : Map<FileName, SeedEntry>
+    | File of contents : ImmutableArray<byte> * permissions : PermissionBits
+    | Directory of entries : Map<FileName, SeedEntry> * permissions : PermissionBits
     /// Held verbatim, and *not* resolved when the seed is realised: a symlink's
     /// target is a string to the kernel, so it may dangle, may be absolute, and
     /// may point outside anything the seed declares.
     | Symlink of target : SymlinkTarget
+
+[<RequireQualifiedAccess>]
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module SeedEntry =
+    /// A regular file with the mode a `umask 022` process's `open(O_CREAT)`
+    /// would have produced: 0666 &&& ~~~0o022.
+    let file (contents : ImmutableArray<byte>) : SeedEntry =
+        SeedEntry.File (contents, PermissionBits.defaultForRegularFile)
+
+    /// A directory with the mode a `umask 022` process's `mkdir` would have
+    /// produced: 0777 &&& ~~~0o022.
+    let directory (entries : Map<FileName, SeedEntry>) : SeedEntry =
+        SeedEntry.Directory (entries, PermissionBits.defaultForDirectory)
 
 [<RequireQualifiedAccess>]
 module FileSystemSeed =
@@ -64,16 +87,8 @@ module FileSystemSeed =
             |> Map.fold
                 (fun vfs name entry ->
                     match entry with
-                    | SeedEntry.File contents ->
-                        match
-                            VirtualFileSystem.createFile
-                                directory
-                                name
-                                PermissionBits.defaultForRegularFile
-                                createdAt
-                                contents
-                                vfs
-                        with
+                    | SeedEntry.File (contents, permissions) ->
+                        match VirtualFileSystem.createFile directory name permissions createdAt contents vfs with
                         | Ok (_, vfs) -> vfs
                         | Error error ->
                             failwith
@@ -84,15 +99,8 @@ module FileSystemSeed =
                         | Error error ->
                             failwith
                                 $"FileSystemSeed: could not create the symlink %s{FileName.toString name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
-                    | SeedEntry.Directory children ->
-                        match
-                            VirtualFileSystem.createDirectory
-                                directory
-                                name
-                                PermissionBits.defaultForDirectory
-                                createdAt
-                                vfs
-                        with
+                    | SeedEntry.Directory (children, permissions) ->
+                        match VirtualFileSystem.createDirectory directory name permissions createdAt vfs with
                         | Ok (inode, vfs) -> install inode children vfs
                         | Error error ->
                             failwith
