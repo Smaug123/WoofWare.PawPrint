@@ -198,7 +198,6 @@ module TestUnixPath =
     let ``The root parses as rooted with no components`` () : unit =
         for candidate in [ "/" ; "//" ; "///" ] do
             let path = parseOk candidate
-            path |> shouldEqual UnixPath.root
             UnixPath.isRooted path |> shouldEqual true
             UnixPath.components path |> shouldEqual []
             // The separator that roots "/" is not a *trailing* one; treating it
@@ -206,7 +205,14 @@ module TestUnixPath =
             // final component be a directory.
             UnixPath.hasTrailingSeparator path |> shouldEqual false
             UnixPath.isEmpty path |> shouldEqual false
-            UnixPath.toString path |> shouldEqual "/"
+            // Verbatim: these three resolve identically but are *not* the same
+            // value, because a kernel can tell them apart. It counts the bytes
+            // of the buffer it was handed, so "///" is two bytes more path than
+            // "/" for the purpose of PATH_MAX.
+            UnixPath.toString path |> shouldEqual candidate
+
+        UnixPath.root |> shouldEqual (parseOk "/")
+        parseOk "//" |> shouldNotEqual UnixPath.root
 
     [<Test>]
     let ``Dot and dot-dot survive parsing as their own components`` () : unit =
@@ -222,11 +228,19 @@ module TestUnixPath =
             ]
 
     [<Test>]
-    let ``Repeated separators collapse, everywhere they can appear`` () : unit =
+    let ``Repeated separators collapse in the components, but not in the text`` () : unit =
         componentStrings (parseOk "//a///b//") |> shouldEqual [ "a" ; "b" ]
         UnixPath.isRooted (parseOk "//a///b//") |> shouldEqual true
         UnixPath.hasTrailingSeparator (parseOk "//a///b//") |> shouldEqual true
-        UnixPath.toString (parseOk "//a///b//") |> shouldEqual "/a/b/"
+
+        // The text is kept exactly as it arrived. A resolution walk sees two
+        // components either way, but the *lengths* differ, and Darwin compares
+        // lengths when it expands a symbolic link: measured on Darwin 25.6.0, a
+        // remainder of "/a//b" costs one byte more than "/a/b", so a target one
+        // byte shorter is the difference between resolving and ENAMETOOLONG.
+        // Collapsing here would make two distinguishable paths equal and throw
+        // away the count.
+        UnixPath.toString (parseOk "//a///b//") |> shouldEqual "//a///b//"
 
     [<Test>]
     let ``A trailing separator is recorded, and only when something precedes it`` () : unit =
@@ -415,6 +429,13 @@ module TestUnixPath =
                        | PathComponent.Current
                        | PathComponent.Parent -> false
                    )
+                // A repeated separator is a *spelling*, not a component, so it
+                // survives into the rendered text now that a UnixPath is kept
+                // verbatim — and `AbsoluteUnixPath` rejects it, being the
+                // canonical shape `getcwd` can return. Before the change the
+                // rendering silently normalised it away, which made this
+                // conjunct invisible.
+                && not ((UnixPath.toString path).Contains "//")
 
             let rendered = UnixPath.toString path
 
@@ -454,8 +475,24 @@ module TestUnixPath =
                 && not (List.isEmpty (UnixPath.components relative))
             then
                 let joined = UnixPath.toString basePath + "/" + UnixPath.toString relative
+                let actual = UnixPath.concat basePath relative
 
-                UnixPath.concat basePath relative |> shouldEqual (parseOk joined)
+                // Where naive text joining is unambiguous — the base does not
+                // already end in a separator — `concat` *is* that join, exactly,
+                // down to the spelling.
+                if not ((UnixPath.toString basePath).EndsWith "/") then
+                    UnixPath.toString actual |> shouldEqual joined
+
+                // Where it is ambiguous, the two differ only in how many
+                // separators sit at the seam, so they still name the same path.
+                // This is what the old assertion checked, but it could only be
+                // written as value equality back when rendering collapsed runs
+                // and hid the seam.
+                UnixPath.components actual |> shouldEqual (UnixPath.components (parseOk joined))
+                UnixPath.isRooted actual |> shouldEqual (UnixPath.isRooted (parseOk joined))
+
+                UnixPath.hasTrailingSeparator actual
+                |> shouldEqual (UnixPath.hasTrailingSeparator (parseOk joined))
 
         Check.One (config, Prop.forAll (Arb.fromGen (Gen.zip pathStringGen pathStringGen)) property)
 

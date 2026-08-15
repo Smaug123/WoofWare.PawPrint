@@ -35,13 +35,14 @@ type SymlinkTargetError =
 /// The target of a symbolic link, held exactly as it was created.
 ///
 /// Verbatim rather than parsed, which matters: `readlink(2)` returns the stored
-/// bytes unchanged, and `lstat` reports their length as the link's `st_size`.
-/// `UnixPath.parse` deliberately collapses repeated separators, so a link
-/// created with target "a//b/" would read back as "a/b" — a difference a guest
-/// really can see, through `FileInfo.LinkTarget` and `ResolveLinkTarget`.
+/// bytes unchanged, and `lstat` reports their length as the link's `st_size`, so
+/// a link created with target "a//b/" must read back as "a//b/" — a difference a
+/// guest really can see, through `FileInfo.LinkTarget` and `ResolveLinkTarget`.
 ///
 /// The path structure is recovered by parsing at traversal time, which is
-/// cheap, total, and keeps the stored form authoritative.
+/// cheap, total, and keeps the stored form authoritative. `UnixPath` is kept
+/// the same way and for a related reason (a kernel measures the bytes it was
+/// handed), so converting a target to one loses nothing.
 [<Struct>]
 type SymlinkTarget =
     private
@@ -1094,28 +1095,28 @@ module VirtualFileSystem =
         /// it — has this kernel given up? — is answered here, in walk order.
         let rec walk
             (directory : InodeNumber)
-            (remaining : PathComponent list)
+            (remaining : PathCursor)
             (trailing : bool)
             (finalSymlinkFollowed : bool)
             (lastNavigation : FinalNavigation)
             (symlinks : int)
             : Result<Resolution, UnixError>
             =
-            match remaining with
+            match PathCursor.next remaining with
             // Reached when the path has no name left to look up: after a "." or
             // "..", or immediately for a path that named no component at all.
-            | [] ->
+            | None ->
                 Ok
                     {
                         Target = ResolvedTarget.Directory (directory, lastNavigation)
                         TrailingSeparatorDemanded = trailing
                         FinalSymlinkFollowed = finalSymlinkFollowed
                     }
-            | PathComponent.Current :: rest ->
+            | Some (PathComponent.Current, rest) ->
                 walk directory rest trailing finalSymlinkFollowed FinalNavigation.Current symlinks
-            | PathComponent.Parent :: rest ->
+            | Some (PathComponent.Parent, rest) ->
                 walk (parentOf directory vfs) rest trailing finalSymlinkFollowed FinalNavigation.Parent symlinks
-            | PathComponent.Name name :: rest ->
+            | Some (PathComponent.Name name, rest) ->
 
             // Before the lookup, and before anything notices whether the name
             // exists — which is what reproduces the measured precedence on both
@@ -1139,7 +1140,7 @@ module VirtualFileSystem =
                     failwith
                         $"VirtualFileSystem: looking up \"%s{FileName.toString name}\" in inode %O{directory}, which the walk had already established was a directory, but it is now absent or not a directory. The inode graph is inconsistent; run VirtualFileSystem.checkInvariants."
 
-            let isFinal = List.isEmpty rest
+            let isFinal = PathCursor.isExhausted rest
 
             let finish (target : ResolvedTarget) : Result<Resolution, UnixError> =
                 Ok
@@ -1186,10 +1187,10 @@ module VirtualFileSystem =
                 // This is also the bound that makes the walk terminate, which is
                 // why there is no cycle detection: a seen-state set would *not*
                 // be sufficient, because a link whose target names itself with a
-                // suffix ("l" with target "l/x") grows the remaining component
-                // list forever without ever repeating a state. Only a count
-                // stops that — and both real kernels use only a counter too, so
-                // this is a transcription of their behaviour rather than an
+                // suffix ("l" with target "l/x") grows the pathname buffer
+                // forever without ever repeating a state. Only a count stops
+                // that — and both real kernels use only a counter too, so this
+                // is a transcription of their behaviour rather than an
                 // approximation of it.
                 if symlinks + 1 > PathLimits.maxSymlinkTraversals limits then
                     Error UnixError.ELOOP
@@ -1200,28 +1201,41 @@ module VirtualFileSystem =
                 let next = if UnixPath.isRooted linkPath then vfs.Root else directory
 
                 // The link's own trailing separator only takes effect when
-                // nothing follows it: a separator between the target and the
-                // remainder absorbs it, exactly as `UnixPath.concat` describes.
+                // nothing follows it: when the walk has more to resolve, the
+                // separator joining the target to the remainder absorbs it.
                 //
                 // It *adds to* the outer demand rather than replacing it. The
                 // separator in "ld/" applies to whatever ld expands to, so a
                 // link with target "d" still has to land on a directory; and a
                 // link with target "d/" imposes the demand even when the
                 // guest's own path carried none.
+                //
+                // This demand is threaded rather than read back off the spliced
+                // buffer, and must be: resolving "ld/" consumes the trailing
+                // separator into the cursor (that is what the kernel's own
+                // collapse does), so the spliced buffer is just the target and
+                // has forgotten it. A kernel remembers the same fact the same
+                // way — XNU latches `TRAILINGSLASH` on the component rather than
+                // re-reading the buffer.
                 let trailing =
                     if isFinal then
                         trailing || UnixPath.hasTrailingSeparator linkPath
                     else
                         trailing
 
-                let spliced = UnixPath.components linkPath @ rest
+                // Exactly what a kernel does to its pathname buffer: the target,
+                // then whatever was left to resolve. Note this consumes `rest`,
+                // whose cursor already sits past the separator run the kernel
+                // collapsed — so the spliced buffer holds the same bytes the
+                // kernel's would.
+                let spliced = PathCursor.splice linkPath rest
 
                 // An empty splice can only mean the target was "/", that being
                 // the one path with no components; the effective path is then
                 // the root itself rather than whatever navigation preceded the
                 // link.
                 let lastNavigation =
-                    if List.isEmpty spliced then
+                    if PathCursor.isExhausted spliced then
                         FinalNavigation.Root
                     else
                         lastNavigation
@@ -1250,7 +1264,7 @@ module VirtualFileSystem =
                     // A path cannot continue through a regular file.
                     Error UnixError.ENOTDIR
 
-        walk start (UnixPath.components path) (UnixPath.hasTrailingSeparator path) false FinalNavigation.Root 0
+        walk start (PathCursor.ofPath path) (UnixPath.hasTrailingSeparator path) false FinalNavigation.Root 0
 
     /// `resolveFull`, discarding the how-it-finished facts. For the lookup
     /// operations, which are unanimous across platforms and so need none of

@@ -534,8 +534,8 @@ module TestVirtualFileSystem =
     [<Test>]
     let ``a symlink target is stored verbatim`` () : unit =
         // readlink(2) returns the stored bytes unchanged and lstat reports
-        // their length as st_size, but UnixPath.parse collapses "//". Storing
-        // a parsed path would make FileInfo.LinkTarget disagree with every Unix.
+        // their length as st_size, so a target that was created as "a//b/" must
+        // read back as "a//b/" or FileInfo.LinkTarget disagrees with every Unix.
         let raw = "a//b/"
         let vfs = build [ mklink (rootOf emptyFs) "l" raw ]
 
@@ -547,8 +547,16 @@ module TestVirtualFileSystem =
         | Some (InodeContent.Symlink stored) ->
             SymlinkTarget.toString stored |> shouldEqual raw
             SymlinkTarget.toUtf8 stored |> Seq.length |> shouldEqual raw.Length
-            // ...while the *traversal* view is the normalised path.
-            SymlinkTarget.toUnixPath stored |> UnixPath.toString |> shouldEqual "a/b/"
+            // The traversal view keeps the spelling too — `UnixPath` is verbatim
+            // for the same reason this is, so converting one to the other loses
+            // nothing. Only `components` collapses, and only where the kernel
+            // does.
+            SymlinkTarget.toUnixPath stored |> UnixPath.toString |> shouldEqual raw
+
+            SymlinkTarget.toUnixPath stored
+            |> UnixPath.components
+            |> List.length
+            |> shouldEqual 2
         | other -> failwith $"expected a symlink, got %A{other}"
 
     [<Test>]
