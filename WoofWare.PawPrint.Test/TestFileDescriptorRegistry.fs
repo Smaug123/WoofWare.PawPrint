@@ -524,17 +524,19 @@ module TestFileDescriptorRegistry =
         : FileDescriptorRegistry
         =
         match FileDescriptorRegistry.flock fd request registry with
-        | Ok registry -> FileDescriptorRegistry.assertInvariants "flock" registry
-        | Error e -> failwith $"expected flock to succeed, got %O{e}"
+        | registry, None -> FileDescriptorRegistry.assertInvariants "flock" registry
+        | _, Some e -> failwith $"expected flock to succeed, got %O{e}"
 
     [<Test>]
     let ``flock of an unknown fd is BadFd`` () : unit =
         for fd in [ 3 ; -1 ; System.Int32.MaxValue ] do
             FileDescriptorRegistry.flock fd (FlockRequest.Acquire FlockMode.Shared) FileDescriptorRegistry.initial
-            |> shouldEqual (Error FlockError.BadFd)
+            |> snd
+            |> shouldEqual (Some FlockError.BadFd)
 
             FileDescriptorRegistry.flock fd FlockRequest.Release FileDescriptorRegistry.initial
-            |> shouldEqual (Error FlockError.BadFd)
+            |> snd
+            |> shouldEqual (Some FlockError.BadFd)
 
     /// The whole contention matrix, exactly as measured against `flock(2)` on
     /// both Linux and Darwin (`scratchpad/flockops.c`), for two *separate*
@@ -559,11 +561,13 @@ module TestFileDescriptorRegistry =
         let registry = lockOrFail a (FlockRequest.Acquire (mode heldExclusive)) registry
 
         match FileDescriptorRegistry.flock b (FlockRequest.Acquire (mode wantedExclusive)) registry with
-        | Ok registry ->
+        | registry, None ->
             expectedGranted |> shouldEqual true
             FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
-        | Error FlockError.WouldBlock -> expectedGranted |> shouldEqual false
-        | Error e -> failwith $"unexpected flock error: %O{e}"
+        | registry, Some FlockError.WouldBlock ->
+            expectedGranted |> shouldEqual false
+            FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
+        | _, Some e -> failwith $"unexpected flock error: %O{e}"
 
     /// A lock is per file, so a description on a different inode is not an
     /// obstacle. Without this, "one global lock" satisfies the matrix above.
@@ -575,8 +579,8 @@ module TestFileDescriptorRegistry =
         let registry = lockOrFail a (FlockRequest.Acquire FlockMode.Exclusive) registry
 
         FileDescriptorRegistry.flock b (FlockRequest.Acquire FlockMode.Exclusive) registry
-        |> Result.isOk
-        |> shouldEqual true
+        |> snd
+        |> shouldEqual None
 
     /// Conversion. `flock(2)` has no separate upgrade operation: re-locking
     /// replaces whatever this description held, and its *own* lock is never an
@@ -596,14 +600,96 @@ module TestFileDescriptorRegistry =
         let registry = lockOrFail b (FlockRequest.Acquire FlockMode.Shared) registry
 
         FileDescriptorRegistry.flock a (FlockRequest.Acquire FlockMode.Exclusive) registry
-        |> shouldEqual (Error FlockError.WouldBlock)
+        |> snd
+        |> shouldEqual (Some FlockError.WouldBlock)
 
         // ...and succeeds again once the other holder releases.
         let registry = lockOrFail b FlockRequest.Release registry
 
         FileDescriptorRegistry.flock a (FlockRequest.Acquire FlockMode.Exclusive) registry
-        |> Result.isOk
-        |> shouldEqual true
+        |> snd
+        |> shouldEqual None
+
+    /// A *failed* conversion still drops the caller's old lock, because `flock(2)` converts by
+    /// removing and then re-establishing, and those steps are not atomic.
+    ///
+    /// This needs a **third** description to observe at all, which is why the conversion test
+    /// above misses it: with only `a` and `b`, whether `a` kept its shared lock is invisible —
+    /// releasing `b` lets `a` take the exclusive lock either way. Only a bystander asking for an
+    /// exclusive lock after `b` releases can tell whether `a` is still holding one.
+    ///
+    /// Measured (scratchpad/flockconv.c): Linux drops it, Darwin keeps it. PawPrint simulates
+    /// Linux. The *error* the failed conversion reports is `EWOULDBLOCK` on both, so nothing
+    /// about the return value distinguishes them.
+    [<Test>]
+    let ``a failed conversion drops the caller's existing lock`` () : unit =
+        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+        let b, registry = openOrFail someInode registry
+        let bystander, registry = openOrFail someInode registry
+
+        let registry = lockOrFail a (FlockRequest.Acquire FlockMode.Shared) registry
+        let registry = lockOrFail b (FlockRequest.Acquire FlockMode.Shared) registry
+
+        // `a` tries to upgrade while `b` still holds shared: refused...
+        let registry, error =
+            FileDescriptorRegistry.flock a (FlockRequest.Acquire FlockMode.Exclusive) registry
+
+        error |> shouldEqual (Some FlockError.WouldBlock)
+        FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
+
+        // ...and `a` is now holding *nothing*, so once `b` releases, the bystander can take an
+        // exclusive lock. Were `a` still holding shared, this would be refused.
+        let registry = lockOrFail b FlockRequest.Release registry
+
+        FileDescriptorRegistry.flock bystander (FlockRequest.Acquire FlockMode.Exclusive) registry
+        |> snd
+        |> shouldEqual None
+
+    /// The same drop happens when the request was going to fail anyway — a caller holding
+    /// *exclusive* that asks for exclusive again while a bystander holds shared. Separate from the
+    /// case above because it is the reverse conversion direction, and an implementation that only
+    /// cleared the lock when downgrading would pass one and fail the other.
+    [<Test>]
+    let ``a failed re-acquisition drops an exclusive lock too`` () : unit =
+        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+        let b, registry = openOrFail someInode registry
+
+        let registry = lockOrFail a (FlockRequest.Acquire FlockMode.Exclusive) registry
+
+        // `b` cannot get in while `a` holds exclusive.
+        FileDescriptorRegistry.flock b (FlockRequest.Acquire FlockMode.Shared) registry
+        |> snd
+        |> shouldEqual (Some FlockError.WouldBlock)
+
+        // Drop to shared, let `b` in, then have `a` fail an upgrade.
+        let registry = lockOrFail a (FlockRequest.Acquire FlockMode.Shared) registry
+        let registry = lockOrFail b (FlockRequest.Acquire FlockMode.Shared) registry
+
+        let registry, error =
+            FileDescriptorRegistry.flock a (FlockRequest.Acquire FlockMode.Exclusive) registry
+
+        error |> shouldEqual (Some FlockError.WouldBlock)
+
+        // `a` holds nothing now, so `b` — the surviving shared holder — can upgrade.
+        FileDescriptorRegistry.flock b (FlockRequest.Acquire FlockMode.Exclusive) registry
+        |> snd
+        |> shouldEqual None
+
+    /// A failed acquisition by a description that held nothing leaves it holding nothing: the
+    /// drop is not an *extra* effect, it is the same "remove then establish" seen from a
+    /// description with nothing to remove.
+    [<Test>]
+    let ``a failed acquisition by an unlocked description changes nothing`` () : unit =
+        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+        let b, registry = openOrFail someInode registry
+        let registry = lockOrFail a (FlockRequest.Acquire FlockMode.Exclusive) registry
+
+        let after, error =
+            FileDescriptorRegistry.flock b (FlockRequest.Acquire FlockMode.Shared) registry
+
+        error |> shouldEqual (Some FlockError.WouldBlock)
+        // `a`'s lock is untouched by `b`'s failure, so the whole table is unchanged.
+        after |> shouldEqual registry
 
     [<Test>]
     let ``releasing a lock that was never taken succeeds`` () : unit =
@@ -632,15 +718,16 @@ module TestFileDescriptorRegistry =
         let other, registry = openOrFail someInode registry
 
         FileDescriptorRegistry.flock other (FlockRequest.Acquire FlockMode.Shared) registry
-        |> shouldEqual (Error FlockError.WouldBlock)
+        |> snd
+        |> shouldEqual (Some FlockError.WouldBlock)
 
         // ...until the lock is released through the *dup*, which drops the
         // single shared lock rather than one of two copies.
         let registry = lockOrFail duplicate FlockRequest.Release registry
 
         FileDescriptorRegistry.flock other (FlockRequest.Acquire FlockMode.Shared) registry
-        |> Result.isOk
-        |> shouldEqual true
+        |> snd
+        |> shouldEqual None
 
     /// Closing the last descriptor of a description destroys the description,
     /// and with it the lock — which is what makes a `FileStream` that was never
@@ -652,7 +739,8 @@ module TestFileDescriptorRegistry =
         let b, registry = openOrFail someInode registry
 
         FileDescriptorRegistry.flock b (FlockRequest.Acquire FlockMode.Exclusive) registry
-        |> shouldEqual (Error FlockError.WouldBlock)
+        |> snd
+        |> shouldEqual (Some FlockError.WouldBlock)
 
         let registry =
             match FileDescriptorRegistry.close a registry with
@@ -660,8 +748,8 @@ module TestFileDescriptorRegistry =
             | Error e -> failwith $"unexpected close error: %O{e}"
 
         FileDescriptorRegistry.flock b (FlockRequest.Acquire FlockMode.Exclusive) registry
-        |> Result.isOk
-        |> shouldEqual true
+        |> snd
+        |> shouldEqual None
 
     /// A standard stream is lockable — Linux permits `flock` on a pipe — and can
     /// never contend, because PawPrint gives each role exactly one description.
@@ -747,6 +835,7 @@ module TestFileDescriptorRegistry =
         let mutable observedGrants = 0
         let mutable observedRefusals = 0
         let mutable observedConversions = 0
+        let mutable observedFailedConversions = 0
 
         let inodes = [| InodeNumber 1L ; InodeNumber 2L |]
 
@@ -809,11 +898,11 @@ module TestFileDescriptorRegistry =
                     let id = idOf fd
 
                     match FileDescriptorRegistry.flock fd FlockRequest.Release registry with
-                    | Ok registry' ->
+                    | registry', None ->
                         registry <- registry'
                         let inode, _ = Map.find id held
                         held <- Map.add id (inode, None) held
-                    | Error e -> failwith $"unexpected release error: %O{e}"
+                    | _, Some e -> failwith $"unexpected release error: %O{e}"
                 else
                     // acquire
                     let fd = liveFds.[rng.Next liveFds.Length]
@@ -843,7 +932,7 @@ module TestFileDescriptorRegistry =
                         )
 
                     match FileDescriptorRegistry.flock fd (FlockRequest.Acquire wanted) registry with
-                    | Ok registry' ->
+                    | registry', None ->
                         expectedBlocked |> shouldEqual false
                         registry <- registry'
                         held <- Map.add id (inode, Some wanted) held
@@ -851,10 +940,22 @@ module TestFileDescriptorRegistry =
 
                         if existing.IsSome then
                             observedConversions <- observedConversions + 1
-                    | Error FlockError.WouldBlock ->
+                    | registry', Some FlockError.WouldBlock ->
                         expectedBlocked |> shouldEqual true
+                        registry <- registry'
+                        // The refused acquisition still *dropped* whatever this
+                        // description held: `flock` converts by removing and then
+                        // re-establishing, and the removal has already happened.
+                        // The model records that independently, so an
+                        // implementation that kept the old lock (which is what
+                        // Darwin does) diverges from it on the very next request.
+                        held <- Map.add id (inode, None) held
+
+                        if existing.IsSome then
+                            observedFailedConversions <- observedFailedConversions + 1
+
                         observedRefusals <- observedRefusals + 1
-                    | Error e -> failwith $"unexpected flock error: %O{e}"
+                    | _, Some e -> failwith $"unexpected flock error: %O{e}"
 
                 FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
 
@@ -865,6 +966,19 @@ module TestFileDescriptorRegistry =
         observedGrants |> shouldBeGreaterThan 100
         observedRefusals |> shouldBeGreaterThan 30
         observedConversions |> shouldBeGreaterThan 30
+        // ...and without *failed* conversions, the drop-on-failure rule is never
+        // exercised: every refusal would be of a description holding nothing, for
+        // which keeping and dropping are the same thing.
+        //
+        // A much lower floor than its neighbours, deliberately. This is the
+        // rarest event the run produces — it needs a description that already
+        // holds a lock to ask for one that another description blocks — and it
+        // was measured at 24 per run, against the ~24000 grants the first bound
+        // covers. A floor of 30 would have been a flaky test rather than a
+        // stronger one. It does not need to be high: a *single* failed
+        // conversion diverges from the model on the next request, so this bound
+        // is proving the event happens at all, not accumulating confidence.
+        observedFailedConversions |> shouldBeGreaterThan 5
 
     [<Test>]
     let ``tryFind crashes rather than inventing a description for a dangling fd`` () : unit =

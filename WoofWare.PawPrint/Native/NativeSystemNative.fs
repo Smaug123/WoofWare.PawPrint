@@ -1413,7 +1413,11 @@ module NativeSystemNative =
             let lockNonBlocking = 4
             let lockUnlock = 8
 
-            let fail (error : UnixError) : NativeHandlerResult option =
+            // Takes the state explicitly rather than closing over the outer one:
+            // a failing `flock` still advances the descriptor table, so the
+            // error paths below must report from the state that *includes* that
+            // advance, not from the one before it.
+            let failFrom (state : IlMachineState) (error : UnixError) : NativeHandlerResult option =
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
                 state.MapKernel (fun kernel ->
@@ -1425,11 +1429,30 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
+            // `flock` is one of the places where the two Unixes PawPrint models
+            // genuinely disagree, and not only about errno numbering. PawPrint
+            // models Linux's rules and refuses under Darwin rather than
+            // guessing, because what has been *measured* about Darwin is its
+            // return codes and not the lock state they leave behind: Darwin
+            // accepts `LOCK_SH|LOCK_EX` and `LOCK_UN|LOCK_SH`, and nothing here
+            // knows which lock the description then holds, which is precisely
+            // what `FlockMode` would have to commit to. Each refusal below
+            // carries what was measured so that the run that hits it starts from
+            // data rather than from scratch.
+            //
+            // Deliberately *not* a `SimulatedUnixPlatform` accessor in the style
+            // of `pathLimits`: those exist because their facts are complete, and
+            // this one is not yet.
+            let refuseDarwin (divergence : string) : 'a =
+                failwith
+                    $"%s{operation}: %s{divergence} PawPrint models Linux's `flock` and has not modelled Darwin's, but this kernel's SimulatedUnixPlatform is Darwin — so answering would be inventing behaviour rather than reporting it. What is measured about Darwin here is the return code only, not the lock state it leaves; deciding that needs its own measurements (issue #956). Configure a Linux platform, or model Darwin's flock."
+
             // Linux validates strictly: exactly one of SH/EX/UN, optionally
             // with NB, and nothing else — `0`, `SH|EX`, `UN|SH`, a bare `NB` and
-            // any unknown bit are all EINVAL. (Darwin is laxer and answers EBADF
-            // for the subset it rejects at all, accepting `SH|EX` and `SH|16`
-            // outright; PawPrint simulates Linux. Both measured.)
+            // any unknown bit are all EINVAL. Darwin is laxer *and* uses a
+            // different errno: it answers EBADF for `0`, a bare `NB` and `16`,
+            // and succeeds outright for `SH|EX`, `UN|SH` and `SH|16`. Both
+            // measured.
             let nonBlocking = request &&& lockNonBlocking <> 0
             let mode = request &&& ~~~lockNonBlocking
 
@@ -1443,15 +1466,62 @@ module NativeSystemNative =
                 else
                     None
 
+            let flavour = SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform
+
             match flockRequest with
-            | None -> fail UnixError.EINVAL
+            | None ->
+                match flavour with
+                | SimulatedUnixFlavour.Linux -> failFrom state UnixError.EINVAL
+                | SimulatedUnixFlavour.Darwin ->
+                    refuseDarwin
+                        $"operation %d{request} is malformed (not exactly one of LOCK_SH/LOCK_EX/LOCK_UN, optionally with LOCK_NB), which Linux rejects with EINVAL and Darwin does not treat uniformly — measured, Darwin answers EBADF for 0, a bare LOCK_NB and unknown bits alone, but *succeeds* for LOCK_SH|LOCK_EX, LOCK_UN|LOCK_SH and LOCK_SH with an unknown bit."
             | Some flockRequest ->
 
-            match FileDescriptorRegistry.flock fd flockRequest state.Kernel.FileDescriptors with
-            | Error FlockError.BadFd -> fail UnixError.EBADF
-            | Error FlockError.WouldBlock ->
+            // The two remaining divergences, both about a descriptor PawPrint has
+            // already resolved, so they are checked here rather than in the
+            // registry: that module models one coherent set of rules. Throws or
+            // falls through; an unknown fd is EBADF on both platforms, so there
+            // is nothing to refuse for one.
+            match flavour, FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+            | SimulatedUnixFlavour.Linux, _
+            | _, None -> ()
+            | SimulatedUnixFlavour.Darwin, Some description ->
+                match description.Object with
+                | OpenFileObject.StandardStream role ->
+                    refuseDarwin
+                        $"fd %d{fd} is the standard stream %O{role}, which PawPrint models as a pipe. Linux permits `flock` on a pipe and returns 0; Darwin refuses it with ENOTSUP (raw 45, and note Darwin numbers ENOTSUP and EOPNOTSUPP differently, 45 against 102, while Linux gives both 95)."
+                | OpenFileObject.File _ ->
+
+                match flockRequest, description.Flock with
+                // Only a *conversion* — an acquire by a description that already
+                // holds something — can expose the keep-versus-drop divergence,
+                // and only when it fails. Refused on the request rather than on
+                // the outcome, so that the refusal is a property of what was
+                // asked rather than of who else happened to hold a lock.
+                | FlockRequest.Acquire _, Some _ ->
+                    refuseDarwin
+                        $"fd %d{fd} is converting a lock it already holds. Should that conversion fail, Linux leaves the description holding *nothing* (`flock` removes the old lock before establishing the new one, and the two steps are not atomic) while Darwin leaves the old lock in place — measured on both, and indistinguishable from the return code, which is EWOULDBLOCK either way."
+                | _, _ -> ()
+
+            // The table advances even when the call fails: a conversion that
+            // could not be granted has already dropped the caller's old lock.
+            // So the new table is committed *before* the outcome is inspected,
+            // and every branch below reports from `state'`.
+            let registry, error =
+                FileDescriptorRegistry.flock fd flockRequest state.Kernel.FileDescriptors
+
+            let state' =
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        FileDescriptors = registry
+                    }
+                )
+
+            match error with
+            | Some FlockError.BadFd -> failFrom state' UnixError.EBADF
+            | Some FlockError.WouldBlock ->
                 if nonBlocking then
-                    fail UnixError.EAGAIN
+                    failFrom state' UnixError.EAGAIN
                 else
                     // A blocking acquisition that *can* be satisfied is served
                     // above, so only genuine contention reaches here. Waiting
@@ -1476,12 +1546,8 @@ module NativeSystemNative =
 
                     failwith
                         $"%s{operation}: fd %d{fd} requested a blocking %s{requested} lock, and another open file description holds a conflicting one. PawPrint cannot block a thread on a lock: that needs the scheduler to park it and wake it when the holder releases (issue #956). If the holder is this same thread, a real kernel would deadlock here rather than return. Pass LOCK_NB to get EWOULDBLOCK instead."
-            | Ok registry ->
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        FileDescriptors = registry
-                    }
-                )
+            | None ->
+                state'
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some

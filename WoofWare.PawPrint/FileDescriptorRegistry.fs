@@ -405,22 +405,44 @@ module FileDescriptorRegistry =
     /// each role exactly one description and `dup` shares rather than copies —
     /// so `flock` on fd 0/1/2 succeeds and conflicts with nothing. That is what
     /// Linux does (measured: `flock` on a pipe returns 0), and it falls out of
-    /// the general rule rather than being a special case. Darwin instead answers
-    /// `EOPNOTSUPP` there; PawPrint simulates Linux, as it does everywhere else.
+    /// the general rule rather than being a special case.
+    ///
+    /// **This is Linux's mechanism, and it is flavour-agnostic on purpose.**
+    /// Darwin diverges in three measured ways — it answers `ENOTSUP` for a pipe,
+    /// it validates the operation differently, and it *keeps* a lock that a
+    /// failed conversion would drop here. None of those live in this module:
+    /// deciding what a Darwin-flavoured kernel does is the handler's job, and it
+    /// currently refuses rather than modelling it (see `SystemNative_FLock` in
+    /// `NativeSystemNative.fs`). Keeping the divergence out of here means this
+    /// type stays a single coherent set of rules rather than two interleaved
+    /// ones.
     ///
     /// `Acquire` replaces any lock this description already held, so a
     /// conversion cannot conflict with itself: `SH` to `EX` succeeds when this
-    /// description is the only holder and reports `WouldBlock` when another
-    /// still holds `SH` (both measured on Linux and Darwin, which agree).
+    /// description is the only holder, and reports `WouldBlock` when another
+    /// still holds `SH`.
+    ///
+    /// **A failed conversion still drops the old lock**, which is why this
+    /// returns a table even on failure rather than an untouched one. `flock(2)`
+    /// converts by removing the existing lock and then establishing the new one,
+    /// and those two steps are not atomic — so when the second fails, the first
+    /// has already happened and the caller is left holding nothing. That is the
+    /// documented BSD-derived behaviour, and it is measured: with `a` and `b`
+    /// both holding `SH`, a failed `a: SH -> EX` leaves `a` unlocked on Linux
+    /// (a third description can then take `EX` once `b` releases) but still
+    /// holding `SH` on Darwin. PawPrint simulates Linux. Note the *error* is the
+    /// same on both platforms, so only a third description can tell them apart,
+    /// which is what the test for this uses.
+    ///
     /// `Release` succeeds whether or not a lock was held.
     let flock
         (fd : int)
         (request : FlockRequest)
         (registry : FileDescriptorRegistry)
-        : Result<FileDescriptorRegistry, FlockError>
+        : FileDescriptorRegistry * FlockError option
         =
         match Map.tryFind fd registry.Fds with
-        | None -> Error FlockError.BadFd
+        | None -> registry, Some FlockError.BadFd
         | Some id ->
 
         let description =
@@ -442,7 +464,7 @@ module FileDescriptorRegistry =
             }
 
         match request with
-        | FlockRequest.Release -> Ok (withFlock None)
+        | FlockRequest.Release -> withFlock None, None
         | FlockRequest.Acquire mode ->
 
         let blocked =
@@ -460,9 +482,11 @@ module FileDescriptorRegistry =
             )
 
         if blocked then
-            Error FlockError.WouldBlock
+            // The old lock is gone either way — see the note above. A caller
+            // that held nothing is unaffected, so this is not a special case.
+            withFlock None, Some FlockError.WouldBlock
         else
-            Ok (withFlock (Some mode))
+            withFlock (Some mode), None
 
     /// Every way in which `registry` fails to be a descriptor table a kernel
     /// could produce. Empty for any registry built out of `initial`, `dup` and
