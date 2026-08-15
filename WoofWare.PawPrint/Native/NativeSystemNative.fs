@@ -1551,6 +1551,212 @@ module NativeSystemNative =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
+        // `int32_t SystemNative_PRead(intptr_t fd, void* buffer, int32_t
+        // bufferSize, int64_t fileOffset)` (pal_io.c:1847): `pread(2)` verbatim,
+        // with an EINTR retry. Note it does *not* go through `Common_Read` in
+        // `pal_io_common.h`, so unlike `SystemNative_Read` it has no
+        // negative-size guard — its `assert(bufferSize >= 0)` is debug-only, and
+        // a release build casts a negative size to a ~4 GB unsigned count.
+        | Some "SystemNative_PRead",
+          [ ConcreteIntPtr state.ConcreteTypes
+            ConcretePointer _
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64 ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_PRead"
+            let fd = fdArgument operation instruction.Arguments.[0]
+            let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
+            let fileOffset = NativeCall.int64Argument operation instruction.Arguments.[3]
+
+            let fail (error : UnixError) : NativeHandlerResult option =
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        LastSystemError = UnixError.toRawErrnoUnder numbering error
+                    }
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            // A negative size is the one input whose real behaviour PawPrint
+            // cannot reproduce, so it is refused before anything else is
+            // considered. The C casts it to `uint32_t`, asking the kernel for
+            // ~4 GB: measured, macOS answers EINVAL (the count exceeds what it
+            // will accept) while Linux answers EFAULT (the buffer's mapping does
+            // not extend that far) — and Linux's answer therefore depends on the
+            // *guest's address space*, which PawPrint does not model to that
+            // fidelity. Either choice would be a documented divergence on one
+            // platform, and a silent one at that.
+            //
+            // Refusing first means a negative size beats an otherwise-diagnosable
+            // bad fd, which real kernels would report as EBADF. That is a
+            // deliberate over-refusal on a two-fault input, recorded here because
+            // a green suite cannot show it; the alternative is to answer a
+            // question whose premise PawPrint has already refused.
+            //
+            // CoreLib never sends one: every caller is `RandomAccess`, whose
+            // sizes come from span lengths.
+            if bufferSize < 0 then
+                failwith
+                    $"%s{operation}: fd %d{fd} was given bufferSize %d{bufferSize}, which is negative. The C shim casts that to an unsigned ~4 GB count rather than rejecting it (unlike SystemNative_Read, which goes through Common_Read and answers ERANGE), and what a kernel then does is not a fact PawPrint can state: measured, macOS answers EINVAL and Linux answers EFAULT, Linux's answer depending on how far the guest's buffer happens to be mapped. Pass a non-negative size."
+            else
+
+            let offsetInvalid = fileOffset < 0L
+
+            // The order of the checks below is measured, not assumed, and it
+            // differs between the two platforms. On a *single-fault* input they
+            // agree on every row; they part company only when two things are
+            // wrong at once, which is why an ordering has to be pinned at all:
+            //
+            //   input                     Linux    Darwin
+            //   negative offset + bad fd  EINVAL   EBADF
+            //   negative offset + pipe    EINVAL   ESPIPE
+            //   negative offset + dir     EINVAL   EINVAL
+            //
+            // Linux validates the offset before it even looks the descriptor up
+            // (`do_pread` checks `pos < 0` ahead of `fdget`); Darwin resolves
+            // the descriptor and its seekability first, and only then the
+            // offset. Both orders are followed here rather than one being
+            // imposed on the other, because both are fully measured — unlike
+            // `SystemNative_FLock`, whose Darwin *return codes* are known but
+            // whose resulting lock state is not, and which therefore refuses.
+            // Where the answer is known, PawPrint gives it rather than crashing.
+            //
+            // Note `EISDIR` follows the offset check on *both* platforms, so
+            // only the descriptor and seekability steps actually move; that is
+            // why one flag suffices rather than two separate orderings.
+            let offsetCheckedBeforeDescriptor =
+                match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+                | SimulatedUnixFlavour.Linux -> true
+                | SimulatedUnixFlavour.Darwin -> false
+
+            if offsetCheckedBeforeDescriptor && offsetInvalid then
+                fail UnixError.EINVAL
+            else
+
+            match FileDescriptorRegistry.tryFindObject fd state.Kernel.FileDescriptors with
+            | None -> fail UnixError.EBADF
+            | Some (OpenFileObject.StandardStream role) ->
+                // `pread` needs a seekable object, and PawPrint models the
+                // standard streams as pipes — stdin the read end, stdout and
+                // stderr write ends (which is why `SystemNative_Write` to fd 0
+                // is EBADF). Such a descriptor fails two different tests at
+                // once for stdout and stderr: it is neither seekable nor open
+                // for reading. Measured, the platforms break that tie
+                // differently:
+                //
+                //   descriptor                        Linux    Darwin
+                //   pipe read end (unseekable)        ESPIPE   ESPIPE
+                //   pipe write end (also unreadable)  ESPIPE   EBADF
+                //   regular file O_WRONLY (seekable)  EBADF    EBADF
+                //
+                // So Linux lets unseekability win for a pipe while Darwin lets
+                // unreadability win; the third row is the control showing this
+                // is about the tie rather than about readability generally.
+                //
+                // Reachable from the BCL, and handled by it:
+                // `RandomAccess.ReadAtOffset` catches ESPIPE (and ENXIO), clears
+                // `SupportsRandomAccess`, and retries through
+                // `SystemNative_Read`. So a `FileStream` over a pipe gets one
+                // step further than it used to and then stops at that
+                // unimplemented handler, which is the honest outcome — the
+                // sequential read path is not this slice. Note the Darwin answer
+                // for stdout/stderr does *not* get that retry, EBADF not being
+                // one of the errnos that clears the flag.
+                let unreadable =
+                    match role with
+                    | FileDescriptorRole.StandardInput -> false
+                    | FileDescriptorRole.StandardOutput
+                    | FileDescriptorRole.StandardError -> true
+
+                match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+                | SimulatedUnixFlavour.Darwin when unreadable -> fail UnixError.EBADF
+                | SimulatedUnixFlavour.Darwin
+                | SimulatedUnixFlavour.Linux -> fail UnixError.ESPIPE
+            | Some (OpenFileObject.File inode) ->
+
+            // Darwin's turn to validate the offset: it has now resolved the
+            // descriptor and rejected an unseekable one, which is exactly the
+            // window in which it differs from Linux. On Linux this cannot fire,
+            // because the check above already did.
+            if not offsetCheckedBeforeDescriptor && offsetInvalid then
+                fail UnixError.EINVAL
+            else
+
+            let entry =
+                match VirtualFileSystem.tryGet inode state.Kernel.FileSystem with
+                | Some entry -> entry
+                | None ->
+                    failwith
+                        $"%s{operation}: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink removed a still-open file; the open file description must keep it alive."
+
+            match entry.Content with
+            | InodeContent.Directory _ ->
+                // EISDIR on both. Reachable: `SystemNative_Open` opens a
+                // directory quite happily, as `open(2)` does.
+                fail UnixError.EISDIR
+            | InodeContent.Symlink _ ->
+                // Not reachable: `open` resolves a symlink, so no descriptor
+                // ever names one. Stated rather than merged into the file case
+                // so that a future `O_PATH`/`O_NOFOLLOW`-returning-a-link finds
+                // a decision here instead of silently reading a target as if it
+                // were file content.
+                failwith
+                    $"%s{operation}: fd %d{fd} names inode %O{inode}, which is a symbolic link. `open` resolves symlinks, so no descriptor should name one; if this is reachable, decide what reading a link through a descriptor means (issue #956)."
+            | InodeContent.RegularFile (contents, _) ->
+
+            let transfer =
+                VirtualFileSystem.readTransferCount fileOffset bufferSize contents.Length
+
+            // The buffer is decoded only on the path that actually writes
+            // through it. That is not an optimisation: a real kernel faults on
+            // `copy_to_user`, so a call that transfers nothing never touches the
+            // buffer at all, and `pread(fd, NULL, 5, offsetAtEof)` returns 0
+            // rather than EFAULT — measured on both platforms, and easy to get
+            // wrong by validating arguments up front.
+            if transfer = 0 then
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            else
+
+            // Only the *base* of the buffer is validated here, which is all
+            // `dereferenceablePointerArgument` can say. A guest that asks to
+            // read more bytes than its buffer holds — `pread(fd, stackalloc
+            // byte[1], 5, 0)` — therefore gets as far as the write and then
+            // fails inside `MemoryBlock.writeBytes`, naming the block rather
+            // than the syscall.
+            //
+            // Left as it is, deliberately. That is a property of the shared
+            // `writeBytesThrough` seam rather than of this handler: measured,
+            // `SystemNative_ReadLink` fails identically for a target longer than
+            // the buffer it was given, and `Stat`/`LStat`/`FStat` write through
+            // the same helper. Fixing it means giving that seam a "is this whole
+            // range writable" query, which has to understand every
+            // `ManagedPointerSource` shape — its own change, and one that should
+            // improve every caller at once rather than this one quietly.
+            //
+            // Nor is the behaviour wrong, exactly: the guest has overflowed its
+            // own buffer, which a real kernel services by corrupting whatever
+            // follows it. Detecting that is more useful than reproducing it.
+            // What is missing is a message that names the syscall.
+            match dereferenceablePointerArgument operation "buffer" instruction.Arguments.[1] with
+            | None -> fail UnixError.EFAULT
+            | Some buffer ->
+
+            // Indexed rather than `Seq.skip`, which would enumerate the whole
+            // prefix on every read and make reading a file quadratic in its
+            // length.
+            let bytes =
+                ImmutableArray.CreateRange (seq { for i in 0 .. transfer - 1 -> contents.[int fileOffset + i] })
+
+            writeBytesThrough ctx operation buffer bytes state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim transfer)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_ReadLink",
           [ ConcretePointer _ ; ConcretePointer _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
