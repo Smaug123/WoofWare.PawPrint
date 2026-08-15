@@ -582,6 +582,23 @@ module internal UnaryMetadataObjectOps =
                 typeHandle
         | ConcreteTypeHandle.Concrete _ ->
 
+        // A byref-like type is stack-only, so boxing one is not a program the runtime will accept:
+        // measured on real .NET as InvalidProgramException, against `sizeof Span<int>` as a control
+        // (legal, answers 16). Universe-independent, because the same IL is illegal either way; it
+        // is only *reachable* from a `DynamicScope` operand, because no compiler emits it, and it
+        // was silently putting a stack-only value on the heap until now.
+        match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes typeHandle with
+        | Some (_, boxedDefn) when DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies boxedDefn ->
+            // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
+            IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.InvalidProgramException
+                (Some $"Box: %O{typeHandle} is a byref-like type, which cannot be boxed")
+                thread
+                state
+        | _ ->
+
         let targetType =
             AllConcreteTypes.lookup typeHandle state.ConcreteTypes |> Option.get
 

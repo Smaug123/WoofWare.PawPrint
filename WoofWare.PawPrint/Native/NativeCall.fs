@@ -654,18 +654,7 @@ module NativeCall =
             | EvalStackValue.ObjectRef addr -> addr
             | other -> failwith $"%s{operation}: expected ObjectRef for RuntimeType argument, got %O{other}"
 
-        let heapObj = ManagedHeap.get runtimeTypeAddr state.ManagedHeap
-
-        // RuntimeType.m_handle is typed as IntPtr (primitive-like); unwrap to reach the inner NativeInt.
-        let handleField =
-            IlMachineState.requiredOwnInstanceFieldId state heapObj.ConcreteType "m_handle"
-
-        match
-            AllocatedNonArrayObject.DereferenceFieldById handleField heapObj
-            |> CliType.unwrapPrimitiveLike
-        with
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
-        | other -> failwith $"%s{operation}: expected TypeHandlePtr in RuntimeType.m_handle, got %O{other}"
+        DynamicScopeOperand.runtimeTypeHandleTargetOfRuntimeType operation state runtimeTypeAddr
 
     let typeAssemblyName
         (operation : string)

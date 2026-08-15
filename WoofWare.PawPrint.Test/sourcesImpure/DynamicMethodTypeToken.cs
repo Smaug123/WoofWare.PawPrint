@@ -314,6 +314,34 @@ public class Program
         {
         }
 
+        // 17, 18. A byref-like type is closed, and still not a legal `newarr` element: `Span<int>`
+        // is stack-only, so CoreCLR fails to load `Span<int>[]` and never allocates. Measured, and
+        // 18 is the control that keeps the refusal honest -- `sizeof` of the same type is perfectly
+        // legal and answers 16, so this is a fact about `newarr` rather than about the type, and a
+        // refusal that widened to the type itself would fail here.
+        Func<int> byrefLikeArray = IntMethod(il =>
+        {
+            il.Emit(OpCodes.Ldc_I4_1);
+            il.Emit(OpCodes.Newarr, typeof(Span<int>));
+            il.Emit(OpCodes.Ldlen);
+            il.Emit(OpCodes.Conv_I4);
+            il.Emit(OpCodes.Ret);
+        });
+
+        try
+        {
+            byrefLikeArray();
+            return 17;
+        }
+        catch (TypeLoadException)
+        {
+        }
+
+        if (IntMethod(il => { il.Emit(OpCodes.Sizeof, typeof(Span<int>)); il.Emit(OpCodes.Ret); })() != 16)
+        {
+            return 18;
+        }
+
         return 0;
     }
 }

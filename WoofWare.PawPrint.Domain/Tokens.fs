@@ -279,8 +279,9 @@ type StringOperand =
     /// mutate a `System.String`'s data in place through an unsafe pointer after emitting it, and
     /// real .NET reads the contents at first JIT rather than at emit, so a value captured here
     /// would be a snapshot that can go stale. Both the characters and the object are resolved when
-    /// the instruction executes, through the executing method's own
-    /// `MintedDynamicMethodBody.ScopeObjects`.
+    /// the instruction executes, by reading the entry out of the executing method's live
+    /// `DynamicScope` — nothing about it is captured when the method is minted, because a guest can
+    /// replace the whole slot as well as mutate what is in it.
     | FromDynamicScope of scopeIndex : int
 
 /// What a `DynamicScope` entry is, so far as decoding a method body needs to care.

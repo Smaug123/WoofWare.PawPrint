@@ -65,6 +65,31 @@ module internal UnaryMetadataArrayOps =
         let zeroOfType, state =
             IlMachineState.cliTypeZeroOfHandle state baseClassTypes concreteTypeHandle
 
+        // A byref-like element type is refused before anything is allocated: `Span<int>` and
+        // `TypedReference` are stack-only, so CoreCLR fails to load `Span<int>[]` at all and never
+        // reaches the allocation. Measured on real .NET, against a control (`sizeof Span<int>` is
+        // perfectly legal and answers 16, so this is a fact about `newarr`, not about the type).
+        //
+        // Universe-independent on purpose: the same IL is illegal whether its token came from
+        // metadata or from a `DynamicScope`. It is only *reachable* from the latter, because no
+        // compiler emits it, which is why this was silently allocating a stack-only type on the
+        // heap until now.
+        let state, elementIsByRefLike =
+            match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes concreteTypeHandle with
+            | None -> state, false
+            | Some (_, elementDefn) ->
+                state, DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies elementDefn
+
+        if elementIsByRefLike then
+            // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.TypeLoadException
+                thread
+                state
+        else
+
         // The length is checked *after* the element type has been resolved, as CoreCLR does:
         // the array MethodTable is in hand before `AllocateSzArray` is reached, so a type that
         // cannot be loaded is reported as such even when the length would independently have

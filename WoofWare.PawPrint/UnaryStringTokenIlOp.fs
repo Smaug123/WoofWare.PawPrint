@@ -68,13 +68,21 @@ module internal UnaryStringTokenIlOp =
                     Ok (value, None)
                 | StringOperand.FromDynamicScope scopeIndex ->
                     // The decoder established at mint that this index held a string, so anything
-                    // else here means the guest rewrote `m_scope.m_tokens` afterwards. Real .NET
-                    // rejects such a method at JIT with a *catchable* exception, so these are guest
-                    // exceptions rather than interpreter failures — and which one is measured, by
-                    // rewriting the scope after `CreateDelegate`: a null slot is
-                    // InvalidProgramException, a slot holding something that is not a string is
-                    // BadImageFormatException, and an index exactly at the list's length is
-                    // ArgumentOutOfRangeException.
+                    // else here means the guest rewrote `m_scope.m_tokens` afterwards, and real
+                    // .NET's answer is a *catchable* exception rather than a rejected method.
+                    //
+                    // Which exception is measured for `ldstr` specifically, and it is *not* the
+                    // type path's answer. `DynamicScope.GetString` is `this[token] as string`
+                    // (`DynamicILGenerator.cs:994`), so a null slot and a slot holding something
+                    // that is not a string are indistinguishable — both come back null — and the
+                    // JIT then embeds an indirection through a null handle. Measured, against an
+                    // untouched control that returns "abcd": a null slot, a `byte[]` and a
+                    // `RuntimeTypeHandle` all give NullReferenceException, and only an index
+                    // exactly at the list's length gives ArgumentOutOfRangeException.
+                    //
+                    // The literal has to be *used* to measure this at all: `ldstr; pop` is never
+                    // materialised by real .NET (the divergence documented above), so a probe that
+                    // discards the value reads every rewrite as a pass.
                     match DynamicScopeOperand.entryObject "ldstr" scopeIndex state thread with
                     | ScopeEntryLookup.PastEnd ->
                         Error (
@@ -83,10 +91,24 @@ module internal UnaryStringTokenIlOp =
                         )
                     | ScopeEntryLookup.Absent ->
                         Error (
-                            baseClassTypes.InvalidProgramException,
+                            baseClassTypes.NullReferenceException,
                             $"DynamicScope entry %d{scopeIndex} is null, so it names no string"
                         )
                     | ScopeEntryLookup.Found addr ->
+
+                    match ManagedHeap.tryGetObjectConcreteType addr state.ManagedHeap with
+                    | None ->
+                        // A live slot pointing off the heap is interpreter corruption, not a state
+                        // any guest can arrange.
+                        failwith $"ldstr: DynamicScope entry %d{scopeIndex} is at %O{addr}, which is not on the heap"
+                    | Some concreteType when
+                        not (DynamicScopeOperand.isCorelibType baseClassTypes.String state concreteType)
+                        ->
+                        Error (
+                            baseClassTypes.NullReferenceException,
+                            $"DynamicScope entry %d{scopeIndex} is not a string"
+                        )
+                    | Some _ ->
 
                     // Read now, not when the method was minted. Real .NET reads the scope entry's
                     // characters when it materialises the literal, and a guest can mutate a
@@ -95,10 +117,11 @@ module internal UnaryStringTokenIlOp =
                     // that gets interned.
                     match ManagedHeap.getStringContents addr state.ManagedHeap with
                     | None ->
-                        Error (
-                            baseClassTypes.BadImageFormatException,
-                            $"DynamicScope entry %d{scopeIndex} is not a string"
-                        )
+                        // The entry *is* a `System.String` but has no recorded contents, which
+                        // breaches the invariant `allocateManagedString` maintains. Kept distinct
+                        // from "not a string" above, which is a state a guest can arrange.
+                        failwith
+                            $"ldstr: DynamicScope entry %d{scopeIndex} is a System.String at %O{addr} whose contents were never recorded; every string reaching the heap goes through allocateManagedString, which records them"
                     | Some value -> Ok (value, Some addr)
 
             match resolved with

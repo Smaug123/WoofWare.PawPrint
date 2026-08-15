@@ -1,6 +1,36 @@
 namespace WoofWare.PawPrint
 
 /// <summary>
+/// What looking an index up in a live <c>DynamicScope</c> found, at the granularity the guest can
+/// tell apart. Every distinction here is measured on real .NET, by rewriting the scope through
+/// private reflection after <c>CreateDelegate</c> and before the first invocation.
+/// </summary>
+/// <remarks>
+/// Which *exception* each case produces is deliberately not recorded here, because it is a property
+/// of the consumer rather than of the lookup: an <c>Absent</c> entry is
+/// <c>InvalidProgramException</c> for a type operand, whose <c>ResolveToken</c> throws on null, and
+/// <c>NullReferenceException</c> for <c>ldstr</c>, whose <c>GetString</c> returns null and leaves
+/// the JIT to indirect through it. Both are measured, and an earlier revision of this branch got
+/// <c>ldstr</c> wrong precisely by reading the mapping off the type path.
+/// </remarks>
+[<RequireQualifiedAccess>]
+type internal ScopeEntryLookup =
+    | Found of ManagedHeapAddress
+    /// The slot is null, or the index is past the end and so reads as null — `DynamicScope`'s
+    /// indexer returns null for both, so no consumer can tell them apart.
+    | Absent
+    /// The index is exactly the list's length, which `DynamicScope`'s indexer lets through its own
+    /// bound check and then faults on. Every consumer surfaces <c>ArgumentOutOfRangeException</c>.
+    ///
+    /// The *type* is reproduced; `ParamName` is not, because the channel that raises a
+    /// runtime-synthesised exception calls a parameterless constructor and cannot set
+    /// <c>_paramName</c>. That is a general property of that channel rather than anything about
+    /// this case — `Intrinsics.fs` declines to fake the same field twice, on the grounds that
+    /// writing the name into `_message` alone would leave `.Message` and `.ParamName` disagreeing
+    /// about whether it is known — and the same reasoning applies here.
+    | PastEnd
+
+/// <summary>
 /// Resolving an operand that names an entry in the executing method's <c>DynamicScope</c>, at the
 /// moment the instruction runs.
 /// </summary>
@@ -30,28 +60,6 @@ namespace WoofWare.PawPrint
 /// <c>UnaryStringTokenIlOp</c> already documents for <c>ldstr</c>, and deferred with it.
 /// </para>
 /// </remarks>
-/// <summary>
-/// What looking an index up in a live <c>DynamicScope</c> found, at the granularity the guest can
-/// tell apart. Every distinction here is measured on real .NET, by rewriting the scope through
-/// private reflection after <c>CreateDelegate</c> and before the first invocation.
-/// </summary>
-[<RequireQualifiedAccess>]
-type internal ScopeEntryLookup =
-    | Found of ManagedHeapAddress
-    /// The slot is null, or the index is past the end and so reads as null. Real .NET rejects the
-    /// method with <c>InvalidProgramException</c>.
-    | Absent
-    /// The index is exactly the list's length, which `DynamicScope`'s indexer lets through its own
-    /// bound check and then faults on. Real .NET surfaces <c>ArgumentOutOfRangeException</c>.
-    ///
-    /// The *type* is reproduced; `ParamName` is not, because the channel that raises a
-    /// runtime-synthesised exception calls a parameterless constructor and cannot set
-    /// <c>_paramName</c>. That is a general property of that channel rather than anything about
-    /// this case — `Intrinsics.fs` declines to fake the same field twice, on the grounds that
-    /// writing the name into `_message` alone would leave `.Message` and `.ParamName` disagreeing
-    /// about whether it is known — and the same reasoning applies here.
-    | PastEnd
-
 [<RequireQualifiedAccess>]
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module internal DynamicScopeOperand =
@@ -304,8 +312,11 @@ module internal DynamicScopeOperand =
         // hold *anything* — a `byte[]` above all, which is what a signature blob is, and which
         // `ManagedHeap.get` refuses because it reads only non-array objects. Measured on real .NET,
         // that case is a BadImageFormatException the guest can catch, not a runtime failure.
+        // `tryGetObjectConcreteType` covers arrays, so its `None` is not that case: it means the
+        // slot points off the heap entirely, which is interpreter corruption rather than anything a
+        // guest can arrange.
         match ManagedHeap.tryGetObjectConcreteType entry state.ManagedHeap with
-        | None -> badImage $"DynamicScope entry %d{scopeIndex} is at %O{entry}, which is not on the heap"
+        | None -> failwith $"%s{operation}: DynamicScope entry %d{scopeIndex} is at %O{entry}, which is not on the heap"
         | Some concreteType when not (isCorelibType baseClassTypes.RuntimeTypeHandle state concreteType) ->
             badImage $"DynamicScope entry %d{scopeIndex} is not a System.RuntimeTypeHandle"
         | Some _ ->

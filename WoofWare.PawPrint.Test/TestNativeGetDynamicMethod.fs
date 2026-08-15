@@ -941,11 +941,10 @@ public static class Entry
         ex.Message |> shouldContainText "no MethodDef token to read"
         ex.Message |> shouldContainText "Probe"
 
-    /// Mints with the given body and returns whatever the handler threw, so that each refusal can
-    /// be checked to fire for its own reason rather than for whichever one happens to come first.
-    /// As `mintExpectingFailure`, for a test that had to build its scope entries out of a state it
-    /// already holds — a `TypeHandle` entry names a target, and a target has to be concretized in
-    /// some state first.
+    /// Mints with the given body in an existing state, and returns whatever the handler threw, so
+    /// that each refusal can be checked to fire for its own reason rather than for whichever one
+    /// happens to come first. Takes the state because a test whose scope holds a `TypeHandle` entry
+    /// has to concretize that entry's target somewhere before it can build the body.
     let private mintExpectingFailureIn
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (prepared : Program.PreparedProgram)
@@ -961,6 +960,7 @@ public static class Entry
 
         ex.Message
 
+    /// `mintExpectingFailureIn` against a fresh fixture, for the tests that need no prior state.
     let private mintExpectingFailure (body : ResolverBody) : string =
         let loggerFactory, prepared, state = loadFixture ()
         mintExpectingFailureIn loggerFactory prepared body state
