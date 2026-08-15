@@ -74,11 +74,16 @@ module internal UnaryMetadataIlOp =
             // is already true of every invalid metadata operand.
             //
             // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
+            // `why` is a PawPrint diagnostic and goes to the log; the exception the guest catches
+            // carries the message CoreCLR gives it, which for these types is either their own
+            // default or a fixed string (see `clrMessageFor`).
+            logger.LogWarning ("{Op} refused a DynamicScope operand: {Reason}", op, why)
+
             IlMachineStateExecution.raiseRuntimeExceptionWithMessage
                 loggerFactory
                 baseClassTypes
                 exceptionType
-                (Some $"%O{op}: %s{why}")
+                (DynamicScopeOperand.clrMessageFor baseClassTypes exceptionType)
                 thread
                 state
         | Ok operand ->

@@ -127,11 +127,15 @@ module internal UnaryStringTokenIlOp =
             match resolved with
             | Error (exceptionType, why) ->
                 // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
+                // As in `UnaryMetadataIlOp`: `why` is a PawPrint diagnostic for the log, and the
+                // guest's exception carries CoreCLR's own message.
+                loggerFactory.CreateLogger("Ldstr").LogWarning ("ldstr refused a DynamicScope operand: {Reason}", why)
+
                 IlMachineStateExecution.raiseRuntimeExceptionWithMessage
                     loggerFactory
                     baseClassTypes
                     exceptionType
-                    (Some $"ldstr: %s{why}")
+                    (DynamicScopeOperand.clrMessageFor baseClassTypes exceptionType)
                     thread
                     state
             | Ok (value, candidate) ->

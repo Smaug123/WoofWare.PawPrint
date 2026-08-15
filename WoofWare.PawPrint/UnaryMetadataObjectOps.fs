@@ -594,7 +594,8 @@ module internal UnaryMetadataObjectOps =
                 loggerFactory
                 baseClassTypes
                 baseClassTypes.InvalidProgramException
-                (Some $"Box: %O{typeHandle} is a byref-like type, which cannot be boxed")
+                // CoreCLR's own message here is InvalidProgramException's default (measured).
+                None
                 thread
                 state
         | _ ->

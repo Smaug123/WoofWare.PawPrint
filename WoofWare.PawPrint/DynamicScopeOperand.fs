@@ -218,6 +218,36 @@ module internal DynamicScopeOperand =
         | None -> ScopeEntryLookup.Absent
         | Some addr -> ScopeEntryLookup.Found addr
 
+    /// <summary>
+    /// The message CoreCLR attaches to the exception it raises for a bad scope operand, or
+    /// <c>None</c> where that is the exception type's own default message.
+    /// </summary>
+    /// <remarks>
+    /// Measured, by rewriting a scope after <c>CreateDelegate</c>: <c>InvalidProgramException</c>
+    /// (null type slot, non-closed, byref, <c>System.Void</c>) and <c>NullReferenceException</c>
+    /// (<c>ldstr</c>) both carry their type's default message, so <c>None</c> reproduces them
+    /// exactly; <c>BadImageFormatException</c> carries the fixed string below, with no token detail
+    /// in it, so that too can be reproduced exactly.
+    ///
+    /// The exception is <c>ArgumentOutOfRangeException</c>, whose real message is
+    /// <c>List&lt;T&gt;</c>'s "Index was out of range… (Parameter 'index')". The suffix comes from
+    /// <c>_paramName</c>, which this channel cannot set, so the message is left at its default and
+    /// the gap is the one already recorded on <see cref="ScopeEntryLookup.PastEnd"/>.
+    ///
+    /// Note this is a property of the *exception*, not of what went wrong: the reason a particular
+    /// operand was refused is a PawPrint diagnostic and belongs in the log, not in a field the guest
+    /// reads.
+    /// </remarks>
+    let clrMessageFor
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exceptionType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : string option
+        =
+        if exceptionType.Identity = baseClassTypes.BadImageFormatException.Identity then
+            Some "Bad class token."
+        else
+            None
+
     /// True when <paramref name="handle"/> is the given corelib type, by identity rather than by
     /// displayed name: a guest can define its own `System.RuntimeTypeHandle`, and CoreCLR's own test
     /// is `handle is RuntimeTypeHandle`, which a lookalike does not satisfy.
