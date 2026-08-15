@@ -442,9 +442,10 @@ module internal UnaryMetadataTokenOps =
                     baseClassTypes
                     state.ConcreteTypes
                     runtimeTypeHandleHandle
-                    (TypeLayoutKind.applied true baseClassTypes.RuntimeTypeHandle.TypeAttributes)
-                    Layout.Default
-                    (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeTypeHandle.TypeAttributes)
+                    (DeclaredTypeFacts.ofTypeInfo
+                        baseClassTypes
+                        state._LoadedAssemblies
+                        baseClassTypes.RuntimeTypeHandle)
 
             IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
 

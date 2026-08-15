@@ -36,6 +36,7 @@
     <Compile Include="AssemblyGraphShape.fs" />
     <Compile Include="TestTypeResolution.fs" />
     <Compile Include="TestTypeIdentityProperties.fs" />
+    <Compile Include="TestEnumClassification.fs" />
     <Compile Include="TestEvalStack.fs" />
     <Compile Include="TestIntrinsicValueArguments.fs" />
     <Compile Include="TestTaggedPointerBits.fs" />

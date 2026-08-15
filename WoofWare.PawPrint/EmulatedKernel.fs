@@ -502,6 +502,20 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Darwin ->
             PermissionBits.parseOrFail "SimulatedUnixPlatform.symlinkPermissions" (0o777 &&& ~~~0o022)
 
+    /// The bounds this platform's kernel puts on path resolution.
+    ///
+    /// The numbers are measured facts about real kernels, which is why they are
+    /// derived from the flavour rather than configured: a host that could set
+    /// them could describe a Unix that does not exist, and a guest would then
+    /// see a `MAXSYMLINKS` no real system has. `TestVirtualFileSystemAgainstHost`
+    /// pins the value for whichever flavour it is running on against that
+    /// kernel's *measured* behaviour, so macOS locally and Linux in CI each
+    /// check one column.
+    let pathLimits (platform : SimulatedUnixPlatform) : PathLimits =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> PathLimits.create 40
+        | SimulatedUnixFlavour.Darwin -> PathLimits.create 32
+
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
 /// syscall-emulation state: process-wide last-error registers, the native
 /// heap pool backing `Marshal.AllocHGlobal`, the Unix file-descriptor table,

@@ -988,11 +988,7 @@ module internal UnaryMetadataCallOps =
                                     baseClassTypes
                                     state.ConcreteTypes
                                     tHandle
-                                    (TypeLayoutKind.applied
-                                        (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies tDefn)
-                                        tDefn.TypeAttributes)
-                                    tDefn.Layout
-                                    (CharSetMetadata.ofTypeAttributes tDefn.TypeAttributes),
+                                    (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies tDefn),
                                 state
 
                         let addr, state = IlMachineState.allocateManagedObject tHandle cvt state

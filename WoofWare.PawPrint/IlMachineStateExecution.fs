@@ -1866,11 +1866,7 @@ module IlMachineStateExecution =
                         baseClassTypes
                         state.ConcreteTypes
                         declaringTypeHandle
-                        (TypeLayoutKind.applied
-                            (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeDef)
-                            typeDef.TypeAttributes)
-                        typeDef.Layout
-                        (CharSetMetadata.ofTypeAttributes typeDef.TypeAttributes)
+                        (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies typeDef)
                         allFields
 
                 let allocatedAddr, state =

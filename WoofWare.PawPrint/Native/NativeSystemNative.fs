@@ -237,22 +237,18 @@ module NativeSystemNative =
     /// builds a path that long — so only a hand-rolled P/Invoke reading errno
     /// can tell. Fixing it needs `ENAMETOOLONG` in `UnixError` (its raw number
     /// is platform-dependent, 36 against 63, so it lands as
-    /// `RawErrnoPortability.PlatformDependent`) plus the two limits derived
-    /// from `SimulatedUnixFlavour`. That is the same slice as the symlink bound
-    /// below: both are the resolver wanting its platform's limits.
+    /// `RawErrnoPortability.PlatformDependent`) plus two more fields on
+    /// `PathLimits`. Note the *unit* of `NAME_MAX` diverges and not merely its
+    /// value: measured, APFS permits 255 UTF-16 code units (a 765-byte name of
+    /// 255 three-byte characters resolves, while 128 emoji do not), where
+    /// ext4's 255 is a byte count. `PATH_MAX` by contrast really is bytes, and
+    /// binds the pathname *as passed* rather than the resolved path, so it
+    /// belongs here — on the raw bytes, before the strict UTF-8 decode below —
+    /// rather than in the resolver, which has only a lossily-parsed `UnixPath`.
     ///
-    /// **Known limitation.** This uses the platform-*neutral* resolver, which
-    /// refuses to answer for a path traversing 33 to 40 symlinks: macOS gives
-    /// up after 32 and Linux permits 40, so the walk cannot say whether such a
-    /// path resolves or gives ELOOP without being told which Unix it is
-    /// modelling. `state.Kernel.UnixPlatform` says, so the fix is to thread a
-    /// platform-derived limit into `VirtualFileSystem.resolveFull` — which
-    /// changes that walk's contract and the tests pinning its refusal, and so
-    /// is its own change rather than a line here. Until then a chain that deep
-    /// aborts with the message that walk prints, which names the decision. It
-    /// takes a deliberately constructed seed to reach: a *cycle*, which is the
-    /// case a seed might contain by accident, terminates at the 41-link bound
-    /// where every platform agrees, and reports ELOOP normally.
+    /// The symlink traversal bound comes from the kernel's own platform, so a
+    /// chain of 33 to 40 links — which macOS refuses and Linux permits — is
+    /// answered rather than refused.
     let private resolveGuestPath
         (operation : string)
         (policy : SymlinkPolicy)
@@ -262,6 +258,7 @@ module NativeSystemNative =
         =
         let vfs = kernel.FileSystem
         let root = VirtualFileSystem.root vfs
+        let limits = SimulatedUnixPlatform.pathLimits kernel.UnixPlatform
 
         let startDirectory =
             if UnixPath.isRooted path then
@@ -270,13 +267,13 @@ module NativeSystemNative =
 
             let cwd = UnixPath.ofAbsolute kernel.CurrentDirectory
 
-            match VirtualFileSystem.resolveExisting root SymlinkPolicy.Follow cwd vfs with
+            match VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow cwd vfs with
             | Ok inode -> inode
             | Error error ->
                 failwith
                     $"%s{operation}: the guest passed the relative path \"%s{UnixPath.toString path}\", but the configured current directory \"%s{AbsoluteUnixPath.toString kernel.CurrentDirectory}\" does not resolve in the seeded filesystem (%O{error}). A process cannot be started in a directory that does not exist; make KernelConfig.FileSystem contain KernelConfig.CurrentDirectory."
 
-        VirtualFileSystem.resolveExisting startDirectory policy path vfs
+        VirtualFileSystem.resolveExisting limits startDirectory policy path vfs
 
     /// `sizeof(FileStatus)`: four 32-bit fields, then twelve 64-bit ones, then
     /// a trailing `uint32_t`, rounded up to the struct's 8-byte alignment.

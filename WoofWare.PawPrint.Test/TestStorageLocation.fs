@@ -297,11 +297,15 @@ module TestStorageLocationResolve =
                 baseClassTypes
                 concreteTypes
                 objectHandle
-                // Every field carries a `FieldOffset`, which is what explicit layout means; the two
-                // deliberately overlap.
-                TypeLayoutKind.Explicit
-                Layout.Default
-                (CharSetMetadata.ofTypeAttributes baseClassTypes.Object.TypeAttributes)
+                {
+                    IsValueType = true
+                    IsEnum = false
+                    // Every field carries a `FieldOffset`, which is what explicit layout means; the
+                    // two deliberately overlap.
+                    LayoutKind = TypeLayoutKind.Explicit
+                    Layout = Layout.Default
+                    CharSet = CharSetMetadata.ofTypeAttributes baseClassTypes.Object.TypeAttributes
+                }
                 [ intField "A" 0 7 ; intField "B" 2 9 ]
 
         let obj : AllocatedNonArrayObject =

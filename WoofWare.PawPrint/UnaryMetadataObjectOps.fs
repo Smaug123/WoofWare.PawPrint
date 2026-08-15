@@ -378,11 +378,7 @@ module internal UnaryMetadataObjectOps =
                 baseClassTypes
                 state.ConcreteTypes
                 declaringTypeHandle
-                (TypeLayoutKind.applied
-                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ctorType)
-                    ctorType.TypeAttributes)
-                ctorType.Layout
-                (CharSetMetadata.ofTypeAttributes ctorType.TypeAttributes)
+                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies ctorType)
                 allFields
 
         // Note: this is a bit unorthodox for value types, which *aren't* heap-allocated.
@@ -515,11 +511,7 @@ module internal UnaryMetadataObjectOps =
                         baseClassTypes
                         state.ConcreteTypes
                         typeHandle
-                        (TypeLayoutKind.applied
-                            (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn)
-                            defn.TypeAttributes)
-                        defn.Layout
-                        (CharSetMetadata.ofTypeAttributes defn.TypeAttributes)
+                        (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies defn)
 
                 cvt, state
 
@@ -680,14 +672,7 @@ module internal UnaryMetadataObjectOps =
                                     baseClassTypes
                                     state.ConcreteTypes
                                     underlyingTypeHandle
-                                    (TypeLayoutKind.applied
-                                        (DumpedAssembly.isValueType
-                                            baseClassTypes
-                                            state._LoadedAssemblies
-                                            underlyingDefn)
-                                        underlyingDefn.TypeAttributes)
-                                    underlyingDefn.Layout
-                                    (CharSetMetadata.ofTypeAttributes underlyingDefn.TypeAttributes),
+                                    (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies underlyingDefn),
                                 state
 
                         let addr, state =

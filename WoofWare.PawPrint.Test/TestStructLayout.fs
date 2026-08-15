@@ -170,7 +170,16 @@ module TestStructLayout =
         (fields : CliField list)
         : CliValueType
         =
-        CliValueType.OfFields bct allCt declaredHandle layoutKind layout CharSet.Ansi fields
+        let facts : DeclaredTypeFacts =
+            {
+                IsValueType = true
+                IsEnum = false
+                LayoutKind = layoutKind
+                Layout = layout
+                CharSet = CharSet.Ansi
+            }
+
+        CliValueType.OfFields bct allCt declaredHandle facts fields
 
     /// The overwhelmingly common shape in this file: a type whose metadata declares
     /// `LayoutKind.Sequential`, which reaches auto layout only if it holds a reference.
