@@ -285,6 +285,46 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // Pins Darwin's symlink-splice length re-check end to end. The
+                // unit tests call the resolver directly, so a `resolveGuestPath`
+                // passing hardcoded limits would satisfy all of them; only a
+                // guest sees that the configured platform reaches the syscall
+                // boundary.
+                //
+                // Configured as **macOS**, unusually for these tests, because
+                // Linux performs no such check at any length — on the default
+                // kernel every path in this guest would simply resolve. That
+                // also makes the raw errno Darwin's 63.
+                FileName = "SpliceLengthSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        FileSystem =
+                            /// An absolute path of exactly `bytes` bytes naming
+                            /// nothing, in components of 200 so that NAME_MAX
+                            /// cannot be what refuses it.
+                            let dangling (bytes : int) : SymlinkTarget =
+                                let component_ = "/" + String.replicate 200 "z"
+
+                                String.replicate (bytes / component_.Length + 1) component_
+                                |> fun s -> s.Substring (0, bytes)
+                                |> SymlinkTarget.parseOrFail "test seed"
+
+                            // Written as literals rather than derived from
+                            // `pathLimits`, so that this test disagrees with a
+                            // wrong PATH_MAX instead of agreeing with it.
+                            [
+                                FileName.parseOrFail "test seed" "atMax", SeedEntry.Symlink (dangling 1021)
+                                FileName.parseOrFail "test seed" "overMax", SeedEntry.Symlink (dangling 1022)
+                            ]
+                            |> Map.ofList
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // Pins PATH_MAX and NAME_MAX end to end. Needs no seed: every
                 // path it passes is refused before anything is looked up, and
                 // the controls are ENOENT in an empty filesystem.

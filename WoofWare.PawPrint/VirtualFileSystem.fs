@@ -603,6 +603,38 @@ type NameLengthLimit =
     /// *wrong* implementation look right on a Mac.
     | Utf16CodeUnits of units : int
 
+/// Whether expanding a symbolic link re-checks that the path still fits in
+/// `PATH_MAX`.
+///
+/// Measured, by bisecting the symlink-target length at which a dangling link
+/// flips ENOENT → ENAMETOOLONG (Darwin 25.6.0 / macOS 26.6 and Linux 6.18.5).
+/// Darwin refuses when `linklen + ni_pathlen > MAXPATHLEN` — XNU's `lookup`
+/// splices by copying the target and the unconsumed remainder into a fresh
+/// `MAXPATHLEN` buffer, so the rule is simply that the new buffer must fit.
+/// Linux has no such check *at all*: measured, a 3842-byte target with an
+/// 806-byte remainder resolves at 4648 bytes spliced, well past its own
+/// `PATH_MAX`.
+///
+/// So this is not a difference of degree that a number could express. One
+/// kernel performs a check the other does not perform at any threshold, which
+/// is why it is a DU and not, say, a nullable limit.
+///
+/// A struct for the reason `NameLengthLimit` gives. Its forged default is
+/// `Recheck`, and that ordering is deliberate: `PathLimits.assertValid` is what
+/// actually rejects a forged value (via the integer fields, which are zero),
+/// but were that guard ever weakened, a spurious ENAMETOOLONG is a visible
+/// wrong answer where a silently skipped check is an invisible one.
+[<RequireQualifiedAccess>]
+[<Struct>]
+type SpliceLengthRecheck =
+    /// Darwin. The spliced path — target bytes, unconsumed remainder, and the
+    /// NUL — must still fit in `PATH_MAX`.
+    | Recheck
+    /// Linux. A path may grow without bound as links are expanded, so long as
+    /// each *component* is within `NAME_MAX` and the original argument was
+    /// within `PATH_MAX`.
+    | NoRecheck
+
 /// A record rather than a bare `int`: `MAXSYMLINKS`, `PATH_MAX` and `NAME_MAX`
 /// are the same kind of fact, and a caller that needs one generally needs the
 /// others.
@@ -634,6 +666,10 @@ type PathLimits =
             /// accessor for it: the number is meaningless without the unit, and
             /// a caller holding both could still measure with the wrong one.
             NameMax : NameLengthLimit
+            /// Whether expanding a symbolic link re-checks the total length.
+            /// Read only through `spliceWithinLimit`, for the same reason
+            /// `NameMax` is read only through `nameWithinLimit`.
+            SpliceRecheck : SpliceLengthRecheck
         }
 
 [<RequireQualifiedAccess>]
@@ -642,7 +678,13 @@ module PathLimits =
     /// whose input is a guest's, every caller of this is the platform table
     /// passing a literal, so a bad value is an interpreter bug and not something
     /// a caller could handle.
-    let create (maxSymlinkTraversals : int) (pathMaxBytes : int) (nameMax : NameLengthLimit) : PathLimits =
+    let create
+        (maxSymlinkTraversals : int)
+        (pathMaxBytes : int)
+        (nameMax : NameLengthLimit)
+        (spliceRecheck : SpliceLengthRecheck)
+        : PathLimits
+        =
         if maxSymlinkTraversals < 1 then
             failwith
                 $"PathLimits.create: a kernel that permits %d{maxSymlinkTraversals} symlink traversals could not resolve a path through any symbolic link at all; every Unix PawPrint models permits at least one."
@@ -672,6 +714,7 @@ module PathLimits =
             MaxSymlinkTraversals = maxSymlinkTraversals
             PathMaxBytes = pathMaxBytes
             NameMax = nameMax
+            SpliceRecheck = spliceRecheck
         }
 
     let maxSymlinkTraversals (limits : PathLimits) : int = limits.MaxSymlinkTraversals
@@ -691,6 +734,36 @@ module PathLimits =
         match limits.NameMax with
         | NameLengthLimit.Utf8Bytes bytes -> UnixPathText.utf8.GetByteCount (FileName.toString name) <= bytes
         | NameLengthLimit.Utf16CodeUnits units -> (FileName.toString name).Length <= units
+
+    /// Whether this kernel will still resolve the path that results from
+    /// expanding `target` here — or, on a kernel that does not re-check,
+    /// unconditionally true.
+    ///
+    /// The only way to read `SpliceRecheck`, on purpose, for the reason
+    /// `nameWithinLimit` is the only way to read `NameMax`: the caller would
+    /// otherwise have to reconstruct the arithmetic, and the arithmetic is
+    /// where the mistakes are. Takes the target and the cursor rather than two
+    /// byte counts, so that neither can be measured with the wrong function nor
+    /// passed in the wrong order.
+    ///
+    /// The rule transcribes XNU's `linklen + ni_pathlen > MAXPATHLEN`, where
+    /// `linklen` is the target's raw byte length and `ni_pathlen` counts the
+    /// unconsumed remainder *including* the NUL — hence the `+ 1`, and hence
+    /// `<=` rather than `<`. Measured on Darwin 25.6.0: through a remainder of
+    /// "/a", a 1021-byte target resolves (1021 + 2 + 1 = 1024) and a 1022-byte
+    /// one does not.
+    ///
+    /// Bytes throughout, never UTF-16 code units — measured with CJK, and the
+    /// distinction matters because `nameWithinLimit` next door legitimately
+    /// *does* count code units on Darwin.
+    let spliceWithinLimit (limits : PathLimits) (target : SymlinkTarget) (remaining : PathCursor) : bool =
+        match limits.SpliceRecheck with
+        | SpliceLengthRecheck.NoRecheck -> true
+        | SpliceLengthRecheck.Recheck ->
+
+        let targetBytes = UnixPathText.utf8.GetByteCount (SymlinkTarget.toString target)
+
+        targetBytes + PathCursor.remainingBytes remaining + 1 <= limits.PathMaxBytes
 
     /// Re-check the invariant of a value that may not have come from `create`.
     ///
@@ -1194,6 +1267,23 @@ module VirtualFileSystem =
                 // approximation of it.
                 if symlinks + 1 > PathLimits.maxSymlinkTraversals limits then
                     Error UnixError.ELOOP
+                else if
+
+                    // *After* the traversal count, because that is the order a
+                    // kernel checks them in and the two disagree. Measured on
+                    // Darwin: a chain whose last link both exhausts the budget and
+                    // would overflow the length reports ELOOP, while the same chain
+                    // one link shorter reports ENAMETOOLONG. XNU tests
+                    // `ni_loopcnt` in `namei` before it ever reads the target.
+                    //
+                    // Before the splice rather than after, so an overflowing
+                    // expansion is refused rather than performed — and note this
+                    // sees `rest`, whose cursor already sits past the separator run
+                    // the kernel collapsed, which is the whole reason the walk
+                    // carries a cursor.
+                    not (PathLimits.spliceWithinLimit limits linkTarget rest)
+                then
+                    Error UnixError.ENAMETOOLONG
                 else
 
                 let linkPath = SymlinkTarget.toUnixPath linkTarget
