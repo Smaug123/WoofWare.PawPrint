@@ -216,6 +216,66 @@ module NativeSystemNative =
 
         state
 
+    /// Turn the NUL-terminated bytes a guest passed as a pathname into a
+    /// `UnixPath`, applying the length rule a kernel applies at *its* boundary.
+    ///
+    /// Deliberately takes bytes rather than machine state, so the boundary — the
+    /// one part of the length rules that the resolver can never see — is
+    /// testable without a heap. `readGuestPathBytes` is the half that needs a
+    /// machine.
+    ///
+    /// The **order** of the three stages is load-bearing, not incidental:
+    ///
+    ///  1. **Length first.** `PATH_MAX` is enforced by `getname()`/`copyinstr`
+    ///     when the kernel copies the string in, before anything looks at what
+    ///     it says. So an over-long path that also contains an invalid UTF-8
+    ///     byte must be ENAMETOOLONG — if the strict decode ran first it would
+    ///     abort the interpreter over a path a real kernel rejects cheaply.
+    ///  2. **Strict decode.** Not `readNullTerminatedUtf8`, which substitutes
+    ///     U+FFFD: a kernel looks up raw bytes, so byte 0xFF names a file no
+    ///     valid UTF-8 name can, and decoding leniently would silently resolve a
+    ///     *different* inode — a seeded file literally called "&#65533;". PawPrint models
+    ///     a filename as a .NET string and cannot represent such a path at all;
+    ///     it should say so rather than answer about the wrong file.
+    ///  3. **Parse.**
+    ///
+    /// Note the limit counts the NUL, and `readNullTerminatedBytes` has already
+    /// dropped it, so the comparison is against `pathMaxBytes - 1`. Measured:
+    /// 1023 bytes resolves on macOS and 1024 does not.
+    let internal parseGuestPathBytes
+        (operation : string)
+        (limits : PathLimits)
+        (bytes : byte[])
+        : Result<UnixPath, UnixError>
+        =
+        if bytes.Length > PathLimits.pathMaxBytes limits - 1 then
+            Error UnixError.ENAMETOOLONG
+        else
+
+        let decoded =
+            try
+                Some (Text.UTF8Encoding(false, true).GetString bytes)
+            with :? Text.DecoderFallbackException ->
+                None
+
+        match decoded with
+        | None ->
+            let rendered = bytes |> Array.map (sprintf "%02X") |> String.concat " "
+
+            failwith
+                $"%s{operation}: the guest passed a path that is not valid UTF-8 (bytes: %s{rendered}). A Unix kernel looks up the raw bytes, but PawPrint models a filename as a .NET string, so this path has no representation in the emulated filesystem; decoding it leniently would silently resolve a different file. CoreLib never produces such a path — it encodes from a string — so this can only come from a hand-rolled P/Invoke."
+        | Some decoded ->
+
+        match UnixPath.parse decoded with
+        | Error error ->
+            // Unreachable from a guest today: the only rejections are a null
+            // candidate (impossible — we have just decoded a string) and text
+            // that cannot survive the `char*` boundary, which a string decoded
+            // *from* that boundary cannot contain.
+            failwith
+                $"%s{operation}: the guest's path did not survive parsing: %s{UnixPath.describe error}. This is an interpreter bug: the value was decoded from a NUL-terminated byte string, so it cannot contain an embedded NUL and cannot be null."
+        | Ok path -> Ok path
+
     /// The inode a path names, or the errno the lookup owes the guest.
     ///
     /// A relative path resolves against the simulated process's current
@@ -229,26 +289,26 @@ module NativeSystemNative =
     /// before every `Stat`/`LStat`, so the path arriving here is normally
     /// already absolute and the current directory is not consulted at all.
     ///
-    /// **Known limitation: no length limits.** A real `stat` refuses a pathname
-    /// over `PATH_MAX` (4096 on Linux, 1024 on Darwin) or a component over
-    /// `NAME_MAX` with ENAMETOOLONG; PawPrint enforces neither, so such a path
-    /// is simply resolved and usually reports ENOENT instead. Invisible through
-    /// the BCL — `File.Exists` answers false either way, and CoreLib never
-    /// builds a path that long — so only a hand-rolled P/Invoke reading errno
-    /// can tell. Fixing it needs `ENAMETOOLONG` in `UnixError` (its raw number
-    /// is platform-dependent, 36 against 63, so it lands as
-    /// `RawErrnoPortability.PlatformDependent`) plus two more fields on
-    /// `PathLimits`. Note the *unit* of `NAME_MAX` diverges and not merely its
-    /// value: measured, APFS permits 255 UTF-16 code units (a 765-byte name of
-    /// 255 three-byte characters resolves, while 128 emoji do not), where
-    /// ext4's 255 is a byte count. `PATH_MAX` by contrast really is bytes, and
-    /// binds the pathname *as passed* rather than the resolved path, so it
-    /// belongs here — on the raw bytes, before the strict UTF-8 decode below —
-    /// rather than in the resolver, which has only a lossily-parsed `UnixPath`.
+    /// **Known limitation: no length re-check when a symlink is spliced.**
+    /// Darwin re-checks the total length each time it expands a symbolic link
+    /// (XNU `namei`: `linklen + ni_pathlen > MAXPATHLEN`), so a *short* argument
+    /// can still be ENAMETOOLONG through a long target — measured, a 206-byte
+    /// argument through an 885-byte target. Linux does not: measured, a
+    /// 3842-byte target with an 806-byte remainder resolves, 4648 spliced.
+    /// PawPrint implements neither, so it answers as Linux does on both.
     ///
-    /// The symlink traversal bound comes from the kernel's own platform, so a
-    /// chain of 33 to 40 links — which macOS refuses and Linux permits — is
-    /// answered rather than refused.
+    /// Reproducing Darwin's rule needs the byte length of the *unconsumed*
+    /// remainder, which this walk no longer has: it holds a `PathComponent
+    /// list`. Threading a length through it is its own change, and the trigger
+    /// has to be designed against measurement rather than arithmetic — a first
+    /// attempt reasoned that collapsed `//` runs would make a rendered length an
+    /// unsound under-estimate, and probing showed XNU consumes such runs before
+    /// splicing, so the sound-looking argument was simply wrong about the
+    /// kernel.
+    ///
+    /// Only a hand-written seed reaches it: symlinks enter the filesystem only
+    /// through seeds, and the differential oracle's validator permits only
+    /// single-component targets.
     let private resolveGuestPath
         (operation : string)
         (policy : SymlinkPolicy)
@@ -269,6 +329,12 @@ module NativeSystemNative =
 
             match VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow cwd vfs with
             | Ok inode -> inode
+            | Error UnixError.ENAMETOOLONG ->
+                // Distinguished because the remedy is different, and the
+                // message below would send the reader looking for a missing
+                // directory that is in fact present.
+                failwith
+                    $"%s{operation}: the configured current directory \"%s{AbsoluteUnixPath.toString kernel.CurrentDirectory}\" contains a component longer than %O{SimulatedUnixPlatform.flavour kernel.UnixPlatform}'s NAME_MAX, so no process could have been started in it. Shorten KernelConfig.CurrentDirectory."
             | Error error ->
                 failwith
                     $"%s{operation}: the guest passed the relative path \"%s{UnixPath.toString path}\", but the configured current directory \"%s{AbsoluteUnixPath.toString kernel.CurrentDirectory}\" does not resolve in the seeded filesystem (%O{error}). A process cannot be started in a directory that does not exist; make KernelConfig.FileSystem contain KernelConfig.CurrentDirectory."
@@ -338,35 +404,24 @@ module NativeSystemNative =
         | None -> fail UnixError.EFAULT
         | Some pathPtr ->
 
-        // Decoded strictly, unlike `readNullTerminatedUtf8`, which replaces an
-        // invalid sequence with U+FFFD. For a *path* that substitution is not a
-        // cosmetic loss: a kernel looks up the raw bytes, so a byte 0xFF names
-        // a file no valid UTF-8 name can, and decoding it leniently would make
-        // the lookup silently find a seeded file literally called "�" —
-        // a different inode from the one the guest asked for. PawPrint models a
-        // filename as a .NET string and so cannot represent such a path at all;
-        // that is a modelling limit, and it should say so rather than answer
-        // about the wrong file.
-        let decoded =
-            let bytes =
-                NativeCall.readNullTerminatedBytes operation ctx.BaseClassTypes state pathPtr
+        let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
 
-            try
-                Text.UTF8Encoding(false, true).GetString bytes
-            with :? Text.DecoderFallbackException ->
-                let rendered = bytes |> Array.map (sprintf "%02X") |> String.concat " "
+        // Bounded by PATH_MAX, because that is where a real kernel stops
+        // looking: an unterminated buffer must be ENAMETOOLONG rather than a
+        // scan that walks off the end of the guest's allocation. On overrun this
+        // hands back exactly `pathMaxBytes` bytes, which `parseGuestPathBytes`
+        // then refuses by its ordinary length rule — so "too long" is still
+        // decided in exactly one place.
+        let bytes =
+            NativeCall.readNullTerminatedBytesWithin
+                operation
+                ctx.BaseClassTypes
+                state
+                pathPtr
+                (PathLimits.pathMaxBytes limits)
 
-                failwith
-                    $"%s{operation}: the guest passed a path that is not valid UTF-8 (bytes: %s{rendered}). A Unix kernel looks up the raw bytes, but PawPrint models a filename as a .NET string, so this path has no representation in the emulated filesystem; decoding it leniently would silently resolve a different file. CoreLib never produces such a path — it encodes from a string — so this can only come from a hand-rolled P/Invoke."
-
-        match UnixPath.parse decoded with
-        | Error error ->
-            // Unreachable from a guest today: the only rejections are a null
-            // candidate (impossible — we have just decoded a string) and text
-            // that cannot survive the `char*` boundary, which a string decoded
-            // *from* that boundary cannot contain.
-            failwith
-                $"%s{operation}: the guest's path did not survive parsing: %s{UnixPath.describe error}. This is an interpreter bug: the value was decoded from a NUL-terminated byte string, so it cannot contain an embedded NUL and cannot be null."
+        match parseGuestPathBytes operation limits bytes with
+        | Error error -> fail error
         | Ok path ->
 
         match resolveGuestPath operation policy state.Kernel path with
