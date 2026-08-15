@@ -285,6 +285,22 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // Pins PATH_MAX and NAME_MAX end to end. Needs no seed: every
+                // path it passes is refused before anything is looked up, and
+                // the controls are ENOENT in an empty filesystem.
+                //
+                // Impure because the raw errno it reads is the *Linux* one, and
+                // ENAMETOOLONG is numbered differently on Darwin (63) — so this
+                // is a claim about the kernel PawPrint is configured to be, not
+                // a cross-runtime fact.
+                FileName = "PathLengthLimitsSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The motivating case for host-seeded AppContext: a BCL feature switch,
                 // declared in `runtimeconfig.json` and latched by `EventSource` on first
                 // read. Impure for the same reason as the case below.
