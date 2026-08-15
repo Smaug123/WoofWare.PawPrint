@@ -1312,16 +1312,8 @@ module ExceptionDispatching =
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (exceptionTypeInfo.Identity, stk))
 
-        let state, allFields =
-            IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state exnHandle
-
-        let fields =
-            CliValueType.OfFields
-                baseClassTypes
-                state.ConcreteTypes
-                exnHandle
-                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies exceptionTypeInfo)
-                allFields
+        let state, fields =
+            IlMachineState.buildInstanceStorage loggerFactory baseClassTypes state exnHandle
 
         let addr, state = IlMachineState.allocateManagedObject exnHandle fields state
 

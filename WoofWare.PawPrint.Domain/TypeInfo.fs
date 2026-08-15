@@ -58,31 +58,6 @@ module TypeLayoutKind =
             failwith
                 $"TypeLayoutKind.ofTypeAttributes: TypeAttributes.LayoutMask is %O{other}, which is not one of AutoLayout, SequentialLayout or ExplicitLayout (CoreCLR rejects this at type load with COR_E_TYPELOAD)"
 
-    /// The layout kind PawPrint actually *applies* to a type, which for a value type is the
-    /// declared one.
-    ///
-    /// A reference type reports `Sequential` however it was declared — and every C# class is
-    /// declared `Auto`. That is a deliberate restriction, not an oversight: PawPrint flattens a
-    /// reference type's whole base chain into one field list
-    /// (`IlMachineRuntimeMetadata.collectAllInstanceFields`) and lays it out in a single pass,
-    /// whereas CoreCLR lays a parent out first and starts the derived type's own fields after the
-    /// parent's instance size. Running the bucketing algorithm over the flattened list would sort
-    /// inherited fields in among the derived type's own, so honouring the declared kind for a
-    /// reference type would trade one infidelity for another — and for a reference-free derived
-    /// class, today's declared-order placement is frequently the one that matches CoreCLR.
-    /// Reference types therefore keep the promotion rule below and nothing else, until the
-    /// flattening is fixed (issue #994).
-    ///
-    /// Note that this suppresses only the *declared-`Auto`* route into auto layout. The GC
-    /// promotion — a `Sequential` type holding references is laid out by auto layout anyway
-    /// (`PlaceInstanceFields`, methodtablebuilder.cpp:8212) — is a property of the fields rather
-    /// than of the declaration and still applies, which is how reference-containing classes reach
-    /// auto layout today.
-    let applied (isValueType : bool) (attrs : TypeAttributes) : TypeLayoutKind =
-        match ofTypeAttributes attrs with
-        | TypeLayoutKind.Auto when not isValueType -> TypeLayoutKind.Sequential
-        | kind -> kind
-
 [<RequireQualifiedAccess>]
 type BaseTypeInfo =
     | TypeDef of TypeDefinitionHandle

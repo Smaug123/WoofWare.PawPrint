@@ -1858,16 +1858,8 @@ module IlMachineStateExecution =
                         ImmutableArray.Empty
                         state
 
-                let state, allFields =
-                    IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state declaringTypeHandle
-
-                let fields =
-                    CliValueType.OfFields
-                        baseClassTypes
-                        state.ConcreteTypes
-                        declaringTypeHandle
-                        (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies typeDef)
-                        allFields
+                let state, fields =
+                    IlMachineState.buildInstanceStorage loggerFactory baseClassTypes state declaringTypeHandle
 
                 let allocatedAddr, state =
                     IlMachineState.allocateManagedObject declaringTypeHandle fields state

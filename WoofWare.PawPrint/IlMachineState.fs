@@ -207,6 +207,10 @@ module IlMachineState =
 
     let collectAllInstanceFields = IlMachineRuntimeMetadata.collectAllInstanceFields
 
+    let collectInstanceFieldChain = IlMachineRuntimeMetadata.collectInstanceFieldChain
+
+    let buildInstanceStorage = IlMachineRuntimeMetadata.buildInstanceStorage
+
     let allocateUninitialisedInstance =
         IlMachineRuntimeMetadata.allocateUninitialisedInstance
 

@@ -543,33 +543,24 @@ module TestStructLayout =
         exn.Message |> shouldContainText "not one of AutoLayout"
 
     [<Test>]
-    let ``A declared-Auto reference type is laid out sequentially, deliberately`` () : unit =
-        // Pins the one place `TypeLayoutKind.applied` departs from the metadata, so that removing
-        // it is a decision rather than an accident. Reference types are held back from the
-        // declared-Auto route because PawPrint flattens the base chain into a single field list
-        // and would otherwise sort inherited fields in among the derived type's own; issue #994
-        // covers lifting both together, and records what real .NET does here. No guest can
-        // observe the difference today — reaching a reference type's first field means
-        // reinterpreting the reference as another class (`Unsafe.As<RawData>(obj).Data`), which
-        // PawPrint does not support — so this unit test is the only thing holding the gate in
-        // place.
+    let ``The declared layout kind is honoured for reference types too`` () : unit =
+        // `TypeLayoutKind.applied` used to report `Sequential` for a declared-`Auto` reference
+        // type -- which is every C# class. That was a holding position for the base-chain
+        // flattening: laying a whole chain out in one pass and then bucketing it would have sorted
+        // inherited fields in among the derived type's own, so honouring the declared kind would
+        // have traded one infidelity for another.
         //
-        // Note what is *not* suppressed: the GC promotion is a property of the fields, so a
-        // reference-containing class still reaches auto layout, which is how nearly every class
-        // is laid out today.
-        TypeLayoutKind.applied false TypeAttributes.AutoLayout
-        |> shouldEqual TypeLayoutKind.Sequential
-
-        TypeLayoutKind.applied true TypeAttributes.AutoLayout
-        |> shouldEqual TypeLayoutKind.Auto
-
-        // Sequential and explicit are reported faithfully for both.
-        for isValueType in [ true ; false ] do
-            TypeLayoutKind.applied isValueType TypeAttributes.SequentialLayout
-            |> shouldEqual TypeLayoutKind.Sequential
-
-            TypeLayoutKind.applied isValueType TypeAttributes.ExplicitLayout
-            |> shouldEqual TypeLayoutKind.Explicit
+        // Layout is per-declaring-type now (issue #994), so the suppression is gone and `applied`
+        // with it. `TestBaseChainLayout` is what holds the replacement in place, against real
+        // .NET: `class Mixed { byte B; int I; long L; short S; }` is bucketed to `L@0 I@8 S@12
+        // B@14` there, which is the row this gate used to get wrong.
+        for attrs, expected in
+            [
+                TypeAttributes.AutoLayout, TypeLayoutKind.Auto
+                TypeAttributes.SequentialLayout, TypeLayoutKind.Sequential
+                TypeAttributes.ExplicitLayout, TypeLayoutKind.Explicit
+            ] do
+            TypeLayoutKind.ofTypeAttributes attrs |> shouldEqual expected
 
     [<Test>]
     let ``A declared-Auto type carrying field offsets is rejected`` () : unit =
@@ -657,6 +648,39 @@ module TestStructLayout =
 
         tryFieldAt 1 8 vt
         |> shouldEqual (Some (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 7L))))
+
+    [<Test>]
+    let ``A declared Size suppresses the alignment rounding`` () : unit =
+        // A declared `ClassLayout.Size` and the alignment rounding are alternatives, not a
+        // sequence: `managedSize = classSizeInMetadata <> 0 ? max(classSizeInMetadata, lastFieldEnd)
+        // : AlignSize(lastFieldEnd, alignmentRequirement)` (classlayoutinfo.cpp:543-550).
+        //
+        // The two sibling tests here only ever exercise a floor *above* the rounded size, where
+        // "round then floor" and "floor instead of round" agree, which is how the bug survived.
+        // These are the cases where they disagree, in both directions.
+        let fields =
+            [
+                cliField "l" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 1L))) None
+                cliField "i" (CliType.Numeric (CliNumericType.Int32 2)) None
+            ]
+
+        // Fields end at 12 and demand 8-byte alignment, so with no declared size this rounds to 16.
+        (CliValueType.SizeOf (ofFields Layout.Default fields)).Size |> shouldEqual 16
+
+        // A declared size between the two suppresses the rounding entirely.
+        (CliValueType.SizeOf (ofFields (Layout.Custom (size = 13, packingSize = 0)) fields)).Size
+        |> shouldEqual 13
+
+        // One below the fields loses to them, rather than truncating them or reinstating the
+        // rounding: `max` picks the field extent, which is not a multiple of the alignment.
+        (CliValueType.SizeOf (ofFields (Layout.Custom (size = 4, packingSize = 0)) fields)).Size
+        |> shouldEqual 12
+
+        // The alignment requirement is untouched by any of this, so a container still places one
+        // of these on an 8-byte boundary however wide it turned out to be.
+        for size in [ 0 ; 4 ; 13 ] do
+            (CliValueType.SizeOf (ofFields (Layout.Custom (size = size, packingSize = 0)) fields)).Alignment
+            |> shouldEqual 8
 
     [<Test>]
     let ``An explicit Size floor applies before the pointer rounding`` () : unit =

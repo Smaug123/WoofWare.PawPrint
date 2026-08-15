@@ -14,6 +14,58 @@ open WoofWare.PawPrint.Test
 module TestImpureCases =
     let assy = typeof<RunResult>.Assembly
 
+    /// Build one registration of `EffectiveUserIdConfigured.cs`. The guest
+    /// echoes the effective uid it observed to stdout as four little-endian
+    /// bytes, so the assertion is that those bytes are the identity we
+    /// configured — which lets one source file pin `SystemNative_GetEUid` at
+    /// several distinct identities.
+    ///
+    /// Through stdout rather than through the exit code, because an exit code
+    /// is eight bits and a uid is a `uint32`. Every identity below 2^16 leaves
+    /// a truncating handler indistinguishable from a correct one, and every
+    /// identity below 2^31 leaves a sign-confusing one indistinguishable too —
+    /// so the registrations include `nobody`, which is neither.
+    ///
+    /// `gid` is always different from `uid`, so a handler reading `GroupId`
+    /// fails; the registrations below also swap the pair, so it fails in both
+    /// directions. None of them is `EmulatedKernel.defaultUserId`, so a handler
+    /// answering with a constant fails too.
+    let private effectiveUserIdCase (uid : uint32) (gid : uint32) : EndToEndTestCase =
+        {
+            FileName = "EffectiveUserIdConfigured.cs"
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    UserId = uid
+                    GroupId = gid
+                    // One file, for the guest's `st_uid == GetEUid()` check.
+                    FileSystem =
+                        Map.ofList
+                            [
+                                FileName.parseOrFail "test seed" "f",
+                                SeedEntry.File (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                            ]
+                }
+            AppContext = AppContextProperties.empty
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    // Spelled out rather than taken from `BitConverter`, which
+                    // would make this expectation and the guest's own
+                    // byte-shifting agree only because the host is
+                    // little-endian.
+                    OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                    |> Seq.toArray
+                    |> shouldEqual
+                        [|
+                            byte (uid &&& 0xFFu)
+                            byte ((uid >>> 8) &&& 0xFFu)
+                            byte ((uid >>> 16) &&& 0xFFu)
+                            byte ((uid >>> 24) &&& 0xFFu)
+                        |]
+                )
+        }
+
     /// Build one registration of `CurrentDirectoryConfigured.cs`. The guest
     /// echoes the directory it observed to stdout, so the assertion is simply
     /// that the bytes it printed are the UTF-8 of the path we configured —
@@ -200,6 +252,19 @@ module TestImpureCases =
             // fails a test that says so.
             currentDirectoryCase "/"
             currentDirectoryCase "/home/pawprint/work"
+            // Root, which is the identity `defaultUserId` deliberately avoids:
+            // `Environment.IsPrivilegedProcess` is exactly `GetEUid() == 0`, so
+            // this is the only case in the suite that observes a guest taking
+            // its privileged branch.
+            effectiveUserIdCase 0u 200u
+            // An ordinary unprivileged identity, and the same pair swapped, so
+            // that reporting the gid fails whichever way round it is.
+            effectiveUserIdCase 37u 200u
+            effectiveUserIdCase 200u 37u
+            // `nobody` on Linux, and the `nogroup` beside it. Both have their
+            // high bit set and neither fits in sixteen bits, which is what
+            // makes a truncating or sign-confusing handler visible at all.
+            effectiveUserIdCase 4294967294u 4294967293u
             {
                 // Reads every field `SystemNative_Stat`/`LStat` write, through a
                 // hand-rolled P/Invoke. Impure because most of those fields
