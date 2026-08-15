@@ -222,6 +222,16 @@ module internal DynamicScopeOperand =
     /// reachable the moment that unrelated QCall lands, at which point nothing would prompt anyone
     /// to add it.
     /// </para>
+    /// <para>
+    /// Where this deliberately stops: it answers the questions that are *about the scope* — is the
+    /// entry a type handle, and is the target a closed type — plus the two shapes above. It does
+    /// not answer "is this type a legal operand of this opcode", which is a per-opcode question
+    /// (<c>sizeof Span&lt;int&gt;</c> is legal and answers 16; <c>newarr Span&lt;int&gt;</c> is a
+    /// <c>TypeLoadException</c> — both measured) and one PawPrint does not answer for metadata
+    /// operands either. Answering it belongs with the ops, for both universes at once; adding
+    /// shapes here one at a time would make the same IL behave differently depending on which
+    /// universe its operand came from.
+    /// </para>
     /// </remarks>
     let closedType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

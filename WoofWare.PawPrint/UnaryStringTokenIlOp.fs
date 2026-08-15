@@ -53,7 +53,7 @@ module internal UnaryStringTokenIlOp =
             // `AddInternedString` (line 431), where the metadata path beside it
             // (`AddStringLiteral(EEStringData*)`, line 396) allocates. So `ReferenceEquals` in the
             // guest can tell the two apart, and this is the difference between them.
-            let value, candidate =
+            let resolved =
                 match operand with
                 | StringOperand.FromMetadata sh ->
                     let value =
@@ -65,33 +65,40 @@ module internal UnaryStringTokenIlOp =
                             failwith
                                 $"Tried to resolve ldstr token %O{sh.Token} from assembly {sh.SourceAssembly.FullName}, but only had the following available: {available}"
 
-                    value, None
+                    Ok (value, None)
                 | StringOperand.FromDynamicScope scopeIndex ->
-                    let addr =
-                        DynamicScopeOperand.entryObject "ldstr" scopeIndex state thread
-                        |> Option.defaultWith (fun () ->
-                            // The decoder established at mint that this index held a string, so
-                            // reaching this means the guest replaced the slot with null (or
-                            // truncated the list) through private reflection afterwards. Real .NET
-                            // makes that an InvalidProgramException at JIT; refuse loudly rather
-                            // than inventing a literal.
-                            failwith
-                                $"ldstr: DynamicScope entry %d{scopeIndex} is null or beyond the end of the scope, so it names no string; the scope must have been rewritten after the method was minted"
-                        )
+                    // The decoder established at mint that this index held a string, so anything
+                    // else here means the guest rewrote `m_scope.m_tokens` afterwards — nulled the
+                    // slot, truncated the list, or put something that is not a string there. Real
+                    // .NET rejects such a method at JIT with a *catchable*
+                    // `InvalidProgramException`, so this is a guest exception rather than an
+                    // interpreter failure.
+                    match DynamicScopeOperand.entryObject "ldstr" scopeIndex state thread with
+                    | None ->
+                        Error
+                            $"DynamicScope entry %d{scopeIndex} is null or beyond the end of the scope, so it names no string"
+                    | Some addr ->
 
                     // Read now, not when the method was minted. Real .NET reads the scope entry's
                     // characters when it materialises the literal, and a guest can mutate a
                     // `System.String`'s data in place through an unsafe pointer between emitting it
                     // and running the method; measured on real .NET, the mutated value is the one
                     // that gets interned.
-                    let value =
-                        ManagedHeap.getStringContents addr state.ManagedHeap
-                        |> Option.defaultWith (fun () ->
-                            failwith
-                                $"ldstr: the DynamicScope entry at %O{addr} has no recorded string contents; the decoder saw a string at index %d{scopeIndex} when the method was minted, so either the slot was rewritten afterwards or it was allocated without going through allocateManagedString"
-                        )
+                    match ManagedHeap.getStringContents addr state.ManagedHeap with
+                    | None -> Error $"DynamicScope entry %d{scopeIndex} is not a string"
+                    | Some value -> Ok (value, Some addr)
 
-                    value, Some addr
+            match resolved with
+            | Error why ->
+                // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
+                IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                    loggerFactory
+                    baseClassTypes
+                    baseClassTypes.InvalidProgramException
+                    (Some $"ldstr: %s{why}")
+                    thread
+                    state
+            | Ok (value, candidate) ->
 
             let addressToLoad, state =
                 match state.InternedStrings.TryGetValue value with
