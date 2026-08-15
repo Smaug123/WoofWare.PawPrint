@@ -311,6 +311,41 @@ module RealRuntime =
             for name in reserved do
                 requireFoldable "The oracle's own reserved file" name
 
+        /// The set-user-ID, set-group-ID and sticky bits are refused for a seed
+        /// the oracle will materialise, because the host does not reliably
+        /// reproduce what the seed asked for. Linux's `chmod` silently drops
+        /// `S_ISGID` when the caller is not a member of the file's group, and
+        /// several filesystems refuse `S_ISUID` outright — so PawPrint would
+        /// report the seeded bit while the host reported nothing, and the
+        /// differential test would be asserting a difference in the *harness*
+        /// rather than in the runtime.
+        ///
+        /// Only for oracle-visible seeds: a `sourcesImpure` case, which nothing
+        /// materialises, may set them freely.
+        let requireOraclePermissions (what : string) (isDirectory : bool) (permissions : PermissionBits) : unit =
+            // Windows has no Unix modes at all, and `File.SetUnixFileMode`
+            // throws there — so the host tree simply cannot be made to match a
+            // seed that asks for one. Refusing loudly beats materialising the
+            // shape and silently comparing PawPrint's stored bits against
+            // whatever Windows synthesises. The *default* modes are permitted,
+            // since a case that never mentions a mode is not asking about one.
+            if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+                let expected =
+                    if isDirectory then
+                        PermissionBits.defaultForDirectory
+                    else
+                        PermissionBits.defaultForRegularFile
+
+                if permissions <> expected then
+                    failwith
+                        $"The filesystem seed gives %s{what} the mode %o{PermissionBits.toInt permissions}, and this oracle is running on Windows, which has no Unix permission bits to give a real file. Run mode-bearing differential cases on Unix."
+
+            let special = PermissionBits.toInt permissions &&& 0o7000
+
+            if special <> 0 then
+                failwith
+                    $"The filesystem seed gives %s{what} the mode %o{PermissionBits.toInt permissions}, whose set-user-ID/set-group-ID/sticky bits (%o{special}) this oracle refuses. A host `chmod` may silently drop them — Linux drops S_ISGID for a caller outside the file's group — so the two runtimes would disagree about the harness rather than about themselves. Move the case to sourcesImpure, which materialises nothing."
+
         let rec go (prefix : string) (depth : int) (entries : Map<FileName, SeedEntry>) : unit =
             let names =
                 entries |> Map.toList |> List.map (fun (name, _) -> FileName.toString name)
@@ -347,8 +382,10 @@ module RealRuntime =
                     | None -> ()
 
                 match entry with
-                | SeedEntry.File _ -> ()
-                | SeedEntry.Directory children -> go (prefix + "/" + name) (depth + 1) children
+                | SeedEntry.File (_, permissions) -> requireOraclePermissions $"%s{prefix}/%s{name}" false permissions
+                | SeedEntry.Directory (children, permissions) ->
+                    requireOraclePermissions $"%s{prefix}/%s{name}" true permissions
+                    go (prefix + "/" + name) (depth + 1) children
                 | SeedEntry.Symlink target ->
                     let raw = SymlinkTarget.toString target
 
@@ -396,6 +433,74 @@ module RealRuntime =
 
         go "" 0 seed
 
+    /// Give every directory under `root` (and `root` itself) owner rwx, so that
+    /// the tree can be enumerated and deleted.
+    ///
+    /// Top-down, and that order is the whole point: a directory must be made
+    /// searchable before its own children can be listed. Symlinks are not
+    /// followed — `Directory.GetDirectories` reports them, but chmod through
+    /// one would change the mode of whatever it points at, which may be outside
+    /// the scratch tree entirely.
+    ///
+    /// A whole-body no-op on Windows, which has no Unix modes to restore and
+    /// where `File.SetUnixFileMode` throws `PlatformNotSupportedException`. That
+    /// matters more than it looks: `deleteScratchTree` runs in the `finally` of
+    /// *every* oracle run, seeded or not, and the caller catches only
+    /// `IOException`/`UnauthorizedAccessException` — so an unguarded call here
+    /// would turn every successful differential test on Windows into a cleanup
+    /// failure.
+    ///
+    /// Not private: the seed for `FileModeSeeded.cs` really does contain a
+    /// directory its owner cannot write, so this runs on every differential run
+    /// and its failure mode — a silently leaked scratch tree, since `Delete`'s
+    /// exception is swallowed — is invisible. `TestRealRuntimeCleanup` fires it
+    /// directly.
+    let rec makeTreeDeletable (root : string) : unit =
+        if not (RuntimeInformation.IsOSPlatform OSPlatform.Windows) then
+            File.SetUnixFileMode (root, UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute)
+
+            for child in Directory.GetDirectories root do
+                if not (File.GetAttributes(child).HasFlag FileAttributes.ReparsePoint) then
+                    makeTreeDeletable child
+
+    /// Remove a scratch tree, including one a seed left with directories their
+    /// owner cannot write.
+    ///
+    /// The chmod lives *inside* this function rather than beside its call site
+    /// deliberately: the caller swallows the failure (a leaked temp directory
+    /// must not fail a test), so a call site that forgot to restore the modes
+    /// first would be silent. Here, `TestRealRuntimeCleanup` covers both halves
+    /// as one unit.
+    let deleteScratchTree (root : string) : unit =
+        makeTreeDeletable root
+        Directory.Delete (root, true)
+
+    /// Whether a real directory on *this* host can stand in for `seed` at all.
+    ///
+    /// False only on Windows, and only for a seed naming a mode that
+    /// `SeedEntry.file`/`SeedEntry.directory` would not have produced: Windows
+    /// has no Unix permission bits to give a real file, so the host tree cannot
+    /// be made to match.
+    ///
+    /// Distinct from `validateSeedForOracle`, which *refuses* such a seed
+    /// loudly, and deliberately so: a seed that reaches the oracle with modes
+    /// it cannot honour is a bug worth a failure, but a *test case* that simply
+    /// cannot run here wants to be skipped. One predicate, so the two answers
+    /// cannot drift apart.
+    let rec canMaterialise (seed : Map<FileName, SeedEntry>) : bool =
+        if not (RuntimeInformation.IsOSPlatform OSPlatform.Windows) then
+            true
+        else
+
+        seed
+        |> Map.forall (fun _ entry ->
+            match entry with
+            | SeedEntry.Symlink _ -> true
+            | SeedEntry.File (_, permissions) -> permissions = PermissionBits.defaultForRegularFile
+            | SeedEntry.Directory (children, permissions) ->
+                permissions = PermissionBits.defaultForDirectory && canMaterialise children
+        )
+
     /// Write a filesystem seed into a real directory, so that the guest running
     /// on the real runtime sees the same tree PawPrint realises into its
     /// `VirtualFileSystem`.
@@ -403,15 +508,59 @@ module RealRuntime =
     /// One description, two interpreters: the differential claim is only worth
     /// anything if both sides are configured from the *same value*, rather than
     /// from a host tree and a seed that someone kept in step by hand.
+    /// The seed's permission bits, as the mode `chmod(2)` takes. `PermissionBits`
+    /// is exactly `st_mode & 0o7777`, which is exactly `UnixFileMode`'s domain,
+    /// so this is a re-encoding rather than a translation.
+    let private toUnixFileMode (permissions : PermissionBits) : UnixFileMode =
+        enum<UnixFileMode> (PermissionBits.toInt permissions)
+
+    /// Apply a seeded mode to a real path, and check it took.
+    ///
+    /// Note the failure path is one no test here can fire: every filesystem the
+    /// suite runs on stores Unix modes, and there is no way to fake one that
+    /// does not. It is kept for the reason this project keeps its other
+    /// environment assertions — a loud stop naming the cause beats a silent
+    /// wrong answer — rather than because a test proves it works.
+    ///
+    /// The read-back is not paranoia about `chmod(2)`, which is reliable; it is
+    /// about the *filesystem* underneath `TMPDIR`. A mount whose modes are
+    /// synthesised from mount options rather than stored — vfat, some CIFS
+    /// configurations — accepts the call and reports something else afterwards.
+    /// The oracle would then be comparing PawPrint's stored bits against the
+    /// mount's invented ones and calling the difference a runtime bug. Better to
+    /// refuse to run at all, naming the directory at fault.
+    let private applyMode (path : string) (permissions : PermissionBits) : unit =
+        let desired = toUnixFileMode permissions
+        File.SetUnixFileMode (path, desired)
+        let actual = File.GetUnixFileMode path
+
+        if actual <> desired then
+            failwith
+                $"The oracle set the mode of \"%s{path}\" to %o{PermissionBits.toInt permissions}, and the filesystem reported %o{int actual} back. Some mounts synthesise modes from mount options rather than storing them (vfat, some CIFS); the differential comparison would be about that mount rather than about the two runtimes. Point TMPDIR at a filesystem that stores Unix modes."
+
     let rec private materialiseSeed (directory : string) (entries : Map<FileName, SeedEntry>) : unit =
         for KeyValue (name, entry) in entries do
             let path = Path.Combine (directory, FileName.toString name)
 
             match entry with
-            | SeedEntry.File contents -> File.WriteAllBytes (path, Seq.toArray contents)
-            | SeedEntry.Directory children ->
+            | SeedEntry.File (contents, permissions) ->
+                File.WriteAllBytes (path, Seq.toArray contents)
+                // After writing, not before: `File.WriteAllBytes` creates the
+                // file under the host's umask, so the mode it lands with is a
+                // property of the machine rather than of the seed. Setting it
+                // explicitly is what makes the mode a cross-runtime fact —
+                // PawPrint reports what the seed says, and now so does the host.
+                if not (RuntimeInformation.IsOSPlatform OSPlatform.Windows) then
+                    applyMode path permissions
+            | SeedEntry.Directory (children, permissions) ->
                 Directory.CreateDirectory path |> ignore<DirectoryInfo>
+                // Children first, *then* the mode: a directory seeded without
+                // owner-write or owner-search could not have its own children
+                // created through it once the mode was in place.
                 materialiseSeed path children
+
+                if not (RuntimeInformation.IsOSPlatform OSPlatform.Windows) then
+                    applyMode path permissions
             // Verbatim, and deliberately not checked for existence: a seeded
             // symlink may dangle, and `File.CreateSymbolicLink` is happy to
             // create one that does.
@@ -454,12 +603,34 @@ module RealRuntime =
 
             File.WriteAllBytes (dllPath, assemblyBytes)
             File.WriteAllText (Path.Combine (tempDir, assemblyName + ".runtimeconfig.json"), runtimeConfig)
+            // The scratch directory *is* the guest's "/" on this side of the
+            // comparison, and `VirtualFileSystem.empty` gives PawPrint's root
+            // `PermissionBits.defaultForDirectory`. `Directory.CreateDirectory`
+            // creates 0777 less the umask, so the two agree only while the
+            // umask is 022 — and the seed, being a map of *entries*, has no way
+            // to name the root and fix it.
+            //
+            // Measured: `nix develop` pins the umask to 0022, so no run through
+            // the devshell (CI included) can diverge here, and
+            // `FileModeSeeded.cs`'s check on "." cannot fail without this line.
+            // The guard is kept anyway, because the suite is runnable outside
+            // the devshell and one chmod is cheaper than the confusing failure
+            // it would otherwise produce there.
+            if not (RuntimeInformation.IsOSPlatform OSPlatform.Windows) then
+                applyMode tempDir PermissionBits.defaultForDirectory
+
             materialiseSeed tempDir seed
 
             runToCompletion timeout muxerPath (dllPath :: List.ofArray args) tempDir assemblyName
         finally
             try
-                Directory.Delete (tempDir, true)
+                // A seed may deliberately have left a directory unreadable or
+                // unsearchable, which is a mode `Directory.Delete` cannot
+                // recurse through — and the `with` below would swallow the
+                // failure, leaking the scratch tree rather than reporting it.
+                // Restore owner rwx from the top down first; each directory is
+                // made traversable before it is enumerated.
+                deleteScratchTree tempDir
             with
             | :? IOException
             | :? UnauthorizedAccessException -> ()

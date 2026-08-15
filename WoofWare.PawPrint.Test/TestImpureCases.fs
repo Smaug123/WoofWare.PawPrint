@@ -43,7 +43,7 @@ module TestImpureCases =
                         Map.ofList
                             [
                                 FileName.parseOrFail "test seed" "f",
-                                SeedEntry.File (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                                SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
                             ]
                 }
             AppContext = AppContextProperties.empty
@@ -294,8 +294,8 @@ module TestImpureCases =
                             Map.ofList
                                 [
                                     name "f",
-                                    SeedEntry.File (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
-                                    name "d", SeedEntry.Directory Map.empty
+                                    SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                                    name "d", SeedEntry.directory Map.empty
                                     name "lf", SeedEntry.Symlink (target "f")
                                     name "dang", SeedEntry.Symlink (target "nx")
                                 ]
@@ -320,7 +320,7 @@ module TestImpureCases =
                             Map.ofList
                                 [
                                     name "f",
-                                    SeedEntry.File (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                                    SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
                                     name "lf", SeedEntry.Symlink (target "f")
                                     // U+00DF then 'x': three UTF-8 bytes,
                                     // C3 9F 78, so that a one- or two-byte
@@ -353,9 +353,39 @@ module TestImpureCases =
                             let name (s : string) = FileName.parseOrFail "test seed" s
 
                             let file (contents : string) =
-                                SeedEntry.File (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
+                                SeedEntry.file (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
 
                             Map.ofList [ name "f", file "one" ; name "g", file "two" ; name "h", file "three" ]
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The twelve-bit modes the differential oracle refuses, because
+                // a host `chmod` may drop them. Refusing them at the oracle
+                // rather than in the model is only defensible if the model
+                // really does carry them, which is what this pins.
+                FileName = "SpecialModeBitsSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        FileSystem =
+                            let name (s : string) = FileName.parseOrFail "test seed" s
+
+                            let mode (raw : int) =
+                                PermissionBits.parseOrFail "test seed" raw
+
+                            let bytes (contents : string) =
+                                Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange
+
+                            Map.ofList
+                                [
+                                    name "setuid", SeedEntry.File (bytes "x", mode 0o4755)
+                                    name "setgid", SeedEntry.File (bytes "x", mode 0o2755)
+                                    name "sticky", SeedEntry.Directory (Map.empty, mode 0o1777)
+                                    name "plain", SeedEntry.file (bytes "x")
+                                ]
                     }
                 AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
@@ -392,7 +422,7 @@ module TestImpureCases =
 
                                         yield name $"%s{prefix}%d{i}", SeedEntry.Symlink (target next)
 
-                                    yield name $"%s{prefix}target", SeedEntry.File ImmutableArray<byte>.Empty
+                                    yield name $"%s{prefix}target", SeedEntry.file ImmutableArray<byte>.Empty
                                 ]
 
                             // 32 is below every platform's limit, 41 above every
