@@ -502,3 +502,215 @@ module TestByrefComparison =
         let exn = Assert.Throws (fun () -> ceq viaField (byref (peRange 32 3) []) |> ignore)
 
         exn.Message |> shouldContainText "root's extent"
+
+    // --------------------------------------------------------------------------------------
+    // The displacement sum must not wrap (issue #993)
+    // --------------------------------------------------------------------------------------
+
+    /// Offsets drawn explicitly rather than from FsCheck's default `int`, which under `Quick`
+    /// is size-bounded to roughly [-100, 100] and would never reach the boundary. The extremes
+    /// are named constants rather than hoped for from a uniform range, since a uniform draw
+    /// hits `Int32.MaxValue` itself with probability 2^-32.
+    let private genDisplacement : Gen<int> =
+        Gen.frequency
+            [
+                3,
+                Gen.elements
+                    [
+                        System.Int32.MinValue
+                        System.Int32.MinValue + 1
+                        System.Int32.MaxValue
+                        System.Int32.MaxValue - 1
+                        -1
+                        0
+                        1
+                    ]
+                2, Gen.choose (System.Int32.MinValue, System.Int32.MaxValue)
+            ]
+
+    /// A chain of address steps only: `ReinterpretAs` moves nothing, `ByteOffset` moves by its
+    /// argument. No `Field`, so the residuals `tryDecideResiduals` sees have no unknown
+    /// component and the comparison is pure arithmetic — which is exactly the arm whose
+    /// arithmetic is under test.
+    ///
+    /// Constructed directly rather than through `appendProjection`, which coalesces adjacent
+    /// `ByteOffset`s and so can never *build* a multi-cursor chain. That is why this was only
+    /// ever latent: the shapes that reach `ceqNormalised` today carry one cursor each. A chain
+    /// with several is what `ManagedPointerSource.fs` already warned this sum could not be
+    /// trusted on, and it becomes constructible the moment anything builds a chain directly.
+    ///
+    /// What that warning got wrong is worth recording, since it is the reason this test looks
+    /// the way it does. It said the sum *wrapped*; measured, `List.sumBy` over `int` is
+    /// `Checked.(+)` inside FSharp.Core, so the sum **threw** `System.OverflowException` — a
+    /// host crash out of a byref comparison, on a pair whose answer is perfectly well defined.
+    /// So this property rejects the old accumulator by crashing, not by disagreeing.
+    let private genAddressChain : Gen<ByrefProjection list> =
+        gen {
+            let! length = Gen.choose (0, 4)
+
+            let! steps =
+                Gen.listOfLength
+                    length
+                    (Gen.frequency
+                        [
+                            1,
+                            Gen.elements
+                                [
+                                    ByrefProjection.ReinterpretAs byteType
+                                    ByrefProjection.ReinterpretAs int32Type
+                                ]
+                            2, genDisplacement |> Gen.map ByrefProjection.ByteOffset
+                        ])
+
+            return ByrefProjection.ReinterpretAs byteType :: steps
+        }
+
+    /// Pairs of chains. Half are independent; half are built so that their `int32` sums agree
+    /// *by construction* — the second chain's two cursors are `a` and `c - a` computed with
+    /// wrapping `int32` arithmetic, so an `int` fold makes it exactly `c` while the true sum
+    /// differs by a multiple of 2^32 whenever that subtraction wrapped. Without that arm the
+    /// colliding case would essentially never be generated, and the property would pass against
+    /// the accumulator it exists to reject.
+    let private genChainPair : Gen<ByrefProjection list * ByrefProjection list> =
+        Gen.frequency
+            [
+                1,
+                gen {
+                    let! left = genAddressChain
+                    let! right = genAddressChain
+                    return left, right
+                }
+                1,
+                gen {
+                    let! c = genDisplacement
+                    let! a = genDisplacement
+                    // Deliberately wrapping: `c - a` in `int32`. F#'s `-` on `int` is unchecked.
+                    let b = c - a
+
+                    return
+                        [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset c ],
+                        [
+                            ByrefProjection.ReinterpretAs byteType
+                            ByrefProjection.ByteOffset a
+                            ByrefProjection.ReinterpretAs int32Type
+                            ByrefProjection.ByteOffset b
+                        ]
+                }
+            ]
+
+    /// The oracle: two byrefs on one root name one address exactly when their chains displace by
+    /// the same number of bytes. Computed in unbounded arithmetic, independently of the fold
+    /// under test.
+    let private trueDisplacement (projs : ByrefProjection list) : bigint =
+        projs
+        |> List.sumBy (fun p ->
+            match p with
+            | ByrefProjection.ByteOffset n -> bigint n
+            | ByrefProjection.Field _
+            | ByrefProjection.ReinterpretAs _ -> 0I
+        )
+
+    [<Test>]
+    let ``two byte cursors on one root compare equal exactly when their displacements agree`` () =
+        let mutable equalAnswers = 0
+        let mutable outsideInt32 = 0
+
+        let property =
+            Prop.forAll
+                (Arb.fromGen genChainPair)
+                (fun (projs1, projs2) ->
+                    let displacement1 = trueDisplacement projs1
+                    let displacement2 = trueDisplacement projs2
+                    let expected = displacement1 = displacement2
+
+                    ceq (byref (local 0us) projs1) (byref (local 0us) projs2)
+                    |> shouldEqual expected
+
+                    if expected then
+                        equalAnswers <- equalAnswers + 1
+
+                    let leavesInt32 (d : bigint) : bool =
+                        d < bigint System.Int32.MinValue || d > bigint System.Int32.MaxValue
+
+                    if leavesInt32 displacement1 || leavesInt32 displacement2 then
+                        outsideInt32 <- outsideInt32 + 1
+                )
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 5000, property)
+
+        // Both halves must occur, or the law is only being checked on one branch.
+        if equalAnswers = 0 then
+            failwith "property never generated a pair of chains at the same address"
+
+        // The inputs an `int` fold cannot serve at all. Without them the property would pass
+        // against the accumulator it exists to reject.
+        if outsideInt32 = 0 then
+            failwith "property never generated a chain whose displacement leaves int32 range"
+
+    /// The other end of the same limit, and the reason the chains above are built by hand.
+    /// `appendProjection` coalesces adjacent byte cursors into one `ByteOffset`, which is an
+    /// `int` — so a total that does not fit is a shape PawPrint *cannot represent*, and the
+    /// honest answer is to say so rather than to store the low 32 bits of it.
+    ///
+    /// This one is reachable from a guest: two `Unsafe.AddByteOffset (ref x, int.MaxValue)`
+    /// calls in a row. The refusal is a `failwith` rather than the `OverflowException` the
+    /// file's `open Checked` would otherwise raise, because `add.ovf`/`sub.ovf` catch that
+    /// exception (`NullaryIlOp.fs`) and convert it into a *guest* `System.OverflowException` —
+    /// turning an interpreter representation limit into a CLI arithmetic overflow that real
+    /// .NET's 64-bit `add.ovf` does not raise.
+    [<Test>]
+    let ``coalescing two cursors past int32 is refused rather than truncated`` () =
+        let cursored =
+            ManagedPointerSource.Byref (
+                local 0us,
+                [
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset System.Int32.MaxValue
+                ]
+            )
+
+        let exn =
+            Assert.Throws (fun () ->
+                ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 1) cursored
+                |> ignore
+            )
+
+        exn.Message
+        |> shouldContainText "does not fit in the int32 PawPrint stores for a byte cursor"
+
+        // The control: a total that *does* fit still coalesces, so this is a limit on the
+        // representation rather than a refusal of multi-step cursor arithmetic.
+        ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset -1) cursored
+        |> shouldEqual (
+            ManagedPointerSource.Byref (
+                local 0us,
+                [
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset (System.Int32.MaxValue - 1)
+                ]
+            )
+        )
+
+    /// The concrete collision, spelled out. `Int32.MaxValue + 1` and `Int32.MinValue` are the
+    /// same 32-bit number and 2^32 apart as addresses; comparison answered `true`.
+    [<Test>]
+    let ``a pair of cursors summing past int32 is not equal to the wrapped single cursor`` () =
+        let wrapped =
+            byref
+                (local 0us)
+                [
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset System.Int32.MaxValue
+                    ByrefProjection.ReinterpretAs int32Type
+                    ByrefProjection.ByteOffset 1
+                ]
+
+        let single =
+            byref
+                (local 0us)
+                [
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset System.Int32.MinValue
+                ]
+
+        ceq wrapped single |> shouldEqual false
