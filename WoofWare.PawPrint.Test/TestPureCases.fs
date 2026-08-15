@@ -109,6 +109,37 @@ module TestPureCases =
                     name "dang", SeedEntry.Symlink (target "nx")
                     name "cyc", SeedEntry.Symlink (target "cyc")
                 ]
+            "SystemNativeReadLink.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    name "d", SeedEntry.Directory Map.empty
+                    name "lf", SeedEntry.Symlink (target "f")
+                    // Six bytes, so that "exactly the target", "one byte more"
+                    // and "one byte less" are three different buffer sizes.
+                    // Dangling on purpose: `readlink` reports a target without
+                    // resolving it, and a target that existed would let a
+                    // handler that answered from the *resolved* file pass.
+                    name "five", SeedEntry.Symlink (target "hello5")
+                ]
+            "LinkTargetSeeded.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    name "d", SeedEntry.Directory Map.empty
+                    name "lf", SeedEntry.Symlink (target "f")
+                    name "ld", SeedEntry.Symlink (target "d")
+                    // A link to a link, so that following to the final target
+                    // has to iterate rather than merely dereference once.
+                    name "l2", SeedEntry.Symlink (target "lf")
+                    name "dang", SeedEntry.Symlink (target "nx")
+                    name "cyc", SeedEntry.Symlink (target "cyc")
+                    // Longer than the 256-byte stackalloc `Interop.Sys.ReadLink`
+                    // starts with, so reading it at all requires the truncating
+                    // first call and the grown retry. NAME_MAX does not apply:
+                    // this is a link's *target*, not anything's name.
+                    name "long", SeedEntry.Symlink (target (String.replicate 300 "a"))
+                ]
         ]
         |> Map.ofList
 
