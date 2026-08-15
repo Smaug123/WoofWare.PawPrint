@@ -207,6 +207,30 @@ module TestPathCursor =
         | None -> failwith "\"abc/d\" has components"
         | Some (_, rest) -> PathCursor.splice (path "l") rest |> PathCursor.isExhausted |> shouldEqual false
 
+    [<Test>]
+    let ``a forged default cursor is refused by every entry point`` () : unit =
+        // `PathCursor` is a struct, so C# `default` and `Unchecked.defaultof`
+        // sidestep `ofPath` entirely and leave the buffer null. Every function
+        // must name that rather than throwing NullReferenceException from
+        // inside a scan — and must not treat it as the empty path, which would
+        // resolve as "the directory I started from" instead of the ENOENT the
+        // empty path owes its caller.
+        let forged = Unchecked.defaultof<PathCursor>
+
+        let refuses (what : string) (action : unit -> unit) : unit =
+            let exn = Assert.Throws<exn> (fun () -> action ())
+
+            exn.Message
+            |> shouldContainText "came from `Unchecked.defaultof` or C# `default`"
+
+            exn.Message |> shouldContainText "PathCursor"
+            ignore<string> what
+
+        refuses "next" (fun () -> PathCursor.next forged |> ignore<(PathComponent * PathCursor) option>)
+        refuses "isExhausted" (fun () -> PathCursor.isExhausted forged |> ignore<bool>)
+        refuses "remainingBytes" (fun () -> PathCursor.remainingBytes forged |> ignore<int>)
+        refuses "splice" (fun () -> PathCursor.splice (path "l") forged |> ignore<PathCursor>)
+
     // ------------------------------------------ remainingBytes, against Darwin
 
     [<Test>]

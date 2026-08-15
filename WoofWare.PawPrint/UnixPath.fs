@@ -214,15 +214,34 @@ module PathCursor =
             Offset = 0
         }
 
+    /// The text this cursor is walking, having checked that the cursor is not a
+    /// forged default.
+    ///
+    /// This type is a struct, so `Unchecked.defaultof` and C# `default` produce
+    /// a value that never went through `ofPath` and whose buffer is null. Every
+    /// function here reads the buffer through this one accessor, so none of them
+    /// can forget to check — and the failure is a named crash rather than a
+    /// `NullReferenceException` from inside a scan, or (worse) a silent
+    /// impersonation of the empty path, which resolves as "the directory I
+    /// started from" rather than the ENOENT the empty path owes its caller.
+    let private bufferOf (cursor : PathCursor) : string =
+        match cursor.Buffer with
+        | null ->
+            failwith
+                "PathCursor: this cursor's buffer is null, which it can only be if the cursor came from `Unchecked.defaultof` or C# `default`; obtain one from PathCursor.ofPath instead."
+        | buffer -> buffer
+
     /// The buffer from the cursor onwards, separator runs intact.
-    let private remainder (cursor : PathCursor) : string = cursor.Buffer.Substring cursor.Offset
+    let private remainder (cursor : PathCursor) : string =
+        (bufferOf cursor).Substring cursor.Offset
 
     /// Where the next component starts, or the end of the buffer if only
     /// separators remain.
     let private afterSeparators (cursor : PathCursor) : int =
+        let buffer = bufferOf cursor
         let mutable index = cursor.Offset
 
-        while index < cursor.Buffer.Length && cursor.Buffer.[index] = UnixPathText.separator do
+        while index < buffer.Length && buffer.[index] = UnixPathText.separator do
             index <- index + 1
 
         index
@@ -230,24 +249,25 @@ module PathCursor =
     /// True when no component remains to be looked up. A buffer holding only
     /// separators is exhausted: "a///" names one component, not four.
     let isExhausted (cursor : PathCursor) : bool =
-        afterSeparators cursor = cursor.Buffer.Length
+        afterSeparators cursor = (bufferOf cursor).Length
 
     /// The next component, and the cursor positioned after it — or `None` when
-    /// the path is exhausted. Total, for any cursor.
+    /// the path is exhausted. Total for every cursor `ofPath` or `splice`
+    /// produced; a forged default is refused loudly rather than walked.
     let next (cursor : PathCursor) : (PathComponent * PathCursor) option =
+        let buffer = bufferOf cursor
         let start = afterSeparators cursor
 
-        if start = cursor.Buffer.Length then
+        if start = buffer.Length then
             None
         else
 
         let mutable finish = start
 
-        while finish < cursor.Buffer.Length
-              && cursor.Buffer.[finish] <> UnixPathText.separator do
+        while finish < buffer.Length && buffer.[finish] <> UnixPathText.separator do
             finish <- finish + 1
 
-        let segment = cursor.Buffer.Substring (start, finish - start)
+        let segment = buffer.Substring (start, finish - start)
 
         let component_ =
             match segment with
@@ -263,7 +283,7 @@ module PathCursor =
                 | Ok name -> PathComponent.Name name
                 | Error error ->
                     failwith
-                        $"PathCursor.next: segment \"%s{segment}\" of \"%s{cursor.Buffer}\" was rejected as an entry name (%s{FileName.describe error}), but every value that can reach this has already been through UnixPath.parse, which excludes every reason a segment could be rejected"
+                        $"PathCursor.next: segment \"%s{segment}\" of \"%s{buffer}\" was rejected as an entry name (%s{FileName.describe error}), but every value that can reach this has already been through UnixPath.parse, which excludes every reason a segment could be rejected"
 
         // Transcribed from XNU's `lookup`, which advances past the separator run
         // following a component "while the next character is a separator or the
@@ -278,10 +298,9 @@ module PathCursor =
         // remainder costs one byte more than "/a/b".
         let mutable niNext = finish
 
-        while niNext < cursor.Buffer.Length
-              && cursor.Buffer.[niNext] = UnixPathText.separator
-              && (niNext + 1 = cursor.Buffer.Length
-                  || cursor.Buffer.[niNext + 1] = UnixPathText.separator) do
+        while niNext < buffer.Length
+              && buffer.[niNext] = UnixPathText.separator
+              && (niNext + 1 = buffer.Length || buffer.[niNext + 1] = UnixPathText.separator) do
             niNext <- niNext + 1
 
         Some (
@@ -321,9 +340,13 @@ module PathCursor =
     /// up "labc". `next` never returns offset zero — a component is at least one
     /// character — so that is exactly the condition checked here.
     let splice (target : UnixPath) (cursor : PathCursor) : PathCursor =
+        // Validity first: a forged default has offset zero too, and would
+        // otherwise be reported as the wrong mistake.
+        let buffer = bufferOf cursor
+
         if cursor.Offset = 0 then
             failwith
-                $"PathCursor.splice: the cursor into \"%s{cursor.Buffer}\" has not consumed a component, so there is no symbolic link here to expand. Splice onto the cursor `next` returned, not one straight from `ofPath`."
+                $"PathCursor.splice: the cursor into \"%s{buffer}\" has not consumed a component, so there is no symbolic link here to expand. Splice onto the cursor `next` returned, not one straight from `ofPath`."
 
         {
             Buffer = target.Raw + remainder cursor
