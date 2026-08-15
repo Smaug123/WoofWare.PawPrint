@@ -363,6 +363,33 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // `SystemNative_PRead`'s contract at the syscall boundary,
+                // including the *order* its checks run in. Impure because that
+                // order is Linux's — on a two-fault input such as a negative
+                // offset with a bad fd, Linux answers EINVAL and Darwin EBADF —
+                // and because several arms are about PawPrint's own simulated
+                // fd table and address space. The single-fault rows all agree
+                // across platforms; `ReadAllBytesSeeded.cs` is the differential
+                // half.
+                FileName = "PReadRawSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        FileSystem =
+                            let name (s : string) = FileName.parseOrFail "test seed" s
+
+                            Map.ofList
+                                [
+                                    name "f",
+                                    SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                                    name "d", SeedEntry.directory Map.empty
+                                ]
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // Pins `open(2)`'s lowest-free-descriptor rule against the
                 // emulated kernel's own table. Impure because the *numbers*
                 // are not cross-runtime: the oracle's process holds the

@@ -1,0 +1,190 @@
+namespace WoofWare.PawPrint.Test
+
+open System.Collections.Immutable
+open System.IO
+open FsUnitTyped
+open NUnit.Framework
+open WoofWare.DotnetRuntimeLocator
+open WoofWare.PawPrint
+
+/// `SystemNative_PRead` refuses a negative `bufferSize` rather than answering, because what a real
+/// kernel does with one is not a fact PawPrint can state: the C shim casts it to an unsigned ~4 GB
+/// count, and measured, macOS answers EINVAL while Linux answers EFAULT — Linux's answer depending
+/// on how far the guest's buffer happens to be mapped, which PawPrint does not model to that
+/// fidelity.
+///
+/// A `failwith` aborts the interpreter rather than reaching the guest's exit code, so no guest can
+/// assert it and it would otherwise be a claim with nothing behind it. These tests drive it.
+///
+/// Note this is `PRead` specifically. `SystemNative_Read` goes through `Common_Read` in
+/// `pal_io_common.h`, which *does* have a negative-size guard and answers ERANGE; `PRead` does not
+/// go through it, so the two entry points genuinely differ and the refusal is not an oversight in
+/// one of them.
+[<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
+module TestPReadNegativeSize =
+
+    let private assy = System.Reflection.Assembly.GetExecutingAssembly ()
+
+    let private seed : KernelConfig =
+        { KernelConfig.Default with
+            FileSystem =
+                Map.ofList
+                    [
+                        FileName.parseOrFail "test seed" "f",
+                        SeedEntry.file (System.Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                    ]
+        }
+
+    let private guest (body : string) : string =
+        $"""
+using System;
+using System.Runtime.InteropServices;
+
+class Program
+{{
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Open", SetLastError = true)]
+    static extern unsafe IntPtr Open(byte* path, int flags, int mode);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_PRead", SetLastError = true)]
+    static extern unsafe int PRead(IntPtr fd, byte* buffer, int bufferSize, long fileOffset);
+
+    static unsafe IntPtr OpenF()
+    {{
+        byte* path = stackalloc byte[2];
+        path[0] = (byte)'f';
+        path[1] = 0;
+        return Open(path, 0, 0);
+    }}
+
+    static unsafe int Main(string[] args)
+    {{
+        byte* buf = stackalloc byte[64];
+{body}
+    }}
+}}
+"""
+
+    let private exitCodeOf (outcome : RunOutcome) : int =
+        let terminalState, terminatingThread =
+            match outcome with
+            | RunOutcome.NormalExit (state, thread) -> state, thread
+            | RunOutcome.ProcessExit (state, thread) -> state, thread
+            | other -> failwith $"expected the guest to terminate cleanly, got %O{other}"
+
+        match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+        | [] -> failwith "expected the guest to return a value, but it returned void"
+        | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> i
+        | ret :: _ -> failwith $"expected the guest to return an int, but it returned %O{ret}"
+
+    let private run (name : string) (source : string) : RunOutcome =
+        let image = Roslyn.compile [ source ]
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", name ]
+
+        use _loggerFactoryResource = loggerFactory
+
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+
+        use peImage = new MemoryStream (image)
+
+        BoundedRun.run
+            loggerFactory
+            name
+            (Some name)
+            peImage
+            { HostConfig.Default dotnetRuntimes with
+                Guest =
+                    { GuestConfig.Default dotnetRuntimes with
+                        Kernel = seed
+                    }
+            }
+
+    /// Every other argument valid — a live descriptor on a real file, a dereferenceable buffer, a
+    /// non-negative offset — so the refusal is provably the negative size and not an earlier guard
+    /// firing first.
+    [<Test>]
+    let ``a negative bufferSize is refused loudly`` () : unit =
+        let source =
+            guest
+                """
+        IntPtr f = OpenF();
+        return PRead(f, buf, -1, 0);
+"""
+
+        let exn =
+            Assert.Catch (fun () -> run "PReadNegativeSize.cs" source |> ignore<RunOutcome>)
+
+        exn.Message |> shouldContainText "SystemNative_PRead"
+        exn.Message |> shouldContainText "bufferSize -1"
+        // The message must carry the measurement, since it is the storage medium for it.
+        exn.Message |> shouldContainText "macOS answers EINVAL and Linux answers EFAULT"
+
+    /// The control: the same call with a *non-negative* size is served, so the refusal is narrow
+    /// rather than "PRead refuses sizes". Without this, a handler that refused every call would
+    /// pass the test above.
+    [<Test>]
+    let ``a non-negative bufferSize is served`` () : unit =
+        let source =
+            guest
+                """
+        IntPtr f = OpenF();
+        if (PRead(f, buf, 5, 0) != 5) return 1;
+        if (buf[0] != 'h') return 2;
+        // Zero is not negative, and is the boundary the refusal must not swallow.
+        if (PRead(f, buf, 0, 0) != 0) return 3;
+        return 0;
+"""
+
+        run "PReadZeroSize.cs" source |> exitCodeOf |> shouldEqual 0
+
+    /// The refusal precedes every other check, so it fires even on a call that a real kernel would
+    /// have rejected for a different reason first. That is a deliberate over-refusal on a
+    /// two-fault input — a real kernel answers EBADF here, since fd lookup precedes buffer use —
+    /// and it is asserted rather than merely commented, because a green suite cannot show it.
+    [<Test>]
+    let ``a negative bufferSize beats a bad descriptor`` () : unit =
+        let source =
+            guest
+                """
+        return PRead(new IntPtr(4242), buf, -1, 0);
+"""
+
+        let exn =
+            Assert.Catch (fun () -> run "PReadNegativeSizeBadFd.cs" source |> ignore<RunOutcome>)
+
+        exn.Message |> shouldContainText "bufferSize -1"
+
+    /// ...and beats a negative *offset*, which PawPrint would otherwise answer with EINVAL. Two
+    /// refusable things at once, and the size is the one that wins.
+    [<Test>]
+    let ``a negative bufferSize beats a negative offset`` () : unit =
+        let source =
+            guest
+                """
+        IntPtr f = OpenF();
+        return PRead(f, buf, -1, -1);
+"""
+
+        let exn =
+            Assert.Catch (fun () -> run "PReadNegativeSizeAndOffset.cs" source |> ignore<RunOutcome>)
+
+        exn.Message |> shouldContainText "bufferSize -1"
+
+    /// A negative offset on its own is an ordinary EINVAL rather than a crash, so the refusal
+    /// above is attributable to the size.
+    [<Test>]
+    let ``a negative offset alone is EINVAL`` () : unit =
+        let source =
+            guest
+                """
+        IntPtr f = OpenF();
+        Marshal.SetLastSystemError(0);
+        if (PRead(f, buf, 5, -1) != -1) return 1;
+        if (Marshal.GetLastSystemError() != 22) return 2;
+        return 0;
+"""
+
+        run "PReadNegativeOffset.cs" source |> exitCodeOf |> shouldEqual 0
