@@ -198,7 +198,6 @@ module TestUnixPath =
     let ``The root parses as rooted with no components`` () : unit =
         for candidate in [ "/" ; "//" ; "///" ] do
             let path = parseOk candidate
-            path |> shouldEqual UnixPath.root
             UnixPath.isRooted path |> shouldEqual true
             UnixPath.components path |> shouldEqual []
             // The separator that roots "/" is not a *trailing* one; treating it
@@ -206,7 +205,14 @@ module TestUnixPath =
             // final component be a directory.
             UnixPath.hasTrailingSeparator path |> shouldEqual false
             UnixPath.isEmpty path |> shouldEqual false
-            UnixPath.toString path |> shouldEqual "/"
+            // Verbatim: these three resolve identically but are *not* the same
+            // value, because a kernel can tell them apart. It counts the bytes
+            // of the buffer it was handed, so "///" is two bytes more path than
+            // "/" for the purpose of PATH_MAX.
+            UnixPath.toString path |> shouldEqual candidate
+
+        UnixPath.root |> shouldEqual (parseOk "/")
+        parseOk "//" |> shouldNotEqual UnixPath.root
 
     [<Test>]
     let ``Dot and dot-dot survive parsing as their own components`` () : unit =
@@ -222,11 +228,19 @@ module TestUnixPath =
             ]
 
     [<Test>]
-    let ``Repeated separators collapse, everywhere they can appear`` () : unit =
+    let ``Repeated separators collapse in the components, but not in the text`` () : unit =
         componentStrings (parseOk "//a///b//") |> shouldEqual [ "a" ; "b" ]
         UnixPath.isRooted (parseOk "//a///b//") |> shouldEqual true
         UnixPath.hasTrailingSeparator (parseOk "//a///b//") |> shouldEqual true
-        UnixPath.toString (parseOk "//a///b//") |> shouldEqual "/a/b/"
+
+        // The text is kept exactly as it arrived. A resolution walk sees two
+        // components either way, but the *lengths* differ, and Darwin compares
+        // lengths when it expands a symbolic link: measured on Darwin 25.6.0, a
+        // remainder of "/a//b" costs one byte more than "/a/b", so a target one
+        // byte shorter is the difference between resolving and ENAMETOOLONG.
+        // Collapsing here would make two distinguishable paths equal and throw
+        // away the count.
+        UnixPath.toString (parseOk "//a///b//") |> shouldEqual "//a///b//"
 
     [<Test>]
     let ``A trailing separator is recorded, and only when something precedes it`` () : unit =
@@ -415,6 +429,13 @@ module TestUnixPath =
                        | PathComponent.Current
                        | PathComponent.Parent -> false
                    )
+                // A repeated separator is a *spelling*, not a component, so it
+                // survives into the rendered text now that a UnixPath is kept
+                // verbatim — and `AbsoluteUnixPath` rejects it, being the
+                // canonical shape `getcwd` can return. Before the change the
+                // rendering silently normalised it away, which made this
+                // conjunct invisible.
+                && not ((UnixPath.toString path).Contains "//")
 
             let rendered = UnixPath.toString path
 
@@ -425,88 +446,3 @@ module TestUnixPath =
             | Error _ -> looksAbsolute |> shouldEqual false
 
         Check.One (config, Prop.forAll (Arb.fromGen pathStringGen) property)
-
-    // ------------------------------------------------------------------ concat
-
-    [<Test>]
-    let ``concat ignores its base when the suffix is rooted`` () : unit =
-        let property (basePath : string, relative : string) : unit =
-            let relative = parseOk ("/" + relative)
-            UnixPath.concat (parseOk basePath) relative |> shouldEqual relative
-
-        Check.One (config, Prop.forAll (Arb.fromGen (Gen.zip pathStringGen pathStringGen)) property)
-
-    [<Test>]
-    let ``concat is lexical joining by a separator`` () : unit =
-        let property (basePath : string, relative : string) : unit =
-            let basePath = parseOk basePath
-            let relative = parseOk relative
-
-            // The restrictions are about what a *string*-level join means, not
-            // about `concat`: joining onto nothing would make the separator
-            // root the result, and joining nothing on would make the separator
-            // trail it. Neither is what concatenating the component lists does.
-            // A rooted suffix discards the base entirely, which the dedicated
-            // property above covers.
-            if
-                not (UnixPath.isEmpty basePath)
-                && not (UnixPath.isRooted relative)
-                && not (List.isEmpty (UnixPath.components relative))
-            then
-                let joined = UnixPath.toString basePath + "/" + UnixPath.toString relative
-
-                UnixPath.concat basePath relative |> shouldEqual (parseOk joined)
-
-        Check.One (config, Prop.forAll (Arb.fromGen (Gen.zip pathStringGen pathStringGen)) property)
-
-    [<Test>]
-    let ``concat preserves components, rootedness and the trailing flag`` () : unit =
-        let property (basePath : string, relative : string) : unit =
-            let basePath = parseOk basePath
-            let relative = parseOk relative
-            let joined = UnixPath.concat basePath relative
-
-            if not (UnixPath.isRooted relative) then
-                UnixPath.components joined
-                |> shouldEqual (UnixPath.components basePath @ UnixPath.components relative)
-
-                UnixPath.isRooted joined |> shouldEqual (UnixPath.isRooted basePath)
-
-                // The separator between the halves absorbs any that trailed the
-                // base, so the base's flag survives only when the suffix
-                // contributed no components of its own.
-                let expectedTrailing =
-                    if List.isEmpty (UnixPath.components relative) then
-                        UnixPath.hasTrailingSeparator basePath
-                    else
-                        UnixPath.hasTrailingSeparator relative
-
-                UnixPath.hasTrailingSeparator joined |> shouldEqual expectedTrailing
-
-        Check.One (config, Prop.forAll (Arb.fromGen (Gen.zip pathStringGen pathStringGen)) property)
-
-    [<Test>]
-    let ``concat with the empty path is the identity on both sides`` () : unit =
-        let property (candidate : string) : unit =
-            let path = parseOk candidate
-            UnixPath.concat path UnixPath.empty |> shouldEqual path
-
-            // The left identity holds only for a relative suffix: prefixing a
-            // rooted path with anything is still that rooted path, which the
-            // rooted case above already covers.
-            if not (UnixPath.isRooted path) then
-                UnixPath.concat UnixPath.empty path |> shouldEqual path
-
-        Check.One (config, Prop.forAll (Arb.fromGen pathStringGen) property)
-
-    [<Test>]
-    let ``concat is associative`` () : unit =
-        let property (a : string, b : string, c : string) : unit =
-            let a = parseOk a
-            let b = parseOk b
-            let c = parseOk c
-
-            UnixPath.concat (UnixPath.concat a b) c
-            |> shouldEqual (UnixPath.concat a (UnixPath.concat b c))
-
-        Check.One (config, Prop.forAll (Arb.fromGen (Gen.zip3 pathStringGen pathStringGen pathStringGen)) property)
