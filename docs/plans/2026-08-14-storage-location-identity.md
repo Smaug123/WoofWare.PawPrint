@@ -1,7 +1,14 @@
 # Plan: one storage-location identity, shared by everything that asks "same location?"
 
-Status: **in progress.** Stage 1 implemented (`storage-location-hoist`, 3023 passing). Stages 2,
-3′ and 4 proposed; Stage 3 withdrawn.
+Status: **in progress.** Stage 1 merged (#982). Stage 2 merged (#984). Stage 3 withdrawn.
+Stage 3′ rewritten below, and **implemented but not yet complete** on `explicit-layout-memmove`
+(`a8bbb1f`) by the investigation that confirmed the `Memmove` defect it predicted — option (a),
+both keys canonicalised, 3069 passing. Its coarse-key half is **untested**: that commit adds no
+resolver-level assertion, and its guest's fields are reference-free so both endpoints resolve
+precisely and `overlapVerdict` never consults the coarse key. Reverting `SharedStorageKey` alone
+would leave the suite green. Not to be treated as satisfying this stage until that mutation is
+killed. Stage 4 unblocked by #916 merging as `55b7d9b`; §6's measurement is answered rather than
+pending.
 
 Reviewed by Codex, which found four defects in the first draft. All four were confirmed against
 the tree and all four changed the plan: §5 Stage 2's type shape, the withdrawal of Stage 3, the
@@ -17,7 +24,11 @@ so that a reviewer can review each branch in isolation.
 ## 1. The finding: the answer already exists, private to the wrong file
 
 This is not a new abstraction. `CellAwareMemOps.fs` already contains the honest decision
-procedure, `private`, serving only `Memmove`/`Array.Copy` direction choice:
+procedure, `private`, serving only `Memmove`/`Array.Copy` direction choice.
+
+*(The line references in this table are as of the finding, before Stage 1. They now live in
+`StorageLocation.fs`; the table is kept as the evidence the finding rested on rather than
+rewritten to point at the code it caused.)*
 
 | what | where | what it answers |
 |---|---|---|
@@ -104,10 +115,25 @@ reach the opcode handlers — `UnaryConstIlOp.fs` (20 `ceq` call sites), `Nullar
 Two genuinely different ways to bridge that, to be decided before Stage 4 is written:
 
 - **(a) Dependency rejection.** `ceq`'s byref arm returns a description rather than a verdict:
-  `Decided of bool | NeedsByteLocation of ManagedPointerSource * ManagedPointerSource`, and the 27
+  `Decided of bool | NeedsByteLocation of ManagedPointerSource * ManagedPointerSource`, and the
   handler call sites interpret it. Matches the gospel's "compute a description, then do it", keeps
-  the partiality visible in the type, and only the one arm that needs state defers. Cost: 27 call
-  sites change shape.
+  the partiality visible in the type, and only the one arm that needs state defers.
+
+  **Cost: six sites, not the 27 first written here** (Codex; recounted). Direct
+  `EvalStackValueComparisons.ceq` callers are `UnaryConstIlOp.fs:218, 281, 346, 409`,
+  `NullaryIlOp.fs:1731` and `Intrinsics.fs:745` — six. The 27 came from a grep that counted
+  `state.PointerHashState` reads rather than `ceq` calls. Two further propagation points call
+  `ceqNormalised` directly rather than through `ceq`: `Unsafe.AreSame` (`Intrinsics.fs:2475`) and
+  `NativeIntSourceComparison.fs:213`. And a **seventh** propagation point that is neither:
+  `Interlocked.CompareExchange(ref IntPtr, ...)` at `Intrinsics.fs:810` calls
+  `NativeIntSourceComparison.equalsForCli` directly, so if comparison starts returning
+  `NeedsByteLocation` that CAS path must resolve or propagate it too. No `Unsafe.AreSame` guest
+  reaches it, so it needs an oracle of its own — a guest doing an `Interlocked.CompareExchange`
+  over a `ref IntPtr` whose operands are byrefs into one container.
+
+  So the honest figure is **six `ceq` call sites, two direct `ceqNormalised` callers, and the CAS
+  path** — still a materially cheaper change than this plan assumed throughout, but not the clean
+  six. Enumerate rather than grep: the 27 above came from grepping, and so did missing this one.
 - **(b) Eager resolution at the call sites.** Handlers resolve both operands to a
   `LocationResolution` *before* calling `ceq`, which takes them as parameters — mirroring how
   `ceq` is already handed `counters : PointerHashState`. Cost: resolution work on every `ceq`
@@ -204,80 +230,273 @@ cases. The two types are deliberately different widths and should stay distinct:
 is the wider "could these share storage", `ByteStorageIdentity` the narrower "this storage has byte
 coordinates". Record that relationship in both types' doc comments; do not unify them.
 
-### Stage 3′ — Classify cross-field aliasing before any consumer trusts a precise location
+### Stage 3′ — Make a field of a heap object a *view into* that object, not its own storage
 
 **Dependencies**: Stage 2.
 
 **Implements**: §2. This is the stage §2's hazard actually demands, and the first draft of this
-plan omitted it.
+plan omitted it. **Rewritten after reading the layer below `byteLocation`** — the first version of
+this stage proposed refusing precision, which measurement shows is both unnecessary and worse.
 
-`byteLocation` resolves a bare `HeapObjectField` root without consulting layout, so two
-explicit-layout fields `A` and `B` that occupy the *same address* resolve to
-`Some (HeapObjectField (addr, A), 0)` and `Some (HeapObjectField (addr, B), 0)` — **different
-containers**, which every consumer reads as "disjoint, no overlap possible". That is precisely the
-aliasing §2 says cannot be decided, being silently decided the unsafe way.
+**The premise of the first version was wrong: field-offset layout *is* carried here.**
+`walkProjectionByteOffset`'s `Field` arm does `let fieldOffset, _ = CliType.getFieldLayoutById
+field template`, bottoming out in `CliValueType.GetFieldLayoutById` (`CliType.fs:1942`), which
+reads the field's real offset out of the value's field list — explicit `FieldOffset` included.
+The recurring claim that "byref comparison does not carry field-offset layout" is true of
+`ceqNormalised` (slot 32) and **false of `byteLocation`** (slot 88). That is the whole reason the
+inversion in §4 is worth doing.
 
-So `Located` must not advertise a precise offset for a field-rooted byref whose declaring type has
-explicit layout, unless the layout proves the fields disjoint. Conservative classification:
-resolve to `Located (coarse, None)` — same-storage-unknown-offset — for two field roots on one
-object under `LayoutKind.Explicit`, so consumers refuse rather than assume.
+So the aliasing problem is not one problem but two, and only one of them is real:
 
-**Suspected pre-existing defect, to be confirmed separately.** On `origin/main`,
-`shouldCopyBackwards` already takes the distinct-containers branch for this shape and returns
-`false` (copy forwards). If two overlapping explicit-layout fields can be the endpoints of one
-`Buffer.Memmove`, that is a live wrong-direction copy today, independent of this plan. Do not fold
-the fix into this stage: write the guest, confirm it against real .NET, and file it. If it is
-*not* reachable, say why in the issue — that answer determines whether this stage is a correctness
-fix or only a guard.
+| shape | what `byteLocation` does | verdict |
+|---|---|---|
+| *projection*: `Byref (root, [Field A])` vs `[Field B])` — explicit-layout **struct** | folds both to offset 0 of one container | **already correct**; degrades to `None` if the value is byte-backed, never answers wrongly |
+| *root*: `ByrefRoot.HeapObjectField (addr, A)` vs `(addr, B)` — explicit-layout **class** | `ByteStorageIdentity.HeapObjectField (addr, field)` — **a distinct container per field**, offset 0 in each | **the defect**: consumers read distinct containers as disjoint |
 
-**Correctness oracle**: a guest with two `[FieldOffset(0)]` fields of one type, byrefs taken to
-both, compared and `Memmove`d. Under `origin/main` the comparison decides; after this stage it
-refuses. Mutation: removing the explicit-layout check must fail exactly that test.
+The tree already knows this split. `AreSameExplicitLayoutOverlappingFields.cs` (projection) and
+`AreSameHeapFieldsOverlappingExplicitLayout.cs` (root) are both parked, and the latter's comment
+states it: *"this one is about roots being wrongly treated as disjoint storage, that one about
+projections. A fix for one does not automatically cover the other."*
+
+**So the fix is to canonicalise the container, not to refuse.** One heap object is one storage; a
+field of it is a view into that storage at an offset. Map the root to
+`(ByteStorageIdentity.HeapObject addr, offsetOfFieldWithinObject)`, and two fields of one object
+become comparable by arithmetic — deciding the overlapping *and* the non-overlapping case
+correctly, where refusal decides neither. This is the AGENTS.md guideline again:
+`ByteStorageIdentity.HeapObjectField` currently asserts a disjointness it has no right to, and the
+remedy is to make the classifier truthful rather than to make its consumers timid.
+
+The two options, stated explicitly per AGENTS.md:
+
+- **(a) Canonicalise.** As above. Preserves the most information, fixes both consumers at once
+  (comparison *and* `Memmove` direction), and removes a DU case's false claim. Blast radius: every
+  `ByteStorageIdentity.HeapObjectField` consumer, notably
+  `NativeIntSource.SyntheticCrossArrayOffset`, which stores a `ByteStorageIdentity` as proof of
+  byte-addressability. Needs the field's offset within the object, which `rootTemplate` currently
+  discards (it calls `AllocatedNonArrayObject.DereferenceFieldById`, yielding the template but not
+  the offset) — check whether a layout accessor exists there or must be added.
+
+  **Both keys must be canonicalised, not just the precise one** (Codex, on this revision — a real
+  hole in the first draft of it). `sharedStorageKeyOfRoot` maps the root to
+  `SharedStorageKey.HeapObjectField (addr, field)` (`StorageLocation.fs:175`), which also carries
+  the `FieldId`. Canonicalising only `ByteStorageIdentity` fixes nothing whenever precision is
+  *unavailable*: `overlapVerdict` then compares coarse keys, finds two fields of one object
+  unequal, and falls through to `CopyForwards` — exactly the silent-corruption path this stage
+  exists to close, merely moved from the precise branch to the coarse one. So the coarse key for a
+  heap-object field must become per-*object* too. Note that this widens what `Undecidable` covers,
+  which is correct: two fields of one object genuinely might overlap.
+- **(b) Refuse.** Resolve to `Located (coarse, None)` for a `HeapObjectField` root, so consumers
+  degrade to `Undecidable` and fail loudly. Smallest possible change, trivially reversible, and
+  consistent with what `ceqNormalised` just did. But it converts a wrong answer into a crash rather
+  than into a right answer, and it leaves the parked heap guest parked.
+
+**Recommend (a)**, with (b) available as a deliberate staging step if the blast radius in fact
+turns out wide. Measure the consumer count before committing.
+
+**A live defect on the `Memmove` surface, delegated separately.** #916 widened the *comparison*
+surface to refuse this shape but did not touch `shouldCopyBackwards`, which still resolves two
+fields of one object to distinct containers and copies **forwards**. That is the missed-surface
+pattern this repo keeps hitting. Under investigation on its own branch; if it reproduces it is a
+live wrong-direction copy on `main` today, and fixing it via (a) subsumes this stage.
+
+**Correctness oracle**: *not* the `AreSame` unpark — that is a Stage 4 result and this stage cannot
+reach it (Codex). `Unsafe.AreSame` calls `ceqNormalised` directly and does not consume
+`StorageLocation.resolve` until the §4 inversion lands, so `AreSameHeapFieldsOverlappingExplicitLayout.cs`
+stays parked however correct the canonicalisation is. Claiming it here would have made the stage
+unsatisfiable in isolation. Instead:
+
+- **Resolver-level assertions**, in the `TestStorageLocation.fs` style: two `HeapObjectField` roots
+  on one object resolve to one `ByteStorageIdentity` and one `SharedStorageKey`, with offsets that
+  differ exactly when the declared `FieldOffset`s differ.
+- **The `Memmove` guest**, which *does* consume this — `shouldCopyBackwards` is a direct caller of
+  `resolve`, so the direction change is observable end-to-end at this stage.
+
+Mutation: reverting the precise container to per-field must fail the precise assertion and the
+`Memmove` guest; reverting only the *coarse* key must still fail an assertion, or the coarse hole
+above is untested.
 
 ### Stage 4 — Give byref comparison access to the resolution
 
-**Dependencies**: Stage 2, Stage 3′, **and PR #916**. See below — this is not optional.
+**Dependencies**: Stage 2, Stage 3′, and PR #916 (**merged** as `55b7d9b`; see below).
 
 **Implements**: §4. This is the payoff, and it **changes behaviour** — it decides comparisons
 currently refused. Its own PR, described as a behaviour change, not folded into a refactor.
 
-**#916 is a hard prerequisite, and the first draft wrongly listed only Stage 2.** Two things this
-stage's oracle needs exist only on the unmerged `aresame-refuse-undecidable` branch:
+**#916 merged as `55b7d9b`, and landed wider than this plan described.** The prerequisite is
+discharged; `TestByrefComparison.fs` and the four `AreSame*` guests are on `main`. Two corrections
+to what this plan assumed of it:
 
-- `WoofWare.PawPrint.Test/TestByrefComparison.fs` is **absent from `origin/main`** — verified at
-  `53fa6ad`. The first draft cited it as the oracle; it was read out of #916's PR description, not
-  the tree.
-- At this merge base `ceqNormalised` refuses only `ReinterpretAs`-then-`Field`. A *plain* field
-  residual is still compared structurally and can return `false` outright, as the parked
-  `AreSameFirstFieldVersusReinterpretedWhole.cs` shows. So the "deferral" this stage converts is
-  not yet a refusal — on `origin/main` it is a silent wrong answer, and #916 is what makes it
-  loud first.
-
-Either land #916 first and stack on it, or fold its refusal into this stage — but the dependency
-must be explicit either way. Recommend the former: #916 is reviewed and its "cost: zero, 2592
-passing" measurement is worth keeping as a separate bisection point.
+- It does **not** refuse only `ReinterpretAs`-then-`Field`. The merged `ceqNormalised` refuses four
+  shapes: non-trailing `ReinterpretAs`; residuals that diverge at *different* fields
+  (`tryDecideResiduals`' final arm); distinct roots where either byref may have left its root's
+  extent; and two `HeapObjectField` roots on one object. So more of Stage 4's work is already done
+  than expected — every shape it would decide now fails loudly rather than answering wrongly.
+- **#916's squash commit message is stale relative to its own merged code.** It argues that
+  diverging-field chains "still answer `false`, which is sound — … overlapping explicit layouts are
+  stored byte-backed and so never carry `Field` projections to begin with." The merged code refuses
+  them, and its comments record the opposite as *measured*: such values **stay field-backed**, and
+  `Unsafe.AreSame(ref u.A, ref u.B)` was measured answering `false` here against `true` on real
+  .NET. The message describes an earlier revision. Noted because it cost time here and will mislead
+  a future bisector; the code and §2 agree, the message is the outlier.
 
 Resolve the §4 (a)/(b) choice first. Then the refusal becomes a deferral, and the handler resolves
-it: `Located` on both sides with `Some` precise on each and equal container decides by comparing
-offsets; distinct containers decide unequal **only when Stage 3′ has ruled out cross-field
-aliasing**; `Unrelatable` decides unequal; anything with `None` precise keeps refusing.
+it:
 
-**Correctness oracle**: the three guests #916 parks — each should move from refused to decided,
-with the expected answer taken from real .NET (they are parked, so the harness runs them there and
-nowhere else; see `park-a-test-to-validate-its-oracle`). Mutation-check both directions as #916
-did: disabling the new decision must fail only the newly-decided tests, and widening it past the
+- both sides `Located` with `Some` precise and **equal** container → decide by comparing offsets;
+- `Unrelatable` on either side → decide unequal;
+- anything with `None` precise → keep refusing;
+- **distinct** containers → decide unequal **only when both byrefs are known to remain within
+  their roots**. See below; this is the arm that is easy to get wrong.
+
+**A precise offset is only meaningful relative to a root the byref has not left** (Codex — this
+caught a real unsoundness in the rule as first written here). `ByteStorageIdentity.StackLocal
+local0` with offset 1000 does not mean "1000 bytes into local0" if local0 is smaller than that; the
+byref has walked out, and the container name is then a statement about how it was *built*, not
+where it points. ECMA-335 promises no relative placement between two independently declared locals, so
+`local0 + 1000` may well *be* `local1` — which is exactly why `TestByrefComparison.fs`'s
+"an unbounded cursor on a local root is refused" exists. A naive distinct-container rule would
+answer `false` there and silently regress a deliberate refusal into a possibly-wrong answer. One-
+past-the-end `PeByteRange` byrefs have the same shape.
+
+So the deferred result must carry the extent information — `mayLeaveRootExtent` already computes
+it in `ManagedPointerSource.fs` — and the distinct-container inference must be gated on both sides
+being in-extent.
+
+**But `mayLeaveRootExtent` is not yet strong enough to be that gate** (Codex, round 3). For
+`[ReinterpretAs Big; Field F]` it computes a known byte displacement of 0 and returns `false`
+— "did not leave its root" — even when `F` lies beyond the original local or static slot, because
+only `ByteOffset` steps contribute to the displacement it sums. That is sound *today* purely
+because `hasNonTrailingReinterpret` refuses this shape earlier, so the predicate is never asked
+about it. Stage 4 would defer the shape instead of refusing it, at which point the predicate's
+answer becomes load-bearing and is wrong: two distinct precise containers, gate satisfied, silent
+`false`.
+
+This is the same defect shape as the two above — a classifier that is only accidentally truthful
+because a caller upstream filters its hard cases. So Stage 4 must either extend the extent
+description to account for a `Field` resolved against a reinterpreted (possibly larger) type, or
+conservatively classify any chain containing a non-trailing `ReinterpretAs` as
+possibly-out-of-extent. The conservative option keeps today's refusal for that shape, which is the
+right default: it loses nothing relative to `main`.
+
+#### The rule Stage 4 should actually be built on
+
+Three review rounds have now each found a *different* counterexample to "distinct containers ⇒
+distinct addresses": overlapping explicit-layout fields, byrefs displaced out of their root, and
+`Field` resolved against a reinterpreted larger type. Three independent falsifications of one
+shortcut is not three bugs to patch; it is evidence the shortcut is the wrong default.
+
+**So invert Stage 4's default. Refuse unless the pair is positively proved equal or unequal, rather
+than deciding unless a known exception fires.** Concretely, the only pairs it should decide are:
+
+1. both `Located` with `Some` precise, **equal** container → compare offsets. Sound because one
+   container means one flat coordinate system, which is the whole content of `ByteStorageIdentity`.
+2. `Unrelatable` on either side → unequal. Sound because a non-byref shares storage with nothing.
+
+Everything else refuses, including distinct containers. That is weaker than what this plan proposed
+three times over, and it still decides all four parked guests — because canonicalisation (Stage 3′)
+moves them into case 1 rather than relying on case-distinct reasoning. The distinct-container
+inference buys only pairs that are *already* answered correctly by `ceqNormalised`'s final arm on
+`main`, so declining to make it costs nothing and removes the entire class of error above.
+
+If a later change wants distinct-container inequality, it should arrive with its own extent proof
+and its own guests, as a separate decision. Note this does *not* affect `AreSameProjectionCrossesArrayElement`: array element
+roots already resolve to one canonical `ByteStorageIdentity.Array arr` with `arrayBytePosition`
+offsets, so that pair is an *equal*-container comparison and never reaches this arm. The gating
+matters for roots that stay distinct after canonicalisation — locals, arguments, statics, PE ranges.
+
+**Correctness oracle**: the four guests #916 parks — `AreSameExplicitLayoutOverlappingFields.cs`,
+`AreSameHeapFieldsOverlappingExplicitLayout.cs`, `AreSameFirstFieldVersusReinterpretedWhole.cs`,
+`AreSameProjectionCrossesArrayElement.cs`. Each should move from refused to decided, with the
+expected answer taken from real .NET (they are parked, so the harness runs them there and nowhere
+else; see `park-a-test-to-validate-its-oracle`). Mutation-check both directions as #916 did:
+disabling the new decision must fail only the newly-decided tests, and widening it past the
 `None`-precise case must fail the containment tests.
+
+**Those four are not a sufficient oracle on their own** (Codex). All four expect `true`, so an
+implementation that called any two precise locations in one `ByteStorageIdentity` equal — ignoring
+their offsets entirely — would pass every one of them, while misreporting every non-overlapping
+pair of fields. The oracle needs at least one **same-container, different-offset** case whose
+answer is `false`.
+
+Conveniently one already exists and needs no exotic type: `Unsafe.AreSame(ref s.X, ref s.Y)` on an
+ordinary **sequential** two-field struct is *currently refused*, because both residuals contain a
+`Field` and `tryDecideResiduals` falls to its final arm. Real .NET answers `false`. So it is a new
+decision (not a pre-existing pass that could go green vacuously), it is the direct negative of the
+explicit-layout guest, and the pair of them together pins that offsets are actually compared.
+
+Worth noting what that implies for §6's payoff figure: the refusal is not confined to exotic
+layouts. Comparing byrefs to two different fields of *any* struct is refused today. The four parked
+guests are what the corpus happens to contain, not the extent of the shape.
+
+Note what each of the four needs, since they do not all fall to the same change and the stage
+should not be declared done on a subset:
+
+| guest | needs |
+|---|---|
+| `AreSameFirstFieldVersusReinterpretedWhole` | the inversion alone — `[Field X]` folds to X's offset and the bare chain to 0, over a sequential struct that is certainly field-backed |
+| `AreSameProjectionCrossesArrayElement` | the inversion alone — two `ArrayElement` roots already resolve to one `ByteStorageIdentity.Array` with `arrayBytePosition` offsets |
+| `AreSameExplicitLayoutOverlappingFields` | the inversion alone — see the storage check below |
+| `AreSameHeapFieldsOverlappingExplicitLayout` | Stage 3′ option (a): the canonical per-object container |
+
+Three of the four therefore fall out of the inversion alone; only the heap-root case needs Stage 3′.
+
+**Why the struct case is safe, since the obvious objection is that it is not.** The fold only works
+if the value is field-backed: `CliValueType.GetFieldLayoutById` goes through `FindFieldById` →
+`FieldStorage`, which **fails** for `CliValueTypeStorage.RawBytes`, so a byte-backed value would
+degrade to `None` and stay refused. And `BulkMoveAcrossOverlappedStructPadding.cs` says, as
+measured, that *"an explicit-layout struct with any overlap is stored byte-backed"* — which would
+sink it.
+
+It does not, because that sentence is about a different mechanism. `RawBytes` has exactly one
+origin, `CliValueType.StorageFromFields` (`CliType.fs:1214`):
+
+```fsharp
+match fields, layout with
+| [], Layout.Custom (size = size) when size > 0 -> CliValueTypeStorage.RawBytes (...)
+| _ -> CliValueTypeStorage.Fields { ... }
+```
+
+The `RawBytes` arm requires an **empty field list**. Every other `RawBytes` occurrence in
+`CliType.fs` copies, zeroes or updates storage that already exists. A struct declaring two `int`
+fields is therefore `Fields`-backed however they overlap, and `GetFieldLayoutById` returns 0 for
+both. The "byte-backed" in that parked comment refers to the reference-containing path that fails
+in `CliType.OfBytesLike` — a distinct notion sharing a name. Worth flagging: "byte-backed" is used
+in this codebase for at least two different things, and conflating them is what nearly cost this
+stage a guest.
 
 ## 6. What would falsify this plan
 
 - **If `byteLocation` returns `Unrelatable`/`None` for most real byref pairs**, Stage 4 unblocks
-  nothing and the whole stack is churn. Measure first: instrument `byteLocation` on the existing
-  suite and count the three outcomes before writing Stage 4. #916's "cost: zero, 2592 passing"
-  note suggests the shapes reaching these predicates are far narrower than their input types
-  admit, which cuts both ways.
+  nothing and the whole stack is churn.
+
+  **Measured, and the instrumentation this bullet asked for is unnecessary.** Since #916 merged,
+  every shape Stage 4 would decide `failwith`s. The suite is green at 3027. Therefore the frequency
+  of such shapes across all active guests is **exactly zero, by construction** — a counter would
+  only re-derive that, because a non-zero count would be a red suite. So Stage 4's payoff is *not*
+  "the suite gets more correct"; it is precisely **the four parked `AreSame*` guests**, three of
+  which fall out of the inversion alone (see the Stage 4 table).
+
+  Whether that falsifies the plan is a judgement call, and worth stating plainly rather than
+  burying: four guests is a modest return for an inversion. Two things argue it is
+  still worth doing. First, the alternative to deciding these shapes is not "answer them cheaply
+  elsewhere" — it is leaving four known-divergent behaviours permanently refused, since
+  `ceqNormalised` at slot 32 provably cannot see the layout and no smaller change reaches it.
+  Second, zero-frequency-on-the-suite is a statement about the *guest corpus*, not about real
+  programs: the corpus contains what has been written, and these shapes are refused precisely
+  because nobody could write a passing guest that used them. The count is endogenous. Concretely:
+  `Unsafe.AreSame(ref s.X, ref s.Y)` on an ordinary sequential struct — no explicit layout, no
+  reinterpretation — is refused today. The shape is not exotic; the *corpus* is.
+
+  And the recount above cuts the other way on cost: six call sites plus two direct callers is a
+  small change, so the return does not need to be large to justify it. What would genuinely
+  falsify it is if `Decided | NeedsByteLocation` cannot be threaded without restructuring the
+  handlers — cheap to test on two sites before committing, and still the first thing Stage 4
+  should do.
 - **If Stage 3′ finds cross-field aliasing is unreachable in practice**, Stage 4's distinct-container
-  rule needs no guard and Stage 3′ collapses to a documentation note. Settle it with the guest, not
-  by argument.
+  rule needs no guard and Stage 3′ collapses to a documentation note. **Resolved: it is reachable**,
+  and the tree records it as measured on both runtimes — see the merged `tryDecideResiduals` and
+  `HeapObjectField` comments in `ManagedPointerSource.fs`, and the two parked guests. Stage 3′ does
+  not collapse; it narrows to the *root* case, the projection case already being correct.
 
 Two risks I raised while drafting are **already resolved**, checked at `53fa6ad`:
 
