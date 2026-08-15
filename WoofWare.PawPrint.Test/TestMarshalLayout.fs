@@ -313,6 +313,41 @@ module TestMarshalLayout =
         |> Check.QuickThrowOnFailure
 
     [<Test>]
+    let ``A declared Size suppresses the native alignment rounding`` () : unit =
+        // Native layout takes a declared `ClassLayout.Size` through the *same* helper the managed
+        // layout does: `CollectNativeLayoutFieldMetadataThrowing` calls
+        // `CalculateSizeWithMetadataSize` when the type `HasExplicitSize()` and `AlignSize`
+        // otherwise (classlayoutinfo.cpp:939-977). So the floor and the rounding are alternatives
+        // here too, and the sweep above cannot see it: `genLayout` only ever draws a `Size` that
+        // is either 0 or larger than the fields need, where the two orderings agree.
+        let fields =
+            [
+                {
+                    Field =
+                        cliField
+                            "l"
+                            (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 1L)))
+                            (handleOf bct.Int64)
+                    NativeWidth = 8
+                }
+                {
+                    Field = cliField "i" (CliType.Numeric (CliNumericType.Int32 2)) (handleOf bct.Int32)
+                    NativeWidth = 4
+                }
+            ]
+
+        // Fields end at 12 and demand 8-byte alignment, so with no declared size this rounds to 16.
+        (fst (layoutOf Layout.Default fields)).Size |> shouldEqual 16
+
+        // A declared size between the two suppresses the rounding entirely.
+        (fst (layoutOf (Layout.Custom (size = 13, packingSize = 0)) fields)).Size
+        |> shouldEqual 13
+
+        // One below the fields loses to them rather than truncating them.
+        (fst (layoutOf (Layout.Custom (size = 4, packingSize = 0)) fields)).Size
+        |> shouldEqual 12
+
+    [<Test>]
     let ``A DateTime field claims eight bytes at eight-byte alignment`` () : unit =
         // Pins `MARSHAL_TYPE_DATE` at the layout level, independently of the sweep: the native
         // form is an OADate double, so `{ int; DateTime }` puts the date at offset 8 and is 16
