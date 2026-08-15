@@ -339,6 +339,30 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // `SystemNative_FLock`'s contract on the points where Linux and
+                // Darwin genuinely disagree — operation validation, `flock` on a
+                // pipe, and the raw number of `EWOULDBLOCK`. PawPrint simulates
+                // Linux, so a *pure* case would assert whichever machine ran it;
+                // the guest's header carries the measured table for both.
+                // `FlockContentionSeeded.cs` is the cross-runtime half.
+                FileName = "FlockRawSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        FileSystem =
+                            let name (s : string) = FileName.parseOrFail "test seed" s
+
+                            Map.ofList
+                                [
+                                    name "f",
+                                    SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                                ]
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // Pins `open(2)`'s lowest-free-descriptor rule against the
                 // emulated kernel's own table. Impure because the *numbers*
                 // are not cross-runtime: the oracle's process holds the

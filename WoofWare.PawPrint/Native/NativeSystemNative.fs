@@ -1356,9 +1356,9 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+            match FileDescriptorRegistry.tryFindObject fd state.Kernel.FileDescriptors with
             | None -> fail UnixError.EBADF
-            | Some (OpenFileDescription.StandardStream role) ->
+            | Some (OpenFileObject.StandardStream role) ->
                 // PawPrint models the standard streams as pipes, and a pipe's
                 // `fstat` is a real answer a real kernel gives — `S_IFIFO`, a
                 // zero size, a device number. Every one of those would be
@@ -1370,7 +1370,7 @@ module NativeSystemNative =
                 // code path, and either wants a decision rather than a guess.
                 failwith
                     $"%s{operation}: fd %d{fd} is the standard stream %O{role}, and PawPrint holds no inode for one. Every field `fstat` owes a pipe would be invented here; decide what a stream's `struct stat` is (issue #956) rather than guessing."
-            | Some (OpenFileDescription.File inode) ->
+            | Some (OpenFileObject.File inode) ->
 
             let entry =
                 match VirtualFileSystem.tryGet inode state.Kernel.FileSystem with
@@ -1389,6 +1389,102 @@ module NativeSystemNative =
             | Some output ->
 
             writeFileStatus ctx operation fileStatusHandle inode entry output state
+        // `int32_t SystemNative_FLock(intptr_t fd, int32_t operation)`
+        // (pal_io.c:744). The operation parameter is matched loosely for the
+        // same reason `SystemNative_Open`'s flags are: CoreLib declares it as
+        // the `Interop.Sys.LockOperations` enum while a guest hand-rolling the
+        // P/Invoke writes `int`.
+        | Some "SystemNative_FLock",
+          [ ConcreteIntPtr state.ConcreteTypes ; _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_FLock"
+            let fd = fdArgument operation instruction.Arguments.[0]
+            let request = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            // Unlike `Interop.Error` and `Interop.Sys.OpenFlags`, these are
+            // *not* PAL values that the C translates: `SystemNative_FLock`
+            // passes `operation` straight to `flock(2)`. `Interop.FLock.cs`
+            // hardcodes 1/2/4/8 anyway, which is correct only because Linux and
+            // Darwin happen to agree on all four — measured on both rather than
+            // assumed, since nothing in the interop layer would catch it if they
+            // did not.
+            let lockShared = 1
+            let lockExclusive = 2
+            let lockNonBlocking = 4
+            let lockUnlock = 8
+
+            let fail (error : UnixError) : NativeHandlerResult option =
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        LastSystemError = UnixError.toRawErrnoUnder numbering error
+                    }
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            // Linux validates strictly: exactly one of SH/EX/UN, optionally
+            // with NB, and nothing else — `0`, `SH|EX`, `UN|SH`, a bare `NB` and
+            // any unknown bit are all EINVAL. (Darwin is laxer and answers EBADF
+            // for the subset it rejects at all, accepting `SH|EX` and `SH|16`
+            // outright; PawPrint simulates Linux. Both measured.)
+            let nonBlocking = request &&& lockNonBlocking <> 0
+            let mode = request &&& ~~~lockNonBlocking
+
+            let flockRequest : FlockRequest option =
+                if mode = lockUnlock then
+                    Some FlockRequest.Release
+                elif mode = lockShared then
+                    Some (FlockRequest.Acquire FlockMode.Shared)
+                elif mode = lockExclusive then
+                    Some (FlockRequest.Acquire FlockMode.Exclusive)
+                else
+                    None
+
+            match flockRequest with
+            | None -> fail UnixError.EINVAL
+            | Some flockRequest ->
+
+            match FileDescriptorRegistry.flock fd flockRequest state.Kernel.FileDescriptors with
+            | Error FlockError.BadFd -> fail UnixError.EBADF
+            | Error FlockError.WouldBlock ->
+                if nonBlocking then
+                    fail UnixError.EAGAIN
+                else
+                    // A blocking acquisition that *can* be satisfied is served
+                    // above, so only genuine contention reaches here. Waiting
+                    // for it is a scheduler feature rather than a filesystem
+                    // one: the caller must park and be woken when the holder
+                    // releases.
+                    //
+                    // The holder is some other open file description of this
+                    // same process, PawPrint simulating exactly one — but not
+                    // necessarily another *thread*. A single-threaded guest that
+                    // opens one file twice and blocks on its own lock is
+                    // deadlocked, and a real kernel duly hangs it forever. So
+                    // refusing here is not merely the conservative option: for
+                    // the single-threaded case it is strictly more useful than
+                    // what Linux does, and it never converts the request into a
+                    // non-blocking one, which would hand the guest an
+                    // `EWOULDBLOCK` no kernel would have produced.
+                    //
+                    // CoreLib never reaches this: `SafeFileHandle.Init` always
+                    // sets `LOCK_NB`.
+                    let requested = if mode = lockShared then "shared" else "exclusive"
+
+                    failwith
+                        $"%s{operation}: fd %d{fd} requested a blocking %s{requested} lock, and another open file description holds a conflicting one. PawPrint cannot block a thread on a lock: that needs the scheduler to park it and wake it when the holder releases (issue #956). If the holder is this same thread, a real kernel would deadlock here rather than return. Pass LOCK_NB to get EWOULDBLOCK instead."
+            | Ok registry ->
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        FileDescriptors = registry
+                    }
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
         | Some "SystemNative_ReadLink",
           [ ConcretePointer _ ; ConcretePointer _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
@@ -1794,12 +1890,12 @@ module NativeSystemNative =
                     // crashing so the guest's own error reporting runs.
                     -1, StepEffect.NoEffect, setErrno state UnixError.ERANGE
                 else
-                    match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+                    match FileDescriptorRegistry.tryFindObject fd state.Kernel.FileDescriptors with
                     | None ->
                         // Unknown fd: report EBADF the same way `write(2)`
                         // would.
                         -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
-                    | Some (OpenFileDescription.File inode) ->
+                    | Some (OpenFileObject.File inode) ->
                         // A descriptor on a real file. EBADF is what a real
                         // kernel answers for a write to an `O_RDONLY`
                         // descriptor, and every descriptor PawPrint hands out
@@ -1815,7 +1911,7 @@ module NativeSystemNative =
                         // instead of assuming.
                         ignore<InodeNumber> inode
                         -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
-                    | Some (OpenFileDescription.StandardStream role) ->
+                    | Some (OpenFileObject.StandardStream role) ->
                         match role with
                         | FileDescriptorRole.StandardInput ->
                             // `write(2)` on a read-only fd returns -1 + EBADF

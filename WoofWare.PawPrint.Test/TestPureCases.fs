@@ -179,6 +179,17 @@ module TestPureCases =
                     // this is a link's *target*, not anything's name.
                     name "long", SeedEntry.Symlink (target (String.replicate 300 "a"))
                 ]
+            "FlockContentionSeeded.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    // A second, unrelated file: a lock is per file, so holding
+                    // one on `f` must not stop `g` being opened exclusively.
+                    name "g", file "other"
+                    // Another path to `f`. Locks are keyed on the resolved
+                    // inode, not on the path used to reach it.
+                    name "lf", SeedEntry.Symlink (target "f")
+                ]
         ]
         |> Map.ofList
 

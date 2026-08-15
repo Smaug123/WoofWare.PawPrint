@@ -13,7 +13,16 @@ module TestFileDescriptorRegistry =
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
     let private standardStream (role : FileDescriptorRole) : OpenFileDescription =
-        OpenFileDescription.StandardStream role
+        {
+            Object = OpenFileObject.StandardStream role
+            Flock = None
+        }
+
+    let private openOn (inode : InodeNumber) : OpenFileDescription =
+        {
+            Object = OpenFileObject.File inode
+            Flock = None
+        }
 
     let private someInode : InodeNumber = InodeNumber 42L
     let private otherInode : InodeNumber = InodeNumber 43L
@@ -29,10 +38,10 @@ module TestFileDescriptorRegistry =
         b |> shouldEqual 4
 
         FileDescriptorRegistry.tryFind a registry
-        |> shouldEqual (Some (OpenFileDescription.File someInode))
+        |> shouldEqual (Some (openOn someInode))
 
         FileDescriptorRegistry.tryFind b registry
-        |> shouldEqual (Some (OpenFileDescription.File otherInode))
+        |> shouldEqual (Some (openOn otherInode))
 
         FileDescriptorRegistry.assertInvariants "openFile" registry
         |> ignore<FileDescriptorRegistry>
@@ -97,7 +106,7 @@ module TestFileDescriptorRegistry =
         let registry =
             FileDescriptorRegistry.Unchecked.ofParts
                 (Map.ofList [ 0, OpenFileDescriptionId 7L ])
-                (Map.ofList [ OpenFileDescriptionId 7L, OpenFileDescription.File someInode ])
+                (Map.ofList [ OpenFileDescriptionId 7L, openOn someInode ])
                 (OpenFileDescriptionId next)
 
         FileDescriptorRegistry.checkInvariants registry
@@ -110,7 +119,7 @@ module TestFileDescriptorRegistry =
     let ``checkInvariants accepts a NextId above every live description`` () : unit =
         FileDescriptorRegistry.Unchecked.ofParts
             (Map.ofList [ 0, OpenFileDescriptionId 7L ])
-            (Map.ofList [ OpenFileDescriptionId 7L, OpenFileDescription.File someInode ])
+            (Map.ofList [ OpenFileDescriptionId 7L, openOn someInode ])
             (OpenFileDescriptionId 8L)
         |> FileDescriptorRegistry.checkInvariants
         |> shouldEqual []
@@ -501,6 +510,361 @@ module TestFileDescriptorRegistry =
 
         exc.Message |> shouldContainText "context here"
         exc.Message |> shouldContainText "DanglingFd"
+
+    /// Helpers for the `flock` tests: they all want "open a file and lock it",
+    /// and threading the Result through by hand at every step obscures which
+    /// step is the one under test.
+    let private openOrFail (inode : InodeNumber) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
+        FileDescriptorRegistry.openFile inode registry
+
+    let private lockOrFail
+        (fd : int)
+        (request : FlockRequest)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistry
+        =
+        match FileDescriptorRegistry.flock fd request registry with
+        | Ok registry -> FileDescriptorRegistry.assertInvariants "flock" registry
+        | Error e -> failwith $"expected flock to succeed, got %O{e}"
+
+    [<Test>]
+    let ``flock of an unknown fd is BadFd`` () : unit =
+        for fd in [ 3 ; -1 ; System.Int32.MaxValue ] do
+            FileDescriptorRegistry.flock fd (FlockRequest.Acquire FlockMode.Shared) FileDescriptorRegistry.initial
+            |> shouldEqual (Error FlockError.BadFd)
+
+            FileDescriptorRegistry.flock fd FlockRequest.Release FileDescriptorRegistry.initial
+            |> shouldEqual (Error FlockError.BadFd)
+
+    /// The whole contention matrix, exactly as measured against `flock(2)` on
+    /// both Linux and Darwin (`scratchpad/flockops.c`), for two *separate*
+    /// descriptions on one inode. Shared-against-shared is the only compatible
+    /// pair.
+    [<TestCase(false, false, true)>]
+    [<TestCase(false, true, false)>]
+    [<TestCase(true, false, false)>]
+    [<TestCase(true, true, false)>]
+    let ``two descriptions on one file conflict unless both are shared``
+        (heldExclusive : bool)
+        (wantedExclusive : bool)
+        (expectedGranted : bool)
+        : unit
+        =
+        let mode (exclusive : bool) =
+            if exclusive then FlockMode.Exclusive else FlockMode.Shared
+
+        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+        let b, registry = openOrFail someInode registry
+
+        let registry = lockOrFail a (FlockRequest.Acquire (mode heldExclusive)) registry
+
+        match FileDescriptorRegistry.flock b (FlockRequest.Acquire (mode wantedExclusive)) registry with
+        | Ok registry ->
+            expectedGranted |> shouldEqual true
+            FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
+        | Error FlockError.WouldBlock -> expectedGranted |> shouldEqual false
+        | Error e -> failwith $"unexpected flock error: %O{e}"
+
+    /// A lock is per file, so a description on a different inode is not an
+    /// obstacle. Without this, "one global lock" satisfies the matrix above.
+    [<Test>]
+    let ``an exclusive lock on one file does not block another file`` () : unit =
+        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+        let b, registry = openOrFail otherInode registry
+
+        let registry = lockOrFail a (FlockRequest.Acquire FlockMode.Exclusive) registry
+
+        FileDescriptorRegistry.flock b (FlockRequest.Acquire FlockMode.Exclusive) registry
+        |> Result.isOk
+        |> shouldEqual true
+
+    /// Conversion. `flock(2)` has no separate upgrade operation: re-locking
+    /// replaces whatever this description held, and its *own* lock is never an
+    /// obstacle to that. Measured on both platforms.
+    [<Test>]
+    let ``a description may convert its own lock but not past another holder`` () : unit =
+        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+
+        // Sole holder: shared upgrades to exclusive, and back down again.
+        let registry = lockOrFail a (FlockRequest.Acquire FlockMode.Shared) registry
+        let registry = lockOrFail a (FlockRequest.Acquire FlockMode.Exclusive) registry
+        let registry = lockOrFail a (FlockRequest.Acquire FlockMode.Shared) registry
+
+        // A second shared holder appears; now the upgrade must fail, even
+        // though `a` already holds a lock on this very file.
+        let b, registry = openOrFail someInode registry
+        let registry = lockOrFail b (FlockRequest.Acquire FlockMode.Shared) registry
+
+        FileDescriptorRegistry.flock a (FlockRequest.Acquire FlockMode.Exclusive) registry
+        |> shouldEqual (Error FlockError.WouldBlock)
+
+        // ...and succeeds again once the other holder releases.
+        let registry = lockOrFail b FlockRequest.Release registry
+
+        FileDescriptorRegistry.flock a (FlockRequest.Acquire FlockMode.Exclusive) registry
+        |> Result.isOk
+        |> shouldEqual true
+
+    [<Test>]
+    let ``releasing a lock that was never taken succeeds`` () : unit =
+        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+        lockOrFail a FlockRequest.Release registry |> ignore<FileDescriptorRegistry>
+
+    /// The lock belongs to the *description*, so `dup` shares it: releasing
+    /// through either descriptor releases the one lock, and neither contends
+    /// with the other. This is the half that a lock stored per-descriptor, or
+    /// per-inode, would get wrong in opposite directions.
+    [<Test>]
+    let ``a dup pair shares one lock`` () : unit =
+        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+        let registry = lockOrFail a (FlockRequest.Acquire FlockMode.Exclusive) registry
+
+        let duplicate, registry =
+            match FileDescriptorRegistry.dup a registry with
+            | Ok result -> result
+            | Error e -> failwith $"unexpected dup error: %O{e}"
+
+        // Re-acquiring through the dup is a no-op conversion, not a conflict.
+        let registry =
+            lockOrFail duplicate (FlockRequest.Acquire FlockMode.Exclusive) registry
+
+        // A third party is still excluded...
+        let other, registry = openOrFail someInode registry
+
+        FileDescriptorRegistry.flock other (FlockRequest.Acquire FlockMode.Shared) registry
+        |> shouldEqual (Error FlockError.WouldBlock)
+
+        // ...until the lock is released through the *dup*, which drops the
+        // single shared lock rather than one of two copies.
+        let registry = lockOrFail duplicate FlockRequest.Release registry
+
+        FileDescriptorRegistry.flock other (FlockRequest.Acquire FlockMode.Shared) registry
+        |> Result.isOk
+        |> shouldEqual true
+
+    /// Closing the last descriptor of a description destroys the description,
+    /// and with it the lock — which is what makes a `FileStream` that was never
+    /// explicitly unlocked stop blocking the next open.
+    [<Test>]
+    let ``closing a locked description releases its lock`` () : unit =
+        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+        let registry = lockOrFail a (FlockRequest.Acquire FlockMode.Exclusive) registry
+        let b, registry = openOrFail someInode registry
+
+        FileDescriptorRegistry.flock b (FlockRequest.Acquire FlockMode.Exclusive) registry
+        |> shouldEqual (Error FlockError.WouldBlock)
+
+        let registry =
+            match FileDescriptorRegistry.close a registry with
+            | Ok registry -> registry
+            | Error e -> failwith $"unexpected close error: %O{e}"
+
+        FileDescriptorRegistry.flock b (FlockRequest.Acquire FlockMode.Exclusive) registry
+        |> Result.isOk
+        |> shouldEqual true
+
+    /// A standard stream is lockable — Linux permits `flock` on a pipe — and can
+    /// never contend, because PawPrint gives each role exactly one description.
+    /// Asserted rather than left implicit: it is the one place where "no
+    /// conflict" is a consequence of the process model rather than of the lock
+    /// rule, so a future shared-pipe model would need to revisit it.
+    [<Test>]
+    let ``a standard stream can be locked and conflicts with nothing`` () : unit =
+        let registry =
+            FileDescriptorRegistry.initial
+            |> lockOrFail 1 (FlockRequest.Acquire FlockMode.Exclusive)
+            |> lockOrFail 0 (FlockRequest.Acquire FlockMode.Exclusive)
+            |> lockOrFail 2 (FlockRequest.Acquire FlockMode.Shared)
+
+        FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
+
+    [<Test>]
+    let ``checkInvariants rejects two conflicting locks on one file`` () : unit =
+        let locked (mode : FlockMode) : OpenFileDescription =
+            {
+                Object = OpenFileObject.File someInode
+                Flock = Some mode
+            }
+
+        let table (first : FlockMode) (second : FlockMode) =
+            FileDescriptorRegistry.Unchecked.ofParts
+                (Map.ofList [ 0, OpenFileDescriptionId 7L ; 1, OpenFileDescriptionId 8L ])
+                (Map.ofList
+                    [
+                        OpenFileDescriptionId 7L, locked first
+                        OpenFileDescriptionId 8L, locked second
+                    ])
+                (OpenFileDescriptionId 9L)
+
+        let expected =
+            [
+                FileDescriptorRegistryDefect.ConflictingFlocks (OpenFileDescriptionId 7L, OpenFileDescriptionId 8L)
+            ]
+
+        FileDescriptorRegistry.checkInvariants (table FlockMode.Exclusive FlockMode.Exclusive)
+        |> shouldEqual expected
+
+        FileDescriptorRegistry.checkInvariants (table FlockMode.Exclusive FlockMode.Shared)
+        |> shouldEqual expected
+
+        FileDescriptorRegistry.checkInvariants (table FlockMode.Shared FlockMode.Exclusive)
+        |> shouldEqual expected
+
+        // ...and the compatible pair is accepted, so the check is not simply
+        // "two locks on one file".
+        FileDescriptorRegistry.checkInvariants (table FlockMode.Shared FlockMode.Shared)
+        |> shouldEqual []
+
+    [<Test>]
+    let ``checkInvariants accepts conflicting locks on different files`` () : unit =
+        let locked (inode : InodeNumber) : OpenFileDescription =
+            {
+                Object = OpenFileObject.File inode
+                Flock = Some FlockMode.Exclusive
+            }
+
+        FileDescriptorRegistry.Unchecked.ofParts
+            (Map.ofList [ 0, OpenFileDescriptionId 7L ; 1, OpenFileDescriptionId 8L ])
+            (Map.ofList
+                [
+                    OpenFileDescriptionId 7L, locked someInode
+                    OpenFileDescriptionId 8L, locked otherInode
+                ])
+            (OpenFileDescriptionId 9L)
+        |> FileDescriptorRegistry.checkInvariants
+        |> shouldEqual []
+
+    /// The mutual-exclusion guarantee over random operation sequences, checked
+    /// against an independent model of who holds what.
+    ///
+    /// The model is deliberately *not* the registry's own view: it maps each
+    /// description identity to the mode the test believes it holds, and derives
+    /// "is this grant legal" from that. An implementation that lost a lock on
+    /// `dup`, or failed to drop one on `close`, would agree with itself but
+    /// disagree with this.
+    [<Test>]
+    let ``flock grants exactly the requests a kernel would`` () : unit =
+        let mutable observedGrants = 0
+        let mutable observedRefusals = 0
+        let mutable observedConversions = 0
+
+        let inodes = [| InodeNumber 1L ; InodeNumber 2L |]
+
+        let property (NonNegativeInt seed : NonNegativeInt) : unit =
+            let rng = System.Random (seed)
+            let steps = rng.Next (1, 40)
+
+            let mutable registry = FileDescriptorRegistry.initial
+            // fd -> description id, and description id -> (inode, held mode).
+            let mutable fdToId : Map<int, OpenFileDescriptionId> = Map.empty
+
+            let mutable held : Map<OpenFileDescriptionId, InodeNumber * FlockMode option> =
+                Map.empty
+
+            let idOf (fd : int) = Map.find fd fdToId
+
+            for _ in 1..steps do
+                let liveFds = fdToId |> Map.toList |> List.map fst
+                let choice = rng.Next 10
+
+                if choice < 3 || liveFds.IsEmpty then
+                    // open
+                    let inode = inodes.[rng.Next inodes.Length]
+                    let fd, registry' = FileDescriptorRegistry.openFile inode registry
+
+                    let id =
+                        match FileDescriptorRegistry.tryFindId fd registry' with
+                        | Some id -> id
+                        | None -> failwith "freshly opened fd should be live"
+
+                    registry <- registry'
+                    fdToId <- Map.add fd id fdToId
+                    held <- Map.add id (inode, None) held
+                elif choice < 5 then
+                    // close
+                    let fd = liveFds.[rng.Next liveFds.Length]
+                    let id = idOf fd
+
+                    match FileDescriptorRegistry.close fd registry with
+                    | Ok registry' ->
+                        registry <- registry'
+                        fdToId <- Map.remove fd fdToId
+                        // The description — and its lock — survive exactly while
+                        // some other fd still names it.
+                        if fdToId |> Map.exists (fun _ other -> other = id) |> not then
+                            held <- Map.remove id held
+                    | Error e -> failwith $"unexpected close error: %O{e}"
+                elif choice < 6 then
+                    // dup
+                    let fd = liveFds.[rng.Next liveFds.Length]
+
+                    match FileDescriptorRegistry.dup fd registry with
+                    | Ok (newFd, registry') ->
+                        registry <- registry'
+                        fdToId <- Map.add newFd (idOf fd) fdToId
+                    | Error e -> failwith $"unexpected dup error: %O{e}"
+                elif choice < 7 then
+                    // release
+                    let fd = liveFds.[rng.Next liveFds.Length]
+                    let id = idOf fd
+
+                    match FileDescriptorRegistry.flock fd FlockRequest.Release registry with
+                    | Ok registry' ->
+                        registry <- registry'
+                        let inode, _ = Map.find id held
+                        held <- Map.add id (inode, None) held
+                    | Error e -> failwith $"unexpected release error: %O{e}"
+                else
+                    // acquire
+                    let fd = liveFds.[rng.Next liveFds.Length]
+                    let id = idOf fd
+                    let inode, existing = Map.find id held
+
+                    let wanted =
+                        if rng.Next 2 = 0 then
+                            FlockMode.Shared
+                        else
+                            FlockMode.Exclusive
+
+                    // The model's own answer, computed from `held` alone: some
+                    // *other* description on this inode holds a lock that is
+                    // incompatible with what we want.
+                    let expectedBlocked =
+                        held
+                        |> Map.exists (fun otherId (otherInode, otherMode) ->
+                            otherId <> id
+                            && otherInode = inode
+                            && (
+                                match otherMode, wanted with
+                                | None, _ -> false
+                                | Some FlockMode.Shared, FlockMode.Shared -> false
+                                | Some _, _ -> true
+                            )
+                        )
+
+                    match FileDescriptorRegistry.flock fd (FlockRequest.Acquire wanted) registry with
+                    | Ok registry' ->
+                        expectedBlocked |> shouldEqual false
+                        registry <- registry'
+                        held <- Map.add id (inode, Some wanted) held
+                        observedGrants <- observedGrants + 1
+
+                        if existing.IsSome then
+                            observedConversions <- observedConversions + 1
+                    | Error FlockError.WouldBlock ->
+                        expectedBlocked |> shouldEqual true
+                        observedRefusals <- observedRefusals + 1
+                    | Error e -> failwith $"unexpected flock error: %O{e}"
+
+                FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
+
+        Check.One (propertyConfig, property)
+
+        // Without refusals the exclusion rule is never exercised; without
+        // conversions the re-lock path is never exercised.
+        observedGrants |> shouldBeGreaterThan 100
+        observedRefusals |> shouldBeGreaterThan 30
+        observedConversions |> shouldBeGreaterThan 30
 
     [<Test>]
     let ``tryFind crashes rather than inventing a description for a dangling fd`` () : unit =
