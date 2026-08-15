@@ -43,6 +43,13 @@ type internal ScopeEntryLookup =
     | Absent
     /// The index is exactly the list's length, which `DynamicScope`'s indexer lets through its own
     /// bound check and then faults on. Real .NET surfaces <c>ArgumentOutOfRangeException</c>.
+    ///
+    /// The *type* is reproduced; `ParamName` is not, because the channel that raises a
+    /// runtime-synthesised exception calls a parameterless constructor and cannot set
+    /// <c>_paramName</c>. That is a general property of that channel rather than anything about
+    /// this case — `Intrinsics.fs` declines to fake the same field twice, on the grounds that
+    /// writing the name into `_message` alone would leave `.Message` and `.ParamName` disagreeing
+    /// about whether it is known — and the same reasoning applies here.
     | PastEnd
 
 [<RequireQualifiedAccess>]
