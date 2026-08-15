@@ -1071,6 +1071,38 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer buffer) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_GetEUid",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->
+            // `uint32_t SystemNative_GetEUid(void)` (pal_uid.c:91) is
+            // `return geteuid();` — infallible, as `geteuid(2)` is.
+            //
+            // The same `UserId` `Stat`/`LStat` below report as every inode's
+            // `st_uid`, because the emulated process has one identity: no
+            // reachable syscall can give an inode an owner of its own
+            // (`SystemNative_ChOwn` is not in the interop surface at all), so
+            // there is nothing for a second source of truth to disagree with.
+            //
+            // That equality is why its `GetEGid` and `GetGroups` neighbours are
+            // *not* implemented here. Within CoreLib the only route to them is
+            // `Interop.Sys.IsMemberOfGroup` — managed code, not an entry point —
+            // whose sole caller is `FileStatus.IsModeReadOnlyCore` behind
+            // `if (_fileCache.Uid == Interop.Sys.GetEUid())`
+            // (FileStatus.Unix.cs:106). With one identity that guard always
+            // holds, so the group path is dead by construction and a
+            // supplementary-group list would be state no syscall could vary.
+            // Implementing `GetEGid` alone would be worse than either: it
+            // short-circuits `IsMemberOfGroup` on `gid == GetEGid()`
+            // (Interop.IsMemberOfGroup.cs:13), which under one identity is also
+            // always true — so the branch would start *succeeding*, on the
+            // strength of the very invariant that must have broken for it to be
+            // reachable. Leaving them unimplemented means a guest that gets
+            // there stops loudly instead, naming the entry point.
+            // `sourcesImpure/EffectiveUserIdConfigured.cs` pins the premise.
+            state
+            |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 state.Kernel.UserId) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         // `int32_t SystemNative_Stat(const char* path, FileStatus* output)` and
         // its `LStat` twin, from `pal_io.c`. CoreLib declares each of them
         // twice — `Interop.Stat.cs` takes a `string`, `Interop.Stat.Span.cs` a
