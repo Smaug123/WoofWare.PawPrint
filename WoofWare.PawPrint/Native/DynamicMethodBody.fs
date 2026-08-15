@@ -103,51 +103,12 @@ module internal DynamicMethodBody =
     /// </remarks>
     let private readScope
         (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (resolver : AllocatedNonArrayObject)
-        : Map<int, DynamicScopeEntry> * Map<int, ManagedHeapAddress>
+        (resolver : ManagedHeapAddress)
+        : Map<int, DynamicScopeEntry>
         =
-        let scope =
-            AllocatedNonArrayObject.DereferenceField "m_scope" resolver
-            |> requireObject operation "m_scope" state
-            |> Option.defaultWith (fun () ->
-                failwith
-                    $"%s{operation}: the resolver's m_scope is null, but DynamicResolver's constructor assigns it from the ILGenerator's scope"
-            )
-
-        let scopeObj = ManagedHeap.get scope state.ManagedHeap
-
-        let tokens =
-            AllocatedNonArrayObject.DereferenceField "m_tokens" scopeObj
-            |> requireObject operation "m_tokens" state
-            |> Option.defaultWith (fun () ->
-                failwith
-                    $"%s{operation}: the scope's m_tokens is null, but DynamicScope initialises it inline with a one-element list"
-            )
-
-        let tokensObj = ManagedHeap.get tokens state.ManagedHeap
-
-        let size =
-            match
-                AllocatedNonArrayObject.DereferenceField "_size" tokensObj
-                |> CliType.unwrapPrimitiveLikeDeep
-            with
-            | CliType.Numeric (CliNumericType.Int32 v) -> v
-            | other -> failwith $"%s{operation}: expected List<object>._size to be an int32, got %O{other}"
-
-        let items =
-            AllocatedNonArrayObject.DereferenceField "_items" tokensObj
-            |> requireObject operation "_items" state
-            |> Option.defaultWith (fun () ->
-                failwith
-                    $"%s{operation}: the token list's _items is null, but List<T> assigns it either the shared empty array or a real one"
-            )
-
-        let itemsShape = ManagedHeap.getArrayShape items state.ManagedHeap
-
-        if size < 0 || size > itemsShape.Length then
-            failwith
-                $"%s{operation}: the token list claims %d{size} entries but its backing array holds %d{itemsShape.Length}"
+        let items, size = DynamicScopeOperand.tokenList operation state resolver
 
         // Classify on the entry's *type*, not on whether string contents happen to be recorded for
         // it. The two differ on exactly the case that matters: a `System.String` whose contents
@@ -172,16 +133,7 @@ module internal DynamicMethodBody =
             | ConcreteTypeHandle.Byref element -> $"%s{describeType element}&"
             | ConcreteTypeHandle.FunctionPointer _ -> $"a function pointer %O{handle}"
 
-        let isCorelibType (namespace_ : string) (name : string) (handle : ConcreteTypeHandle) : bool =
-            match handle with
-            | ConcreteTypeHandle.Concrete _ ->
-                match AllConcreteTypes.lookup handle state.ConcreteTypes with
-                | Some ty -> ty.Namespace = namespace_ && ty.Name = name
-                | None -> false
-            | _ -> false
-
         let mutable entries = Map.empty
-        let mutable objects = Map.empty
 
         for i in 0 .. size - 1 do
             let entry =
@@ -194,15 +146,10 @@ module internal DynamicMethodBody =
                     // entry no instruction may name.
                     DynamicScopeEntry.Unsupported "the null every DynamicScope is seeded with at index 0"
                 | CliType.ObjectRef (Some addr) ->
-                    // Recorded for every non-null entry, not only the classifiable ones: this map
-                    // answers "where does entry i live", which is a question with an answer here
-                    // regardless of whether anything can yet resolve what is in it.
-                    objects <- Map.add i addr objects
-
                     match ManagedHeap.tryGetObjectConcreteType addr state.ManagedHeap with
                     | None -> DynamicScopeEntry.Unsupported $"an object at %O{addr} that is not on the heap"
                     | Some concreteType ->
-                        if isCorelibType "System" "String" concreteType then
+                        if DynamicScopeOperand.isCorelibType baseClassTypes.String state concreteType then
                             let contents =
                                 ManagedHeap.getStringContents addr state.ManagedHeap
                                 |> Option.defaultWith (fun () ->
@@ -211,7 +158,7 @@ module internal DynamicMethodBody =
                                 )
 
                             DynamicScopeEntry.String contents
-                        elif isCorelibType "System" "RuntimeTypeHandle" concreteType then
+                        elif DynamicScopeOperand.isCorelibType baseClassTypes.RuntimeTypeHandle state concreteType then
                             // Which type it names is *not* read here. `DynamicResolver.ResolveToken`
                             // reads `m_scope[token]` at JIT, and a guest that replaces this entry
                             // between minting the method and first invoking it is measured to see
@@ -224,7 +171,7 @@ module internal DynamicMethodBody =
 
             entries <- Map.add i entry entries
 
-        entries, objects
+        entries
 
     /// <summary>
     /// The `initLocals` a dynamic method would be compiled with if it were compiled *now*, read
@@ -275,6 +222,7 @@ module internal DynamicMethodBody =
     /// </param>
     let read
         (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (scopeAssembly : DumpedAssembly)
         (resolver : ManagedHeapAddress)
@@ -334,7 +282,7 @@ module internal DynamicMethodBody =
         // silently resolve it to an unrelated real row, because the bit patterns are the same.
         // `scopeAssembly` remains the right universe for the *local signature* below, which
         // `SignatureHelper` really does spell against a module.
-        let scopeEntries, scopeObjects = readScope operation state obj
+        let scopeEntries = readScope operation baseClassTypes state resolver
 
         let instructions =
             IlDecoding.decodeInstructions (IlTokenUniverse.DynamicScope scopeEntries) code
@@ -352,4 +300,4 @@ module internal DynamicMethodBody =
 
         // No `initLocals` here: it is not knowable yet. `readInitLocals` above answers it, at
         // first execution, and `MethodHandleRegistry.latchInitLocals` fixes it there.
-        MintedDynamicMethodBody.make instructions localVars ImmutableArray.Empty scopeObjects
+        MintedDynamicMethodBody.make instructions localVars ImmutableArray.Empty

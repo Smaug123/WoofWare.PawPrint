@@ -1346,10 +1346,11 @@ public static class Entry
 
         scopeTypeOperands minted |> shouldEqual [ 2 ]
 
-        // Every non-null entry is recorded, not only the one the body names and not only the ones
-        // of a kind something can resolve: this map answers "where does entry i live", and the
-        // instruction reads the object when it runs.
-        minted.ScopeObjects |> Map.toList |> List.map fst |> shouldEqual [ 1 ; 2 ]
+        // Nothing about *where* the entry lives is recorded, deliberately: the object is read out of
+        // the live `m_scope.m_tokens` when the instruction runs, because a guest can replace a slot
+        // between minting and first invocation and real .NET compiles against the replacement. There
+        // is no captured address here to go stale, which is a stronger guarantee than a test for one.
+        minted.LocalVars |> Option.map Seq.toList |> shouldEqual (Some [])
 
     /// The kind check is real, and it is the entry that supplies it. A `newarr` whose index holds a
     /// string is a program CoreCLR would reject at JIT; PawPrint rejects it when the method is

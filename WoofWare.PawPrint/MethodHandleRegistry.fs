@@ -41,28 +41,6 @@ type MintedDynamicMethodBody =
         Locations : Map<int, IlOp>
         LocalVars : ImmutableArray<TypeDefn> option
         ExceptionRegions : ImmutableArray<WoofWare.PawPrint.ExceptionRegion>
-        /// Where each of this method's `DynamicScope` entries lives on the guest heap, by scope
-        /// index: every non-null entry, whatever kind it is. What each entry *is* is recorded
-        /// separately, as a `DynamicScopeEntry` consulted when the body was decoded; this map is
-        /// only "where to look", so that one map does not have to be kept in step per kind.
-        ///
-        /// The address, not the contents, and the distinction is measured rather than stylistic.
-        /// For a string entry, real .NET interns a dynamic method's literals by value and on a miss
-        /// interns *the object the emitting guest handed to `ILGenerator.Emit`*
-        /// (`GlobalStringLiteralMap::GetInternedString` takes a `STRINGREF*` and stores it via
-        /// `AddInternedString`, `vm/stringliteralmap.cpp:403,431` — unlike the metadata-literal path
-        /// beside it, which allocates), so a `ReferenceEquals` in the guest can see it. And for both
-        /// strings and type handles the *contents* are read when the instruction executes, because
-        /// CoreCLR reads the scope at JIT: a guest that mutates a string's characters in place, or
-        /// replaces the boxed `RuntimeTypeHandle` in `m_scope.m_tokens`, between minting the method
-        /// and first invoking it gets the new value on real .NET. Both are measured.
-        ///
-        /// Lives here rather than in the operand because an `IlOp` is a description of code and
-        /// must not be tied to one machine's heap. `UnaryStringTokenIlOp` and
-        /// `DynamicScopeOperand` reach it through the executing method's
-        /// `SynthesisedMethod.DynamicMethod` handle. Not carried into `MethodInstructions`, which is
-        /// a Domain type and has no business holding an address.
-        ScopeObjects : Map<int, ManagedHeapAddress>
     }
 
 [<RequireQualifiedAccess>]
@@ -72,7 +50,6 @@ module MintedDynamicMethodBody =
         (instructions : (IlOp * int) list)
         (localVars : ImmutableArray<TypeDefn> option)
         (exceptionRegions : ImmutableArray<WoofWare.PawPrint.ExceptionRegion>)
-        (scopeObjects : Map<int, ManagedHeapAddress>)
         : MintedDynamicMethodBody
         =
         {
@@ -80,7 +57,6 @@ module MintedDynamicMethodBody =
             Locations = instructions |> List.map (fun (a, b) -> b, a) |> Map.ofList
             LocalVars = localVars
             ExceptionRegions = exceptionRegions
-            ScopeObjects = scopeObjects
         }
 
     /// Complete the body with the `initLocals` that was latched at first execution.

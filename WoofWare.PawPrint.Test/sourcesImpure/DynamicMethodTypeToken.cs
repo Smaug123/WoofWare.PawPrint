@@ -291,6 +291,29 @@ public class Program
         {
         }
 
+        // 16. Closed is not the same as legal: `System.Void` is a closed type and still an invalid
+        // operand, measured on real .NET for `sizeof`, `newarr` and `box` alike.
+        //
+        // A byref type is rejected the same way, and a *pointer* type is by contrast perfectly legal
+        // and answers 8 -- both measured on real .NET, and both implemented -- but neither is
+        // checkable from here: `Type.MakeByRefType` and `Type.MakePointerType` bottom out in the
+        // `RuntimeTypeHandle_MakeByRef` QCall, which PawPrint does not implement, so no guest can
+        // construct either operand yet.
+        Func<int> voidOperand = IntMethod(il =>
+        {
+            il.Emit(OpCodes.Sizeof, typeof(void));
+            il.Emit(OpCodes.Ret);
+        });
+
+        try
+        {
+            voidOperand();
+            return 16;
+        }
+        catch (InvalidProgramException)
+        {
+        }
+
         return 0;
     }
 }

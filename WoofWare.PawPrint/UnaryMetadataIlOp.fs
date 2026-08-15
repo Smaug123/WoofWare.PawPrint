@@ -53,12 +53,16 @@ module internal UnaryMetadataIlOp =
 
                 Ok (ResolvedMetadataOperand.FromMetadata (activeAssy, sourced.Token))
             | MetadataOperand.FromDynamicScope scopeIndex ->
-                match DynamicScopeOperand.typeTarget (string<UnaryMetadataTokenIlOp> op) scopeIndex state thread with
-                | RuntimeTypeHandleTarget.Closed handle -> Ok (ResolvedMetadataOperand.ScopeType handle)
-                | notClosed -> Error notClosed
+                DynamicScopeOperand.closedType
+                    baseClassTypes
+                    (string<UnaryMetadataTokenIlOp> op)
+                    scopeIndex
+                    state
+                    thread
+                |> Result.map ResolvedMetadataOperand.ScopeType
 
         match resolved with
-        | Error notClosed ->
+        | Error why ->
             // Measured on real .NET: an open generic definition, a bare generic parameter and an
             // open constructed type all make the method throw InvalidProgramException when it is
             // compiled, against a closed control that runs. `Emit` accepts all of them, because
@@ -74,7 +78,7 @@ module internal UnaryMetadataIlOp =
                 loggerFactory
                 baseClassTypes
                 baseClassTypes.InvalidProgramException
-                (Some $"%O{op} names a DynamicScope entry whose type is %O{notClosed}, which is not a closed type")
+                (Some $"%O{op}: %s{why}")
                 thread
                 state
         | Ok operand ->
