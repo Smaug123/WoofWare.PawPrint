@@ -216,7 +216,7 @@ module TestUnaryConstIlOp =
 
             let state, thread = stateWithSignedBranch loggerFactory op case.Value1 case.Value2
 
-            let state, whatWeDid = UnaryConstIlOp.execute state thread op
+            let state, whatWeDid = UnaryConstIlOp.execute baseClassTypes state thread op
 
             whatWeDid |> shouldEqual WhatWeDid.Executed
 
@@ -271,7 +271,7 @@ module TestUnaryConstIlOp =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Float value1) thread
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Float value2) thread
 
-        let state, whatWeDid = UnaryConstIlOp.execute state thread op
+        let state, whatWeDid = UnaryConstIlOp.execute baseClassTypes state thread op
 
         whatWeDid |> shouldEqual WhatWeDid.Executed
 

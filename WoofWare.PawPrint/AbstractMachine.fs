@@ -428,7 +428,8 @@ module AbstractMachine =
         match executingInstruction with
         | IlOp.Nullary op -> NullaryIlOp.execute loggerFactory baseClassTypes state thread op
         | IlOp.UnaryConst unaryConstIlOp ->
-            UnaryConstIlOp.execute state thread unaryConstIlOp |> ExecutionResult.stepped
+            UnaryConstIlOp.execute baseClassTypes state thread unaryConstIlOp
+            |> ExecutionResult.stepped
         | IlOp.UnaryMetadataToken (unaryMetadataTokenIlOp, bytes) ->
             UnaryMetadataIlOp.execute loggerFactory baseClassTypes unaryMetadataTokenIlOp bytes state thread
             |> ExecutionResult.stepped

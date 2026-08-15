@@ -287,3 +287,38 @@ module internal StorageLocation =
             // Distinct coarse keys, or a non-byref endpoint: no shared storage is possible
             // under the model, so overlap is not either.
             OverlapVerdict.CopyForwards
+
+    /// Answer a byref comparison that structural comparison deferred, by resolving both
+    /// sides to flat byte coordinates.
+    ///
+    /// **This decides only what it can positively prove**, and refuses everything else by
+    /// re-raising the deferral's own diagnostic. In particular it does *not* infer inequality
+    /// from two byrefs landing in different containers, even though that is the tempting rule
+    /// and would decide more pairs. Three separate review rounds each produced a different
+    /// counterexample to it: two fields of one explicit-layout object overlap; a byref
+    /// displaced past its root's extent lands in another root, and ECMA-335 promises no
+    /// relative placement between independently declared locals, so `local0 + 1000` may *be*
+    /// `local1`; and a `Field` resolved against a reinterpreted larger type can sit outside
+    /// the original slot while `mayLeaveRootExtent` still reports it in-extent. Rather than
+    /// gate on a predicate that has been wrong three times, the distinct-container case is
+    /// simply not decided here — it is exactly the set of pairs `ceqNormalised` already
+    /// answers correctly on its own, so declining costs nothing.
+    let resolveCeq
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (outcome : CeqOutcome)
+        : bool
+        =
+        match outcome with
+        | CeqOutcome.Decided answer -> answer
+        | CeqOutcome.NeedsByteLocation (left, right, diagnostic) ->
+            match resolve baseClassTypes state left, resolve baseClassTypes state right with
+            | LocationResolution.Located (_, Some (leftStorage, leftOffset)),
+              LocationResolution.Located (_, Some (rightStorage, rightOffset)) when leftStorage = rightStorage ->
+                // One container means one flat coordinate system, which is the whole content
+                // of `ByteStorageIdentity`, so equal coordinates are the same address and
+                // unequal ones are not. Field offsets are consulted here (via
+                // `walkProjectionByteOffset`), which is precisely what the structural
+                // comparison lacked.
+                leftOffset = rightOffset
+            | _ -> failwith diagnostic
