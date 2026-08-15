@@ -493,6 +493,14 @@ module EvalStackValueComparisons =
     /// because that recursion routes through `NativeIntSourceComparison` rather than through
     /// this function. Widening that is its own change.
     let ceqDeferred (counters : PointerHashState) (var1 : EvalStackValue) (var2 : EvalStackValue) : CeqOutcome =
+        // Must precede the match, exactly as in `ceq`. A `ManagedPointer (NativeIntPlaceholder
+        // bits)` is a bit pattern wearing a byref's clothes; comparing it *structurally* against
+        // a live symbolic byref would answer `false` on the shape of the two representations,
+        // when the literal bits may well be that byref's actual address. Unwrapping sends the
+        // pair down the native-int path, which refuses the indeterminate mixed comparison.
+        let var1 = unwrapPlaceholderForBitComparison var1
+        let var2 = unwrapPlaceholderForBitComparison var2
+
         match var1, var2 with
         | EvalStackValue.ManagedPointer p1, EvalStackValue.ManagedPointer p2 ->
             ManagedPointerSource.ceqNormalisedDeferred
