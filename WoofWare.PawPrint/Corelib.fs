@@ -104,6 +104,9 @@ module Corelib =
         let arrayTypeMismatchException =
             findCorelibType corelib "System" "ArrayTypeMismatchException"
 
+        let invalidProgramException =
+            findCorelibType corelib "System" "InvalidProgramException"
+
         let missingFieldException = findCorelibType corelib "System" "MissingFieldException"
 
         let missingMethodException =
@@ -197,6 +200,7 @@ module Corelib =
             IndexOutOfRangeException = indexOutOfRangeException
             InvalidCastException = invalidCastException
             ArrayTypeMismatchException = arrayTypeMismatchException
+            InvalidProgramException = invalidProgramException
             MissingFieldException = missingFieldException
             MissingMethodException = missingMethodException
             NotSupportedException = notSupportedException

@@ -66,31 +66,32 @@ module internal UnaryMetadataObjectOps =
     let executeCastclass (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
         let actualObj, state = IlMachineState.popEvalStack thread state
 
-        let state, targetType, _targetAssy =
-            IlMachineState.resolveTypeMetadataToken
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy
-                ImmutableArray.Empty
-                metadataToken
-
         let state, targetConcreteType =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy.Name
-                currentMethod.DeclaringTypeGenerics
-                currentMethod.Generics
-                targetType
+            match ctx.Operand with
+            | ResolvedMetadataOperand.ScopeType handle -> state, handle
+            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+                let state, targetType, _targetAssy =
+                    IlMachineState.resolveTypeMetadataToken
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        ImmutableArray.Empty
+                        metadataToken
+
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy.Name
+                    currentMethod.DeclaringTypeGenerics
+                    currentMethod.Generics
+                    targetType
 
         castToReferenceType loggerFactory baseClassTypes "Castclass" thread targetConcreteType actualObj state
 
@@ -520,36 +521,37 @@ module internal UnaryMetadataObjectOps =
     let executeBox (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let state, ty, assy =
-            match metadataToken with
-            | MetadataToken.TypeDefinition h ->
-                let state, ty = IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
-                state, ty, activeAssy
-            | MetadataToken.TypeReference ref ->
-                IlMachineState.lookupTypeRef
+        let state, typeHandle =
+            match ctx.Operand with
+            | ResolvedMetadataOperand.ScopeType handle -> state, handle
+            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+                let state, ty, assy =
+                    match metadataToken with
+                    | MetadataToken.TypeDefinition h ->
+                        let state, ty = IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
+                        state, ty, activeAssy
+                    | MetadataToken.TypeReference ref ->
+                        IlMachineState.lookupTypeRef
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            activeAssy
+                            currentMethod.DeclaringTypeGenerics
+                            ref
+                    | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
+                    | _ -> failwith $"unexpected token {metadataToken} in Box"
+
+                IlMachineState.concretizeType
                     loggerFactory
                     baseClassTypes
                     state
-                    activeAssy
+                    assy.Name
                     currentMethod.DeclaringTypeGenerics
-                    ref
-            | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
-            | _ -> failwith $"unexpected token {metadataToken} in Box"
-
-        let state, typeHandle =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                assy.Name
-                currentMethod.DeclaringTypeGenerics
-                currentMethod.Generics
-                ty
+                    currentMethod.Generics
+                    ty
 
         let toBox, state = state |> IlMachineState.popEvalStack thread
 
@@ -698,31 +700,32 @@ module internal UnaryMetadataObjectOps =
     let executeIsinst (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
         let actualObj, state = IlMachineState.popEvalStack thread state
 
-        let state, targetType, _targetAssy =
-            IlMachineState.resolveTypeMetadataToken
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy
-                ImmutableArray.Empty
-                metadataToken
-
         let state, targetConcreteType =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy.Name
-                currentMethod.DeclaringTypeGenerics
-                currentMethod.Generics
-                targetType
+            match ctx.Operand with
+            | ResolvedMetadataOperand.ScopeType handle -> state, handle
+            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+                let state, targetType, _targetAssy =
+                    IlMachineState.resolveTypeMetadataToken
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        ImmutableArray.Empty
+                        metadataToken
+
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy.Name
+                    currentMethod.DeclaringTypeGenerics
+                    currentMethod.Generics
+                    targetType
 
         let isinstCheck
             (state : IlMachineState)
@@ -883,32 +886,33 @@ module internal UnaryMetadataObjectOps =
     let executeUnboxAny (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
         // ECMA-335 III.4.33
         let actualObj, state = IlMachineState.popEvalStack thread state
 
-        let state, targetType, _targetAssy =
-            IlMachineState.resolveTypeMetadataToken
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy
-                ImmutableArray.Empty
-                metadataToken
-
         let state, targetConcreteTypeHandle =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy.Name
-                currentMethod.DeclaringTypeGenerics
-                currentMethod.Generics
-                targetType
+            match ctx.Operand with
+            | ResolvedMetadataOperand.ScopeType handle -> state, handle
+            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+                let state, targetType, _targetAssy =
+                    IlMachineState.resolveTypeMetadataToken
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        ImmutableArray.Empty
+                        metadataToken
+
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy.Name
+                    currentMethod.DeclaringTypeGenerics
+                    currentMethod.Generics
+                    targetType
 
         // The type token need not denote a nominal type: `unbox.any !!T` with `T = int[]`
         // concretizes to a structural array handle, which by design has no row in
@@ -1097,31 +1101,32 @@ module internal UnaryMetadataObjectOps =
     let executeUnbox (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
         let actualObj, state = IlMachineState.popEvalStack thread state
 
-        let state, targetType, _targetAssy =
-            IlMachineState.resolveTypeMetadataToken
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy
-                ImmutableArray.Empty
-                metadataToken
-
         let state, targetConcreteTypeHandle =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy.Name
-                currentMethod.DeclaringTypeGenerics
-                currentMethod.Generics
-                targetType
+            match ctx.Operand with
+            | ResolvedMetadataOperand.ScopeType handle -> state, handle
+            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+                let state, targetType, _targetAssy =
+                    IlMachineState.resolveTypeMetadataToken
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        ImmutableArray.Empty
+                        metadataToken
+
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy.Name
+                    currentMethod.DeclaringTypeGenerics
+                    currentMethod.Generics
+                    targetType
 
         // Unlike `unbox.any`, whose token may denote any boxable type, III.4.32 requires a value
         // type. None of the structural handle shapes is one — arrays are reference types, and

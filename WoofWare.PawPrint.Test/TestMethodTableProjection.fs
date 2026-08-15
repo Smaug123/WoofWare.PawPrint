@@ -874,7 +874,9 @@ public unsafe struct PointerWrapper
         let field = methodTableField "Flags"
         let token = MetadataToken.FieldDefinition field.Handle
         let token = SourcedMetadataToken.make corelib.Name token
-        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)
+
+        let op =
+            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, MetadataOperand.FromMetadata token)
 
         let state, thread =
             initialState |> stateWithSingleInstructionFromState loggerFactory op
@@ -884,7 +886,13 @@ public unsafe struct PointerWrapper
             |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr target)) thread
 
         let state, whatWeDid =
-            UnaryMetadataIlOp.execute loggerFactory bct UnaryMetadataTokenIlOp.Ldfld token state thread
+            UnaryMetadataIlOp.execute
+                loggerFactory
+                bct
+                UnaryMetadataTokenIlOp.Ldfld
+                (MetadataOperand.FromMetadata token)
+                state
+                thread
 
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
@@ -1101,7 +1109,10 @@ public unsafe struct PointerWrapper
         let field = methodTableField "Flags"
         let token = MetadataToken.FieldDefinition field.Handle
         let token = SourcedMetadataToken.make corelib.Name token
-        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)
+
+        let op =
+            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, MetadataOperand.FromMetadata token)
+
         let state, thread = stateWithSingleInstruction loggerFactory op
 
         let intArrayHandle = ConcreteTypeHandle.OneDimArrayZero (handleFor bct.Int32)
@@ -1115,7 +1126,13 @@ public unsafe struct PointerWrapper
                 thread
 
         let state, whatWeDid =
-            UnaryMetadataIlOp.execute loggerFactory bct UnaryMetadataTokenIlOp.Ldfld token state thread
+            UnaryMetadataIlOp.execute
+                loggerFactory
+                bct
+                UnaryMetadataTokenIlOp.Ldfld
+                (MetadataOperand.FromMetadata token)
+                state
+                thread
 
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
@@ -1425,7 +1442,10 @@ public unsafe struct PointerWrapper
         let field = methodTableField "PerInstInfo"
         let token = MetadataToken.FieldDefinition field.Handle
         let token = SourcedMetadataToken.make corelib.Name token
-        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)
+
+        let op =
+            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, MetadataOperand.FromMetadata token)
+
         let intHandle = handleFor bct.Int32
 
         let state, nullableIntHandle =
@@ -1442,7 +1462,13 @@ public unsafe struct PointerWrapper
                 thread
 
         let state, whatWeDid =
-            UnaryMetadataIlOp.execute loggerFactory bct UnaryMetadataTokenIlOp.Ldfld token state thread
+            UnaryMetadataIlOp.execute
+                loggerFactory
+                bct
+                UnaryMetadataTokenIlOp.Ldfld
+                (MetadataOperand.FromMetadata token)
+                state
+                thread
 
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
@@ -1519,7 +1545,10 @@ public unsafe struct PointerWrapper
         let field = methodTableAuxiliaryDataField "Flags"
         let token = MetadataToken.FieldDefinition field.Handle
         let token = SourcedMetadataToken.make corelib.Name token
-        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)
+
+        let op =
+            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, MetadataOperand.FromMetadata token)
+
         let state, thread = stateWithSingleInstruction loggerFactory op
         let intHandle = handleFor bct.Int32
 
@@ -1532,7 +1561,13 @@ public unsafe struct PointerWrapper
                 thread
 
         let state, whatWeDid =
-            UnaryMetadataIlOp.execute loggerFactory bct UnaryMetadataTokenIlOp.Ldfld token state thread
+            UnaryMetadataIlOp.execute
+                loggerFactory
+                bct
+                UnaryMetadataTokenIlOp.Ldfld
+                (MetadataOperand.FromMetadata token)
+                state
+                thread
 
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
@@ -1548,7 +1583,10 @@ public unsafe struct PointerWrapper
         let field = rawArrayDataField "Length"
         let token = MetadataToken.FieldDefinition field.Handle
         let token = SourcedMetadataToken.make corelib.Name token
-        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)
+
+        let op =
+            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, MetadataOperand.FromMetadata token)
+
         let state, thread = stateWithSingleInstruction loggerFactory op
         let arrayAddr, state = allocateIntArray 3 state
 
@@ -1557,7 +1595,13 @@ public unsafe struct PointerWrapper
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef arrayAddr) thread
 
         let state, whatWeDid =
-            UnaryMetadataIlOp.execute loggerFactory bct UnaryMetadataTokenIlOp.Ldfld token state thread
+            UnaryMetadataIlOp.execute
+                loggerFactory
+                bct
+                UnaryMetadataTokenIlOp.Ldfld
+                (MetadataOperand.FromMetadata token)
+                state
+                thread
 
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
@@ -1573,7 +1617,10 @@ public unsafe struct PointerWrapper
         let field = rawArrayDataField "Data"
         let token = MetadataToken.FieldDefinition field.Handle
         let token = SourcedMetadataToken.make corelib.Name token
-        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldflda, token)
+
+        let op =
+            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldflda, MetadataOperand.FromMetadata token)
+
         let state, thread = stateWithSingleInstruction loggerFactory op
         let arrayAddr, state = allocateIntArray 3 state
 
@@ -1582,7 +1629,13 @@ public unsafe struct PointerWrapper
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef arrayAddr) thread
 
         let state, whatWeDid =
-            UnaryMetadataIlOp.execute loggerFactory bct UnaryMetadataTokenIlOp.Ldflda token state thread
+            UnaryMetadataIlOp.execute
+                loggerFactory
+                bct
+                UnaryMetadataTokenIlOp.Ldflda
+                (MetadataOperand.FromMetadata token)
+                state
+                thread
 
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
@@ -1604,7 +1657,10 @@ public unsafe struct PointerWrapper
         let field = rawDataField "Data"
         let token = MetadataToken.FieldDefinition field.Handle
         let token = SourcedMetadataToken.make corelib.Name token
-        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldflda, token)
+
+        let op =
+            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldflda, MetadataOperand.FromMetadata token)
+
         let state, thread = stateWithSingleInstruction loggerFactory op
         let boxedAddr, state = allocateBoxedIntPtr 0x0102030405060708L state
 
@@ -1613,7 +1669,13 @@ public unsafe struct PointerWrapper
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef boxedAddr) thread
 
         let state, whatWeDid =
-            UnaryMetadataIlOp.execute loggerFactory bct UnaryMetadataTokenIlOp.Ldflda token state thread
+            UnaryMetadataIlOp.execute
+                loggerFactory
+                bct
+                UnaryMetadataTokenIlOp.Ldflda
+                (MetadataOperand.FromMetadata token)
+                state
+                thread
 
         whatWeDid |> shouldEqual WhatWeDid.Executed
 

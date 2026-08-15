@@ -213,7 +213,13 @@ public static class HasMethod
             |> SourcedMetadataToken.make assembly.Name
 
         let state, whatWeDid =
-            UnaryMetadataIlOp.execute loggerFactory baseClassTypes UnaryMetadataTokenIlOp.Ldtoken token state thread
+            UnaryMetadataIlOp.execute
+                loggerFactory
+                baseClassTypes
+                UnaryMetadataTokenIlOp.Ldtoken
+                (MetadataOperand.FromMetadata token)
+                state
+                thread
 
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
@@ -261,7 +267,7 @@ public class GenericHasMethod<T>
                     loggerFactory
                     baseClassTypes
                     UnaryMetadataTokenIlOp.Ldtoken
-                    token
+                    (MetadataOperand.FromMetadata token)
                     state
                     thread
                 |> ignore
@@ -310,7 +316,7 @@ public static class GenericMethodHolder
                     loggerFactory
                     baseClassTypes
                     UnaryMetadataTokenIlOp.Ldtoken
-                    token
+                    (MetadataOperand.FromMetadata token)
                     state
                     thread
                 |> ignore

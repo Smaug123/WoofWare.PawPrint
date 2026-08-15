@@ -345,6 +345,10 @@ type BaseClassTypes<'corelib> =
         IndexOutOfRangeException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         InvalidCastException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         ArrayTypeMismatchException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// Thrown by the runtime — not the BCL — when a method body is not a valid program:
+        /// among other things, when a type operand does not name a closed type, which is
+        /// reachable from `Reflection.Emit` because `ILGenerator.Emit` accepts any `RuntimeType`.
+        InvalidProgramException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingFieldException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingMethodException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         NotSupportedException : TypeInfo<GenericParamFromMetadata, TypeDefn>

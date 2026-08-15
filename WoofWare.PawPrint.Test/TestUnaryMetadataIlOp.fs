@@ -158,7 +158,10 @@ module TestUnaryMetadataIlOp =
 
         let field = int32StaticField "MaxValue"
         let token = sourceToken (MetadataToken.FieldDefinition field.Handle)
-        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)
+
+        let op =
+            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, MetadataOperand.FromMetadata token)
+
         let state, thread = stateWithSingleInstruction loggerFactory op
 
         let state =
@@ -166,7 +169,13 @@ module TestUnaryMetadataIlOp =
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                UnaryMetadataIlOp.execute loggerFactory baseClassTypes UnaryMetadataTokenIlOp.Ldfld token state thread
+                UnaryMetadataIlOp.execute
+                    loggerFactory
+                    baseClassTypes
+                    UnaryMetadataTokenIlOp.Ldfld
+                    (MetadataOperand.FromMetadata token)
+                    state
+                    thread
                 |> ignore
             )
 
@@ -186,7 +195,10 @@ module TestUnaryMetadataIlOp =
             |> Option.defaultWith (fun () -> failwith "VolatileObject::Value not found")
 
         let token = sourceToken (MetadataToken.FieldDefinition valueField.Handle)
-        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)
+
+        let op =
+            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, MetadataOperand.FromMetadata token)
+
         let state, thread = stateWithSingleInstruction loggerFactory op
 
         let state, volatileObjectHandle, volatileObjectConcrete =
@@ -210,7 +222,13 @@ module TestUnaryMetadataIlOp =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer source) thread
 
         let state, whatWeDid =
-            UnaryMetadataIlOp.execute loggerFactory baseClassTypes UnaryMetadataTokenIlOp.Ldfld token state thread
+            UnaryMetadataIlOp.execute
+                loggerFactory
+                baseClassTypes
+                UnaryMetadataTokenIlOp.Ldfld
+                (MetadataOperand.FromMetadata token)
+                state
+                thread
 
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
@@ -228,7 +246,10 @@ module TestUnaryMetadataIlOp =
 
         let field = int32StaticField "MaxValue"
         let token = sourceToken (MetadataToken.FieldDefinition field.Handle)
-        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stfld, token)
+
+        let op =
+            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stfld, MetadataOperand.FromMetadata token)
+
         let state, thread = stateWithSingleInstruction loggerFactory op
 
         let state =
@@ -238,7 +259,13 @@ module TestUnaryMetadataIlOp =
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                UnaryMetadataIlOp.execute loggerFactory baseClassTypes UnaryMetadataTokenIlOp.Stfld token state thread
+                UnaryMetadataIlOp.execute
+                    loggerFactory
+                    baseClassTypes
+                    UnaryMetadataTokenIlOp.Stfld
+                    (MetadataOperand.FromMetadata token)
+                    state
+                    thread
                 |> ignore
             )
 

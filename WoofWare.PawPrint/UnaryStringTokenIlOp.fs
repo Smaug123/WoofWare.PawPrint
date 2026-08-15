@@ -34,41 +34,6 @@ open Microsoft.Extensions.Logging
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module internal UnaryStringTokenIlOp =
 
-    /// <summary>
-    /// The guest <c>System.String</c> object that entry <paramref name="scopeIndex"/> of the
-    /// executing method's <c>DynamicScope</c> holds.
-    /// </summary>
-    /// <remarks>
-    /// Reached through the executing method rather than through the operand, because the operand is
-    /// an <see cref="IlOp"/> and must not carry a heap address. A dynamic method's
-    /// <c>MethodInfo</c> is <c>Synthesised</c> with a <c>SynthesisedMethod.DynamicMethod</c> kind
-    /// carrying its <c>DynamicMethodHandle</c> — that handle is the method's identity precisely
-    /// because every dynamic method in a module shares one owner — so the body, and with it the
-    /// scope's string objects, is one registry lookup away.
-    /// </remarks>
-    let private scopeStringObject (scopeIndex : int) (state : IlMachineState) (thread : ThreadId) : ManagedHeapAddress =
-        let executing = state.ThreadState.[thread].MethodState.ExecutingMethod
-
-        let handle =
-            match executing.SynthesisedKind with
-            | Some (SynthesisedMethod.DynamicMethod handle) -> handle
-            | _ ->
-                failwith
-                    $"ldstr names DynamicScope entry %d{scopeIndex}, but the executing method %s{executing.Name} is not a dynamic method; only a body read off a DynamicResolver can carry a scope operand"
-
-        let definition =
-            MethodHandleRegistry.resolveDynamicMethod handle state.MethodHandles
-            |> Option.defaultWith (fun () ->
-                failwith $"ldstr: %O{handle} is executing but is not registered in the method-handle registry"
-            )
-
-        (definition.GetBody ()).ScopeStrings
-        |> Map.tryFind scopeIndex
-        |> Option.defaultWith (fun () ->
-            failwith
-                $"ldstr: %O{handle} names DynamicScope entry %d{scopeIndex}, but no string object was recorded for it; the decoder builds this operand only for entries the scope reader classified as strings, so the two have gone out of step"
-        )
-
     let execute
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -102,7 +67,7 @@ module internal UnaryStringTokenIlOp =
 
                     value, None
                 | StringOperand.FromDynamicScope scopeIndex ->
-                    let addr = scopeStringObject scopeIndex state thread
+                    let addr = DynamicScopeOperand.entryObject "ldstr" scopeIndex state thread
 
                     // Read now, not when the method was minted. Real .NET reads the scope entry's
                     // characters when it materialises the literal, and a guest can mutate a

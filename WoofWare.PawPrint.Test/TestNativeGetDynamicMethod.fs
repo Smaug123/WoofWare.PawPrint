@@ -438,6 +438,9 @@ public static class Entry
         /// `DynamicILGenerator`'s constructor puts the method's own signature there before any user
         /// code runs, and no instruction ever names it.
         | Blob of byte[]
+        /// A boxed `System.RuntimeTypeHandle` naming <paramref name="target"/>, as
+        /// `GetTokenFor(RuntimeTypeHandle)` adds for `Emit(OpCode, Type)`.
+        | TypeHandle of target : RuntimeTypeHandleTarget
 
     /// What a `DynamicResolver`'s fields will be made to say. Everything here is a field the
     /// resolver's constructor assigns and `DynamicMethodBody` reads back.
@@ -490,6 +493,22 @@ public static class Entry
                 Array.append
                     (Array.append [| 0x72uy |] (System.BitConverter.GetBytes (index ||| 0x70000000)))
                     [| 0x2Auy |]
+            Scope = scope
+        }
+
+    /// A `newarr` naming scope entry <paramref name="index"/>, then `ret`. The tag is the one
+    /// `GetTokenFor(RuntimeTypeHandle)` applies, which `DynamicScope`'s indexer masks off and
+    /// ignores; the entry is what decides whether this resolves.
+    let private newarrBody (index : int) (scope : ScopeEntry list) =
+        { doublingBody with
+            Code =
+                Array.concat
+                    [
+                        [| 0x17uy |]
+                        [| 0x8Duy |]
+                        System.BitConverter.GetBytes (index ||| 0x02000000)
+                        [| 0x2Auy |]
+                    ]
             Scope = scope
         }
 
@@ -586,6 +605,40 @@ public static class Entry
                         CliType.ObjectRef (Some addr), state
                     | ScopeEntry.Blob bytes ->
                         let addr, state = NativeCall.allocateManagedByteArray baseClassTypes bytes state
+
+                        CliType.ObjectRef (Some addr), state
+                    | ScopeEntry.TypeHandle target ->
+                        // A real boxed `RuntimeTypeHandle` pointing at the registry's canonical
+                        // `RuntimeType` for the target, rather than any object with an `m_type`
+                        // field: the walk under test is entry -> m_type -> RuntimeType -> m_handle,
+                        // and `getOrAllocateType` is the same choke point through which a guest's
+                        // own `typeof(T).TypeHandle` would have reached the scope.
+                        let runtimeType, state =
+                            IlMachineState.getOrAllocateType loggerFactory baseClassTypes target state
+
+                        let addr, state =
+                            allocateZeroedAs
+                                loggerFactory
+                                baseClassTypes
+                                (TypeDefn.FromDefinition (
+                                    baseClassTypes.RuntimeTypeHandle.Identity,
+                                    SignatureTypeKind.ValueType
+                                ))
+                                baseClassTypes.RuntimeTypeHandle
+                                state
+
+                        let heapObj = ManagedHeap.get addr state.ManagedHeap
+
+                        let fieldId =
+                            IlMachineState.requiredOwnInstanceFieldId state heapObj.ConcreteType "m_type"
+
+                        let heapObj =
+                            AllocatedNonArrayObject.SetFieldById fieldId (CliType.ObjectRef (Some runtimeType)) heapObj
+
+                        let state =
+                            { state with
+                                ManagedHeap = ManagedHeap.set addr heapObj state.ManagedHeap
+                            }
 
                         CliType.ObjectRef (Some addr), state
 
@@ -890,9 +943,16 @@ public static class Entry
 
     /// Mints with the given body and returns whatever the handler threw, so that each refusal can
     /// be checked to fire for its own reason rather than for whichever one happens to come first.
-    let private mintExpectingFailure (body : ResolverBody) : string =
-        let loggerFactory, prepared, state = loadFixture ()
-
+    /// As `mintExpectingFailure`, for a test that had to build its scope entries out of a state it
+    /// already holds — a `TypeHandle` entry names a target, and a target has to be concretized in
+    /// some state first.
+    let private mintExpectingFailureIn
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (body : ResolverBody)
+        (state : IlMachineState)
+        : string
+        =
         let ex =
             Assert.Throws<System.Exception> (fun () ->
                 mintOne loggerFactory prepared "Probe" [| 0x01uy |] body state
@@ -900,6 +960,10 @@ public static class Entry
             )
 
         ex.Message
+
+    let private mintExpectingFailure (body : ResolverBody) : string =
+        let loggerFactory, prepared, state = loadFixture ()
+        mintExpectingFailureIn loggerFactory prepared body state
 
     [<Test>]
     let ``the body is read back from the resolver`` () : unit =
@@ -1219,6 +1283,160 @@ public static class Entry
 
         message |> shouldContainText "entry 7"
         message |> shouldContainText "does not exist"
+
+    /// The `DynamicScope` index every `newarr` in a body names. Projected rather than compared as a
+    /// `MetadataOperand`, for the same reason `scopeStringOperands` is: the other case carries an
+    /// `AssemblyName`, which has no equality. A `newarr` that had decoded to the metadata case fails
+    /// here rather than silently comparing unequal.
+    let private scopeTypeOperands (body : MintedDynamicMethodBody) : int list =
+        body.Instructions
+        |> List.map fst
+        |> List.choose (fun op ->
+            match op with
+            | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newarr, operand) ->
+                match operand with
+                | MetadataOperand.FromDynamicScope index -> Some index
+                | MetadataOperand.FromMetadata token ->
+                    failwith $"expected a dynamic-scope operand, got the metadata token %O{token.Token}"
+            | _ -> None
+        )
+
+    /// A closed `RuntimeTypeHandleTarget` to hang a scope entry on. `System.Int32` rather than
+    /// anything more exotic because what is under test is the walk to the target, not the target.
+    let private closedInt32
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        : RuntimeTypeHandleTarget * IlMachineState
+        =
+        let state, handle =
+            IlMachineState.concretizeType
+                loggerFactory
+                prepared.BaseClassTypes
+                state
+                prepared.BaseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.PrimitiveType PrimitiveType.Int32)
+
+        RuntimeTypeHandleTarget.Closed handle, state
+
+    /// The scope entry a `newarr` names becomes the operand, exactly as an `ldstr`'s does — the
+    /// point being that the *tag* in the token (0x02, TypeDef) is not what decided it. `DynamicScope`
+    /// masks the tag off and ignores it, so the entry is the only authority on what an index holds.
+    [<Test>]
+    let ``a newarr resolves against the DynamicScope`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+        let target, state = closedInt32 loggerFactory prepared state
+
+        let body =
+            newarrBody
+                2
+                [
+                    ScopeEntry.Null
+                    ScopeEntry.Blob [| 0x00uy |]
+                    ScopeEntry.TypeHandle target
+                ]
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let _, definition = definitionBehindStub state stubAddress
+        let minted = definition.GetBody ()
+
+        scopeTypeOperands minted |> shouldEqual [ 2 ]
+
+        // Every non-null entry is recorded, not only the one the body names and not only the ones
+        // of a kind something can resolve: this map answers "where does entry i live", and the
+        // instruction reads the object when it runs.
+        minted.ScopeObjects |> Map.toList |> List.map fst |> shouldEqual [ 1 ; 2 ]
+
+    /// The kind check is real, and it is the entry that supplies it. A `newarr` whose index holds a
+    /// string is a program CoreCLR would reject at JIT; PawPrint rejects it when the method is
+    /// minted, as it already does for the mirror-image `ldstr`.
+    [<Test>]
+    let ``a newarr naming a string entry is refused`` () : unit =
+        let body =
+            newarrBody 2 [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; ScopeEntry.Str "not a type" ]
+
+        let message = mintExpectingFailure body
+
+        message |> shouldContainText "Newarr"
+        message |> shouldContainText "entry 2"
+        message |> shouldContainText "rather than a type handle"
+
+    [<Test>]
+    let ``a newarr naming the method's own signature blob is refused`` () : unit =
+        let body = newarrBody 1 baselineScope
+
+        let message = mintExpectingFailure body
+
+        message |> shouldContainText "entry 1"
+        message |> shouldContainText "System.Byte[]"
+        message |> shouldContainText "rather than a type handle"
+
+    [<Test>]
+    let ``a newarr naming a nonexistent entry is refused`` () : unit =
+        let body = newarrBody 7 baselineScope
+
+        let message = mintExpectingFailure body
+
+        message |> shouldContainText "entry 7"
+        message |> shouldContainText "does not exist"
+
+    /// The mirror image of the check above: `ldstr` must not accept a type entry either.
+    [<Test>]
+    let ``an ldstr naming a type entry is refused`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+        let target, state = closedInt32 loggerFactory prepared state
+
+        let body =
+            ldstrBody
+                2
+                [
+                    ScopeEntry.Null
+                    ScopeEntry.Blob [| 0x00uy |]
+                    ScopeEntry.TypeHandle target
+                ]
+
+        let message = mintExpectingFailureIn loggerFactory prepared body state
+
+        message |> shouldContainText "entry 2"
+        message |> shouldContainText "type handle rather than a string"
+
+    /// "This opcode is not wired for scope operands yet" and "this entry is the wrong kind" are
+    /// different facts and must read differently: a guest that trips either just gets parked, so the
+    /// message is the only diagnostic anyone gets. A `call` naming a perfectly good *type* entry is
+    /// the case that separates them.
+    [<Test>]
+    let ``a call naming a type entry is refused as unsupported rather than as wrong-kind`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+        let target, state = closedInt32 loggerFactory prepared state
+
+        // ldnull; call <scope 2>; ret
+        let body =
+            { doublingBody with
+                Code =
+                    Array.concat
+                        [
+                            [| 0x14uy ; 0x28uy |]
+                            System.BitConverter.GetBytes (2 ||| 0x0A000000)
+                            [| 0x2Auy |]
+                        ]
+                Scope =
+                    [
+                        ScopeEntry.Null
+                        ScopeEntry.Blob [| 0x00uy |]
+                        ScopeEntry.TypeHandle target
+                    ]
+            }
+
+        let message = mintExpectingFailureIn loggerFactory prepared body state
+
+        message |> shouldContainText "Call"
+        message |> shouldContainText "cannot yet resolve method entries"
+        // Not the wrong-kind wording: the entry is fine, the opcode is what is missing.
+        message |> shouldNotContainText "rather than a type handle"
 
     /// A `catch` clause's type arrives as a `DynamicScope` index in `ClassTokenOrFilterOffset`,
     /// which `ExceptionRegion.Catch` has nowhere to put; so clauses are refused as a body, rather

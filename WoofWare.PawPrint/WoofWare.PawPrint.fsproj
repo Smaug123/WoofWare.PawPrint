@@ -97,6 +97,7 @@
     <Compile Include="IlMachineStateExecution.fs" />
     <Compile Include="StructMarshalStub.fs" />
     <Compile Include="NullaryIlOp.fs" />
+    <Compile Include="DynamicScopeOperand.fs" />
     <Compile Include="UnaryMetadataIlOpContext.fs" />
     <Compile Include="UnaryMetadataCallOps.fs" />
     <Compile Include="UnaryMetadataObjectOps.fs" />

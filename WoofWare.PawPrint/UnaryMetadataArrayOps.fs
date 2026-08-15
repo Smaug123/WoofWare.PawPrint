@@ -10,8 +10,6 @@ module internal UnaryMetadataArrayOps =
     let executeNewarr (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
@@ -38,24 +36,34 @@ module internal UnaryMetadataArrayOps =
 
         let typeGenerics = currentMethod.DeclaringTypeGenerics
 
-        let state, elementType, assy =
-            IlMachineState.resolveTypeMetadataToken
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy
-                currentMethod.DeclaringTypeGenerics
-                metadataToken
+        let state, concreteTypeHandle =
+            match ctx.Operand with
+            | ResolvedMetadataOperand.ScopeType handle -> state, handle
+            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+                let state, elementType, assy =
+                    IlMachineState.resolveTypeMetadataToken
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        currentMethod.DeclaringTypeGenerics
+                        metadataToken
 
-        let state, zeroOfType, concreteTypeHandle =
-            IlMachineState.cliTypeZeroOf
-                loggerFactory
-                baseClassTypes
-                assy
-                elementType
-                typeGenerics
-                methodState.Generics
-                state
+                // `cliTypeZeroOf` split into its two halves (IlMachineTypeResolution.fs:586-607)
+                // so that the zero below is computed the same way for both universes.
+                let state = state.WithLoadedAssembly assy
+
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    assy.Name
+                    typeGenerics
+                    methodState.Generics
+                    elementType
+
+        let zeroOfType, state =
+            IlMachineState.cliTypeZeroOfHandle state baseClassTypes concreteTypeHandle
 
         // The length is checked *after* the element type has been resolved, as CoreCLR does:
         // the array MethodTable is in hand before `AllocateSzArray` is reached, so a type that
@@ -133,8 +141,6 @@ module internal UnaryMetadataArrayOps =
     let executeLdelema (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
@@ -212,24 +218,30 @@ module internal UnaryMetadataArrayOps =
             // The exact-equality semantics — not assignment-compatibility — match CoreCLR
             // (interpexec.cpp INTOP_LDELEMA_REF, where the JIT-resolved expectedMT is
             // compared with `arr->GetArrayElementTypeHandle()`).
-            let state, elementType, elementAssy =
-                IlMachineState.resolveTypeMetadataToken
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    activeAssy
-                    typeGenerics
-                    metadataToken
+            let state, tokenElementHandle =
+                match ctx.Operand with
+                | ResolvedMetadataOperand.ScopeType handle -> state, handle
+                | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+                    let state, elementType, elementAssy =
+                        IlMachineState.resolveTypeMetadataToken
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            activeAssy
+                            typeGenerics
+                            metadataToken
 
-            let state, _zeroOfType, tokenElementHandle =
-                IlMachineState.cliTypeZeroOf
-                    loggerFactory
-                    baseClassTypes
-                    elementAssy
-                    elementType
-                    typeGenerics
-                    methodGenerics
-                    state
+                    // `cliTypeZeroOf` minus the zero, which this path never used.
+                    let state = state.WithLoadedAssembly elementAssy
+
+                    IlMachineState.concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        elementAssy.Name
+                        typeGenerics
+                        methodGenerics
+                        elementType
 
             if tokenElementHandle <> arrayElementHandle then
                 // Don't advance the PC: exception dispatch needs the faulting instruction's

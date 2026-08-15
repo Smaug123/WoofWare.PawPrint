@@ -80,8 +80,8 @@ module internal DynamicMethodBody =
 
     /// <summary>
     /// The entries of the <c>DynamicScope</c> reachable from this resolver: what each one is, so
-    /// the decoder can resolve operands against it, and where the guest object holding it lives,
-    /// so <c>ldstr</c> can intern the right instance.
+    /// the decoder can decide which operands are resolvable against it, and where the guest object
+    /// holding it lives, so the instruction that names it can read the object when it runs.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -172,16 +172,16 @@ module internal DynamicMethodBody =
             | ConcreteTypeHandle.Byref element -> $"%s{describeType element}&"
             | ConcreteTypeHandle.FunctionPointer _ -> $"a function pointer %O{handle}"
 
-        let isString (handle : ConcreteTypeHandle) : bool =
+        let isCorelibType (namespace_ : string) (name : string) (handle : ConcreteTypeHandle) : bool =
             match handle with
             | ConcreteTypeHandle.Concrete _ ->
                 match AllConcreteTypes.lookup handle state.ConcreteTypes with
-                | Some ty -> ty.Namespace = "System" && ty.Name = "String"
+                | Some ty -> ty.Namespace = namespace_ && ty.Name = name
                 | None -> false
             | _ -> false
 
         let mutable entries = Map.empty
-        let mutable strings = Map.empty
+        let mutable objects = Map.empty
 
         for i in 0 .. size - 1 do
             let entry =
@@ -194,10 +194,15 @@ module internal DynamicMethodBody =
                     // entry no instruction may name.
                     DynamicScopeEntry.Unsupported "the null every DynamicScope is seeded with at index 0"
                 | CliType.ObjectRef (Some addr) ->
+                    // Recorded for every non-null entry, not only the classifiable ones: this map
+                    // answers "where does entry i live", which is a question with an answer here
+                    // regardless of whether anything can yet resolve what is in it.
+                    objects <- Map.add i addr objects
+
                     match ManagedHeap.tryGetObjectConcreteType addr state.ManagedHeap with
                     | None -> DynamicScopeEntry.Unsupported $"an object at %O{addr} that is not on the heap"
                     | Some concreteType ->
-                        if isString concreteType then
+                        if isCorelibType "System" "String" concreteType then
                             let contents =
                                 ManagedHeap.getStringContents addr state.ManagedHeap
                                 |> Option.defaultWith (fun () ->
@@ -205,15 +210,21 @@ module internal DynamicMethodBody =
                                         $"%s{operation}: DynamicScope entry %d{i} is a System.String at %O{addr} whose contents were never recorded; every string the guest can hand to ILGenerator.Emit was allocated through allocateManagedString, which records them"
                                 )
 
-                            strings <- Map.add i addr strings
                             DynamicScopeEntry.String contents
+                        elif isCorelibType "System" "RuntimeTypeHandle" concreteType then
+                            // Which type it names is *not* read here. `DynamicResolver.ResolveToken`
+                            // reads `m_scope[token]` at JIT, and a guest that replaces this entry
+                            // between minting the method and first invoking it is measured to see
+                            // the new type — so a target resolved now would be a snapshot that can
+                            // go stale, exactly as a string's characters can.
+                            DynamicScopeEntry.TypeHandle
                         else
                             DynamicScopeEntry.Unsupported $"a %s{describeType concreteType}"
                 | other -> failwith $"%s{operation}: expected DynamicScope entry %d{i} to be a reference, got %O{other}"
 
             entries <- Map.add i entry entries
 
-        entries, strings
+        entries, objects
 
     /// <summary>
     /// The `initLocals` a dynamic method would be compiled with if it were compiled *now*, read
@@ -323,7 +334,7 @@ module internal DynamicMethodBody =
         // silently resolve it to an unrelated real row, because the bit patterns are the same.
         // `scopeAssembly` remains the right universe for the *local signature* below, which
         // `SignatureHelper` really does spell against a module.
-        let scopeEntries, scopeStrings = readScope operation state obj
+        let scopeEntries, scopeObjects = readScope operation state obj
 
         let instructions =
             IlDecoding.decodeInstructions (IlTokenUniverse.DynamicScope scopeEntries) code
@@ -341,4 +352,4 @@ module internal DynamicMethodBody =
 
         // No `initLocals` here: it is not knowable yet. `readInitLocals` above answers it, at
         // first execution, and `MethodHandleRegistry.latchInitLocals` fixes it there.
-        MintedDynamicMethodBody.make instructions localVars ImmutableArray.Empty scopeStrings
+        MintedDynamicMethodBody.make instructions localVars ImmutableArray.Empty scopeObjects
