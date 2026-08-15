@@ -81,10 +81,9 @@ type RawErrnoPortability =
 /// that is not: it is what a resolution walk reports for a symlink chain, so
 /// the model needs to name it, but its raw number differs between the platforms
 /// PawPrint models. It therefore carries both candidates and yields one only to
-/// a caller that says which Unix it is impersonating. `EAGAIN`, `ENOTEMPTY`,
-/// `ENAMETOOLONG`
-/// and the rest of the range from 35 up are still absent, simply because
-/// nothing here raises them yet; each will land the same way when it does.
+/// a caller that says which Unix it is impersonating. `ENOTEMPTY` and the rest
+/// of the range from 35 up are still absent, simply because nothing here raises
+/// them yet; each will land the same way when it does.
 [<RequireQualifiedAccess>]
 type UnixError =
     /// `EPERM` — Operation not permitted.
@@ -199,6 +198,25 @@ type UnixError =
     /// two `<errno.h>`s), so either choice would rename a different error on the
     /// other platform.
     | ENAMETOOLONG
+    /// `EAGAIN` — Resource temporarily unavailable. `EWOULDBLOCK` is the *same*
+    /// value, on both platforms and in the PAL enum
+    /// (`Interop.Errors.cs:111` defines `EWOULDBLOCK = EAGAIN`), so there is one
+    /// case here rather than two: a guest that distinguished them would be
+    /// asserting a difference no Unix PawPrint models actually has.
+    ///
+    /// Reported by `SystemNative_FLock` when a non-blocking lock request
+    /// conflicts with a lock another open file description already holds. This
+    /// is the one errno the BCL's `FileStream` treats as meaningful — every
+    /// other failure to lock is swallowed, since the lock is advisory
+    /// (`SafeFileHandle.Unix.cs:359`) — so it is what makes `FileShare` do
+    /// anything at all on Unix.
+    ///
+    /// Platform-dependent like `ELOOP`, and it is *the* transposition the whole
+    /// `RawErrnoPortability` distinction was built around: Linux numbers this 11
+    /// and Darwin 35, which are exactly the two numbers Darwin and Linux
+    /// respectively give `EDEADLK`. Measured on both platforms rather than read
+    /// off a header.
+    | EAGAIN
 
 /// The raw and PAL numbering of one `UnixError`.
 type UnixErrorNumbering =
@@ -270,6 +288,7 @@ module UnixError =
             UnixError.ERANGE
             UnixError.ELOOP
             UnixError.ENAMETOOLONG
+            UnixError.EAGAIN
         ]
 
     let private portable (pal : int) (raw : int) : UnixErrorNumbering =
@@ -330,6 +349,9 @@ module UnixError =
         // Likewise: raw 36 is EINPROGRESS on Darwin, and raw 63 is ENOSR on
         // Linux.
         | UnixError.ENAMETOOLONG -> platformDependent 0x10025 36 63
+        // The V7 transposition itself: raw 11 is EAGAIN on Linux but EDEADLK on
+        // Darwin, and raw 35 is EAGAIN on Darwin but EDEADLK on Linux.
+        | UnixError.EAGAIN -> platformDependent 0x10006 11 35
 
     /// The `Interop.Error` value CoreLib switches on. Total: the PAL numbering is
     /// platform-independent, so it is always answerable.
