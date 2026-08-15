@@ -85,6 +85,15 @@ module TestPureCases =
         let file (contents : string) =
             SeedEntry.File (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
 
+        let openSeed =
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    name "d", SeedEntry.Directory (Map.ofList [ name "g", file "nested" ])
+                    name "lf", SeedEntry.Symlink (target "f")
+                    name "ld", SeedEntry.Symlink (target "d")
+                ]
+
         [
             "FileMetadataSeeded.cs",
             Map.ofList
@@ -121,6 +130,12 @@ module TestPureCases =
                     // handler that answered from the *resolved* file pass.
                     name "five", SeedEntry.Symlink (target "hello5")
                 ]
+            // Both open-path guests want the same tree, and deliberately share
+            // one: the raw guest pins the syscall contract and the managed one
+            // pins which exception each errno becomes, so a divergence between
+            // them is a divergence about one filesystem rather than two.
+            "SystemNativeOpen.cs", openSeed
+            "OpenMissingFile.cs", openSeed
             "LinkTargetSeeded.cs",
             Map.ofList
                 [

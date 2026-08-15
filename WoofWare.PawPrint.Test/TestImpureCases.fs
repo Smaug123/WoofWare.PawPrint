@@ -339,6 +339,29 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // Pins `open(2)`'s lowest-free-descriptor rule against the
+                // emulated kernel's own table. Impure because the *numbers*
+                // are not cross-runtime: the oracle's process holds the
+                // runtime's own descriptors, so its first open is not 3, and a
+                // differential guest could assert only ">= 0" — which no wrong
+                // allocator fails.
+                FileName = "OpenFdNumbering.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        FileSystem =
+                            let name (s : string) = FileName.parseOrFail "test seed" s
+
+                            let file (contents : string) =
+                                SeedEntry.File (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
+
+                            Map.ofList [ name "f", file "one" ; name "g", file "two" ; name "h", file "three" ]
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // Pins the emulated kernel's MAXSYMLINKS end to end, which is
                 // the one part of `pathLimits` that unit tests cannot reach:
                 // they call the resolver directly, so a `resolveGuestPath` that
