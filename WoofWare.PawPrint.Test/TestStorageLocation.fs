@@ -300,6 +300,7 @@ module TestStorageLocationResolve =
                 {
                     IsValueType = true
                     IsEnum = false
+                    NominalAlignment = None
                     // Every field carries a `FieldOffset`, which is what explicit layout means; the
                     // two deliberately overlap.
                     LayoutKind = TypeLayoutKind.Explicit

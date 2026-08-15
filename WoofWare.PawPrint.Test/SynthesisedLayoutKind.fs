@@ -38,6 +38,7 @@ module SynthesisedLayoutKind =
         {
             IsValueType = true
             IsEnum = false
+            NominalAlignment = None
             LayoutKind = ofFieldShape fields
             Layout = layout
             CharSet = charSet

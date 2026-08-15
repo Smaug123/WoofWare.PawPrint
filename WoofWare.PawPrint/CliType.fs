@@ -858,6 +858,16 @@ and CliValueType =
             /// time so the context-free `EvalStackValue.ofCliType` can flatten without threading
             /// `BaseClassTypes`/`AllConcreteTypes` through every push site.
             _PrimitiveLikeKind : PrimitiveLikeKind option
+            /// The alignment CoreCLR stamps on the declared type by name, overriding the one its
+            /// fields imply; `None` for every type whose demand is derived, which is almost all of
+            /// them. Arrives as `DeclaredTypeFacts.NominalAlignment`, and is cached here for the
+            /// same reason `_PrimitiveLikeKind` is: answering it needs metadata, and `SizeOf` is
+            /// deliberately context-free.
+            ///
+            /// It governs only what a *container* must do to place a field of this type. The
+            /// type's own size is still derived (see `SizeOf`), which is faithful: CoreCLR stamps
+            /// the alignment after the size has been computed and never recomputes it.
+            _NominalAlignment : int option
             _Storage : CliValueTypeStorage
             /// Which field-placement algorithm governs this type, as
             /// `TypeLayoutKind.applied` reports it for the declaring type. Stored alongside
@@ -1052,13 +1062,12 @@ and CliValueType =
                     // reference and an `Int128` on an 8-byte rather than 16-byte boundary inside
                     // its enclosing type.
                     //
-                    // The two arms cannot currently disagree: `SizeOfFieldStorage` reports
-                    // pointer alignment for every GC-containing value type, and no PawPrint value
-                    // type yet demands more than pointer alignment — `Int128`'s 16-byte
-                    // requirement is nominal on the type rather than derived from its two
-                    // `ulong`s, and is a separate gap (parked as `StructLayoutInt128Alignment.cs`).
-                    // Stated explicitly all the same, so that landing that gap does not silently
-                    // start over-aligning by inheriting the wider field's alignment here.
+                    // The two arms now genuinely disagree, and the cap is load-bearing:
+                    // `Int128` demands 16 (`DeclaredTypeFacts.nominalAlignment`), so a struct
+                    // holding both a reference and an `Int128` would land at 16 rather than 8 if
+                    // this inherited the field's own alignment. `GcWideOuter` in
+                    // `sourcesPure/StructLayoutInt128Alignment.cs` is 40 bytes on real .NET
+                    // precisely because of this arm, and would be 48 without it.
                     let alignment =
                         if CliType.ContainsObjectReferences field.Contents then
                             NATIVE_INT_SIZE
@@ -1151,8 +1160,8 @@ and CliValueType =
         let _minimumSize, packingSize =
             match layout with
             | Layout.Custom (size = size ; packingSize = packing) ->
-                size, if packing = 0 then DEFAULT_STRUCT_ALIGNMENT else packing
-            | Layout.Default -> 0, DEFAULT_STRUCT_ALIGNMENT
+                size, if packing = 0 then DEFAULT_PACKING_SIZE else packing
+            | Layout.Default -> 0, DEFAULT_PACKING_SIZE
 
         let seqFields, nonSeqFields =
             fields |> List.partition (fun field -> field.Offset.IsNone)
@@ -1328,8 +1337,8 @@ and CliValueType =
         let minimumSize, packingSize =
             match layout with
             | Layout.Custom (size = size ; packingSize = packing) ->
-                size, if packing = 0 then DEFAULT_STRUCT_ALIGNMENT else packing
-            | Layout.Default -> 0, DEFAULT_STRUCT_ALIGNMENT
+                size, if packing = 0 then DEFAULT_PACKING_SIZE else packing
+            | Layout.Default -> 0, DEFAULT_PACKING_SIZE
 
         let containsObjectReferences =
             fields
@@ -2040,6 +2049,7 @@ and CliValueType =
         {
             _Declared = declared
             _PrimitiveLikeKind = CliValueType.ClassifyPrimitiveLike bct allCt declared facts.IsEnum fields
+            _NominalAlignment = facts.NominalAlignment
             _Storage = CliValueType.StorageFromFields facts.LayoutKind facts.Layout fields
             LayoutKind = facts.LayoutKind
             Layout = facts.Layout
@@ -2062,6 +2072,7 @@ and CliValueType =
         {
             _Declared = source._Declared
             _PrimitiveLikeKind = source._PrimitiveLikeKind
+            _NominalAlignment = source._NominalAlignment
             _Storage = CliValueType.StorageFromFields source.LayoutKind layout fields
             LayoutKind = source.LayoutKind
             Layout = layout
@@ -2281,13 +2292,41 @@ and CliValueType =
                 $"cannot view %O{cvt._Declared} as a %d{size}-byte value at offset %d{offset}: %s{describeCandidates}"
 
     static member SizeOf (vt : CliValueType) : SizeofResult =
-        match vt._Storage with
-        | CliValueTypeStorage.RawBytes bytes ->
-            {
-                Size = bytes.Length
-                Alignment = 1
+        let derived =
+            match vt._Storage with
+            | CliValueTypeStorage.RawBytes bytes ->
+                {
+                    Size = bytes.Length
+                    Alignment = 1
+                }
+            | CliValueTypeStorage.Fields storage ->
+                CliValueType.SizeOfFieldStorage vt.LayoutKind vt.Layout storage.Fields
+
+        // A stamped alignment replaces the derived one but leaves `Size` alone. That asymmetry is
+        // CoreCLR's, not a simplification: `InitializeSequentialFieldLayout` computes the size as
+        // `AlignSize(lastFieldEnd, alignmentRequirement)` (classlayoutinfo.cpp:548) and
+        // `CheckForSystemTypes` overwrites the alignment afterwards without revisiting the size.
+        // So `Int128` is 16 bytes because its two `ulong`s end at 16, not because it rounds to 16.
+        //
+        // The `Alignment` this returns is read by containers, through `CliType.SizeOf` on a field's
+        // contents — which is exactly the `GetFieldAlignmentRequirement()` call CoreCLR makes at
+        // classlayoutinfo.cpp:112 and methodtablebuilder.cpp:8532. That is the whole propagation
+        // mechanism: no separate walk is needed to make a struct embedding an `Int128` 16-aligned.
+        match vt._NominalAlignment with
+        | None -> derived
+        | Some alignment ->
+            // Every type CoreCLR stamps happens to be a whole number of its stamp wide, so
+            // "round the size to the stamp" and "leave the size alone" agree on all of them and
+            // no test could distinguish the two. Rather than leave that a silent coin-flip,
+            // require the coincidence: where it holds the choice does not matter, and a stamped
+            // type that broke it would need this code to make a decision it has no evidence for.
+            if derived.Size % alignment <> 0 then
+                failwith
+                    $"CliValueType.SizeOf: %O{vt._Declared} carries a nominal alignment of %d{alignment} but its fields derive a size of %d{derived.Size}, which is not a multiple of it. CoreCLR stamps the alignment after sizing the type and never revisits the size (classlayoutinfo.cpp:548 vs methodtablebuilder.cpp:10576), so the size would stay %d{derived.Size} while containers placed it at %d{alignment} — a shape no stamped BCL type has, and one this model has no evidence for"
+
+            { derived with
+                Alignment = alignment
             }
-        | CliValueTypeStorage.Fields storage -> CliValueType.SizeOfFieldStorage vt.LayoutKind vt.Layout storage.Fields
 
     static member ContainsObjectReferences (vt : CliValueType) : bool =
         match vt._Storage with
@@ -2742,8 +2781,8 @@ and CliValueType =
             let minimumSize, packingSize =
                 match vt.Layout with
                 | Layout.Custom (size = size ; packingSize = packing) ->
-                    size, if packing = 0 then DEFAULT_STRUCT_ALIGNMENT else packing
-                | Layout.Default -> 0, DEFAULT_STRUCT_ALIGNMENT
+                    size, if packing = 0 then DEFAULT_PACKING_SIZE else packing
+                | Layout.Default -> 0, DEFAULT_PACKING_SIZE
 
             // CoreCLR's `EEClassNativeLayoutInfo::CollectNativeLayoutFieldMetadataThrowing`
             // (classlayoutinfo.cpp:984-988) bumps a computed native layout size of 0 to 1
@@ -2886,6 +2925,7 @@ and CliValueType =
         {
             _Declared = cvt._Declared
             _PrimitiveLikeKind = cvt._PrimitiveLikeKind
+            _NominalAlignment = cvt._NominalAlignment
             LayoutKind = cvt.LayoutKind
             Layout = cvt.Layout
             CharSet = cvt.CharSet
@@ -2967,6 +3007,7 @@ and CliValueType =
             {
                 _Declared = target._Declared
                 _PrimitiveLikeKind = target._PrimitiveLikeKind
+                _NominalAlignment = target._NominalAlignment
                 _Storage = CliValueTypeStorage.RawBytes (Array.copy sourceBytes)
                 LayoutKind = target.LayoutKind
                 Layout = target.Layout
@@ -3007,6 +3048,7 @@ and CliValueType =
             {
                 _Declared = target._Declared
                 _PrimitiveLikeKind = target._PrimitiveLikeKind
+                _NominalAlignment = target._NominalAlignment
                 _Storage =
                     CliValueTypeStorage.Fields
                         {
@@ -3080,6 +3122,7 @@ and CliValueType =
                 {
                     _Declared = template._Declared
                     _PrimitiveLikeKind = template._PrimitiveLikeKind
+                    _NominalAlignment = template._NominalAlignment
                     _Storage = CliValueTypeStorage.RawBytes (Array.copy bytes)
                     LayoutKind = template.LayoutKind
                     Layout = template.Layout
@@ -3125,6 +3168,7 @@ and CliValueType =
                     {
                         _Declared = template._Declared
                         _PrimitiveLikeKind = template._PrimitiveLikeKind
+                        _NominalAlignment = template._NominalAlignment
                         _Storage =
                             CliValueTypeStorage.Fields
                                 {

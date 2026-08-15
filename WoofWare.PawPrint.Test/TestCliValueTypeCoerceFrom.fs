@@ -105,6 +105,7 @@ module TestCliValueTypeCoerceFrom =
             {
                 IsValueType = true
                 IsEnum = false
+                NominalAlignment = None
                 LayoutKind = TypeLayoutKind.Explicit
                 Layout = layout
                 CharSet = CharSet.Ansi
