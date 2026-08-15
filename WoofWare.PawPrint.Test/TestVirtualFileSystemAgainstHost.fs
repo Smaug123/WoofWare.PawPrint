@@ -518,6 +518,132 @@ module TestVirtualFileSystemAgainstHost =
             with _ ->
                 ()
 
+    // ------------------------------------------------- symlink splice length
+
+    /// An absolute path of exactly `bytes` bytes naming nothing, in components
+    /// of 200 so that NAME_MAX cannot be what refuses it on either flavour.
+    let private danglingTarget (bytes : int) : string =
+        let component_ = "/" + String.replicate 200 "z"
+        let repeated = String.replicate (bytes / component_.Length + 1) component_
+        repeated.Substring (0, bytes)
+
+    [<Test>]
+    let ``the model splices symlink targets exactly as this kernel does`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // Darwin re-checks the total length whenever it expands a symbolic link
+        // and Linux does not, so this pins whichever of the two the host is —
+        // macOS locally, Linux in CI, and neither column rests on my say-so.
+        //
+        // Outcomes are compared pointwise rather than boundaries, so the same
+        // test is meaningful on a kernel that has no boundary at all: on Linux
+        // every probe below must resolve, and a model that wrongly re-checked
+        // would fail here rather than silently agreeing.
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-splice-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            let pathMax = PathLimits.pathMaxBytes (limits ())
+            let mutable index = 0
+            let mutable compared = 0
+
+            // The suffix table from the probes, including the rows that
+            // separate a raw-byte model from a canonical one: "//a" costs what
+            // "/a" costs, but "/a//b" costs one byte more than "/a/b".
+            let suffixes =
+                [
+                    ""
+                    "/"
+                    "//"
+                    "/a"
+                    "/a/"
+                    "//a"
+                    "///a"
+                    "/a/b"
+                    "/a//b"
+                    "/a///b"
+                    "/./a"
+                    "/.."
+                    "/a/../b"
+                ]
+
+            for suffix in suffixes do
+                // Where the *model* would put the boundary. Used only to choose
+                // probe points; every assertion below compares the host's
+                // outcome against the model's, so a wrong PATH_MAX here would
+                // move the probes rather than excuse a disagreement — and the
+                // PATH_MAX oracle above is what pins that number.
+                let predicted = pathMax - Text.Encoding.UTF8.GetByteCount suffix - 1
+
+                for candidate in [ predicted - 1 ; predicted ; predicted + 1 ] do
+                    // `symlink(2)` will not create a target of PATH_MAX bytes or
+                    // more, so that cell is not reachable on a live kernel at
+                    // all; the unit tests state the extrapolation instead.
+                    if candidate >= 1 && candidate <= pathMax - 1 then
+                        index <- index + 1
+                        let linkName = $"L%d{index}"
+                        let linkPath = Path.Combine (root, linkName)
+                        let targetText = danglingTarget candidate
+
+                        if symlink (targetText, linkPath) <> 0 then
+                            failwith
+                                $"could not create a probe symlink with a %d{candidate}-byte target: errno %d{errno ()}"
+
+                        let hostOutcome =
+                            match access (linkPath + suffix, F_OK) with
+                            | 0 -> Ok ()
+                            | _ -> Error (errno ())
+
+                        let vfs =
+                            VirtualFileSystem.createSymlink
+                                (VirtualFileSystem.root (VirtualFileSystem.empty buildTime))
+                                (FileName.parseOrFail "test" linkName)
+                                buildTime
+                                (SymlinkTarget.parseOrFail "test" targetText)
+                                (VirtualFileSystem.empty buildTime)
+                            |> function
+                                | Ok (_, vfs) -> vfs
+                                | Error error -> failwith $"building the model link: %O{error}"
+
+                        let modelOutcome =
+                            match
+                                VirtualFileSystem.resolve
+                                    (limits ())
+                                    (VirtualFileSystem.root vfs)
+                                    SymlinkPolicy.Follow
+                                    (UnixPath.parseOrFail "test" ("/" + linkName + suffix))
+                                    vfs
+                            with
+                            | Ok _ -> Ok ()
+                            | Error error -> Error (hostErrno error)
+
+                        compared <- compared + 1
+
+                        if hostOutcome <> modelOutcome then
+                            let describe (outcome : Result<unit, int>) : string =
+                                match outcome with
+                                | Ok () -> "resolved"
+                                | Error e when e = hostErrno UnixError.ENOENT -> "ENOENT"
+                                | Error e when e = hostErrno UnixError.ENAMETOOLONG -> "ENAMETOOLONG"
+                                | Error e when e = hostErrno UnixError.ELOOP -> "ELOOP"
+                                | Error e -> $"errno %d{e}"
+
+                            failwith
+                                $"Resolving \"%s{linkName}%s{suffix}\" through a symlink whose target is %d{candidate} bytes: this kernel says %s{describe hostOutcome}, but the model says %s{describe modelOutcome}. %O{hostPlatform ()} either re-checks the spliced length or does not, and the kernel is the authority."
+
+            // Guards against a silently empty sweep: if `symlink` or the probe
+            // loop stopped producing candidates, every comparison above would
+            // vacuously hold.
+            compared |> shouldBeGreaterThan 30
+        finally
+            try
+                Directory.Delete (root, true)
+            with _ ->
+                ()
+
     // ------------------------------------------------------------------ the test
 
     [<Test>]

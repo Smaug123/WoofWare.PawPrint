@@ -314,12 +314,14 @@ module TestVirtualFileSystem =
     [<Test>]
     let ``create refuses a limit no Unix has`` () : unit =
         Assert.Throws<Exception> (fun () ->
-            PathLimits.create 0 4096 (NameLengthLimit.Utf8Bytes 255) |> ignore<PathLimits>
+            PathLimits.create 0 4096 (NameLengthLimit.Utf8Bytes 255) SpliceLengthRecheck.NoRecheck
+            |> ignore<PathLimits>
         )
         |> ignore<Exception>
 
         Assert.Throws<Exception> (fun () ->
-            PathLimits.create 40 4096 (NameLengthLimit.Utf8Bytes 0) |> ignore<PathLimits>
+            PathLimits.create 40 4096 (NameLengthLimit.Utf8Bytes 0) SpliceLengthRecheck.NoRecheck
+            |> ignore<PathLimits>
         )
         |> ignore<Exception>
 
@@ -331,7 +333,8 @@ module TestVirtualFileSystem =
         // a way no test of *resolution* would obviously report.
         let exn =
             Assert.Throws<Exception> (fun () ->
-                PathLimits.create 4096 40 (NameLengthLimit.Utf8Bytes 255) |> ignore<PathLimits>
+                PathLimits.create 4096 40 (NameLengthLimit.Utf8Bytes 255) SpliceLengthRecheck.NoRecheck
+                |> ignore<PathLimits>
             )
 
         exn.Message |> shouldContainText "wrong way round"
@@ -534,8 +537,8 @@ module TestVirtualFileSystem =
     [<Test>]
     let ``a symlink target is stored verbatim`` () : unit =
         // readlink(2) returns the stored bytes unchanged and lstat reports
-        // their length as st_size, but UnixPath.parse collapses "//". Storing
-        // a parsed path would make FileInfo.LinkTarget disagree with every Unix.
+        // their length as st_size, so a target that was created as "a//b/" must
+        // read back as "a//b/" or FileInfo.LinkTarget disagrees with every Unix.
         let raw = "a//b/"
         let vfs = build [ mklink (rootOf emptyFs) "l" raw ]
 
@@ -547,8 +550,16 @@ module TestVirtualFileSystem =
         | Some (InodeContent.Symlink stored) ->
             SymlinkTarget.toString stored |> shouldEqual raw
             SymlinkTarget.toUtf8 stored |> Seq.length |> shouldEqual raw.Length
-            // ...while the *traversal* view is the normalised path.
-            SymlinkTarget.toUnixPath stored |> UnixPath.toString |> shouldEqual "a/b/"
+            // The traversal view keeps the spelling too — `UnixPath` is verbatim
+            // for the same reason this is, so converting one to the other loses
+            // nothing. Only `components` collapses, and only where the kernel
+            // does.
+            SymlinkTarget.toUnixPath stored |> UnixPath.toString |> shouldEqual raw
+
+            SymlinkTarget.toUnixPath stored
+            |> UnixPath.components
+            |> List.length
+            |> shouldEqual 2
         | other -> failwith $"expected a symlink, got %A{other}"
 
     [<Test>]
@@ -1332,3 +1343,244 @@ module TestVirtualFileSystem =
         // every comparison above would hold vacuously.
         observedLateModification |> shouldBeGreaterThan 100
         observedCtimeAheadOfMtime |> shouldBeGreaterThan 10
+
+    // ------------------------------------------- symlink splice length limits
+
+    /// An absolute path of exactly `bytes` bytes that names nothing, built from
+    /// 200-byte components so that `NAME_MAX` can never be what refuses it — on
+    /// either flavour, since 200 is under 255 counted either way.
+    let private danglingTarget (bytes : int) : string =
+        let component_ = "/" + String.replicate 200 "z"
+        let repeated = String.replicate (bytes / component_.Length + 1) component_
+        repeated.Substring (0, bytes)
+
+    /// Resolve "/L<suffix>" where L is a symlink whose dangling target is
+    /// `targetBytes` bytes, under the given platform's limits.
+    let private throughLink
+        (platform : SimulatedUnixPlatform)
+        (targetBytes : int)
+        (suffix : string)
+        : Result<ResolvedTarget, UnixError>
+        =
+        let vfs = build [ mklink (rootOf emptyFs) "L" (danglingTarget targetBytes) ]
+
+        VirtualFileSystem.resolve
+            (SimulatedUnixPlatform.pathLimits platform)
+            (rootOf vfs)
+            SymlinkPolicy.Follow
+            (path ("/L" + suffix))
+            vfs
+
+    [<Test>]
+    let ``the spliced path must still fit in PATH_MAX, on Darwin only`` () : unit =
+        // Bisected on Darwin 25.6.0 (macOS 26.6): resolving "L<suffix>" through
+        // a dangling target of T bytes, the largest T that still resolves.
+        // Below it the dangling target gives ENOENT, above it ENAMETOOLONG, so
+        // the boundary is directly observable — and both endpoints are asserted,
+        // because a model that refused everything would pass a one-sided check.
+        //
+        // The rows are not redundant. "//a" costs what "/a" costs because the
+        // kernel collapses the separator run adjacent to the component it just
+        // consumed, while "/a//b" costs one byte more than "/a/b" because an
+        // interior run is untouched; a model that rendered the remainder
+        // canonically would agree with the first and not the second.
+        let measured =
+            [
+                "/a", 1021
+                "/a/", 1020
+                "//a", 1021
+                "///a", 1021
+                "/a/b", 1019
+                "/a//b", 1018
+                "/a///b", 1017
+                "/./a", 1019
+                "/..", 1020
+                "/a/../b", 1016
+            ]
+
+        for suffix, largestResolving in measured do
+            throughLink SimulatedUnixPlatform.macOsArm64 largestResolving suffix
+            |> shouldEqual (Error UnixError.ENOENT)
+
+            throughLink SimulatedUnixPlatform.macOsArm64 (largestResolving + 1) suffix
+            |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+            // Linux performs no such check at any threshold: measured, a
+            // 3842-byte target with an 806-byte remainder resolves at 4648
+            // spliced, past its own PATH_MAX. So the same splice that Darwin
+            // refuses merely fails to find the dangling target.
+            throughLink SimulatedUnixPlatform.linuxX64 (largestResolving + 1) suffix
+            |> shouldEqual (Error UnixError.ENOENT)
+
+    [<Test>]
+    let ``a splice with nothing left to resolve is bounded only by the target itself`` () : unit =
+        // With no remainder the kernel has just the target and the NUL, so the
+        // budget is PATH_MAX - 1 = 1023. Measured: a 1023-byte target resolves.
+        throughLink SimulatedUnixPlatform.macOsArm64 1023 ""
+        |> shouldEqual (Error UnixError.ENOENT)
+
+        // 1024 is *not* measurable on a live Darwin: `symlink(2)` refuses to
+        // create a target that long, so no real filesystem can hold one. A
+        // PawPrint seed can, and this expectation is therefore extrapolated
+        // from the formula rather than bisected out of a kernel — which is
+        // worth saying plainly, because every other row here was measured.
+        throughLink SimulatedUnixPlatform.macOsArm64 1024 ""
+        |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+        throughLink SimulatedUnixPlatform.linuxX64 1024 ""
+        |> shouldEqual (Error UnixError.ENOENT)
+
+    [<Test>]
+    let ``a trailing separator run adjacent to the link costs nothing`` () : unit =
+        // Measured: suffixes "", "/", "//" and "///" all behave identically,
+        // because the kernel consumes a run with nothing after it entirely.
+        // This is the pair of rows that kills a model counting the trailing
+        // separator unconditionally, which would refuse a 1023-byte target.
+        for suffix in [ "" ; "/" ; "//" ; "///" ] do
+            throughLink SimulatedUnixPlatform.macOsArm64 1023 suffix
+            |> shouldEqual (Error UnixError.ENOENT)
+
+    [<Test>]
+    let ``ELOOP is reported before ENAMETOOLONG when one splice would trip both`` () : unit =
+        // Measured on Darwin: a chain whose last link both exhausts the
+        // traversal budget and would overflow the length reports ELOOP, while
+        // the same chain one link shorter reports ENAMETOOLONG. XNU tests
+        // `ni_loopcnt` in `namei` before it ever reads the target.
+        let chain (length : int) (lastTarget : string) : VirtualFileSystem =
+            build
+                [
+                    for i in 1..length do
+                        let next = if i = length then lastTarget else $"/c%d{i + 1}"
+                        yield mklink (rootOf emptyFs) $"c%d{i}" next
+                ]
+
+        let resolve (length : int) (lastTarget : string) : Result<ResolvedTarget, UnixError> =
+            let vfs = chain length lastTarget
+
+            VirtualFileSystem.resolve
+                (SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.macOsArm64)
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                (path "/c1/a")
+                vfs
+
+        // Darwin's MAXSYMLINKS is 32. At 32 traversals the budget is intact and
+        // the last link's over-long target is what decides.
+        resolve 32 (danglingTarget 1022) |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+        // At 33 the count is exhausted first, and the same over-long target is
+        // never examined.
+        resolve 33 (danglingTarget 1022) |> shouldEqual (Error UnixError.ELOOP)
+
+        // Control: without the over-long target, 32 resolves and 33 is ELOOP,
+        // so the pair above is really about precedence and not about the chain
+        // length alone.
+        resolve 32 (danglingTarget 100) |> shouldEqual (Error UnixError.ENOENT)
+        resolve 33 (danglingTarget 100) |> shouldEqual (Error UnixError.ELOOP)
+
+    [<Test>]
+    let ``the limit applies to every splice, not just the first`` () : unit =
+        // The buffer is replaced at each expansion rather than appended to, so
+        // lengths do not accumulate — measured, a chain of ten links each with
+        // a 500-byte absolute target resolves. What must still hold is that
+        // *each* splice is checked, so a short first link cannot smuggle a long
+        // second one past the rule.
+        let vfs =
+            build
+                [
+                    mklink (rootOf emptyFs) "a" "/b"
+                    mklink (rootOf emptyFs) "b" (danglingTarget 1022)
+                ]
+
+        let resolve (platform : SimulatedUnixPlatform) : Result<ResolvedTarget, UnixError> =
+            VirtualFileSystem.resolve
+                (SimulatedUnixPlatform.pathLimits platform)
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                (path "/a/a")
+                vfs
+
+        resolve SimulatedUnixPlatform.macOsArm64
+        |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+        resolve SimulatedUnixPlatform.linuxX64 |> shouldEqual (Error UnixError.ENOENT)
+
+    [<Test>]
+    let ``the splice budget counts UTF-8 bytes, not UTF-16 code units`` () : unit =
+        // Every row above is ASCII and would pass either way. U+4E2D is three
+        // UTF-8 bytes and one UTF-16 code unit, so a target spelled in it is
+        // three times longer than `String.Length` reports — and the limit next
+        // door, NAME_MAX, genuinely *is* code units on Darwin, which is exactly
+        // what makes the wrong function look right here.
+        //
+        // 340 CJK characters in components of 80: 340 * 3 + 5 separators = 1025
+        // raw bytes, but only 345 UTF-16 units. With no remainder the budget is
+        // 1023, so bytes refuse this and code units would permit it four times
+        // over.
+        let cjk (chars : int) : string =
+            let full = chars / 80
+            let rest = chars % 80
+
+            [
+                for _ in 1..full -> "/" + String.replicate 80 "中"
+                if rest > 0 then
+                    yield "/" + String.replicate rest "中"
+            ]
+            |> String.concat ""
+
+        let target = cjk 340
+        target.Length |> shouldEqual 345
+        Text.Encoding.UTF8.GetByteCount target |> shouldEqual 1025
+
+        let vfs = build [ mklink (rootOf emptyFs) "L" target ]
+
+        let resolve (platform : SimulatedUnixPlatform) : Result<ResolvedTarget, UnixError> =
+            VirtualFileSystem.resolve
+                (SimulatedUnixPlatform.pathLimits platform)
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                (path "/L")
+                vfs
+
+        resolve SimulatedUnixPlatform.macOsArm64
+        |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+        resolve SimulatedUnixPlatform.linuxX64 |> shouldEqual (Error UnixError.ENOENT)
+
+    [<Test>]
+    let ``Linux resolves a splice well past its own PATH_MAX`` () : unit =
+        // The Linux column needs a probe at *Linux's* scale. Every other case
+        // here uses a target near Darwin's 1024, which a wrongly-re-checking
+        // Linux would still resolve — mutation confirmed that gap: flipping
+        // Linux to `Recheck` survived the whole suite until this test existed.
+        //
+        // These are the measured numbers: on Linux 6.18.5, a symlink whose
+        // target is 3842 bytes, resolved with an 806-byte remainder, resolves
+        // at 4648 bytes spliced — past its own PATH_MAX of 4096. Darwin refuses
+        // the same shape, and would refuse it even at its own smaller scale.
+        let target = danglingTarget 3842
+
+        let remainder =
+            let component_ = String.replicate 200 "r" + "/"
+            let repeated = String.replicate (806 / component_.Length + 1) component_
+            repeated.Substring (0, 806)
+
+        // The argument itself is comfortably within both platforms' PATH_MAX,
+        // so only the *spliced* length can be what refuses it.
+        let argument = "/L/" + remainder
+        argument.Length |> shouldBeSmallerThan 1024
+
+        let vfs = build [ mklink (rootOf emptyFs) "L" target ]
+
+        let resolve (platform : SimulatedUnixPlatform) : Result<ResolvedTarget, UnixError> =
+            VirtualFileSystem.resolve
+                (SimulatedUnixPlatform.pathLimits platform)
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                (path argument)
+                vfs
+
+        resolve SimulatedUnixPlatform.linuxX64 |> shouldEqual (Error UnixError.ENOENT)
+
+        resolve SimulatedUnixPlatform.macOsArm64
+        |> shouldEqual (Error UnixError.ENAMETOOLONG)

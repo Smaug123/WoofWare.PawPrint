@@ -520,8 +520,10 @@ module SimulatedUnixPlatform =
     /// UTF-16 units, and APFS resolves it where ext4 refuses it.
     let pathLimits (platform : SimulatedUnixPlatform) : PathLimits =
         match flavour platform with
-        | SimulatedUnixFlavour.Linux -> PathLimits.create 40 4096 (NameLengthLimit.Utf8Bytes 255)
-        | SimulatedUnixFlavour.Darwin -> PathLimits.create 32 1024 (NameLengthLimit.Utf16CodeUnits 255)
+        | SimulatedUnixFlavour.Linux ->
+            PathLimits.create 40 4096 (NameLengthLimit.Utf8Bytes 255) SpliceLengthRecheck.NoRecheck
+        | SimulatedUnixFlavour.Darwin ->
+            PathLimits.create 32 1024 (NameLengthLimit.Utf16CodeUnits 255) SpliceLengthRecheck.Recheck
 
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
 /// syscall-emulation state: process-wide last-error registers, the native

@@ -35,13 +35,14 @@ type SymlinkTargetError =
 /// The target of a symbolic link, held exactly as it was created.
 ///
 /// Verbatim rather than parsed, which matters: `readlink(2)` returns the stored
-/// bytes unchanged, and `lstat` reports their length as the link's `st_size`.
-/// `UnixPath.parse` deliberately collapses repeated separators, so a link
-/// created with target "a//b/" would read back as "a/b" — a difference a guest
-/// really can see, through `FileInfo.LinkTarget` and `ResolveLinkTarget`.
+/// bytes unchanged, and `lstat` reports their length as the link's `st_size`, so
+/// a link created with target "a//b/" must read back as "a//b/" — a difference a
+/// guest really can see, through `FileInfo.LinkTarget` and `ResolveLinkTarget`.
 ///
 /// The path structure is recovered by parsing at traversal time, which is
-/// cheap, total, and keeps the stored form authoritative.
+/// cheap, total, and keeps the stored form authoritative. `UnixPath` is kept
+/// the same way and for a related reason (a kernel measures the bytes it was
+/// handed), so converting a target to one loses nothing.
 [<Struct>]
 type SymlinkTarget =
     private
@@ -602,6 +603,38 @@ type NameLengthLimit =
     /// *wrong* implementation look right on a Mac.
     | Utf16CodeUnits of units : int
 
+/// Whether expanding a symbolic link re-checks that the path still fits in
+/// `PATH_MAX`.
+///
+/// Measured, by bisecting the symlink-target length at which a dangling link
+/// flips ENOENT → ENAMETOOLONG (Darwin 25.6.0 / macOS 26.6 and Linux 6.18.5).
+/// Darwin refuses when `linklen + ni_pathlen > MAXPATHLEN` — XNU's `lookup`
+/// splices by copying the target and the unconsumed remainder into a fresh
+/// `MAXPATHLEN` buffer, so the rule is simply that the new buffer must fit.
+/// Linux has no such check *at all*: measured, a 3842-byte target with an
+/// 806-byte remainder resolves at 4648 bytes spliced, well past its own
+/// `PATH_MAX`.
+///
+/// So this is not a difference of degree that a number could express. One
+/// kernel performs a check the other does not perform at any threshold, which
+/// is why it is a DU and not, say, a nullable limit.
+///
+/// A struct for the reason `NameLengthLimit` gives. Its forged default is
+/// `Recheck`, and that ordering is deliberate: `PathLimits.assertValid` is what
+/// actually rejects a forged value (via the integer fields, which are zero),
+/// but were that guard ever weakened, a spurious ENAMETOOLONG is a visible
+/// wrong answer where a silently skipped check is an invisible one.
+[<RequireQualifiedAccess>]
+[<Struct>]
+type SpliceLengthRecheck =
+    /// Darwin. The spliced path — target bytes, unconsumed remainder, and the
+    /// NUL — must still fit in `PATH_MAX`.
+    | Recheck
+    /// Linux. A path may grow without bound as links are expanded, so long as
+    /// each *component* is within `NAME_MAX` and the original argument was
+    /// within `PATH_MAX`.
+    | NoRecheck
+
 /// A record rather than a bare `int`: `MAXSYMLINKS`, `PATH_MAX` and `NAME_MAX`
 /// are the same kind of fact, and a caller that needs one generally needs the
 /// others.
@@ -633,6 +666,10 @@ type PathLimits =
             /// accessor for it: the number is meaningless without the unit, and
             /// a caller holding both could still measure with the wrong one.
             NameMax : NameLengthLimit
+            /// Whether expanding a symbolic link re-checks the total length.
+            /// Read only through `spliceWithinLimit`, for the same reason
+            /// `NameMax` is read only through `nameWithinLimit`.
+            SpliceRecheck : SpliceLengthRecheck
         }
 
 [<RequireQualifiedAccess>]
@@ -641,7 +678,13 @@ module PathLimits =
     /// whose input is a guest's, every caller of this is the platform table
     /// passing a literal, so a bad value is an interpreter bug and not something
     /// a caller could handle.
-    let create (maxSymlinkTraversals : int) (pathMaxBytes : int) (nameMax : NameLengthLimit) : PathLimits =
+    let create
+        (maxSymlinkTraversals : int)
+        (pathMaxBytes : int)
+        (nameMax : NameLengthLimit)
+        (spliceRecheck : SpliceLengthRecheck)
+        : PathLimits
+        =
         if maxSymlinkTraversals < 1 then
             failwith
                 $"PathLimits.create: a kernel that permits %d{maxSymlinkTraversals} symlink traversals could not resolve a path through any symbolic link at all; every Unix PawPrint models permits at least one."
@@ -671,6 +714,7 @@ module PathLimits =
             MaxSymlinkTraversals = maxSymlinkTraversals
             PathMaxBytes = pathMaxBytes
             NameMax = nameMax
+            SpliceRecheck = spliceRecheck
         }
 
     let maxSymlinkTraversals (limits : PathLimits) : int = limits.MaxSymlinkTraversals
@@ -690,6 +734,36 @@ module PathLimits =
         match limits.NameMax with
         | NameLengthLimit.Utf8Bytes bytes -> UnixPathText.utf8.GetByteCount (FileName.toString name) <= bytes
         | NameLengthLimit.Utf16CodeUnits units -> (FileName.toString name).Length <= units
+
+    /// Whether this kernel will still resolve the path that results from
+    /// expanding `target` here — or, on a kernel that does not re-check,
+    /// unconditionally true.
+    ///
+    /// The only way to read `SpliceRecheck`, on purpose, for the reason
+    /// `nameWithinLimit` is the only way to read `NameMax`: the caller would
+    /// otherwise have to reconstruct the arithmetic, and the arithmetic is
+    /// where the mistakes are. Takes the target and the cursor rather than two
+    /// byte counts, so that neither can be measured with the wrong function nor
+    /// passed in the wrong order.
+    ///
+    /// The rule transcribes XNU's `linklen + ni_pathlen > MAXPATHLEN`, where
+    /// `linklen` is the target's raw byte length and `ni_pathlen` counts the
+    /// unconsumed remainder *including* the NUL — hence the `+ 1`, and hence
+    /// `<=` rather than `<`. Measured on Darwin 25.6.0: through a remainder of
+    /// "/a", a 1021-byte target resolves (1021 + 2 + 1 = 1024) and a 1022-byte
+    /// one does not.
+    ///
+    /// Bytes throughout, never UTF-16 code units — measured with CJK, and the
+    /// distinction matters because `nameWithinLimit` next door legitimately
+    /// *does* count code units on Darwin.
+    let spliceWithinLimit (limits : PathLimits) (target : SymlinkTarget) (remaining : PathCursor) : bool =
+        match limits.SpliceRecheck with
+        | SpliceLengthRecheck.NoRecheck -> true
+        | SpliceLengthRecheck.Recheck ->
+
+        let targetBytes = UnixPathText.utf8.GetByteCount (SymlinkTarget.toString target)
+
+        targetBytes + PathCursor.remainingBytes remaining + 1 <= limits.PathMaxBytes
 
     /// Re-check the invariant of a value that may not have come from `create`.
     ///
@@ -1094,28 +1168,28 @@ module VirtualFileSystem =
         /// it — has this kernel given up? — is answered here, in walk order.
         let rec walk
             (directory : InodeNumber)
-            (remaining : PathComponent list)
+            (remaining : PathCursor)
             (trailing : bool)
             (finalSymlinkFollowed : bool)
             (lastNavigation : FinalNavigation)
             (symlinks : int)
             : Result<Resolution, UnixError>
             =
-            match remaining with
+            match PathCursor.next remaining with
             // Reached when the path has no name left to look up: after a "." or
             // "..", or immediately for a path that named no component at all.
-            | [] ->
+            | None ->
                 Ok
                     {
                         Target = ResolvedTarget.Directory (directory, lastNavigation)
                         TrailingSeparatorDemanded = trailing
                         FinalSymlinkFollowed = finalSymlinkFollowed
                     }
-            | PathComponent.Current :: rest ->
+            | Some (PathComponent.Current, rest) ->
                 walk directory rest trailing finalSymlinkFollowed FinalNavigation.Current symlinks
-            | PathComponent.Parent :: rest ->
+            | Some (PathComponent.Parent, rest) ->
                 walk (parentOf directory vfs) rest trailing finalSymlinkFollowed FinalNavigation.Parent symlinks
-            | PathComponent.Name name :: rest ->
+            | Some (PathComponent.Name name, rest) ->
 
             // Before the lookup, and before anything notices whether the name
             // exists — which is what reproduces the measured precedence on both
@@ -1139,7 +1213,7 @@ module VirtualFileSystem =
                     failwith
                         $"VirtualFileSystem: looking up \"%s{FileName.toString name}\" in inode %O{directory}, which the walk had already established was a directory, but it is now absent or not a directory. The inode graph is inconsistent; run VirtualFileSystem.checkInvariants."
 
-            let isFinal = List.isEmpty rest
+            let isFinal = PathCursor.isExhausted rest
 
             let finish (target : ResolvedTarget) : Result<Resolution, UnixError> =
                 Ok
@@ -1186,13 +1260,30 @@ module VirtualFileSystem =
                 // This is also the bound that makes the walk terminate, which is
                 // why there is no cycle detection: a seen-state set would *not*
                 // be sufficient, because a link whose target names itself with a
-                // suffix ("l" with target "l/x") grows the remaining component
-                // list forever without ever repeating a state. Only a count
-                // stops that — and both real kernels use only a counter too, so
-                // this is a transcription of their behaviour rather than an
+                // suffix ("l" with target "l/x") grows the pathname buffer
+                // forever without ever repeating a state. Only a count stops
+                // that — and both real kernels use only a counter too, so this
+                // is a transcription of their behaviour rather than an
                 // approximation of it.
                 if symlinks + 1 > PathLimits.maxSymlinkTraversals limits then
                     Error UnixError.ELOOP
+                else if
+
+                    // *After* the traversal count, because that is the order a
+                    // kernel checks them in and the two disagree. Measured on
+                    // Darwin: a chain whose last link both exhausts the budget and
+                    // would overflow the length reports ELOOP, while the same chain
+                    // one link shorter reports ENAMETOOLONG. XNU tests
+                    // `ni_loopcnt` in `namei` before it ever reads the target.
+                    //
+                    // Before the splice rather than after, so an overflowing
+                    // expansion is refused rather than performed — and note this
+                    // sees `rest`, whose cursor already sits past the separator run
+                    // the kernel collapsed, which is the whole reason the walk
+                    // carries a cursor.
+                    not (PathLimits.spliceWithinLimit limits linkTarget rest)
+                then
+                    Error UnixError.ENAMETOOLONG
                 else
 
                 let linkPath = SymlinkTarget.toUnixPath linkTarget
@@ -1200,28 +1291,41 @@ module VirtualFileSystem =
                 let next = if UnixPath.isRooted linkPath then vfs.Root else directory
 
                 // The link's own trailing separator only takes effect when
-                // nothing follows it: a separator between the target and the
-                // remainder absorbs it, exactly as `UnixPath.concat` describes.
+                // nothing follows it: when the walk has more to resolve, the
+                // separator joining the target to the remainder absorbs it.
                 //
                 // It *adds to* the outer demand rather than replacing it. The
                 // separator in "ld/" applies to whatever ld expands to, so a
                 // link with target "d" still has to land on a directory; and a
                 // link with target "d/" imposes the demand even when the
                 // guest's own path carried none.
+                //
+                // This demand is threaded rather than read back off the spliced
+                // buffer, and must be: resolving "ld/" consumes the trailing
+                // separator into the cursor (that is what the kernel's own
+                // collapse does), so the spliced buffer is just the target and
+                // has forgotten it. A kernel remembers the same fact the same
+                // way — XNU latches `TRAILINGSLASH` on the component rather than
+                // re-reading the buffer.
                 let trailing =
                     if isFinal then
                         trailing || UnixPath.hasTrailingSeparator linkPath
                     else
                         trailing
 
-                let spliced = UnixPath.components linkPath @ rest
+                // Exactly what a kernel does to its pathname buffer: the target,
+                // then whatever was left to resolve. Note this consumes `rest`,
+                // whose cursor already sits past the separator run the kernel
+                // collapsed — so the spliced buffer holds the same bytes the
+                // kernel's would.
+                let spliced = PathCursor.splice linkPath rest
 
                 // An empty splice can only mean the target was "/", that being
                 // the one path with no components; the effective path is then
                 // the root itself rather than whatever navigation preceded the
                 // link.
                 let lastNavigation =
-                    if List.isEmpty spliced then
+                    if PathCursor.isExhausted spliced then
                         FinalNavigation.Root
                     else
                         lastNavigation
@@ -1250,7 +1354,7 @@ module VirtualFileSystem =
                     // A path cannot continue through a regular file.
                     Error UnixError.ENOTDIR
 
-        walk start (UnixPath.components path) (UnixPath.hasTrailingSeparator path) false FinalNavigation.Root 0
+        walk start (PathCursor.ofPath path) (UnixPath.hasTrailingSeparator path) false FinalNavigation.Root 0
 
     /// `resolveFull`, discarding the how-it-finished facts. For the lookup
     /// operations, which are unanimous across platforms and so need none of

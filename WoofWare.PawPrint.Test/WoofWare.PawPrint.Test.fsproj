@@ -66,6 +66,7 @@
     <Compile Include="TestNativeMemoryPool.fs" />
     <Compile Include="TestAbsoluteUnixPath.fs" />
     <Compile Include="TestUnixPath.fs" />
+    <Compile Include="TestPathCursor.fs" />
     <Compile Include="TestVirtualFileSystem.fs" />
     <Compile Include="TestFileSystemSeed.fs" />
     <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
