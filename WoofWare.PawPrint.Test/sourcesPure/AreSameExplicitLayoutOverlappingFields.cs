@@ -17,21 +17,22 @@ namespace AreSameExplicitLayoutOverlappingFieldsTest
     // Two *distinct* fields deliberately laid out on one address. Real .NET's
     // `Unsafe.AreSame(ref u.A, ref u.B)` is therefore `true`.
     //
-    // PawPrint refuses the comparison. Its byrefs are `[Field A]` and `[Field B]` over the
-    // same root, and whether those alias is decided entirely by the declaring type's
-    // field-offset table, which byref comparison does not carry. It cannot answer `false`
-    // — that is wrong here — and it cannot answer `true`, which would be wrong for the
-    // sequential struct that produces an identical pair of chains.
+    // The byrefs are `[Field A]` and `[Field B]` over one root, and whether those alias is
+    // decided entirely by the declaring type's field-offset table. Structural comparison does
+    // not carry that table, so it cannot answer: `false` is wrong here, and `true` would be
+    // wrong for the sequential struct that produces an identical pair of chains. It therefore
+    // defers, and `StorageLocation.resolveCeq` resolves both sides to byte coordinates in one
+    // container and compares them — 0 and 0.
     //
-    // This is the counterexample to the obvious shortcut, and it is why `ceqNormalised`
-    // refuses *every* field divergence rather than just the prefix ones: "distinct fields
-    // occupy disjoint extents" is true for sequential and auto layout but not for explicit.
-    // Measured rather than assumed — before the refusal existed this returned 1, and the
-    // shape reaches `Field` projections rather than collapsing to a byte range, contrary to
-    // what the byte-backed explicit-layout tests might suggest.
+    // This is the counterexample to the obvious shortcut, and it is why the structural
+    // comparison declines *every* field divergence rather than just the prefix ones:
+    // "distinct fields occupy disjoint extents" is true for sequential and auto layout but
+    // not for explicit. Measured rather than assumed — before the deferral existed this
+    // returned 1, and the shape reaches `Field` projections rather than collapsing to a byte
+    // range, contrary to what the byte-backed explicit-layout tests might suggest.
     //
-    // Same root cause as `AreSameFirstFieldVersusReinterpretedWhole.cs`: deciding needs
-    // field offsets. Un-park both together.
+    // Exercises the *projection* arm. `AreSameHeapFieldsOverlappingExplicitLayout.cs` is the
+    // same aliasing through the *root* arm.
     class Program
     {
         static int Main(string[] args)

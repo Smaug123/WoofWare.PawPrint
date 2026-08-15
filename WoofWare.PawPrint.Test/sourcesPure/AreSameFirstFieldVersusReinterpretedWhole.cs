@@ -12,26 +12,24 @@ namespace AreSameFirstFieldVersusReinterpretedWholeTest
     // A byref to a struct's first field and a byref to the whole struct reinterpreted as that
     // field's type are the same address, and real .NET's `Unsafe.AreSame` says so.
     //
-    // PawPrint cannot tell. Once the trailing `ReinterpretAs` is stripped, one side is
-    // `Byref (local, [Field X])` and the other the bare `Byref (local, [])`; whether those
-    // alias depends on whether `X` sits at offset 0 of its declaring type, and field-offset
-    // layout is not something byref comparison carries. So it refuses the comparison, naming
-    // both byrefs, rather than answering — this guest fails loudly at the first half below.
+    // Structural comparison cannot tell. Once the trailing `ReinterpretAs` is stripped, one
+    // side is `Byref (local, [Field X])` and the other the bare `Byref (local, [])`; whether
+    // those alias depends on whether `X` sits at offset 0 of its declaring type, which is
+    // field-offset layout that byref comparison does not carry. So it declines rather than
+    // guessing, and `StorageLocation.resolveCeq` decides it by resolving both to byte
+    // coordinates in the one local's storage: `X`'s offset is 0, so both are 0.
     //
     // It used to answer `false` and return 3 (both halves diverging, 1 for the direct
-    // `Unsafe.AreSame` and 2 for the same comparison through `ReadOnlySpan<T>.op_Equality`).
-    // The two halves are still reported as independent bits rather than short-circuiting, so
-    // if the refusal is ever replaced by a real answer the exit code still says which half is
-    // wrong.
+    // `Unsafe.AreSame` and 2 for the same comparison through `ReadOnlySpan<T>.op_Equality`),
+    // and then, once the refusal landed, to fail loudly at the first half. The two halves are
+    // still reported as independent bits rather than short-circuiting, so a regression in
+    // either says which one.
     //
     // The first half is the point: it involves no span at all, so this is a byref-comparison
-    // gap rather than anything about spans, and it is reachable by any guest calling
-    // `Unsafe.AreSame` directly. Closing it needs either an "is this field at offset 0"
-    // predicate or full byte-offset byref identity; the latter cannot be total while
-    // reference- and pointer-containing values remain byte-imageless.
-    //
-    // PawPrint's side of this — that it refuses rather than guesses — is asserted by
-    // `TestByrefComparison.fs`, because a parked guest is only ever run against real .NET.
+    // fact rather than anything about spans, and it is reachable by any guest calling
+    // `Unsafe.AreSame` directly. Note the resolution is *not* total — a reference- or
+    // pointer-containing value has no byte image, so such a pair still gets no coordinate and
+    // is still refused; `TestByrefComparison.fs` covers that side, which no guest can assert.
     class Program
     {
         static int Main(string[] args)
