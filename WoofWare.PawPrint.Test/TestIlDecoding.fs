@@ -221,7 +221,7 @@ module TestIlDecoding =
             |> Result.map (fun op ->
                 IlOp.UnaryMetadataToken (
                     unbox<UnaryMetadataTokenIlOp> op,
-                    SourcedMetadataToken.ofInt sourceAssembly token
+                    MetadataOperand.FromMetadata (SourcedMetadataToken.ofInt sourceAssembly token)
                 )
             )
         | Operand.StringToken token, t when t = typeof<UnaryStringTokenIlOp> ->
@@ -248,10 +248,13 @@ module TestIlDecoding =
         | IlOp.Nullary a, IlOp.Nullary b -> a = b
         | IlOp.UnaryConst a, IlOp.UnaryConst b -> a = b
         | IlOp.Switch a, IlOp.Switch b -> List.ofSeq a = List.ofSeq b
-        | IlOp.UnaryMetadataToken (a, ta), IlOp.UnaryMetadataToken (b, tb) ->
+        | IlOp.UnaryMetadataToken (a, MetadataOperand.FromMetadata ta),
+          IlOp.UnaryMetadataToken (b, MetadataOperand.FromMetadata tb) ->
             a = b
             && ta.Token = tb.Token
             && ta.SourceAssembly.FullName = tb.SourceAssembly.FullName
+        | IlOp.UnaryMetadataToken (a, MetadataOperand.FromDynamicScope ia),
+          IlOp.UnaryMetadataToken (b, MetadataOperand.FromDynamicScope ib) -> a = b && ia = ib
         | IlOp.UnaryStringToken (a, StringOperand.FromMetadata ta),
           IlOp.UnaryStringToken (b, StringOperand.FromMetadata tb) ->
             a = b

@@ -442,8 +442,16 @@ module ContextSwitchPrior =
         match op with
         | IlOp.Nullary op -> ofNullary op
         | IlOp.UnaryConst op -> ofUnaryConst op
-        | IlOp.UnaryMetadataToken (op, _) -> ofUnaryMetadata op
-        | IlOp.UnaryStringToken (op, _) -> ofUnaryString op
+        // An operand naming a `DynamicScope` entry is read out of the guest heap when the
+        // instruction runs — `m_scope.m_tokens` is an ordinary `List<object>` that guest code holds
+        // a reference to — so the instruction depends on mutable shared state whatever its opcode
+        // would otherwise say. `sizeof` is the case that makes this visible: it is `InterpreterOnly`
+        // for a metadata operand, correctly, and would keep that 0.01 prior for a scope operand
+        // whose entry another thread can rewrite. The metadata classification is untouched.
+        | IlOp.UnaryMetadataToken (_, MetadataOperand.FromDynamicScope _)
+        | IlOp.UnaryStringToken (_, StringOperand.FromDynamicScope _) -> ContextSwitchPrior.AlwaysGuestVisible
+        | IlOp.UnaryMetadataToken (op, MetadataOperand.FromMetadata _) -> ofUnaryMetadata op
+        | IlOp.UnaryStringToken (op, StringOperand.FromMetadata _) -> ofUnaryString op
         // Multi-target branch on the integer at the top of the eval
         // stack; pure frame-local control flow.
         | IlOp.Switch _ -> ContextSwitchPrior.Never

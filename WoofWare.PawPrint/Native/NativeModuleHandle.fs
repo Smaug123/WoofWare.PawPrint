@@ -324,7 +324,8 @@ module NativeModuleHandle =
                         $"%s{operation}: the scope assembly %s{scopeAssemblyFullName} is not loaded; available assemblies: %s{available}"
                 )
 
-            let body = DynamicMethodBody.read operation state scopeAssembly resolverAddress
+            let body =
+                DynamicMethodBody.read operation ctx.BaseClassTypes state scopeAssembly resolverAddress
 
             let runtimeMethodInfoStubType =
                 AllConcreteTypes.getRequiredNonGenericHandle

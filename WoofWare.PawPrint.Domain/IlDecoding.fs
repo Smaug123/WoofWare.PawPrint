@@ -27,18 +27,109 @@ module IlDecoding =
     /// cross-checking the tag, or a token the real runtime resolves happily would be refused.
     let private scopeIndexOf (token : int) : int = token &&& 0x00FFFFFF
 
-    let private readMetadataToken (universe : IlTokenUniverse) (reader : byref<BlobReader>) : SourcedMetadataToken =
+    /// What kind of `DynamicScope` entry an instruction's operand may name.
+    ///
+    /// Total over `UnaryMetadataTokenIlOp` by construction, so that adding an opcode — or extending
+    /// this to method and field entries — is a compile error here rather than a silent inheritance
+    /// of whatever the default arm happened to be.
+    [<RequireQualifiedAccess>]
+    type private ScopeOperandKind =
+        /// A boxed `RuntimeTypeHandle`.
+        | Type
+        /// This opcode's scope operands are not resolvable yet, whatever the entry turns out to be.
+        /// The string names what is missing, for the refusal message.
+        | NotYetSupported of missing : string
+
+    let private scopeOperandKind (op : UnaryMetadataTokenIlOp) : ScopeOperandKind =
+        let method_ =
+            ScopeOperandKind.NotYetSupported
+                "PawPrint cannot yet resolve method entries (RuntimeMethodHandle, DynamicMethod, GenericMethodInfo, VarArgMethod) against a scope"
+
+        let field =
+            ScopeOperandKind.NotYetSupported
+                "PawPrint cannot yet resolve field entries (RuntimeFieldHandle, GenericFieldInfo) against a scope"
+
+        match op with
+        | UnaryMetadataTokenIlOp.Newarr
+        | UnaryMetadataTokenIlOp.Castclass
+        | UnaryMetadataTokenIlOp.Isinst
+        | UnaryMetadataTokenIlOp.Box
+        | UnaryMetadataTokenIlOp.Unbox
+        | UnaryMetadataTokenIlOp.Unbox_Any
+        | UnaryMetadataTokenIlOp.Initobj
+        | UnaryMetadataTokenIlOp.Stobj
+        | UnaryMetadataTokenIlOp.Ldobj
+        | UnaryMetadataTokenIlOp.Sizeof
+        | UnaryMetadataTokenIlOp.Ldelema -> ScopeOperandKind.Type
+
+        | UnaryMetadataTokenIlOp.Call
+        | UnaryMetadataTokenIlOp.Callvirt
+        | UnaryMetadataTokenIlOp.Calli
+        | UnaryMetadataTokenIlOp.Newobj
+        | UnaryMetadataTokenIlOp.Ldftn
+        | UnaryMetadataTokenIlOp.Ldvirtftn
+        | UnaryMetadataTokenIlOp.Jmp -> method_
+
+        | UnaryMetadataTokenIlOp.Ldfld
+        | UnaryMetadataTokenIlOp.Ldflda
+        | UnaryMetadataTokenIlOp.Stfld
+        | UnaryMetadataTokenIlOp.Ldsfld
+        | UnaryMetadataTokenIlOp.Ldsflda
+        | UnaryMetadataTokenIlOp.Stsfld -> field
+
+        // Type operands, but not resolvable against a scope yet, each for its own reason.
+        | UnaryMetadataTokenIlOp.Ldelem
+        | UnaryMetadataTokenIlOp.Stelem ->
+            ScopeOperandKind.NotYetSupported
+                "ldelem/stelem resolve their element type through a separate path that yields a TypeInfo rather than a ConcreteTypeHandle; note that the nullary forms (ldelem.i4 and friends) need no operand at all"
+        | UnaryMetadataTokenIlOp.Ldtoken ->
+            ScopeOperandKind.NotYetSupported
+                "a guest can only tell a correctly-resolved ldtoken from a consistently-wrong one by passing the handle to Type.GetTypeFromHandle, which needs method entries; wiring it now would be an arm no test can kill"
+        | UnaryMetadataTokenIlOp.Constrained ->
+            ScopeOperandKind.NotYetSupported
+                "constrained. is only meaningful as a prefix to a callvirt, which needs method entries"
+        | UnaryMetadataTokenIlOp.Cpobj
+        | UnaryMetadataTokenIlOp.Mkrefany
+        | UnaryMetadataTokenIlOp.Refanyval ->
+            ScopeOperandKind.NotYetSupported "this opcode is unimplemented in PawPrint for any token universe"
+
+    let private readMetadataToken
+        (universe : IlTokenUniverse)
+        (op : UnaryMetadataTokenIlOp)
+        (reader : byref<BlobReader>)
+        : MetadataOperand
+        =
         let value = reader.ReadUInt32 () |> int
 
         match universe with
-        | IlTokenUniverse.Metadata assembly -> SourcedMetadataToken.ofInt assembly value
-        | IlTokenUniverse.DynamicScope _ ->
-            // Deliberately fails here rather than decoding against some stand-in assembly and
-            // refusing afterwards: a `SourcedMetadataToken` naming an assembly whose tables it does
-            // not index is a well-formed value that would execute against the wrong rows if any
-            // path ever failed to refuse it. There is no such value to leak if it is never built.
-            failwith
-                $"TODO: a dynamic method's IL carries the metadata token 0x%08x{value}, which names an entry in the method's DynamicScope rather than a row in any assembly's tables; PawPrint can resolve only string operands against a scope so far"
+        | IlTokenUniverse.Metadata assembly -> MetadataOperand.FromMetadata (SourcedMetadataToken.ofInt assembly value)
+        | IlTokenUniverse.DynamicScope entries ->
+            // Deliberately never builds a `SourcedMetadataToken` for this universe: one naming an
+            // assembly whose tables it does not index is a well-formed value that would execute
+            // against the wrong rows if any path ever failed to refuse it. There is no such value
+            // to leak if it is never built.
+            let index = scopeIndexOf value
+
+            // Two refusals, deliberately worded apart. "Not wired" and "wrong kind" want completely
+            // different responses from whoever hits them, and a guest that trips either just gets
+            // parked — so this message is the only diagnostic anyone gets.
+            match scopeOperandKind op with
+            | ScopeOperandKind.NotYetSupported missing ->
+                failwith
+                    $"TODO: a dynamic method's %O{op} names DynamicScope entry %d{index} (token 0x%08x{value}), but %s{missing}"
+            | ScopeOperandKind.Type ->
+
+            match Map.tryFind index entries with
+            | Some DynamicScopeEntry.TypeHandle -> MetadataOperand.FromDynamicScope index
+            | Some (DynamicScopeEntry.String contents) ->
+                failwith
+                    $"a dynamic method's %O{op} names DynamicScope entry %d{index} (token 0x%08x{value}), which holds the string %s{contents} rather than a type handle"
+            | Some (DynamicScopeEntry.Unsupported description) ->
+                failwith
+                    $"a dynamic method's %O{op} names DynamicScope entry %d{index} (token 0x%08x{value}), which holds %s{description} rather than a type handle"
+            | None ->
+                failwith
+                    $"a dynamic method's %O{op} names DynamicScope entry %d{index} (token 0x%08x{value}), which does not exist; the scope holds %d{entries.Count} entr(y/ies)"
 
     let private readStringToken (universe : IlTokenUniverse) (reader : byref<BlobReader>) : StringOperand =
         let value = reader.ReadUInt32 () |> int
@@ -53,6 +144,9 @@ module IlDecoding =
             // minted rather than when it runs, while leaving the value to be read at execution.
             match Map.tryFind index entries with
             | Some (DynamicScopeEntry.String _) -> StringOperand.FromDynamicScope index
+            | Some DynamicScopeEntry.TypeHandle ->
+                failwith
+                    $"a dynamic method's ldstr names DynamicScope entry %d{index} (token 0x%08x{value}), which holds a type handle rather than a string"
             | Some (DynamicScopeEntry.Unsupported description) ->
                 failwith
                     $"a dynamic method's ldstr names DynamicScope entry %d{index} (token 0x%08x{value}), which holds %s{description} rather than a string"
@@ -134,11 +228,20 @@ module IlDecoding =
                     | ILOpCode.Dup -> IlOp.Nullary NullaryIlOp.Dup
                     | ILOpCode.Pop -> IlOp.Nullary NullaryIlOp.Pop
                     | ILOpCode.Jmp ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Jmp, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Jmp,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Jmp &reader
+                        )
                     | ILOpCode.Call ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Call,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Call &reader
+                        )
                     | ILOpCode.Calli ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Calli, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Calli,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Calli &reader
+                        )
                     | ILOpCode.Ret -> IlOp.Nullary NullaryIlOp.Ret
                     | ILOpCode.Br_s -> IlOp.UnaryConst (UnaryConstIlOp.Br_s (reader.ReadSByte ()))
                     | ILOpCode.Brfalse_s -> IlOp.UnaryConst (UnaryConstIlOp.Brfalse_s (reader.ReadSByte ()))
@@ -221,37 +324,79 @@ module IlDecoding =
                     | ILOpCode.Conv_u4 -> IlOp.Nullary NullaryIlOp.Conv_U4
                     | ILOpCode.Conv_u8 -> IlOp.Nullary NullaryIlOp.Conv_U8
                     | ILOpCode.Callvirt ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Callvirt, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Callvirt,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Callvirt &reader
+                        )
                     | ILOpCode.Cpobj ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Cpobj, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Cpobj,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Cpobj &reader
+                        )
                     | ILOpCode.Ldobj ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldobj, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Ldobj,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Ldobj &reader
+                        )
                     | ILOpCode.Ldstr ->
                         IlOp.UnaryStringToken (UnaryStringTokenIlOp.Ldstr, readStringToken universe &reader)
                     | ILOpCode.Newobj ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newobj, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Newobj,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Newobj &reader
+                        )
                     | ILOpCode.Castclass ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Castclass, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Castclass,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Castclass &reader
+                        )
                     | ILOpCode.Isinst ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Isinst, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Isinst,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Isinst &reader
+                        )
                     | ILOpCode.Conv_r_un -> IlOp.Nullary NullaryIlOp.Conv_r_un
                     | ILOpCode.Unbox ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Unbox, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Unbox,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Unbox &reader
+                        )
                     | ILOpCode.Throw -> IlOp.Nullary NullaryIlOp.Throw
                     | ILOpCode.Ldfld ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Ldfld,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Ldfld &reader
+                        )
                     | ILOpCode.Ldflda ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldflda, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Ldflda,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Ldflda &reader
+                        )
                     | ILOpCode.Stfld ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stfld, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Stfld,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Stfld &reader
+                        )
                     | ILOpCode.Ldsfld ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldsfld, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Ldsfld,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Ldsfld &reader
+                        )
                     | ILOpCode.Ldsflda ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldsflda, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Ldsflda,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Ldsflda &reader
+                        )
                     | ILOpCode.Stsfld ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stsfld, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Stsfld,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Stsfld &reader
+                        )
                     | ILOpCode.Stobj ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stobj, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Stobj,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Stobj &reader
+                        )
                     | ILOpCode.Conv_ovf_i_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_i_un
                     | ILOpCode.Conv_ovf_i1_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_i1_un
                     | ILOpCode.Conv_ovf_i2_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_i2_un
@@ -263,12 +408,21 @@ module IlDecoding =
                     | ILOpCode.Conv_ovf_u4_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_u4_un
                     | ILOpCode.Conv_ovf_u8_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_u8_un
                     | ILOpCode.Box ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Box, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Box,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Box &reader
+                        )
                     | ILOpCode.Newarr ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newarr, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Newarr,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Newarr &reader
+                        )
                     | ILOpCode.Ldlen -> IlOp.Nullary NullaryIlOp.LdLen
                     | ILOpCode.Ldelema ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldelema, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Ldelema,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Ldelema &reader
+                        )
                     | ILOpCode.Ldelem_i1 -> IlOp.Nullary NullaryIlOp.Ldelem_i1
                     | ILOpCode.Ldelem_u1 -> IlOp.Nullary NullaryIlOp.Ldelem_u1
                     | ILOpCode.Ldelem_i2 -> IlOp.Nullary NullaryIlOp.Ldelem_i2
@@ -289,11 +443,20 @@ module IlDecoding =
                     | ILOpCode.Stelem_r8 -> IlOp.Nullary NullaryIlOp.Stelem_r8
                     | ILOpCode.Stelem_ref -> IlOp.Nullary NullaryIlOp.Stelem_ref
                     | ILOpCode.Ldelem ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldelem, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Ldelem,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Ldelem &reader
+                        )
                     | ILOpCode.Stelem ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stelem, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Stelem,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Stelem &reader
+                        )
                     | ILOpCode.Unbox_any ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Unbox_Any, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Unbox_Any,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Unbox_Any &reader
+                        )
                     | ILOpCode.Conv_ovf_i1 -> IlOp.Nullary NullaryIlOp.Conv_ovf_i1
                     | ILOpCode.Conv_ovf_u1 -> IlOp.Nullary NullaryIlOp.Conv_ovf_u1
                     | ILOpCode.Conv_ovf_i2 -> IlOp.Nullary NullaryIlOp.Conv_ovf_i2
@@ -303,12 +466,21 @@ module IlDecoding =
                     | ILOpCode.Conv_ovf_i8 -> IlOp.Nullary NullaryIlOp.Conv_ovf_i8
                     | ILOpCode.Conv_ovf_u8 -> IlOp.Nullary NullaryIlOp.Conv_ovf_u8
                     | ILOpCode.Refanyval ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Refanyval, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Refanyval,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Refanyval &reader
+                        )
                     | ILOpCode.Ckfinite -> IlOp.Nullary NullaryIlOp.Ckfinite
                     | ILOpCode.Mkrefany ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Mkrefany, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Mkrefany,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Mkrefany &reader
+                        )
                     | ILOpCode.Ldtoken ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldtoken, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Ldtoken,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Ldtoken &reader
+                        )
                     | ILOpCode.Conv_u2 -> IlOp.Nullary NullaryIlOp.Conv_U2
                     | ILOpCode.Conv_u1 -> IlOp.Nullary NullaryIlOp.Conv_U1
                     | ILOpCode.Conv_i -> IlOp.Nullary NullaryIlOp.Conv_I
@@ -332,9 +504,15 @@ module IlDecoding =
                     | ILOpCode.Clt -> IlOp.Nullary NullaryIlOp.Clt
                     | ILOpCode.Clt_un -> IlOp.Nullary NullaryIlOp.Clt_un
                     | ILOpCode.Ldftn ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldftn, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Ldftn,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Ldftn &reader
+                        )
                     | ILOpCode.Ldvirtftn ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldvirtftn, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Ldvirtftn,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Ldvirtftn &reader
+                        )
                     | ILOpCode.Ldarg -> IlOp.UnaryConst (UnaryConstIlOp.Ldarg (reader.ReadUInt16 ()))
                     | ILOpCode.Ldarga -> IlOp.UnaryConst (UnaryConstIlOp.Ldarga (reader.ReadUInt16 ()))
                     | ILOpCode.Starg -> IlOp.UnaryConst (UnaryConstIlOp.Starg (reader.ReadUInt16 ()))
@@ -347,14 +525,23 @@ module IlDecoding =
                     | ILOpCode.Volatile -> IlOp.Nullary NullaryIlOp.Volatile
                     | ILOpCode.Tail -> IlOp.Nullary NullaryIlOp.Tail
                     | ILOpCode.Initobj ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Initobj, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Initobj,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Initobj &reader
+                        )
                     | ILOpCode.Constrained ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Constrained, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Constrained,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Constrained &reader
+                        )
                     | ILOpCode.Cpblk -> IlOp.Nullary NullaryIlOp.Cpblk
                     | ILOpCode.Initblk -> IlOp.Nullary NullaryIlOp.Initblk
                     | ILOpCode.Rethrow -> IlOp.Nullary NullaryIlOp.Rethrow
                     | ILOpCode.Sizeof ->
-                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Sizeof, readMetadataToken universe &reader)
+                        IlOp.UnaryMetadataToken (
+                            UnaryMetadataTokenIlOp.Sizeof,
+                            readMetadataToken universe UnaryMetadataTokenIlOp.Sizeof &reader
+                        )
                     | ILOpCode.Refanytype -> IlOp.Nullary NullaryIlOp.Refanytype
                     | ILOpCode.Readonly -> IlOp.Nullary NullaryIlOp.Readonly
                     | i -> failwithf "Unknown opcode: %A" i

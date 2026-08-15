@@ -649,3 +649,51 @@ for both routes into a single-dimensional allocation (`UnaryMetadataArrayOps.exe
 exception *type* differentially across element types on both sides of the split, and
 `sourcesImpure/NewarrNegativeLengthMessage.cs` pins PawPrint's choice of message for the case
 where CoreCLR would have used the other one.
+
+## A narrow auto-layout `[InlineArray(N)]` runs instead of failing to compile
+
+**CoreCLR**: `[StructLayout(LayoutKind.Auto)] [InlineArray(N)] struct` gets its alignment from
+`MethodTable::GetFieldAlignmentRequirement` (`vm/methodtable.cpp:8853`). An auto-layout type has
+no layout metadata, so that reads the *class*: the custom field alignment if one was recorded, and
+otherwise `min(GetNumInstanceFieldBytes(), TARGET_POINTER_SIZE)`. The recording test is
+`minAlign != min(elementSize, TARGET_POINTER_SIZE)` (`vm/methodtablebuilder.cpp:8598`) and runs
+*before* the repeat count is applied, while the fallback reads the size *after* it — so a type
+whose element needs no custom alignment and whose multiplied size is below the pointer size and is
+not a power of two ends up with a non-power-of-two alignment. Three `byte`s give 3; three `short`s
+give 6. The type loads: this is a computed alignment, not a rejection. The JIT then refuses to
+compile any method that mentions it, and the program dies with
+`InvalidProgramException: The metadata is corrupt.` before reaching `Main`.
+
+**PawPrint**: Computes the same alignment, and runs the program.
+
+**Spec status**: Neither behaviour is specified. ECMA-335 says nothing about `[InlineArray]`, which
+is a .NET 8 runtime feature; and a runtime that cannot execute a type it agreed to load is a bug
+rather than a contract. Reported upstream behaviour, not a documented one.
+
+**Why we chose this**: PawPrint has no JIT, so there is no component that could refuse the program
+— the refusal is not a property of the type or of the layout algorithm, it is a property of a
+compilation step PawPrint does not perform. The alternative would be to reject such a type at
+layout time, which would mean refusing a type CoreCLR loads on the strength of a guess about what
+a JIT we do not have would have done with it. Every *observable size* here matches CoreCLR; what
+differs is only whether the program starts.
+
+**Observable example**:
+
+```csharp
+[StructLayout(LayoutKind.Auto)] [InlineArray(3)] struct ThreeBytes { private byte _item; }
+
+Console.WriteLine(Unsafe.SizeOf<ThreeBytes>());
+
+// CoreCLR:  System.InvalidProgramException: The metadata is corrupt.
+// PawPrint: 3
+```
+
+Note the neighbours that are *not* affected, which is what makes this narrow: `[InlineArray(2)]`
+over `byte` is 2 bytes and 2-aligned, and anything reaching 8 bytes or more is capped at the
+pointer size. Only a total of 3, 5, 6 or 7 bytes can trip it, and only on the auto route — a
+sequential type has layout metadata, so `GetFieldAlignmentRequirement` never reaches the fallback.
+
+**Where this lives in code**: `CliValueType.InlineArraySize` in `CliType.fs` transcribes both
+halves of the rule. `TestInlineArrayLayout.unrunnableCases` holds the two shapes the differential
+sweep therefore cannot check, and asserts that the host runtime still refuses them — so a runtime
+that fixed the upstream bug would fail that test rather than leave a stale carve-out in place.

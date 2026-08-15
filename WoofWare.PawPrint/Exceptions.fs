@@ -169,6 +169,9 @@ module internal ExceptionHResults =
             "System.ArgumentNullException", 0x80004003 // E_POINTER (ArgumentNullException maps to E_POINTER in the CLR)
             "System.NotSupportedException", int 0x80131515u // COR_E_NOTSUPPORTED
             "System.DuplicateWaitObjectException", int 0x80131529u // COR_E_DUPLICATEWAITOBJECT
+            "System.InvalidProgramException", int 0x8013153Au // COR_E_INVALIDPROGRAM
+            "System.BadImageFormatException", int 0x8007000Bu // COR_E_BADIMAGEFORMAT
+            "System.ArgumentOutOfRangeException", int 0x80131502u // COR_E_ARGUMENTOUTOFRANGE
             "System.Reflection.TargetInvocationException", int 0x80131604u // COR_E_TARGETINVOCATION
         ]
 

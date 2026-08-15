@@ -66,31 +66,32 @@ module internal UnaryMetadataObjectOps =
     let executeCastclass (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
         let actualObj, state = IlMachineState.popEvalStack thread state
 
-        let state, targetType, _targetAssy =
-            IlMachineState.resolveTypeMetadataToken
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy
-                ImmutableArray.Empty
-                metadataToken
-
         let state, targetConcreteType =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy.Name
-                currentMethod.DeclaringTypeGenerics
-                currentMethod.Generics
-                targetType
+            match ctx.Operand with
+            | ResolvedMetadataOperand.ScopeType handle -> state, handle
+            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+                let state, targetType, _targetAssy =
+                    IlMachineState.resolveTypeMetadataToken
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        ImmutableArray.Empty
+                        metadataToken
+
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy.Name
+                    currentMethod.DeclaringTypeGenerics
+                    currentMethod.Generics
+                    targetType
 
         castToReferenceType loggerFactory baseClassTypes "Castclass" thread targetConcreteType actualObj state
 
@@ -512,42 +513,46 @@ module internal UnaryMetadataObjectOps =
     let executeBox (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let state, ty, assy =
-            match metadataToken with
-            | MetadataToken.TypeDefinition h ->
-                let state, ty = IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
-                state, ty, activeAssy
-            | MetadataToken.TypeReference ref ->
-                IlMachineState.lookupTypeRef
+        let state, typeHandle =
+            match ctx.Operand with
+            | ResolvedMetadataOperand.ScopeType handle -> state, handle
+            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+                let state, ty, assy =
+                    match metadataToken with
+                    | MetadataToken.TypeDefinition h ->
+                        let state, ty = IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
+                        state, ty, activeAssy
+                    | MetadataToken.TypeReference ref ->
+                        IlMachineState.lookupTypeRef
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            activeAssy
+                            currentMethod.DeclaringTypeGenerics
+                            ref
+                    | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
+                    | _ -> failwith $"unexpected token {metadataToken} in Box"
+
+                IlMachineState.concretizeType
                     loggerFactory
                     baseClassTypes
                     state
-                    activeAssy
+                    assy.Name
                     currentMethod.DeclaringTypeGenerics
-                    ref
-            | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
-            | _ -> failwith $"unexpected token {metadataToken} in Box"
-
-        let state, typeHandle =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                assy.Name
-                currentMethod.DeclaringTypeGenerics
-                currentMethod.Generics
-                ty
+                    currentMethod.Generics
+                    ty
 
         let toBox, state = state |> IlMachineState.popEvalStack thread
 
         // ECMA-335 III.4.1: structural reference-type tokens (szarrays and multi-dim arrays)
-        // make `box` a no-op — the value already on the stack is a reference. Byref and
-        // pointer tokens are unverifiable for `box`. FunctionPointer is similarly not boxable.
+        // make `box` a no-op — the value already on the stack is a reference. A byref token is
+        // rejected outright by the runtime; a pointer or function-pointer token, despite being
+        // unverifiable, is *not* — measured on real .NET, `box int*` (and `unbox.any int*`) runs.
+        // PawPrint does not implement a boxed pointer, which would be a heap object whose runtime
+        // type is a structural handle; that is its own change, so refuse loudly and say so.
         match typeHandle with
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
@@ -556,12 +561,36 @@ module internal UnaryMetadataObjectOps =
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed
         | ConcreteTypeHandle.Byref _ ->
-            failwithf "Box: byref types cannot be boxed (unverifiable IL); typeHandle=%O" typeHandle
+            failwithf
+                "Box: byref type %O cannot be boxed; real .NET rejects the method as an invalid program (measured)."
+                typeHandle
         | ConcreteTypeHandle.Pointer _ ->
-            failwithf "Box: pointer types cannot be boxed (unverifiable IL); typeHandle=%O" typeHandle
+            failwithf
+                "TODO: Box of pointer type %O is not implemented. Real .NET boxes one (measured), producing an object whose runtime type is the pointer type; PawPrint has no heap object with a structural type. Reachable from a dynamic method, whose `ILGenerator.Emit(OpCode, Type)` takes any RuntimeType, and from `typeof(int*)`."
+                typeHandle
         | ConcreteTypeHandle.FunctionPointer _ ->
-            failwithf "TODO: Box of function pointer type not implemented; typeHandle=%O" typeHandle
+            failwithf
+                "TODO: Box of function pointer type %O is not implemented; see the pointer case above, which real .NET likewise permits."
+                typeHandle
         | ConcreteTypeHandle.Concrete _ ->
+
+        // A byref-like type is stack-only, so boxing one is not a program the runtime will accept:
+        // measured on real .NET as InvalidProgramException, against `sizeof Span<int>` as a control
+        // (legal, answers 16). Universe-independent, because the same IL is illegal either way; it
+        // is only *reachable* from a `DynamicScope` operand, because no compiler emits it, and it
+        // was silently putting a stack-only value on the heap until now.
+        match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes typeHandle with
+        | Some (_, boxedDefn) when DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies boxedDefn ->
+            // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
+            IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.InvalidProgramException
+                // CoreCLR's own message here is InvalidProgramException's default (measured).
+                None
+                thread
+                state
+        | _ ->
 
         let targetType =
             AllConcreteTypes.lookup typeHandle state.ConcreteTypes |> Option.get
@@ -690,31 +719,32 @@ module internal UnaryMetadataObjectOps =
     let executeIsinst (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
         let actualObj, state = IlMachineState.popEvalStack thread state
 
-        let state, targetType, _targetAssy =
-            IlMachineState.resolveTypeMetadataToken
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy
-                ImmutableArray.Empty
-                metadataToken
-
         let state, targetConcreteType =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy.Name
-                currentMethod.DeclaringTypeGenerics
-                currentMethod.Generics
-                targetType
+            match ctx.Operand with
+            | ResolvedMetadataOperand.ScopeType handle -> state, handle
+            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+                let state, targetType, _targetAssy =
+                    IlMachineState.resolveTypeMetadataToken
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        ImmutableArray.Empty
+                        metadataToken
+
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy.Name
+                    currentMethod.DeclaringTypeGenerics
+                    currentMethod.Generics
+                    targetType
 
         let isinstCheck
             (state : IlMachineState)
@@ -875,32 +905,33 @@ module internal UnaryMetadataObjectOps =
     let executeUnboxAny (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
         // ECMA-335 III.4.33
         let actualObj, state = IlMachineState.popEvalStack thread state
 
-        let state, targetType, _targetAssy =
-            IlMachineState.resolveTypeMetadataToken
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy
-                ImmutableArray.Empty
-                metadataToken
-
         let state, targetConcreteTypeHandle =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy.Name
-                currentMethod.DeclaringTypeGenerics
-                currentMethod.Generics
-                targetType
+            match ctx.Operand with
+            | ResolvedMetadataOperand.ScopeType handle -> state, handle
+            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+                let state, targetType, _targetAssy =
+                    IlMachineState.resolveTypeMetadataToken
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        ImmutableArray.Empty
+                        metadataToken
+
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy.Name
+                    currentMethod.DeclaringTypeGenerics
+                    currentMethod.Generics
+                    targetType
 
         // The type token need not denote a nominal type: `unbox.any !!T` with `T = int[]`
         // concretizes to a structural array handle, which by design has no row in
@@ -922,11 +953,12 @@ module internal UnaryMetadataObjectOps =
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ ->
-            // ECMA-335 III.4.33 requires `typeTok` to denote a boxable type, and none of these
-            // are; nor can any of them be a generic argument, so `unbox.any !!T` cannot reach
-            // here either. Metadata that gets here would be rejected by the real runtime too.
+            // None of these can be a generic argument, so `unbox.any !!T` cannot reach here. A
+            // byref token really is invalid IL; a *pointer* token is unverifiable but not invalid,
+            // and `unbox.any int*` was measured to run on real .NET. PawPrint refuses both, because
+            // the pointer case needs the boxed pointer `executeBox` does not implement either.
             failwith
-                $"Unbox_Any: type token denotes byref/pointer/function-pointer type %O{targetConcreteTypeHandle}, which is not a boxable type as ECMA-335 III.4.33 requires; this is invalid IL"
+                $"TODO: Unbox_Any of byref/pointer/function-pointer type %O{targetConcreteTypeHandle} is not implemented. A byref token is invalid IL; a pointer token is legal on real .NET (measured) and needs the same boxed pointer `box` does not implement."
         | ConcreteTypeHandle.Concrete _ ->
 
         let targetConcreteType, targetDefn =
@@ -1089,37 +1121,40 @@ module internal UnaryMetadataObjectOps =
     let executeUnbox (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
         let actualObj, state = IlMachineState.popEvalStack thread state
 
-        let state, targetType, _targetAssy =
-            IlMachineState.resolveTypeMetadataToken
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy
-                ImmutableArray.Empty
-                metadataToken
-
         let state, targetConcreteTypeHandle =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy.Name
-                currentMethod.DeclaringTypeGenerics
-                currentMethod.Generics
-                targetType
+            match ctx.Operand with
+            | ResolvedMetadataOperand.ScopeType handle -> state, handle
+            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+                let state, targetType, _targetAssy =
+                    IlMachineState.resolveTypeMetadataToken
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        activeAssy
+                        ImmutableArray.Empty
+                        metadataToken
+
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy.Name
+                    currentMethod.DeclaringTypeGenerics
+                    currentMethod.Generics
+                    targetType
 
         // Unlike `unbox.any`, whose token may denote any boxable type, III.4.32 requires a value
-        // type. None of the structural handle shapes is one — arrays are reference types, and
-        // byrefs/pointers/function pointers are not boxable at all — so metadata that gets here
-        // is invalid IL that the real runtime would reject too. Dispatch on the shape before
-        // touching metadata, since these handles have no row in `AllConcreteTypes`.
+        // type, and no structural handle shape is one: arrays are reference types and byrefs are
+        // not boxable at all. A *pointer* token is unverifiable rather than invalid — real .NET
+        // reaches the instruction for `unbox int*` (measured) — but supporting it needs the boxed
+        // pointer `executeBox` does not implement, so all of these are refused together. Dispatch
+        // on the shape before touching metadata, since these handles have no row in
+        // `AllConcreteTypes`.
         match targetConcreteTypeHandle with
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _
@@ -1127,7 +1162,7 @@ module internal UnaryMetadataObjectOps =
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ ->
             failwith
-                $"Unbox: type token denotes %O{targetConcreteTypeHandle}, which is not a value type as ECMA-335 III.4.32 requires; this is invalid IL"
+                $"TODO: Unbox of %O{targetConcreteTypeHandle} is not implemented. Arrays and byrefs are invalid IL here per ECMA-335 III.4.32; a pointer token is legal on real .NET (measured) and needs the boxed pointer `box` does not implement."
         | ConcreteTypeHandle.Concrete _ ->
 
         let targetConcreteType =
