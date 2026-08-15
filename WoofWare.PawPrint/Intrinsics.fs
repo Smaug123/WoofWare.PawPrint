@@ -2809,59 +2809,44 @@ module Intrinsics =
                 |> IntrinsicResult.Completed
             | _ ->
 
-            // ByteOffset measures the byte distance between two byref address
-            // targets. The generic T on the method is only the static view
-            // through which each byref was declared; reinterpreting a byref
-            // doesn't move it. Trailing `ByteOffset` projections contribute
-            // to the absolute byte address; `ReinterpretAs` projections are
-            // address-preserving.
-            let extractByteLocation (v : EvalStackValue) : ByteStorageIdentity * int64 =
-                let src =
-                    match v with
-                    | EvalStackValue.ManagedPointer p -> p
-                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer p) -> p
-                    | _ -> failwith $"TODO: Unsafe.ByteOffset on non-ManagedPointer: %O{v}"
+            // ByteOffset measures the byte distance between two byref address targets. The
+            // generic `T` is only the static view through which each byref was declared;
+            // reinterpreting a byref does not move it.
+            //
+            // `StorageLocation.resolve` is the one place that turns a byref into a flat byte
+            // coordinate, and it is deliberately the only way in: it hands back the coarse
+            // storage key alongside the precise coordinate, so a caller cannot obtain a distance
+            // without also holding the answer to "could these two share storage at all".
+            //
+            // This used to carry a cut-down copy of that walk, which knew about every `ByrefRoot`
+            // except the two heap ones and rejected `Field` projections outright. The gap was
+            // not academic: a byref into a heap object's field is the *only* route by which a
+            // guest can observe a reference type's layout at all, so nothing in `sourcesPure`
+            // could see the base-chain fix of issue #994.
+            let locate (v : EvalStackValue) : StorageLocation.LocationResolution =
+                match v with
+                | EvalStackValue.ManagedPointer p -> StorageLocation.resolve baseClassTypes state p
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer p) ->
+                    StorageLocation.resolve baseClassTypes state p
+                | _ -> failwith $"TODO: Unsafe.ByteOffset on non-ManagedPointer: %O{v}"
 
-                let projectionByteOffset (projs : ByrefProjection list) : int64 =
-                    let mutable byteOff = 0L
+            let originLocation = locate origin
+            let targetLocation = locate target
 
-                    for p in projs do
-                        match p with
-                        | ByrefProjection.ReinterpretAs _ -> ()
-                        | ByrefProjection.ByteOffset n -> byteOff <- byteOff + int64 n
-                        | _ -> failwith $"TODO: Unsafe.ByteOffset on byref with non-ReinterpretAs projection: %O{p}"
+            let storage1, originOffset, storage2, targetOffset =
+                match originLocation, targetLocation with
+                | StorageLocation.LocationResolution.Located (_, Some (storage1, originOffset)),
+                  StorageLocation.LocationResolution.Located (_, Some (storage2, targetOffset)) ->
+                    storage1, originOffset, storage2, targetOffset
+                | _ ->
+                    // One side named no storage at all, or named one whose projection chain has
+                    // no flat byte coordinate (a reference-containing value has no byte image, and
+                    // explicit layout can put two fields at one address). Neither a distance nor
+                    // the cross-storage sentinel would be honest, because without coordinates we
+                    // cannot even tell which of the two this is.
+                    failwith
+                        $"TODO: Unsafe.ByteOffset needs a flat byte coordinate for both byrefs, and at least one has none: origin %O{origin} resolved to %O{originLocation}, target %O{target} resolved to %O{targetLocation}"
 
-                    byteOff
-
-                match src with
-                | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), projs) ->
-                    ByteStorageIdentity.StackMemory (thread, frame, block),
-                    int64 byteOffset + projectionByteOffset projs
-                | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), projs) ->
-                    ByteStorageIdentity.NativeMemory block, int64 byteOffset + projectionByteOffset projs
-                | ManagedPointerSource.Byref (ByrefRoot.LocalVariable (thread, frame, local), projs) ->
-                    ByteStorageIdentity.StackLocal (thread, frame, local), projectionByteOffset projs
-                | ManagedPointerSource.Byref (ByrefRoot.Argument (thread, frame, arg), projs) ->
-                    ByteStorageIdentity.StackArgument (thread, frame, arg), projectionByteOffset projs
-                | ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringType, field, owner), projs) ->
-                    ByteStorageIdentity.StaticField (declaringType, field, owner), projectionByteOffset projs
-                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
-                    // The cell index is a position in *this array's* layout, so the array's
-                    // stride is what converts it to bytes — not `sizeof(T)` from the calling
-                    // method, which is only the same number when `T` is the element type.
-                    // `Array.Empty<T>()` needs no special case: it has no stored element to
-                    // measure, but it has a recorded stride like any other array.
-                    let elementSize = (ManagedHeap.getArrayShape arr state.ManagedHeap).ElementStride
-
-                    ByteStorageIdentity.Array arr, int64 i * int64 elementSize + projectionByteOffset projs
-                | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
-                    ByteStorageIdentity.String str, int64 charIndex * 2L + projectionByteOffset projs
-                | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, projs) ->
-                    ByteStorageIdentity.PeByteRange peByteRange, projectionByteOffset projs
-                | _ -> failwith $"TODO: Unsafe.ByteOffset on unsupported byref: %O{v}"
-
-            let storage1, originOffset = extractByteLocation origin
-            let storage2, targetOffset = extractByteLocation target
 
             // Same-storage ByteOffset is an honest byte delta and composes
             // correctly with Unsafe.Add / further arithmetic. Cross-storage
