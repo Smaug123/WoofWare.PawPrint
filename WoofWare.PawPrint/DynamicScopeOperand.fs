@@ -382,3 +382,110 @@ module internal DynamicScopeOperand =
         | Ok (RuntimeTypeHandleTarget.Closed handle) -> Ok handle
         | Ok notClosed ->
             invalidProgram $"DynamicScope entry %d{scopeIndex} names %O{notClosed}, which is not a closed type"
+
+    /// <summary>
+    /// The dynamic method named by entry <paramref name="scopeIndex"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is CoreCLR's <c>ResolveToken</c> arm <c>methodHandle = dm.GetMethodDescriptor().Value</c>
+    /// (<c>DynamicILGenerator.cs:798-803</c>), minus the minting half of
+    /// <c>GetMethodDescriptor</c> — see the <c>_methodHandle</c> refusal below.
+    /// </para>
+    /// <para>
+    /// Reading late is not a stylistic echo of <see cref="closedType"/> here; it is what makes the
+    /// feature work. A dynamic method may take a token for *itself*, and on CoreCLR that resolves
+    /// because installation and compilation are separate steps: <c>ModuleHandle.GetDynamicMethod</c>
+    /// returns and its caller assigns <c>_methodHandle</c> *before* anything walks the body's
+    /// tokens. PawPrint reproduces that ordering by reading the field when the instruction runs, at
+    /// which point the executing method has necessarily been minted. Resolving at mint would find
+    /// null and have to invent a cycle-breaking rule.
+    /// </para>
+    /// <para>
+    /// Every refusal below is a <c>failwith</c> rather than a guest exception, and that is a
+    /// statement about reachability rather than laziness. Real .NET's answers are measured — a null
+    /// slot is <c>InvalidProgramException</c>, a slot holding something <c>ResolveToken</c> falls
+    /// through on (a <c>string</c>, a <c>RuntimeTypeHandle</c>, a signature blob) is
+    /// <c>BadImageFormatException</c> with the fixed message "Bad method token.", and an index
+    /// exactly at the list's length is <c>ArgumentOutOfRangeException</c> — but no guest can provoke
+    /// any of them today: <c>Emit(OpCode, MethodInfo)</c> accepts only a <c>DynamicMethod</c> or a
+    /// <c>RuntimeMethodInfo</c> (which stops at the unimplemented
+    /// <c>RuntimeMethodHandle::GetMethodDef</c>), <c>GetTokenFor</c> never hands out index 0 or an
+    /// index at <c>Count</c>, and rewriting <c>m_tokens</c> needs reflection PawPrint does not
+    /// implement. Raising those exceptions would be three arms nothing could ever kill. Worse, the
+    /// obvious rule — "not a <c>DynamicMethod</c>, so bad token" — is *false*:
+    /// <c>ResolveToken</c> resolves a <c>RuntimeMethodHandle</c>, a <c>GenericMethodInfo</c> and a
+    /// <c>VarArgMethod</c> in method position perfectly happily, so a guest exception here would
+    /// diverge from real .NET the day the reflection primitive lands. Crashing with the found kind
+    /// named is the honest answer until one of these becomes reachable.
+    /// </para>
+    /// </remarks>
+    let dynamicMethod
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (scopeIndex : int)
+        (state : IlMachineState)
+        (thread : ThreadId)
+        : DynamicMethodHandle
+        =
+        let entry =
+            match entryObject operation scopeIndex state thread with
+            | ScopeEntryLookup.Found entry -> entry
+            | ScopeEntryLookup.Absent ->
+                failwith
+                    $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, which is null or does not exist; real .NET raises InvalidProgramException, but no guest can reach this today so PawPrint does not fabricate it"
+            | ScopeEntryLookup.PastEnd ->
+                failwith
+                    $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, which is exactly at the end of the scope's token list; real .NET raises ArgumentOutOfRangeException, but no guest can reach this today so PawPrint does not fabricate it"
+
+        // The entry's type before it is dereferenced, for the reason `closedType` gives: a slot can
+        // hold an array (a signature blob is a `byte[]`), which `ManagedHeap.get` refuses.
+        match ManagedHeap.tryGetObjectConcreteType entry state.ManagedHeap with
+        | None -> failwith $"%s{operation}: DynamicScope entry %d{scopeIndex} is at %O{entry}, which is not on the heap"
+        | Some concreteType when not (isCorelibType baseClassTypes.DynamicMethod state concreteType) ->
+            failwith
+                $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, which holds a %O{concreteType} rather than a System.Reflection.Emit.DynamicMethod; PawPrint resolves only DynamicMethod entries in method position, and neither the three reflected kinds real .NET also accepts there nor real .NET's BadImageFormatException for the rest is implemented"
+        | Some _ ->
+
+        let dm = ManagedHeap.get entry state.ManagedHeap
+
+        // `DynamicMethod._methodHandle` is an `IRuntimeMethodInfo` -- under PawPrint the
+        // `RuntimeMethodInfoStub` that `MethodHandleRegistry.mintDynamicMethod` allocated -- and is
+        // null until the target has been minted.
+        let stub =
+            match
+                AllocatedNonArrayObject.DereferenceField "_methodHandle" dm
+                |> CliType.unwrapPrimitiveLikeDeep
+            with
+            | CliType.ObjectRef (Some stub) -> stub
+            | CliType.ObjectRef None ->
+                // Real .NET mints the target here: `ResolveToken` calls `GetMethodDescriptor`, which
+                // takes `lock (this)` and runs the guest's `GetCallableMethod`, reaching the very
+                // QCall PawPrint implements. Doing the same means an IL op suspending for a managed
+                // call and re-executing, which is a mechanism the interpreter does not have yet;
+                // until it does, a callee the guest never minted itself is refused here rather than
+                // silently called wrongly.
+                failwith
+                    $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, a DynamicMethod that has not been minted (_methodHandle is null). Real .NET mints it on demand from ResolveToken; PawPrint cannot yet run a managed call from an IL op, so the guest must invoke or bind a delegate to the callee first"
+            | other ->
+                failwith
+                    $"%s{operation}: expected DynamicScope entry %d{scopeIndex}'s DynamicMethod._methodHandle to be a reference, got %O{other}"
+
+        let registryId =
+            match
+                AllocatedNonArrayObject.DereferenceField "m_value" (ManagedHeap.get stub state.ManagedHeap)
+                |> CliType.unwrapPrimitiveLikeDeep
+            with
+            | CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle id) -> id
+            | other ->
+                failwith
+                    $"%s{operation}: expected DynamicScope entry %d{scopeIndex}'s RuntimeMethodInfoStub.m_value to carry a method registry id, got %O{other}"
+
+        match MethodHandleRegistry.resolveMethodFromId registryId state.MethodHandles with
+        | Some (MethodHandle.FromDynamic handle) -> handle
+        | Some (MethodHandle.FromMetadata identity) ->
+            failwith
+                $"%s{operation}: DynamicScope entry %d{scopeIndex} is a DynamicMethod whose _methodHandle names the metadata method %O{identity.GetMethodDefinitionHandle ()}; only mintDynamicMethod may populate that field"
+        | None ->
+            failwith
+                $"%s{operation}: DynamicScope entry %d{scopeIndex} is a DynamicMethod whose _methodHandle carries registry id %d{registryId}, which is not registered"

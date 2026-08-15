@@ -292,6 +292,11 @@ type BaseClassTypes<'corelib> =
         Object : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeMethodHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeMethodInfoStub : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// <c>System.Reflection.Emit.DynamicMethod</c>, the builder object a guest holds while it
+        /// emits IL. Carried here so that a <c>DynamicScope</c> entry can be recognised as one by
+        /// *identity* rather than by displayed name: CoreCLR's own test is <c>handle as
+        /// DynamicMethod</c>, which a guest-defined lookalike does not satisfy.
+        DynamicMethod : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeMethodHandleInternal : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeFieldHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeTypeHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>

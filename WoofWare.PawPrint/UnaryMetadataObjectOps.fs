@@ -72,9 +72,9 @@ module internal UnaryMetadataObjectOps =
         let actualObj, state = IlMachineState.popEvalStack thread state
 
         let state, targetConcreteType =
-            match ctx.Operand with
-            | ResolvedMetadataOperand.ScopeType handle -> state, handle
-            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+            match ctx.TypeOperand with
+            | ResolvedTypeOperand.FromScope handle -> state, handle
+            | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
                 let state, targetType, _targetAssy =
                     IlMachineState.resolveTypeMetadataToken
                         loggerFactory
@@ -517,9 +517,9 @@ module internal UnaryMetadataObjectOps =
         let thread = ctx.Thread
 
         let state, typeHandle =
-            match ctx.Operand with
-            | ResolvedMetadataOperand.ScopeType handle -> state, handle
-            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+            match ctx.TypeOperand with
+            | ResolvedTypeOperand.FromScope handle -> state, handle
+            | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
                 let state, ty, assy =
                     match metadataToken with
                     | MetadataToken.TypeDefinition h ->
@@ -725,9 +725,9 @@ module internal UnaryMetadataObjectOps =
         let actualObj, state = IlMachineState.popEvalStack thread state
 
         let state, targetConcreteType =
-            match ctx.Operand with
-            | ResolvedMetadataOperand.ScopeType handle -> state, handle
-            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+            match ctx.TypeOperand with
+            | ResolvedTypeOperand.FromScope handle -> state, handle
+            | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
                 let state, targetType, _targetAssy =
                     IlMachineState.resolveTypeMetadataToken
                         loggerFactory
@@ -912,9 +912,9 @@ module internal UnaryMetadataObjectOps =
         let actualObj, state = IlMachineState.popEvalStack thread state
 
         let state, targetConcreteTypeHandle =
-            match ctx.Operand with
-            | ResolvedMetadataOperand.ScopeType handle -> state, handle
-            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+            match ctx.TypeOperand with
+            | ResolvedTypeOperand.FromScope handle -> state, handle
+            | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
                 let state, targetType, _targetAssy =
                     IlMachineState.resolveTypeMetadataToken
                         loggerFactory
@@ -1127,9 +1127,9 @@ module internal UnaryMetadataObjectOps =
         let actualObj, state = IlMachineState.popEvalStack thread state
 
         let state, targetConcreteTypeHandle =
-            match ctx.Operand with
-            | ResolvedMetadataOperand.ScopeType handle -> state, handle
-            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+            match ctx.TypeOperand with
+            | ResolvedTypeOperand.FromScope handle -> state, handle
+            | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
                 let state, targetType, _targetAssy =
                     IlMachineState.resolveTypeMetadataToken
                         loggerFactory

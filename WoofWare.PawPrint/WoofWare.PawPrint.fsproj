@@ -98,6 +98,8 @@
     <Compile Include="StructMarshalStub.fs" />
     <Compile Include="NullaryIlOp.fs" />
     <Compile Include="DynamicScopeOperand.fs" />
+    <Compile Include="DynamicMethodBody.fs" />
+    <Compile Include="DynamicMethodExecution.fs" />
     <Compile Include="UnaryMetadataIlOpContext.fs" />
     <Compile Include="UnaryMetadataCallOps.fs" />
     <Compile Include="UnaryMetadataObjectOps.fs" />
@@ -150,8 +152,6 @@
     <Compile Include="Native\NativeEventSource.fs" />
     <Compile Include="Native\NativeCustomAttribute.fs" />
     <Compile Include="Native\NativeMdUtf8String.fs" />
-    <Compile Include="Native\DynamicMethodBody.fs" />
-    <Compile Include="Native\DynamicMethodExecution.fs" />
     <Compile Include="Native\NativeModuleHandle.fs" />
     <!-- After NativeRuntimeTypeHelpers.fs: the CastHelpers QCall formats CoreCLR's
          InvalidCastException message with that module's type-name renderer. -->

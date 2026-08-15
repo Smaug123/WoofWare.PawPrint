@@ -441,6 +441,14 @@ public static class Entry
         /// A boxed `System.RuntimeTypeHandle` naming <paramref name="target"/>, as
         /// `GetTokenFor(RuntimeTypeHandle)` adds for `Emit(OpCode, Type)`.
         | TypeHandle of target : RuntimeTypeHandleTarget
+        /// A `System.Reflection.Emit.DynamicMethod`, as `GetTokenFor(DynamicMethod)` adds for
+        /// `Emit(OpCode, MethodInfo)` when the operand is itself a dynamic method.
+        ///
+        /// Every field zeroed, `_methodHandle` included, which is what a target that has not been
+        /// minted looks like — and is all decoding needs, since decoding classifies the entry by its
+        /// *type* and reads nothing out of it. Which method it names is read when the instruction
+        /// runs, by which time `GetMethodDescriptor` has assigned that field.
+        | DynamicMethodObject
 
     /// What a `DynamicResolver`'s fields will be made to say. Everything here is a field the
     /// resolver's constructor assigns and `DynamicMethodBody` reads back.
@@ -605,6 +613,11 @@ public static class Entry
                         CliType.ObjectRef (Some addr), state
                     | ScopeEntry.Blob bytes ->
                         let addr, state = NativeCall.allocateManagedByteArray baseClassTypes bytes state
+
+                        CliType.ObjectRef (Some addr), state
+                    | ScopeEntry.DynamicMethodObject ->
+                        let addr, state =
+                            allocateZeroed loggerFactory baseClassTypes baseClassTypes.DynamicMethod state
 
                         CliType.ObjectRef (Some addr), state
                     | ScopeEntry.TypeHandle target ->
@@ -1301,6 +1314,22 @@ public static class Entry
             | _ -> None
         )
 
+    /// The scope indices this body's `call`s name, in order. The sibling of `scopeTypeOperands`, and
+    /// separate from it so that a `call` decoded as a metadata token fails here loudly rather than
+    /// being silently dropped.
+    let private scopeMethodOperands (body : MintedDynamicMethodBody) : int list =
+        body.Instructions
+        |> List.map fst
+        |> List.choose (fun op ->
+            match op with
+            | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, operand) ->
+                match operand with
+                | MetadataOperand.FromDynamicScope index -> Some index
+                | MetadataOperand.FromMetadata token ->
+                    failwith $"expected a dynamic-scope operand, got the metadata token %O{token.Token}"
+            | _ -> None
+        )
+
     /// A closed `RuntimeTypeHandleTarget` to hang a scope entry on. `System.Int32` rather than
     /// anything more exotic because what is under test is the walk to the target, not the target.
     let private closedInt32
@@ -1407,10 +1436,45 @@ public static class Entry
 
     /// "This opcode is not wired for scope operands yet" and "this entry is the wrong kind" are
     /// different facts and must read differently: a guest that trips either just gets parked, so the
-    /// message is the only diagnostic anyone gets. A `call` naming a perfectly good *type* entry is
-    /// the case that separates them.
+    /// message is the only diagnostic anyone gets. A method-shaped opcode naming a perfectly good
+    /// *method* entry is the case that separates them, and `callvirt` is the one to use now that
+    /// `call` is wired: a `DynamicMethod` is always static, so real .NET answers a `callvirt` naming
+    /// one with MissingMethodException (measured) rather than by resolving it.
     [<Test>]
-    let ``a call naming a type entry is refused as unsupported rather than as wrong-kind`` () : unit =
+    let ``a callvirt naming a dynamic-method entry is refused as unsupported rather than as wrong-kind`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        // ldnull; callvirt <scope 2>; ret
+        let body =
+            { doublingBody with
+                Code =
+                    Array.concat
+                        [
+                            [| 0x14uy ; 0x6Fuy |]
+                            System.BitConverter.GetBytes (2 ||| 0x0A000000)
+                            [| 0x2Auy |]
+                        ]
+                Scope =
+                    [
+                        ScopeEntry.Null
+                        ScopeEntry.Blob [| 0x00uy |]
+                        ScopeEntry.DynamicMethodObject
+                    ]
+            }
+
+        let message = mintExpectingFailureIn loggerFactory prepared body state
+
+        message |> shouldContainText "Callvirt"
+        message |> shouldContainText "MissingMethodException"
+        // Not the wrong-kind wording ("... which holds X rather than Y"): the entry is fine, the
+        // opcode is what is missing.
+        message |> shouldNotContainText "which holds"
+
+    /// The other half of that distinction, and the case the previous slice pinned the opposite way:
+    /// now that `call` *is* wired, a `call` naming a type entry is a wrong-kind refusal rather than
+    /// an unsupported-opcode one.
+    [<Test>]
+    let ``a call naming a type entry is refused as wrong-kind`` () : unit =
         let loggerFactory, prepared, state = loadFixture ()
         let target, state = closedInt32 loggerFactory prepared state
 
@@ -1435,9 +1499,60 @@ public static class Entry
         let message = mintExpectingFailureIn loggerFactory prepared body state
 
         message |> shouldContainText "Call"
-        message |> shouldContainText "cannot yet resolve method entries"
-        // Not the wrong-kind wording: the entry is fine, the opcode is what is missing.
-        message |> shouldNotContainText "rather than a type handle"
+        message |> shouldContainText "entry 2"
+        message |> shouldContainText "a type handle rather than a dynamic method"
+
+    /// The accepting direction, which is what this slice adds: a `call` naming a `DynamicMethod`
+    /// entry is a body PawPrint will mint. Nothing is read out of the entry here — the method it
+    /// names lives in its `_methodHandle`, which is still null at this point precisely because a
+    /// dynamic method may name *itself* and so cannot be minted before its own body is decoded.
+    [<Test>]
+    let ``a call naming a dynamic-method entry is minted`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        // ldnull; call <scope 2>; ret
+        let body =
+            { doublingBody with
+                Code =
+                    Array.concat
+                        [
+                            [| 0x14uy ; 0x28uy |]
+                            System.BitConverter.GetBytes (2 ||| 0x06000000)
+                            [| 0x2Auy |]
+                        ]
+                Scope =
+                    [
+                        ScopeEntry.Null
+                        ScopeEntry.Blob [| 0x00uy |]
+                        ScopeEntry.DynamicMethodObject
+                    ]
+            }
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let _, definition = definitionBehindStub state stubAddress
+
+        scopeMethodOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
+
+    /// The mirror image, as for type entries: `ldstr` must not accept a method entry either.
+    [<Test>]
+    let ``an ldstr naming a dynamic-method entry is refused`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let body =
+            ldstrBody
+                2
+                [
+                    ScopeEntry.Null
+                    ScopeEntry.Blob [| 0x00uy |]
+                    ScopeEntry.DynamicMethodObject
+                ]
+
+        let message = mintExpectingFailureIn loggerFactory prepared body state
+
+        message |> shouldContainText "entry 2"
+        message |> shouldContainText "a dynamic method rather than a string"
 
     /// A `catch` clause's type arrives as a `DynamicScope` index in `ClassTokenOrFilterOffset`,
     /// which `ExceptionRegion.Catch` has nowhere to put; so clauses are refused as a body, rather

@@ -302,8 +302,19 @@ type DynamicScopeEntry =
     /// Carries no payload on purpose. Which type it names is read from the guest heap when the
     /// instruction executes, not now — see `MetadataOperand.FromDynamicScope`.
     | TypeHandle
+    /// A guest `System.Reflection.Emit.DynamicMethod`, which is what
+    /// `DynamicILGenerator.Emit(OpCode, MethodInfo)` stores when the operand is itself a dynamic
+    /// method: that overload has a dedicated branch for the case, and `GetTokenFor(DynamicMethod)`
+    /// appends the builder object rather than a handle (`DynamicILGenerator.cs:531-534`).
+    ///
+    /// Carries no payload, as `TypeHandle` does, and here the deferral is doing more than mirroring
+    /// CoreCLR. The method this entry names is identified by the object's `_methodHandle`, which is
+    /// null until the target is minted — so at the moment a body is decoded, a self-referential
+    /// entry names nothing at all. It is precisely because the read happens later that
+    /// `il.Emit(OpCodes.Call, dm)` inside `dm` works.
+    | DynamicMethod
     /// Some entry kind whose resolution is not yet implemented — a signature blob, a
-    /// `RuntimeMethodHandle`, a nested `DynamicMethod`. The description names the kind, for the
+    /// `RuntimeMethodHandle`, a `GenericMethodInfo`. The description names the kind, for the
     /// refusal message an instruction naming it would produce.
     | Unsupported of description : string
 
