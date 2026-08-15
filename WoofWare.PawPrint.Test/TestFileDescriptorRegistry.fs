@@ -15,6 +15,106 @@ module TestFileDescriptorRegistry =
     let private standardStream (role : FileDescriptorRole) : OpenFileDescription =
         OpenFileDescription.StandardStream role
 
+    let private someInode : InodeNumber = InodeNumber 42L
+    let private otherInode : InodeNumber = InodeNumber 43L
+
+    [<Test>]
+    let ``openFile takes the lowest free descriptor and a fresh description`` () : unit =
+        let a, registry =
+            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+
+        a |> shouldEqual 3
+
+        let b, registry = FileDescriptorRegistry.openFile otherInode registry
+        b |> shouldEqual 4
+
+        FileDescriptorRegistry.tryFind a registry
+        |> shouldEqual (Some (OpenFileDescription.File someInode))
+
+        FileDescriptorRegistry.tryFind b registry
+        |> shouldEqual (Some (OpenFileDescription.File otherInode))
+
+        FileDescriptorRegistry.assertInvariants "openFile" registry
+        |> ignore<FileDescriptorRegistry>
+
+    /// The distinction `dup` exists to draw, in the other direction: two opens
+    /// of the *same* inode are two descriptions, so the offsets and `flock`
+    /// locks they will later carry are separate. Comparing the payloads would
+    /// not show this — they are equal — so the identities are what is asserted.
+    [<Test>]
+    let ``two opens of one inode are two descriptions, unlike dup`` () : unit =
+        let a, registry =
+            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+
+        let b, registry = FileDescriptorRegistry.openFile someInode registry
+
+        FileDescriptorRegistry.tryFind a registry
+        |> shouldEqual (FileDescriptorRegistry.tryFind b registry)
+
+        FileDescriptorRegistry.tryFindId a registry
+        |> shouldNotEqual (FileDescriptorRegistry.tryFindId b registry)
+
+        match FileDescriptorRegistry.dup a registry with
+        | Error e -> failwith $"expected dup to succeed, got %O{e}"
+        | Ok (duplicate, registry) ->
+            FileDescriptorRegistry.tryFindId duplicate registry
+            |> shouldEqual (FileDescriptorRegistry.tryFindId a registry)
+
+    /// Descriptor numbers are reused; description identities are not. The
+    /// former is POSIX ("lowest free"), the latter is what keeps a replay trace
+    /// unambiguous about which open a given description was.
+    [<Test>]
+    let ``a closed description's identity is never handed out again`` () : unit =
+        let fd, registry =
+            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+
+        let firstId = FileDescriptorRegistry.tryFindId fd registry
+
+        let registry =
+            match FileDescriptorRegistry.close fd registry with
+            | Ok registry -> registry
+            | Error e -> failwith $"expected close to succeed, got %O{e}"
+
+        let reused, registry = FileDescriptorRegistry.openFile otherInode registry
+
+        // The *descriptor* comes back...
+        reused |> shouldEqual fd
+        // ...but it names a different description.
+        FileDescriptorRegistry.tryFindId reused registry |> shouldNotEqual firstId
+
+        FileDescriptorRegistry.assertInvariants "reuse" registry
+        |> ignore<FileDescriptorRegistry>
+
+    /// Both directions of staleness, because only one of them is obvious. A
+    /// cursor *equal* to a live id collides on the very next `open`; a cursor
+    /// *below* one collides a few opens later, and an invariant that checked
+    /// only for the collision it can see today would pass the second — then
+    /// silently retarget every descriptor naming that description.
+    [<TestCase(7L)>]
+    [<TestCase(6L)>]
+    [<TestCase(0L)>]
+    let ``checkInvariants rejects a NextId at or below a live description`` (next : int64) : unit =
+        let registry =
+            FileDescriptorRegistry.Unchecked.ofParts
+                (Map.ofList [ 0, OpenFileDescriptionId 7L ])
+                (Map.ofList [ OpenFileDescriptionId 7L, OpenFileDescription.File someInode ])
+                (OpenFileDescriptionId next)
+
+        FileDescriptorRegistry.checkInvariants registry
+        |> shouldEqual
+            [
+                FileDescriptorRegistryDefect.NextIdNotFresh (OpenFileDescriptionId next, OpenFileDescriptionId 7L)
+            ]
+
+    [<Test>]
+    let ``checkInvariants accepts a NextId above every live description`` () : unit =
+        FileDescriptorRegistry.Unchecked.ofParts
+            (Map.ofList [ 0, OpenFileDescriptionId 7L ])
+            (Map.ofList [ OpenFileDescriptionId 7L, OpenFileDescription.File someInode ])
+            (OpenFileDescriptionId 8L)
+        |> FileDescriptorRegistry.checkInvariants
+        |> shouldEqual []
+
     [<Test>]
     let ``initial seeds stdin, stdout, stderr`` () : unit =
         FileDescriptorRegistry.tryFind 0 FileDescriptorRegistry.initial
@@ -361,7 +461,10 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``checkInvariants rejects a descriptor naming an absent description`` () : unit =
         let registry =
-            FileDescriptorRegistry.Unchecked.ofParts (Map.ofList [ 0, OpenFileDescriptionId 7L ]) Map.empty
+            FileDescriptorRegistry.Unchecked.ofParts
+                (Map.ofList [ 0, OpenFileDescriptionId 7L ])
+                Map.empty
+                (OpenFileDescriptionId 8L)
 
         FileDescriptorRegistry.checkInvariants registry
         |> shouldEqual [ FileDescriptorRegistryDefect.DanglingFd (0, OpenFileDescriptionId 7L) ]
@@ -372,6 +475,7 @@ module TestFileDescriptorRegistry =
             FileDescriptorRegistry.Unchecked.ofParts
                 Map.empty
                 (Map.ofList [ OpenFileDescriptionId 7L, standardStream FileDescriptorRole.StandardOutput ])
+                (OpenFileDescriptionId 8L)
 
         FileDescriptorRegistry.checkInvariants registry
         |> shouldEqual
@@ -385,7 +489,10 @@ module TestFileDescriptorRegistry =
         |> shouldEqual FileDescriptorRegistry.initial
 
         let unsound =
-            FileDescriptorRegistry.Unchecked.ofParts (Map.ofList [ 0, OpenFileDescriptionId 7L ]) Map.empty
+            FileDescriptorRegistry.Unchecked.ofParts
+                (Map.ofList [ 0, OpenFileDescriptionId 7L ])
+                Map.empty
+                (OpenFileDescriptionId 8L)
 
         let exc =
             Assert.Throws<System.Exception> (fun () ->
@@ -401,7 +508,10 @@ module TestFileDescriptorRegistry =
         // loudly rather than report the descriptor as closed, which would let a
         // corrupt table masquerade as EBADF.
         let registry =
-            FileDescriptorRegistry.Unchecked.ofParts (Map.ofList [ 0, OpenFileDescriptionId 7L ]) Map.empty
+            FileDescriptorRegistry.Unchecked.ofParts
+                (Map.ofList [ 0, OpenFileDescriptionId 7L ])
+                Map.empty
+                (OpenFileDescriptionId 8L)
 
         let exc =
             Assert.Throws<System.Exception> (fun () -> FileDescriptorRegistry.tryFind 0 registry |> ignore)
