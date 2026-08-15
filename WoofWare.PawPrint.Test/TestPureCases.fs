@@ -83,13 +83,19 @@ module TestPureCases =
         let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
 
         let file (contents : string) =
-            SeedEntry.File (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
+            SeedEntry.file (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
+
+        let bytes (contents : string) =
+            Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange
+
+        let mode (raw : int) =
+            PermissionBits.parseOrFail "test seed" raw
 
         let openSeed =
             Map.ofList
                 [
                     name "f", file "hello"
-                    name "d", SeedEntry.Directory (Map.ofList [ name "g", file "nested" ])
+                    name "d", SeedEntry.directory (Map.ofList [ name "g", file "nested" ])
                     name "lf", SeedEntry.Symlink (target "f")
                     name "ld", SeedEntry.Symlink (target "d")
                 ]
@@ -99,7 +105,7 @@ module TestPureCases =
             Map.ofList
                 [
                     name "f", file "hello"
-                    name "d", SeedEntry.Directory (Map.ofList [ name "g", file "nested" ])
+                    name "d", SeedEntry.directory (Map.ofList [ name "g", file "nested" ])
                     name "lf", SeedEntry.Symlink (target "f")
                     name "ld", SeedEntry.Symlink (target "d")
                     name "dang", SeedEntry.Symlink (target "nx")
@@ -107,11 +113,33 @@ module TestPureCases =
                     // on Unix.
                     name ".hidden", file "x"
                 ]
+            // Every mode here is written as an octal literal rather than
+            // assembled from named bits, because the guest asserts the named
+            // bits: if both sides were spelled the same way, a wrong bit order
+            // would agree with itself.
+            "FileModeSeeded.cs",
+            Map.ofList
+                [
+                    name "default", file "hello"
+                    name "private", SeedEntry.File (bytes "hello", mode 0o600)
+                    name "shared", SeedEntry.File (bytes "hello", mode 0o666)
+                    name "readonly", SeedEntry.File (bytes "hello", mode 0o444)
+                    name "dir", SeedEntry.directory Map.empty
+                    name "narrow", SeedEntry.Directory (Map.empty, mode 0o711)
+                    // Non-empty *and* not writable by its owner, which is the
+                    // one shape that makes the oracle's materialisation order
+                    // observable: the child has to be created before the mode
+                    // is applied, or the host cannot create it at all. (A
+                    // process running as root bypasses that check, so on a root
+                    // CI runner this seed exercises the order without being
+                    // able to falsify it — the test still passes either way.)
+                    name "locked", SeedEntry.Directory (Map.ofList [ name "inside", file "within" ], mode 0o555)
+                ]
             "FileExistsSeeded.cs",
             Map.ofList
                 [
                     name "f", file "hello"
-                    name "d", SeedEntry.Directory (Map.ofList [ name "g", file "nested" ])
+                    name "d", SeedEntry.directory (Map.ofList [ name "g", file "nested" ])
                     name "lf", SeedEntry.Symlink (target "f")
                     name "ld", SeedEntry.Symlink (target "d")
                     name "dang", SeedEntry.Symlink (target "nx")
@@ -121,7 +149,7 @@ module TestPureCases =
             Map.ofList
                 [
                     name "f", file "hello"
-                    name "d", SeedEntry.Directory Map.empty
+                    name "d", SeedEntry.directory Map.empty
                     name "lf", SeedEntry.Symlink (target "f")
                     // Six bytes, so that "exactly the target", "one byte more"
                     // and "one byte less" are three different buffer sizes.
@@ -140,7 +168,7 @@ module TestPureCases =
             Map.ofList
                 [
                     name "f", file "hello"
-                    name "d", SeedEntry.Directory Map.empty
+                    name "d", SeedEntry.directory Map.empty
                     name "lf", SeedEntry.Symlink (target "f")
                     name "ld", SeedEntry.Symlink (target "d")
                     // A link to a link, so that following to the final target
@@ -745,6 +773,13 @@ class Program
 
     [<TestCaseSource(nameof seededCaseNames)>]
     let ``Seeded filesystem tests`` (fileName : string) =
+        // A seed naming a Unix mode has no Windows equivalent, so the oracle
+        // cannot stand in for it and the case is skipped rather than failed.
+        // Asked of `RealRuntime` rather than decided here, so that the skip and
+        // the validator's refusal cannot disagree about which seeds qualify.
+        if not (RealRuntime.canMaterialise seededCases.[fileName]) then
+            Assert.Ignore $"%s{fileName}'s seed names Unix permission bits, which this host cannot give a real file."
+
         {
             FileName = fileName
             ExpectedReturnCode = 0

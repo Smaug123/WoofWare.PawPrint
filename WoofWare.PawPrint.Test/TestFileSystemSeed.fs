@@ -5,6 +5,7 @@ open System.Collections.Immutable
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
+open System.Runtime.InteropServices
 open NUnit.Framework
 open WoofWare.PawPrint
 
@@ -28,6 +29,9 @@ module TestFileSystemSeed =
     /// is what `KernelConfig` defaults to.
     let private limits : PathLimits =
         SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
+
+    let private mode (raw : int) : PermissionBits =
+        PermissionBits.parseOrFail "test seed" raw
 
     let private bytes (s : string) : ImmutableArray<byte> =
         System.Text.Encoding.UTF8.GetBytes s |> ImmutableArray.CreateRange
@@ -56,14 +60,14 @@ module TestFileSystemSeed =
             Map.ofList
                 [
                     name "etc",
-                    SeedEntry.Directory (
+                    SeedEntry.directory (
                         Map.ofList
                             [
-                                name "hostname", SeedEntry.File (bytes "pawprint")
+                                name "hostname", SeedEntry.file (bytes "pawprint")
                                 name "localtime", SeedEntry.Symlink (target "/usr/share/zoneinfo/UTC")
                             ]
                     )
-                    name "empty", SeedEntry.Directory Map.empty
+                    name "empty", SeedEntry.directory Map.empty
                 ]
 
         let vfs = realise seed
@@ -110,7 +114,7 @@ module TestFileSystemSeed =
         let seed =
             Map.ofList
                 [
-                    name "a", SeedEntry.Directory (Map.ofList [ name "b", SeedEntry.Directory Map.empty ])
+                    name "a", SeedEntry.directory (Map.ofList [ name "b", SeedEntry.directory Map.empty ])
                 ]
 
         let vfs = realise seed
@@ -127,9 +131,9 @@ module TestFileSystemSeed =
         let seed =
             Map.ofList
                 [
-                    name "f", SeedEntry.File (bytes "x")
+                    name "f", SeedEntry.file (bytes "x")
                     name "l", SeedEntry.Symlink (target "f")
-                    name "d", SeedEntry.Directory (Map.ofList [ name "g", SeedEntry.File ImmutableArray<byte>.Empty ])
+                    name "d", SeedEntry.directory (Map.ofList [ name "g", SeedEntry.file ImmutableArray<byte>.Empty ])
                 ]
 
         let vfs = realise seed
@@ -153,18 +157,18 @@ module TestFileSystemSeed =
             if depth <= 0 then
                 Gen.oneof
                     [
-                        Gen.constant (SeedEntry.File ImmutableArray<byte>.Empty)
+                        Gen.constant (SeedEntry.file ImmutableArray<byte>.Empty)
                         Gen.constant (SeedEntry.Symlink (target "a"))
-                        Gen.constant (SeedEntry.Directory Map.empty)
+                        Gen.constant (SeedEntry.directory Map.empty)
                     ]
             else
                 Gen.oneof
                     [
-                        Gen.constant (SeedEntry.File ImmutableArray<byte>.Empty)
+                        Gen.constant (SeedEntry.file ImmutableArray<byte>.Empty)
                         Gen.constant (SeedEntry.Symlink (target "../a"))
                         Gen.zip nameGen (go (depth - 1))
                         |> Gen.listOf
-                        |> Gen.map (Map.ofList >> SeedEntry.Directory)
+                        |> Gen.map (Map.ofList >> SeedEntry.directory)
                     ]
 
         go depth
@@ -182,7 +186,7 @@ module TestFileSystemSeed =
             let here = prefix + "/" + FileName.toString name
 
             match entry with
-            | SeedEntry.Directory children -> (here, entry) :: declared here children
+            | SeedEntry.Directory (children, _) -> (here, entry) :: declared here children
             | SeedEntry.File _
             | SeedEntry.Symlink _ -> [ here, entry ]
         )
@@ -298,6 +302,85 @@ module TestFileSystemSeed =
             UnixTimestamp.nanoseconds timestamp |> shouldBeGreaterThan -1
             UnixTimestamp.seconds timestamp |> shouldBeSmallerThan 0L
 
+    [<Test>]
+    let ``a seeded mode reaches the inode graph, and the default is a decision`` () : unit =
+        let seed =
+            Map.ofList
+                [
+                    name "byDefault", SeedEntry.file (bytes "x")
+                    name "explicit", SeedEntry.File (bytes "x", mode 0o600)
+                    name "dirByDefault", SeedEntry.directory Map.empty
+                    name "dirExplicit", SeedEntry.Directory (Map.empty, mode 0o711)
+                    // A symlink has no seedable mode at all; what `stat` reports
+                    // for one is the platform's business, not the seed's.
+                    name "link", SeedEntry.Symlink (target "byDefault")
+                ]
+
+        let vfs = realise seed
+        let root = VirtualFileSystem.root vfs
+
+        let permissionsAt (p : string) : InodePermissions =
+            match VirtualFileSystem.resolveExisting limits root SymlinkPolicy.NoFollowFinal (path p) vfs with
+            | Error error -> failwith $"%s{p} did not resolve: %O{error}"
+            | Ok inode ->
+
+            match VirtualFileSystem.tryGet inode vfs with
+            | Some entry -> VirtualFileSystem.permissions entry
+            | None -> failwith $"%s{p} resolved to an inode the graph does not contain"
+
+        permissionsAt "/explicit" |> shouldEqual (InodePermissions.Stored (mode 0o600))
+
+        permissionsAt "/dirExplicit"
+        |> shouldEqual (InodePermissions.Stored (mode 0o711))
+
+        // The smart constructors' defaults are what a `umask 022` process would
+        // have produced, and are asserted as literals rather than by reference
+        // to `PermissionBits.defaultForRegularFile` — otherwise this test would
+        // agree with any value that constant happened to take.
+        permissionsAt "/byDefault" |> shouldEqual (InodePermissions.Stored (mode 0o644))
+
+        permissionsAt "/dirByDefault"
+        |> shouldEqual (InodePermissions.Stored (mode 0o755))
+
+        permissionsAt "/link" |> shouldEqual InodePermissions.PlatformSymlinkDefault
+
+    /// Split out from the shape-validation test above, and Unix-only, because
+    /// on Windows the validator refuses *any* non-default mode first — it has no
+    /// Unix bits to give a real file — so both halves below would be answered by
+    /// that rule instead of the one under test.
+    [<Test>]
+    let ``the oracle refuses mode bits a host chmod may drop`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "The validator refuses every non-default mode on Windows, which is a different rule."
+
+        let reserved = [ "Guest.dll" ; "Guest.runtimeconfig.json" ]
+
+        let refused (seed : Map<FileName, SeedEntry>) : string =
+            let failure =
+                Assert.Throws (fun () -> RealRuntime.validateSeedForOracle reserved seed)
+
+            failure.Message
+
+        // Set-user-ID, set-group-ID and sticky: a host `chmod` may silently
+        // drop these, so PawPrint would report a bit the host did not have and
+        // the comparison would be about the harness rather than the runtimes.
+        for special in [ 0o4644 ; 0o2644 ; 0o1644 ] do
+            refused (Map.ofList [ name "f", SeedEntry.File (bytes "x", mode special) ])
+            |> shouldContainText "set-user-ID/set-group-ID/sticky"
+
+        // ...on a directory too, where the sticky bit is the one that actually
+        // has a common use.
+        refused (Map.ofList [ name "d", SeedEntry.Directory (Map.empty, mode 0o1755) ])
+        |> shouldContainText "set-user-ID/set-group-ID/sticky"
+
+        // The ordinary twelve-bit modes are all fine, including ones the
+        // default umask would never produce. This half is what stops the rule
+        // above being satisfied by a validator that simply refused every mode.
+        for ordinary in [ 0o000 ; 0o400 ; 0o600 ; 0o666 ; 0o777 ] do
+            RealRuntime.validateSeedForOracle
+                reserved
+                (Map.ofList [ name "f", SeedEntry.File (bytes "x", mode ordinary) ])
+
     // ------------------------------------------------------- the oracle's side
 
     [<Test>]
@@ -319,8 +402,8 @@ module TestFileSystemSeed =
             reserved
             (Map.ofList
                 [
-                    name "f", SeedEntry.File (bytes "hello")
-                    name "d", SeedEntry.Directory (Map.ofList [ name "g", SeedEntry.File (bytes "nested") ])
+                    name "f", SeedEntry.file (bytes "hello")
+                    name "d", SeedEntry.directory (Map.ofList [ name "g", SeedEntry.file (bytes "nested") ])
                     name "lf", SeedEntry.Symlink (target "f")
                     name "ld", SeedEntry.Symlink (target "d")
                     name "dang", SeedEntry.Symlink (target "nx")
@@ -359,7 +442,7 @@ module TestFileSystemSeed =
         refused (
             Map.ofList
                 [
-                    name "f", SeedEntry.File (bytes "a")
+                    name "f", SeedEntry.file (bytes "a")
                     name "l", SeedEntry.Symlink (target "F")
                 ]
         )
@@ -373,7 +456,7 @@ module TestFileSystemSeed =
         // Names differing only by case: one file on a stock macOS, two in
         // PawPrint. Refused on every host, so that a seed cannot pass here and
         // compare the wrong thing in CI.
-        refused (Map.ofList [ name "f", SeedEntry.File (bytes "a") ; name "F", SeedEntry.File (bytes "b") ])
+        refused (Map.ofList [ name "f", SeedEntry.file (bytes "a") ; name "F", SeedEntry.file (bytes "b") ])
         |> shouldContainText "case or Unicode normalisation"
 
         // ...at any depth, not just the root.
@@ -381,8 +464,8 @@ module TestFileSystemSeed =
             Map.ofList
                 [
                     name "d",
-                    SeedEntry.Directory (
-                        Map.ofList [ name "g", SeedEntry.File (bytes "a") ; name "G", SeedEntry.File (bytes "b") ]
+                    SeedEntry.directory (
+                        Map.ofList [ name "g", SeedEntry.file (bytes "a") ; name "G", SeedEntry.file (bytes "b") ]
                     )
                 ]
         )
@@ -397,13 +480,13 @@ module TestFileSystemSeed =
         let decomposed = "e\u0301"
         precomposed |> shouldNotEqual decomposed
 
-        refused (Map.ofList [ name precomposed, SeedEntry.File (bytes "a") ])
+        refused (Map.ofList [ name precomposed, SeedEntry.file (bytes "a") ])
         |> shouldContainText "case folding is unambiguous"
 
-        refused (Map.ofList [ name decomposed, SeedEntry.File (bytes "b") ])
+        refused (Map.ofList [ name decomposed, SeedEntry.file (bytes "b") ])
         |> shouldContainText "case folding is unambiguous"
 
-        refused (Map.ofList [ name "\u00DF", SeedEntry.File (bytes "a") ])
+        refused (Map.ofList [ name "\u00DF", SeedEntry.file (bytes "a") ])
         |> shouldContainText "case folding is unambiguous"
 
         // The rule has to cover every string the folding is applied to, not
@@ -413,7 +496,7 @@ module TestFileSystemSeed =
         refused (
             Map.ofList
                 [
-                    name "ss", SeedEntry.File (bytes "a")
+                    name "ss", SeedEntry.file (bytes "a")
                     name "l", SeedEntry.Symlink (target "\u00DF")
                 ]
         )
@@ -430,7 +513,7 @@ module TestFileSystemSeed =
             Assert.Throws (fun () ->
                 RealRuntime.validateSeedForOracle
                     [ "Gu\u00DFest.dll" ]
-                    (Map.ofList [ name "f", SeedEntry.File (bytes "a") ])
+                    (Map.ofList [ name "f", SeedEntry.file (bytes "a") ])
             )
 
         reservedFailure.Message |> shouldContainText "oracle's own reserved file"
@@ -440,16 +523,16 @@ module TestFileSystemSeed =
             reserved
             (Map.ofList
                 [
-                    name "a-b_c.d", SeedEntry.File (bytes "x")
-                    name "Guest2.dll", SeedEntry.File (bytes "y")
+                    name "a-b_c.d", SeedEntry.file (bytes "x")
+                    name "Guest2.dll", SeedEntry.file (bytes "y")
                 ])
 
         // The guest image, which the oracle must write itself — including under
         // a case that a case-insensitive host would alias onto it.
-        refused (Map.ofList [ name "Guest.dll", SeedEntry.File (bytes "a") ])
+        refused (Map.ofList [ name "Guest.dll", SeedEntry.file (bytes "a") ])
         |> shouldContainText "run the guest at all"
 
-        refused (Map.ofList [ name "guest.DLL", SeedEntry.File (bytes "a") ])
+        refused (Map.ofList [ name "guest.DLL", SeedEntry.file (bytes "a") ])
         |> shouldContainText "run the guest at all"
 
     [<Test>]
