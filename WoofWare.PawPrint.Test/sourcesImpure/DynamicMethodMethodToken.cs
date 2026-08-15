@@ -185,6 +185,25 @@ public class Program
             return 6;
         }
 
+        // 7. `EmitCall` rather than `Emit`, which is the *same call* spelled the other way and is
+        // not an exotic vararg-only API: `GetMemberRefToken` wraps whatever it is given in a
+        // `VarArgMethod` unconditionally, so this scope entry is a wrapper where every other one in
+        // this file is a bare `DynamicMethod`. `ResolveToken` unwraps it and ignores the wrapper's
+        // signature; a `DynamicMethod` is always `CallingConventions.Standard`, so `EmitCall` would
+        // have thrown had this passed a non-null `optionalParameterTypes`.
+        DynamicMethod callsViaEmitCall = Unary("CallsViaEmitCall");
+        {
+            ILGenerator il = callsViaEmitCall.GetILGenerator();
+            il.Emit(OpCodes.Ldarg_0);
+            il.EmitCall(OpCodes.Call, plus10, null);
+            il.Emit(OpCodes.Ret);
+        }
+
+        if (Mint(callsViaEmitCall)(1) != 11)
+        {
+            return 7;
+        }
+
         return 0;
     }
 }

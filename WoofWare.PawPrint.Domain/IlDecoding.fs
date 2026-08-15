@@ -41,9 +41,11 @@ module IlDecoding =
     type ScopeOperandKind =
         /// A boxed `RuntimeTypeHandle`.
         | Type
-        /// A method: today only a `DynamicMethod`, since the other three kinds `ResolveToken` accepts
-        /// in method position (`RuntimeMethodHandle`, `GenericMethodInfo`, `VarArgMethod`) all require
-        /// the guest to obtain a reflected `MethodInfo` first, which stops at the unimplemented
+        /// A method: today a `DynamicMethod`, either bare (as `Emit(OpCode, MethodInfo)` stores it)
+        /// or inside the `VarArgMethod` wrapper `EmitCall` always stores. The other kinds
+        /// `ResolveToken` accepts in method position — a `RuntimeMethodHandle`, a
+        /// `GenericMethodInfo`, or a `VarArgMethod` wrapping a *reflected* method — all require the
+        /// guest to obtain a reflected `MethodInfo` first, which stops at the unimplemented
         /// `RuntimeMethodHandle::GetMethodDef`.
         | Method
         /// This opcode's scope operands are not resolvable yet, whatever the entry turns out to be.
@@ -166,6 +168,7 @@ module IlDecoding =
                 match entry with
                 | DynamicScopeEntry.TypeHandle -> "a type handle"
                 | DynamicScopeEntry.DynamicMethod -> "a dynamic method"
+                | DynamicScopeEntry.VarArgMethod -> "a call site naming a dynamic method"
                 | DynamicScopeEntry.String contents -> $"the string %s{contents}"
                 | DynamicScopeEntry.Unsupported description -> description
 
@@ -174,9 +177,12 @@ module IlDecoding =
                 failwith
                     $"TODO: a dynamic method's %O{op} names DynamicScope entry %d{index} (token 0x%08x{value}), but %s{missing}"
             | ScopeOperandKind.Type, DynamicScopeEntry.TypeHandle
-            | ScopeOperandKind.Method, DynamicScopeEntry.DynamicMethod -> MetadataOperand.FromDynamicScope index
+            | ScopeOperandKind.Method, DynamicScopeEntry.DynamicMethod
+            // `Emit(OpCode, MethodInfo)` and `EmitCall` differ only in whether the entry is wrapped;
+            // both are ordinary ways to spell the same call, so both are accepted here.
+            | ScopeOperandKind.Method, DynamicScopeEntry.VarArgMethod -> MetadataOperand.FromDynamicScope index
             | ScopeOperandKind.Type, held -> refuse "a type handle" (describe held)
-            | ScopeOperandKind.Method, held -> refuse "a dynamic method" (describe held)
+            | ScopeOperandKind.Method, held -> refuse "a method" (describe held)
 
     let private readStringToken (universe : IlTokenUniverse) (reader : byref<BlobReader>) : StringOperand =
         let value = reader.ReadUInt32 () |> int
@@ -194,7 +200,8 @@ module IlDecoding =
             | Some DynamicScopeEntry.TypeHandle ->
                 failwith
                     $"a dynamic method's ldstr names DynamicScope entry %d{index} (token 0x%08x{value}), which holds a type handle rather than a string"
-            | Some DynamicScopeEntry.DynamicMethod ->
+            | Some DynamicScopeEntry.DynamicMethod
+            | Some DynamicScopeEntry.VarArgMethod ->
                 failwith
                     $"a dynamic method's ldstr names DynamicScope entry %d{index} (token 0x%08x{value}), which holds a dynamic method rather than a string"
             | Some (DynamicScopeEntry.Unsupported description) ->

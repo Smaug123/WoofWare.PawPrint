@@ -297,6 +297,12 @@ type BaseClassTypes<'corelib> =
         /// *identity* rather than by displayed name: CoreCLR's own test is <c>handle as
         /// DynamicMethod</c>, which a guest-defined lookalike does not satisfy.
         DynamicMethod : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// <c>System.Reflection.Emit.VarArgMethod</c>, the wrapper <c>ILGenerator.EmitCall</c> puts
+        /// round whatever method it was given. Recognised by identity for the same reason
+        /// <see cref="DynamicMethod"/> is, even though it is an internal type a guest could not
+        /// plausibly counterfeit: the strength of the check should not depend on who happens to be
+        /// able to reach it today.
+        VarArgMethod : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeMethodHandleInternal : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeFieldHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeTypeHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>

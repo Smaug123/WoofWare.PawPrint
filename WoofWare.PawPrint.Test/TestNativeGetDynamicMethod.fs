@@ -441,6 +441,11 @@ public static class Entry
         /// A boxed `System.RuntimeTypeHandle` naming <paramref name="target"/>, as
         /// `GetTokenFor(RuntimeTypeHandle)` adds for `Emit(OpCode, Type)`.
         | TypeHandle of target : RuntimeTypeHandleTarget
+        /// A `System.Reflection.Emit.VarArgMethod`, as `GetMemberRefToken` adds for *every*
+        /// `EmitCall`, vararg call site or not. Every field zeroed, `m_dynamicMethod` included,
+        /// which is all decoding needs: decoding classifies by type and unwrapping happens when the
+        /// instruction runs.
+        | VarArgMethodObject
         /// A `System.Reflection.Emit.DynamicMethod`, as `GetTokenFor(DynamicMethod)` adds for
         /// `Emit(OpCode, MethodInfo)` when the operand is itself a dynamic method.
         ///
@@ -618,6 +623,11 @@ public static class Entry
                     | ScopeEntry.DynamicMethodObject ->
                         let addr, state =
                             allocateZeroed loggerFactory baseClassTypes baseClassTypes.DynamicMethod state
+
+                        CliType.ObjectRef (Some addr), state
+                    | ScopeEntry.VarArgMethodObject ->
+                        let addr, state =
+                            allocateZeroed loggerFactory baseClassTypes baseClassTypes.VarArgMethod state
 
                         CliType.ObjectRef (Some addr), state
                     | ScopeEntry.TypeHandle target ->
@@ -1500,7 +1510,7 @@ public static class Entry
 
         message |> shouldContainText "Call"
         message |> shouldContainText "entry 2"
-        message |> shouldContainText "a type handle rather than a dynamic method"
+        message |> shouldContainText "a type handle rather than a method"
 
     /// The accepting direction, which is what this slice adds: a `call` naming a `DynamicMethod`
     /// entry is a body PawPrint will mint. Nothing is read out of the entry here — the method it
@@ -1525,6 +1535,39 @@ public static class Entry
                         ScopeEntry.Null
                         ScopeEntry.Blob [| 0x00uy |]
                         ScopeEntry.DynamicMethodObject
+                    ]
+            }
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let _, definition = definitionBehindStub state stubAddress
+
+        scopeMethodOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
+
+    /// `EmitCall` spells the same call as `Emit(OpCode, MethodInfo)` but stores a `VarArgMethod`
+    /// wrapper rather than the bare `DynamicMethod` — unconditionally, so this is what an ordinary
+    /// `EmitCall(OpCodes.Call, dm, null)` produces rather than a vararg-only curiosity. Both must be
+    /// minted, or a guest that used the other overload would be refused a program real .NET runs.
+    [<Test>]
+    let ``a call naming a vararg-wrapped dynamic method is minted`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        // ldnull; call <scope 2>; ret
+        let body =
+            { doublingBody with
+                Code =
+                    Array.concat
+                        [
+                            [| 0x14uy ; 0x28uy |]
+                            System.BitConverter.GetBytes (2 ||| 0x0A000000)
+                            [| 0x2Auy |]
+                        ]
+                Scope =
+                    [
+                        ScopeEntry.Null
+                        ScopeEntry.Blob [| 0x00uy |]
+                        ScopeEntry.VarArgMethodObject
                     ]
             }
 

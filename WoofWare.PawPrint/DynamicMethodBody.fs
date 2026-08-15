@@ -172,6 +172,11 @@ module internal DynamicMethodBody =
                             // assigns when the *target* is minted. For a body that names itself that
                             // has not happened yet, so there is nothing here to read.
                             DynamicScopeEntry.DynamicMethod
+                        elif DynamicScopeOperand.isCorelibType baseClassTypes.VarArgMethod state concreteType then
+                            // `EmitCall` wraps *every* operand it is given, vararg call site or not.
+                            // Whether the wrapper holds a dynamic method or a reflected one is read
+                            // when the instruction runs, along with everything else about it.
+                            DynamicScopeEntry.VarArgMethod
                         else
                             DynamicScopeEntry.Unsupported $"a %s{describeType concreteType}"
                 | other -> failwith $"%s{operation}: expected DynamicScope entry %d{i} to be a reference, got %O{other}"

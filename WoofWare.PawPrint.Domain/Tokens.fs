@@ -313,6 +313,18 @@ type DynamicScopeEntry =
     /// entry names nothing at all. It is precisely because the read happens later that
     /// `il.Emit(OpCodes.Call, dm)` inside `dm` works.
     | DynamicMethod
+    /// CoreLib's `System.Reflection.Emit.VarArgMethod`, the wrapper `ILGenerator.EmitCall` stores
+    /// (`GetMemberRefToken`, `DynamicILGenerator.cs:396-443`) — *unconditionally*, whether or not
+    /// the caller passed any `optionalParameterTypes`, so it is what an ordinary
+    /// `EmitCall(OpCodes.Call, dm, null)` produces rather than an exotic vararg-only case.
+    ///
+    /// Payload-free for the same reason `DynamicMethod` is: the wrapper's `m_dynamicMethod` is
+    /// followed when the instruction runs. The wrapper's `m_signature` is deliberately *not* part of
+    /// the answer, matching `ResolveToken`, which ignores it for the dynamic case: a `DynamicMethod`
+    /// is always `CallingConventions.Standard` (its constructors reject anything else,
+    /// `DynamicMethod.cs:227`), so `GetMemberRefToken` would have thrown had a call site tried to
+    /// add optional parameters, and the signature is therefore always the callee's own.
+    | VarArgMethod
     /// Some entry kind whose resolution is not yet implemented — a signature blob, a
     /// `RuntimeMethodHandle`, a `GenericMethodInfo`. The description names the kind, for the
     /// refusal message an instruction naming it would produce.

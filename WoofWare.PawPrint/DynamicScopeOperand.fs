@@ -440,12 +440,52 @@ module internal DynamicScopeOperand =
 
         // The entry's type before it is dereferenced, for the reason `closedType` gives: a slot can
         // hold an array (a signature blob is a `byte[]`), which `ManagedHeap.get` refuses.
-        match ManagedHeap.tryGetObjectConcreteType entry state.ManagedHeap with
-        | None -> failwith $"%s{operation}: DynamicScope entry %d{scopeIndex} is at %O{entry}, which is not on the heap"
-        | Some concreteType when not (isCorelibType baseClassTypes.DynamicMethod state concreteType) ->
+        let entryType =
+            match ManagedHeap.tryGetObjectConcreteType entry state.ManagedHeap with
+            | Some concreteType -> concreteType
+            | None ->
+                failwith $"%s{operation}: DynamicScope entry %d{scopeIndex} is at %O{entry}, which is not on the heap"
+
+        // `ILGenerator.EmitCall` wraps whatever it was given in a `VarArgMethod`, unconditionally
+        // (`GetMemberRefToken`, `DynamicILGenerator.cs:396-443`), so an ordinary
+        // `EmitCall(OpCodes.Call, dm, null)` produces one where `Emit(OpCodes.Call, dm)` does not.
+        // `ResolveToken` unwraps it to `vaMeth.m_dynamicMethod.GetMethodDescriptor()` and ignores
+        // `m_signature` entirely for that case — which is safe rather than sloppy of it, because a
+        // `DynamicMethod` is always `CallingConventions.Standard` (its constructors reject anything
+        // else, `DynamicMethod.cs:227`), so `GetMemberRefToken` would have thrown had the call site
+        // tried to add optional parameter types, and the wrapper's signature is therefore always
+        // the callee's own.
+        let entry, entryType =
+            if isCorelibType baseClassTypes.VarArgMethod state entryType then
+                let wrapper = ManagedHeap.get entry state.ManagedHeap
+
+                let inner =
+                    match
+                        AllocatedNonArrayObject.DereferenceField "m_dynamicMethod" wrapper
+                        |> CliType.unwrapPrimitiveLikeDeep
+                    with
+                    | CliType.ObjectRef (Some inner) -> inner
+                    | CliType.ObjectRef None ->
+                        // A wrapper round a *reflected* method, which `ResolveToken` resolves
+                        // through `m_method`. Unreachable today: obtaining a `RuntimeMethodInfo` at
+                        // all stops at the unimplemented `RuntimeMethodHandle::GetMethodDef`.
+                        failwith
+                            $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, a VarArgMethod whose m_dynamicMethod is null, so it wraps a reflected method; PawPrint resolves only dynamic methods in method position"
+                    | other ->
+                        failwith
+                            $"%s{operation}: expected DynamicScope entry %d{scopeIndex}'s VarArgMethod.m_dynamicMethod to be a reference, got %O{other}"
+
+                match ManagedHeap.tryGetObjectConcreteType inner state.ManagedHeap with
+                | Some innerType -> inner, innerType
+                | None ->
+                    failwith
+                        $"%s{operation}: DynamicScope entry %d{scopeIndex}'s VarArgMethod.m_dynamicMethod is at %O{inner}, which is not on the heap"
+            else
+                entry, entryType
+
+        if not (isCorelibType baseClassTypes.DynamicMethod state entryType) then
             failwith
-                $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, which holds a %O{concreteType} rather than a System.Reflection.Emit.DynamicMethod; PawPrint resolves only DynamicMethod entries in method position, and neither the three reflected kinds real .NET also accepts there nor real .NET's BadImageFormatException for the rest is implemented"
-        | Some _ ->
+                $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, which holds a %O{entryType} rather than a System.Reflection.Emit.DynamicMethod; PawPrint resolves only dynamic methods in method position, and neither the reflected kinds real .NET also accepts there nor real .NET's BadImageFormatException for the rest is implemented"
 
         let dm = ManagedHeap.get entry state.ManagedHeap
 

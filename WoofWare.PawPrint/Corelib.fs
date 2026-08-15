@@ -64,6 +64,9 @@ module Corelib =
         let dynamicMethodType =
             findCorelibType corelib "System.Reflection.Emit" "DynamicMethod"
 
+        let varArgMethodType =
+            findCorelibType corelib "System.Reflection.Emit" "VarArgMethod"
+
         let runtimeMethodHandleInternalType =
             findCorelibType corelib "System" "RuntimeMethodHandleInternal"
 
@@ -189,6 +192,7 @@ module Corelib =
             RuntimeMethodHandle = runtimeMethodHandleType
             RuntimeMethodInfoStub = runtimeMethodInfoStubType
             DynamicMethod = dynamicMethodType
+            VarArgMethod = varArgMethodType
             RuntimeMethodHandleInternal = runtimeMethodHandleInternalType
             RuntimeFieldHandle = runtimeFieldHandleType
             RuntimeFieldInfoStub = runtimeFieldInfoStubType
