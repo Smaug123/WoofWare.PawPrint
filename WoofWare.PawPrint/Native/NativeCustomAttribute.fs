@@ -510,7 +510,7 @@ module NativeCustomAttribute =
 
                 // wasConstructing = None: we drive the ctor as a regular instance call, since
                 // the constructed instance is already on the eval stack as the re-entry marker.
-                // ConstructedObjectDisposition.PushToCaller / advanceProgramCounterOfCaller = false:
+                // ReturnValueDisposition.PushToCaller / advanceProgramCounterOfCaller = false:
                 // the native QCall frame has no IL to advance.
                 let state =
                     IlMachineStateExecution.callMethod
@@ -526,7 +526,7 @@ module NativeCustomAttribute =
                         ctx.Thread
                         threadState
                         None
-                        ConstructedObjectDisposition.PushToCaller
+                        ReturnValueDisposition.PushToCaller
                         false // wrapExceptionInTargetInvocation
                         state
 

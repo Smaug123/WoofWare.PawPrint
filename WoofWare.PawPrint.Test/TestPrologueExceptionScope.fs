@@ -146,7 +146,7 @@ module TestPrologueExceptionScope =
                 WasInitialisingType = None
                 Constructing = ConstructionState.NotConstructing
                 CallSiteIlOpIndex = 0
-                ConstructedObjectDisposition = ConstructedObjectDisposition.PushToCaller
+                ReturnValueDisposition = ReturnValueDisposition.PushToCaller
                 WrapExceptionInTargetInvocation = false
             }
 

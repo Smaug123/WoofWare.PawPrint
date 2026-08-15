@@ -789,7 +789,7 @@ module StructMarshalStub =
                     thread
                     threadState
                     None
-                    ConstructedObjectDisposition.PushToCaller
+                    ReturnValueDisposition.PushToCaller
                     false // wrapExceptionInTargetInvocation
                     state
 

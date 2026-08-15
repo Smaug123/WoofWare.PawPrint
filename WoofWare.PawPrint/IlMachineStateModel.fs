@@ -245,14 +245,20 @@ type WhatWeDid =
     | Executed
     /// We didn't run what you wanted, because we have to do class initialisation first.
     | SuspendedForClassInit
-    /// A native handler has set up a managed call as a continuation: it pushed a managed callee
-    /// frame on top of itself and now needs the dispatch loop to run that callee before returning
-    /// to the handler. The active frame is the new managed callee; the native handler frame
-    /// remains on the stack and will become active again when the callee returns. The native
-    /// handler will then be re-entered by the dispatch loop and is responsible for distinguishing
-    /// first entry from re-entry. This is the same shape as `SuspendedForClassInit` but
-    /// generalised for arbitrary managed continuations (e.g. invoking a default ctor on a
-    /// freshly-allocated object inside a QCall).
+    /// Something has set up a managed call as a continuation: it pushed a managed callee frame on
+    /// top of itself and now needs the dispatch loop to run that callee before it resumes. The
+    /// active frame is the new managed callee; the suspended frame remains on the stack and will
+    /// become active again when the callee returns. This is the same shape as
+    /// `SuspendedForClassInit` but generalised for arbitrary managed continuations.
+    ///
+    /// Two producers, which resume differently. A *native handler* (e.g. invoking a default ctor
+    /// on a freshly-allocated object inside a QCall) is re-entered by the dispatch loop and is
+    /// responsible for distinguishing first entry from re-entry, usually via re-entry markers on
+    /// its own eval stack. An *IL op* that needs guest code to run mid-instruction
+    /// (`DynamicScopeOperand.mintDynamicMethod`, which mints a `DynamicMethod` a `call` names)
+    /// instead leaves its program counter unadvanced, so the dispatch loop simply runs the same
+    /// instruction again; it tells first entry from re-entry by re-reading the guest heap, which
+    /// the callee has changed.
     | SuspendedForManagedCall
     /// We can't proceed until this thread has finished the class initialisation work it's doing.
     | BlockedOnClassInit of threadBlockingUs : ThreadId
@@ -462,7 +468,7 @@ type ReturnFrameResult =
     /// onto the eval stack.  Before dispatching, the caller MUST call
     /// ExceptionDispatching.overwriteHResultPostCtor to apply the CLR's post-ctor
     /// SetHResult(GetHR()) step, and then, when `message` is `Some`, overwrite `_message`
-    /// with it (see `ConstructedObjectDisposition.DispatchAsException` for why that has to
+    /// with it (see `ReturnValueDisposition.DispatchAsException` for why that has to
     /// happen after the ctor rather than before it).
     | DispatchException of
         IlMachineState *
@@ -644,9 +650,11 @@ module NativeHandlerResult =
     /// already dispatched). Returns `None` when the sub-call ran to completion
     /// (`WhatWeDid.Executed`) so the handler should continue.
     ///
-    /// `WhatWeDid.SuspendedForManagedCall` is rejected as a logic error: that variant
-    /// is produced only by native handlers themselves pushing a managed callee, never
-    /// by managed sub-calls returning to a native handler.
+    /// `WhatWeDid.SuspendedForManagedCall` is rejected as a logic error: it is produced by
+    /// something *deciding* to push a managed callee on top of itself and be resumed — a native
+    /// handler, or an IL op that has to run guest code mid-instruction (see
+    /// `DynamicScopeOperand.mintDynamicMethod`) — never by a managed sub-call returning to a
+    /// native handler, which is what this function translates.
     let tryEarlyReturn ((state, whatWeDid) : IlMachineState * WhatWeDid) : NativeHandlerResult option =
         match whatWeDid with
         | WhatWeDid.Executed -> None
@@ -679,7 +687,7 @@ module NativeHandlerResult =
     /// Any `Stepped` value with a `WhatWeDid` other than `Executed` is rejected as a logic
     /// error: ExternImpls are not authorised to drive cctor / managed-call / exception
     /// re-entry directly, because those decisions require structural support (re-entry
-    /// markers, `ConstructedObjectDisposition.DispatchAsException` arming) that ExternImpls don't
+    /// markers, `ReturnValueDisposition.DispatchAsException` arming) that ExternImpls don't
     /// have access to.
     /// `VoluntaryYield` is rejected here for the same structural-boundary reason: the yield
     /// signal is produced at the native-handler return shape via `NativeHandlerResult.Yielded`,

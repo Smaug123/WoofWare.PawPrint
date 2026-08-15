@@ -526,7 +526,7 @@ module internal UnaryMetadataCallOps =
             ctx.Thread
             threadState
             None
-            ConstructedObjectDisposition.PushToCaller
+            ReturnValueDisposition.PushToCaller
             false // wrapExceptionInTargetInvocation
             state,
         WhatWeDid.Executed
@@ -1085,7 +1085,7 @@ module internal UnaryMetadataCallOps =
             thread
             threadState
             None
-            ConstructedObjectDisposition.PushToCaller
+            ReturnValueDisposition.PushToCaller
             false // wrapExceptionInTargetInvocation
             state,
         WhatWeDid.Executed
@@ -1585,7 +1585,7 @@ module internal UnaryMetadataCallOps =
                 thread
                 threadState
                 None
-                ConstructedObjectDisposition.PushToCaller
+                ReturnValueDisposition.PushToCaller
                 false // wrapExceptionInTargetInvocation
                 state
 
