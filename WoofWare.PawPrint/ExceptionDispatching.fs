@@ -1272,6 +1272,12 @@ module ExceptionDispatching =
             ExceptionHResults.lookup "System.NotSupportedException"
         elif id = baseClassTypes.DuplicateWaitObjectException.Identity then
             ExceptionHResults.lookup "System.DuplicateWaitObjectException"
+        elif id = baseClassTypes.InvalidProgramException.Identity then
+            ExceptionHResults.lookup "System.InvalidProgramException"
+        elif id = baseClassTypes.BadImageFormatException.Identity then
+            ExceptionHResults.lookup "System.BadImageFormatException"
+        elif id = baseClassTypes.ArgumentOutOfRangeException.Identity then
+            ExceptionHResults.lookup "System.ArgumentOutOfRangeException"
         else
             ExceptionHResults.corEException
 

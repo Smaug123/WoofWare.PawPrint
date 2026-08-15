@@ -293,11 +293,17 @@ module internal DynamicScopeOperand =
         | ScopeEntryLookup.Absent -> invalidProgram $"DynamicScope entry %d{scopeIndex} is null, so it names no type"
         | ScopeEntryLookup.Found entry ->
 
-        let boxed = ManagedHeap.get entry state.ManagedHeap
-
-        if not (isCorelibType baseClassTypes.RuntimeTypeHandle state boxed.ConcreteType) then
+        // The entry's type is established before it is dereferenced, because a rewritten slot can
+        // hold *anything* — a `byte[]` above all, which is what a signature blob is, and which
+        // `ManagedHeap.get` refuses because it reads only non-array objects. Measured on real .NET,
+        // that case is a BadImageFormatException the guest can catch, not a runtime failure.
+        match ManagedHeap.tryGetObjectConcreteType entry state.ManagedHeap with
+        | None -> badImage $"DynamicScope entry %d{scopeIndex} is at %O{entry}, which is not on the heap"
+        | Some concreteType when not (isCorelibType baseClassTypes.RuntimeTypeHandle state concreteType) ->
             badImage $"DynamicScope entry %d{scopeIndex} is not a System.RuntimeTypeHandle"
-        else
+        | Some _ ->
+
+        let boxed = ManagedHeap.get entry state.ManagedHeap
 
         let mTypeField =
             IlMachineState.requiredOwnInstanceFieldId state boxed.ConcreteType "m_type"
