@@ -1399,12 +1399,39 @@ and CliValueType =
             fields
             |> List.fold (fun maxAlign field -> max maxAlign (min field.Alignment packingSize)) 0
 
-        // Explicit layout is not switched to auto layout, so an explicit `Size` still applies as a
-        // floor. A GC-containing type nevertheless ends on a pointer boundary, so the floor is
-        // applied first and the pointer rounding second: `[Explicit, Size = 9] { object }` is 16
-        // bytes, while the same `Size = 9` over a `long` field is 9.
-        let withFloor = max (roundUpToAlignment alignment finalOffset) minimumSize
+        // A declared `ClassLayout.Size` and the alignment rounding are alternatives, not a
+        // sequence: CoreCLR picks exactly one (classlayoutinfo.cpp:543-550 for sequential,
+        // :598-605 for explicit).
+        //
+        //     managedSize = classSizeInMetadata <> 0
+        //                 ? max (classSizeInMetadata + parentSize) lastFieldEnd  // :326-341
+        //                 : AlignSize lastFieldEnd alignmentRequirement
+        //
+        // So a declared `Size` never rounds -- `[Sequential, Size = 13] { long; int }` is 13 bytes
+        // and not 16 -- and one that is too small loses to the fields rather than truncating them:
+        // `[Sequential, Size = 4]` over the same fields is 12. Doing both, as this did before,
+        // was wrong in each direction independently.
+        //
+        // `parentSize` is 0 here because this lays out one type's fields with no base chain; the
+        // parent-relative half of the rule belongs with issue #994, which is what gives this
+        // function a parent to add.
+        let withFloor =
+            if minimumSize > 0 then
+                max minimumSize finalOffset
+            else
+                roundUpToAlignment alignment finalOffset
 
+        // The one rounding a declared `Size` does *not* suppress. "The GC requires that all
+        // valuetypes containing orefs be sized to a multiple of TARGET_POINTER_SIZE"
+        // (`ValidateExplicitLayout`, methodtablebuilder.cpp:9104), which recomputes the instance
+        // size after the layout above has run and so applies on top of the floor rather than
+        // instead of it. Hence `[Explicit, Size = 9] { object }` is 16 bytes while the same
+        // `Size = 9` over a `long` is 9, and `Size = 17` over an object is 24.
+        //
+        // Only explicit layout reaches this with references in it: a *sequential* type holding
+        // them is promoted to auto layout and never gets here (`AutoLayoutGoverns`), which is
+        // also why a declared `Size` is invisible on such a type -- auto layout reads no
+        // `ClassLayout` row at all.
         if containsObjectReferences then
             {
                 Size = roundUpToAlignment NATIVE_INT_SIZE withFloor
@@ -2799,19 +2826,24 @@ and CliValueType =
                 else
                     size
 
+            // Native layout takes a declared `Size` by exactly the same rule the managed layout
+            // does, through the same helper: `CollectNativeLayoutFieldMetadataThrowing` calls
+            // `CalculateSizeWithMetadataSize` when the type `HasExplicitSize()` and `AlignSize`
+            // otherwise (classlayoutinfo.cpp:939-977). So the floor and the rounding are
+            // alternatives here too -- `Marshal.SizeOf` of `[Sequential, Size = 13] { long; int }`
+            // is 13, and of the same type with `Size = 4` is 12.
             let computeFinal (currentEnd : int) (maxAlign : int) : SizeofResult =
                 let alignment = max maxAlign 1
-                let error = currentEnd % alignment
 
                 let totalSize =
-                    if error = 0 then
-                        currentEnd
+                    if minimumSize > 0 then
+                        max minimumSize currentEnd
                     else
-                        currentEnd + (alignment - error)
+                        roundUpToAlignment alignment currentEnd
 
                 bumpZeroSized
                     {
-                        Size = max totalSize minimumSize
+                        Size = totalSize
                         Alignment = alignment
                     }
 
