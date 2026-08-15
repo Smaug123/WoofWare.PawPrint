@@ -188,3 +188,121 @@ class Program
 """
 
         run "PReadNegativeOffset.cs" source |> exitCodeOf |> shouldEqual 0
+
+    /// The *order* `pread`'s checks run in differs between the two platforms, and PawPrint follows
+    /// whichever the configured kernel claims to be. Both orders are measured in full
+    /// (scratchpad/preadpairs.c), which is why this models Darwin rather than refusing it as
+    /// `SystemNative_FLock` does — there, the Darwin return codes are known but the lock state they
+    /// leave behind is not.
+    ///
+    /// Only two-fault inputs can tell the orders apart, so these are the tests that keep the Darwin
+    /// branch from being dead code, and the Linux assertions in `PReadRawSeeded.cs` are the other
+    /// half of the same claim.
+    module CheckOrder =
+
+        let private darwin : KernelConfig =
+            { seed with
+                UnixPlatform = SimulatedUnixPlatform.macOsArm64
+            }
+
+        let private runOn (kernel : KernelConfig) (name : string) (source : string) : RunOutcome =
+            let image = Roslyn.compile [ source ]
+
+            let _messages, loggerFactory =
+                LoggerFactory.makeTestWithProperties [ "source_file", name ]
+
+            use _loggerFactoryResource = loggerFactory
+
+            let dotnetRuntimes =
+                DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+
+            use peImage = new MemoryStream (image)
+
+            BoundedRun.run
+                loggerFactory
+                name
+                (Some name)
+                peImage
+                { HostConfig.Default dotnetRuntimes with
+                    Guest =
+                        { GuestConfig.Default dotnetRuntimes with
+                            Kernel = kernel
+                        }
+                }
+
+        /// The three rows that distinguish the orders. Darwin resolves the descriptor and its
+        /// seekability first, so a negative offset on a bad or unseekable descriptor reports the
+        /// descriptor's problem; a negative offset on a *directory* still reports EINVAL, because
+        /// EISDIR follows the offset check on both platforms.
+        [<Test>]
+        let ``Darwin resolves the descriptor before validating the offset`` () : unit =
+            let source =
+                guest
+                    """
+        IntPtr f = OpenF();
+        // Darwin: the descriptor is looked up first, so a bad one wins.
+        Marshal.SetLastSystemError(0);
+        if (PRead(new IntPtr(4242), buf, 5, -1) != -1) return 1;
+        if (Marshal.GetLastSystemError() != 9) return 2;      // EBADF
+        // ...and an unseekable one likewise: fd 1 is a pipe.
+        Marshal.SetLastSystemError(0);
+        if (PRead(new IntPtr(1), buf, 5, -1) != -1) return 3;
+        // ESPIPE is 29 on *both* platforms -- it sits in the portable 1-34 band, unlike
+        // EAGAIN, which is the one errno the two Unixes transpose (11 against 35). So the
+        // divergence being pinned here is purely the check *order*, not the numbering.
+        if (Marshal.GetLastSystemError() != 29) return 4;
+        // A negative offset on a good descriptor is still EINVAL...
+        Marshal.SetLastSystemError(0);
+        if (PRead(f, buf, 5, -1) != -1) return 5;
+        if (Marshal.GetLastSystemError() != 22) return 6;     // EINVAL
+        // ...and the ordinary read still works.
+        if (PRead(f, buf, 5, 0) != 5) return 7;
+        if (buf[0] != 'h' || buf[4] != 'o') return 8;
+        return 0;
+"""
+
+            runOn darwin "PReadDarwinOrder.cs" source |> exitCodeOf |> shouldEqual 0
+
+        /// The same three calls under Linux, which answers EINVAL for all of them because it
+        /// validates the offset before looking the descriptor up at all. Without this the Darwin
+        /// test above would pass for an implementation that had simply got Linux wrong.
+        [<Test>]
+        let ``Linux validates the offset before resolving the descriptor`` () : unit =
+            let source =
+                guest
+                    """
+        IntPtr f = OpenF();
+        Marshal.SetLastSystemError(0);
+        if (PRead(new IntPtr(4242), buf, 5, -1) != -1) return 1;
+        if (Marshal.GetLastSystemError() != 22) return 2;     // EINVAL, not EBADF
+        Marshal.SetLastSystemError(0);
+        if (PRead(new IntPtr(1), buf, 5, -1) != -1) return 3;
+        if (Marshal.GetLastSystemError() != 22) return 4;     // EINVAL, not ESPIPE
+        Marshal.SetLastSystemError(0);
+        if (PRead(f, buf, 5, -1) != -1) return 5;
+        if (Marshal.GetLastSystemError() != 22) return 6;
+        return 0;
+"""
+
+            run "PReadLinuxOrder.cs" source |> exitCodeOf |> shouldEqual 0
+
+        /// Single-fault reads are identical on both platforms, so a Darwin-configured guest reads
+        /// files exactly as a Linux one does. This is what makes the ordering difference the *only*
+        /// divergence, rather than one symptom of a wider one.
+        [<Test>]
+        let ``ordinary reads are identical under either flavour`` () : unit =
+            let source =
+                guest
+                    """
+        IntPtr f = OpenF();
+        if (PRead(f, buf, 64, 0) != 5) return 1;
+        if (buf[0] != 'h' || buf[4] != 'o') return 2;
+        if (PRead(f, buf, 64, 3) != 2) return 3;
+        if (buf[0] != 'l' || buf[1] != 'o') return 4;
+        if (PRead(f, buf, 64, 5) != 0) return 5;
+        if (PRead(f, buf, 0, 0) != 0) return 6;
+        return 0;
+"""
+
+            runOn darwin "PReadDarwinOrdinary.cs" source |> exitCodeOf |> shouldEqual 0
+            run "PReadLinuxOrdinary.cs" source |> exitCodeOf |> shouldEqual 0

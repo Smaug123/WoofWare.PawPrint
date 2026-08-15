@@ -1601,24 +1601,38 @@ module NativeSystemNative =
             if bufferSize < 0 then
                 failwith
                     $"%s{operation}: fd %d{fd} was given bufferSize %d{bufferSize}, which is negative. The C shim casts that to an unsigned ~4 GB count rather than rejecting it (unlike SystemNative_Read, which goes through Common_Read and answers ERANGE), and what a kernel then does is not a fact PawPrint can state: measured, macOS answers EINVAL and Linux answers EFAULT, Linux's answer depending on how far the guest's buffer happens to be mapped. Pass a non-negative size."
-            else if
+            else
 
-                // The order of the checks below is measured, not assumed, and it is
-                // the *Linux* order. On a single-fault input the two platforms agree
-                // everywhere; they part company only when two things are wrong at
-                // once, which is why an ordering has to be pinned at all:
-                //
-                //   input                     Linux    Darwin
-                //   negative offset + bad fd  EINVAL   EBADF
-                //   negative offset + pipe    EINVAL   ESPIPE
-                //   negative offset + dir     EINVAL   EINVAL
-                //
-                // So Linux validates the offset before it even looks the descriptor
-                // up (`do_pread` checks `pos < 0` ahead of `fdget`), while Darwin
-                // resolves the descriptor and its seekability first. PawPrint
-                // simulates Linux.
-                fileOffset < 0L
-            then
+            let offsetInvalid = fileOffset < 0L
+
+            // The order of the checks below is measured, not assumed, and it
+            // differs between the two platforms. On a *single-fault* input they
+            // agree on every row; they part company only when two things are
+            // wrong at once, which is why an ordering has to be pinned at all:
+            //
+            //   input                     Linux    Darwin
+            //   negative offset + bad fd  EINVAL   EBADF
+            //   negative offset + pipe    EINVAL   ESPIPE
+            //   negative offset + dir     EINVAL   EINVAL
+            //
+            // Linux validates the offset before it even looks the descriptor up
+            // (`do_pread` checks `pos < 0` ahead of `fdget`); Darwin resolves
+            // the descriptor and its seekability first, and only then the
+            // offset. Both orders are followed here rather than one being
+            // imposed on the other, because both are fully measured — unlike
+            // `SystemNative_FLock`, whose Darwin *return codes* are known but
+            // whose resulting lock state is not, and which therefore refuses.
+            // Where the answer is known, PawPrint gives it rather than crashing.
+            //
+            // Note `EISDIR` follows the offset check on *both* platforms, so
+            // only the descriptor and seekability steps actually move; that is
+            // why one flag suffices rather than two separate orderings.
+            let offsetCheckedBeforeDescriptor =
+                match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+                | SimulatedUnixFlavour.Linux -> true
+                | SimulatedUnixFlavour.Darwin -> false
+
+            if offsetCheckedBeforeDescriptor && offsetInvalid then
                 fail UnixError.EINVAL
             else
 
@@ -1637,6 +1651,14 @@ module NativeSystemNative =
                 // sequential read path is not this slice.
                 fail UnixError.ESPIPE
             | Some (OpenFileObject.File inode) ->
+
+            // Darwin's turn to validate the offset: it has now resolved the
+            // descriptor and rejected an unseekable one, which is exactly the
+            // window in which it differs from Linux. On Linux this cannot fire,
+            // because the check above already did.
+            if not offsetCheckedBeforeDescriptor && offsetInvalid then
+                fail UnixError.EINVAL
+            else
 
             let entry =
                 match VirtualFileSystem.tryGet inode state.Kernel.FileSystem with
