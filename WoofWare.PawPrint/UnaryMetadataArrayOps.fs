@@ -37,9 +37,9 @@ module internal UnaryMetadataArrayOps =
         let typeGenerics = currentMethod.DeclaringTypeGenerics
 
         let state, concreteTypeHandle =
-            match ctx.Operand with
-            | ResolvedMetadataOperand.ScopeType handle -> state, handle
-            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+            match ctx.TypeOperand with
+            | ResolvedTypeOperand.FromScope handle -> state, handle
+            | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
                 let state, elementType, assy =
                     IlMachineState.resolveTypeMetadataToken
                         loggerFactory
@@ -258,9 +258,9 @@ module internal UnaryMetadataArrayOps =
             // (interpexec.cpp INTOP_LDELEMA_REF, where the JIT-resolved expectedMT is
             // compared with `arr->GetArrayElementTypeHandle()`).
             let state, tokenElementHandle =
-                match ctx.Operand with
-                | ResolvedMetadataOperand.ScopeType handle -> state, handle
-                | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+                match ctx.TypeOperand with
+                | ResolvedTypeOperand.FromScope handle -> state, handle
+                | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
                     let state, elementType, elementAssy =
                         IlMachineState.resolveTypeMetadataToken
                             loggerFactory

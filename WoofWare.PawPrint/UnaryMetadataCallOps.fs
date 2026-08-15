@@ -497,7 +497,70 @@ module internal UnaryMetadataCallOps =
 
             state, implementation, declaringTypeHandle
 
+    /// Push a frame for the method `concretizedMethod`, having already resolved it however this
+    /// opcode's operand demanded. Shared by the metadata and `DynamicScope` paths of `executeCall`
+    /// so that the two cannot drift on how the callee is entered.
+    ///
+    /// No class-initialisation check here: `callMethod` arms it on the callee's frame and the
+    /// dispatch loop runs it as that frame's prologue, which is where the CLR puts it. This call
+    /// therefore always commits, and the opcode never re-executes — which is why nothing reinstalls
+    /// the `constrained.` prefix any more.
+    let private enterCallee
+        (ctx : UnaryMetadataIlOpContext)
+        (concretizedMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        let threadState = state.ThreadState.[ctx.Thread]
+
+        IlMachineStateExecution.callMethod
+            ctx.LoggerFactory
+            ctx.BaseClassTypes
+            None
+            ConstructionState.NotConstructing
+            false
+            false
+            true
+            concretizedMethod.Generics
+            concretizedMethod
+            ctx.Thread
+            threadState
+            None
+            ConstructedObjectDisposition.PushToCaller
+            false // wrapExceptionInTargetInvocation
+            state,
+        WhatWeDid.Executed
+
     let executeCall (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
+        // Split on the operand before anything else: `ctx.ActiveAssembly` and `ctx.MetadataToken`
+        // are partial, and a scope operand has neither, so binding them eagerly would fail for a
+        // dynamic method's `call` even though nothing below would have used them.
+        match ctx.Operand with
+        | ResolvedMetadataOperand.ScopeMethod handle ->
+            // Everything the metadata path does between here and `enterCallee` is token resolution:
+            // multi-dim array Get/Set synthesis, MethodSpec/MemberRef lookup, and concretising the
+            // result against the caller's generic context. None of it applies. A `DynamicMethod` is
+            // never generic and never an instance method, and the operand is already the callee's
+            // identity, so the only step left is turning that identity into a frame's worth of
+            // method — which is the same step `CreateDelegate`'s invocation path takes, latching
+            // `initLocals` on first execution.
+            //
+            // No `constrained.` handling either, and no arm to refuse one: a dynamic method's body
+            // cannot contain `constrained.` at all, because that prefix's own operand is a scope
+            // entry which `IlDecoding.scopeOperandKind` refuses, so the decoder rejects such a body
+            // when the method is minted. Nothing can be pending here.
+            let state, concretizedMethod =
+                DynamicMethodExecution.concretize
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    "call naming a DynamicScope entry"
+                    handle
+                    state
+
+            enterCallee ctx concretizedMethod state
+        | ResolvedMetadataOperand.FromMetadata _
+        | ResolvedMetadataOperand.ScopeType _ ->
+
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
         let activeAssy = ctx.ActiveAssembly
@@ -655,29 +718,7 @@ module internal UnaryMetadataCallOps =
                     concretizedMethod
                     state
 
-        // No class-initialisation check here: `callMethod` arms it on the callee's frame and the
-        // dispatch loop runs it as that frame's prologue, which is where the CLR puts it. This
-        // call therefore always commits, and the opcode never re-executes — which is why nothing
-        // reinstalls the `constrained.` prefix any more.
-        let threadState = state.ThreadState.[thread]
-
-        IlMachineStateExecution.callMethod
-            loggerFactory
-            baseClassTypes
-            None
-            ConstructionState.NotConstructing
-            false
-            false
-            true
-            concretizedMethod.Generics
-            concretizedMethod
-            thread
-            threadState
-            None
-            ConstructedObjectDisposition.PushToCaller
-            false // wrapExceptionInTargetInvocation
-            state,
-        WhatWeDid.Executed
+        enterCallee ctx concretizedMethod state
 
     let executeCallvirt (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory

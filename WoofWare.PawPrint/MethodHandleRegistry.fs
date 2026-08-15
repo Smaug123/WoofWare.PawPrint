@@ -105,12 +105,13 @@ type DynamicMethodDefinition =
     /// minted (see `DynamicMethodBody`).
     ///
     /// Recorded eagerly and not as an option, so that a minted dynamic method is never in a
-    /// half-built state where it has an identity but no body. That will have to give when a
-    /// dynamic method is allowed to carry a token for *itself*: CoreCLR installs the method and
-    /// assigns `_methodHandle` before anything resolves its tokens, precisely so that the
-    /// self-reference has something to resolve *to*, and matching that needs the identity minted
-    /// first and the body attached second. Bodies carrying tokens at all are refused today, so
-    /// the cycle is unreachable and the simpler shape is the honest one.
+    /// half-built state where it has an identity but no body. A dynamic method carrying a token for
+    /// *itself* turns out not to disturb this, though an earlier revision of this comment predicted
+    /// it would: the cycle is broken by *when* a scope entry is read rather than by minting the
+    /// identity before the body. Decoding classifies the self-entry by its type alone and reads
+    /// nothing out of it, and the read that needs `_methodHandle` happens when the `call` executes —
+    /// by which point the executing method has necessarily been minted. So there is no moment at
+    /// which a body must exist before its own identity does.
     ///
     /// This is *not* the whole body: `initLocals` is not known at mint. See
     /// <see cref="MintedDynamicMethodBody"/>.

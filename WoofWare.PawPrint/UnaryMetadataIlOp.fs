@@ -31,9 +31,10 @@ module internal UnaryMetadataIlOp =
         let logger = logger loggerFactory op
 
         // Resolving a `DynamicScope` operand here rather than in each op is what keeps the
-        // "not a closed type" refusal in one place. It is sound to resolve it *as a type* without
-        // knowing which op is about to run, because `IlDecoding.scopeOperandKind` only lets a scope
-        // operand through for the ops whose operand is a type.
+        // "not a closed type" refusal in one place. Which *kind* of entry to read it as comes from
+        // `IlDecoding.scopeOperandKind`, the same function the decoder consulted when it accepted
+        // the body — so this cannot disagree with what the body was admitted on, and there is no
+        // second copy of the classification to drift.
         //
         // Doing it before the op runs also matches CoreCLR, which resolves every token when it JITs
         // the method — i.e. before any of its instructions execute. Nothing observable turns on the
@@ -53,13 +54,24 @@ module internal UnaryMetadataIlOp =
 
                 Ok (ResolvedMetadataOperand.FromMetadata (activeAssy, sourced.Token))
             | MetadataOperand.FromDynamicScope scopeIndex ->
-                DynamicScopeOperand.closedType
-                    baseClassTypes
-                    (string<UnaryMetadataTokenIlOp> op)
-                    scopeIndex
-                    state
-                    thread
-                |> Result.map ResolvedMetadataOperand.ScopeType
+                let operation = string<UnaryMetadataTokenIlOp> op
+
+                match IlDecoding.scopeOperandKind op with
+                | IlDecoding.ScopeOperandKind.Type ->
+                    DynamicScopeOperand.closedType baseClassTypes operation scopeIndex state thread
+                    |> Result.map ResolvedMetadataOperand.ScopeType
+                | IlDecoding.ScopeOperandKind.Method ->
+                    // No `Error` arm: every way a method-position entry can be wrong is unreachable
+                    // from a guest today, so `dynamicMethod` crashes rather than fabricating the
+                    // exception real .NET would raise. See its docs for the measurements.
+                    DynamicScopeOperand.dynamicMethod baseClassTypes operation scopeIndex state thread
+                    |> ResolvedMetadataOperand.ScopeMethod
+                    |> Ok
+                | IlDecoding.ScopeOperandKind.NotYetSupported missing ->
+                    // Unreachable: the decoder refuses such a body when the method is minted, so no
+                    // `IlOp` carrying a scope operand for this opcode exists to be executed.
+                    failwith
+                        $"BUG: %O{op} is executing a DynamicScope operand naming entry %d{scopeIndex}, but IlDecoding.scopeOperandKind says %s{missing}, so the decoder should have refused this body at mint"
 
         match resolved with
         | Error (exceptionType, why) ->

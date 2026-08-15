@@ -165,6 +165,18 @@ module internal DynamicMethodBody =
                             // the new type — so a target resolved now would be a snapshot that can
                             // go stale, exactly as a string's characters can.
                             DynamicScopeEntry.TypeHandle
+                        elif DynamicScopeOperand.isCorelibType baseClassTypes.DynamicMethod state concreteType then
+                            // Likewise not read now, and here the deferral is doing more than
+                            // mirroring CoreCLR: which method this entry names is carried by the
+                            // object's `_methodHandle`, which `DynamicMethod.GetMethodDescriptor`
+                            // assigns when the *target* is minted. For a body that names itself that
+                            // has not happened yet, so there is nothing here to read.
+                            DynamicScopeEntry.DynamicMethod
+                        elif DynamicScopeOperand.isCorelibType baseClassTypes.VarArgMethod state concreteType then
+                            // `EmitCall` wraps *every* operand it is given, vararg call site or not.
+                            // Whether the wrapper holds a dynamic method or a reflected one is read
+                            // when the instruction runs, along with everything else about it.
+                            DynamicScopeEntry.VarArgMethod
                         else
                             DynamicScopeEntry.Unsupported $"a %s{describeType concreteType}"
                 | other -> failwith $"%s{operation}: expected DynamicScope entry %d{i} to be a reference, got %O{other}"

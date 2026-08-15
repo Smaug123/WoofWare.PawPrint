@@ -302,8 +302,31 @@ type DynamicScopeEntry =
     /// Carries no payload on purpose. Which type it names is read from the guest heap when the
     /// instruction executes, not now — see `MetadataOperand.FromDynamicScope`.
     | TypeHandle
+    /// A guest `System.Reflection.Emit.DynamicMethod`, which is what
+    /// `DynamicILGenerator.Emit(OpCode, MethodInfo)` stores when the operand is itself a dynamic
+    /// method: that overload has a dedicated branch for the case, and `GetTokenFor(DynamicMethod)`
+    /// appends the builder object rather than a handle (`DynamicILGenerator.cs:531-534`).
+    ///
+    /// Carries no payload, as `TypeHandle` does, and here the deferral is doing more than mirroring
+    /// CoreCLR. The method this entry names is identified by the object's `_methodHandle`, which is
+    /// null until the target is minted — so at the moment a body is decoded, a self-referential
+    /// entry names nothing at all. It is precisely because the read happens later that
+    /// `il.Emit(OpCodes.Call, dm)` inside `dm` works.
+    | DynamicMethod
+    /// CoreLib's `System.Reflection.Emit.VarArgMethod`, the wrapper `ILGenerator.EmitCall` stores
+    /// (`GetMemberRefToken`, `DynamicILGenerator.cs:396-443`) — *unconditionally*, whether or not
+    /// the caller passed any `optionalParameterTypes`, so it is what an ordinary
+    /// `EmitCall(OpCodes.Call, dm, null)` produces rather than an exotic vararg-only case.
+    ///
+    /// Payload-free for the same reason `DynamicMethod` is: the wrapper's `m_dynamicMethod` is
+    /// followed when the instruction runs. The wrapper's `m_signature` is deliberately *not* part of
+    /// the answer, matching `ResolveToken`, which ignores it for the dynamic case: a `DynamicMethod`
+    /// is always `CallingConventions.Standard` (its constructors reject anything else,
+    /// `DynamicMethod.cs:227`), so `GetMemberRefToken` would have thrown had a call site tried to
+    /// add optional parameters, and the signature is therefore always the callee's own.
+    | VarArgMethod
     /// Some entry kind whose resolution is not yet implemented — a signature blob, a
-    /// `RuntimeMethodHandle`, a nested `DynamicMethod`. The description names the kind, for the
+    /// `RuntimeMethodHandle`, a `GenericMethodInfo`. The description names the kind, for the
     /// refusal message an instruction naming it would produce.
     | Unsupported of description : string
 

@@ -662,6 +662,25 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // Method-shaped operands resolved against a `DynamicScope` rather than against
+                // metadata: `call` naming a scope entry that is itself a `DynamicMethod`, including
+                // a method naming *itself*. Registered with the dynamic-code switch overridden, like
+                // its siblings. Every expectation was measured against the host's real .NET, which
+                // returns 0 for this program.
+                FileName = "DynamicMethodMethodToken.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `Delegate_BindToMethodInfo`, the QCall behind `DynamicMethod.CreateDelegate`.
                 // Registered with the dynamic-code switch overridden to true, like its
                 // `ModuleHandle_GetDynamicMethod` sibling above. The guest walks every binding

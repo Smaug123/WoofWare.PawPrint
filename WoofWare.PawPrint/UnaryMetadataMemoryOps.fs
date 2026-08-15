@@ -17,9 +17,9 @@ module internal UnaryMetadataMemoryOps =
         let declaringTypeGenerics = currentMethod.DeclaringTypeGenerics
 
         let state, concreteTypeHandle =
-            match ctx.Operand with
-            | ResolvedMetadataOperand.ScopeType handle -> state, handle
-            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+            match ctx.TypeOperand with
+            | ResolvedTypeOperand.FromScope handle -> state, handle
+            | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
                 let state, targetType, assy =
                     IlMachineState.resolveTypeMetadataToken
                         loggerFactory
@@ -68,9 +68,9 @@ module internal UnaryMetadataMemoryOps =
         let thread = ctx.Thread
 
         let state, typeHandle =
-            match ctx.Operand with
-            | ResolvedMetadataOperand.ScopeType handle -> state, handle
-            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+            match ctx.TypeOperand with
+            | ResolvedTypeOperand.FromScope handle -> state, handle
+            | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
                 let state, ty, assy =
                     IlMachineState.resolveTypeMetadataToken
                         loggerFactory
@@ -143,9 +143,9 @@ module internal UnaryMetadataMemoryOps =
         let thread = ctx.Thread
 
         let state, typeHandle =
-            match ctx.Operand with
-            | ResolvedMetadataOperand.ScopeType handle -> state, handle
-            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+            match ctx.TypeOperand with
+            | ResolvedTypeOperand.FromScope handle -> state, handle
+            | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
                 let state, ty, assy =
                     IlMachineState.resolveTypeMetadataToken
                         loggerFactory
@@ -268,9 +268,9 @@ module internal UnaryMetadataMemoryOps =
         let thread = ctx.Thread
 
         let state, typeHandle =
-            match ctx.Operand with
-            | ResolvedMetadataOperand.ScopeType handle -> state, handle
-            | ResolvedMetadataOperand.FromMetadata (activeAssy, metadataToken) ->
+            match ctx.TypeOperand with
+            | ResolvedTypeOperand.FromScope handle -> state, handle
+            | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
                 let state, ty, assy =
                     IlMachineState.resolveTypeMetadataToken
                         loggerFactory
