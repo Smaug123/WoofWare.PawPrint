@@ -1,14 +1,16 @@
 # Plan: one storage-location identity, shared by everything that asks "same location?"
 
-Status: **in progress.** Stage 1 merged (#982). Stage 2 merged (#984). Stage 3 withdrawn.
-Stage 3′ rewritten below, and **implemented but not yet complete** on `explicit-layout-memmove`
-(`a8bbb1f`) by the investigation that confirmed the `Memmove` defect it predicted — option (a),
-both keys canonicalised, 3069 passing. Its coarse-key half is **untested**: that commit adds no
-resolver-level assertion, and its guest's fields are reference-free so both endpoints resolve
-precisely and `overlapVerdict` never consults the coarse key. Reverting `SharedStorageKey` alone
-would leave the suite green. Not to be treated as satisfying this stage until that mutation is
-killed. Stage 4 unblocked by #916 merging as `55b7d9b`; §6's measurement is answered rather than
-pending.
+Status: **all stages resolved.** Stage 1 merged (#982). Stage 2 merged (#984). Stage 3 withdrawn.
+Stage 3′ merged (#987) — option (a), both keys canonicalised, and it fixed a live silent
+data-corruption bug rather than only a modelling infelicity. The coarse-key half that this status
+line previously flagged as untested is now covered: `TestStorageLocation.fs` asserts it at the
+resolver, so reverting `SharedStorageKey.HeapObjectField` to a per-field key no longer leaves the
+suite green. Stage 4 implemented (#1016), after two prerequisites that only became visible once it
+was built (#992, #993 — both closed). §6's measurement is answered rather than pending.
+
+What remains is not a stage of this plan: `AreSameProjectionCrossesArrayElement.cs` stays parked on
+the unrelated byte-cursor gap of #729, and distinct-container inequality was deliberately left
+undecided (see Stage 4) for a later change to justify on its own terms.
 
 Reviewed by Codex, which found four defects in the first draft. All four were confirmed against
 the tree and all four changed the plan: §5 Stage 2's type shape, the withdrawal of Stage 3, the
@@ -317,7 +319,17 @@ above is untested.
 
 ### Stage 4 — Give byref comparison access to the resolution
 
-**Dependencies**: Stage 2, Stage 3′, and PR #916 (**merged** as `55b7d9b`; see below).
+**Status: implemented in #1016.** What follows is the reasoning that produced it, kept because
+three of its conclusions were reached by falsifying an earlier draft and are worth not
+rediscovering. Where the implementation diverged from the plan, it is marked inline; the
+divergences are recorded at the end of the stage.
+
+**Dependencies**: Stage 2, Stage 3′, and PR #916 (**merged** as `55b7d9b`; see below). Two further
+prerequisites emerged only once the stage was built, and both are now discharged: #992 (field byte
+offsets were not identity-grade, because `LayoutKind.Auto` and nominal alignment were unmodelled —
+closed by #997, #1002, #1006, #1011) and #993 (the projection walk accumulated into an unchecked
+int32 — closed by #1014). Neither was visible from the plan; both were found by a throwaway probe
+of the stage, which is the argument for probing rather than planning further.
 
 **Implements**: §4. This is the payoff, and it **changes behaviour** — it decides comparisons
 currently refused. Its own PR, described as a behaviour change, not folded into a refactor.
@@ -431,14 +443,24 @@ guests are what the corpus happens to contain, not the extent of the shape.
 Note what each of the four needs, since they do not all fall to the same change and the stage
 should not be declared done on a subset:
 
-| guest | needs |
-|---|---|
-| `AreSameFirstFieldVersusReinterpretedWhole` | the inversion alone — `[Field X]` folds to X's offset and the bare chain to 0, over a sequential struct that is certainly field-backed |
-| `AreSameProjectionCrossesArrayElement` | the inversion alone — two `ArrayElement` roots already resolve to one `ByteStorageIdentity.Array` with `arrayBytePosition` offsets |
-| `AreSameExplicitLayoutOverlappingFields` | the inversion alone — see the storage check below |
-| `AreSameHeapFieldsOverlappingExplicitLayout` | Stage 3′ option (a): the canonical per-object container |
+| guest | needs | outcome in #1016 |
+|---|---|---|
+| `AreSameFirstFieldVersusReinterpretedWhole` | the inversion alone — `[Field X]` folds to X's offset and the bare chain to 0, over a sequential struct that is certainly field-backed | un-parked, passes |
+| `AreSameProjectionCrossesArrayElement` | the inversion alone — two `ArrayElement` roots already resolve to one `ByteStorageIdentity.Array` with `arrayBytePosition` offsets | **still parked — this row was wrong**, see below |
+| `AreSameExplicitLayoutOverlappingFields` | the inversion alone — see the storage check below | un-parked, passes |
+| `AreSameHeapFieldsOverlappingExplicitLayout` | Stage 3′ option (a): the canonical per-object container | un-parked, passes |
 
 Three of the four therefore fall out of the inversion alone; only the heap-root case needs Stage 3′.
+
+**That prediction was right about the comparison and wrong about the guest.** The reasoning for
+`AreSameProjectionCrossesArrayElement` holds exactly as written — the comparison no longer blocks
+it. But the guest still fails, and strictly *earlier* than before: at IL offset 71, in the byte-view
+*read* that builds one of the operands, with "byte-view read at offset 8 for 1 bytes does not fit in
+single primitive cell of size 8". That is the byte-cursor gap of #729 — a cursor may not leave the
+cell it started in — and has nothing to do with byref identity. The table row reasoned about the
+one dependency it was looking at and concluded the guest would pass, which does not follow: a guest
+passes only when *every* gap on its path is closed. Un-park it when a byte view can cross out of its
+originating cell.
 
 **Why the struct case is safe, since the obvious objection is that it is not.** The fold only works
 if the value is field-backed: `CliValueType.GetFieldLayoutById` goes through `FindFieldById` →
@@ -464,6 +486,38 @@ in `CliType.OfBytesLike` — a distinct notion sharing a name. Worth flagging: "
 in this codebase for at least two different things, and conflating them is what nearly cost this
 stage a guest.
 
+#### What #1016 actually built
+
+The inversion shipped as written. `ManagedPointerSource.ceqNormalisedDeferred` returns a
+`CeqOutcome` — `Decided of bool`, or `NeedsByteLocation` carrying both byrefs and the diagnostic the
+refusal would have raised — and `StorageLocation.resolveCeq` interprets it, deciding only cases 1
+and 2 above and re-raising the diagnostic for everything else. Carrying the diagnostic is what makes
+the deferral free: a caller that cannot resolve reproduces the previous failure verbatim rather than
+inventing a worse one. Seven propagation points, one widened signature (`UnaryConstIlOp.execute`
+takes `baseClassTypes`), one line of ripple in `AbstractMachine`.
+
+Three divergences from the plan, none of them design changes:
+
+1. **The call-site count.** An earlier draft of this plan said 27; the true number is six, plus the
+   `Interlocked.CompareExchange` path that reaches comparison through
+   `NativeIntSourceComparison.equalsForCli` rather than through `ceq`. Threading turned out to be
+   mechanical, which is what the probe was run to find out.
+2. **`AreSameProjectionCrossesArrayElement` did not un-park**, per the correction above. The stage
+   is therefore declared done on three of the four guests it named — legitimately, since the fourth
+   is blocked on an unrelated gap and not on anything this stage owns.
+3. **The negative oracle needed a new guest after all.** This plan said one "already exists" for the
+   sequential two-field struct. It did not: no guest in the corpus compared byrefs to two distinct
+   fields of an ordinary struct, precisely because the shape was refused and so nothing could assert
+   it. `AreSameSequentialStructDistinctFields.cs` is that guest, written for this stage.
+   `AreSameByteOffsetsSpanningInt32.cs` is a second negative, at the int32 boundary, and exists
+   because #993's fix and this stage only compose: while comparison refused every chain needing
+   field offsets, no guest could observe the accumulator's width through `AreSame` at all.
+
+Both mutations this stage asked for were run. Dropping the offset comparison from `resolveCeq` fails
+the two negatives with exit code 1 and leaves all three overlapping guests green — which is the
+failure mode Codex predicted and the reason the negatives were required. Reverting the projection
+walk to a wrapping int32 fails `AreSameByteOffsetsSpanningInt32.cs` alone.
+
 ## 6. What would falsify this plan
 
 - **If `byteLocation` returns `Unrelatable`/`None` for most real byref pairs**, Stage 4 unblocks
@@ -475,6 +529,12 @@ stage a guest.
   only re-derive that, because a non-zero count would be a red suite. So Stage 4's payoff is *not*
   "the suite gets more correct"; it is precisely **the four parked `AreSame*` guests**, three of
   which fall out of the inversion alone (see the Stage 4 table).
+
+  **Settled by #1016, and the answer is "three, not four".** `AreSameProjectionCrossesArrayElement`
+  is blocked on the unrelated byte-cursor gap of #729, so the realised payoff is one guest smaller
+  than this bullet forecast. Against that, two negative-control guests had to be *written* for the
+  stage rather than un-parked, which is itself the endogeneity argument below made concrete: they
+  could not have existed earlier, because the shapes they assert were refused.
 
   Whether that falsifies the plan is a judgement call, and worth stating plainly rather than
   burying: four guests is a modest return for an inversion. Two things argue it is
@@ -491,7 +551,10 @@ stage a guest.
   small change, so the return does not need to be large to justify it. What would genuinely
   falsify it is if `Decided | NeedsByteLocation` cannot be threaded without restructuring the
   handlers — cheap to test on two sites before committing, and still the first thing Stage 4
-  should do.
+  should do. **That test was run, and threading is mechanical**: one widened signature and a
+  one-line ripple, no handler restructured. The probe that established it also surfaced #992 and
+  #993, neither of which any amount of further planning would have found — the plan had reviewed
+  three rounds of Codex without either being noticed.
 - **If Stage 3′ finds cross-field aliasing is unreachable in practice**, Stage 4's distinct-container
   rule needs no guard and Stage 3′ collapses to a documentation note. **Resolved: it is reachable**,
   and the tree records it as measured on both runtimes — see the merged `tryDecideResiduals` and
