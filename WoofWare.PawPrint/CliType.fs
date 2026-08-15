@@ -1258,6 +1258,9 @@ and CliValueType =
     /// True when these fields are an `[InlineArray(N)]` type's storage slots rather than a
     /// plain field list: `InlineArrayStorage.expand` mints `FieldId.InlineArrayElement` for
     /// every slot from 1 upwards, so the marker is present exactly when `N >= 2`.
+    ///
+    /// `N = 1` is deliberately *not* an expansion: the list is then the single declared field,
+    /// unchanged, and the ordinary one-field layout is already what CoreCLR computes for it.
     static member private IsInlineArrayExpansion (fieldIds : FieldId seq) : bool =
         fieldIds
         |> Seq.exists (fun id ->
@@ -1266,6 +1269,63 @@ and CliValueType =
             | FieldId.Metadata _
             | FieldId.Named _ -> false
         )
+
+    /// The size and alignment CoreCLR gives an `[InlineArray(N)]` type, from the layout its one
+    /// element received.
+    ///
+    /// CoreCLR never lays the slots out together. It lays out the single declared field, sizes
+    /// *that* completely — the value-class rounding at the tail of `HandleAutoLayout` on the auto
+    /// route (methodtablebuilder.cpp:8574-8607), `AlignSize` on the sequential one
+    /// (classlayoutinfo.cpp) — and only then multiplies by N (`PlaceInstanceFields` :8612 and
+    /// `HandleSequentialLayout` :8663). The size is therefore N copies of the *rounded* element,
+    /// which differs from rounding the run once exactly when an element's size is not already a
+    /// multiple of its alignment: three 3-byte elements are 12 bytes on the auto route rather than
+    /// 9, and three of a `[StructLayout(Sequential, Size = 5)]` element are 24 rather than 15.
+    ///
+    /// Note this is the *size* only. Where the elements sit is a separate question with a different
+    /// answer — `sizeof(element)` apart, so the last element can end well short of the size; see
+    /// the striding in `LayoutLevel`.
+    ///
+    /// The alignment is the subtler half, and only the auto route has anything to decide. A
+    /// sequential type `HasLayout()`, so `MethodTable::GetFieldAlignmentRequirement`
+    /// (methodtable.cpp:8853) answers from its `EEClassLayoutInfo` — derived from the one field,
+    /// and untouched by the multiplication. An auto type has no layout metadata, so the same
+    /// function answers from the *class*: the custom alignment if one was recorded, and otherwise
+    /// `min(GetNumInstanceFieldBytes(), TARGET_POINTER_SIZE)`. Both halves of that are load-bearing
+    /// here, because the recording test is `minAlign != min(elementSize, TARGET_POINTER_SIZE)`
+    /// (:8598) and runs *before* the multiplication while the fallback reads the size *after* it:
+    ///
+    /// * `[Auto, InlineArray(3)] struct { S3 }` — element 3 bytes, `minAlign` 4, so 4 != 3 and the
+    ///   custom alignment is recorded. The type is 4-aligned.
+    /// * `[Auto, InlineArray(3)] struct { int }` — element 4 bytes, `minAlign` 4, so nothing is
+    ///   recorded and the answer is `min(12, 8)` = 8. The type is 8-aligned despite every element
+    ///   in it being 4-aligned, which moves it inside a containing struct.
+    ///
+    /// The fallback is not always a power of two: `[Auto, InlineArray(3)] struct { byte }` reports
+    /// 3, and `{ short }` reports 6. Those really are the numbers real .NET computes — it then
+    /// fails to *use* such a type, with `InvalidProgramException` from the JIT — so they are
+    /// modelled rather than rounded away, and `roundUpToAlignment` is modular arithmetic and copes.
+    /// PawPrint has no JIT to refuse them, so a guest that declares one gets the layout CoreCLR
+    /// computed instead of the crash CoreCLR would produce; see `docs/divergences.md`.
+    static member private InlineArraySize
+        (governedByAuto : bool)
+        (elementUnrounded : int)
+        (elementSize : int)
+        (elementAlignment : int)
+        (repeat : int)
+        : int * int
+        =
+        let total = elementSize * repeat
+
+        let alignment =
+            if not governedByAuto then
+                elementAlignment
+            elif elementAlignment <> min elementUnrounded NATIVE_INT_SIZE then
+                elementAlignment
+            else
+                min total NATIVE_INT_SIZE
+
+        total, alignment
 
     /// Whether CoreCLR's auto-layout algorithm governs a type, given the layout kind PawPrint
     /// applies to it (`TypeLayoutKind.applied`) and three facts about its fields.
@@ -1284,17 +1344,9 @@ and CliValueType =
     /// the kind is load-bearing only for the choice this function exists to make: among fields
     /// that carry no offsets, auto placement or sequential.
     ///
-    /// The inline-array carve-out is a *deliberate, recorded* divergence rather than a rule of
-    /// CoreCLR's. CoreCLR lays an `[InlineArray(N)]` type out as its one declared field and then
-    /// multiplies the resulting instance size by N (:8612 for the auto route, :8663 for
-    /// sequential), so the auto route's size rounding applies to a single element and not to the
-    /// whole run of them. PawPrint instead materialises N storage slots and lays them out
-    /// together, which agrees with CoreCLR on the sequential route but not on the auto one:
-    /// `[Auto, InlineArray(3)] struct { int }` is 12 bytes on real .NET and would be 16 here,
-    /// because a run of three ints is past the pointer size and so rounds up to it. Keeping such
-    /// types on the pre-existing route leaves that shape exactly as correct as it is today
-    /// (`AutoInlineArrayElementSizeRounding.cs` is parked against the residual gap, which is
-    /// visible only for an element whose own size is not already its rounded size).
+    /// An `[InlineArray(N)]` type is routed by this function like any other, because CoreCLR routes
+    /// it like any other: the repeat count is applied to the size the chosen route computes for the
+    /// type's *one* declared field (`CliValueType.InlineArraySize`), not to the choice of route.
     ///
     /// `containsReferences` is the *chain's* answer, not the level's: CoreCLR's `hasGCFields` is
     /// `(pParentMT && pParentMT->ContainsGCPointers()) || <own fields hold one>`
@@ -1306,7 +1358,6 @@ and CliValueType =
     static member private AutoLayoutGoverns
         (layoutKind : TypeLayoutKind)
         (hasFieldOffsets : bool)
-        (isInlineArrayExpansion : bool)
         (containsReferences : bool)
         (parentIsNonSequential : bool)
         : bool
@@ -1316,7 +1367,7 @@ and CliValueType =
         else
 
         match layoutKind with
-        | TypeLayoutKind.Auto -> not isInlineArrayExpansion || containsReferences
+        | TypeLayoutKind.Auto -> true
         // A declared-`Explicit` type whose fields carry no offsets is the inheritance shape above;
         // it keeps the promotion rule, which is what it got before the kind was modelled at all.
         | TypeLayoutKind.Sequential -> containsReferences || parentIsNonSequential
@@ -1424,23 +1475,69 @@ and CliValueType =
             CliValueType.AutoLayoutGoverns
                 layoutKind
                 (not nonSeqFields.IsEmpty)
-                (CliValueType.IsInlineArrayExpansion (seqFields |> Seq.map _.Id))
                 containsReferences
                 parentIsNonSequential
 
+        // An `[InlineArray(N)]` type's storage slots are N copies of its one declared field
+        // (`InlineArrayStorage.expand`), and CoreCLR lays out only the first of them: see
+        // `CliValueType.InlineArraySize`. So the fields placed below are the element alone, and the
+        // slots are struck from its placement afterwards.
+        //
+        // The repeat count is read back off the field list rather than carried alongside it. The
+        // slots *are* the count, so a second copy of N would be a second thing to keep in step with
+        // the first -- and every route into this function, including the eval-stack rewrap in
+        // `OfFieldsLike`, would have to carry it.
+        let inlineArraySlots : CliField list option =
+            if CliValueType.IsInlineArrayExpansion (seqFields |> Seq.map _.Id) then
+                Some seqFields
+            else
+                None
+
+        match inlineArraySlots with
+        | None -> ()
+        | Some slots ->
+            // Everything below assumes the slots are interchangeable copies of one field, which is
+            // what `expand` builds and what CoreCLR's single `FieldDesc` means. Same concrete type
+            // means same size, which is all the striding needs.
+            let element = List.head slots
+
+            match slots |> List.tryFind (fun slot -> slot.Type <> element.Type) with
+            | Some odd ->
+                failwith
+                    $"CliValueType.LayoutLevel: %O{level.Declared} carries %d{slots.Length} inline-array storage slots, but slot %s{odd.Name} has concrete type %O{odd.Type} where the first slot %s{element.Name} has %O{element.Type}; the slots of an inline array are copies of one declared field"
+            | None -> ()
+
+            // A value type has no non-trivial parent, and `expand` refuses a declared `ClassSize`
+            // (CoreCLR's `IDS_CLASSLOAD_INLINE_ARRAY_EXPLICIT_SIZE`). Both would otherwise silently
+            // change what the multiplication is applied to.
+            if startOffset <> 0 then
+                failwith
+                    $"CliValueType.LayoutLevel: %O{level.Declared} carries inline-array storage slots but inherits %d{startOffset} bytes from a base chain; CoreCLR reads `[InlineArray]` only inside the value-type branch of PlaceInstanceFields, so such a type has no non-trivial parent"
+
+            if minimumSize > 0 then
+                failwith
+                    $"CliValueType.LayoutLevel: %O{level.Declared} carries inline-array storage slots and a declared ClassLayout.Size of %d{minimumSize}; CoreCLR refuses to load such a type (IDS_CLASSLOAD_INLINE_ARRAY_EXPLICIT_SIZE), so `InlineArrayStorage.expand` should already have rejected it"
+
+        // The fields actually placed: an inline array's one element, or every field of an ordinary
+        // level. Empty exactly when `seqFields` is, so it can carry the routing match below.
+        let placementFields =
+            match inlineArraySlots with
+            | None -> seqFields
+            | Some slots -> [ List.head slots ]
+
         let placed, unrounded =
-            match seqFields, nonSeqFields with
+            match placementFields, nonSeqFields with
             | _, [] when governedByAuto ->
                 // Either the type declares `LayoutKind.Auto`, or it declares `Sequential` and is
                 // promoted -- for holding GC references, or for having a parent that is not
                 // managed-sequential. Declared field order and any `Pack`/`Size` request are both
                 // discarded here; explicit layout is never promoted.
-                CliValueType.ComputeAutoLayoutFields startOffset seqFields
+                CliValueType.ComputeAutoLayoutFields startOffset placementFields
             | _, [] ->
                 // Sequential layout: declared order, each field at its own alignment capped by
                 // `Pack`, continuing from where the parent's fields ended.
                 let finalOffset, concreteFields =
-                    ((startOffset, []), seqFields)
+                    ((startOffset, []), placementFields)
                     ||> List.fold (fun (currentOffset, acc) field ->
                         let size = CliType.SizeOf field.Contents
                         let alignmentCap = min size.Alignment packingSize
@@ -1565,6 +1662,48 @@ and CliValueType =
                 1, alignment, true
             else
                 sized, alignment, false
+
+        // Everything above sized the element. Strike the remaining slots off its placement and
+        // multiply.
+        let placed, size, alignment =
+            match inlineArraySlots with
+            | None -> placed, size, alignment
+            | Some slots ->
+                let element =
+                    match placed with
+                    | [ element ] -> element
+                    | _ ->
+                        failwith
+                            $"CliValueType.LayoutLevel: laying out the single element of inline array %O{level.Declared} produced %d{placed.Length} placements"
+
+                if element.Offset <> 0 then
+                    failwith
+                        $"CliValueType.LayoutLevel: the single element of inline array %O{level.Declared} was placed at offset %d{element.Offset} rather than 0"
+
+                // `alignment` here is the *type's* -- `minAlign` on the auto route, the layout
+                // info's on the sequential one -- not the element field's own demand.
+                let total, alignment =
+                    CliValueType.InlineArraySize governedByAuto unrounded size alignment slots.Length
+
+                // The slots stride by the element's *own* size, not by the rounded one the total is
+                // built from, and the two differ exactly where the rounding bites. Nothing lays
+                // these out: CoreCLR has a single `FieldDesc` at offset 0, and an element access is
+                // `InlineArrayElementRef` -> `Unsafe.Add(ref Unsafe.As<TBuffer, TElement>(ref
+                // buffer), index)`, which is `sizeof(TElement)` arithmetic that never consults the
+                // aggregate. So `[Auto, InlineArray(3)] struct { S3 }` really is 12 bytes with its
+                // three 3-byte elements at 0, 3 and 6 and three bytes of slack after them --
+                // measured on real .NET, and inconsistent-looking upstream rather than here.
+                let placed =
+                    slots
+                    |> List.mapi (fun index slot ->
+                        { element with
+                            Id = slot.Id
+                            Name = slot.Name
+                            Offset = index * element.Size
+                        }
+                    )
+
+                placed, total, alignment
 
         let next =
             {

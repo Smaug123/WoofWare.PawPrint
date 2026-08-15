@@ -12,16 +12,17 @@ open WoofWare.PawPrint.Test
 /// A differential sweep over `[InlineArray(N)]` layout, taking the *real runtime* as the oracle
 /// rather than a table of constants a human transcribed once.
 ///
-/// CoreCLR lays an inline array out as if it had its one declared instance field, then multiplies
-/// the resulting instance size by N (`MethodTableBuilder::PlaceInstanceFields`,
-/// methodtablebuilder.cpp:8612 for the auto-layout route, :8663 for sequential). PawPrint instead
-/// replicates the field into N storage slots and runs its ordinary layout algorithms over them
-/// (`InlineArrayStorage.expand`). Those are only the same thing because every slot is identical —
-/// an argument that is easy to state and easy to get wrong at the edges, which is what this sweep
-/// is for: it varies the element's size, alignment, GC content and nesting, and `Pack`, and
-/// requires the two runtimes to agree for every combination.
+/// CoreCLR lays an inline array out as if it had its one declared instance field, sizes *that*
+/// completely — the rounding at the end of the layout algorithm included — and then multiplies the
+/// result by N (`MethodTableBuilder::PlaceInstanceFields`, methodtablebuilder.cpp:8612 for the
+/// auto-layout route, `HandleSequentialLayout` :8663 for sequential). PawPrint materialises N
+/// storage slots (`InlineArrayStorage.expand`) but places only the first, striding the rest by the
+/// rounded element size, so the two agree by construction rather than by coincidence. The sweep is
+/// what holds that claim honest at the edges: it varies the element's size, alignment, GC content
+/// and nesting, the declared `LayoutKind`, and `Pack`, and requires the two runtimes to agree for
+/// every combination.
 ///
-/// Each generated program measures four sizes — N = 1, 2 and 3, plus the element's placement inside
+/// Each generated program measures four sizes — N = 1, 2 and 3, plus the buffer's placement inside
 /// a larger struct — from a single compilation. PawPrint returns all four packed into one int32,
 /// which is read directly off the evaluation stack; the real runtime is a real process, whose exit
 /// code on Unix is only 8 bits, so it is run once per measurement. On disagreement the assertion
@@ -103,28 +104,68 @@ module TestInlineArrayLayout =
                 Declarations = "[InlineArray(3)] private struct Inner { private int _item; }"
                 TypeName = "Inner"
             }
+            // Five bytes with an alignment of four: a declared `Size` is a floor and the alignment
+            // rounding is its alternative rather than its sequel (`CalculateSizeWithMetadataSize`,
+            // classlayoutinfo.cpp:326-341), so this element's own size is *not* a multiple of its
+            // own alignment. That is the only way to make "round the slot then multiply" and
+            // "multiply then round" disagree on the sequential route: every other element here is
+            // already its own rounded size, which is why the sweep passed while that route was
+            // computing the wrong thing.
+            "sizeFloor",
+            {
+                Declarations = "[StructLayout(LayoutKind.Sequential, Size = 5)] private struct Floor { public int I; }"
+                TypeName = "Floor"
+            }
         ]
         |> Map.ofList
 
+    /// The `StructLayout` the buffer types themselves carry.
+    ///
     /// `Pack` applies to the single-slot layout, so it can change the stride — except when the
     /// element holds a GC reference, where CoreCLR discards it along with the rest of the declared
     /// layout. Both behaviours are swept.
-    let private packAttributes : Map<string, string> =
+    ///
+    /// `auto` is the other axis: a C# struct with no attribute is `Sequential` in metadata, so
+    /// without an explicit `LayoutKind.Auto` this sweep never reaches the auto route at all —
+    /// which is where the element rounding differs most visibly, and where the aggregate's
+    /// *alignment* stops being its element's.
+    let private bufferAttributes : Map<string, string> =
         [
             "packDefault", ""
             "pack1", "[StructLayout(LayoutKind.Sequential, Pack = 1)]"
             "pack2", "[StructLayout(LayoutKind.Sequential, Pack = 2)]"
+            "auto", "[StructLayout(LayoutKind.Auto)]"
         ]
         |> Map.ofList
+
+    /// Combinations for which there is no oracle, because real .NET cannot run them.
+    ///
+    /// An auto-layout inline array whose *multiplied* size is below the pointer size and is not a
+    /// power of two gets exactly that as its alignment: nothing is recorded as a custom field
+    /// alignment (the element's `minAlign` equals `min(elementSize, sizeof(void*))`), so
+    /// `MethodTable::GetFieldAlignmentRequirement` falls through to `min(3, 8)` for three bytes and
+    /// `min(6, 8)` for three shorts. The type *loads* — this is a computed alignment, not a
+    /// rejection — but the JIT then refuses to compile any method that mentions it, with
+    /// `InvalidProgramException: The metadata is corrupt`. Every other combination in the sweep
+    /// escapes it: two bytes give 2, and anything reaching 8 or more is capped at the pointer size.
+    ///
+    /// PawPrint has no JIT, so it lays such a type out with the alignment CoreCLR computed and runs
+    /// the program. That divergence is recorded in `docs/divergences.md`; what is asserted below is
+    /// only that the exclusion is still warranted, so that a future runtime which fixes the
+    /// upstream bug fails this fixture rather than quietly keeping a stale carve-out.
+    let private unrunnableCases : string list = [ "byte/auto" ; "short/auto" ]
 
     let private cases : string list =
         [
             for element in elementShapes |> Map.toSeq |> Seq.map fst do
-                for pack in packAttributes |> Map.toSeq |> Seq.map fst do
-                    yield $"%s{element}/%s{pack}"
+                for attribute in bufferAttributes |> Map.toSeq |> Seq.map fst do
+                    let case = $"%s{element}/%s{attribute}"
+
+                    if not (List.contains case unrunnableCases) then
+                        yield case
         ]
 
-    let private source (element : ElementShape) (pack : string) : string =
+    let private source (element : ElementShape) (attribute : string) : string =
         $"""
 using System;
 using System.Runtime.CompilerServices;
@@ -134,12 +175,15 @@ public class TestInlineArrayLayoutSweep
 {{
     %s{element.Declarations}
 
-    %s{pack} [InlineArray(1)] private struct B1 {{ private %s{element.TypeName} _item; }}
-    %s{pack} [InlineArray(2)] private struct B2 {{ private %s{element.TypeName} _item; }}
-    %s{pack} [InlineArray(3)] private struct B3 {{ private %s{element.TypeName} _item; }}
+    %s{attribute} [InlineArray(1)] private struct B1 {{ private %s{element.TypeName} _item; }}
+    %s{attribute} [InlineArray(2)] private struct B2 {{ private %s{element.TypeName} _item; }}
+    %s{attribute} [InlineArray(3)] private struct B3 {{ private %s{element.TypeName} _item; }}
 
-    // The element's alignment — not the aggregate's size — decides where a whole inline array
-    // lands inside a larger struct, and where the field after it lands.
+    // Where a whole inline array lands inside a larger struct, and where the field after it lands.
+    // The alignment that decides this is the aggregate's own, and on the auto route that is not
+    // always its element's: CoreCLR records a custom field alignment only when the element's
+    // rounded alignment differs from `min(elementSize, sizeof(void*))`, and otherwise answers from
+    // the *multiplied* size (`MethodTable::GetFieldAlignmentRequirement`, methodtable.cpp:8853).
     private struct Holder {{ public byte Lead; public B3 Buf; public byte Tail; }}
 
     public static int Main(string[] argv)
@@ -227,12 +271,12 @@ public class TestInlineArrayLayoutSweep
 
     [<TestCaseSource(nameof cases)>]
     let ``Inline array layout matches the real runtime`` (case : string) : unit =
-        let elementKey, packKey =
+        let elementKey, attributeKey =
             match case.Split '/' with
-            | [| elementKey ; packKey |] -> elementKey, packKey
+            | [| elementKey ; attributeKey |] -> elementKey, attributeKey
             | _ -> failwith $"malformed case key %s{case}"
 
-        let text = source elementShapes.[elementKey] packAttributes.[packKey]
+        let text = source elementShapes.[elementKey] bufferAttributes.[attributeKey]
         let image = Roslyn.compile [ text ]
 
         // The oracle runs the guest as a real process, whose exit code on Unix is 8 bits, so it can
@@ -264,3 +308,27 @@ public class TestInlineArrayLayoutSweep
                 $"%s{case}: PawPrint and the real runtime disagree.\n  real runtime: %s{decode expected}\n  PawPrint:     %s{decode actual}"
 
         actual |> shouldEqual expected
+
+    /// The carve-out above is only defensible while it is true, and it is a claim about the *host*
+    /// runtime rather than about anything in this repository — so it is measured, not assumed. A
+    /// runtime that fixed the upstream bug would make these shapes oracle-checkable again, and this
+    /// test is what would say so.
+    [<TestCaseSource(nameof unrunnableCases)>]
+    let ``The excluded shapes are ones the real runtime refuses to run`` (case : string) : unit =
+        let elementKey, attributeKey =
+            match case.Split '/' with
+            | [| elementKey ; attributeKey |] -> elementKey, attributeKey
+            | _ -> failwith $"malformed case key %s{case}"
+
+        let text = source elementShapes.[elementKey] bufferAttributes.[attributeKey]
+        let image = Roslyn.compile [ text ]
+
+        match RealRuntime.executeWithRealRuntime [| "0" |] image with
+        | RealRuntimeResult.UnhandledException report when report.Contains "InvalidProgramException" -> ()
+        | RealRuntimeResult.UnhandledException report ->
+            failwith
+                $"%s{case}: the real runtime failed, but not with the InvalidProgramException this exclusion is for:\n%s{report}"
+        | RealRuntimeResult.NormalExit exitCode ->
+            failwith
+                $"%s{case}: the real runtime now runs this shape (exit code %d{exitCode}), so it has an oracle again and belongs in the sweep rather than in `unrunnableCases`"
+        | RealRuntimeResult.FailFast report -> failwith $"%s{case}: real runtime called FailFast:\n%s{report}"
