@@ -232,6 +232,32 @@ class Program
 
         run "LSeekDirSetCur.cs" source |> exitCodeOf |> shouldEqual 0
 
+    /// Darwin decides seekability *before* it validates the whence, and Linux the other way round.
+    /// `sourcesImpure/LSeekRawSeeded.cs` pins the Linux half — an unseekable descriptor with a
+    /// nonsense whence is EINVAL there — and this is the other, which no guest run under the default
+    /// flavour can reach. Without both, either ordering could be flipped to match the other and the
+    /// suite would stay green.
+    [<Test>]
+    let ``Darwin decides seekability before the whence is validated`` () : unit =
+        let source =
+            guest
+                """
+        // ESPIPE, where Linux answers EINVAL.
+        if (!Rejected(new IntPtr(0), 0, 99, 29)) return 1;
+        if (!Rejected(new IntPtr(1), 0, -1, 29)) return 2;
+        // ...and still ESPIPE when the offset would also have overflowed, so this is the whence
+        // losing rather than the least-severe fault winning.
+        if (!Rejected(new IntPtr(0), long.MaxValue, 99, 29)) return 3;
+        // The descriptor itself still precedes both: a bad fd with a bad whence is EBADF.
+        if (!Rejected(new IntPtr(4242), 0, 99, 9)) return 4;
+        // ...and a *valid* whence on an unseekable descriptor is ESPIPE too, so the rows above are
+        // not passing merely because ESPIPE is this handler's favourite answer.
+        if (!Rejected(new IntPtr(0), 0, SEEK_CUR, 29)) return 5;
+        return 0;
+"""
+
+        runOn darwin "LSeekDarwinOrder.cs" source |> exitCodeOf |> shouldEqual 0
+
     /// Under Darwin, an offset that leaves `int64` is EOVERFLOW rather than EINVAL. This is the only
     /// place that distinction is observable: under Linux both faults report EINVAL, so a model that
     /// conflated "overflowed" with "landed below zero" — which is exactly what unchecked `int64`

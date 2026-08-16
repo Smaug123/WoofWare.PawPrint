@@ -4,6 +4,23 @@ open System
 open System.Buffers.Binary
 open System.Collections.Immutable
 
+/// Why a file descriptor cannot be seeked, as a *fault* rather than as the errno
+/// it becomes.
+///
+/// The distinction is load-bearing for `SystemNative_LSeek`, which is why this
+/// is not simply a `UnixError`: the two faults sit at different points in the
+/// two platforms' check orders — measured, Linux validates `whence` between them
+/// while Darwin does not — so an ordering written over errnos would let a future
+/// third fault inherit whichever position its errno's arm happened to occupy.
+[<RequireQualifiedAccess>]
+type internal DescriptorFault =
+    /// No such descriptor in the process's table; `EBADF`. Precedes everything
+    /// else on both platforms.
+    | NotOpen
+    /// The descriptor names something with no file offset — a pipe, which is
+    /// what PawPrint models the standard streams as; `ESPIPE`.
+    | NotSeekable
+
 [<RequireQualifiedAccess>]
 module NativeSystemNative =
     let private trySystemNativeEntryPoint (ctx : NativeCallContext) : string option =
@@ -1959,28 +1976,45 @@ module NativeSystemNative =
 
             let target = FileDescriptorRegistry.tryFindTarget fd state.Kernel.FileDescriptors
 
-            let descriptorFault : UnixError option =
+            let descriptorFault : DescriptorFault option =
                 match target with
-                | None -> Some UnixError.EBADF
+                | None -> Some DescriptorFault.NotOpen
                 | Some (OpenFileTarget.StandardStream _) ->
                     // Not seekable: PawPrint models the standard streams as
                     // pipes, and `lseek` on a pipe is ESPIPE on both platforms
                     // whichever end it is. This is the answer `SafeFileHandle`
                     // reads back to decide `CanSeek`, so it is on the BCL's own
                     // path rather than a corner.
-                    Some UnixError.ESPIPE
+                    Some DescriptorFault.NotSeekable
                 | Some (OpenFileTarget.File _) -> None
 
+            // The two descriptor faults are ordered *differently* against the
+            // whence check, so they are kept apart as faults rather than as
+            // errnos: a future third fault must then decide where it sits
+            // instead of silently inheriting whichever position its errno's
+            // arm happened to occupy.
             let ordered : UnixError option =
+                match descriptorFault with
+                | Some DescriptorFault.NotOpen ->
+                    // Ahead of everything on both platforms.
+                    Some UnixError.EBADF
+                | notOpenRejected ->
+
+                let unseekable =
+                    match notOpenRejected with
+                    | Some DescriptorFault.NotSeekable -> true
+                    | Some DescriptorFault.NotOpen
+                    | None -> false
+
                 match flavour with
                 | SimulatedUnixFlavour.Linux ->
-                    match descriptorFault with
-                    | Some UnixError.EBADF -> Some UnixError.EBADF
-                    | other -> if not whenceValid then Some UnixError.EINVAL else other
+                    if not whenceValid then Some UnixError.EINVAL
+                    elif unseekable then Some UnixError.ESPIPE
+                    else None
                 | SimulatedUnixFlavour.Darwin ->
-                    match descriptorFault with
-                    | Some error -> Some error
-                    | None -> if not whenceValid then Some UnixError.EINVAL else None
+                    if unseekable then Some UnixError.ESPIPE
+                    elif not whenceValid then Some UnixError.EINVAL
+                    else None
 
             match ordered with
             | Some error -> fail error
