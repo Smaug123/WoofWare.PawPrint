@@ -404,10 +404,20 @@ module FileDescriptorRegistry =
     /// which is why they can hold separate offsets and separate `flock` locks.
     /// Sharing here would make the second open silently alias the first.
     ///
-    /// The offset starts at 0, which is `open(2)`'s answer for every flag
-    /// PawPrint accepts. `O_APPEND` would start it at the end instead, and is
-    /// refused at the handler — see `SystemNative_Open`, which refuses every
-    /// write flag outright.
+    /// The offset starts at 0, and that is `open(2)`'s answer for *every* flag,
+    /// not merely the ones PawPrint accepts. `O_APPEND` is the tempting
+    /// exception and is not one: measured on both platforms, a descriptor
+    /// opened `O_WRONLY | O_APPEND` on a five-byte file reports 0 from
+    /// `lseek(0, SEEK_CUR)` immediately afterwards, and only reaches 6 after a
+    /// one-byte write. The flag repositions to the end before each individual
+    /// *write*, not at open time, so when the write path lands it belongs
+    /// there — seeding the offset at the end here would make a guest's first
+    /// `SEEK_CUR` report a position no kernel would.
+    ///
+    /// The BCL would not exercise it in any case: `Interop.Sys.OpenFlags` has no
+    /// append bit at all, and `SafeFileHandle.Init` implements `FileMode.Append`
+    /// as `OpenOrCreate` plus an explicit seek to the end
+    /// (SafeFileHandle.Unix.cs:255).
     ///
     /// Total — there is no failure mode at this level. Whether the path
     /// resolves, whether the flags are ones PawPrint honours, and whether the
