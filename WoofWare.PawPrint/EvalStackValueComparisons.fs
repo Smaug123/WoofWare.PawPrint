@@ -265,7 +265,7 @@ module EvalStackValueComparisons =
             uint32 var1 < uint32 var2
         | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.NativeInt var2 ->
             failwith "TODO: comparison of unsigned int32 with nativeint"
-        | EvalStackValue.Int32 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
+        | EvalStackValue.Int32 _, _ -> failwith $"Clt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.Int64 (Int64Source.Verbatim var1), EvalStackValue.Int64 (Int64Source.Verbatim var2) ->
             uint64 var1 < uint64 var2
         // See cgtUn: OpaqueHashBits is bit-pattern unambiguous and can be
@@ -275,7 +275,7 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits var1), EvalStackValue.Int64 (Int64Source.Verbatim var2)
         | EvalStackValue.Int64 (Int64Source.Verbatim var1), EvalStackValue.Int64 (Int64Source.OpaqueHashBits var2) ->
             uint64 var1 < uint64 var2
-        | EvalStackValue.Int64 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
+        | EvalStackValue.Int64 _, _ -> failwith $"Clt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
             match var1, var2 with
             | NativeIntSource.Verbatim var1, NativeIntSource.Verbatim var2 -> uint64 var1 < uint64 var2
@@ -330,7 +330,7 @@ module EvalStackValueComparisons =
         | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
             failwith $"TODO: clt.un comparing a native int with an int32: %O{var1} vs %O{var2}"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 >= var2)
-        | EvalStackValue.Float _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
+        | EvalStackValue.Float _, _ -> failwith $"Clt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt _ ->
             cltUn (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1)) var2
         | EvalStackValue.ManagedPointer var1, EvalStackValue.ManagedPointer var2 ->
@@ -346,7 +346,7 @@ module EvalStackValueComparisons =
             failwith "TODO"
         | EvalStackValue.NullObjectRef, other -> failwith $"Clt.un invalid for comparing NullObjectRef with {other}"
         | EvalStackValue.ObjectRef _, other -> failwith $"Clt.un invalid for comparing ObjectRef with {other}"
-        | other1, other2 -> failwith $"Cgt.un instruction invalid for comparing {other1} vs {other2}"
+        | other1, other2 -> failwith $"Clt.un instruction invalid for comparing {other1} vs {other2}"
 
     let cgeUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with

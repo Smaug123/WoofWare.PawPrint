@@ -906,7 +906,7 @@ module ArithmeticOperation =
                 | _, _ -> failwith "refusing to multiply two managed pointers"
 
             member _.Int64ManagedPtr _ state a ptr = mulOffsetManagedPtr state a ptr
-            member _.ManagedPtrInt64 _ state a ptr = mulOffsetManagedPtr state ptr a
+            member _.ManagedPtrInt64 _ state ptr a = mulOffsetManagedPtr state a ptr
 
             member _.Name = "mul_ovf"
         }
@@ -930,7 +930,7 @@ module ArithmeticOperation =
                 failwith $"refusing to mul.ovf.un two managed pointers: %O{ptr1} and %O{ptr2}"
 
             member _.Int64ManagedPtr _ state a ptr = mulOffsetManagedPtr state a ptr
-            member _.ManagedPtrInt64 _ state a ptr = mulOffsetManagedPtr state ptr a
+            member _.ManagedPtrInt64 _ state ptr a = mulOffsetManagedPtr state a ptr
 
             member _.Name = "mul.ovf.un"
         }

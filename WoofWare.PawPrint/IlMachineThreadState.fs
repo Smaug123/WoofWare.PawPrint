@@ -172,9 +172,6 @@ module IlMachineThreadState =
                     failwith
                         $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly had evaluation stack values"
 
-                let callerFrame =
-                    ThreadState.getFrame returnState.JumpTo threadStateWithSyntheticFrame
-
                 let threadState =
                     threadStateWithSyntheticFrame
                     |> ThreadState.setActiveFrame returnState.JumpTo
@@ -206,9 +203,8 @@ module IlMachineThreadState =
             | None -> state
             | Some finishedInitialising -> state.WithTypeEndInit currentThread finishedInitialising
 
-        // Return to previous stack frame
-        let callerFrame = ThreadState.getFrame returnState.JumpTo threadStateAtEndOfMethod
-
+        // Return to previous stack frame. `setActiveFrame` fails loud if `JumpTo`
+        // is not live on this thread.
         let threadState =
             threadStateAtEndOfMethod
             |> ThreadState.setActiveFrame returnState.JumpTo

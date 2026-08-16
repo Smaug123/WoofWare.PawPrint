@@ -369,6 +369,33 @@ module TestEvalStack =
         if not (EvalStackValueComparisons.cleUn one nan) then
             failwith "Expected ble.un-style float comparison to be true when right operand is NaN"
 
+    [<Test>]
+    let ``clt.un's refusal diagnostics name clt.un, not its cgt.un twin`` () : unit =
+        // `cltUn` and `cgtUn` are near-identical twins, so a refusal message in one
+        // is easily copy-pasted from the other; a mislabelled diagnostic sends whoever
+        // hits it to the wrong function. One probe per independently-reachable refusal
+        // arm. (The final catch-all arm is not covered: reaching it needs a
+        // `UserDefinedValueType` operand, which there is no cheap way to construct here.)
+        let probes =
+            [
+                EvalStackValue.Int32 (Int32Source.Verbatim 0), EvalStackValue.Float 1.0
+                EvalStackValue.Int64 (Int64Source.Verbatim 0L), EvalStackValue.Float 1.0
+                EvalStackValue.Float 1.0, EvalStackValue.Int32 (Int32Source.Verbatim 0)
+            ]
+
+        for lhs, rhs in probes do
+            let outcome =
+                try
+                    EvalStackValueComparisons.cltUn lhs rhs |> Choice1Of2
+                with e ->
+                    Choice2Of2 e.Message
+
+            match outcome with
+            | Choice1Of2 answer -> failwith $"expected clt.un to refuse %O{lhs} vs %O{rhs}, but it answered %b{answer}"
+            | Choice2Of2 message ->
+                if not (message.Contains "Clt.un") || message.Contains "Cgt.un" then
+                    failwith $"clt.un's refusal of %O{lhs} vs %O{rhs} is mislabelled: %s{message}"
+
     // Tag bits never make a handle look null: `base` is non-zero on its own, so
     // `WeakReference.get_Target`'s `if (th == 0) return default` must not fire for
     // a stripped-but-still-live handle either.

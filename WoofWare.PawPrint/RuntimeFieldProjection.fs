@@ -94,11 +94,6 @@ module internal RuntimeFieldProjection =
         =
         isCorelibType baseClassTypes field "System.Runtime.CompilerServices" "RawData"
 
-    /// Render a `ConcreteTypeHandle` for diagnostic messages. See `AllConcreteTypes.describe`
-    /// for why this never throws.
-    let private describeConcreteType (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
-        AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes handle
-
     /// Per-byte safety is enforced when the byref is read or written, so the projection
     /// itself only needs to confirm a heap object exists.
     let private requireHeapObject (addr : ManagedHeapAddress) (state : IlMachineState) : unit =
