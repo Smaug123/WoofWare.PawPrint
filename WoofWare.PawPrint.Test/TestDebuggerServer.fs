@@ -395,7 +395,7 @@ class Program
             let failureSteps =
                 match failureSteps with
                 | Some failureSteps -> failureSteps
-                | None -> failwith "ProcessorCount test did not fail within 100 debugger steps"
+                | None -> failwith "The unimplemented-native guest did not fail within 100 debugger steps"
 
             failureSteps > 0L |> shouldEqual true
 
