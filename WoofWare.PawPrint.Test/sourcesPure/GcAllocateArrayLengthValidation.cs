@@ -24,7 +24,7 @@ public class TestGcAllocateArrayLengthValidation
         {
         }
 
-        // `pinned: true` is load-bearing. A release-built CoreLib short-circuits an *unpinned*
+        // A release-built CoreLib short-circuits an *unpinned*
         // `AllocateUninitializedArray<T>` to `new T[length]` whenever `length < 2048 / sizeof(T)`
         // (GC.CoreCLR.cs:806-812), and that comparison is signed — so it is trivially true for a
         // negative length, and the unpinned spelling would never reach the QCall at all. Passing
@@ -52,7 +52,7 @@ public class TestGcAllocateArrayLengthValidation
         {
             if (e.Message != "Array dimensions exceeded supported range.") return 4;
 
-            // And it is genuinely not the default message, which is what makes the check above
+            // And it is not the default message, which is what makes the check above
             // more than a tautology on either runtime.
             if (e.Message == new OutOfMemoryException().Message) return 5;
         }

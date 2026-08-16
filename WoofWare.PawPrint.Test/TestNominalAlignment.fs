@@ -284,8 +284,8 @@ module TestNominalAlignment =
     /// the next divergence, where a name that no longer diverges — or a new one that does — should
     /// make this test go red and be looked at.
     ///
-    /// The one entry is the deferred half of issue #992, and it is worth being precise about,
-    /// because it is the evidence that the `Vector` rows are genuinely target-dependent rather
+    /// The one entry is the deferred half of issue #992, and is the evidence that the `Vector`
+    /// rows are target-dependent rather
     /// than merely untested: `AhoCorasick` holds an `AsciiState`, which holds a `Vector256<byte>`.
     /// On this arm64 host that vector demands 16, making `AhoCorasick` 80 bytes; on x64 it demands
     /// 32, making the very same type 96. PawPrint derives 8 and gets 72 on both. Adding a

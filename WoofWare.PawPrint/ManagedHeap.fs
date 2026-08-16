@@ -93,8 +93,8 @@ module ManagedHeap =
     /// from a `Monitor.Wait`, in ascending address order and then in wait-queue (FIFO)
     /// order within each object.
     ///
-    /// The ordering is load-bearing, which is why it lives here rather than at the call
-    /// sites: `SyncBlockMonitor.applySpuriousWakeups` folds a wake over this list, and a
+    /// The ordering lives here rather than at the call sites because it matters:
+    /// `SyncBlockMonitor.applySpuriousWakeups` folds a wake over this list, and a
     /// different enumeration order would give a different interleaving for the same seed.
     /// Objects with an empty wait queue contribute nothing.
     let syncBlockWaiters (heap : ManagedHeap) : (ManagedHeapAddress * ThreadId) list =
@@ -323,7 +323,7 @@ module ManagedHeap =
     /// Mirrors the semantics of System.String.Equals(string, string): null-aware, reference
     /// equal implies equal, otherwise compares full character contents.
     /// Fails if either address is not a known string and the two addresses are distinct
-    /// (i.e., we genuinely need the character content to answer).
+    /// (i.e., the character content is needed to answer).
     let stringsEqual (a1 : ManagedHeapAddress) (a2 : ManagedHeapAddress) (heap : ManagedHeap) : bool =
         if a1 = a2 then
             true

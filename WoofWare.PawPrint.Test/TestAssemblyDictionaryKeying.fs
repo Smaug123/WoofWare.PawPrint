@@ -12,11 +12,10 @@ open WoofWare.PawPrint
 /// `ResolvedTypeIdentity.AssemblyFullName` — carries a definition identity, so an assembly must be
 /// findable by that identity no matter which reference caused it to be loaded.
 ///
-/// This used to fail: the load context was keyed by whichever AssemblyReference triggered the
-/// load. In the .NET shared framework the .NET Framework compatibility facades reference their
+/// In the .NET shared framework the .NET Framework compatibility facades reference their
 /// implementation assemblies with `Version=0.0.0.0`, and six assemblies there — including
-/// `System.IO.FileSystem.AccessControl` — are referenced *only* that way, so they could never be
-/// found again once loaded.
+/// `System.IO.FileSystem.AccessControl` — are referenced *only* that way. A load context keyed
+/// by whichever AssemblyReference triggered the load could never find them again once loaded.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestAssemblyDictionaryKeying =
@@ -36,9 +35,8 @@ module TestAssemblyDictionaryKeying =
 
         candidate
 
-    /// The production loader. Tests must not hand-roll an `IAssemblyLoad`: this bug was invisible
-    /// to the suite for exactly as long as the test fakes keyed their dictionaries differently
-    /// from production.
+    /// The production loader. Tests must not hand-roll an `IAssemblyLoad`: a fake that keys its
+    /// dictionary differently from production hides exactly this class of bug.
     let private loader () : IAssemblyLoad =
         let _, loggerFactory = LoggerFactory.makeTest ()
         TypeResolution.directoryLoader loggerFactory [ runtimeDir ]

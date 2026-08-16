@@ -110,7 +110,7 @@ module TestRuntimeConfig =
     /// because `JsonElement.TryGetInt64` happens to reject anything with a fraction or an
     /// exponent all by itself, so the integral/real classification does not change *whether*
     /// we refuse — only what we tell the user. Left untested, it could silently start
-    /// describing `1.5` as a number that "exceeds int64", which is simply false.
+    /// describing `1.5` as a number that "exceeds int64", which is false.
     let private theRefusedShapes : (string * string * string) list =
         [
             "1.5", "1.5", "non-integer numeric"
@@ -138,7 +138,7 @@ module TestRuntimeConfig =
 
     [<Test>]
     let ``a refused value does not discard the properties around it`` () =
-        // Whole-file refusal is deliberate: seeding a partial property set would leave a
+        // The whole file is refused: seeding a partial property set would leave a
         // guest silently missing a feature switch, which is the failure we are avoiding.
         parseError (document """{ "Good": "yes", "Bad": 1.5, "AlsoGood": true }""")
         |> shouldContainText "Bad"
@@ -836,7 +836,7 @@ module TestRuntimeConfig =
         // The other side of the asymmetry above, pinned so that nobody tidies the two into
         // agreement: for the main config `ensure_parsed` propagates `parse_file`'s failure,
         // and the app does not launch. Running the guest with its feature switches silently
-        // dropped is the failure this whole change exists to avoid.
+        // dropped is the failure being avoided.
         if OperatingSystem.IsWindows () then
             Assert.Ignore "file modes are a Unix concept"
 
@@ -915,7 +915,7 @@ module TestRuntimeConfig =
 
     [<Test>]
     let ``an unreproducible dev value cannot smuggle a host-owned name past the check`` () =
-        // The case that motivated splitting the error: CoreCLR renders `[]` happily, so the
+        // The case that requires the error split: CoreCLR renders `[]` happily, so the
         // property exists and the launch dies on the duplicate. Swallowing our refusal to
         // render it would drop the property, and with it the collision — PawPrint would run
         // a configuration that cannot start on a real runtime.

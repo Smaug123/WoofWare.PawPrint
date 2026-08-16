@@ -1,6 +1,6 @@
 using System.Threading.Tasks;
 
-// Pins Task.WhenAll, which issue #712 reported as failing and which nothing covered afterwards.
+// Pins Task.WhenAll (issue #712).
 //
 // #712 was not Task-shaped. Unlike WhenAny, which has a dedicated two-argument overload
 // (Task.cs:6597, `WhenAny(Task task1, Task task2)`) that TaskWhenAnyTwoResults.cs binds to,
@@ -8,15 +8,13 @@ using System.Threading.Tasks;
 // two-argument WhenAll call site is a params-collection, and the C# compiler builds the span from a
 // local of type `System.Runtime.CompilerServices.InlineArray2<Task>`: `initobj`, then per argument a
 // byref to one slot via `<PrivateImplementationDetails>::InlineArrayElementRef` followed by
-// `stind.ref`, then `InlineArrayAsReadOnlySpan`. Writing a slot past the first is what used to fail,
-// because PawPrint had no N-slot layout for [InlineArray(N)] types and so reached a byte write over
-// storage holding object references. Giving those types a real layout (#789, commit 5c3048f) fixed
-// it, and this file exists so that a regression in that layout work is caught here rather than
-// silently un-breaking WhenAll.
+// `stind.ref`, then `InlineArrayAsReadOnlySpan`. Writing a slot past the first requires a real
+// N-slot layout for [InlineArray(N)] types (#789, commit 5c3048f); without one it is a byte write
+// over storage holding object references. This file catches a regression in that layout work.
 //
-// That framing is why the arity of each call below is load-bearing rather than incidental: two
-// arguments emits an InlineArray2 and three an InlineArray3, distinct types with distinct layouts.
-// (Verified with WoofWare.PawPrint.IlDump against the compiled guest, not assumed.)
+// The arity of each call below is therefore significant: two arguments emits an InlineArray2 and
+// three an InlineArray3, distinct types with distinct layouts. (Verified with
+// WoofWare.PawPrint.IlDump against the compiled guest.)
 //
 // Every assertion is a documented .NET guarantee, so it holds identically under the real runtime
 // (which is the differential oracle for this file) and under PawPrint's simulated thread pool. In
@@ -36,7 +34,7 @@ public static class TaskWhenAll
     }
 
     // Three arguments, so the call site builds an InlineArray3 rather than an InlineArray2: pins that
-    // the layout fix generalises past the width the original repro happened to use.
+    // the inline-array layout generalises past the width the #712 repro happened to use.
     static int TestThreeCompletedTasks()
     {
         Task t = Task.WhenAll(Task.CompletedTask, Task.CompletedTask, Task.CompletedTask);

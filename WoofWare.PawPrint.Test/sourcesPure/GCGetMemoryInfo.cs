@@ -7,7 +7,7 @@ using System;
 // numeric value.
 //
 // Every assertion is on a SINGLE field of a single snapshot. Nothing here relates two
-// fields to each other, and that restriction is load-bearing rather than stylistic.
+// fields to each other; a cross-field assertion would be a race.
 // GC.GetMemoryInfo is an InternalCall that fills the caller's GCMemoryInfoData field by
 // field (comutilnative.cpp, GCInterface::GetMemoryInfo -> gc.cpp,
 // GCHeap::GetMemoryInfo) out of a `last_recorded_gc_info` record, with no synchronisation.
@@ -18,8 +18,7 @@ using System;
 // record: some fields from the old all-zero record, some from the new one.
 //
 // So any cross-field assertion is a race, however obviously true it looks of a coherent
-// snapshot. Three were tried here and removed after this test was seen to fail
-// intermittently in full-suite runs:
+// snapshot. Three have been observed to fail intermittently in full-suite runs:
 //   - "Index == 0 implies every other field is 0" (the documented never-collected state);
 //   - FragmentedBytes <= HeapSizeBytes;
 //   - GenerationInfo[0].FragmentationAfterBytes <= SizeAfterBytes.

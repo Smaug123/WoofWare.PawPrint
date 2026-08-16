@@ -12,8 +12,8 @@ using System.IO;
 // resembling Windows' richer sharing modes — `FileShare.Read` and
 // `FileShare.Write` are indistinguishable here, which is why both appear.
 //
-// The two handles are opened by the *same process*. That is deliberate and is
-// the whole reason this is testable: a `flock` lock belongs to the open file
+// The two handles are opened by the *same process*, which is what makes this
+// testable: a `flock` lock belongs to the open file
 // description, not to the process, so two separate `open(2)` calls contend with
 // each other even from one thread. A model that keyed locks on the process
 // would pass every check by never conflicting at all.
@@ -88,7 +88,7 @@ class Program
         check = 6;
         if (CanOpenUnder(FileShare.Write, FileShare.None)) return check;
 
-        // A lock does not outlive the handles that took it. Note this pins the
+        // A lock does not outlive the handles that took it. This pins the
         // *net* effect of disposal, not `LOCK_UN` specifically: CoreCLR issues
         // `LOCK_UN` and then `close(2)`, and closing the last descriptor drops
         // the lock anyway, so no managed guest can tell the two apart. (Measured

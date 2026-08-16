@@ -10,11 +10,10 @@ open WoofWare.PawPrint
 /// give the same answer as over a populated array of the same element type — the walk is a
 /// question about the element type, not about how many cells happen to exist.
 ///
-/// Before the stride was recorded on `ArrayShape`, it could only be recovered by measuring a
-/// stored cell, so every one of these paths carried an empty-array fallback that substituted
-/// something else: `sizeof(T)` from the *calling* method, or a zero that silently disabled
-/// byte-offset normalisation. Those fallbacks disagreed with the populated case, which is
-/// what these tests pin.
+/// The stride comes from `ArrayShape.ElementStride`, recorded at allocation. An empty-array
+/// fallback that substituted something else — `sizeof(T)` from the *calling* method, or a
+/// zero that disabled byte-offset normalisation — would disagree with the populated case,
+/// which is what these tests pin.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestEmptyArrayByrefWalks =
@@ -87,13 +86,13 @@ module TestEmptyArrayByrefWalks =
 
     [<Test>]
     let ``walking an empty array agrees with a populated one, under a byte view`` () : unit =
-        // The case the old empty-array fallback got wrong. `T` is `byte` while the array's
-        // element is `int`, so eight elements of `T` is eight *bytes* — two cells, not eight.
+        // `T` is `byte` while the array's element is `int`, so eight elements of `T` is
+        // eight *bytes* — two cells, not eight.
         //
-        // Substituting `sizeof(T)` for the stride of an empty array made the two sizes compare
-        // equal, which sent this down the cell-index branch and produced cell 8: four times too
+        // Substituting `sizeof(T)` for the stride of an empty array would make the two sizes
+        // compare equal, sending this down the cell-index branch to cell 8: four times too
         // far, and silently, since an empty array has no cell whose contents would contradict
-        // it. The populated array took the byte-cursor branch and correctly reached cell 2.
+        // it. The populated array takes the byte-cursor branch and correctly reaches cell 2.
         let byteView =
             [ ByrefProjection.ReinterpretAs (concreteTypeFor baseClassTypes.Byte) ]
 
@@ -162,14 +161,12 @@ module TestEmptyArrayByrefWalks =
 
     [<Test>]
     let ``a byte cursor at the int32 floor normalises without overflowing`` () : unit =
-        // `Int32.MinValue` bytes into an array whose stride does not divide it. Folding used
-        // to recover the residual as `n - cellAdvance * cellSize`, whose product is
-        // -2147483649 here: outside int32, and `ManagedPointerSource` is `Checked`, so it
-        // raised `OverflowException` over an intermediate even though the residual it was
-        // computing is 1.
+        // `Int32.MinValue` bytes into an array whose stride does not divide it. Recovering
+        // the residual as `n - cellAdvance * cellSize` would overflow here — the product is
+        // -2147483649, outside int32, and `ManagedPointerSource` is `Checked` — raising
+        // `OverflowException` over an intermediate even though the residual itself is 1.
         //
-        // Reachable only now that an empty array supplies a real stride to normalisation;
-        // before, a zero stride meant the fold was skipped entirely.
+        // An empty array supplies a real stride to normalisation, so the fold runs here.
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
         let state = state loggerFactory

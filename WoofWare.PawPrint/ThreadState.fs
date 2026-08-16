@@ -52,7 +52,7 @@ type ThreadStatus =
     /// of `BlockedOnMonitorWait` and is now waiting to reacquire) on a monitor whose
     /// owner is another thread. The scheduler unblocks at most one such thread when
     /// the owner calls `Release` (or `Signal_Release`); FIFO order over the acquire
-    /// queue is load-bearing for fairness of higher-level locks built on top of this
+    /// queue is required for fairness of higher-level locks built on top of this
     /// primitive (e.g. `LowLevelLock`).
     | BlockedOnMonitorAcquire of monitor : LowLevelMonitorId
     /// This thread called `SystemNative_LowLevelMonitor_Wait` (infinite
@@ -274,7 +274,7 @@ module ThreadStatus =
     /// *next* statement.
     ///
     /// `BlockedOnClassInit` is the exception, and for the opposite reason: the dispatcher
-    /// deliberately leaves the native frame on the stack so the handler can be re-entered
+    /// leaves the native frame on the stack so the handler can be re-entered
     /// when the `.cctor` lock is released (see `NativeHandlerResult.BlockedOnClassInit`).
     /// Nothing has been popped and no PC has advanced.
     ///
@@ -340,12 +340,9 @@ type ThreadState =
         /// seat a future core-aware scheduler would rewrite to model migration.
         ///
         /// A total field rather than a `Map<ThreadId, CpuId>` in
-        /// `EmulatedKernel` (where the per-thread sigprocmask lives) precisely
-        /// because there is no truthful default for an absent key: "no signals
-        /// blocked" genuinely is the state of a fresh thread, whereas no
-        /// processor index is an identity element, so a missing entry could
-        /// only be answered with an arbitrary lie or with an `option` every
-        /// caller must handle despite it being structurally unreachable. As a
+        /// `EmulatedKernel` (where the per-thread sigprocmask lives) because
+        /// there is no truthful default for an absent key: "no signals blocked"
+        /// is the state of a fresh thread, whereas no processor index is. As a
         /// field, the compiler asks each future thread-creation site which core
         /// it wants.
         Cpu : CpuId
@@ -359,22 +356,16 @@ type ThreadState =
         /// a thread from `IlMachineState.ThreadState`, and a recycled id would
         /// let a stale `Lock._owningThreadId` be mistaken for a live owner.
         ///
-        /// Stored rather than recomputed at each read, even though
-        /// `EmulatedKernel.osThreadId` currently derives it from the thread's
-        /// `ThreadId` and so could answer every query without this field. The
-        /// field is what makes the id a *per-thread fact* rather than a
-        /// coincidence of the minting formula: `Cpu` next door is already one,
-        /// the test stubs that build a `ThreadState` directly can state an id
-        /// without reproducing the formula, and a future scheme that stopped
-        /// being a function of `ThreadId` — modelled tid recycling, say, or an
-        /// id a guest can influence — would need no change here.
+        /// Stored rather than recomputed at each read: `EmulatedKernel.osThreadId`
+        /// currently derives it from the thread's `ThreadId`, but the field lets
+        /// test stubs state an id without reproducing the formula, and a future
+        /// scheme that stopped being a function of `ThreadId` (modelled tid
+        /// recycling, an id a guest can influence) would need no change here.
         ///
         /// A total field rather than a `Map<ThreadId, OsThreadId>` on
-        /// `EmulatedKernel` for the same reason `Cpu` is: there is no truthful
-        /// default for an absent key. Every thread the scheduler can run has an
-        /// id; a missing entry could only be answered with an arbitrary lie —
-        /// and here the lie would be an *aliased* id, which is precisely the
-        /// failure this type exists to prevent.
+        /// `EmulatedKernel`, as with `Cpu`: there is no truthful default for an
+        /// absent key, and an arbitrary one would be an aliased id — the failure
+        /// this type exists to prevent.
         OsThreadId : OsThreadId
         /// Threads this one must see run — or see leave the Runnable set — before the
         /// scheduler will choose it again. Empty for every thread that has not just yielded,
@@ -385,17 +376,16 @@ type ThreadState =
         /// `Thread.Sleep(0)` sends the caller to the back of the run queue, and the queue is
         /// "everyone who was Runnable alongside me at that moment".
         /// `Scheduler.onStepOutcome` charges the debt (see `WhatWeDid.VoluntaryYield`);
-        /// `Scheduler.dischargeYieldDebts`, applied to every retired step at the driver's
-        /// single step seam, removes members as they run.
+        /// `Scheduler.dischargeYieldDebts`, applied by the driver to every retired step,
+        /// removes members as they run.
         ///
-        /// Bounded and self-clearing by construction, which is the whole point of the
-        /// representation. The set only ever shrinks, and `Scheduler.candidates` additionally
+        /// Bounded and self-clearing by construction. The set only ever shrinks, and `Scheduler.candidates` additionally
         /// intersects it with the live Runnable set at read time, so a member that blocks,
         /// parks or terminates stops counting even before its id is removed — no wake path
         /// needs a cleanup hook.
         ///
-        /// A peer that never yields nonetheless *discharges* the debt by running, and that is
-        /// load-bearing rather than incidental. A rule that instead held a yielder out until
+        /// A peer that never yields nonetheless *discharges* the debt by running. A rule
+        /// that instead held a yielder out until
         /// its peers also yielded would let one non-yielding busy-waiter exclude it forever:
         /// `Thread.Yield(); f = true;` racing `while (!f) {}` would livelock under such a
         /// rule.
@@ -518,7 +508,6 @@ type ThreadState =
             Cpu = cpu
             OsThreadId = osThreadId
             YieldDebt = Set.empty
-            // A fresh thread has raised nothing yet.
             IsRaisingForeignException = false
         }
 

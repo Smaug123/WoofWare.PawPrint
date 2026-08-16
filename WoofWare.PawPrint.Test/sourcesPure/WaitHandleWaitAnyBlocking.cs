@@ -18,7 +18,7 @@ namespace HelloWorldApp
         static int Main(string[] args)
         {
             // The blocking half of WaitHandleWaitAny.cs. Everything there is
-            // satisfied inline; here the main thread genuinely parks on both
+            // satisfied inline; here the main thread parks on both
             // handles and is woken by another thread's Set.
             //
             // This is the case where the returned value cannot be known at

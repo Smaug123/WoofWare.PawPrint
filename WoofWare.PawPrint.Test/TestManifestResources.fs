@@ -265,14 +265,12 @@ public static class Entry
     /// A zero-length payload has no readable byte at all, and that — not "a read of nothing
     /// succeeds" — is the guarantee worth pinning.
     ///
-    /// This used to read a hand-built zero-sized value type and assert it yielded `[||]`. No such
-    /// template exists any more: CoreCLR forbids zero-length value classes (`SetInstanceBytesSize`,
-    /// class.h:497, and methodtablebuilder.cpp:8568), and `CliValueType.SizeOfFieldStorage` now
-    /// models that floor, so every value type is at least one byte wide. The old template was in
-    /// any case a shape real metadata cannot produce — `TypeLayout.IsDefault` is true when size and
-    /// packing are both zero, so parsing never yields `Layout.Custom (0, 0)`; only a test could
-    /// construct it. Assert the real contract instead: the narrowest read there is gets rejected,
-    /// naming the empty range it was rejected against.
+    /// There is no zero-sized value type to read with: CoreCLR forbids zero-length value classes
+    /// (`SetInstanceBytesSize`, class.h:497, and methodtablebuilder.cpp:8568), and
+    /// `CliValueType.SizeOfFieldStorage` models that floor, so every value type is at least one
+    /// byte wide. (`TypeLayout.IsDefault` is true when size and packing are both zero, so parsing
+    /// never yields `Layout.Custom (0, 0)`.) So assert the real contract: the narrowest read there
+    /// is gets rejected, naming the empty range it was rejected against.
     let private shouldRejectEveryRead
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)

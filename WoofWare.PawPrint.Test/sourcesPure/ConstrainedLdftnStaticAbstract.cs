@@ -56,8 +56,8 @@ public static class ConstrainedLdftnStaticAbstract
         return T.Make;
     }
 
-    // `constrained. call` — passes today. This is the control for the shared-helper
-    // extraction: if it ever breaks, the extraction is what broke it.
+    // `constrained. call` — the control: the ldftn and call paths share a resolution
+    // helper, so if this breaks, that helper is what broke it.
     private static int TagDirect<T> ()
         where T : ITagged<T>
     {
@@ -99,7 +99,7 @@ public static class ConstrainedLdftnStaticAbstract
             return 5;
         }
 
-        // Controls: the direct `constrained. call` path, which already worked.
+        // Controls: the direct `constrained. call` path.
         if (TagDirect<RefWidget> () != 11)
         {
             return 6;

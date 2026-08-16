@@ -519,7 +519,7 @@ public sealed class MethodSignatureHost
     /// Every spelling `default(RuntimeFieldHandleInternal)` can reach a QCall as. A real guest
     /// calling `new Signature(IRuntimeMethodInfo, RuntimeType)` produces the last of these, so a
     /// classifier that recognises only the verbatim zeros throws on the shape that actually
-    /// arrives -- which is how `Signature_Init` broke while every unit test still passed.
+    /// arrives.
     let nullFieldHandleSpellings : CliType list =
         [
             CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
@@ -536,9 +536,8 @@ public sealed class MethodSignatureHost
     [<Test>]
     let ``Signature_Init stores field RuntimeType into _returnTypeORfieldType`` () : unit =
         // .NET 10 split the field-signature population: the managed Signature constructor sets
-        // `_declaringType` itself before calling the QCall, so we no longer assert on it here.
-        // The QCall is now responsible only for `_returnTypeORfieldType`, `_sig`, and the
-        // calling-convention flags.
+        // `_declaringType` itself before calling the QCall, which is responsible only for
+        // `_returnTypeORfieldType`, `_sig`, and the calling-convention flags.
         let fixture = makeSignatureFixture ()
 
         let signatureAddr, expectedFieldTypeHandle, state =

@@ -7,15 +7,15 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// The reported crash was one hand-picked chain (`mscorlib` forwarding
-/// `System.Security.AccessControl.FileSystemRights` to `System.IO.FileSystem.AccessControl`).
-/// Hand-picking chains does not tell us whether the *class* of bug is gone, so this sweeps every
-/// type-forward declared by the .NET Framework compatibility facades in the real pinned shared
-/// framework and asserts that resolving it lands somewhere findable by its definition identity.
+/// Sweeps every type-forward declared by the .NET Framework compatibility facades in the real
+/// pinned shared framework and asserts that resolving it lands somewhere findable by its
+/// definition identity.
 ///
 /// Those facades are where reference and definition identities actually disagree: they name their
-/// implementation assemblies as `Version=0.0.0.0`. If the load context is ever keyed by reference
-/// identity again, this fails in bulk rather than waiting for a user report.
+/// implementation assemblies as `Version=0.0.0.0` (e.g. `mscorlib` forwards
+/// `System.Security.AccessControl.FileSystemRights` to `System.IO.FileSystem.AccessControl`).
+/// If the load context is ever keyed by reference identity, this fails in bulk rather than
+/// waiting for a user report.
 [<TestFixture>]
 module TestSharedFrameworkForwardSweep =
 
@@ -112,9 +112,8 @@ module TestSharedFrameworkForwardSweep =
                 loaded <- next
                 resolvedCount <- resolvedCount + 1
 
-                // The load context must be able to find the assembly the identity names. This is
-                // precisely what `ensureTypeDefinitionBaseAssembliesLoaded` and
-                // `concretizeTypeDefinition` do, and precisely what used to throw.
+                // The load context must be able to find the assembly the identity names, as
+                // `ensureTypeDefinitionBaseAssembliesLoaded` and `concretizeTypeDefinition` do.
                 if not (loaded.ContainsDefinition targetAssembly.Name) then
                     failures.Add
                         $"%s{describe}: resolved into %s{targetAssembly.Name.FullName}, which is not findable by its definition identity"
@@ -122,10 +121,9 @@ module TestSharedFrameworkForwardSweep =
                     failures.Add
                         $"%s{describe}: identity names %s{identity.AssemblyFullName}, which is not in the load context"
             with e ->
-                // Every exception is a failure. An earlier version filtered on the message text,
-                // which silently swallowed the exact regression this sweep exists to catch:
-                // `assertReferenceBound` says "still not bound", not "not loaded". A filter here
-                // can only ever hide the thing we are looking for.
+                // Every exception is a failure. Do not filter on message text:
+                // `assertReferenceBound` says "still not bound", not "not loaded", so a text
+                // filter hides the regression this sweep exists to catch.
                 failures.Add $"%s{describe}: %s{e.GetType().Name}: %s{e.Message}"
 
         if failures.Count > 0 then

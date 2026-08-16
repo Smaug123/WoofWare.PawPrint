@@ -9,7 +9,7 @@ type ExceptionDispatchResult =
     /// interpreter should carry on stepping: a catch handler body, a `filter` body the first
     /// pass is evaluating, or a `finally`/`fault` clause the second pass is running.
     ///
-    /// Deliberately not called "handler found": three of those four destinations are not
+    /// Not called "handler found": three of those four destinations are not
     /// handlers, and under two-pass dispatch a `filter` can be entered long before anything is
     /// known about whether the exception will be caught at all.
     | Dispatched of IlMachineState
@@ -200,12 +200,10 @@ module ExceptionDispatching =
     /// The clause of `method` that accepts this exception at `currentPC`, if any: an assignable
     /// `catch`, or a `filter` whose body has not already run and rejected.
     ///
-    /// `finally` and `fault` are invisible here, which is the whole of the two-pass split.
-    /// Cleanup clauses are not candidates for *receiving* an exception — they run on the way to
-    /// whichever clause does — so a first pass that could return one would be answering a
-    /// different question from the one its callers ask. The predecessor of this function
-    /// returned them alongside an `isCleanup` flag that every caller ignored, which is what made
-    /// PawPrint run cleanup before its stack trace was complete (issue #865).
+    /// `finally` and `fault` are invisible here: cleanup clauses are not candidates for
+    /// *receiving* an exception — they run on the way to whichever clause does — so a first pass
+    /// that could return one would be answering a different question from the one its callers
+    /// ask (issue #865 is the failure mode).
     ///
     /// When several clauses cover `currentPC`, the innermost wins: smallest `try`, then metadata
     /// order, which ECMA-335 II.25.4.6 requires to list more deeply nested clauses first.
@@ -476,9 +474,8 @@ module ExceptionDispatching =
     /// running the wrapping frame's cleanup. That is not an exception to the rule but a different
     /// raise — CoreCLR's own wrap is managed `throw new TargetInvocationException(e)`, whose first
     /// append performs the same unconditional read — so the answer is right for the same reason.
-    /// It is called out because PawPrint's pre-two-pass shape carried an eligibility flag across
-    /// the wrap and declined; `docs/plans/2026-08-11-two-pass-exception-dispatch.md` records why
-    /// the new answer is the faithful one.
+    /// `docs/plans/2026-08-11-two-pass-exception-dispatch.md` records why this answer is the
+    /// faithful one.
     ///
     /// The frames come from the exception object rather than from any in-flight list, because
     /// CoreCLR re-reads `_stackTrace` at every append. That is observable: a nested throw of the
@@ -520,7 +517,7 @@ module ExceptionDispatching =
     /// an exception crossing a delegate call reports the target and then whoever called `Invoke`.
     /// PawPrint's ordinary delegate path gets that for free, because `dispatchDelegateInvoke`
     /// pops its synthetic frame before calling the target — so the frame is already gone by the
-    /// time anything can throw. The exception is class initialisation, which deliberately runs
+    /// time anything can throw. The exception is class initialisation, which runs
     /// *while* that frame is still active so the instruction can be retried after the `.cctor`
     /// returns; without this, a `.cctor` that throws would report a `System.Action.Invoke` frame
     /// that no real trace contains.
@@ -574,11 +571,9 @@ module ExceptionDispatching =
     /// The innermost `filter` clause of this frame that is currently being evaluated, if any.
     ///
     /// Scanning the continuation stack rather than reading only its top is what lets the first
-    /// pass abandon an exception at a filter boundary. Under the old interleaved dispatch a
-    /// `finally` nested inside a filter body had already been entered *and popped* by its
-    /// `endfinally` before this question was asked, so the filter was always on top; the first
-    /// pass asks before running any cleanup, so a cleanup scope belonging to a superseded raise
-    /// can sit above the filter that still owns the frame.
+    /// pass abandon an exception at a filter boundary: the first pass asks before running any
+    /// cleanup, so a cleanup scope belonging to a superseded raise can sit above the filter that
+    /// still owns the frame.
     let private activeFilterOf
         (methodState : MethodState)
         : ExceptionFilterContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
@@ -637,7 +632,7 @@ module ExceptionDispatching =
             // Guest code is about to read this exception, and CoreCLR has appended every frame
             // the search reached so far — measured on .NET 10: a `when` clause sees a trace
             // ending at its own frame. Project before entering, or a filter observes
-            // `StackTrace == null` on an exception that has genuinely been thrown, and
+            // `StackTrace == null` on an exception that has been thrown, and
             // `Exception.HasBeenThrown`, which keys off the frozen token, answers false.
             let state = projectStackTrace loggerFactory corelib search.Exception state
 
@@ -822,9 +817,8 @@ module ExceptionDispatching =
                         failwith
                             $"Logic error: failed to look up ConcreteType for initialising-type handle %O{finishedInitialising} when synthesising TypeInitializationException"
 
-                // The exception being wrapped is *not* re-projected here, unlike in the
-                // pre-two-pass code, which wrote the in-flight trace onto it at each wrap because
-                // that was the last point at which it held one. `concludeFirstPass` has already
+                // The exception being wrapped is *not* re-projected here.
+                // `concludeFirstPass` has already
                 // frozen its completed trace, so a write here could only be a no-op or a
                 // regression: the second pass runs the wrapping frame's cleanup before arriving,
                 // and guest code there may have moved the object's token on —
@@ -897,8 +891,6 @@ module ExceptionDispatching =
     /// Splitting these is the whole of issue #865. CoreCLR appends every stack-trace frame and
     /// runs every `filter` before a single `finally` executes, so managed code running in a
     /// cleanup clause — or holding an exception the clause displaced — reads a *complete* trace.
-    /// PawPrint used to interleave the two, entering cleanup as soon as it found any covering
-    /// region, and so froze a truncated trace onto the object.
     let rec private runFirstPass
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
@@ -916,7 +908,7 @@ module ExceptionDispatching =
     ///
     /// The projection happens for *every* outcome, not only when a handler was found. An
     /// exception that goes unhandled, one abandoned at a filter boundary, and one about to be
-    /// swallowed by a synthesised wrapper have all genuinely propagated, and a guest holding any
+    /// swallowed by a synthesised wrapper have all propagated, and a guest holding any
     /// of them can read `StackTrace` afterwards.
     and private concludeFirstPass
         (loggerFactory : ILoggerFactory)
@@ -1005,7 +997,7 @@ module ExceptionDispatching =
         | None ->
             match unwind.Target with
             | ExceptionSearchOutcome.NoHandler ->
-                // The outermost frame, with nothing left to run. It is deliberately not popped:
+                // The outermost frame, with nothing left to run. It is not popped:
                 // the thread is terminating and its final frames stay for the report.
                 ExceptionDispatchResult.ExceptionUnhandled (state, unwind.Exception)
             | other ->

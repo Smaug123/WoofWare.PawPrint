@@ -19,8 +19,8 @@ class Program
     // Marshal.GetLastPInvokeError, which is what CoreLib's own Interop.Sys.GetCwd
     // reads immediately after this call. PawPrint does not yet act on a P/Invoke's
     // SetLastError flag -- nothing copies the system error into the separate
-    // last-P/Invoke-error slot -- so GetLastPInvokeError is not a seam the two
-    // runtimes currently agree on. SetLastError is still declared, because on the
+    // last-P/Invoke-error slot -- so the two runtimes do not currently agree on
+    // GetLastPInvokeError. SetLastError is still declared, because on the
     // real runtime it is what makes the CLR preserve errno across the transition.
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetCwd", SetLastError = true)]
     static extern unsafe byte* GetCwd(byte* buffer, int bufferSize);

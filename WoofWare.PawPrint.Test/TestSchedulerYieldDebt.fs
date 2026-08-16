@@ -77,7 +77,7 @@ module TestSchedulerYieldDebt =
     /// Mirror of what the driver does when a thread retires a step: discharge every yield debt
     /// naming the runner, then apply the consequences specific to the outcome. The two halves
     /// live in different places on purpose — the discharge is applied once at
-    /// `Program.stepPrepared`'s single `executeOneStep` seam so that it cannot be forgotten for
+    /// `Program.stepPrepared`'s single `executeOneStep` call site so that it cannot be forgotten for
     /// an outcome, while `onStepOutcome` sees only the `Stepped` family — so a test that wants
     /// to model "a step happened" has to compose them.
     ///
@@ -219,7 +219,7 @@ module TestSchedulerYieldDebt =
 
     // ---------------- Properties ----------------
 
-    /// One thread's behaviour in a generated schedule. `NeverYields` is the load-bearing case:
+    /// One thread's behaviour in a generated schedule. `NeverYields` is the case that matters:
     /// the livelock the epoch design suffered needs a peer that only ever executes.
     type private Behaviour =
         | AlwaysYields
@@ -402,19 +402,13 @@ module TestSchedulerYieldDebt =
 
     [<Test>]
     let ``Pct draws on a yield iff a peer is Runnable`` () : unit =
-        // This test used to assert the opposite: that a yield burns exactly one draw
-        // *regardless* of the Runnable set, matching the always-burn Bernoulli in
-        // `chooseNext`. The stated benefit was that the seed is consumed "at a rate that
-        // depends only on the sequence of yields", so a replay could not diverge because a
-        // thread happened to be blocked at one of them.
-        //
-        // That invariant was never actually true — consumption is also one draw per
+        // Do not tighten this to "a yield burns exactly one draw regardless of the Runnable
+        // set": that is not an invariant the policy has — consumption is also one draw per
         // newly-seen Runnable thread (`PctState.ensurePriorityFor`) plus one per demotion,
         // and the demotion count depends on the `ContextSwitchPrior` weights of the ops
-        // encountered. So the old assertion pinned a rate that nothing observable depended on
-        // and that the rest of the policy did not honour anyway.
+        // encountered — and nothing observable depends on a fixed per-yield rate.
         //
-        // What is pinned instead is the invariant the schedule-sharing work needs: the policy
+        // What is pinned is the invariant the schedule-sharing work needs: the policy
         // state changes only where a draw could change something. A yield with no other
         // Runnable thread is forced to "no switch" by the empty-`others` branch of
         // `chargeYieldDebt` whatever the coin says, so the coin is not tossed.
@@ -468,7 +462,7 @@ module TestSchedulerYieldDebt =
         // A thread's final step is its bottom-frame `Ret`, which reaches the driver as
         // `ExecutionResult.Terminated` rather than `Stepped` — so the one step that most
         // conclusively satisfies "I am waiting to see you run" is the one that is easiest to
-        // forget. It is discharged at the seam, like every other retired step, so the sequence
+        // forget. It is discharged at the same single call site as every other retired step, so the sequence
         // modelled here is "the step was retired, *and* it happened to be a termination".
         //
         // Correctness does not depend on it (a Terminated thread is never in the Runnable set,
@@ -502,7 +496,7 @@ module TestSchedulerYieldDebt =
 
     [<Test>]
     let ``mapState reaches the state of every ExecutionResult variant`` () : unit =
-        // The seam's totality is the enforcement mechanism: `Program.stepPrepared` discharges by
+        // `mapState`'s totality is the enforcement mechanism: `Program.stepPrepared` discharges by
         // mapping over whatever `executeOneStep` returned, so an outcome whose state `mapState`
         // failed to touch would silently skip the per-step bookkeeping. The compiler catches a
         // *missing* variant; this catches one that is present but wired to the wrong field, and

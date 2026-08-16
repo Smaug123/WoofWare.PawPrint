@@ -22,11 +22,11 @@ type ConcreteType<'typeGeneric> =
         {
             /// Do not use this directly; use the accessor `.Identity` instead.
             _Identity : ResolvedTypeIdentity
-            /// Do not use this, because it's intended to be private; use the accessor `.Name` instead.
+            /// Do not use this directly; use the accessor `.Name` instead.
             _Name : string
-            /// Do not use this, because it's intended to be private; use the accessor `.Namespace` instead.
+            /// Do not use this directly; use the accessor `.Namespace` instead.
             _Namespace : string
-            /// Do not use this, because it's intended to be private; use the accessor `.Generics` instead.
+            /// Do not use this directly; use the accessor `.Generics` instead.
             _Generics : ImmutableArray<'typeGeneric>
         }
 

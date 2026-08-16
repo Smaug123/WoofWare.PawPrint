@@ -1,7 +1,5 @@
-// Regression: the array-store variance gate previously caught `failwith
-// "TODO:"` from `isConcreteTypeAssignableTo`'s generic-variance walk and
-// degraded to "permit". With the variance walk now implemented, the gate
-// gives a definitive answer for both positive and negative cases.
+// The array-store variance gate answers definitively, for both positive and
+// negative cases, via `isConcreteTypeAssignableTo`'s generic-variance walk.
 //
 // Setup: `Func<DelegBase>[]` — element type is a delegate with declared
 // covariance. Storing a `Func<DelegDerived>` should succeed (covariant);

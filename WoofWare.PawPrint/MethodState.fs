@@ -146,13 +146,13 @@ and MethodState =
         /// This is a method prologue, which is where the CLR puts the check: the frame is
         /// established first, so a `.cctor` that throws produces a `TypeInitializationException`
         /// whose trace names *this* method, and a stack walk taken during the `.cctor` sees this
-        /// frame. Running it at the call site instead — as PawPrint used to — loses both, and
-        /// answers for the type named at the call site rather than the one whose method actually
-        /// runs, which differ for an interface call.
+        /// frame. Running it at the call site instead loses both, and answers for the type named
+        /// at the call site rather than the one whose method actually runs, which differ for an
+        /// interface call.
         ///
         /// Deliberately survives the suspension paths. When the check pushes a `.cctor` frame, or
         /// parks the thread on another thread's initialisation, this frame is re-entered with the
-        /// field still set and simply asks again.
+        /// field still set and asks again.
         PendingTypeInit : ConcreteTypeHandle option
     }
 

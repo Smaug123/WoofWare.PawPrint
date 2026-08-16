@@ -5,12 +5,11 @@ open NUnit.Framework
 
 /// Tests of the cross-assembly harness's *oracle*, rather than of any particular IL construct.
 ///
-/// The harness ran its guests inside the test host's own process, which meant a guest could do
-/// things to that process which the harness then could not report on: `Environment.Exit` took the
-/// test runner down with it, and an escaped exception arrived as a `TargetInvocationException`
+/// The harness must run its guests out of process: in-process, `Environment.Exit` takes the
+/// test runner down with it, and an escaped exception arrives as a `TargetInvocationException`
 /// whose own message says nothing about what went wrong. Each test here is a guest doing one of
-/// those things across an assembly boundary, so it also demonstrates that the sibling assembly
-/// still resolves now that the guest is a child process rather than an `AssemblyLoadContext`.
+/// those things across an assembly boundary, so it also checks that the sibling assembly
+/// resolves when the guest is a child process rather than an `AssemblyLoadContext`.
 [<TestFixture>]
 module TestCrossAssemblyOracle =
 
@@ -63,9 +62,7 @@ class Program
 
     [<Test>]
     let ``a cross-assembly guest's escaped exception is reported, naming the exception`` () : unit =
-        // In-process this surfaced as a `TargetInvocationException` — "Exception has been thrown by
-        // the target of an invocation" — which names neither the guest's exception type nor its
-        // message. Out of process the payload is the runtime's own stderr report, so assert that
+        // Out of process the payload is the runtime's own stderr report, so assert that
         // the type defined in the *library* reaches the failure message.
         let case =
             {
@@ -113,7 +110,7 @@ class Program
 
         let e = Assert.Throws (fun () -> CrossAssemblyHarness.runTest case)
 
-        // A `TargetInvocationException` from the old in-process path satisfies "something threw",
+        // An in-process host's `TargetInvocationException` would satisfy "something threw",
         // so the discrimination has to be on the message: only the runtime's own report names the
         // guest's exception type and text.
         if not (e.Message.Contains "SiblingAssemblyFailure") then

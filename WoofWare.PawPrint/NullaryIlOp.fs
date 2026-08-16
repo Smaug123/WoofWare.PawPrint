@@ -46,9 +46,7 @@ module NullaryIlOp =
                 failwith "unreachable: tryStableAddressBits handles NativeIntPlaceholder managed pointers"
             | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), projs) ->
                 // The stride is recorded on the array at allocation, so it is available even
-                // for `Array.Empty<T>()`, which has no cell to measure. That used to force a
-                // `None` for every index but zero; the offset of index `i` into an empty
-                // array is as well defined as into any other, so it is answered here.
+                // for `Array.Empty<T>()`, which has no cell to measure.
                 let elementSize = ManagedHeap.getArrayElementStride arr state.ManagedHeap
 
                 projectionByteOffset projs
@@ -269,7 +267,7 @@ module NullaryIlOp =
     /// fails loudly on any other `ManagedPointer` and on
     /// `SyntheticCrossArrayOffset`, preserving byref / cross-storage provenance.
     ///
-    /// Note that a handle-shaped source does not survive a double complement *as itself*:
+    /// A handle-shaped source does not survive a double complement *as itself*:
     /// `~~handle` comes back as `OpaqueHashBits`, not as the handle. Comparing that against
     /// the original handle is nonetheless answered correctly — `equalsForCli` looks the
     /// handle's assigned address up in `PointerHashState` and compares bit patterns — so
@@ -432,11 +430,11 @@ module NullaryIlOp =
             |> EvalStackValue.NativeInt
         | _ -> failwith $"TODO: Div_un for {v1} and {v2}"
 
-    /// Which operand-dependent faults an IL arithmetic instruction is *allowed* to raise. This is
-    /// load-bearing rather than decorative: `executeFaultingArithmetic` converts exactly the listed
-    /// faults into guest exceptions and lets anything else escape as an interpreter failure, so a
-    /// host `DivideByZeroException` arriving from somewhere that cannot divide still crashes loudly
-    /// instead of being handed to the guest as a plausible-looking `System.DivideByZeroException`.
+    /// Which operand-dependent faults an IL arithmetic instruction is *allowed* to raise.
+    /// `executeFaultingArithmetic` converts exactly the listed faults into guest exceptions and
+    /// lets anything else escape as an interpreter failure, so a host `DivideByZeroException`
+    /// arriving from somewhere that cannot divide still crashes loudly instead of being handed to
+    /// the guest as a plausible-looking `System.DivideByZeroException`.
     [<RequireQualifiedAccess>]
     type private ArithmeticFaults =
         /// `div.un`, `rem.un`. Unsigned, so every quotient is representable and only a zero divisor
@@ -1347,7 +1345,7 @@ module NullaryIlOp =
 
                 // The cell has to be read before the routing question can be asked, and is
                 // discarded when the answer is "bytes". Reads are pure, so this costs a walk
-                // and nothing else; it is not an oversight to be optimised into a partial read.
+                // and nothing else.
                 let cell = IlMachineState.readManagedByref corelib state src
 
                 if ldindNeedsByteView target cell then
@@ -1593,8 +1591,7 @@ module NullaryIlOp =
         // Re-read the allocation from the post-check state rather than reusing the `arr` binding
         // above: the variance check returns an updated state, and everything after it should be
         // derived from that one. (An array's `ConcreteType` is fixed at allocation, so this is
-        // the same handle either way today; deriving it from the current state keeps that a
-        // property we rely on locally rather than one a reader has to go and confirm.)
+        // the same handle either way.)
         let elementHandle =
             match (ManagedHeap.getArrayShape arrAddr state.ManagedHeap).ConcreteType with
             | ConcreteTypeHandle.OneDimArrayZero element -> element
@@ -2692,10 +2689,10 @@ module NullaryIlOp =
                 // lives in this same method leaves the flag pending because it appends nothing at
                 // all. See `sourcesPure/ForeignRaiseFlagSurvivesFramelessRethrow.cs`.
                 //
-                // The raise needs no record of what was pending at this instant either, now that
-                // the first pass appends every frame before any cleanup clause runs: a `finally`
+                // The raise needs no record of what was pending at this instant either: the
+                // first pass appends every frame before any cleanup clause runs, so a `finally`
                 // this raise executes on its way out cannot get between the raise and its own
-                // appends, so there is no window in which a flag could be mistaken for this
+                // appends, and there is no window in which a flag could be mistaken for this
                 // raise's to spend.
                 //
                 // Its `StackTrace` out of `CatchExceptions` *is* stale: that is the snapshot this
@@ -3109,13 +3106,11 @@ module NullaryIlOp =
                     // `ldloca.s; conv.u; ldind.ref`) is still logically the
                     // same address, so it must dereference identically to the
                     // `&`-typed spelling. `Stind_ref` immediately below
-                    // already treats both spellings identically for exactly
-                    // this reason; this mirrors it.
+                    // treats both spellings identically for the same reason.
                     //
                     // Both spellings route through `readManagedByref` rather
                     // than the byte-view `readManagedByrefBytesAs` that the
-                    // generic `ldind` uses for primitives. That split is
-                    // deliberate, not an oversight: `readManagedByref` already
+                    // generic `ldind` uses for primitives: `readManagedByref`
                     // contains the correct byte-view-vs-structural dispatch
                     // for object references (including the `ReinterpretAs`
                     // zero-offset elision that the Task<T> pattern above

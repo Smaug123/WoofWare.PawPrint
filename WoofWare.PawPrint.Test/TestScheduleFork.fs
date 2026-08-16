@@ -11,7 +11,7 @@ open WoofWare.PawPrint
 /// scheduling decision is identical under every PCT seed, so it can be computed once and each
 /// seed resumed from it.
 ///
-/// The load-bearing claim is a commuting square. Down the left, `Program.run` with
+/// The claim is a commuting square. Down the left, `Program.run` with
 /// `PctSeed = Some s`; down the right, `Program.runToFirstFork` (no seed, `RoundRobin`) followed
 /// by `Program.resumeFork` with `s`. The two must agree — not merely on the exit code, which a
 /// resume that explored a *different* schedule could easily match by luck, but on the whole
@@ -182,7 +182,7 @@ module TestScheduleFork =
         | other -> failwith $"%s{sourceName} was expected to reach a fork point, but: %A{other}"
 
     /// Guests that reach a fork point, each chosen for a distinct shape of prefix — plus the
-    /// whole `sourcesConcurrencyBugs` corpus, because `TestConcurrencyBugs` and `TestRaces` now
+    /// whole `sourcesConcurrencyBugs` corpus, because `TestConcurrencyBugs` and `TestRaces`
     /// fan their seed sweeps out from a fork snapshot rather than re-running the guest per seed.
     /// Those sweeps cannot check the fanout themselves: they assert only that *some* seed finds
     /// the bug, which a resume exploring a subtly different schedule space would still satisfy.
@@ -247,9 +247,9 @@ module TestScheduleFork =
         let snapshot = forkOf loggerFactory sourceName image
         let forkAt = snapshot.State.Kernel.StepCounter
 
-        // A fork point is a genuine choice, so at least two threads contend for it — and the list
+        // A fork point is a choice, so at least two threads contend for it — and the list
         // is checked against something other than itself, because both sides of every other
-        // assertion about it come from the same evaluation. Ascending order is load-bearing:
+        // assertion about it come from the same evaluation. Ascending order is required:
         // `PctState.ensurePriorityFor` samples in list order, so a shuffle would silently change
         // which seed produces which schedule.
         snapshot.Contenders |> List.length |> shouldBeGreaterThan 1

@@ -157,10 +157,9 @@ module NativeException =
             // PawPrint has no such singletons: every exception object it raises is freshly allocated
             // by `ExceptionDispatching.allocateRuntimeException`, and it does not construct these
             // three at all — the sites that would raise them are still `failwith` TODOs (e.g.
-            // `NativeString.fs:15`, `NullaryIlOp.fs:344`). So the answer is unconditionally false,
-            // and that is a fact about PawPrint's design rather than a convenient default. If a
-            // preallocated-singleton pool is ever introduced, this handler is where it must be
-            // consulted.
+            // `NativeString.fs:15`, `NullaryIlOp.fs:344`). So the answer is unconditionally false.
+            // If a preallocated-singleton pool is ever introduced, this handler is where it must
+            // be consulted.
             //
             // Three near-misses, each a plausible way to get this wrong:
             //

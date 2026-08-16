@@ -242,9 +242,8 @@ public class Program
 
         // One argument taken, none supplied, so this classifies as *closed* rather than as an
         // arity mismatch — and is then rejected on its return type, `Action` returning void where
-        // the target returns `int`. (Measured, not assumed: an earlier version of this comment
-        // claimed the objref rule below rejected it, and mutating that rule out left this check
-        // passing. Void-versus-value is decided first.)
+        // the target returns `int`. (Measured by mutation: void-versus-value is decided first;
+        // the objref rule below is not what rejects this.)
         if (!Rejects(intToInt, typeof(Action)))
         {
             return 14;
@@ -273,7 +272,7 @@ public class Program
         // `int&` supplied where the target declares `int`. The byref is on the delegate's side,
         // which is why this check is possible at all: a dynamic method with a byref *parameter*
         // would need `typeof(int).MakeByRefType()`, and `RuntimeTypeHandle_MakeByRef` is not
-        // implemented (measured — it is where an earlier draft of this file stopped).
+        // implemented (measured).
         if (!Rejects(intToInt, typeof(RefIntToInt)))
         {
             return 18;
@@ -296,7 +295,7 @@ public class Program
         }
 
         // The control for both: the identical shape with an object *reference* on the narrow side
-        // is accepted. Without this, 19 and 20 are also satisfied by an implementation that simply
+        // is accepted. Without this, 19 and 20 are also satisfied by an implementation that
         // refuses every widening.
         if (objectToInt.CreateDelegate(typeof(Func<string, int>)) == null)
         {

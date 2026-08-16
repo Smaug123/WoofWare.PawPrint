@@ -55,8 +55,8 @@ module TestIlDumpRendering =
 
     [<Test>]
     let ``a field-name member filter finds the field`` () : unit =
-        // Before the fix, Mode.Default iterated only Methods, so filtering a type
-        // by one of its field names emitted nothing at all — making a data-only
+        // A Mode.Default that iterated only Methods would emit nothing when a type
+        // is filtered by one of its field names — making a data-only
         // type look as though it did not exist.
         let ty = findTypeByName "System.GCMemoryInfoData"
 
@@ -184,7 +184,7 @@ module TestIlDumpRendering =
 
     [<Test>]
     let ``no declared member of any sampled type is invisible`` () : unit =
-        // The property the fix is really asserting: for any type, an unfiltered
+        // The property: for any type, an unfiltered
         // dump mentions every field, method and event the type declares. Sampled
         // with a fixed stride so the test is deterministic and doesn't format the
         // IL of all of corelib.

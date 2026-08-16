@@ -32,8 +32,7 @@ module TestFinallyChain =
     /// or both ends. Constructing it this way makes proper nesting structural rather than
     /// something the generator has to check: growing outward cannot overshoot, whereas shrinking
     /// inward has to be clamped against an empty `try`, and a clamped level can escape its
-    /// parent's end — which an earlier version of this generator did, producing towers that
-    /// were not nested at all and a property failure that was the generator's fault.
+    /// parent's end, producing towers that are not nested at all.
     let private towerGen : Gen<ExceptionOffset list> =
         gen {
             let! depth = Gen.choose (1, 6)
@@ -93,7 +92,7 @@ module TestFinallyChain =
 
         Check.One (config, Prop.forAll (Arb.fromGen towerGen) property)
 
-    /// The load-bearing one: stepping the chain one `endfinally` at a time is equivalent to
+    /// Stepping the chain one `endfinally` at a time is equivalent to
     /// computing it in full up front. Were `nextFinallyToRun` to skip a handler, repeat one, or
     /// reverse the order, the reconstructed list would differ from the specification.
     [<Test>]
@@ -122,7 +121,7 @@ module TestFinallyChain =
     /// ECMA-335 II.25.4.6 does require a producer to list more deeply nested clauses first, so
     /// relying on table order would pass on real assemblies — right up until it did not. Sorting
     /// on `(-TryOffset, TryLength)` makes the order intrinsic to the regions, and this is what
-    /// says so: with the old `-TryOffset`-only key, a shuffled tower whose levels share a start
+    /// says so: with a `-TryOffset`-only key, a shuffled tower whose levels share a start
     /// offset comes back in whatever order the shuffle produced.
     [<Test>]
     let ``the chain does not depend on the order of the region table`` () : unit =

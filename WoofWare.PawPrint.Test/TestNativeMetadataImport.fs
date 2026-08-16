@@ -1792,7 +1792,7 @@ public class TypesWithMembers
         // back a PCCOR_SIGNATURE straight into the mapped metadata, and PawPrint models that with a
         // PeByteRange root whose Source names *this* FieldDef; `NativeSignature.resolveSignatureBlobHandle`
         // reads that provenance back when the blob later arrives as a `Signature`'s `_sig`. The
-        // `ReinterpretAs byte` projection is equally load-bearing: `BinaryArithmetic` refuses
+        // `ReinterpretAs byte` projection is equally required: `BinaryArithmetic` refuses
         // arithmetic on a bare PeByteRange root, so without it a guest's `ConstArray[i]` — which is
         // `((byte*)m_constArray)[index]` — would fail while every content assertion above still passed.
         let byteType =
@@ -2581,7 +2581,7 @@ public class TypesWithMembers
         // blob would be unresolvable by the one thing that ever consumes it
         // (`RuntimePropertyInfo.Signature`, via the handle-less `Signature` constructor).
         //
-        // The `ReinterpretAs byte` projection is equally load-bearing: `BinaryArithmetic` refuses
+        // The `ReinterpretAs byte` projection is equally required: `BinaryArithmetic` refuses
         // arithmetic on a bare PeByteRange root, so without it a guest's `ConstArray[i]` — which is
         // `((byte*)m_constArray)[index]` — would fail while every content assertion still passed.
         let byteType =

@@ -25,21 +25,18 @@ type ByteBackedEnum =
 /// </summary>
 /// <remarks>
 /// The oracle throughout is the real <c>System.Reflection.Emit.SignatureHelper</c>, driven with a
-/// null module so that it takes exactly the branch <c>DynamicMethod</c> drives it down. That
-/// matters: the interesting claims this module makes are about which types
-/// <c>SignatureHelper</c> can spell and how, and reading those off the encoder rather than
-/// asserting them by hand is what stops the tests agreeing with a wrong belief. It is the same
-/// discipline as decoding against a real image rather than a hand-built byte array -- an
-/// expectation taken from outside the code under test.
+/// null module so that it takes exactly the branch <c>DynamicMethod</c> drives it down. The
+/// claims about which types <c>SignatureHelper</c> can spell, and how, are read off the encoder
+/// rather than asserted by hand.
 /// </remarks>
 [<TestFixture>]
 module TestMethodSignatureDecoding =
 
     /// A real metadata reader for the decoder to resolve tokens against. A blob whose types are
     /// all simple element types never consults it, but the entry point requires one, and
-    /// supplying a genuine one means the "not consulted" claim is tested rather than assumed: a
-    /// decoder that *did* reach for a token would find a real table and could quietly succeed
-    /// against the wrong row, which is exactly the failure a stub reader would mask.
+    /// `MetadataReader` is a concrete type that cannot be replaced by a throwing stub. A decoder that
+    /// *did* reach for a token would resolve against corelib's real tables and decode some
+    /// unrelated type, which the exact-output assertions below catch.
     let private corelibReader : PEReader =
         new PEReader (File.OpenRead typeof<obj>.Assembly.Location)
 

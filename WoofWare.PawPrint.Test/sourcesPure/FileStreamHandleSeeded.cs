@@ -6,7 +6,7 @@ using Microsoft.Win32.SafeHandles;
 // `FileStream` over a `SafeFileHandle`, which neither the raw-P/Invoke guests
 // nor `File.ReadAllBytes` reaches.
 //
-// The two routes here are genuinely different, and each pins one syscall:
+// The two routes here are different, and each pins one syscall:
 //
 //   * **A regular file.** `SafeFileHandle.Init` sets `_canSeek` from its `fstat`
 //     without a syscall, so the seekability *probe* never fires — but

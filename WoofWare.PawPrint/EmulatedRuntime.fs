@@ -22,7 +22,7 @@ type EmulatedRuntime =
         /// The full dotnet/runtime commit SHA that `SourceRef` resolves to: the public release-tag
         /// commit, i.e. the upstream source PawPrint's native code is read against and mirrors.
         ///
-        /// Note this is NOT necessarily the commit the shipped binary was built from: `dotnet --info`
+        /// This is NOT necessarily the commit the shipped binary was built from: `dotnet --info`
         /// (and the runtime pack's `.version`) can report an internal build commit that was never
         /// pushed to the public dotnet/runtime repo. We record the public, readable source commit.
         SourceCommit : string
@@ -46,5 +46,5 @@ module EmulatedRuntime =
     ///
     /// PawPrint currently implements exactly one runtime's native surface. When a second is added,
     /// this is the value to dispatch on when selecting the appropriate native handler set in
-    /// `NativeDispatch`; nothing in today's structure forecloses that.
+    /// `NativeDispatch`.
     let current : EmulatedRuntime = net10

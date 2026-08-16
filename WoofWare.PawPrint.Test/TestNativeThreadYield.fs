@@ -129,7 +129,8 @@ public static class Entry
                 effect |> shouldEqual StepEffect.NoEffect
                 // `Thread.Yield()` returns Interop.BOOL, so the handler owes the scheduler an
                 // optimistic slot to rewrite with the real answer. Asserting the flag here
-                // pins the half of the contract that lives on this side of the seam.
+                // pins the handler's half of the contract; `Scheduler.onStepOutcome` owns the
+                // rewrite.
                 reportsSwitch |> shouldEqual true
                 state
             | Some other -> failwith $"unexpected ThreadNative_YieldThread execution result: %O{other}"

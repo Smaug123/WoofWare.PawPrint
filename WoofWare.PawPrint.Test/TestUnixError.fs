@@ -17,7 +17,7 @@ open WoofWare.PawPrint
 /// the table claims its number is platform-independent — so it must match
 /// whichever platform the suite happens to run on.
 ///
-/// A `PlatformDependent` case is weaker, and worth being explicit about. The
+/// A `PlatformDependent` case is weaker. The
 /// host header can only check the *half* corresponding to the platform the
 /// suite is running on: the Darwin half on a dev box, the Linux half in CI.
 /// The other half is held only by a literal in
@@ -311,7 +311,7 @@ module TestUnixError =
     /// ENOTBLK is 15 on both Linux and Darwin, so its meaning needs no platform
     /// choice — but `Interop.Error` has no entry for it, so upstream's switch
     /// falls through to ENONSTANDARD. We must do the same rather than crash:
-    /// this conversion is unambiguous, it simply has no PAL name. Today this is
+    /// this conversion is unambiguous, it just has no PAL name. Today this is
     /// the only raw errno in that class.
     [<Test>]
     let ``palOfRawErrno reports ENONSTANDARD for a portable errno with no PAL name`` () : unit =
@@ -330,7 +330,7 @@ module TestUnixError =
     let ``palOfRawErrno reports ENONSTANDARD for a negative errno`` (raw : int) : unit =
         UnixError.palOfRawErrno raw |> shouldEqual UnixError.palNonStandard
 
-    /// The crux of the design: an errno whose meaning depends on the platform
+    /// An errno whose meaning depends on the platform
     /// must not be silently resolved. 11 and 35 are the transposed
     /// EAGAIN/EDEADLK pair; 39 is ENOTEMPTY on Linux and EDESTADDRREQ on Darwin;
     /// 40 is ELOOP on Linux and EMSGSIZE on Darwin.

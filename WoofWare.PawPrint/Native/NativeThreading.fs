@@ -158,10 +158,9 @@ module NativeThreading =
                 failwith $"Thread.Join: target ThreadId {targetThreadId} has no ThreadState"
             )
 
-        // A constructed-but-never-Start()ed Thread used to be unreachable here:
-        // `ManagedThreadObjects` had no entry, so `threadIdFromThreadAddr` would
-        // fail. Pre-allocating the NotStarted slot at Initialize time means the
-        // lookup now succeeds, so we have to reject the case explicitly. The
+        // The NotStarted slot is pre-allocated at Initialize time, so
+        // `threadIdFromThreadAddr` succeeds for a constructed-but-never-
+        // Start()ed Thread; reject that case explicitly. The
         // real CLR raises ThreadStateException; PawPrint can't synthesise that
         // yet, so fail loud at the call site rather than silently returning
         // false (timeout=0) or blocking forever on a thread that will never run.
@@ -492,7 +491,7 @@ module NativeThreading =
             // written the canonical name into the managed `Thread._name` field. In CoreCLR
             // this hook tells the OS / debugger about the new thread name
             // (SetThreadDescription on Windows, pthread_setname_np on Linux). PawPrint has
-            // no OS threads to name, so we simply record the value on `ThreadState.Name`
+            // no OS threads to name, so we record the value on `ThreadState.Name`
             // as a diagnostic mirror — guest reads of `Thread.Name` go through `_name` and
             // never consult our mirror, so the mirror cannot mislead guest code.
             //
@@ -579,17 +578,10 @@ module NativeThreading =
             // CoreCLR's native implementation calls `__SwitchToThread(0, ...)` and
             // returns whether the OS actually switched away from the caller.
             //
-            // Return-value contract. We push `Interop.BOOL.FALSE` (Int32 0)
-            // unconditionally. A truthful TRUE would require evidence that the
-            // scheduler is honouring the yield by running a different thread
-            // before this caller observes the return — and PawPrint's current
-            // `Scheduler.chooseNext` is *permitted* to schedule another thread
-            // under round-robin but is not *required* to as a consequence of
-            // VoluntaryYield (its signature is `(lastRan, state)` and it doesn't
-            // see the previous outcome). Claiming TRUE based on a runnable-set
-            // scan would therefore lie under that contract. Returning FALSE is
-            // honest: PawPrint has not yet modelled a guaranteed successful
-            // switch. The BCL's common callers (`SpinWait.SpinOnceCore`,
+            // Return-value contract: FALSE is pushed here optimistically (see
+            // the comment on the push below), and `Scheduler.onStepOutcome`
+            // rewrites the slot to TRUE iff a switch is guaranteed. The BCL's
+            // common callers (`SpinWait.SpinOnceCore`,
             // `LowLevelSpinWaiter.SpinWaitForCondition`) discard this boolean
             // and escalate via `Thread.Sleep` anyway, so the choice does not
             // affect forward progress on the canonical Task.Run spin path.
@@ -726,11 +718,10 @@ module NativeThreading =
             // after about `N * ticksPerMillisecond / instructionCostTicks`
             // iterations.
             //
-            // What is deliberately not modelled is the *proportionality* to
+            // What is not modelled is the *proportionality* to
             // `iterations`: `SpinWait(1)` and `SpinWait(10_000_000)` each cost
             // the handful of ticks their call sequence retires, where real
-            // hardware puts them ~7 orders of magnitude apart. Restoring that
-            // proportionality was considered and rejected twice over. Scaled
+            // hardware puts them ~7 orders of magnitude apart. Scaled
             // consistently with the rest of the clock (a real spin iteration is
             // some tens of instruction-times, and an instruction bills 1 ms
             // here) `SpinWait(10_000_000)` would have to jump the clock by
@@ -752,7 +743,7 @@ module NativeThreading =
             // blocking path is the one with the real synchronisation in it —
             // but it does mean PawPrint under-exercises guest spin paths.
             //
-            // Note also that every CoreLib caller of `Thread.SpinWait`
+            // Every CoreLib caller of `Thread.SpinWait`
             // (`SpinWait.SpinOnceCore`, `LowLevelSpinWaiter.Wait`,
             // `ReaderWriterLockSlim`, `PortableThreadPool.WorkerThread`) is
             // guarded by `!Environment.IsSingleProcessor`, and

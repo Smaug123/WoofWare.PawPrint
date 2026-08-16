@@ -1,21 +1,14 @@
 using System.Threading.Tasks;
 
-// Pins the System.Threading.Tasks baseline described in issue #713: before this file, there was not
-// a single Task test case in sourcesPure/sourcesImpure, despite quite a lot already working. Each
-// Test* method exercises one independently-verified behaviour and returns 0 on success, matching the
-// BeqBranch.cs convention of one file per coherent feature with offset-per-assertion return codes, so
-// a failure here still says *which* Task behaviour regressed.
+// Pins the System.Threading.Tasks baseline described in issue #713. Each Test* method exercises
+// one independently-verified behaviour and returns 0 on success, matching the BeqBranch.cs
+// convention of one file per coherent feature with offset-per-assertion return codes, so a
+// failure here still says *which* Task behaviour regressed.
 //
 // The Task.Yield / ContinueWith / async-void behaviours live in their own single-behaviour files
 // (TaskYieldAwait.cs, TaskContinueWith.cs, TaskAsyncVoid.cs) rather than being bundled in here, so
 // that a failure names the behaviour that broke rather than just "TaskBasics".
-//
-// That split originally had a second, harder motivation: a *second* blocking wait on
-// pool-scheduled work in the same process reaches .NET's thread-pool blocking-adjustment
-// heuristic, which calls GC::GetMemoryInfo -- unimplemented at the time these were written, so
-// each test process could only afford one such wait. That is no longer a constraint:
-// GC::GetMemoryInfo is implemented (issue #698), and TaskMultipleBlockingWaits.cs pins the
-// multiple-wait path directly. The files stay separate for the failure-signal reason above.
+// TaskMultipleBlockingWaits.cs pins the multiple-blocking-wait path.
 //
 // Every assertion here only inspects results/values that are guaranteed deterministic under both the
 // real runtime and PawPrint's simulated thread pool -- never which worker thread ran something, nor
@@ -42,7 +35,7 @@ public static class TaskBasics
     }
 
     // Task.Run dispatches the delegate onto PawPrint's simulated thread pool; `.Result` blocks the
-    // calling thread until it completes. This is the only place in this file that genuinely exercises
+    // calling thread until it completes. This is the only place in this file that exercises
     // cross-thread scheduling, but the assertion is only on the (deterministic) returned value.
     static int TestTaskRun()
     {

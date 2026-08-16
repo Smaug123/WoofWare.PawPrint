@@ -8,8 +8,8 @@ using System.Reflection;
 // method. Both restrictions are about blockers elsewhere, not about this QCall: see the sibling
 // `ReflectionInvokeMethodMultipleArguments.cs` and `ReflectionInvokeVirtualMethod.cs`.
 //
-// EVERY DISTINCT MethodInfo BELOW IS INVOKED EXACTLY ONCE, and that is load-bearing rather than
-// stylistic. `MethodInvokerCommon.DetermineStrategy_RefArgs` / `_ObjSpanArgs`
+// EVERY DISTINCT MethodInfo BELOW IS INVOKED EXACTLY ONCE.
+// `MethodInvokerCommon.DetermineStrategy_RefArgs` / `_ObjSpanArgs`
 // (MethodInvokerCommon.cs:114-121, :168-181) deliberately take the interpreted
 // `RuntimeMethodHandle.InvokeMethod` path only on a given MethodBase's *first* invocation, and
 // build a Reflection.Emit delegate for every invocation after that (whenever

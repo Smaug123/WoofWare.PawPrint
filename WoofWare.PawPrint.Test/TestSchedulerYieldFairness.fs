@@ -79,14 +79,14 @@ module TestSchedulerYieldFairness =
                     // The discharge lemma, checked against a real run rather than a model of
                     // one: no thread may hold a yield debt naming a thread that has already
                     // terminated. A terminating thread retires a step like any other (its
-                    // bottom-frame `Ret`), so the driver's seam must have discharged it; and
+                    // bottom-frame `Ret`), so the driver's per-step discharge must have caught it; and
                     // nothing can be charged into a debt after it stops being Runnable, since
                     // `chargeYieldDebt` only names Runnable threads. So a violation here means
                     // the driver skipped `Scheduler.dischargeYieldDebts` for some outcome.
                     //
                     // This is the assertion the unit tests structurally cannot make: their
                     // `retireStep` helper re-implements the driver, so it stays green if the
-                    // driver itself drops the seam call.
+                    // driver itself drops the `dischargeYieldDebts` call.
                     let terminated =
                         state.ThreadState
                         |> Map.filter (fun _ ts -> ts.Status = ThreadStatus.Terminated)

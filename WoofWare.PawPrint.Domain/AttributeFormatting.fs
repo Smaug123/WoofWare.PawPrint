@@ -283,8 +283,8 @@ module AttributeFormatting =
         attr.Value |> Seq.map (sprintf "%02X") |> String.concat " "
 
     /// Decoded form of a blob: positional args and the raw <c>NumNamed</c>
-    /// count (so callers can surface its presence without us having to decode
-    /// the named-args section in this PR).
+    /// count (so callers can surface its presence; the named-args section
+    /// itself is not decoded).
     type private DecodedBlob =
         {
             Args : CustomAttribFixedArg list
@@ -297,8 +297,7 @@ module AttributeFormatting =
         | Some paramTypes ->
 
         // The dumper has no cross-assembly resolution and no `BaseClassTypes`, so it cannot decide
-        // whether a named parameter type is an enum. Those blobs fall back to the hex dump, exactly
-        // as they did when `readFixedArgs` itself rejected the parameter type.
+        // whether a named parameter type is an enum. Those blobs fall back to the hex dump.
         let shapes =
             paramTypes
             |> List.fold

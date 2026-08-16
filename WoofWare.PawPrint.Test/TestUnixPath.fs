@@ -429,12 +429,9 @@ module TestUnixPath =
                        | PathComponent.Current
                        | PathComponent.Parent -> false
                    )
-                // A repeated separator is a *spelling*, not a component, so it
-                // survives into the rendered text now that a UnixPath is kept
-                // verbatim — and `AbsoluteUnixPath` rejects it, being the
-                // canonical shape `getcwd` can return. Before the change the
-                // rendering silently normalised it away, which made this
-                // conjunct invisible.
+                // A repeated separator is a *spelling*, not a component: a UnixPath
+                // keeps it verbatim in the rendered text, and `AbsoluteUnixPath`
+                // rejects it, being the canonical shape `getcwd` can return.
                 && not ((UnixPath.toString path).Contains "//")
 
             let rendered = UnixPath.toString path

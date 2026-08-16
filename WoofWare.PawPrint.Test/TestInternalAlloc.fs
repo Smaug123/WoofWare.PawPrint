@@ -13,8 +13,8 @@ open WoofWare.PawPrint
 /// `TestInternalAllocNoChecks.fs` covers. Same allocation; `MethodTable::Allocate`
 /// (methodtable.cpp:4056) additionally runs `EnsureInstanceActive` and a class initialiser.
 ///
-/// The two files are deliberately near-identical, because the *difference* between them is the
-/// point. `AllocateNoChecks` exists precisely so that a caller who already knows the type is
+/// The two files are near-identical, because the *difference* between them is the
+/// point. `AllocateNoChecks` exists so that a caller who already knows the type is
 /// initialised can skip that work, so "does allocating run the `.cctor`?" must have opposite
 /// answers here and there, and each file pins its own. A change that made the two handlers agree
 /// would be caught by whichever file it broke.
@@ -384,8 +384,8 @@ public static class Program
         handle, state
 
     /// `invokeNative`, but handing back the handler's result rather than insisting it completed.
-    /// Allocating a type that needs initialising suspends instead of completing, and that
-    /// suspension is a fact worth asserting rather than an inconvenience to route around.
+    /// Allocating a type that needs initialising suspends instead of completing, and the tests
+    /// below assert that suspension.
     let private invokeNativeRaw
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (prepared : Program.PreparedProgram)

@@ -244,7 +244,7 @@ module TestNativeRuntimeMethodHandle =
                             methodTable isValueType hasInstantiation isGenericTypeDefinition isInterface
         ]
 
-    /// The load-bearing property. CoreCLR documents the fast-path FCall predicate as "duplicated
+    /// CoreCLR documents the fast-path FCall predicate as "duplicated
     /// from FindOrCreateAssociatedMethodDescForReflection" (runtimehandles.cpp:1899-1900). The two
     /// are written independently here, so a typo in either breaks this: whenever the fast path
     /// short-circuits to the original MethodDesc, the slow path -- which the BCL would then never
@@ -271,7 +271,7 @@ module TestNativeRuntimeMethodHandle =
         NativeRuntimeMethodHandle.stubOutcome StubDeclaringType.TypeDesc true 1 1
         |> shouldEqual StubOutcome.Original
 
-        // Even an arity that would otherwise be rejected. This is load-bearing for the QCall arm's
+        // Even an arity that would otherwise be rejected. This pins the QCall arm's
         // ordering: because the answer here is `Original`, the arm must not have already tried to
         // narrow the instantiation's elements to closed types, since CoreCLR never inspects them
         // on this path.

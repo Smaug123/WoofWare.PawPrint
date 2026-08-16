@@ -164,14 +164,11 @@ module DebuggerServer =
 
     /// The source span the compiler attributed to `sourceIlOffset` in `frame`, or `null`.
     ///
-    /// `null` is ordinary rather than exceptional: the whole shared framework ships without
-    /// PDBs, a synthesised stub has no metadata row to key one by, and a compiler may mark a
-    /// range as having no source at all. A consumer must treat its absence as "not known here",
-    /// never as a defect.
+    /// `null` is ordinary: the shared framework ships without PDBs, a synthesised stub has no
+    /// metadata row to key one by, and a compiler may mark a range as having no source at all.
     ///
     /// The span carries the offset it was resolved at, which for anything but the active frame
-    /// is deliberately *not* the frame's `ilOffset`: see `GuestLocation.attributionOffsets`.
-    /// Emitting it makes the two impossible to confuse.
+    /// is *not* the frame's `ilOffset`: see `GuestLocation.attributionOffsets`.
     let private writeSourceLocation
         (writer : Utf8JsonWriter)
         (state : IlMachineState)
@@ -652,8 +649,7 @@ module DebuggerServer =
         match method.TryDeclaringType with
         // A `Reflection.Emit` method is owned by a synthetic per-module class with no TypeDef row,
         // and real .NET renders such a frame with no type name at all (`at Thrower(Int32)`).
-        // `MethodOwner.describe` says that in a form no type could be confused with, rather than
-        // this reaching for a name there is none of.
+        // `MethodOwner.describe` renders that in a form no type name could be confused with.
         | None -> MethodOwner.describe method.Owner
         | Some declaringType ->
 

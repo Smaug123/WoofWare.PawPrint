@@ -500,10 +500,9 @@ module TestLowLevelMonitor =
     /// FIFO fairness oracle. For any sequence of contended acquirers that
     /// park behind a single owner, releasing the monitor once per current
     /// owner must transfer ownership through the parked threads in
-    /// registration order. This is the load-bearing property for
-    /// `LowLevelLock` fairness — moving to LIFO or arbitrary order would
-    /// change the observable interleaving of any guest-level lock built
-    /// on top.
+    /// registration order. `LowLevelLock` fairness depends on this —
+    /// moving to LIFO or arbitrary order would change the observable
+    /// interleaving of any guest-level lock built on top.
     [<Test>]
     let ``Property: release transfers ownership through parked threads in FIFO order`` () : unit =
         let property (PositiveInt waiterCount) : bool =
@@ -877,11 +876,11 @@ module TestLowLevelMonitor =
 
     // ----- LowLevelMonitor.wait deadline plumbing -----
     //
-    // `BlockedOnMonitorWait` now carries an optional deadline. The
+    // `BlockedOnMonitorWait` carries an optional deadline. The
     // scheduler in `Program.fireExpiredDeadlines` keys off this option to
     // decide whether the thread is a TimedWait waiter (finite Some) or
-    // an untimed `Wait` waiter (None). These tests pin the variant
-    // payload that is the load-bearing contract.
+    // an untimed `Wait` waiter (None). These tests pin that variant
+    // payload.
 
     [<Test>]
     let ``wait with no deadline records None on the BlockedOnMonitorWait status`` () : unit =

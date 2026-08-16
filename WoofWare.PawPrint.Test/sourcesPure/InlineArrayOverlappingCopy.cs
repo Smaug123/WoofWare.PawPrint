@@ -10,8 +10,8 @@ using System.Runtime.InteropServices;
 // flat byte offset in a shared storage. When that fold throws it degrades to a coarse
 // storage-identity comparison, and two byrefs into the *same* storage with no offsets to compare
 // are undecidable — so it fails loud rather than guessing a direction that could corrupt the
-// overlap. A `ByteOffset` followed by a `Field` used to throw in exactly that way, which made this
-// program a host failure rather than a copy.
+// overlap. A `ByteOffset` followed by a `Field` must fold rather than throw, or this program is a
+// host failure rather than a copy.
 //
 // The direction matters here: `dst` starts two ints after `src` and the ranges overlap, so a
 // forward loop would smear the first element across the range instead of shifting it. The expected

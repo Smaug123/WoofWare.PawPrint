@@ -80,7 +80,7 @@ module TestSequencePoints =
 
     // ---- Reading symbols out of a real image ----
 
-    /// Line numbers are load-bearing in the assertions below, so the source is assembled from
+    /// The assertions below depend on exact line numbers, so the source is assembled from
     /// explicit lines rather than a triple-quoted literal whose leading newline and indentation
     /// are easy to disturb. `Triple` occupies lines 3-7, with its opening brace on line 4.
     let private source : string =
@@ -118,8 +118,7 @@ module TestSequencePoints =
         |> Seq.pick (fun kvp -> if kvp.Value.Name = "Triple" then Some kvp.Value else None)
 
     /// The rendering prose diagnostics use — `GuestLocation`'s thread summaries. Column
-    /// information is deliberately dropped: the line wants to be greppable and to paste into an
-    /// editor, and `path:line` is what does that.
+    /// information is dropped: `path:line` is greppable and pastes into an editor.
     [<Test>]
     let ``a source location renders as path and line`` () : unit =
         let location =
@@ -248,9 +247,8 @@ module TestSequencePoints =
 
     /// PawPrint looks for `<assembly file>.pdb` and pays no attention to the file name recorded
     /// in the image's CodeView entry, so an assembly renamed after it was built keeps its symbols
-    /// as long as the PDB was renamed with it. Depending on the recorded name instead would also
-    /// mean deciding whether this filesystem is case-sensitive, and losing the symbols of any
-    /// assembly opened under casing that differs from what the compiler wrote down.
+    /// as long as the PDB was renamed with it. Matching on the recorded name would also require
+    /// deciding whether this filesystem is case-sensitive.
     [<Test>]
     let ``a renamed assembly finds the sidecar named after it`` () : unit =
         let image, pdb = Roslyn.compileWithSidecarSymbols [ source ]
@@ -259,8 +257,7 @@ module TestSequencePoints =
         let dir = Path.Combine (Path.GetTempPath (), $"pawprint-pdb-%s{unique}")
         Directory.CreateDirectory dir |> ignore<DirectoryInfo>
 
-        // Deliberately *not* the assembly name the compiler recorded, which is
-        // PawPrintTestAssembly.
+        // Not the assembly name the compiler recorded, which is PawPrintTestAssembly.
         let dll = Path.Combine (dir, "SomethingElse.dll")
         File.WriteAllBytes (dll, image)
         File.WriteAllBytes (Path.ChangeExtension (dll, ".pdb"), pdb)
@@ -317,9 +314,9 @@ module TestSequencePoints =
         let logs, loggerFactory = LoggerFactory.makeTest ()
         logs, AssemblyApi.readFile loggerFactory path
 
-    /// Both damage tests assert that the *guard* fired, not merely that no symbols came back.
-    /// Without that, either would also pass against an implementation that quietly failed to
-    /// find the PDB at all — which is precisely how an earlier version of this test went vacuous.
+    /// Both damage tests assert that the *guard* fired, not merely that no symbols came back;
+    /// otherwise either would also pass against an implementation that quietly failed to find
+    /// the PDB at all.
     let private shouldHaveReportedUnusableSymbols (logs : unit -> LogLine list) : unit =
         logs ()
         |> List.exists (fun line -> line.Message.Contains "malformed debug information")
@@ -377,10 +374,9 @@ module TestSequencePoints =
         let _, loggerFactory = LoggerFactory.makeTest ()
         AssemblyApi.readFile loggerFactory typeof<DumpedAssembly>.Assembly.Location
 
-    /// The `Hidden` case is only load-bearing if the *parser* records it; the unit tests above
-    /// exercise `resolve` on hand-built points and would all still pass if hidden points were
-    /// dropped at read time. F# emits them over compiler-generated IL, so a real F# assembly is
-    /// the corpus that pins the parse down.
+    /// The unit tests above exercise `resolve` on hand-built points and would all still pass if
+    /// hidden points were dropped at read time. F# emits them over compiler-generated IL, so a
+    /// real F# assembly is the corpus that pins the parse down.
     [<Test>]
     let ``hidden sequence points survive parsing`` () : unit =
         let assy = domainAssembly ()
@@ -398,9 +394,6 @@ module TestSequencePoints =
 
         hidden |> shouldBeGreaterThan 0
 
-    /// Exhaustive rather than sampled: the corpus is every method of a real, symbol-bearing
-    /// assembly, so there is nothing to gain from generating a subset of it.
-    ///
     /// Sequence point offsets are required to fall on instruction boundaries, and `Locations`
     /// is keyed by exactly those boundaries. The property therefore catches both a misjoined
     /// PDB and a PDB that does not belong to this image at all (a stale `.pdb` beside a

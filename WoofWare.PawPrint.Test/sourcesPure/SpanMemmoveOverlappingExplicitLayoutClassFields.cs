@@ -10,14 +10,13 @@ public class Program
     // therefore overlaps, and must copy backwards when the source starts
     // below the destination.
     //
-    // PawPrint used to resolve each `ByrefRoot.HeapObjectField` to its own
-    // storage container (`ByteStorageIdentity.HeapObjectField`), so this pair
-    // read as "distinct storages, disjoint, copy forwards" — and the forward
-    // loop re-read source bytes it had already overwritten. Measured before
-    // the fix: check 7 below saw 0x0000000001010101 (the clobbered read,
-    // reported as exit 8) where real .NET's backwards memmove leaves
-    // 0x0000000002020202. One heap object is one storage; a field is a view
-    // into it at its layout offset, which is what the resolution now says.
+    // One heap object is one storage; a field is a view into it at its
+    // layout offset. Resolving each `ByrefRoot.HeapObjectField` to its own
+    // storage container instead would read this pair as "distinct storages,
+    // disjoint, copy forwards", and the forward loop would re-read source
+    // bytes it had already overwritten: check 7 below would see
+    // 0x0000000001010101 (the clobbered read, reported as exit 8) where
+    // real .NET's backwards memmove leaves 0x0000000002020202.
     [StructLayout(LayoutKind.Explicit)]
     class AliasClass
     {
@@ -83,7 +82,8 @@ public class Program
 
         // Control: the same overlapping copy on an explicit-layout *struct*
         // local. Both byrefs resolve into the same stack local with honest
-        // field offsets, so the direction decision was already correct here.
+        // field offsets, so the direction decision does not depend on the
+        // heap-field storage resolution here.
         OverlapStruct os = default;
         os.A.F0 = 0x0101010101010101L;
         os.A.F1 = 0x0202020202020202L;

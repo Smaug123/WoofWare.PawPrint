@@ -76,7 +76,7 @@ module TestSystemTimeAsTicks =
         // Also pinned against the BCL. The tempting derivation
         // `maxWallClockEpochMs * ticksPerMillisecond` is wrong by 9,999 ticks:
         // that is the last whole *millisecond*, and the clock resolves finer
-        // than that, so deriving it would reject the finalsub-millisecond of
+        // than that, so deriving it would reject the final sub-millisecond of
         // representable time.
         DateTime.MaxValue.Ticks - DateTime.UnixEpoch.Ticks
         |> shouldEqual EmulatedKernel.maxWallClockTicks
@@ -133,7 +133,7 @@ module TestSystemTimeAsTicks =
         // Only a *whole millisecond* of elapsed time can be moved, because the
         // boot instant is denominated in milliseconds and the clock is not. The
         // sub-millisecond remainder has to stay on the clock; that it does, and
-        // that the reading is unchanged, is the substance of the property now.
+        // that the reading is unchanged, is the substance of the property.
         let property (seeds : int64 * int64) : bool =
             let epochMs, clockTicks = reachable seeds
             let wholeMs = clockTicks / EmulatedKernel.ticksPerMillisecond

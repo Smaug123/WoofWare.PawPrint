@@ -14,17 +14,16 @@ module NativeGcFrameRegistration =
     /// overloaded (`MethodBaseInvoker.Constructor.cs:15` and `:68`), and matching by name
     /// covers both.
     ///
-    /// A CoreLib method that is *not* on this list gets the same loud refusal as a guest. That
-    /// is deliberate: if a future CoreLib grows another caller, the failure names it, which is a
-    /// better answer than silently assuming the new caller has the same escape property.
+    /// A CoreLib method that is *not* on this list gets the same loud refusal as a guest: if a
+    /// future CoreLib grows another caller, the failure names it rather than silently assuming
+    /// the new caller has the same escape property.
     ///
-    /// Only the first entry is exercised by a test, and the others are unreachable today for a
-    /// reason that has nothing to do with this handler — measured, not assumed. A guest calling
-    /// `ConstructorInfo.Invoke` with six arguments, which is the shape that would reach
-    /// `InvokeConstructorWithoutAlloc`, stops much earlier at the unimplemented InternalCall
-    /// `RuntimeMethodHandle::GetMethodDef`. They are on the list on the authority of the
-    /// upstream grep rather than of a passing test, which is the right way round: leaving a real
-    /// caller off would turn a working path into a loud failure the moment it became reachable.
+    /// Only the first entry is exercised by a test; the others are unreachable today because a
+    /// guest calling `ConstructorInfo.Invoke` with six arguments (the shape that would reach
+    /// `InvokeConstructorWithoutAlloc`) stops much earlier at the unimplemented InternalCall
+    /// `RuntimeMethodHandle::GetMethodDef` (measured). They are on the list on the authority of
+    /// the upstream grep; leaving a real caller off would turn a working path into a loud
+    /// failure the moment it became reachable.
     let private permittedCallers : (string * string) list =
         [
             "MethodBaseInvoker", "InvokeWithManyArgs"
@@ -56,7 +55,7 @@ module NativeGcFrameRegistration =
     /// ever landed, because the blocks registered here are precisely the roots nothing else can
     /// find — so a collector's first job is to make this handler stop being a no-op.)
     ///
-    /// The case for that, in full. The chain these two maintain has three readers upstream:
+    /// The chain these two maintain has three readers upstream:
     ///
     ///   * `GCFrame::GcScanRoots`, reached from `vm/gcenv.ee.cpp:209` during a collection, which
     ///     promotes the `_numObjRefs` slots at `_pObjRefs` (as interior pointers when
@@ -94,7 +93,7 @@ module NativeGcFrameRegistration =
     ///     itself, so the immediate caller frame is CoreLib's even though the registration and
     ///     the code that inspects it afterwards are both the guest's. An assembly-level check
     ///     would wave that through. It is not reachable today — pointer-typed parameters are
-    ///     refused by that QCall, see below — which is precisely why it is worth pinning now.
+    ///     refused by that QCall, see below.
     ///
     /// The frames on the list qualify because the registration cannot escape them, not because
     /// they are CoreLib: `_reserved1`/`_reserved2` are private, are written only by the
@@ -119,25 +118,23 @@ module NativeGcFrameRegistration =
     /// forged pointer is accepted and no-opped: CoreCLR has no defined behaviour for it either,
     /// and with no chain to link it onto there is nothing here for it to corrupt.
     ///
-    /// No guest can reach that refusal today, and this was measured rather than assumed: a guest
-    /// doing exactly the above (`GetType("System.Runtime.GCFrameRegistration")`, then
+    /// No guest can reach that refusal today (measured): a guest doing exactly the above
+    /// (`GetType("System.Runtime.GCFrameRegistration")`, then
     /// `Invoke(null, new object[] { IntPtr.Zero })`) stops one level earlier, in
     /// `RuntimeMethodHandle_InvokeMethod`, with "parameter 0 is a pointer or function pointer,
     /// whose argument buffer entry addresses a boxed IntPtr payload rather than an object slot"
     /// — the gap the parked `sourcesPure/ReflectionInvokePointerSignature.cs` is filed against.
     /// So the only live route into this handler is CoreLib's own, and CoreLib always passes
-    /// `&someLocal`. The refusal below is therefore an arm no test can currently kill; it is
-    /// kept because without it PawPrint would *silently succeed* where CoreCLR faults, and
-    /// because un-parking that reflection gap makes it reachable without anyone revisiting this
-    /// file.
+    /// `&someLocal`. No test can currently kill the refusal below; without it PawPrint would
+    /// *silently succeed* where CoreCLR faults, and un-parking that reflection gap makes it
+    /// reachable.
     ///
-    /// Deliberately, no registration is recorded anywhere. A per-thread table of registered
-    /// blocks would be write-only — PawPrint has no collector to consult it — so no test could
-    /// tell a correct table from a wrong one, and building one means reading the struct back
-    /// through a pointer into a guest stack frame, i.e. new failure modes bought with no
-    /// observable behaviour. That table is what to add if a collector ever lands; it is also
-    /// where an "every `Register` is balanced by an `Unregister`" invariant check would live, if
-    /// a use for one appears (today, unbalanced registration is unobservable by construction).
+    /// No registration is recorded anywhere: PawPrint has no collector to consult a table of
+    /// registered blocks, so it would be write-only, and building one means reading the struct
+    /// back through a pointer into a guest stack frame. Such a table is what to add if a
+    /// collector ever lands; it is also where an "every `Register` is balanced by an
+    /// `Unregister`" invariant check would live (today, unbalanced registration is unobservable
+    /// by construction).
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction

@@ -25,10 +25,10 @@ open WoofWare.PawPrint
 /// guest program and no reachable IL path, so it can cover shapes (deep chains, reordered and
 /// partially-applied base arguments, name-shadowed fields) long before any guest reaches them.
 ///
-/// Note what this deliberately does *not* assume: that the declaring handle equals the object's
-/// own type. It must not -- that is the whole point of an inherited field -- so the invariant is
-/// stated as "the declaring handle names the type that really declares this field definition, and
-/// round-trips through the access-site concretization unchanged".
+/// The invariant does not assume the declaring handle equals the object's own type (for an
+/// inherited field it must not); it is stated as "the declaring handle names the type that really
+/// declares this field definition, and round-trips through the access-site concretization
+/// unchanged".
 [<TestFixture>]
 module TestFieldIdAgreement =
 
@@ -694,7 +694,7 @@ public class Outer<A>
     /// thought to write down. FSharp.Core is not: this sweeps every type in it that inherits,
     /// which is where the reported failure lived (`PrintfFormat`5 : PrintfFormat`4`).
     ///
-    /// Note the division of labour. This sweep is breadth: it pins that each identity names the
+    /// Division of labour: this sweep is breadth. It pins that each identity names the
     /// type that really declares the field, that an access site recomputes it, and that it does
     /// not depend on the derived type it was reached through. It has no independent oracle for
     /// *which instantiation* of a base type is correct, and it instantiates uniformly, so a
@@ -795,7 +795,7 @@ public class Outer<A>
         let valueField =
             fields |> List.filter (fun f -> f.Name = "value") |> List.exactlyOne
 
-        // The load-bearing claim: the identity is keyed to PrintfFormat`4<a,b,c,d>, *not* to the
+        // The identity is keyed to PrintfFormat`4<a,b,c,d>, *not* to the
         // PrintfFormat`5<a,b,c,d,e> whose storage it lives in.
         FieldId.tryDeclaringType valueField.Id |> shouldEqual (Some baseHandle)
         derivedHandle |> shouldNotEqual baseHandle

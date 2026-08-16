@@ -103,8 +103,7 @@ module NativeGc =
     /// two are computed unconditionally from `total_physical_mem` upstream
     /// (`gc.cpp`, `GCHeap::GetMemoryInfo`) rather than from any `last_gc_info` record, so
     /// reporting them as zero is a genuine divergence rather than the documented never-collected
-    /// state. There are two known consumers, and neither crashes, but the second is more
-    /// consequential than it first appears:
+    /// state. There are two known consumers, and neither crashes:
     ///
     ///   1. `System.Buffers.Utilities.GetMemoryPressure` (behind `ArrayPool<T>`'s trim
     ///      heuristic) reads `0 >= 0` as "high pressure" where a real CLR reads "no data yet"
@@ -225,8 +224,7 @@ module NativeGc =
     /// `OutOfMemoryException` carrying `IDS_EE_ARRAY_DIMENSIONS_EXCEEDED`, and otherwise return
     /// a fresh SZ array of that length.
     ///
-    /// Neither `GC_ALLOC_FLAGS` bit that can reach here changes what PawPrint does, and in both
-    /// cases that is a property of the interpreter rather than a shortcut:
+    /// Neither `GC_ALLOC_FLAGS` bit that can reach here changes what PawPrint does:
     ///
     ///   * `GC_ALLOC_ZEROING_OPTIONAL` (set by `AllocateUninitializedArray`) *permits* the
     ///     runtime to skip zeroing; it does not require it, and the API's contract states the

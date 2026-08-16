@@ -10,8 +10,7 @@ type TypeInitState =
     /// repeated accesses rethrow the *same* instance (matching CLR identity semantics).
     | Failed of tieAddress : ManagedHeapAddress * tieType : ConcreteTypeHandle
 
-/// Tracks the initialization state of types across assemblies. The string in the key is the FullName of the AssemblyName where the type comes from.
-// TODO: need a better solution than string here! AssemblyName didn't work, we had nonequal assembly names.
+/// Tracks the initialization state of types across assemblies.
 type TypeInitTable = ImmutableDictionary<ConcreteTypeHandle, TypeInitState>
 
 [<RequireQualifiedAccess>]

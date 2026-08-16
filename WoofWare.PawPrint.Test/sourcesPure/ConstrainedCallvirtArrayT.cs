@@ -2,8 +2,8 @@ using System.Collections;
 
 // Regression test for a crash in the `constrained.` prefix handler when T is a runtime array
 // type. Array type handles (`ConcreteTypeHandle.OneDimArrayZero` / `Array`) are structural
-// wrappers that aren't stored in the concrete-type mapping, so the previous implementation
-// fell off `AllConcreteTypes.lookup |> Option.get` before it could take ECMA case 1.
+// wrappers that aren't stored in the concrete-type mapping, so a handler that resolves T via
+// `AllConcreteTypes.lookup |> Option.get` crashes before it can take ECMA case 1.
 
 public class Program
 {

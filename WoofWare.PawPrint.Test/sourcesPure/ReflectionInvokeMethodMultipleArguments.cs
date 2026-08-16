@@ -2,17 +2,16 @@ using System;
 using System.Reflection;
 
 // `MethodBase.Invoke` on a target taking more than one argument. The single-argument shapes live in
-// `sourcesPure/ReflectionInvokeMethod.cs`; this file exists separately because everything here was
-// blocked on a write-path gap that has nothing to do with reflection, and parking the two together
-// would have hidden the coverage that did pass.
+// `sourcesPure/ReflectionInvokeMethod.cs`; this file is separate because everything here turns on a
+// write-path rule that has nothing to do with reflection.
 //
-// That gap: `InvokeDirectByRefWithFewArgs` fills a `StackAllocatedByRefs` local — an
+// That rule: `InvokeDirectByRefWithFewArgs` fills a `StackAllocatedByRefs` local — an
 // `[InlineArray(4)]` of `ref byte` — with `*(ByReference*)(pByRefFixedStorage + i) = ...`. A
 // `ByReference` wraps a managed pointer and so has no byte image, and the buffer is four of them, so
 // this is the one shape where a store's width cannot be recovered from the bytes: index 0 arrives as
-// a bare byref (`p + 0` is `p`) and used to replace the whole 32-byte local with an 8-byte value,
-// and index 1 then found only 8 bytes to write into. Both halves of that are the width rule, and
-// `TestNarrowByrefAccess.fs` pins them cell by cell.
+// a bare byref (`p + 0` is `p`), and a whole-slot write there would replace the whole 32-byte local
+// with an 8-byte value, leaving index 1 only 8 bytes to write into. Both halves of that are the
+// width rule, and `TestNarrowByrefAccess.fs` pins them cell by cell.
 //
 // As in the sibling file, every distinct MethodInfo is invoked exactly once: after the first
 // invocation `MethodInvokerCommon.DetermineStrategy_*` switches to a Reflection.Emit delegate and

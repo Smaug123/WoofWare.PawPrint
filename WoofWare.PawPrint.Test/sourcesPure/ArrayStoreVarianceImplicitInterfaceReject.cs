@@ -1,11 +1,10 @@
-// Regression: variance gate must reject element-incompatible stores into
-// arrays of generic implicit-interface element type, now that
-// `isConcreteTypeAssignableTo` knows about the SZ-array → implicit-generic-
-// interface rule and no longer reports "unknown" (None) on this pair. The
-// gate's previous behaviour was to *permit* the store (degrade on `None`),
-// which would have allowed a clearly-invalid store like
-// `IEnumerable<string>[0] = new object[0]` to land. With the walk now
-// definitive, the gate must answer false and raise `ArrayTypeMismatchException`.
+// The variance gate must reject element-incompatible stores into
+// arrays of generic implicit-interface element type:
+// `isConcreteTypeAssignableTo` knows the SZ-array → implicit-generic-
+// interface rule and answers definitively (not "unknown"/None) on this pair,
+// so the gate must answer false and raise `ArrayTypeMismatchException`.
+// A gate that degraded to "permit" on `None` would let a clearly-invalid
+// store like `IEnumerable<string>[0] = new object[0]` land.
 //
 // Companion test `ArrayStoreVarianceGenericInterface.cs` covers the
 // positive case (`IEnumerable<string>[0] = new string[0]`).

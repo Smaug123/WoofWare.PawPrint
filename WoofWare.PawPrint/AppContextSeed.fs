@@ -15,8 +15,7 @@ open Microsoft.Extensions.Logging
 /// ordinary managed IL — it news up a `Dictionary<string, object>`, walks the arrays doing
 /// pointer arithmetic, and `new string(char*)`s each entry — so PawPrint runs CoreLib's own
 /// code here. The host's contribution, and the only thing this module synthesises, is the
-/// two `char**` buffers; producing those is the host doing its job, not a stand-in for
-/// managed code.
+/// two `char**` buffers.
 ///
 /// This module only *builds the call*; installing and pumping it is `Program.prepare`'s
 /// business, because that is where the entry thread's frame lifecycle is managed.
@@ -153,7 +152,7 @@ module AppContextSeed =
     /// null for a null store, and `SetData` lazily installs one. So this buys the cheaper path
     /// without changing what a guest can see.
     ///
-    /// The native blocks allocated here are deliberately never freed. `hostpolicy`'s arrays
+    /// The native blocks allocated here are never freed. `hostpolicy`'s arrays
     /// outlive the call too, and a guest is entitled to have kept a `char*` into one — so
     /// freeing them would turn a legal (if strange) guest into a use-after-free report.
     let prepareCall

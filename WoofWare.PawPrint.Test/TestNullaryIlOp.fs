@@ -627,7 +627,7 @@ module TestNullaryIlOp =
         with :? OverflowException ->
             Error ()
 
-    /// The pointer shape used for the `WidenedNativeInt` round-trip. It is deliberately
+    /// The pointer shape used for the `WidenedNativeInt` round-trip. It is
     /// one the *bare* native-int path refuses: `conv.i8` of a method handle followed by
     /// `conv.ovf.i` must invert to the original handle (the widening is bit-preserving
     /// on 64 bits), whereas a method handle arriving directly at `conv.ovf.i` has no
@@ -1359,8 +1359,8 @@ module TestNullaryIlOp =
     [<Test>]
     let ``And with a base-preserving mask leaves a type handle intact`` () : unit =
         // The whole unknown base survives and the tag is unchanged, so the value
-        // is bit-identical to the input. Answering `0` here (as PawPrint did
-        // before) silently replaces a pointer with null.
+        // is bit-identical to the input. Answering `0` here would silently
+        // replace a pointer with null.
         runBinary NullaryIlOp.And (typeHandle methodTableTarget) (nativeConst ~~~2L)
         |> shouldEqual (typeHandle methodTableTarget)
 
@@ -1534,9 +1534,8 @@ module TestNullaryIlOp =
     /// does not have. A synthetic address is 64 bits wide; the `int` that each `ByteOffset` step
     /// is stored in is a limit on the *step*, not on the total (issue #993).
     ///
-    /// The chain is built directly because `appendProjection` coalesces adjacent `ByteOffset`s,
-    /// and its coalesce now refuses a total this size — which is the right answer *there*,
-    /// because a single `ByteOffset` genuinely cannot hold it.
+    /// The chain is built directly because `appendProjection` coalesces adjacent `ByteOffset`s
+    /// and refuses a total this size, since a single `ByteOffset` cannot hold it.
     [<Test>]
     let ``a stable address folds several cursors without a 32-bit limit`` () : unit =
         let byteConcreteType : ConcreteType<ConcreteTypeHandle> =
@@ -1871,11 +1870,10 @@ module TestNullaryIlOp =
     // --- Byte views of a primitive cell at byte offset zero ---
     //
     // `*(byte*)&aLong` reads one byte at the address of an eight-byte cell. A *non-zero*
-    // index (`p[1]`) already worked, because C# emits the offset as pointer arithmetic and
-    // the resulting byref carries a trailing byte-view projection; index zero emits no
-    // arithmetic at all, so the byref names the whole cell and the read has to decide for
-    // itself that a narrower requested width means "reinterpret these bytes" rather than
-    // "convert this value".
+    // index (`p[1]`) arrives as a byref with a trailing byte-view projection, because C#
+    // emits the offset as pointer arithmetic; index zero emits no arithmetic at all, so
+    // the byref names the whole cell and the read has to decide for itself that a narrower
+    // requested width means "reinterpret these bytes" rather than "convert this value".
     //
     // The oracle is `System.BitConverter`, which is not derived from PawPrint: the bytes the
     // interpreter hands back must be the bytes the host runtime finds at that address.
@@ -2052,11 +2050,10 @@ module TestNullaryIlOp =
     // ---------------------------------------------------------------------
     // `And` over an array-element byref.
     //
-    // The offset of element `i` is `i * stride`, and the stride now comes from
-    // the array's recorded `ElementStride` rather than from measuring cell 0.
-    // That is what lets these questions be answered for `Array.Empty<T>()`,
-    // which has no cell to measure: previously every index but zero was
-    // refused outright. `MemoryMarshal.GetArrayDataReference` hands out a
+    // The offset of element `i` is `i * stride`, with the stride taken from
+    // the array's recorded `ElementStride` — a property of the element type,
+    // so the question is answerable even for `Array.Empty<T>()`, which has no
+    // cell to measure. `MemoryMarshal.GetArrayDataReference` hands out a
     // byref to index 0 of an empty array without a bounds check, and
     // `Unsafe.Add` walks it, so such a byref is reachable from legal IL.
     // ---------------------------------------------------------------------
@@ -2133,9 +2130,6 @@ module TestNullaryIlOp =
 
     [<Test>]
     let ``And answers for an empty array, at every index rather than only zero`` () : unit =
-        // Index 0 was always answerable. The rest were refused, because the stride was read
-        // off cell 0 and an empty array has none — so the answer depended on the array's
-        // contents rather than on its type.
         elementByteOffset baseClassTypes.Int32 0 0 |> shouldEqual 0L
 
         elementByteOffset baseClassTypes.Int32 0 2

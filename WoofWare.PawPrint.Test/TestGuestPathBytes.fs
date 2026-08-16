@@ -80,7 +80,7 @@ module TestGuestPathBytes =
 
     [<Test>]
     let ``an over-long path is refused before its bytes are decoded`` () : unit =
-        // Ordering, and not a detail: a real kernel checks the length in
+        // Ordering: a real kernel checks the length in
         // `getname`/`copyinstr` as it copies the string in, long before anything
         // interprets it. PawPrint aborts the interpreter on a path that is not
         // valid UTF-8, because it cannot represent one — so if the decode ran

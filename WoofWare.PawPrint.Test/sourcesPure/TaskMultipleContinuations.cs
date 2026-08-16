@@ -12,18 +12,17 @@ using System.Threading.Tasks;
 //
 // The final branch is an *unconditional* cast, reached only once a second continuation has been
 // registered, at which point Task.AddTaskContinuationComplex has replaced the single object with
-// a List<object>. So that cast is load-bearing on the preceding isinst tests all answering
-// correctly: if any of them wrongly matched, or if the object PawPrint stored were not the one
-// CoreLib expects to find there, the guest would die with an unhandled InvalidCastException
-// instead. This is the "keep the classifier's contract truthful and load-bearing" case from
-// AGENTS.md, and it is the shape that issue #758 suspected of being broken.
+// a List<object>. So that cast relies on the preceding isinst tests all answering correctly: if
+// any of them wrongly matched, or if the object PawPrint stored were not the one CoreLib expects
+// to find there, the guest would die with an unhandled InvalidCastException instead — the shape
+// issue #758 suspected of being broken.
 //
 // The sibling cases cannot reach it: TaskContinueWith.cs and TaskBasics.cs each register exactly
 // one continuation per Task, so they only ever exercise the TaskContinuation isinst arm. Getting
 // to the List arm needs several continuations attached to a Task that has *not yet completed* --
 // attaching to an already-completed Task runs the continuation immediately instead of storing it,
 // so in every block below the antecedent is deliberately left incomplete until after the last
-// ContinueWith call. That ordering is the whole point of the file, not incidental style.
+// ContinueWith call. That ordering is the point of the file.
 //
 // Both completion sites are covered, because they run RunContinuations on different threads:
 // completion from the main thread, and completion from a pool worker -- the latter being where

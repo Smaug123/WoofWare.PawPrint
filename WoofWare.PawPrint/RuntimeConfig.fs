@@ -137,7 +137,7 @@ module AppContextProperties =
 
     /// Lay the host's properties over <see cref="runtimeBaseline"/>.
     ///
-    /// The direction is deliberate: the host wins. A guest whose `runtimeconfig.json`
+    /// The host wins. A guest whose `runtimeconfig.json`
     /// declares the switch true observes true, because `AppContextSeed` is otherwise a
     /// faithful reproduction of what `hostpolicy` puts in `AppContext`, and would stop being
     /// one if PawPrint overwrote a value the guest's own configuration contains. Forcing the
@@ -279,8 +279,8 @@ module RuntimeConfig =
     /// parsing "succeeded". `parse` promises a `Result`, and the caller that treats a bad dev
     /// config as survivable depends on that promise, so the failure has to be contained here.
     ///
-    /// Contained as a refusal rather than reproduced, which is a deliberate choice and the
-    /// same one `renderValue` makes below. hostpolicy does not validate either — rapidjson is
+    /// Contained as a refusal rather than reproduced — the same choice `renderValue` makes
+    /// below. hostpolicy does not validate either — rapidjson is
     /// not given `kParseValidateEncodingFlag` — so a real host launches the app, and CoreCLR's
     /// UTF-8 → UTF-16 conversion substitutes U+FFFD. Measured against a real .NET 10 host, we
     /// cannot reproduce that substitution with the decoder we have: for the bytes `ED A0 80`
@@ -441,7 +441,7 @@ module RuntimeConfig =
     /// and at that default we would refuse a file a real host reads without comment, which is
     /// the same mistake as rejecting trailing content would have been.
     ///
-    /// It is finite anyway, because unlimited is worse than generous here. `JsonDocument` is
+    /// It is finite anyway. `JsonDocument` is
     /// iterative, so depth costs no stack (measured: a million levels parses, no overflow),
     /// but its cost is quadratic in the depth — measured at 266ms for 10k levels, 3.1s for
     /// 100k, 12.7s for 200k — so an unbounded limit turns a pathological file into an

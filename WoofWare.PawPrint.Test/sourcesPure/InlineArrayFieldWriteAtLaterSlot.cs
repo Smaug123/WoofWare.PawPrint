@@ -14,7 +14,7 @@ using System.Runtime.CompilerServices;
 // `writeManagedByrefCore` routes on whether the value being stored is byte-renderable, so
 // `Tag = 8` (a byte) goes to the bytes-or-typed-cell writer while `Payload = new Box(...)` (a
 // reference) goes to the structural writer's trailing-`Field` arm. Both need the chain to fold to
-// an offset first, which is what they had in common while this was parked.
+// an offset first.
 //
 // Slot 0 is kept as the control: it needs no `ByteOffset` at all.
 public class TestInlineArrayFieldWriteAtLaterSlot

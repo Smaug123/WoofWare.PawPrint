@@ -8,9 +8,9 @@ namespace WoofWare.PawPrint
 /// information across PawPrint even when we don't model the signal's
 /// semantics.
 ///
-/// Note: this type intentionally does NOT mention native (POSIX) signal
+/// This type intentionally does NOT mention native (POSIX) signal
 /// numbers, which are platform-specific. The native↔domain mapping lives at
-/// the P/Invoke seam and is platform-aware; the domain type is the
+/// the P/Invoke boundary and is platform-aware; the domain type is the
 /// platform-neutral identity that the rest of the simulator works with.
 /// PawPrint always uses the Linux signal-number table, regardless of host
 /// OS — see `Signal.toLinuxSigno`. This keeps the simulator deterministic
@@ -43,8 +43,8 @@ type Signal =
 /// information. `SystemNative_HandleNonCanceledPosixSignal` treats
 /// `Ignore`, `Stop`, and `Continue` all as no-ops in the dispatcher path
 /// — the runtime cannot stop or continue itself, and Ignore is literally
-/// nothing to do — but the classification is still load-bearing for
-/// future slices that want to render or assert the disposition.
+/// nothing to do — but the classification is preserved for consumers that
+/// render or assert the disposition.
 [<RequireQualifiedAccess>]
 type DefaultDisposition =
     /// Kernel default is to terminate the process. PawPrint does not yet
@@ -66,7 +66,7 @@ type DefaultDisposition =
 
 [<RequireQualifiedAccess>]
 module Signal =
-    /// Highest signal number the simulator accepts at the P/Invoke seam.
+    /// Highest signal number the simulator accepts from P/Invoke arguments.
     /// Matches Linux's `SIGRTMAX` on every modern glibc build (the real
     /// native side reads `GetSignalMax()` from `<signal.h>`, which expands
     /// to `SIGRTMAX` whenever that macro is defined). Used as the ceiling
@@ -78,8 +78,8 @@ module Signal =
 
     /// Map a domain `Signal` to its Linux native signo. PawPrint uses the
     /// Linux table on every host, so simulation traces don't depend on the
-    /// host OS. Callers crossing the P/Invoke seam must use this — never the
-    /// host's own headers — for deterministic output.
+    /// host OS. Callers crossing the P/Invoke boundary must use this — never
+    /// the host's own headers — for deterministic output.
     let toLinuxSigno (signal : Signal) : int =
         match signal with
         | Signal.SIGHUP -> 1
@@ -124,7 +124,7 @@ module Signal =
     /// with `EINVAL`, so `SystemNative_EnablePosixSignalHandling` returns
     /// `false` (install failed) and `PosixSignalRegistration.Create` throws
     /// rather than recording an impossible handler. PawPrint mirrors this
-    /// at the seam; the simulator never delivers either signal, regardless
+    /// at the P/Invoke boundary; the simulator never delivers either signal, regardless
     /// of what's in the pending queue, because no one can legally install
     /// a handler for them.
     let isUncatchable (signal : Signal) : bool =
@@ -135,8 +135,8 @@ module Signal =
 
     /// Map a positive native signo to a domain `Signal`. Modelled signos
     /// produce their named case; unmodelled-but-valid signos (positive and
-    /// `<= linuxSignalMax`) round-trip through `Signal.Other` so the seam
-    /// preserves identity — matching the real native semantics, where
+    /// `<= linuxSignalMax`) round-trip through `Signal.Other` so identity is
+    /// preserved across the P/Invoke boundary — matching the real native semantics, where
     /// `SystemNative_GetPlatformSignalNumber` returns the raw value when
     /// `signal > 0 && signal <= GetSignalMax()` and `PosixSignalRegistration`
     /// then forwards it to `Enable/DisablePosixSignalHandling` unchanged.
@@ -153,7 +153,7 @@ module Signal =
                 ValueNone
 
     /// Map a managed `PosixSignal` enum value (as the BCL passes it across
-    /// the seam) to a domain `Signal`. The managed enum uses negative
+    /// the P/Invoke boundary) to a domain `Signal`. The managed enum uses negative
     /// values for cross-platform identities and positive values when the
     /// caller has supplied a raw native signo directly; this helper
     /// translates either form. Returns `ValueNone` for values we don't

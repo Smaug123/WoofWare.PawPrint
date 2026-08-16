@@ -17,12 +17,11 @@ using System.Reflection;
 // would have nothing to mark and the theft would show up only in the outer count, one step
 // removed from its cause.
 //
-// This was parked on issue #865 while PawPrint interleaved search with cleanup: it recorded at
-// raise initiation whether a flag was pending and re-read the thread's bit at the delayed append,
-// leaving a window in which a `finally` could move the bit. Giving dispatch a real first pass
-// closes the window structurally — there is no longer any point between a raise and its appends
-// at which guest cleanup can run — which is why the eligibility field the old shape needed could
-// be deleted outright rather than patched.
+// Issue #865: a dispatcher that interleaves search with cleanup — recording at raise
+// initiation whether a flag was pending and re-reading the thread's bit at a delayed append —
+// leaves a window in which a `finally` can move the bit. A real first pass closes the window
+// structurally: there is no point between a raise and its appends at which guest cleanup can
+// run.
 class ForeignRaiseFlagNotStolenByCleanup
 {
     const string Boundary = "--- End of stack trace from previous location ---";

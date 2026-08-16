@@ -7,8 +7,8 @@ public class ConvOvfI
     // and double. (`int` -> `nint` cannot overflow on any platform, so Roslyn
     // emits plain `conv.i` for it and it is not covered here.)
     //
-    // The interesting contrast with `conv.ovf.u` is that negative sources are
-    // perfectly representable here, so the only integer overflow would be a
+    // The contrast with `conv.ovf.u` is that negative sources are
+    // representable here, so the only integer overflow would be a
     // long that doesn't fit in a native int — impossible on a 64-bit runtime,
     // which is what both PawPrint and the real runtime under test are. Floats
     // are therefore the only overflow source: `conv.ovf.i` truncates toward

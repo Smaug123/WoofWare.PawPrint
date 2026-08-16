@@ -20,7 +20,7 @@ open WoofWare.PawPrint
 /// That makes the *decidable* half at least as important to pin, and harder: a rule that
 /// refuses too much still passes every guest, because a guest that no longer runs simply
 /// moves to the parked list. `Utf8LiteralSpanEquality.cs` is the end-to-end guard against
-/// exactly that, and it exists because over-refusal did ship here once already.
+/// exactly that.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestByrefComparison =
@@ -81,9 +81,8 @@ module TestByrefComparison =
     /// That argument is false under explicit layout. `[FieldOffset(0)] int A;` and
     /// `[FieldOffset(0)] int B;` are distinct fields at one address, and such values stay
     /// field-backed rather than collapsing to a byte range — measured, by running
-    /// `Unsafe.AreSame(ref u.A, ref u.B)` on both runtimes: real .NET says `true`, and this
-    /// comparison used to say `false`. `AreSameExplicitLayoutOverlappingFields.cs` is the
-    /// parked guest for it.
+    /// `Unsafe.AreSame(ref u.A, ref u.B)` on real .NET: it says `true`.
+    /// `AreSameExplicitLayoutOverlappingFields.cs` is the parked guest for it.
     ///
     /// So the field-offset table is the only thing that separates that from an ordinary
     /// sequential struct, and comparison does not carry it.
@@ -97,7 +96,7 @@ module TestByrefComparison =
     /// Two fields of one heap object are *different roots*, but that is a fact about how
     /// each byref was built, not about where it points: `[StructLayout(LayoutKind.Explicit)]`
     /// on a class can put two fields on one address. Measured the same way as the struct
-    /// case — real .NET says `true`, this comparison used to say `false`. Parked as
+    /// case — real .NET says `true`. Parked as
     /// `AreSameHeapFieldsOverlappingExplicitLayout.cs`.
     [<Test>]
     let ``two fields of one heap object are refused`` () =
@@ -111,7 +110,7 @@ module TestByrefComparison =
 
         exn.Message |> shouldContainText "one heap object"
 
-    /// Fields of *different* objects are genuinely different storage, so those still decide.
+    /// Fields of *different* objects are different storage, so those still decide.
     [<Test>]
     let ``fields of different heap objects are unequal`` () =
         let field (addr : int) (name : string) =
@@ -232,9 +231,8 @@ module TestByrefComparison =
     /// on a local root is unbounded even with no `Field` before it — unlike the array case
     /// above, where folding leaves a residual inside one element.
     ///
-    /// This is the shape that was answering `false` while the predicate justified itself by
-    /// a folding that had never happened for this root. ECMA-335 promises no relative address
-    /// between two independently declared locals, so there is no fact to answer with.
+    /// ECMA-335 promises no relative address between two independently declared locals, so
+    /// there is no fact to answer with.
     [<Test>]
     let ``an unbounded cursor on a local root is refused`` () =
         let displaced =
@@ -253,8 +251,7 @@ module TestByrefComparison =
     /// produce — `normaliseTrailingByteOffset` would have folded whole strides of it into
     /// the index — and asserting an answer on it would enshrine an impossible shape. Worse,
     /// the asserted answer would be *wrong* in the only world where the input were canonical:
-    /// an element size above 1000 is what it would take, and then the address genuinely is
-    /// `a[1]`.
+    /// an element size above 1000 is what it would take, and then the address is `a[1]`.
     [<Test>]
     let ``the same cursor on a fold-eligible root still decides`` () =
         let displaced =
@@ -290,7 +287,7 @@ module TestByrefComparison =
 
     /// A chain differing only by a trailing `ReinterpretAs` is address-preserving, so it
     /// still decides — this is what makes `Unsafe.As` round-trips compare equal, and it is
-    /// deliberately *not* what the field refusal catches.
+    /// *not* what the field refusal catches.
     [<Test>]
     let ``a trailing reinterpret does not stop the comparison deciding`` () =
         ceq (byref (local 0us) [ ByrefProjection.ReinterpretAs byteType ]) (byref (local 0us) [])
@@ -455,9 +452,8 @@ module TestByrefComparison =
     /// A PE byte range knows its own size, so a cursor on one is not the open question that
     /// a cursor on a local is: it either lands inside the range or it does not. This is the
     /// shape a `u8` literal takes — `Utf8LiteralSpanEquality.cs` is the end-to-end guest —
-    /// and grouping it with the roots that carry no size was a measured regression, in which
-    /// `"abc"u8.Slice(1) == "xy"u8` began failing outright where both runtimes had agreed
-    /// on `false`.
+    /// and grouping it with the roots that carry no size fails
+    /// `"abc"u8.Slice(1) == "xy"u8` outright, where both runtimes decide `false`.
     let private peRange (rva : int) (size : int) : ByrefRoot =
         ByrefRoot.PeByteRange
             {
@@ -534,16 +530,13 @@ module TestByrefComparison =
     /// arithmetic is under test.
     ///
     /// Constructed directly rather than through `appendProjection`, which coalesces adjacent
-    /// `ByteOffset`s and so can never *build* a multi-cursor chain. That is why this was only
-    /// ever latent: the shapes that reach `ceqNormalised` today carry one cursor each. A chain
-    /// with several is what `ManagedPointerSource.fs` already warned this sum could not be
-    /// trusted on, and it becomes constructible the moment anything builds a chain directly.
+    /// `ByteOffset`s and so can never *build* a multi-cursor chain; the shapes that reach
+    /// `ceqNormalised` from the pipeline carry one cursor each.
     ///
-    /// What that warning got wrong is worth recording, since it is the reason this test looks
-    /// the way it does. It said the sum *wrapped*; measured, `List.sumBy` over `int` is
-    /// `Checked.(+)` inside FSharp.Core, so the sum **threw** `System.OverflowException` — a
-    /// host crash out of a byref comparison, on a pair whose answer is perfectly well defined.
-    /// So this property rejects the old accumulator by crashing, not by disagreeing.
+    /// Measured: `List.sumBy` over `int` is `Checked.(+)` inside FSharp.Core, so an `int`
+    /// fold over these displacements throws `System.OverflowException` — a host crash out of
+    /// a byref comparison, on a pair whose answer is well defined. This property rejects such
+    /// an accumulator by crashing, not by disagreeing.
     let private genAddressChain : Gen<ByrefProjection list> =
         gen {
             let! length = Gen.choose (0, 4)
@@ -692,7 +685,7 @@ module TestByrefComparison =
         )
 
     /// The concrete collision, spelled out. `Int32.MaxValue + 1` and `Int32.MinValue` are the
-    /// same 32-bit number and 2^32 apart as addresses; comparison answered `true`.
+    /// same 32-bit number and 2^32 apart as addresses; a wrapping `int32` sum calls them equal.
     [<Test>]
     let ``a pair of cursors summing past int32 is not equal to the wrapped single cursor`` () =
         let wrapped =

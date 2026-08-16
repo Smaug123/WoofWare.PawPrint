@@ -8,10 +8,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 /// Property-based and unit tests for the deterministic `SignalState` data
-/// model. `SignalState` has no full dispatcher in the simulator yet — these
-/// tests pin down its behaviour in isolation so the downstream slices
-/// (dispatch, harness injection, native handler arms) can build on a
-/// known-good shape.
+/// model, exercised in isolation from the dispatcher.
 ///
 /// The property test runs a random sequence of operations through both the
 /// production module and a structurally-different reference oracle, then
@@ -185,7 +182,7 @@ module TestSignalState =
 
     [<Test>]
     let ``unblock collapses empty mask back to the empty state`` () : unit =
-        // Critical: a state that had a signal blocked and then unblocked must
+        // A state that had a signal blocked and then unblocked must
         // be structurally identical to a state that never blocked it. Without
         // collapsing the empty mask, equality would distinguish two
         // semantically-equivalent states and the property-test oracle would
@@ -234,10 +231,9 @@ module TestSignalState =
 
     [<Test>]
     let ``structural equality survives a non-empty pending queue`` () : unit =
-        // Regression guard for a previous representation that stored
-        // `Pending` as `ImmutableQueue<T>`: that container uses reference
-        // equality, so two independently-built states with identical
-        // contents would compare unequal once the queue was non-empty.
+        // `ImmutableQueue<T>` compares by reference, so storing `Pending` in
+        // one would make two independently-built states with identical
+        // contents compare unequal once the queue was non-empty.
         // `EmulatedKernel` (which embeds `SignalState`) is compared
         // structurally for deterministic state dedup; this test pins
         // down that the contract holds across every operation that
@@ -719,9 +715,9 @@ module TestSignalState =
 
         Check.One (propertyConfig, property)
 
-        // Distribution checks: the random walk must hit each load-bearing
-        // path frequently enough that a regression would actually surface.
-        // The thresholds are deliberately conservative — expected counts
+        // Distribution checks: the random walk must hit each of these
+        // paths frequently enough that a regression would actually surface.
+        // The thresholds are conservative — expected counts
         // are in the hundreds, so requiring a few dozen guards against
         // pathological non-coverage without becoming flaky on the lower
         // tail of the seed distribution.

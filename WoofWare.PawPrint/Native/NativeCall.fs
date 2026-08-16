@@ -184,13 +184,10 @@ module NativeCall =
         | other -> failwith $"%s{operation}: expected Int64 argument, got %O{other}"
 
     /// Extract the registry id from the m_handle of a `RuntimeFieldHandleInternal`, or `None` for
-    /// the null sentinel. The null sentinel has several spellings, because
-    /// `default(RuntimeFieldHandleInternal)` reaches PawPrint as whichever zero shape the
-    /// zero-initialising path produced -- a verbatim zero or a null managed pointer, in either the
-    /// runtime-pointer or the native-int tag. Recognise all four, exactly as
-    /// `methodHandleIdOfRuntimeMethodHandleInternal` does below: a caller that dispatches on "did
-    /// I get a field handle?" needs this to answer honestly for every spelling of null, rather than
-    /// throwing on the ones it happens not to list.
+    /// the null sentinel. `default(RuntimeFieldHandleInternal)` reaches PawPrint as whichever zero
+    /// shape the zero-initialising path produced -- a verbatim zero or a null managed pointer, in
+    /// either the runtime-pointer or the native-int tag -- so all four spellings map to `None`,
+    /// exactly as in `methodHandleIdOfRuntimeMethodHandleInternal` below.
     let fieldHandleIdOfRuntimeFieldHandleInternal (operation : string) (arg : CliType) : int64 option =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id) -> Some id
@@ -404,9 +401,8 @@ module NativeCall =
     /// memory — for callers whose own boundary imposes a limit.
     ///
     /// Returns the bytes before the terminator when one is found within that
-    /// span, and otherwise exactly `maxBytes` bytes: "at least this long", which
-    /// is all a caller needs to know to refuse it, and which keeps the *rule*
-    /// about what is too long with the caller rather than duplicated here.
+    /// span, and otherwise exactly `maxBytes` bytes ("at least this long"); the
+    /// rule for what is too long stays with the caller.
     ///
     /// This exists because a real `stat` does not scan for a terminator
     /// indefinitely either. `getname()` on Linux and `copyinstr` on Darwin copy
@@ -678,7 +674,7 @@ module NativeCall =
         // closed one does (`typeof(List<int>).Assembly` is corelib, not the caller's).
         // `CreateMinimalMethodTable` calls `SetModule(pContainingModule)` (methodtable.cpp:687), so
         // the containing module -- and hence the assembly -- is one of the few facts the synthetic
-        // type genuinely carries, rather than one it would need a metadata row to answer.
+        // type carries, rather than one it would need a metadata row to answer.
         | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly -> System.Reflection.AssemblyName scopeAssembly
         | RuntimeTypeHandleTarget.OpenConstructed (identity, _)
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> identity.Assembly

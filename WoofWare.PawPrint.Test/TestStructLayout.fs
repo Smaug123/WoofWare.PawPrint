@@ -13,10 +13,8 @@ open WoofWare.PawPrint
 /// 32-bit-only offset bias, no inline arrays.
 ///
 /// Written from the C++ rather than from `CliValueType.ComputeAutoLayoutFields`, and structured
-/// differently on purpose: list folds over explicit size classes rather than mutable
-/// bucket-index arrays. Two transcriptions that agree are much better evidence than one, because
-/// the failure mode this guards against is a slip in the placement arithmetic, and a slip is
-/// unlikely to be made identically in two differently-shaped pieces of code.
+/// differently: list folds over explicit size classes rather than mutable bucket-index arrays,
+/// so a slip in the placement arithmetic is unlikely to be made identically in both.
 module private AutoLayoutOracle =
 
     /// Everything the layout algorithm needs to know about one field.
@@ -236,7 +234,7 @@ module TestStructLayout =
                     }
             }
 
-        // Note the limit of this: a nested value class's `Size`/`Alignment` are read back from
+        // The limit of this: a nested value class's `Size`/`Alignment` are read back from
         // the implementation under test, not fixed independently, so the oracle property checks
         // that the algorithm composes consistently with itself across one level of nesting rather
         // than that a nested struct is sized as CoreCLR would size it. The latter is pinned by
@@ -544,16 +542,11 @@ module TestStructLayout =
 
     [<Test>]
     let ``The declared layout kind is honoured for reference types too`` () : unit =
-        // `TypeLayoutKind.applied` used to report `Sequential` for a declared-`Auto` reference
-        // type -- which is every C# class. That was a holding position for the base-chain
-        // flattening: laying a whole chain out in one pass and then bucketing it would have sorted
-        // inherited fields in among the derived type's own, so honouring the declared kind would
-        // have traded one infidelity for another.
-        //
-        // Layout is per-declaring-type now (issue #994), so the suppression is gone and `applied`
-        // with it. `TestBaseChainLayout` is what holds the replacement in place, against real
-        // .NET: `class Mixed { byte B; int I; long L; short S; }` is bucketed to `L@0 I@8 S@12
-        // B@14` there, which is the row this gate used to get wrong.
+        // Layout is computed per-declaring-type (issue #994), so the declared kind is honoured
+        // for reference types — which is every C# class — as well as value types.
+        // `TestBaseChainLayout` pins the behaviour against real .NET:
+        // `class Mixed { byte B; int I; long L; short S; }` is bucketed to `L@0 I@8 S@12 B@14`
+        // there.
         for attrs, expected in
             [
                 TypeAttributes.AutoLayout, TypeLayoutKind.Auto
@@ -595,7 +588,7 @@ module TestStructLayout =
             ofFieldsWithKind kind Layout.Default withoutOffsets |> ignore
 
         // A declared-`Explicit` type whose fields carry no offsets falls back to declared-order
-        // placement, which is what it received before the layout kind was modelled at all.
+        // placement.
         let fallback =
             ofFieldsWithKind TypeLayoutKind.Explicit Layout.Default withoutOffsets
 
@@ -656,8 +649,8 @@ module TestStructLayout =
         // : AlignSize(lastFieldEnd, alignmentRequirement)` (classlayoutinfo.cpp:543-550).
         //
         // The two sibling tests here only ever exercise a floor *above* the rounded size, where
-        // "round then floor" and "floor instead of round" agree, which is how the bug survived.
-        // These are the cases where they disagree, in both directions.
+        // "round then floor" and "floor instead of round" agree. These are the cases where they
+        // disagree, in both directions.
         let fields =
             [
                 cliField "l" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 1L))) None

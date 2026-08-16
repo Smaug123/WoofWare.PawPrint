@@ -7,8 +7,8 @@ using System.IO;
 // which is what brings SystemNative_GetEUid into the picture: whenever the
 // user, group and other read-only verdicts are not unanimous — 0o644 and 0o755
 // are both such modes — IsModeReadOnlyCore compares the file's owner against
-// the effective uid (FileStatus.Unix.cs:106). Before that entry point existed,
-// every check here aborted the interpreter.
+// the effective uid (FileStatus.Unix.cs:106). Without that entry point,
+// every check here aborts the interpreter.
 //
 // Every path is RELATIVE: the real runtime runs in a scratch directory holding
 // the materialised seed, while PawPrint puts the same seed at the root of its

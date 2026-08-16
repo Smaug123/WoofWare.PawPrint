@@ -26,7 +26,7 @@ public class TestUnboxAnyMultiDimArrayTarget
         if (back[1, 2] != 7) return 5;
         if (!object.ReferenceEquals(back, grid)) return 6;
 
-        // Rank is load-bearing: a rank-3 token must not accept a rank-2 operand.
+        // A rank-3 token must not accept a rank-2 operand.
         bool threw = false;
         try
         {

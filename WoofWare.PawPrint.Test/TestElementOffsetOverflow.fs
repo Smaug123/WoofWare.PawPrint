@@ -220,7 +220,7 @@ module TestElementOffsetOverflow =
 
     [<Test>]
     let ``element walk refuses an index that overflows int32`` () : unit =
-        // The exact shape Codex found: `Unsafe.Add(ref a[1], Int32.MaxValue)`. Real .NET lands
+        // `Unsafe.Add(ref a[1], Int32.MaxValue)`: real .NET lands
         // +8589934592 bytes from &a[0]; wrapping would report -8589934592.
         let arr, st = allocateIntArray 4 (state ())
 
@@ -287,8 +287,8 @@ module TestElementOffsetOverflow =
 
     [<Test>]
     let ``in-range byte-cursor walk still succeeds`` () : unit =
-        // The control for the case above: a byte delta that does fit must keep working, so the new
-        // guard is not simply refusing the whole byte-cursor path.
+        // The control for the case above: a byte delta that does fit must keep working, so the
+        // guard is not refusing the whole byte-cursor path outright.
         let arr, st = allocateIntArray 4 (state ())
 
         let int64View =

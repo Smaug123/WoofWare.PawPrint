@@ -8,12 +8,11 @@ open Microsoft.Extensions.Logging
 /// private reflection after <c>CreateDelegate</c> and before the first invocation.
 /// </summary>
 /// <remarks>
-/// Which *exception* each case produces is deliberately not recorded here, because it is a property
+/// Which *exception* each case produces is not recorded here, because it is a property
 /// of the consumer rather than of the lookup: an <c>Absent</c> entry is
 /// <c>InvalidProgramException</c> for a type operand, whose <c>ResolveToken</c> throws on null, and
 /// <c>NullReferenceException</c> for <c>ldstr</c>, whose <c>GetString</c> returns null and leaves
-/// the JIT to indirect through it. Both are measured, and an earlier revision of this branch got
-/// <c>ldstr</c> wrong precisely by reading the mapping off the type path.
+/// the JIT to indirect through it. Both are measured.
 /// </remarks>
 [<RequireQualifiedAccess>]
 type internal ScopeEntryLookup =
@@ -59,8 +58,7 @@ type internal DynamicMethodResolution =
 /// off a dynamic method's <c>DynamicResolver</c>; an operand into it is an index, and nothing about
 /// the token's bits distinguishes it from a metadata token naming a real row (see
 /// <see cref="MetadataOperand"/>). The decoder settles which universe an operand belongs to and
-/// records the index; this module turns that index into a value, which is deliberately a separate
-/// step and a later one.
+/// records the index; this module turns that index into a value, as a separate and later step.
 /// </para>
 /// <para>
 /// Later, because CoreCLR reads the scope at JIT rather than at emit —
@@ -203,7 +201,7 @@ module internal DynamicScopeOperand =
     /// </summary>
     /// <remarks>
     /// Read out of the live <c>m_tokens</c> rather than out of anything captured when the method was
-    /// minted, and that is the whole point: a guest can replace a slot through private reflection
+    /// minted: a guest can replace a slot through private reflection
     /// after <c>CreateDelegate</c> and before the first invocation, and real .NET compiles against
     /// the replacement (measured — swap `typeof(int).TypeHandle` for `typeof(long).TypeHandle` and
     /// `sizeof` answers 8). Capturing the entry's address at mint would follow a *mutation of the
@@ -269,7 +267,7 @@ module internal DynamicScopeOperand =
     /// <c>_paramName</c>, which this channel cannot set, so the message is left at its default and
     /// the gap is the one already recorded on <see cref="ScopeEntryLookup.PastEnd"/>.
     ///
-    /// Note this is a property of the *exception*, not of what went wrong: the reason a particular
+    /// This is a property of the *exception*, not of what went wrong: the reason a particular
     /// operand was refused is a PawPrint diagnostic and belongs in the log, not in a field the guest
     /// reads.
     /// </remarks>
@@ -321,7 +319,7 @@ module internal DynamicScopeOperand =
     /// closed control that runs: a byref (<c>typeof(int).MakeByRefType()</c>) and <c>System.Void</c>
     /// are <c>InvalidProgramException</c> for <c>sizeof</c>, <c>newarr</c> and <c>box</c> alike,
     /// whereas a *pointer* type is perfectly legal and answers 8 — so pointers, arrays and function
-    /// pointers are deliberately not refused here. The equivalent metadata operands are not
+    /// pointers are not refused here. The equivalent metadata operands are not
     /// validated either; that is pre-existing and unreachable from any compiler, where this is newly
     /// reachable because `ILGenerator.Emit` accepts any `RuntimeType`.
     /// </para>
@@ -334,7 +332,7 @@ module internal DynamicScopeOperand =
     /// to add it.
     /// </para>
     /// <para>
-    /// Where this deliberately stops: it answers the questions that are *about the scope* — is the
+    /// Where this stops: it answers the questions that are *about the scope* — is the
     /// entry a type handle, and is the target a closed type — plus the two shapes above. It does
     /// not answer "is this type a legal operand of this opcode", which is a per-opcode question
     /// (<c>sizeof Span&lt;int&gt;</c> is legal and answers 16; <c>newarr Span&lt;int&gt;</c> is a
@@ -430,7 +428,7 @@ module internal DynamicScopeOperand =
     /// refusal; <see cref="mintDynamicMethod"/> is the other half.
     /// </para>
     /// <para>
-    /// Reading late is not a stylistic echo of <see cref="closedType"/> here; it is what makes the
+    /// Reading late is what makes the
     /// feature work. A dynamic method may take a token for *itself*, and on CoreCLR that resolves
     /// because installation and compilation are separate steps: <c>ModuleHandle.GetDynamicMethod</c>
     /// returns and its caller assigns <c>_methodHandle</c> *before* anything walks the body's
@@ -439,8 +437,8 @@ module internal DynamicScopeOperand =
     /// null and have to invent a cycle-breaking rule.
     /// </para>
     /// <para>
-    /// Every refusal below is a <c>failwith</c> rather than a guest exception, and that is a
-    /// statement about reachability rather than laziness. Real .NET's answers are measured — a null
+    /// Every refusal below is a <c>failwith</c> rather than a guest exception.
+    /// Real .NET's answers are measured — a null
     /// slot is <c>InvalidProgramException</c>, a slot holding something <c>ResolveToken</c> falls
     /// through on (a <c>string</c>, a <c>RuntimeTypeHandle</c>, a signature blob) is
     /// <c>BadImageFormatException</c> with the fixed message "Bad method token.", and an index
@@ -582,8 +580,8 @@ module internal DynamicScopeOperand =
     /// <para>
     /// The minting is done by *calling the guest's own* <c>DynamicMethod.GetMethodDescriptor</c>,
     /// which is what CoreCLR's <c>ResolveToken</c> calls (<c>DynamicILGenerator.cs:800</c>), rather
-    /// than by reading the builder's fields and minting natively. That matters for more than
-    /// tidiness: <c>GetMethodDescriptor</c> takes <c>lock (this)</c> and double-checks under it, so
+    /// than by reading the builder's fields and minting natively.
+    /// <c>GetMethodDescriptor</c> takes <c>lock (this)</c> and double-checks under it, so
     /// two threads racing to call the same unminted callee agree on one identity without the
     /// interpreter arranging anything; it refuses an empty body with
     /// <c>InvalidOperationException</c>, which a native shortcut would have to fabricate; and it
@@ -593,7 +591,7 @@ module internal DynamicScopeOperand =
     /// <para>
     /// No re-entry marker is needed, and none is wanted. Whether the mint has happened is a fact
     /// about the guest heap — <c>_methodHandle</c> is null or it is not — exactly as it is for
-    /// class initialisation, so the re-executed instruction can simply ask again. A marker would
+    /// class initialisation, so the re-executed instruction can ask again. A marker would
     /// be a second copy of that answer, free to disagree with it.
     /// </para>
     /// <para>
@@ -601,8 +599,8 @@ module internal DynamicScopeOperand =
     /// still be there when it re-executes. <c>callMethod</c> pops exactly the one <c>this</c>
     /// pushed here (<c>GetMethodDescriptor</c> takes no arguments and is not virtual, so nothing
     /// peeks deeper), and <c>ReturnValueDisposition.Discard</c> stops the <c>RuntimeMethodHandle</c>
-    /// it returns from landing on top of them. The value is genuinely redundant rather than merely
-    /// inconvenient: it wraps the same <c>_methodHandle</c> the re-execution reads off the heap.
+    /// it returns from landing on top of them. The value is redundant: it wraps the same
+    /// <c>_methodHandle</c> the re-execution reads off the heap.
     /// </para>
     /// <para>
     /// <b>Divergence.</b> Real .NET mints as part of *compiling* the caller, not of running it, so

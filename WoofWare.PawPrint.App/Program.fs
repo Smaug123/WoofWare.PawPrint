@@ -20,11 +20,7 @@ module AppProgram =
         | InvalidArgs of message : string
 
     /// Parse a PCT seed in decimal (`12345`) or hex (`0xDEADBEEF`/`0XDEADBEEF`).
-    /// Hex is supported because writing 16 raw hex digits is the natural shape
-    /// for a 64-bit seed, and the CLI is a place where humans want to copy/paste
-    /// reproduction seeds from log output. Returns the parsed value or an error
-    /// message; failure cases are reported via `AppMode.InvalidArgs` so the
-    /// existing usage-print path handles them uniformly.
+    /// Returns the parsed value or an error message.
     let private parseSeed (s : string) : Result<uint64, string> =
         let trimmed = s.Trim ()
 
@@ -53,10 +49,8 @@ module AppProgram =
                 Result.Error $"--seed: '%s{s}' is not a valid unsigned 64-bit decimal or 0x-prefixed hex literal"
 
     let private parseMode (argv : string list) : AppMode =
-        // Two flags (`--debug-server`, `--seed N`) are accepted in either order
-        // before the DLL path. Implemented as a fold rather than a fixed-order
-        // pattern match so callers don't have to memorise the prefix order, and
-        // so a future third flag stays additive instead of multiplying cases.
+        // The flags (`--debug-server`, `--seed N`) are accepted in either order
+        // before the DLL path.
         let rec go (debugServer : bool) (seed : uint64 option) (rest : string list) : AppMode =
             match rest with
             | "--debug-server" :: tail -> go true seed tail
@@ -137,10 +131,8 @@ module AppProgram =
         // than reporting this machine's core count, and its `DateTime.UtcNow`
         // starts at the Unix epoch rather than at this machine's clock, so a run
         // recorded here replays identically elsewhere — and at the same *times*.
-        // Env vars are a deliberate exception because the
-        // guest's whole reason to run under the CLI is to see the invoker's
-        // configuration — and unlike the core count they are visible in, and
-        // reproducible from, the recorded kernel state.
+        // Env vars don't break replay: unlike the core count, they are visible in,
+        // and reproducible from, the recorded kernel state.
         let kernelConfig : KernelConfig =
             let dict = System.Environment.GetEnvironmentVariables ()
 
@@ -184,17 +176,10 @@ module AppProgram =
             // `StepEffect.WroteToFd`; we consume the effect so output reaches the host
             // as the guest produces it.
             //
-            // Streaming rather than draining the log once at the end is what makes
-            // output survive a run that never yields a `RunOutcome`: a livelocked guest,
+            // Streaming rather than draining the log once at the end makes output
+            // survive a run that never yields a `RunOutcome`: a livelocked guest,
             // one killed from outside, or one this interpreter reports as `Deadlocked`.
-            // Draining only on a `RunOutcome` silently discarded everything such a guest
-            // had printed, which is precisely when the output is most wanted. That holds
-            // for everything the stepping loop below drives — see the `prepare` call site
-            // for the startup-phase writes it does not yet cover.
-            //
-            // It costs no determinism: the interpreter is untouched and still never
-            // performs I/O, the effect is a value it hands back, and this shell decides
-            // what to do with it.
+            // Both stepping loops below (startup and `Main`) consume effects this way.
             use hostOut = System.Console.OpenStandardOutput ()
             use hostErr = System.Console.OpenStandardError ()
 
@@ -211,19 +196,17 @@ module AppProgram =
                     | FileDescriptorRole.StandardError -> hostErr
                     | FileDescriptorRole.StandardInput ->
                         // Unreachable: `SystemNative_Write` rejects stdin with EBADF before
-                        // appending. Exhaustiveness is load-bearing here — a future writable
-                        // role (e.g. a regular file) will fail to compile until its
-                        // destination is decided.
+                        // appending. A future writable role (e.g. a regular file) will fail
+                        // to compile until its destination is decided.
                         failwith "guest OutputLog contains a StandardInput entry (this is an interpreter bug)"
 
                 destination.Write (bytes.AsSpan ())
 
-                // Flush per guest write rather than at end of run. Without this the whole
-                // point is lost: a guest that prints and then hangs leaves its output in the
-                // host's stream buffer, and a `kill` discards it. Guest writes arrive at
-                // whatever granularity the guest's own `TextWriter` flushes (a line at a time
-                // for `Console.WriteLine`), not per byte, so this is cheap relative to
-                // interpreting the IL that produced them.
+                // Flush per guest write: otherwise a guest that prints and then hangs leaves
+                // its output in the host's stream buffer, and a `kill` discards it. Guest
+                // writes arrive at whatever granularity the guest's own `TextWriter` flushes
+                // (a line at a time for `Console.WriteLine`), not per byte, so this is cheap
+                // relative to interpreting the IL that produced them.
                 //
                 // The two streams are written in guest write order, so a `Write(2,…)`
                 // followed by a `Write(1,…)` reaches the host as `err`-then-`out`, which is
@@ -303,12 +286,10 @@ module AppProgram =
 
             // The stepping loop is driven here rather than by calling `Program.run`,
             // because `Program.run` hands back only a terminal `RunOutcome` and the
-            // per-step `StepEffect`s are what carry guest output. Consuming them here is
-            // the whole point: output reaches the host while the guest is still running.
-            //
-            // `Program.pumpPrepared` (which `Program.run` uses) additionally raises on
-            // `Deadlocked` rather than returning, so a deadlocked guest never reached the
-            // end-of-run drain at all and lost everything it had printed.
+            // per-step `StepEffect`s are what carry guest output while the guest is
+            // still running. `Program.pumpPrepared` (which `Program.run` uses) also
+            // raises on `Deadlocked` rather than returning, so a deadlocked guest
+            // would never reach an end-of-run drain.
             let logger = loggerFactory.CreateLogger "Program"
 
             // Every thread is blocked and the run has not finished, so no further step is
@@ -324,10 +305,10 @@ module AppProgram =
                     stuck
                 )
 
-                // Same code the escaping host exception produced, so shell callers observe no
-                // change. That is per-platform: an unhandled .NET exception terminates with
-                // 0xE0434352 on Windows and SIGABRT (128 + 6) on Unix, which is the same split
-                // the guest-unhandled-exception arm above uses.
+                // Same exit code an unhandled host exception would produce. That is
+                // per-platform: an unhandled .NET exception terminates with 0xE0434352 on
+                // Windows and SIGABRT (128 + 6) on Unix, which is the same split the
+                // guest-unhandled-exception arm above uses.
                 if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
                     -532462766
                 else

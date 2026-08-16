@@ -22,8 +22,8 @@ using System.Text;
 // agree on the real runtime, but under PawPrint the P/Invoke error slot is
 // filled by the LibraryImport-generated stub, which copies GetLastSystemError
 // into it — and a classic DllImport like the ones here has no such stub, so
-// nothing performs the copy. That gap is real but belongs to the P/Invoke seam
-// rather than to stat; the CoreLib path is exercised by FileExistsSeeded.cs,
+// nothing performs the copy. That gap is real but belongs to the P/Invoke
+// last-error plumbing rather than to stat; the CoreLib path is exercised by FileExistsSeeded.cs,
 // where a failing LStat is what makes File.Exists answer false.
 //
 // The exit code is the index of the first check that failed; 0 means all

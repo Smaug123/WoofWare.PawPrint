@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-// Test edge cases with generic parameters as mentioned in the diff
+// Test edge cases with generic parameters
 public class GenericParameterEdgeCases
 {
     // Test method with multiple generic parameters
@@ -97,7 +97,7 @@ public class GenericConstraintTest<T> where T : class
     }
 }
 
-// Test generic field access scenarios mentioned in the diff
+// Test generic field access scenarios
 public class GenericFieldAccess<T>
 {
     public static T DefaultValue = default(T);

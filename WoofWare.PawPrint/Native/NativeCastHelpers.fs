@@ -16,8 +16,8 @@ module NativeCastHelpers =
     /// nor an open constructed type, which CoreCLR's class loader gives a MethodTable of its
     /// own too (`TypeVarTypeDesc::LoadConstraints`, `vm/typedesc.cpp:826`).
     ///
-    /// The distinction is load-bearing for object casts: `ObjIsInstanceOfCore` answers a flat
-    /// `false` for a TypeDesc target without consulting the structural walk at all.
+    /// `ObjIsInstanceOfCore` answers a flat `false` for a TypeDesc target without consulting
+    /// the structural walk at all.
     let private isTypeDescTarget (target : RuntimeTypeHandleTarget) : bool =
         match target with
         // `CreateMinimalMethodTable` produces a MethodTable, not a TypeDesc (methodtable.cpp:663);
@@ -90,7 +90,7 @@ module NativeCastHelpers =
     /// CoreCLR's `ObjIsInstanceOfCore` (`src/coreclr/vm/jithelpers.cpp:385`), minus the cast
     /// cache — the caller has already missed in it, which is what "NoCacheLookup" names.
     ///
-    /// The branch order is CoreCLR's and is load-bearing, not merely a fast path:
+    /// The branch order is CoreCLR's and changes the answer, not merely the cost:
     ///
     /// 1. `Nullable::IsNullableForType` first, and deliberately never cached, because object
     ///    castability and type castability disagree on `T -> Nullable<T>`: the two share a
@@ -101,10 +101,8 @@ module NativeCastHelpers =
     ///    but CoreCLR never asks it about one.
     /// 3. Otherwise the ordinary structural walk (`MethodTable::CanCastTo`). An *open
     ///    constructed* target reaches this walk (it is not a TypeDesc) and the cast oracle
-    ///    refuses it loudly; that is deliberate. The answer is almost certainly `false` — no
-    ///    closed type's interface map or base chain holds an instantiation containing type
-    ///    variables — but "almost certainly" is not a basis for an answer the guest branches
-    ///    on, and such a target only arises from a reflected generic-parameter constraint.
+    ///    refuses it loudly; such a target only arises from a reflected generic-parameter
+    ///    constraint.
     /// 4. If that failed and the target is an interface, CoreCLR consults the COM and
     ///    `IDynamicInterfaceCastable` fallbacks. COM is unreachable here — `FEATURE_COMINTEROP`
     ///    is Windows-only and PawPrint has no RCWs — but `IDynamicInterfaceCastable` is real
@@ -160,9 +158,7 @@ module NativeCastHelpers =
         elif not (isInterfaceTarget state target) then
             state, false
         // `MethodTableBuilder` never sets the flag on a value class, so a boxed struct that
-        // implements the interface still takes the ordinary `false`. Checked before the
-        // assignability query because it is the cheaper of the two and because it is the
-        // faithful reading of the flag, not an optimisation.
+        // implements the interface still takes the ordinary `false`.
         elif argumentIsValueType ctx.BaseClassTypes state objType then
             state, false
         else
@@ -179,11 +175,11 @@ module NativeCastHelpers =
                 dynamicCastableHandle
 
         if objIsDynamicCastable then
-            // Note that PawPrint's own `isinst` / `castclass` opcodes
+            // PawPrint's own `isinst` / `castclass` opcodes
             // (`UnaryMetadataObjectOps.castToReferenceType`) do not model this feature either;
             // they would answer `false` here without complaint. Closing that hole means
             // driving a managed callback out of the cast path generally, not just from this
-            // QCall, so it is deliberately left as its own change.
+            // QCall.
             failwith
                 $"TODO: %s{operation}: object of type %O{objType} failed the structural cast to interface %O{target}, but its type implements System.Runtime.InteropServices.IDynamicInterfaceCastable; CoreCLR would call back into the guest's IsInterfaceImplemented (DynamicInterfaceCastable::IsInstanceOf, src/coreclr/vm/dynamicinterfacecastable.cpp) to decide, which PawPrint does not model"
         else

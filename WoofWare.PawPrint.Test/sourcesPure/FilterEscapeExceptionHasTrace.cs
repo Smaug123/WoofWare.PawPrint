@@ -6,7 +6,7 @@ class FilterEscape : Exception
 
 // An exception that escapes an exception *filter* is discarded: the CLR treats it as the
 // filter returning false, and handler search resumes for the original exception. But the
-// escaping exception genuinely propagated, so it carries a stack trace, and a guest holding
+// escaping exception did propagate, so it carries a stack trace, and a guest holding
 // the object can read it afterwards.
 //
 // Measured on .NET 10 before being written. Both escape routes are covered because PawPrint

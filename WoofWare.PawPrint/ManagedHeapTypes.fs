@@ -5,7 +5,7 @@ open System.Collections.Immutable
 /// State carried when an object's monitor is `Held` by some thread.
 /// `AcquireQueue` is the FIFO list of (thread, optional re-entry depth) pairs
 /// parked in `BlockedOnSyncBlockAcquire` waiting for ownership to be transferred
-/// to them when `LockingThread` calls `Monitor.Exit`. FIFO order is load-bearing
+/// to them when `LockingThread` calls `Monitor.Exit`. FIFO order is required
 /// for fairness: switching to LIFO or arbitrary order would change the
 /// observable interleaving for guests that race multiple threads into the same
 /// `lock` block.

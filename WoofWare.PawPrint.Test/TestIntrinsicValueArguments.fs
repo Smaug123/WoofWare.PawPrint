@@ -19,7 +19,7 @@ open WoofWare.PawPrint
 /// What must be refused is narrowing a *pointer* to int32. `conv.i4` would synthesise
 /// bits for one, which fabricates the answer and, worse, assigns the pointer a
 /// `PointerHashState` identity — perturbing every synthesised pointer value later in
-/// the run. An int32 parameter cannot legally receive a pointer, so this is pure downside.
+/// the run. An int32 parameter cannot legally receive a pointer.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestIntrinsicValueArguments =
@@ -116,7 +116,7 @@ module TestIntrinsicValueArguments =
 
     [<Test>]
     let ``int32 value argument refuses a pointer rather than synthesising its bits`` () : unit =
-        // The whole point of the change. `conv.i4` answers these by minting bits and
+        // `conv.i4` answers these by minting bits and
         // registering a pointer identity; the intrinsic must not, because an int32
         // parameter cannot legally receive a pointer.
         let property (value : EvalStackValue) : unit =
@@ -159,7 +159,7 @@ module TestIntrinsicValueArguments =
 
     [<Test>]
     let ``int32 value argument coerces ldnull to zero, where conv i4 refuses it`` () : unit =
-        // The one shape where call-boundary coercion and the `conv.i4` opcode genuinely
+        // The one shape where call-boundary coercion and the `conv.i4` opcode
         // disagree, so it cannot live in the oracle above. `impImplicitIorI4Cast` retypes a
         // zero `TYP_REF` constant to a pointer-sized integer outright ("We also allow an
         // implicit conversion of a ldnull into a TYP_I_IMPL(0)"), and narrows from there.

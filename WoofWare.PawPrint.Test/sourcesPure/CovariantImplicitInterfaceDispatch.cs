@@ -1,10 +1,10 @@
 // The mirror image of `ContravariantImplicitInterfaceDispatch.cs`: covariant (`out`) interface
 // dispatch onto an IMPLICIT interface implementation.
 //
-// This case passed before the variant-interface-map retarget landed, but only by accident of
+// This case passes even without the variant-interface-map retarget, by accident of
 // where the two halves of the signature comparison differ: `signatureMatchesTarget` compares
 // return types with `isAssignableFrom` and parameter types with equality, so the covariant half
-// of variance was tolerated and the contravariant half was not. It is here so that a future
+// of variance is tolerated and the contravariant half is not. It is here so that a future
 // tightening of the return-type comparison cannot silently break covariant dispatch without a
 // test noticing.
 

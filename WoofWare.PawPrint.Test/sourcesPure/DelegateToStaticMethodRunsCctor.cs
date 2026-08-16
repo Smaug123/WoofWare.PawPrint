@@ -8,8 +8,8 @@ using System;
 // Both halves below reach the same code path (`AbstractMachine.dispatchDelegateInvoke`), by
 // the two routes that can produce a pointer to a static method: a plain `ldftn` of an
 // ordinary static method, and a `constrained. ldftn` of a static abstract interface member.
-// The direct calls are controls: they run the `.cctor` correctly today, which is what makes
-// this about delegate invocation rather than about type initialisation generally.
+// The direct calls are controls: they make this about delegate invocation rather than
+// about type initialisation generally.
 //
 // Each half checks the witness *twice*: once after building the delegate and once after
 // invoking it. The "after building" read is what distinguishes running the initialiser at

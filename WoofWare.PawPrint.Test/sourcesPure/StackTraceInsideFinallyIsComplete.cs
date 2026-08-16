@@ -16,10 +16,10 @@ class CompleteTraceBoom : Exception
 // `Thrower`, `Cleaner`, `Handler` — three frames. `Caller`, which called `Handler`, is absent,
 // as is `Main`.
 //
-// Both halves are asserted, and both matter. PawPrint used to interleave search with cleanup,
-// so it entered this `finally` having unwound only as far as `Cleaner` and reported two frames;
-// an implementation that over-corrected by recording the entire call stack would be just as
-// wrong, and the `Caller`/`Main` checks are what catch it.
+// Both halves are asserted, and both matter. An implementation that interleaves search with
+// cleanup enters this `finally` having unwound only as far as `Cleaner` and reports two frames;
+// one that records the entire call stack instead is just as wrong, and the `Caller`/`Main`
+// checks are what catch it.
 class StackTraceInsideFinallyIsComplete
 {
     static bool ContainsSubstring(string haystack, string needle)
@@ -109,8 +109,9 @@ class StackTraceInsideFinallyIsComplete
             return 4;
         }
 
-        // The handler-owning frame is in the trace, and it is the frame PawPrint used to be
-        // missing here: the first pass had reached it, but cleanup ran before that was recorded.
+        // The handler-owning frame is in the trace. It is the frame an interleaving
+        // implementation misses: the first pass has reached it, but cleanup runs before that
+        // is recorded.
         if (!ContainsSubstring(TraceInFinally, "StackTraceInsideFinallyIsComplete.Handler"))
         {
             return 5;

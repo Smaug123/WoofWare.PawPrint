@@ -7,7 +7,7 @@ namespace DefaultSpanSequenceEqualTest
     // reinterprets `MemoryMarshal.GetReference(span)` through `Unsafe.As<T, byte>` before
     // it ever looks at the length. That reinterpret is address-preserving and never
     // dereferences, so it has to be defined on a null byref
-    // (`ManagedPointerSource.reinterpretAs`); it used to fail with
+    // (`ManagedPointerSource.reinterpretAs`); a reinterpret that refuses null fails with
     // "cannot project from null managed pointer".
     //
     // `ReadOnlySpan<T>.Empty` is `default`, so it is affected identically; a zero-length

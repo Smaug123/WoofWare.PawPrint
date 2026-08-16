@@ -32,7 +32,7 @@ namespace WoofWare.PawPrint
 ///  - The value the guest sees is materialised at wake time, not park time:
 ///    a wait-any returns `WAIT_OBJECT_0 + index`, which is unknowable until
 ///    some handle satisfies it. `grantTo` rewrites the optimistic slot, the
-///    same mechanism the timeout path already used.
+///    same mechanism the timeout path uses.
 ///
 /// Three kinds are supported today: semaphore (`Count`-based), mutex
 /// (ownership-based, re-entrant on owner, abandoned-flag-aware), and
@@ -62,15 +62,14 @@ namespace WoofWare.PawPrint
 /// it back to `Runnable`. The zero-timeout case is still routed
 /// through `tryWaitOne` (fully deterministic, no park).
 ///
-/// Abandoned-mutex propagation: full support (rewriting the wake-time
-/// return value of already-blocked waiters when their owner thread
-/// terminates) is structural and out of scope for this slice — the
-/// scheduler pushes `WAIT_OBJECT_0` at park time, so making the wake
-/// produce `WAIT_ABANDONED` requires deferred-return-value
-/// materialisation. Until that lands, `Scheduler.onThreadTerminated`
-/// fails loud if a terminating thread still owns any mutex, so a real
-/// guest reaching that case surfaces as a clean failure rather than a
-/// silent permanent ownership.
+/// Abandoned-mutex propagation (rewriting the wake-time return value of
+/// already-blocked waiters when their owner thread terminates) is not
+/// implemented — the scheduler pushes `WAIT_OBJECT_0` at park time, so
+/// making the wake produce `WAIT_ABANDONED` requires
+/// deferred-return-value materialisation. Instead
+/// `Scheduler.onThreadTerminated` fails loud if a terminating thread
+/// still owns any mutex, so a real guest reaching that case surfaces as
+/// a clean failure rather than a silent permanent ownership.
 [<RequireQualifiedAccess>]
 module WaitHandle =
 
@@ -103,12 +102,7 @@ module WaitHandle =
     /// the integer return code (`WAIT_OBJECT_0` vs `WAIT_ABANDONED`),
     /// which the native handler unpacks. `AcquiredAbandoned` is only
     /// produced by the mutex variant on a `Free wasAbandoned=true`
-    /// transition; semaphore acquires never produce it. The
-    /// non-mutex-aware caller can still pattern-match against the
-    /// constructor (it'd never fire) — that's tolerable because
-    /// `waitOne` is the operation as a whole, and the abandoned outcome
-    /// is properly a wait-handle-level concept rather than a
-    /// kind-specific one.
+    /// transition; semaphore acquires never produce it.
     ///
     /// `Blocked` means the thread is parked at the wait queue and its
     /// status flipped to `BlockedOnWaitHandle`. The IL site advances in
@@ -127,8 +121,7 @@ module WaitHandle =
     /// flag analogue (still a fast-path success, but the caller pushes
     /// `WAIT_ABANDONED` rather than `WAIT_OBJECT_0`). `TimedOut` means
     /// the fast path could not apply; state is unchanged (no enqueue,
-    /// no thread-status flip — that's the entire point of distinguishing
-    /// this from `waitOne`). The native handler maps these to
+    /// no thread-status flip). The native handler maps these to
     /// `WAIT_OBJECT_0` (0), `WAIT_ABANDONED` (0x80), and `WAIT_TIMEOUT`
     /// (0x102) respectively.
     [<RequireQualifiedAccess>]
@@ -343,11 +336,11 @@ module WaitHandle =
                 }
 
     /// Whether `thread` could take `handle` right now without blocking. This
-    /// is the PAL's `CanThreadWaitWithoutBlocking`, and is the single
-    /// definition consulted by every fast path, by the wake walk's
-    /// satisfiability test, and by the wait-all "is the rest of the wait
-    /// satisfied" check. Keeping one definition is what stops those three from
-    /// drifting apart.
+    /// is the PAL's `CanThreadWaitWithoutBlocking`, consulted by the
+    /// multi-handle fast paths, the wake walk's satisfiability test, and the
+    /// wait-all "is the rest of the wait satisfied" check. (The single-handle
+    /// fast paths test their conditions inline.) Keeping one definition is
+    /// what stops the multi-handle consumers from drifting apart.
     ///
     /// `thread` matters only for mutexes, which are re-entrant on their owner.
     let private isAcquirable (thread : ThreadId) (handle : WaitHandleState) : bool =
@@ -507,8 +500,7 @@ module WaitHandle =
                 state
 
         // A single-handle waiter's `WAIT_OBJECT_0` was already pushed at park
-        // time and is still correct, so its slot is left untouched (this is
-        // what keeps single-handle wake behaviour byte-identical). A
+        // time and is still correct, so its slot is left untouched. A
         // multi-handle waiter's result is only known now: wait-any reports the
         // index of the handle that satisfied it, wait-all reports none because
         // the OS cannot say which of them was abandoned.
@@ -983,11 +975,10 @@ module WaitHandle =
             Ok (), writeHandle id (WaitHandleState.Mutex mutex) state
         | MutexOwnership.Held (_, _) ->
             // Outermost release: mark free, then hand ownership to the
-            // head-most satisfiable waiter. Absent multi-handle waiters this
-            // is exactly the previous direct-handoff behaviour — the mutex is
-            // only observably `Free` with a non-empty queue when every queued
-            // entry is a wait-all waiter blocked on some other handle, which
-            // is the case that has no waiter to hand ownership to.
+            // head-most satisfiable waiter. The mutex is only observably
+            // `Free` with a non-empty queue when every queued entry is a
+            // wait-all waiter blocked on some other handle, which is the case
+            // that has no waiter to hand ownership to.
             let mutex =
                 { mutex with
                     Ownership = MutexOwnership.Free false
@@ -1008,11 +999,9 @@ module WaitHandle =
     ///    one waiter and leaves `Signaled = false`. With no satisfiable waiter
     ///    the signal stays latched for the next `WaitOne`.
     ///
-    /// Absent multi-handle waiters this is exactly the previous
-    /// wake-all/direct-handoff behaviour. With them, a wait-all waiter blocked
-    /// on some other handle is skipped and stays queued, so `Signaled = true`
-    /// may now coexist with a non-empty queue — see the invariant note on
-    /// `EventState`.
+    /// A wait-all waiter blocked on some other handle is skipped and stays
+    /// queued, so `Signaled = true` may coexist with a non-empty queue — see
+    /// the invariant note on `EventState`.
     ///
     /// Idempotent on already-signalled events. Never fails — the Win32
     /// `SetEvent` only returns FALSE on an invalid handle, which is
@@ -1088,8 +1077,7 @@ module WaitHandle =
     /// naming the same *stale* handle twice is an invalid-handle error, not a
     /// duplicate one. Checking duplicates first would report a use-after-free
     /// as `DuplicateWaitObjectException`: a confident wrong diagnosis of a real
-    /// bug, and exactly the masking that `lookup`'s loud failure exists to
-    /// prevent. That inversion was a live bug once already.
+    /// bug, and the masking that `lookup`'s loud failure exists to prevent.
     ///
     /// Since `validateMultiWait` is the only way to obtain one and
     /// `tryAcquireMultiple` demands one, no caller can reach the acquisition
@@ -1108,8 +1096,7 @@ module WaitHandle =
     /// `ERROR_INVALID_PARAMETER`). Duplicates are legal for a wait-any.
     ///
     /// `None` is the duplicate rejection. A stale handle does not return `None`
-    /// — it fails loud inside `lookup`, which is the whole point of doing this
-    /// in one function rather than two.
+    /// — it fails loud inside `lookup`.
     let private validateMultiWait
         (handles : WaitHandleId list)
         (waitAll : bool)

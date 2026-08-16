@@ -24,7 +24,7 @@ public class Program
     // `ResolveToken` (DynamicILGenerator.cs:772) reads `((RuntimeTypeHandle)handle).Value` at JIT.
     //
     // Two of these checks discriminate a right implementation from a consistently-wrong one, and
-    // the rest do not; that is called out per check below rather than left to be assumed. Every
+    // the rest do not; that is called out per check below. Every
     // expectation was measured on the host's real .NET before being written down, because impure
     // cases get no automatic differential oracle.
     //
@@ -52,7 +52,7 @@ public class Program
 
     public static int Main()
     {
-        // 1. newarr. Smoke only, and deliberately labelled as such: the length comes back whatever
+        // 1. newarr. Smoke only: the length comes back whatever
         // element type was resolved, so this check is type-blind and cannot catch a wrong answer.
         Func<int> newarr = IntMethod(il =>
         {

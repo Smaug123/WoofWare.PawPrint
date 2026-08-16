@@ -7,9 +7,7 @@ using System.Runtime.CompilerServices;
 // Indexing past the first element lowers to `Unsafe.Add(ref Unsafe.As<TBuffer, TElement>(ref
 // buffer), 1)`, i.e. `[ReinterpretAs TElement; ByteOffset <one element width>]` — 4 here, for
 // `int`. That offset only has somewhere to land once the struct's storage is N slots rather than
-// its one declared field, which is what `InlineArrayStorage.expand` gives it; before that this
-// failed with "byte-view write at offset 4 for 4 bytes does not fit in single primitive cell of
-// size 4".
+// its one declared field, which is what `InlineArrayStorage.expand` gives it.
 //
 // A primitive element is used deliberately: it removes the reference-typed-storage question
 // entirely, so this isolates "inline arrays have N slots" from "byte views over references".

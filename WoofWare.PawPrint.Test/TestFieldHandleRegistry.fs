@@ -358,11 +358,10 @@ public class GenericHolder<T>
 
     [<Test>]
     let ``Field handle on open generic declaring type records OpenGenericTypeDefinition`` () : unit =
-        // Regression: getOrAllocateField used to map the typedef's generic parameters onto
-        // TypeDefn.GenericTypeParameter placeholders and then concretise with empty typeGenerics,
-        // raising IndexOutOfRangeException. After the fix the caller threads the declaring target
-        // through; the test helper supplies OpenGenericTypeDefinition for a still-open declaring
-        // type, mirroring `typeof(Foo<>).GetField(...).FieldHandle` in CoreCLR.
+        // The test helper supplies OpenGenericTypeDefinition for a still-open declaring type,
+        // mirroring `typeof(Foo<>).GetField(...).FieldHandle` in CoreCLR. Mapping the typedef's
+        // generic parameters onto TypeDefn.GenericTypeParameter placeholders and concretising
+        // with empty typeGenerics raises IndexOutOfRangeException.
         let fixture = makeFieldHandleFixture ()
 
         let genericField =

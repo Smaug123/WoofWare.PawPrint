@@ -159,8 +159,7 @@ module TestRaces =
         // instead of `⊇` so a future PCT regression that produces a value
         // outside `readWriteRaceLegalOutcomes` (e.g. an uninitialised int
         // due to a memory-model bug in the interpreter) is caught here
-        // rather than passing silently as "well, it covered 0 and 1, so
-        // who cares about the extras."
+        // rather than passing silently.
         let image = compileImage "ReadWriteRace.cs"
         let observed = sweepPctExitCodes "ReadWriteRace.cs" image
 

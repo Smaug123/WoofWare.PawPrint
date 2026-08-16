@@ -7,7 +7,7 @@ public class Program
     // same array but distinct element indices, both with a trailing `Field`
     // projection, are guaranteed disjoint. The shared-storage discriminator
     // must include the array index so this copy proceeds rather than
-    // tripping the fail-loud diagnostic intended for genuinely-undecidable
+    // tripping the fail-loud diagnostic intended for undecidable
     // same-cell overlaps.
     [StructLayout(LayoutKind.Sequential)]
     struct S

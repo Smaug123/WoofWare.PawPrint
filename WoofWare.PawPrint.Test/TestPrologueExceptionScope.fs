@@ -15,13 +15,13 @@ open WoofWare.PawPrint
 /// runs.
 ///
 /// PawPrint raises that exception with the callee's frame established — which is what lets the
-/// trace name the method — so the frame's clauses are reachable and have to be excluded
-/// deliberately. Before `PendingTypeInit` gated them, the frame's own `catch` would be selected.
+/// trace name the method — so the frame's clauses are reachable and `PendingTypeInit` must
+/// exclude them; without that gate, the frame's own `catch` would be selected.
 ///
 /// Asserted here rather than by a `sourcesPure` guest because the guest cannot reach it: the test
 /// harness compiles unoptimized, which puts a `nop` at IL offset 0 *outside* the try, so the
 /// region does not cover the offset the prologue raises from. Optimized IL — which is what every
-/// BCL assembly PawPrint interprets is — starts the try at 0.
+/// BCL assembly PawPrint interprets — starts the try at 0.
 [<TestFixture>]
 module TestPrologueExceptionScope =
 
@@ -40,7 +40,7 @@ module TestPrologueExceptionScope =
 
     /// A `catch (object)` covering IL offsets 0..3, with its handler body at offset 10. Catching
     /// `System.Object` makes the clause match anything, so a search that considers this frame at
-    /// all must select it — the test cannot pass by the exception simply not being assignable.
+    /// all must select it — the test cannot pass by the exception not being assignable.
     let private catchAllOffset : ExceptionOffset =
         {
             TryOffset = 0

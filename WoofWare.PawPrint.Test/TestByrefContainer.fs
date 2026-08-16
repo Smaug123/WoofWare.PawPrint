@@ -243,14 +243,11 @@ module TestByrefContainer =
         locationOf "A" |> shouldEqual (ByteStorageIdentity.HeapObject addr, 0L)
         locationOf "B" |> shouldEqual (ByteStorageIdentity.HeapObject addr, 4L)
 
-    /// The hoist's equivalence claim, stated rather than left to inspection.
-    ///
-    /// `StorageLocation.byteLocation` used to resolve a class-field root by rewriting it to
-    /// the whole object with a leading `Field` projection, and now adds the field's offset up
-    /// front instead. Both shapes are still constructible, so both can be resolved and
-    /// compared. Only the precise coordinates are compared: the two shapes carry *different*
-    /// coarse keys on purpose, since `SharedStorageKey` separates a boxed value from a class
-    /// field.
+    /// `StorageLocation.byteLocation` resolves a class-field root by adding the field's
+    /// offset up front; the rewrite to the whole object with a leading `Field` projection is
+    /// also constructible, so both shapes can be resolved and compared. Only the precise
+    /// coordinates are compared: the two shapes carry *different* coarse keys, since
+    /// `SharedStorageKey` separates a boxed value from a class field.
     [<Test>]
     let ``a field root and the object-plus-field rewrite give one coordinate`` () : unit =
         let state, addr = stateWithPairObject ()

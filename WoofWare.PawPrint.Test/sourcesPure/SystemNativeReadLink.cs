@@ -178,7 +178,7 @@ class Program
         if (Marshal.GetLastSystemError() != ENOTDIR) return check;
 
         // Zero size on a perfectly good link. EINVAL from the shim's own
-        // guard, and note this is the case where the shim and the kernel
+        // guard; this is the case where the shim and the kernel
         // disagree: macOS's readlink answers 0 here.
         check = 19;
         Ascii("lf", path);

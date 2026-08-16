@@ -13,10 +13,8 @@ open WoofWare.PawPrint
 /// are resolved through both, comparing outcomes.
 ///
 /// This is the only oracle here that is not a restatement of PawPrint's own
-/// beliefs, and it earns its keep: it was written after a probe of this kernel
-/// falsified the assumption that a trailing separator can be desugared into a
-/// "." component (`mkdir("d/")` succeeds where `mkdir("d/.")` does not), which
-/// an earlier draft of the resolver relied on.
+/// beliefs. Probed: a trailing separator cannot be desugared into a "."
+/// component — `mkdir("d/")` succeeds where `mkdir("d/.")` does not.
 ///
 /// Deliberately avoids `struct stat`, whose layout is platform-specific and
 /// whose symbol is versioned on macOS. `access(2)` and `readlink(2)` between
@@ -81,13 +79,11 @@ module TestVirtualFileSystemAgainstHost =
 
     /// The physical path of `path`, with every symlink in it resolved away.
     ///
-    /// Load-bearing rather than tidy-minded: on macOS `Path.GetTempPath()`
-    /// returns "/var/folders/...", and "/var" is itself a symlink to
-    /// "/private/var". Every absolute path built under the raw temporary
-    /// directory therefore spends one symlink traversal before reaching
-    /// anything this test created — which silently shifts the measured limit
-    /// down by one, and made an earlier version of the boundary test below
-    /// conclude this kernel allows 31 traversals when it allows 32.
+    /// On macOS `Path.GetTempPath()` returns "/var/folders/...", and "/var" is
+    /// itself a symlink to "/private/var". Every absolute path built under the
+    /// raw temporary directory therefore spends one symlink traversal before
+    /// reaching anything this test created — which silently shifts the measured
+    /// limit down by one.
     let private physicalPath (path : string) : string =
         let resolved = realpath (path, 0n)
 
@@ -371,11 +367,8 @@ module TestVirtualFileSystemAgainstHost =
             Assert.Ignore "This oracle compares against a Unix kernel."
 
         // Pins `SimulatedUnixPlatform.pathLimits` against the kernel rather than
-        // against a header or a recollection. A review of this code claimed
-        // macOS fails at 32 rather than 33; measuring settled it, and this test
-        // keeps the answer from drifting. macOS locally and Linux in CI, so each
-        // flavour's entry is checked on the machine that can actually falsify
-        // it — and neither rests on my say-so.
+        // against a header or a recollection. macOS locally and Linux in CI, so
+        // each flavour's entry is checked on the machine that can falsify it.
         let unique = Guid.NewGuid().ToString "N"
         let root = Path.Combine (Path.GetTempPath (), $"pawprint-loop-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
@@ -534,7 +527,7 @@ module TestVirtualFileSystemAgainstHost =
 
         // Darwin re-checks the total length whenever it expands a symbolic link
         // and Linux does not, so this pins whichever of the two the host is —
-        // macOS locally, Linux in CI, and neither column rests on my say-so.
+        // macOS locally, Linux in CI.
         //
         // Outcomes are compared pointwise rather than boundaries, so the same
         // test is meaningful on a kernel that has no boundary at all: on Linux

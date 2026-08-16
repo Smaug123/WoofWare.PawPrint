@@ -2,18 +2,14 @@
 // III.3.55 requires it to run *every* `finally` between the leave site and the target,
 // innermost first.
 //
-// `UnaryConstIlOp.leave` used to run only the innermost and jump straight to the target: it
-// computed the full list via `Exceptions.findFinallyBlocksToRun` (correctly, sorted
-// inner-to-outer) and then matched `finallyOffset :: _`, discarding the tail. `leave` now
-// enters the innermost and each `endfinally` asks `ExceptionHandling.nextFinallyToRun` for
-// its successor, so the whole chain runs. `TestFinallyChain.fs` pins that rule directly;
-// this file is the end-to-end guest.
+// `UnaryConstIlOp.leave` enters the innermost `finally` and each `endfinally` asks
+// `ExceptionHandling.nextFinallyToRun` for its successor, so the whole chain runs.
+// `TestFinallyChain.fs` pins that rule directly; this file is the end-to-end guest.
 //
-// Whether C# produces a multi-region `leave` turns on where the branch target sits, which is
-// why the bug was easy to miss: `OneRegion` below puts a statement after the loop, so the
-// loop-exit label is still inside the outer `try` and its `leave` crosses one region — that
-// case behaved correctly throughout, and is the control. The other four cross two or more,
-// and every one of them failed before the fix.
+// Whether C# produces a multi-region `leave` turns on where the branch target sits:
+// `OneRegion` below puts a statement after the loop, so the loop-exit label is still inside
+// the outer `try` and its `leave` crosses one region — it is the control. The other four
+// cross two or more.
 //
 // It also turns on the optimization level, which matters because `Roslyn.compile` builds
 // these guests unoptimized. See `LoopExitTwoRegions` for the measurement: a plain `break`
@@ -22,14 +18,14 @@
 // crosses the regions under the harness's own settings.
 //
 // This is not a niche shape. `CancellationTokenSource.ExecuteCallbackHandlers` hits it: its
-// `break` out of the callback-dispatch loop is the last thing in the outer `try`, so the
-// `leave` crossed straight past the outer `finally` that sets `_state =
-// NotifyingCompleteState` and clears `Registrations.ExecutingCallbackId`. Both stayed stale
-// for ever, so a later `CancellationTokenRegistration.Dispose()` from a thread other than
-// the one that ran `Cancel()` span for ever in `Registrations.WaitForCallbackToComplete`.
-// See the sibling `CancellationTokenRegistrationDisposeCrossThread.cs`, the guest-level
-// witness of exactly that — and note it detects a regression by hanging, whereas this file
-// fails in about a second, so this is the one to read first.
+// `break` out of the callback-dispatch loop is the last thing in the outer `try`, so a
+// `leave` that skips the outer `finally` leaves `_state` short of `NotifyingCompleteState`
+// and `Registrations.ExecutingCallbackId` uncleared — both stale for ever, so a later
+// `CancellationTokenRegistration.Dispose()` from a thread other than the one that ran
+// `Cancel()` spins for ever in `Registrations.WaitForCallbackToComplete`. See the sibling
+// `CancellationTokenRegistrationDisposeCrossThread.cs`, the guest-level witness of exactly
+// that — it detects a regression by hanging, whereas this file fails in about a second, so
+// this is the one to read first.
 //
 // Handlers append to a shared ordered trace rather than bumping independent counters,
 // because *order* is half the contract and counters cannot see it: an implementation that
@@ -67,8 +63,8 @@ class NestedFinallyOnLeave
     }
 
     // One region crossed: the `leave` target is still inside the outer `try`, because
-    // `after = 1` follows the loop. This already passes; it is the control that pins down
-    // *which* leaves are broken.
+    // `after = 1` follows the loop. This is the control that pins down *which* leaves a
+    // failure involves.
     static int OneRegion()
     {
         Reset();
@@ -98,8 +94,8 @@ class NestedFinallyOnLeave
     // Leaving a dispatch loop from inside a nested `try`, straight past the outer handler:
     // the `ExecuteCallbackHandlers` shape, and the one that matters most here.
     //
-    // The loop exit is spelled `goto`, not `break`, and that is load-bearing. C#'s `break`
-    // does not reliably produce a multi-region `leave`: under the unoptimized compilation
+    // The loop exit is spelled `goto`, not `break`, because C#'s `break` does not reliably
+    // produce a multi-region `leave`: under the unoptimized compilation
     // `Roslyn.compile` uses (`CSharpCompilationOptions`' default is
     // `OptimizationLevel.Debug`), Roslyn lowers it to `leave.s` to a label that is *still
     // inside* the outer `try`, followed by a second `leave.s` out of it — two instructions

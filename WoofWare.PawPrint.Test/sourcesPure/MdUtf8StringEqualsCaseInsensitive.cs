@@ -7,7 +7,7 @@ using System.Reflection;
 // further name comparison of its own (there is no prefix lookup on the singular
 // getters), so this test observes the QCall's semantics directly.
 //
-// Note that `RuntimeType.FilterHelper` lowercases the *requested* name with
+// `RuntimeType.FilterHelper` lowercases the *requested* name with
 // `ToLowerInvariant` before handing it to the QCall, so a metadata name must
 // carry the uppercase form for a lookup to exercise case folding at all.
 

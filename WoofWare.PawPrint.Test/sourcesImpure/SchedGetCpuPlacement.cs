@@ -57,8 +57,7 @@ namespace HelloWorldApp
 
             // A thread that is constructed but never started still consumes a
             // rotation slot, mirroring real .NET's eager `ManagedThreadId`
-            // assignment in the `Thread` constructor. This is a deliberate
-            // design choice, not an accident, so pin it: the next started
+            // assignment in the `Thread` constructor: the next started
             // thread must skip a core.
             Thread neverStarted = new Thread(() => { });
 

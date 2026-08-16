@@ -112,7 +112,7 @@ module ManagedHeap =
     val getStringChar : addr : ManagedHeapAddress -> charIndex : int -> heap : ManagedHeap -> char
 
     /// Value equality between two managed strings, with the semantics of
-    /// `System.String.Equals(string, string)`. Fails if the contents are genuinely needed
+    /// `System.String.Equals(string, string)`. Fails if the contents are needed to answer
     /// and either address is not a registered string.
     val stringsEqual : a1 : ManagedHeapAddress -> a2 : ManagedHeapAddress -> heap : ManagedHeap -> bool
 

@@ -57,8 +57,7 @@ type CanonicalPointerKey =
 /// early in a run shifts the bits of every key materialised after it, so two
 /// nearly-identical runs diverge in every synthesised pointer value rather than in
 /// the one that actually changed. That is a real cost when diffing runs (mutation
-/// testing, delta debugging). It is not the default because the correlation
-/// between assignment order and address order is load-bearing: CoreCLR's
+/// testing, delta debugging). It is not the default because CoreCLR's
 /// cast-cache pipeline hashes real pointer bits whose ordering is an artefact of
 /// allocation order, and `SequentialFirstTouch` reproduces that shape where a hash
 /// of the identity would not. A keyed scheme would also have to establish
@@ -82,10 +81,9 @@ type PointerHashState =
     /// the low 2 bits clear for exactly this, so no-collision is preserved.
     ///
     /// Distinct keys get distinct bit patterns by construction, and the assignment
-    /// order is deterministic given a fixed program and scheduler. This is the
-    /// load-bearing property that makes synthesised hash bits a faithful
-    /// guest-observable surrogate for real pointer bits in the CoreCLR cast-cache
-    /// pipeline.
+    /// order is deterministic given a fixed program and scheduler; that is what
+    /// makes synthesised hash bits a faithful guest-observable surrogate for real
+    /// pointer bits in the CoreCLR cast-cache pipeline.
     | SequentialFirstTouch of nextCounter : uint64 * assigned : Map<CanonicalPointerKey, uint64>
 
 [<RequireQualifiedAccess>]
@@ -165,15 +163,13 @@ module PointerHashSynthesis =
         | NativeIntSource.FunctionPointer FunctionPointerTarget.RuntimeAllocator ->
             CanonicalPointerKey.RuntimeAllocatorFunctionPointer
         | NativeIntSource.FunctionPointer (FunctionPointerTarget.Dynamic handle) ->
-            // Same reasoning as the synthesised-method refusal above, though for a different
-            // reason: a dynamic method *has* an identity to key on (its registry id, which is the
-            // whole payload), so `CanonicalPointerKey.DynamicMethodFunctionPointer of int64` would
-            // be a five-line addition. It is not here because nothing consumes it. The only guest
-            // path that reads a bound dynamic method's `_methodPtr` is `Delegate.Equals`
-            // (Delegate.CoreCLR.cs:96), whose `_methodPtr == d._methodPtr` is a `ceq` over native
-            // ints, which `NativeIntSourceComparison.equalsForCli` answers structurally through
+            // A dynamic method has an identity to key on (its registry id), but nothing consumes
+            // synthesised bits for one. The only guest path that reads a bound dynamic method's
+            // `_methodPtr` is `Delegate.Equals` (Delegate.CoreCLR.cs:96), whose
+            // `_methodPtr == d._methodPtr` is a `ceq` over native ints, which
+            // `NativeIntSourceComparison.equalsForCli` answers structurally through
             // `FunctionPointerTarget.Equals` without materialising any bits at all. Minting bits
-            // now would be committing to keeping them stable for a consumer that does not exist.
+            // now would commit to keeping them stable for a consumer that does not exist.
             failwith
                 $"PointerHashSynthesis.canonicalKey: %O{handle} has no synthesised address bits; nothing hashes or does arithmetic on a dynamic method's code address today, so widening CanonicalPointerKey is work for whichever consumer first needs it"
         | NativeIntSource.MethodHandlePtr id -> CanonicalPointerKey.MethodHandle id
@@ -239,8 +235,7 @@ module PointerHashSynthesis =
     /// goes for the pointer shapes `canonicalKey` itself declines — PerInstInfo chain
     /// intermediates, a `MethodTablePtr` over a generic parameter, a function pointer to a
     /// synthesised method — which crash here with `canonicalKey`'s diagnostic rather than a
-    /// comparison-flavoured one. They crashed before this function existed too; the message
-    /// names the shape, which is the part a failing run needs.
+    /// comparison-flavoured one.
     let tryExistingHashBits (counters : PointerHashState) (src : NativeIntSource) : int64 option =
         let key = canonicalKey src
         let tagBits = lowBitsForSource src

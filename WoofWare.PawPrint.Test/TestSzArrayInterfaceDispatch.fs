@@ -193,7 +193,7 @@ module TestSzArrayInterfaceDispatch =
         else
             objectHandle
 
-    /// The load-bearing property. Whenever a well-typed program can hold an `elem[]` in an
+    /// The central property: whenever a well-typed program can hold an `elem[]` in an
     /// `I<arg>` local — i.e. whenever the cast the interpreter itself performs would succeed —
     /// dispatching any slot of `I<arg>` must land on a concrete, callable `SZArrayHelper`
     /// method, instantiated per CoreCLR's rule. Returning `None` is what produced the original
@@ -317,7 +317,7 @@ module TestSzArrayInterfaceDispatch =
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen genDispatchCase) property)
 
     /// The dispatch carve-out and the assignability carve-out are two halves of one rule, and
-    /// they must agree on which interfaces are in the set. Both now read
+    /// they must agree on which interfaces are in the set. Both read
     /// `BaseClassTypes.IsImplicitInterfaceOfSzArray`; this pins that the set is exactly the five
     /// CoreCLR names, so a corelib bump that renamed or moved one of them fails here rather than
     /// silently shrinking the carve-out.

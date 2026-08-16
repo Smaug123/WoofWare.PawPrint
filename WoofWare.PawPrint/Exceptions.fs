@@ -44,7 +44,7 @@ type ExceptionFilterRegion =
 /// How a first-pass handler search concluded. Every case but `NoHandler` names the frame the
 /// second pass unwinds *to*; the frame itself stays live until the second pass reaches it.
 ///
-/// The payload is deliberately no more than a `FrameId` plus, where a frame has several clauses,
+/// The payload is no more than a `FrameId` plus, where a frame has several clauses,
 /// which one won. Everything else the second pass needs — the wrap flags on the frame's
 /// `ReturnState`, the parked filter continuation, the caller to advance to — is still readable
 /// from the live frame when the second pass arrives, so copying it here could only introduce a
@@ -275,7 +275,7 @@ module ExceptionHandling =
     /// table. Tests can then exercise the rule against hand-built towers of regions without
     /// standing up a method.
     ///
-    /// `fault` clauses are deliberately absent: `leave` is a *non-exceptional* transfer of
+    /// `fault` clauses are absent: `leave` is a *non-exceptional* transfer of
     /// control, and ECMA-335 III.3.55 runs only `finally` handlers for it. The exceptional
     /// counterpart, which does run both kinds, is `cleanupRegionsBetween` below.
     let finallyBlocksBetween (regions : ExceptionRegion seq) (currentPC : int) (targetPC : int) : ExceptionOffset list =
@@ -302,7 +302,7 @@ module ExceptionHandling =
     /// filter boundary. `None` means the exception is leaving the method altogether, so every
     /// covering clause runs.
     ///
-    /// The boundary is load-bearing, not a refinement. A cleanup clause whose `try` also covers
+    /// A cleanup clause whose `try` also covers
     /// the destination *encloses* the handler rather than lying between the throw point and it,
     /// so it must not run now; it runs later, when control eventually leaves it by `leave`.
     /// Without the exclusion this would run the `finally` of a plain C# `try/catch/finally`
@@ -337,16 +337,10 @@ module ExceptionHandling =
         | None -> []
         | Some instructions -> finallyBlocksBetween instructions.ExceptionRegions currentPC targetPC
 
-    /// The next `finally` a `leave` bound for `targetPC` must run, given that `justRan` — the
-    /// innermost one not yet accounted for — has just completed. `None` once the chain is
-    /// exhausted, at which point control belongs at `targetPC`.
-    ///
-    /// A single `leave` may exit several nested protected regions at once, and ECMA-335
-    /// III.3.55 requires every one of their handlers to run, innermost first. Rather than
-    /// carrying the remaining list in the continuation, each `endfinally` asks this for its
-    /// successor. That keeps `MethodState`'s continuation shape unchanged, and means there is
-    /// no second copy of the chain that could disagree with the method's own handler table if
-    /// an exception unwinds partway through it.
+    /// The handlers a `leave` bound for `targetPC` has still to run once `justRan` completes,
+    /// innermost first. `None` means `justRan` is not in that chain at all, which is a caller
+    /// contract violation rather than an empty tail — the two are distinguished so the
+    /// `MethodInfo` wrapper can report the former loudly.
     ///
     /// `justRan.TryOffset` stands in for the original leave site, which the continuation does
     /// not carry, and it selects the same remaining regions. Any region still to run properly
@@ -354,10 +348,6 @@ module ExceptionHandling =
     /// point must nest (ECMA-335 II.12.4.2.7 forbids partial overlap), so one that began after
     /// `justRan.TryOffset` would be nested *inside* `justRan` and would therefore already have
     /// run before it. Enclosing regions contain the whole of `justRan`, hence its first byte.
-    /// The handlers a `leave` bound for `targetPC` has still to run once `justRan` completes,
-    /// innermost first. `None` means `justRan` is not in that chain at all, which is a caller
-    /// contract violation rather than an empty tail — the two are distinguished so the
-    /// `MethodInfo` wrapper can report the former loudly.
     let finallyBlocksAfter
         (regions : ExceptionRegion seq)
         (justRan : ExceptionOffset)
@@ -371,6 +361,16 @@ module ExceptionHandling =
 
         finallyBlocksBetween regions justRan.TryOffset targetPC |> afterJustRan
 
+    /// The next `finally` a `leave` bound for `targetPC` must run, given that `justRan` — the
+    /// innermost one not yet accounted for — has just completed. `None` once the chain is
+    /// exhausted, at which point control belongs at `targetPC`.
+    ///
+    /// A single `leave` may exit several nested protected regions at once, and ECMA-335
+    /// III.3.55 requires every one of their handlers to run, innermost first. Rather than
+    /// carrying the remaining list in the continuation, each `endfinally` asks this for its
+    /// successor. That keeps `MethodState`'s continuation shape unchanged, and means there is
+    /// no second copy of the chain that could disagree with the method's own handler table if
+    /// an exception unwinds partway through it.
     let nextFinallyToRun
         (justRan : ExceptionOffset)
         (targetPC : int)

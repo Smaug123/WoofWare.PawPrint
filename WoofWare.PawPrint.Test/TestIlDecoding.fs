@@ -177,10 +177,10 @@ module TestIlDecoding =
 
         Array.append opCodeBytes operandBytes
 
-    /// The `IlOp` this instruction and operand must decode to. Building it by reflection
-    /// rather than by a second hand-written table is deliberate: the point of the test is
-    /// that the *only* PawPrint input is the union case, so nothing here can inherit a
-    /// mistake from the decoder's own opcode table.
+    /// The `IlOp` this instruction and operand must decode to. Built by reflection
+    /// rather than by a second hand-written table: the *only* PawPrint input is the
+    /// union case, so nothing here can inherit a mistake from the decoder's own
+    /// opcode table.
     let private expectedOp (case : UnionCaseInfo) (operand : Operand) : Result<IlOp, string> =
         let fieldType : Type option =
             match case.GetFields () with

@@ -62,7 +62,7 @@ class Program
         if (ConvertToPalInt(0) != 0) return 6;
 
         // PAL values are deliberately numbered outside the raw errno range so
-        // the two cannot be confused. Guard that we are genuinely converting
+        // the two cannot be confused. Guard that we are converting
         // rather than echoing the input back.
         if (ConvertToPalInt(9) == 9) return 7;
 

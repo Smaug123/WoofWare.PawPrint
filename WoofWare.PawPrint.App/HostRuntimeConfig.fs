@@ -15,20 +15,15 @@ module HostRuntimeConfig =
     /// the main config and lets the main config override.
     ///
     /// A failure *hostpolicy itself* would shrug off yields no properties rather than an
-    /// error, because that is what `ensure_dev_config_parsed` does: a missing file is
-    /// `return true`, a file that will not parse makes `ensure_parsed` emit a verbose trace
-    /// and carry on, and a `runtimeOptions` of the wrong shape has `parse_opts`' return value
-    /// discarded at the call site. A dev config is a developer convenience, and a broken one
-    /// does not stop the app launching. That covers failing to read the bytes at all:
-    /// hostpolicy draws no distinction between a file it cannot mmap and one it cannot parse
-    /// — both are `parse_file` returning false — so neither may we, and losing the app to a
-    /// stray permission bit would be a fragility of ours alone.
+    /// error, matching `ensure_dev_config_parsed`: a missing file is `return true`, a file
+    /// that will not parse makes `ensure_parsed` emit a verbose trace and carry on, and a
+    /// `runtimeOptions` of the wrong shape has `parse_opts`' return value discarded at the
+    /// call site. Hostpolicy draws no distinction between a file it cannot mmap and one it
+    /// cannot parse — both are `parse_file` returning false — so neither do we.
     ///
-    /// It emphatically does *not* cover a file hostpolicy reads happily and PawPrint cannot
-    /// reproduce, which is why `RuntimeConfig.parse` distinguishes the two. Treating those
-    /// alike would silently drop properties a real launch acts on — and would hide the very
-    /// failure the merged check exists to catch, since a dev sidecar claiming a host-owned
-    /// name is fatal to a real launch precisely *because* the property survives to collide.
+    /// That does *not* cover a file hostpolicy reads happily and PawPrint cannot reproduce
+    /// (`RuntimeConfigError.NotReproducible`); a real launch acts on such a file, so
+    /// dropping it would silently change the guest's property set.
     let private devPropertiesFor (dllPath : string) : AppContextProperties =
         let devPath = RuntimeConfig.devPathForAssembly dllPath
 
@@ -39,10 +34,9 @@ module HostRuntimeConfig =
                 else
                     None
             with _ ->
-                // Deliberately catching everything: the point is that no way of failing to
-                // obtain these bytes is fatal, and an enumeration of exception types is a
-                // list to get wrong. Note that `File.Exists` above is a check-then-use, so
-                // the file may also simply have vanished in between.
+                // Catch everything: no way of failing to obtain these bytes is fatal, and an
+                // enumeration of exception types is a list to get wrong. `File.Exists` above
+                // is a check-then-use, so the file may also have vanished in between.
                 None
 
         match contents with
@@ -54,11 +48,9 @@ module HostRuntimeConfig =
         | Error (RuntimeConfigError.HostWouldReject _) -> AppContextProperties.empty
         | Error (RuntimeConfigError.NotReproducible message) ->
             // Only hostpolicy's own failures are ignorable here, and this is not one of them:
-            // a real host reads this file and acts on it. Dropping it would launch the guest
-            // with a property set neither we nor the user asked for — and would hide a
-            // subsequent failure, since a dev sidecar naming something the hosting layer owns
-            // is fatal to a real launch precisely *because* the property survives to be
-            // detected as a duplicate.
+            // a real host reads this file and acts on it, so dropping it would launch the
+            // guest with a different property set (and would hide the duplicate-name check,
+            // since a dev sidecar naming a host-owned property is fatal to a real launch).
             failwith $"Could not read %s{devPath}: %s{message}"
 
     /// Read the AppContext properties for a guest assembly from the `runtimeconfig.json` the

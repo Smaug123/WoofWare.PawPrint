@@ -12,7 +12,7 @@ open WoofWare.PawPrint
 /// the byref layer needs when storage cannot be rendered as bytes at all — a value type containing
 /// object references — because then naming the cell is the only way to serve the access.
 ///
-/// It is deliberately *structural*: it reports every cell whose extent is exactly the range,
+/// It is *structural*: it reports every cell whose extent is exactly the range,
 /// outermost first, and says nothing about whether any of them is type-compatible with what the
 /// caller wants to read or write. Callers apply their own rule to the returned contents. More than
 /// one answer is normal and not an ambiguity — a transparent wrapper and the field it wraps occupy
@@ -403,7 +403,7 @@ module TestCliTypeCellPaths =
             CliValueType.TryAllFields vt
             |> List.map CliConcreteField.ToCliField
             |> List.collect (fun f ->
-                // Deliberately via the public `getFieldLayoutById` rather than the concrete field's
+                // Via the public `getFieldLayoutById` rather than the concrete field's
                 // own offset: the resolver reads the latter, so going through a different accessor
                 // keeps this an independent check rather than the same lookup twice.
                 let off, _ = CliType.getFieldLayoutById f.Id value
@@ -423,7 +423,7 @@ module TestCliTypeCellPaths =
                 let size = CliType.SizeOf(contents).Size
                 let found = CliType.CellPathsExactlyCovering abs size value
 
-                // The cell must be among the answers, and every answer must genuinely be a cell of
+                // The cell must be among the answers, and every answer must be a cell of
                 // that extent — so this pins both directions, not just "finds at least something".
                 List.exists (fun (p, c) -> p = path && c = contents) found
                 && found |> List.forall (fun (_, c) -> CliType.SizeOf(c).Size = size)
@@ -472,7 +472,7 @@ module TestCliTypeCellPaths =
 
         Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
 
-    /// The load-bearing equivalence: wherever the storage *can* be rendered as bytes, naming a cell
+    /// Wherever the storage *can* be rendered as bytes, naming a cell
     /// and reading its bytes must give the same answer as the byte path would. This is what makes
     /// the descent a faithful substitute for the byte view rather than a second, divergent way to
     /// read memory — and it is checkable on exactly the values the incumbent path already handles.
@@ -515,8 +515,8 @@ module TestCliTypeCellPaths =
 
     /// Setting a cell to what it already holds leaves every leaf reading back as it did.
     ///
-    /// Deliberately stated over leaves rather than over the whole value, for two reasons that both
-    /// bite: `withFieldSetById` stamps a write timestamp on the field it touches, so even a
+    /// Stated over leaves rather than over the whole value, for two
+    /// reasons: `withFieldSetById` stamps a write timestamp on the field it touches, so even a
     /// semantically-null write yields a structurally different value; and writing a nested cell
     /// necessarily rebuilds every value that *contains* it, so ancestors differ by construction.
     /// Neither is observable to a guest. Over-reporting a change is safe for the write path — it
@@ -635,7 +635,7 @@ module TestCliTypeCellPaths =
 
         CliType.CandidateCellExtentsContainingByte 0 value |> shouldEqual [ 0, 8 ]
 
-    /// Every extent proposed genuinely lies within the value and contains the byte asked about.
+    /// Every extent proposed lies within the value and contains the byte asked about.
     /// Weak on its own — the validator would catch a violation — but it keeps the generator from
     /// drifting into nonsense that happens to be harmless.
     [<Test>]
@@ -719,7 +719,7 @@ module TestCliTypeCellPaths =
     // neither route works: no cell begins there, and the struct around them has no byte image, so
     // `BytesAt` refuses the whole of it.
     //
-    // The oracle below is deliberately built the other way round from the implementation. The
+    // The oracle below is built the other way round from the implementation. The
     // implementation *descends*, stepping through the single field containing the byte;
     // `enumerateCells` *enumerates* what is there. A byte covered by a leaf cell — a primitive or a
     // reference, the things that hold content — is data, and every other byte is padding. Agreement
@@ -826,9 +826,9 @@ module TestCliTypeCellPaths =
     let private paddingPayload (length : int) : byte[] =
         Array.init length (fun i -> byte ((0xA5 + i) % 256))
 
-    /// Writing padding round-trips, and touches nothing that holds content. The second half is the
-    /// load-bearing one: the copy driver writes the *whole* enclosing cell back afterwards, so a
-    /// padding write that disturbed a field would corrupt live data rather than filler.
+    /// Writing padding round-trips, and touches nothing that holds content. The second half is
+    /// the one that matters: the copy driver writes the *whole* enclosing cell back afterwards,
+    /// so a padding write that disturbed a field would corrupt live data rather than filler.
     [<Test>]
     let ``writing a padding run round-trips and disturbs no leaf`` () : unit =
         let property (shape : Shape) : bool =
@@ -920,7 +920,7 @@ module TestCliTypeCellPaths =
 
     /// Explicit layout can put two fields over one byte. There is then no single field to descend
     /// through, so the byte cannot be classified — the same refusal `CellPathsExactlyCovering`
-    /// makes for an aliased range. Crucially it must not be *mistaken* for padding: those bytes
+    /// makes for an aliased range. It must not be *mistaken* for padding: those bytes
     /// hold two fields' worth of live content.
     [<Test>]
     let ``an aliased byte is not padding`` () : unit =

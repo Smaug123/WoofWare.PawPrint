@@ -273,11 +273,11 @@ module internal IntrinsicHelpers =
         let ptr : EvalStackValue =
             match src with
             | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)) ->
-                // The array's own stride, for an empty array as much as a populated one. This
-                // used to substitute `sizeof(T)` when the array was empty, which made the
-                // `tSize <> arrElementSize` test below trivially false and so always chose
-                // cell-index arithmetic — silently producing a cell index that is only a
-                // correct byte position when `T` *is* the element type.
+                // The array's own stride, for an empty array as much as a populated one:
+                // substituting `sizeof(T)` for an empty array would make the
+                // `tSize <> arrElementSize` test below trivially false, silently choosing
+                // cell-index arithmetic that is only a correct byte position when `T` *is*
+                // the element type.
                 let arrElementSize = (ManagedHeap.getArrayShape arr state.ManagedHeap).ElementStride
 
                 // Choose between cell-index and byte-cursor walks:
@@ -324,9 +324,9 @@ module internal IntrinsicHelpers =
                     let byteDelta = byteDelta ()
                     let baseSrc = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)
 
-                    // Zero here would have meant "do not normalise" (the fold guards on
-                    // `cellSize > 0`), so an empty array used to keep a raw byte cursor where a
-                    // populated one of the same element type folded it into the cell index.
+                    // Zero here would mean "do not normalise" (the fold guards on
+                    // `cellSize > 0`), leaving an empty array with a raw byte cursor where a
+                    // populated one of the same element type folds it into the cell index.
                     let normalisation =
                         ByteOffsetNormalisationContext.withArrayElementSize arr arrElementSize
 

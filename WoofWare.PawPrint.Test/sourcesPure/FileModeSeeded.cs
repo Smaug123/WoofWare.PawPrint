@@ -3,10 +3,10 @@ using System.IO;
 
 // A seeded file's permission bits, read back through the BCL.
 //
-// This is the check `FileMetadataSeeded.cs` had to exclude: before the seed
-// could state a mode, PawPrint gave every file 0644 while the oracle's host
-// gave it whatever `File.WriteAllBytes` produced under the machine's umask, so
-// `File.GetUnixFileMode` was not a cross-runtime fact. It is one now, because
+// This is the check `FileMetadataSeeded.cs` excludes: with no seeded mode,
+// PawPrint gives every file 0644 while the oracle's host gives it whatever
+// `File.WriteAllBytes` produced under the machine's umask, so
+// `File.GetUnixFileMode` would not be a cross-runtime fact. It is one because
 // the seed names the mode and the harness chmods the host tree to match.
 //
 // Every mode below is chosen so that a *wrong* implementation is visible rather
@@ -43,7 +43,7 @@ class Program
                                                | UnixFileMode.GroupRead | UnixFileMode.GroupWrite
                                                | UnixFileMode.OtherRead | UnixFileMode.OtherWrite)) return check;
 
-        // Read-only for everyone, including the owner. Note this says nothing
+        // Read-only for everyone, including the owner. This says nothing
         // about whether a *write* would be refused: PawPrint enforces no
         // permissions yet, and neither runtime is asked to write here.
         check = 4;

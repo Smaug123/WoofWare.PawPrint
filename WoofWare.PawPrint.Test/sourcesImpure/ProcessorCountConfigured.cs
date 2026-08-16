@@ -7,8 +7,8 @@ namespace HelloWorldApp
 {
     class Program
     {
-        // Read during static initialisation, which is the load-bearing part of this
-        // test. CoreLib declares `Environment.ProcessorCount` as
+        // Read during static initialisation, which is what this test pins.
+        // CoreLib declares `Environment.ProcessorCount` as
         // `public static int ProcessorCount { get; } = GetProcessorCount()`, so the
         // first read latches the value into a static for the life of the process --
         // and PawPrint pumps this type's .cctor inside `Program.prepare`. If the

@@ -10,8 +10,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 /// `LoadedAssemblies` is the one place that knows an assembly's definition identity is not its
-/// reference identity. These tests pin its laws directly, so the whole class of ref/def confusion
-/// is covered rather than the single facade chain that happened to be reported.
+/// reference identity. These tests pin its laws directly.
 [<TestFixture>]
 module TestLoadedAssemblies =
 
@@ -28,7 +27,7 @@ module TestLoadedAssemblies =
         use stream = new MemoryStream (File.ReadAllBytes path)
         AssemblyApi.read loggerFactory (Some path) stream
 
-    /// Real assemblies from the pinned shared framework, which is where genuinely mismatching
+    /// Real assemblies from the pinned shared framework, which is where mismatching
     /// (reference, definition) identity pairs actually occur. Synthesising `DumpedAssembly`
     /// values is not practical, so the generator draws from this pool.
     let private pool : DumpedAssembly array Lazy =
@@ -126,7 +125,7 @@ module TestLoadedAssemblies =
                 )
         }
 
-    /// The invariant the fix exists to guarantee, checked after every single operation.
+    /// The central invariant, checked after every single operation.
     let private assertEveryAssemblyFindableByItsOwnName (real : LoadedAssemblies) (model : Model) : unit =
         for _, assy in model.ByDefinition do
             match real.TryByDefinition assy.Name with
@@ -221,7 +220,7 @@ module TestLoadedAssemblies =
         (second.DefinitionNames |> Seq.length)
         |> shouldEqual (first.DefinitionNames |> Seq.length)
 
-        // A genuinely distinct instance of the same assembly must not displace the one already
+        // A distinct instance of the same assembly must not displace the one already
         // held. `Assembly.readFile` memoises by path, so it would hand back a reference-equal
         // value and never exercise the branch; read uncached to get a real second instance.
         let reread = readUncached assy.OriginalPath.Value
@@ -247,8 +246,6 @@ module TestLoadedAssemblies =
     ///
     /// A coarser fingerprint than the module version ID (type counts, say) would let exactly this
     /// case through: both assemblies below define one type.
-    /// Two single-type assemblies with one name and different contents. Both would pass a
-    /// type-count check, which is why the guard fingerprints on MVID.
     let private conflictingBuildBytes () : (DumpedAssembly * byte[]) * (DumpedAssembly * byte[]) =
         let corelibReference =
             TypeIdentityTestHelpers.metadataReferenceFromImage (File.ReadAllBytes corelibPath)
@@ -262,7 +259,7 @@ module TestLoadedAssemblies =
         let first = compile "namespace N { public class OnlyType { public int A; } }"
         let second = compile "namespace N { public class OnlyType { public string B; } }"
 
-        // Same declared identity, same type count, genuinely different builds.
+        // Same declared identity, same type count, different builds.
         (fst second).Name.FullName |> shouldEqual (fst first).Name.FullName
         (fst second).TypeDefs.Count |> shouldEqual (fst first).TypeDefs.Count
         (fst second).ModuleVersionId |> shouldNotEqual (fst first).ModuleVersionId

@@ -161,12 +161,8 @@ module NativeMonitor =
                         + int64 timeout * EmulatedKernel.ticksPerMillisecond
                     )
 
-            // Push the optimistic `Int32 1` (signalled) onto the calling thread's eval stack
-            // *before* parking. Park flips the thread's status; the IL site advances past
-            // Monitor_Wait when the native handler returns Stepped/Executed, so the pushed
-            // value sits on the parked thread's frame stack until it's eventually woken —
-            // at which point either the value is correct as-is (signal/spurious wake) or it
-            // was rewritten to `Int32 0` by `SyncBlockMonitor.fireWaitTimeout` (deadline wake).
+            // The optimistic `Int32 1` (signalled), pushed before parking; see the contract
+            // comment at the top of this arm.
             let state =
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread

@@ -118,8 +118,8 @@ class RethrowUsesCurrentExceptionTrace
         // And the frames from before the nested throw are gone, because that throw reset the
         // trace. Asserted as well as the above so that an implementation which *concatenates* the
         // snapshot and the token — passing the check above for the wrong reason — still fails.
-        // The leading dot is load-bearing: both runtimes render a frame as `at Type.Method(...)`,
-        // and without it this would also match `NestedThrower`.
+        // Both runtimes render a frame as `at Type.Method(...)`; without the leading dot this
+        // would also match `NestedThrower`.
         if (Contains(trace, ".Thrower("))
         {
             return 6;

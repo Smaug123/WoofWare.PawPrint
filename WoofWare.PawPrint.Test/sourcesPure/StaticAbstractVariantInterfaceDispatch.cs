@@ -10,7 +10,7 @@
 // implementation from MethodImpl" in the debug log) and never reaches
 // `tryRetargetToVariantInterfaceMapEntry`, which explicitly declines static members.
 //
-// That is load-bearing rather than incidental: CoreCLR guards its own first-compatible-entry
+// That routing matters: CoreCLR guards its own first-compatible-entry
 // shortcut on `!pInterfaceMD->IsStatic()`, so a static member keeps scanning for a conflict and
 // can throw AmbiguousResolutionException — the tie-break the retarget applies would be wrong
 // here. This test fails if a future change routes static interface dispatch through the

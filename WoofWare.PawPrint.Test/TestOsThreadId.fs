@@ -12,14 +12,13 @@ open WoofWare.PawPrint
 /// `SystemNative_GetUInt64OSThreadId` (macOS CoreLib) — the OS thread id
 /// `System.Threading.Lock` uses as its owner identity.
 ///
-/// The reason this is worth a property module rather than a couple of examples:
-/// the load-bearing invariant is *uniqueness across every live thread*, and a
-/// collision would not crash. It would make `Lock` treat two threads as one,
-/// silently, because `Lock` reads a matching id as "the same thread
-/// re-entering". Uniqueness is inherited from `ThreadId` — the policy is a
-/// function of it — so what is established here is that the function is
-/// injective, that it dodges the two fatal sentinel values, and that every
-/// allocation site really does feed it a distinct `ThreadId`.
+/// The invariant is *uniqueness across every live thread*, and a collision
+/// would not crash: it would make `Lock` treat two threads as one, silently,
+/// because `Lock` reads a matching id as "the same thread re-entering".
+/// Uniqueness is inherited from `ThreadId` — the policy is a function of it —
+/// so these tests establish that the function is injective, that it dodges the
+/// two fatal sentinel values, and that every allocation site feeds it a
+/// distinct `ThreadId`.
 ///
 /// `TestCpuPlacement` covers the sibling policy (`cpuForRotation`), which
 /// deliberately keys off a *different* cursor; the contrast is the subject of
@@ -144,10 +143,10 @@ module TestOsThreadId =
 
     [<Test>]
     let ``a parked thread does consume an id, unlike a rotation slot`` () =
-        // The deliberate contrast with TestCpuPlacement's
-        // `an interleaved parked thread does not shift guest placements`, pinned
-        // here so that the asymmetry reads as a decision rather than an
-        // oversight, and so that "fixing" it fails a test that says why.
+        // The contrast with TestCpuPlacement's
+        // `an interleaved parked thread does not shift guest placements`: the
+        // asymmetry is a decision, and "fixing" it must fail a test that says
+        // why.
         //
         // The signal dispatcher is minted lazily, on the guest's first
         // `SystemNative_InitializeTerminalAndSignalHandling`, so a guest that
@@ -186,8 +185,8 @@ module TestOsThreadId =
                 OsThreadId 5u
             ]
 
-        // Shifted by exactly the one id the dispatcher took, and — the part
-        // that actually matters — still all distinct.
+        // Shifted by exactly the one id the dispatcher took, and still all
+        // distinct.
         idsFrom true
         |> shouldEqual
             [

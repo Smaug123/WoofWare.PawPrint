@@ -14,7 +14,7 @@ type MemoryBlockInitialization =
 /// block's `MemoryBlockInitialization`. Cells preserve provenance — a
 /// `NativeIntSource.FieldHandlePtr` stays a tagged pointer rather than collapsing to its bit
 /// pattern — and a byte view of a non-byte-addressable cell fails through the `CliType` byte
-/// helpers, which is the seam that catches accidental provenance loss.
+/// helpers, which is what catches accidental provenance loss.
 ///
 /// The representation is hidden, and the invariant that motivates hiding it is that cells
 /// never overlap one another and never overlap a byte-overlay key. Every function below

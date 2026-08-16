@@ -160,7 +160,6 @@ module MethodInstructions =
         }
 
 /// <summary>
-/// <summary>
 /// The kind of target an <c>[UnsafeAccessor]</c> method accesses, mirroring
 /// <see cref="System.Runtime.CompilerServices.UnsafeAccessorKind"/> from the BCL.
 /// </summary>
@@ -173,12 +172,11 @@ type UnsafeAccessorKind =
 
 /// Classifies the runtime-synthesised behaviour of a method whose implementation is
 /// supplied by the runtime. Most variants correspond to
-/// <c>MethodImplAttributes.Runtime</c> (used by the CLR for delegates today; multi-dim
-/// array <c>Get</c>/<c>Set</c>/<c>Address</c>/<c>.ctor</c> coming soon). The
+/// <c>MethodImplAttributes.Runtime</c> (the CLR uses it for delegates and multi-dim
+/// array <c>Get</c>/<c>Set</c>/<c>Address</c>/<c>.ctor</c>). The
 /// <see cref="UnsafeAccessor"/> variant is different: those methods carry
 /// <c>ImplAttributes=IL</c> with <c>RVA=0</c>, and the runtime synthesises the body
 /// from the <c>[UnsafeAccessor]</c> attribute rather than from <c>MethodImpl.Runtime</c>.
-/// </summary>
 type RuntimeBehaviour =
     /// A delegate constructor, dispatched by writing the target object and method
     /// pointer into the new delegate instance.
@@ -218,7 +216,7 @@ type RuntimeBehaviour =
 /// <summary>
 /// The implementation a method carries. The CLR distinguishes several kinds of
 /// "method body" beyond plain IL — InternalCalls, P/Invokes, runtime-synthesised
-/// methods (delegates today, multi-dim arrays soon), and abstract methods with no
+/// methods (delegates, multi-dim arrays), and abstract methods with no
 /// body at all. This DU names them all so dispatch sites can match exhaustively
 /// rather than treating "no IL" as an undifferentiated <c>None</c>.
 /// </summary>
@@ -350,7 +348,7 @@ module SynthesisedMethod =
     /// For a synthesised method the declaring type is the *subject* rather than the *owner* — the
     /// type it acts on, chosen so the method's identity is one-per-subject — so the ordinary
     /// "calling a member initialises its type" rule does not follow. Whatever initialisation a
-    /// synthesised method's semantics genuinely require is part of those semantics and is
+    /// synthesised method's semantics require is part of those semantics and is
     /// discharged by its interpreter: the struct-marshal stub, for instance, runs `loadClass` on
     /// `StubHelpers.DateMarshaler` itself before calling into it.
     ///
@@ -419,7 +417,7 @@ type MetadataMethodFacts =
         RawSignature : TypeMethodSignature<TypeDefn>
 
         /// <summary>
-        /// Custom attributes defined on the method. I've never yet seen one of these in practice.
+        /// Custom attributes defined on the method.
         /// </summary>
         CustomAttributes : WoofWare.PawPrint.CustomAttribute ImmutableArray
 
@@ -453,7 +451,7 @@ type MetadataMethodFacts =
 /// <remarks>
 /// Custom equality, for two reasons. A declared owner compares on identity plus instantiation and
 /// deliberately <em>not</em> on the whole <see cref="ConcreteType"/> record, matching what
-/// <c>MethodInfo.NominallyEqual</c> has always compared. And <c>AssemblyName</c> is a BCL class
+/// <c>MethodInfo.NominallyEqual</c> compares. And <c>AssemblyName</c> is a BCL class
 /// with reference equality, so the dynamic case has to compare <c>FullName</c> or two reads of the
 /// same assembly's name would be different owners.
 /// </remarks>
@@ -798,9 +796,9 @@ module MethodInfo =
         (b : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
         : bool
         =
-        // Owner equality, which for two declared methods is the identity-plus-instantiation
-        // comparison this has always done — see `MethodOwner`'s custom equality, which is where
-        // that spelling now lives so that hashing agrees with it. Two dynamic methods are *not*
+        // Owner equality, which for two declared methods is an identity-plus-instantiation
+        // comparison — see `MethodOwner`'s custom equality, which hashing agrees with.
+        // Two dynamic methods are *not*
         // distinguished here: their owning class is per-module, so both sides of a same-module
         // comparison agree, and what separates them is the `DynamicMethodHandle` in their
         // synthesised kind, compared below where a metadata method's token is.

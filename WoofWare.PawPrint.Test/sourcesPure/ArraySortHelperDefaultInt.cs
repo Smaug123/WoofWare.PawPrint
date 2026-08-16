@@ -10,7 +10,7 @@ namespace ArraySortHelperDefaultIntTest
             // whose cctor calls RuntimeTypeHandle.CreateInstanceForAnotherGenericParameter
             // with (RuntimeType)typeof(GenericArraySortHelper<string>) and
             // (RuntimeType)typeof(int) to obtain a GenericArraySortHelper<int>. The
-            // QCall is the load-bearing piece under test; the sort operating on the
+            // QCall is the piece under test; the sort operating on the
             // returned helper is the observable confirmation.
             int[] arr = { 3, 1, 2 };
             Array.Sort(arr);

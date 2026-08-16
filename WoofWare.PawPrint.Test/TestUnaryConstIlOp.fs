@@ -292,10 +292,8 @@ module TestUnaryConstIlOp =
     let private nInfF : float = System.Double.NegativeInfinity
     let private subnormalF : float = System.Double.Epsilon
 
-    /// `(name, op, factory)` quartet: each branch op under test together with the helper that
-    /// reconstructs it for a given short-form offset. Long-form Ble/Bge are exercised in their
-    /// own test; the short-form (Blt_s/Ble_s/Bgt_s/Bge_s) versions are the ones that were
-    /// `failwith "todo"` for Float × Float before this change.
+    /// Expected taken-ness of each ordered branch op for the operand pair, per IEEE
+    /// `<`/`<=`/`>`/`>=` (all false for NaN).
     let private floatTakenCases (v1 : float) (v2 : float) : (string * bool) list =
         [ "blt", v1 < v2 ; "ble", v1 <= v2 ; "bgt", v1 > v2 ; "bge", v1 >= v2 ]
 
@@ -362,9 +360,7 @@ module TestUnaryConstIlOp =
 
     [<Test>]
     let ``Ble/Bge (long form) on Float × Float follow IEEE ordered semantics`` () : unit =
-        // The long-form ops were also previously `failwith "todo"` on Float; cover them here
-        // with a smaller but still NaN-inclusive battery. `Blt`/`Bgt` (long form) already
-        // delegated to `clt`/`cgt` before this change, but we exercise them too for symmetry.
+        // A smaller but still NaN-inclusive battery; Blt/Bgt (long form) are included for symmetry.
         let offset = 13
 
         let assertCase (name : string) (op : UnaryConstIlOp) (expectedTaken : bool) (v1 : float) (v2 : float) : unit =

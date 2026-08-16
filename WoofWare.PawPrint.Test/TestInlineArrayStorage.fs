@@ -203,7 +203,7 @@ module TestInlineArrayStorage =
         |> InlineArrayStorage.expand describe Layout.Default (InlineArrayStorage.effectiveLength false (Some 2))
         |> shouldEqual twoFields
 
-        // Inert means inert: even a count CoreCLR would reject on a struct must not make us refuse
+        // Even a count CoreCLR would reject on a struct must not make us refuse
         // a class, because CoreCLR never looks at the attribute there and loads the type fine.
         InlineArrayStorage.effectiveLength false (Some 0) |> shouldEqual None
 
@@ -384,7 +384,7 @@ module TestInlineArrayStorage =
     /// which is `sizeof(TElement)` arithmetic that never consults PawPrint's storage. So neither
     /// can see where the slot cells actually are, which is what these pin.
     ///
-    /// The two answers genuinely differ. The *size* is N copies of the element after its rounding,
+    /// The two answers differ. The *size* is N copies of the element after its rounding,
     /// because CoreCLR sizes the single declared field completely and then multiplies. The *slots*
     /// stride by the element's own size, because CoreCLR keeps one `FieldDesc` at offset 0 and
     /// leaves element addressing to that `Unsafe.Add`. A rounded element therefore leaves its slack
@@ -469,8 +469,7 @@ module TestInlineArrayStorage =
     /// Three assumptions the striding above makes about the slot list it is handed. `expand` builds
     /// a list that satisfies all three, so nothing in the interpreter can reach these — but F#'s
     /// `private` is assembly-scoped and `CliValueType.OfFields` is public, so a future construction
-    /// site could. Each is asserted rather than assumed, and each is fired here, so that "no test
-    /// covers this" never becomes "and it turns out it never worked".
+    /// site could. Each is asserted rather than assumed, and each is fired here.
     [<Test>]
     let ``the striding assumptions are asserted rather than assumed`` () : unit =
         let expectFailure (contains : string) (f : unit -> unit) : unit =

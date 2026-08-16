@@ -1,8 +1,8 @@
 // Regression for IlMachineStateExecution.findMatchingMethodImplBodies: when a class
 // provides an explicit MethodImpl for ICovariant<string>.Get and the call site
 // dispatches ICovariant<object>.Get (allowed by `out`-variance), the MethodImpl must
-// still be selected. Earlier we used exact generic-argument equality on the
-// declaration's declaring type, which rejected this case.
+// still be selected. Exact generic-argument equality on the declaration's declaring
+// type rejects this case.
 
 using System;
 

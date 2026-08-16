@@ -7,8 +7,8 @@ open WoofWare.PawPrint
 
 /// A byte access through a byref may leave the cell its root names, because the root may be a
 /// *view* into something larger. `sourcesPure/AreSameProjectionCrossesArrayElement.cs` and
-/// `sourcesPure/GCMemoryInfoSpanProperties.cs` cover that it now works; this file covers the
-/// two ways it must still refuse.
+/// `sourcesPure/GCMemoryInfoSpanProperties.cs` cover that it works; this file covers the
+/// two ways it must refuse.
 ///
 /// Neither refusal can be a `sourcesPure` guest. Reading past the end of an array is undefined
 /// behaviour in real .NET rather than a fault, and reading across a managed reference is
@@ -240,20 +240,16 @@ module TestByteViewCrossesContainer =
 
         state, ptr
 
-    /// The refusal that matters, and the one worth naming precisely.
+    /// Stepping out of `A` reaches the whole object — but the object holds a managed
+    /// reference, and a reference has no byte image by design: rendering one would have to
+    /// invent an address, which a deterministic replay cannot do. The refusal is
+    /// `readHeapValueBytesAs`'s, covering the payload as a whole rather than this particular
+    /// four-byte window (which happens to be padding): the step-out hands the access to the
+    /// container reader's own rule rather than around it.
     ///
-    /// Stepping out of `A` reaches the whole object, which is the point — but the object holds
-    /// a managed reference, and a reference has no byte image by design: rendering one would
-    /// have to invent an address, which is exactly what a deterministic replay cannot do. Note
-    /// what the message says: the refusal is `readHeapValueBytesAs`'s, covering the payload as
-    /// a whole rather than this particular four-byte window (which happens to be padding). That
-    /// is the container reader's own pre-existing rule, and the point here is that the step-out
-    /// hands the access to it rather than around it.
-    ///
-    /// Asserting on the specific text is what makes this test load-bearing. Any exception would
-    /// satisfy a looser check — including the "there is nothing larger to read from" refusal
-    /// that this whole change exists to remove — so a regression that stopped stepping out at
-    /// all would pass a test that only demanded failure.
+    /// The assertion is on the specific text: any exception would satisfy a looser check —
+    /// including the "there is nothing larger to read from" refusal — so a regression that
+    /// stopped stepping out at all would pass a test that only demanded failure.
     let private crossesIntoReference (byteOffset : int) : string =
         let state, ptr = mixedObjectByref byteOffset
 

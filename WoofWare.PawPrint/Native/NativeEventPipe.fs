@@ -97,8 +97,7 @@ module NativeEventPipe =
             ->
             // No tracing session is ever opened in PawPrint, so we always report a zero
             // session ID. EventPipeEventDispatcher treats sessionID == 0 as "enable failed"
-            // and stops trying to drive the dispatcher loop, which is exactly the behaviour
-            // we want.
+            // and stops trying to drive the dispatcher loop.
             state |> pushUInt64Zero ctx.Thread |> Some
 
         | "EventPipeInternal_Disable",

@@ -73,8 +73,8 @@ module TypeResolution =
     /// </summary>
     /// <remarks>
     /// This is the one loader. Tests must use it too rather than hand-rolling an
-    /// <c>IAssemblyLoad</c>: the bug this exists to prevent was invisible to the test suite for
-    /// precisely as long as the test fakes keyed their dictionaries differently from production.
+    /// <c>IAssemblyLoad</c>: test fakes that key their dictionaries differently from production
+    /// hide reference-binding bugs from the suite.
     /// </remarks>
     let directoryLoader (loggerFactory : ILoggerFactory) (dotnetRuntimeDirs : string seq) : IAssemblyLoad =
         { new IAssemblyLoad with
@@ -250,14 +250,13 @@ module TypeResolution =
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <c>Ty</c> is compared and hashed <i>by reference</i>, not structurally. That is a soundness
-    /// concession in the safe direction — reference equality implies structural equality, so the
-    /// memo can only miss, never lie — and it is the whole point of the key: a <c>TypeDefn</c> is
-    /// a DAG, and structural hashing of one costs its size <i>as a tree</i>. For the shape this
-    /// memo exists to make tractable (<c>nest(d) := Dictionary&lt;nest(d-1), nest(d-1)&gt;</c>,
-    /// which is <c>d</c> nodes as a DAG and 2^<c>d</c> as a tree), hashing the key structurally
-    /// would cost as much as the traversal it is trying to avoid. Reference keying is O(1) and
-    /// hits exactly on the sharing that makes the DAG small in the first place.
+    /// <c>Ty</c> is compared and hashed <i>by reference</i>, not structurally. Reference equality
+    /// implies structural equality, so the memo can only miss, never lie. A <c>TypeDefn</c> is a
+    /// DAG, and structural hashing of one costs its size <i>as a tree</i>: for
+    /// <c>nest(d) := Dictionary&lt;nest(d-1), nest(d-1)&gt;</c> (<c>d</c> nodes as a DAG,
+    /// 2^<c>d</c> as a tree), hashing the key structurally would cost as much as the traversal it
+    /// is trying to avoid. Reference keying is O(1) and hits exactly on the sharing that makes
+    /// the DAG small.
     /// </para>
     /// <para>
     /// <c>Expanding</c> is part of the key because it decides whether a parameter is a cycle or an
@@ -267,11 +266,10 @@ module TypeResolution =
     /// </para>
     /// <para>
     /// <c>DefinedIn</c> is the assembly a <c>FromReference</c> is resolved relative to, so it too
-    /// changes the answer. Every path in this recursive group happens to thread one unchanged for
-    /// as long as a table lives, which would make carrying it redundant — but "happens to" is not
-    /// a property anyone editing this later can see, and getting it wrong would hand back a type
-    /// resolved against the wrong assembly rather than fail. It is compared by reference, so at
-    /// worst it costs a miss.
+    /// changes the answer. Every path in this recursive group currently threads one unchanged for
+    /// as long as a table lives, but nothing enforces that, and getting it wrong would hand back
+    /// a type resolved against the wrong assembly rather than fail. It is compared by reference,
+    /// so at worst it costs a miss.
     /// </para>
     /// </remarks>
     [<Struct ; CustomEquality ; NoComparison>]
@@ -485,21 +483,18 @@ module TypeResolution =
             assemblies, TypeDefn.Byref resolved
         | TypeDefn.GenericInstantiation (generic, args) ->
             // Substitute the arguments, then resolve the head *under those arguments* and convert
-            // back with typeInfoToTypeDefn. Resolving the head is what canonicalises it (a TypeRef
+            // back with typeInfoToTypeDefn. Resolving the head canonicalises it (a TypeRef
             // becomes the TypeDef it binds to, in the assembly it actually binds to) and loads
-            // whatever assembly that names; the structural recursion above is what keeps arrays,
+            // whatever assembly that names; the structural recursion above keeps arrays,
             // pointers and byrefs in the arguments intact rather than collapsing them.
             //
-            // Note we resolve `generic` directly rather than re-entering resolveTypeFromDefn on the
-            // reassembled `GenericInstantiation (generic, args')`. Re-entering would reach the very
-            // same call one step later, having first substituted `args'` a second time — and that
-            // second pass cannot change the answer: substitution is idempotent on its own output,
-            // and `args'` is closed whenever the environment is well-founded, which is this
-            // function's stated precondition. It is emphatically not free, though. It re-traverses
-            // and *re-allocates* the whole argument subtree, so it doubles the work at every level
-            // of nesting; worse, because the second pass builds fresh nodes, no reference-keyed
-            // memo can ever hit on them, which would leave the blowup exponential however much we
-            // cached.
+            // We resolve `generic` directly rather than re-entering resolveTypeFromDefn on the
+            // reassembled `GenericInstantiation (generic, args')`. Re-entering would substitute
+            // `args'` a second time; that cannot change the answer (substitution is idempotent on
+            // its own output, and `args'` is closed whenever the environment is well-founded,
+            // this function's stated precondition), but it re-traverses and re-allocates the
+            // whole argument subtree at every nesting level, and the fresh nodes defeat the
+            // reference-keyed memo, leaving the blowup exponential.
             let builder = ImmutableArray.CreateBuilder args.Length
 
             let assemblies =
@@ -709,9 +704,7 @@ module TypeResolution =
             // metadata can only ever spell as a TypeDef or TypeRef, and resolving either consults
             // no parameter and so reaches no guard. Clearing the links would only change the
             // answer for a parameter-headed instantiation — a shape no assembly can contain, and
-            // one whose environment is cyclic in any case. Staying conservative is the honest
-            // choice for a guard whose false positives would be far harder to diagnose than its
-            // false negatives.
+            // one whose environment is cyclic in any case.
             //
             // The memo, by contrast, must *not* be carried: it is keyed on the type alone, and is
             // therefore only meaningful for the environment it was built against, which we have
@@ -838,9 +831,9 @@ module TypeResolution =
     /// <para>
     /// The cost is the size of <paramref name="ty" /> as a <i>DAG</i>, not as a tree: a subterm
     /// physically shared between several argument positions is substituted once and the answer
-    /// reused, and the answer shares in the same way. That distinction is not academic — a type
-    /// like <c>nest(d) := Dictionary&lt;nest(d-1), nest(d-1)&gt;</c> is <c>d</c> nodes shared and
-    /// 2^<c>d</c> unshared — so callers that build types by repeated instantiation should hand the
+    /// reused, and the answer shares in the same way. A type like
+    /// <c>nest(d) := Dictionary&lt;nest(d-1), nest(d-1)&gt;</c> is <c>d</c> nodes shared and
+    /// 2^<c>d</c> unshared, so callers that build types by repeated instantiation should hand the
     /// same object to each position that wants the same type, rather than an equal copy. Doing
     /// otherwise costs more but cannot change the answer; see <c>SubstitutionMemo</c>.
     /// </para>

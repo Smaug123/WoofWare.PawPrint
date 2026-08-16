@@ -511,7 +511,7 @@ module IlMachineRuntimeMetadata =
         // `System.Object` or `System.ValueType` as having no parent at all. Marked rather than
         // dropped, so that the chain still describes `System.Object` itself.
         //
-        // `System.Enum` is deliberately absent: it is a *reference* type deriving from `ValueType`
+        // `System.Enum` is absent: it is a *reference* type deriving from `ValueType`
         // and declaring no instance fields, so CoreCLR treats it as an ordinary zero-sized parent
         // -- which is exactly why an enum's `value__` still lands at offset 0.
         let isTrivialParent =
@@ -554,11 +554,7 @@ module IlMachineRuntimeMetadata =
         state, chain |> List.collect _.OwnFields
 
     /// Build the field-block storage for a heap instance of `concreteType`: its whole base chain,
-    /// laid out per-declaring-type.
-    ///
-    /// The one way to build an object's storage. Every allocation site used to pair
-    /// `collectAllInstanceFields` with `CliValueType.OfFields` itself, which meant six copies of
-    /// the same two lines and six chances to forget the chain.
+    /// laid out per-declaring-type. The one way to build an object's storage.
     let buildInstanceStorage
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -572,7 +568,7 @@ module IlMachineRuntimeMetadata =
         state, CliValueType.OfFieldChain baseClassTypes state.ConcreteTypes concreteType chain
 
     /// Allocate a zeroed heap instance of <paramref name="concreteType"/> and return its address.
-    /// No constructor runs, and — deliberately — no class initialiser either: callers that need
+    /// No constructor runs, and no class initialiser either: callers that need
     /// the type initialised must arrange that themselves.
     ///
     /// For a value type this is the *boxed* representation, structurally identical to what
@@ -639,13 +635,13 @@ module IlMachineRuntimeMetadata =
                 ImmutableArray.Empty
 
         let fields =
-            // `_firstChar` is intentionally omitted: its canonical storage is
+            // `_firstChar` is omitted: its canonical storage is
             // `StringArrayData[dataOffset]`, and `RuntimeFieldProjection` synthesises
             // ldfld/ldflda/stfld access against that side-table. Materialising a
             // separate field cell would create a second source of truth for the
-            // same char and historically led to drift after `stfld _firstChar`
-            // (e.g. CoreLib's `String.CreateFromChar`'s `result._firstChar = c`)
-            // bypassed `setStringChar` and left the byte view at NUL.
+            // same char: a `stfld _firstChar` (e.g. CoreLib's `String.CreateFromChar`'s
+            // `result._firstChar = c`) would bypass `setStringChar` and leave the
+            // byte view at NUL.
             let stringLengthField =
                 FieldIdentity.requiredOwnInstanceField baseClassTypes.String "_stringLength"
 
@@ -1113,7 +1109,7 @@ module IlMachineRuntimeMetadata =
     /// mint a fresh token object, register `token -> frames` in `IlMachineState.FrozenStackTraces`,
     /// and store the token in the exception's `_stackTrace`.
     ///
-    /// Deliberately a separate function from `setExceptionStackTraceString` rather than folded
+    /// A separate function from `setExceptionStackTraceString` rather than folded
     /// into it: that one is a pure string projection and is also called from
     /// `IlMachineStateExecution`, where a literal empty list means "I have nothing to say about
     /// this cached exception"; this one is a claim about dispatch, and only the four
@@ -1124,19 +1120,15 @@ module IlMachineRuntimeMetadata =
     /// `Exception.Source` silently answers null where the real runtime names the assembly.
     /// See `FrozenStackTraces` for why the token is opaque.
     ///
-    /// An empty frame list mints no token, which matters more than it looks. `HasBeenThrown`
+    /// An empty frame list mints no token. `HasBeenThrown`
     /// being true is what sends `Exception.StackTrace` down `GetStackTrace()` and into the
     /// structured decoder, so a token with no frames would promise an answer PawPrint cannot
     /// give and turn a readable `null` trace into a crash at the unimplemented
-    /// `StackTrace_GetStackFramesInternal`. Claiming less is the honest move.
+    /// `StackTrace_GetStackFramesInternal`.
     ///
-    /// The shape that used to reach this was a `.cctor` throwing under
-    /// `Activator.CreateInstance<T>()`, which hits both the `WasInitialisingType` and
-    /// `WrapExceptionInTargetInvocation` wraps on one frame: the second saw the freshly
-    /// synthesised `TypeInitializationException` before any frame had been appended to it.
-    /// `ExceptionDispatching.applyFrameWraps` now seeds each wrapper it synthesises with the
-    /// frame raising it, so that one arrives with a frame. The guard stays because it is about
-    /// this function's contract rather than about that caller.
+    /// `ExceptionDispatching.applyFrameWraps` seeds each wrapper it synthesises with the
+    /// frame raising it, so a synthesised wrapper arrives here with a frame; the empty-list
+    /// guard is about this function's contract rather than about that caller.
     let recordThrownStackTrace
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1592,7 +1584,7 @@ module IlMachineRuntimeMetadata =
     /// `System.Decimal`, reference types, the structural handles — answers `None`.
     ///
     /// The identity is returned *exactly*: `Int32` and `UInt32` are different answers, as are
-    /// `Char`/`UInt16`, `Boolean`/`Byte` and `IntPtr`/`Int64`. This is deliberately narrower than
+    /// `Char`/`UInt16`, `Boolean`/`Byte` and `IntPtr`/`Int64`. This is narrower than
     /// both ECMA-335's verification types and the array-element rule below, each of which collapses
     /// signedness — see `unboxPermitted` for why we make that distinction.
     let primitiveElementIdentity
@@ -1649,7 +1641,7 @@ module IlMachineRuntimeMetadata =
                     // PawPrint already flattens the two `*HandleInternal` structs to a
                     // runtime-pointer NativeInt, so they can be honoured exactly.
                     //
-                    // `RuntimeArgumentHandle` is deliberately absent: PawPrint has no
+                    // `RuntimeArgumentHandle` is absent: PawPrint has no
                     // `PrimitiveLikeKind` for it, so it is not stored flattened and answering
                     // `Some` here would license an unbox this interpreter cannot materialise.
                     // It stays unclassified, which costs an InvalidCastException in a case only
@@ -1690,7 +1682,7 @@ module IlMachineRuntimeMetadata =
     /// True for the built-in primitives themselves, and for enums over the fixed-width integers.
     /// False for enums over `bool`, `char` or a native int: ECMA-335 II.14.3 permits those and the
     /// CLR does load them (C# cannot declare one, but Reflection.Emit can), yet
-    /// `CliValueType.EnumUnderlyingIsFlattenable` deliberately answers false for them, so their storage stays
+    /// `CliValueType.EnumUnderlyingIsFlattenable` answers false for them, so their storage stays
     /// a wrapped `CliValueType`.
     let private unboxMaterialisesFlattened
         (loggerFactory : ILoggerFactory)
@@ -1734,12 +1726,12 @@ module IlMachineRuntimeMetadata =
     /// category and report the *same* primitive element type. That second clause is what lets a
     /// boxed enum unbox to its underlying integer and back.
     ///
-    /// It is narrower than it first looks, and deliberately so:
+    /// It is narrower than it first looks:
     ///   - ECMA-335's verification types collapse signedness (`int32` and `uint32` share one), but
     ///     this does not: `(uint)(object)1` raises InvalidCastException on a real runtime;
     ///   - the array-element rule (`CanCastParam`, via `valueElementNormalisedIdentity` below)
     ///     *does* collapse signedness, which is why `(uint[])(object)new int[1]` succeeds while the
-    ///     scalar cast fails. Do not reach for that helper here — the two rules genuinely differ.
+    ///     scalar cast fails. Do not reach for that helper here — the two rules differ.
     ///
     /// `Nullable\`1` never reaches this predicate: it matches its argument by exact equivalence
     /// (`Nullable::IsNullableForTypeHelper`), so a boxed enum is not a `T?` of its underlying type.
@@ -1780,7 +1772,7 @@ module IlMachineRuntimeMetadata =
                     //     rejects a bare primitive into a value-type slot unless that slot is
                     //     primitive-like (see the `failwith` in its `CliType.ValueType` arm), so an
                     //     unflattened target would abort on the following `stloc`/`stfld` instead.
-                    // The identity case never reaches here, so this only ever rejects genuinely
+                    // The identity case never reaches here, so this only ever rejects
                     // mixed pairs. Fail loudly rather than answering `false`, which would raise
                     // InvalidCastException where a real runtime would succeed.
                     let state, boxedFlattened =
@@ -2499,7 +2491,7 @@ module IlMachineRuntimeMetadata =
             // model constraint-aware variance during an open walk, so when the walk
             // encounters a node whose identity matches a variant target we crash loudly
             // rather than silently returning false. The mirror at the closed/closed oracle
-            // (lines 1215-1220) uses the same shape.
+            // uses the same shape.
             let targetIdentityWithVariance =
                 match AllConcreteTypes.lookup t state.ConcreteTypes with
                 | Some targetCt ->
@@ -2639,8 +2631,8 @@ module IlMachineRuntimeMetadata =
                 | None ->
                     // Interfaces (and System.Object itself) carry no `extends` clause, so
                     // `BaseType` is `None` in metadata. Every reference type is assignable
-                    // to System.Object, so mirror the closed oracle's `walkBase` fallback
-                    // (lines 1183-1187): when the chain runs out, accept iff the target is
+                    // to System.Object, so mirror the closed oracle's `walkBase` fallback:
+                    // when the chain runs out, accept iff the target is
                     // System.Object. Open generic *classes* and *structs* never hit this
                     // branch — their metadata BaseType is always System.Object or
                     // System.ValueType — so in practice this fires for open interfaces with

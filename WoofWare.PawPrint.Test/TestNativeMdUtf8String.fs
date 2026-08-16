@@ -88,7 +88,8 @@ module TestNativeMdUtf8String =
         eq "ıi" "iı" |> shouldEqual true
         eq "ſs" "sſ" |> shouldEqual true
 
-        // Sanity: the host really does disagree, so these assertions are load-bearing.
+        // Sanity: the host really does disagree, so the assertions above cannot pass by
+        // delegating to it.
         Char.ToUpperInvariant 'ı' |> shouldEqual 'ı'
 
         String.Equals ("ſ", "s", StringComparison.OrdinalIgnoreCase)

@@ -434,9 +434,9 @@ public static class GenericMethodHolder
 
     [<Test>]
     let ``getOrAllocateInternalHandle accepts methods with method-generic parameters`` () : unit =
-        // Regression test: prior to commit fixing introduced-method iterator generics, the path
-        // routed through `concretizeMethodWithAllGenerics` with empty methodArgs and crashed at
-        // `methodArgs.[gp.SequenceNumber]` for any method with method-generic parameters.
+        // Regression test: registering a method with method-generic parameters must not route
+        // through `concretizeMethodWithAllGenerics` with empty methodArgs, which crashes at
+        // `methodArgs.[gp.SequenceNumber]`.
         let source =
             """
 public static class GenericMethodHolder
@@ -786,9 +786,8 @@ public class HasConstructors
         // lives in, which for a *shared* (reference-type) instantiation is the canonical
         // `Holder<__Canon>`. PawPrint models no sharing at all, which is exactly CoreCLR's
         // value-type-instantiation regime: the MethodTable of `Holder<int>.Target` is `Holder<int>`.
-        // So the instantiation must survive; collapsing it to the open generic definition (which is
-        // a different MethodTable in CoreCLR too, with IsGenericTypeDefinition = true) would be
-        // wrong, and this assertion is what fails if someone tries it.
+        // The instantiation must survive: the open generic definition is a different MethodTable
+        // in CoreCLR too (IsGenericTypeDefinition = true).
         let source =
             """
 public class GenericHolder<T>

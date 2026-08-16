@@ -14,11 +14,6 @@ open WoofWare.PawPrint
 /// Tests for <see cref="LocalSignatureDecoding" />, the locals counterpart of
 /// <see cref="MethodSignatureDecoding" />.
 /// </summary>
-/// <remarks>
-/// This module predates <c>MethodSignatureDecoding</c> and was covered only indirectly, through
-/// the dynamic-method minting tests. These are the direct ones, added alongside a declared-count
-/// bound that the two modules now share the reasoning for.
-/// </remarks>
 [<TestFixture>]
 module TestLocalSignatureDecoding =
 

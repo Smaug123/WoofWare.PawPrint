@@ -6,7 +6,7 @@ class Program
     // operand (the rotated TypeHandle bits) and one `NativeInt(TypeHandlePtr)`
     // operand (the raw RuntimeTypeHandle).
     //
-    // This is the next blocker the BCL's cast cache reaches:
+    // The BCL's cast cache reaches this shape:
     //
     //     nuint hash = RotateLeft(source, 32) ^ target;
     //
@@ -43,9 +43,9 @@ class Program
         }
 
         // XOR with the same target a second time should cancel the target bits
-        // out (the rotated bits remain). That's a load-bearing property of the
-        // cast-cache hash mixing — repeating the operation is well-defined and
-        // deterministic given the synthesised bit assignment.
+        // out (the rotated bits remain). The cast-cache hash mixing relies on
+        // this: repeating the operation is well-defined and deterministic
+        // given the synthesised bit assignment.
         nint roundTrip = mixed ^ target;
         // `roundTrip` is the rotated bits alone; AND with a small mask just
         // sanity-checks that further bit ops on the result are still tractable.
