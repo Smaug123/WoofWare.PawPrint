@@ -182,7 +182,8 @@ jobs:
   attestation-domain:
     runs-on: ubuntu-latest
     needs: [all-required-checks-complete]
-    if: ${{ !github.event.repository.fork && github.ref == 'refs/heads/main' }}
+    # if: ${{ !github.event.repository.fork && github.ref == 'refs/heads/main' }}
+    if: false
     permissions:
       id-token: write
       attestations: write
@@ -201,7 +202,8 @@ jobs:
   attestation-pawprint:
     runs-on: ubuntu-latest
     needs: [all-required-checks-complete]
-    if: ${{ !github.event.repository.fork && github.ref == 'refs/heads/main' }}
+    # if: ${{ !github.event.repository.fork && github.ref == 'refs/heads/main' }}
+    if: false
     permissions:
       id-token: write
       attestations: write
@@ -219,7 +221,8 @@ jobs:
 
   nuget-publish-domain:
     runs-on: ubuntu-latest
-    if: ${{ !github.event.repository.fork && github.ref == 'refs/heads/main' }}
+    # if: ${{ !github.event.repository.fork && github.ref == 'refs/heads/main' }}
+    if: false
     needs: [all-required-checks-complete]
     environment: main-deploy
     permissions:
@@ -257,7 +260,8 @@ jobs:
 
   nuget-publish-pawprint:
     runs-on: ubuntu-latest
-    if: ${{ !github.event.repository.fork && github.ref == 'refs/heads/main' }}
+    # if: ${{ !github.event.repository.fork && github.ref == 'refs/heads/main' }}
+    if: false
     needs: [all-required-checks-complete]
     environment: main-deploy
     permissions:
@@ -300,7 +304,8 @@ jobs:
         - nuget-package-domain
         - nuget-package-pawprint
     runs-on: ubuntu-latest
-    if: ${{ !github.event.repository.fork && github.ref == 'refs/heads/main' }}
+    # if: ${{ !github.event.repository.fork && github.ref == 'refs/heads/main' }}
+    if: false
     needs: [all-required-checks-complete]
     environment: main-deploy
     permissions:
