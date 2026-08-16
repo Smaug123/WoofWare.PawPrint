@@ -52,15 +52,15 @@ module IlDecoding =
         /// guest to obtain a reflected `MethodInfo` first, which stops at the unimplemented
         /// `RuntimeMethodHandle::GetMethodDef`.
         | Method
+        /// A field: a `GenericFieldInfo`, which is what everything reachable through
+        /// `Type.GetField` arrives as, or a bare `RuntimeFieldHandle`, which is what a
+        /// module-level global and `DynamicILInfo.GetTokenFor` produce.
+        | Field
         /// This opcode's scope operands are not resolvable yet, whatever the entry turns out to be.
         /// The string names what is missing, for the refusal message.
         | NotYetSupported of missing : string
 
     let scopeOperandKind (op : UnaryMetadataTokenIlOp) : ScopeOperandKind =
-        let field =
-            ScopeOperandKind.NotYetSupported
-                "PawPrint cannot yet resolve field entries (RuntimeFieldHandle, GenericFieldInfo) against a scope"
-
         match op with
         | UnaryMetadataTokenIlOp.Newarr
         | UnaryMetadataTokenIlOp.Castclass
@@ -114,7 +114,7 @@ module IlDecoding =
         | UnaryMetadataTokenIlOp.Stfld
         | UnaryMetadataTokenIlOp.Ldsfld
         | UnaryMetadataTokenIlOp.Ldsflda
-        | UnaryMetadataTokenIlOp.Stsfld -> field
+        | UnaryMetadataTokenIlOp.Stsfld -> ScopeOperandKind.Field
 
         // Type operands, but not resolvable against a scope yet, each for its own reason.
         | UnaryMetadataTokenIlOp.Ldelem
@@ -122,8 +122,19 @@ module IlDecoding =
             ScopeOperandKind.NotYetSupported
                 "ldelem/stelem resolve their element type through a separate path that yields a TypeInfo rather than a ConcreteTypeHandle; note that the nullary forms (ldelem.i4 and friends) need no operand at all"
         | UnaryMetadataTokenIlOp.Ldtoken ->
+            // `ldtoken` does not narrow to a closed type the way every other type-shaped opcode
+            // does: `ldtoken typeof(List<>)` is legal and pushes a handle to the open definition, so
+            // it wants the whole `RuntimeTypeHandleTarget` where `DynamicScopeOperand.closedType`
+            // deliberately answers only `Closed`. It also accepts method and field entries, which
+            // are a further two kinds again.
+            //
+            // A guest can tell a correct answer from a consistently-wrong one without any of that:
+            // the body can `box` the `RuntimeTypeHandle` it pushed and return it as `object`, and
+            // the caller unboxes and compares against `typeof(X).TypeHandle` in ordinary C#
+            // (measured — that guest exits 0 on real .NET). So this arm is testable once the
+            // unnarrowed target is available.
             ScopeOperandKind.NotYetSupported
-                "a guest can only tell a correctly-resolved ldtoken from a consistently-wrong one by passing the handle to Type.GetTypeFromHandle, which needs method entries; wiring it now would be an arm no test can kill"
+                "ldtoken needs the unnarrowed RuntimeTypeHandleTarget (ldtoken of an open generic definition is legal, unlike every other type-shaped opcode), and also accepts method and field entries; DynamicScopeOperand.closedType answers only closed types"
         | UnaryMetadataTokenIlOp.Constrained ->
             ScopeOperandKind.NotYetSupported
                 "constrained. is only meaningful as a prefix to a callvirt, which needs method entries"
@@ -176,9 +187,14 @@ module IlDecoding =
             | ScopeOperandKind.Method, DynamicScopeEntry.DynamicMethod
             // `Emit(OpCode, MethodInfo)` and `EmitCall` differ only in whether the entry is wrapped;
             // both are ordinary ways to spell the same call, so both are accepted here.
-            | ScopeOperandKind.Method, DynamicScopeEntry.VarArgMethod -> MetadataOperand.FromDynamicScope index
+            | ScopeOperandKind.Method, DynamicScopeEntry.VarArgMethod
+            // `Emit(OpCode, FieldInfo)` and `DynamicILInfo.GetTokenFor` differ only in whether the
+            // handle is wrapped with the declaring type it was observed on; both name a field.
+            | ScopeOperandKind.Field, DynamicScopeEntry.GenericFieldInfo
+            | ScopeOperandKind.Field, DynamicScopeEntry.FieldHandle -> MetadataOperand.FromDynamicScope index
             | ScopeOperandKind.Type, held -> refuse "a type handle" (DynamicScopeEntry.describe held)
             | ScopeOperandKind.Method, held -> refuse "a method" (DynamicScopeEntry.describe held)
+            | ScopeOperandKind.Field, held -> refuse "a field" (DynamicScopeEntry.describe held)
 
     let private readStringToken (universe : IlTokenUniverse) (reader : byref<BlobReader>) : StringOperand =
         let value = reader.ReadUInt32 () |> int
@@ -200,6 +216,10 @@ module IlDecoding =
             | Some DynamicScopeEntry.VarArgMethod ->
                 failwith
                     $"a dynamic method's ldstr names DynamicScope entry %d{index} (token 0x%08x{value}), which holds a dynamic method rather than a string"
+            | Some DynamicScopeEntry.FieldHandle
+            | Some DynamicScopeEntry.GenericFieldInfo ->
+                failwith
+                    $"a dynamic method's ldstr names DynamicScope entry %d{index} (token 0x%08x{value}), which holds a field rather than a string"
             | Some (DynamicScopeEntry.Unsupported description) ->
                 failwith
                     $"a dynamic method's ldstr names DynamicScope entry %d{index} (token 0x%08x{value}), which holds %s{description} rather than a string"

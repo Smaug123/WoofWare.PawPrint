@@ -325,6 +325,28 @@ type DynamicScopeEntry =
     /// `DynamicMethod.cs:227`), so `GetMemberRefToken` would have thrown had a call site tried to
     /// add optional parameters, and the signature is therefore always the callee's own.
     | VarArgMethod
+    /// A boxed `System.RuntimeFieldHandle`, which is what
+    /// `DynamicScope.GetTokenFor(RuntimeFieldHandle)` adds (`DynamicILGenerator.cs:1042`).
+    ///
+    /// Reachable two ways, and neither is the ordinary one. `Emit(OpCode, FieldInfo)` takes this
+    /// overload only when `field.DeclaringType` is null (`DynamicILGenerator.cs:147`), i.e. for a
+    /// module-level global, which `Type.GetField` cannot produce; and `DynamicILInfo.GetTokenFor`
+    /// exposes it publicly for any field at all. The ordinary case is `GenericFieldInfo`.
+    ///
+    /// Payload-free, as `TypeHandle` is, and for the same reason: which field the handle names is
+    /// read from the live scope when the instruction runs.
+    | FieldHandle
+    /// CoreLib's `System.Reflection.Emit.GenericFieldInfo`, which pairs a `RuntimeFieldHandle` with
+    /// the `RuntimeTypeHandle` of the declaring type it was observed on
+    /// (`DynamicILGenerator.cs:1082`).
+    ///
+    /// Despite the name, this is what *every* field a guest can reach arrives as, generic or not:
+    /// `Emit(OpCode, FieldInfo)` chooses between the one- and two-argument `GetTokenFor` on whether
+    /// the field has a declaring type, not on whether that type is generic, and everything
+    /// `Type.GetField` returns has one.
+    ///
+    /// Payload-free, as the other wrappers are.
+    | GenericFieldInfo
     /// Some entry kind whose resolution is not yet implemented — a signature blob, a
     /// `RuntimeMethodHandle`, a `GenericMethodInfo`. The description names the kind, for the
     /// refusal message an instruction naming it would produce.
@@ -341,6 +363,8 @@ module DynamicScopeEntry =
         | DynamicScopeEntry.TypeHandle -> "a type handle"
         | DynamicScopeEntry.DynamicMethod -> "a dynamic method"
         | DynamicScopeEntry.VarArgMethod -> "a call site naming a dynamic method"
+        | DynamicScopeEntry.FieldHandle -> "a field handle"
+        | DynamicScopeEntry.GenericFieldInfo -> "a field handle together with its declaring type"
         | DynamicScopeEntry.String contents -> $"the string %s{contents}"
         | DynamicScopeEntry.Unsupported description -> description
 

@@ -416,6 +416,228 @@ module internal DynamicScopeOperand =
         | Ok notClosed ->
             invalidProgram $"DynamicScope entry %d{scopeIndex} names %O{notClosed}, which is not a closed type"
 
+    /// The field-registry id inside a `RuntimeFieldHandleInternal`, or `None` for the null sentinel,
+    /// whose several spellings all mean `default`. Duplicates `NativeCall`'s
+    /// `fieldHandleIdOfRuntimeFieldHandleInternal`, which compiles after this file and so cannot be
+    /// called from here; the two must accept the same shapes.
+    let private fieldRegistryId (operation : string) (value : CliType) : int64 option =
+        match CliType.unwrapPrimitiveLikeDeep value with
+        | CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id) -> Some id
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr id)) -> Some id
+        | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
+        | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) -> None
+        | other ->
+            failwith
+                $"%s{operation}: expected a RuntimeFieldHandleInternal holding a field-registry handle, got %O{other}"
+
+    /// <summary>
+    /// The field a <c>System.RuntimeFieldHandle</c> value names, given that value's <c>m_ptr</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>m_ptr</c> is an <c>IRuntimeFieldInfo</c>, and two implementations of it reach here. The
+    /// one the Emit path always produces is an <c>RtFieldInfo</c>: <c>RtFieldInfo.FieldHandle</c> is
+    /// <c>new RuntimeFieldHandle(this)</c> (<c>RtFieldInfo.cs:115</c>), so every handle a guest gets
+    /// out of <c>Type.GetField</c> points at the reflection object itself, whose
+    /// <c>m_fieldHandle</c> is a bare <c>IntPtr</c>. The other is the <c>RuntimeFieldInfoStub</c>
+    /// the field-handle registry mints, whose <c>m_fieldHandle</c> is a
+    /// <c>RuntimeFieldHandleInternal</c>. Both spell the same registry id, which is why this reads
+    /// the field by name and lets <see cref="fieldRegistryId"/> accept either shape, rather than
+    /// keying on the stub's address as <c>FieldHandleRegistry.resolveFieldFromAddress</c> does —
+    /// that lookup cannot see the <c>RtFieldInfo</c> shape at all.
+    /// </remarks>
+    let private fieldOfRuntimeFieldHandlePtr
+        (operation : string)
+        (state : IlMachineState)
+        (ptr : ManagedHeapAddress)
+        : FieldHandle option
+        =
+        let holder = ManagedHeap.get ptr state.ManagedHeap
+
+        let handleField =
+            IlMachineState.requiredOwnInstanceFieldId state holder.ConcreteType "m_fieldHandle"
+
+        match
+            AllocatedNonArrayObject.DereferenceFieldById handleField holder
+            |> fieldRegistryId operation
+        with
+        | None -> None
+        | Some id ->
+            FieldHandleRegistry.resolveFieldFromId id state.FieldHandles
+            |> Option.orElseWith (fun () ->
+                failwith
+                    $"%s{operation}: field-registry id %d{id}, read from the m_fieldHandle of the object at %O{ptr}, is not in the field-handle registry"
+            )
+
+    /// <summary>
+    /// The field named by entry <paramref name="scopeIndex"/>, or a description of why the entry
+    /// does not name one — which the caller turns into the guest's exception.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is CoreCLR's <c>ResolveToken</c> arms <c>((RuntimeFieldHandle)handle).Value</c> and
+    /// <c>gfi.m_fieldHandle.Value; gfi.m_context.Value</c>
+    /// (<c>DynamicILGenerator.cs:793-796, 815-820</c>).
+    /// </para>
+    /// <para>
+    /// Both shapes are accepted, and the wrapped one is the ordinary case despite its name.
+    /// <c>Emit(OpCode, FieldInfo)</c> chooses the two-argument <c>GetTokenFor</c> whenever the field
+    /// has a declaring type (<c>:147</c>) — which everything <c>Type.GetField</c> returns does — so
+    /// a plain static <c>int</c> on a non-generic type arrives as a <c>GenericFieldInfo</c> too. The
+    /// bare handle is what a module-level global produces, and what the public
+    /// <c>DynamicILInfo.GetTokenFor</c> produces for any field.
+    /// </para>
+    /// <para>
+    /// The wrapper's <c>m_context</c> is read and required to agree with the declaring type the
+    /// field-handle registry already recorded, rather than being used. CoreCLR needs the context
+    /// because a <c>FieldDesc</c> is shared across instantiations; PawPrint's <c>FieldHandle</c>
+    /// keys on the declaring <c>RuntimeTypeHandleTarget</c> itself
+    /// (<c>NativeRuntimeTypeHelpers.fs:140-144</c> preserves the <c>Closed</c> /
+    /// <c>OpenGenericTypeDefinition</c> distinction), so the context is redundant information here.
+    /// A disagreement crashes rather than picking a side. Two things stop a guest producing one:
+    /// <c>DynamicMethodBody.read</c> refuses a <c>DynamicILInfo</c>-built resolver by its non-null
+    /// <c>m_exceptionHeader</c>, and rewriting <c>m_tokens</c> by reflection needs
+    /// <c>RuntimeFieldHandle_GetValue</c>, an unimplemented QCall. Real .NET, measured through
+    /// <c>DynamicILInfo</c>, resolves by the *handle* and ignores a disagreeing context; that is
+    /// what to implement if either of those stops applying.
+    /// </para>
+    /// <para>
+    /// An <c>OpenGenericTypeDefinition</c> declaring type is refused as an invalid program, measured
+    /// on real .NET against a closed control that runs: <c>typeof(Box&lt;&gt;).GetField("Item")</c>
+    /// emitted into a body is an <c>InvalidProgramException</c> where
+    /// <c>typeof(Box&lt;int&gt;).GetField("Item")</c> answers. Both are reachable from a guest,
+    /// because <c>GetStaticFieldForGenericType</c> — which blocks a *static* field of a generic type
+    /// well before emit — is gated on <c>isStatic</c> (<c>RuntimeType.CoreCLR.cs:915-917</c>) and an
+    /// instance field never meets it.
+    /// </para>
+    /// </remarks>
+    let field
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (scopeIndex : int)
+        (state : IlMachineState)
+        (handle : DynamicMethodHandle)
+        : Result<FieldHandle, TypeInfo<GenericParamFromMetadata, TypeDefn> * string>
+        =
+        // The exception each refusal carries is the one `closedType` measured for the same shape:
+        // these are properties of `ResolveToken`'s dispatch and of `DynamicScope`'s indexer, neither
+        // of which looks at what kind of thing the entry is.
+        let badImage (why : string) =
+            Error (baseClassTypes.BadImageFormatException, why)
+
+        let invalidProgram (why : string) =
+            Error (baseClassTypes.InvalidProgramException, why)
+
+        /// The `FieldHandle` a `System.RuntimeFieldHandle`-shaped value names, given its `m_ptr`.
+        let ofHandleValue (what : string) (value : CliType) =
+            match CliType.unwrapPrimitiveLikeDeep value with
+            | CliType.ObjectRef None ->
+                // `default(RuntimeFieldHandle)`, whose `m_ptr` is null. `closedType` measured the
+                // type-shaped equivalent to be BadImageFormatException rather than
+                // InvalidProgramException, because the token resolves to a null handle rather than
+                // to nothing at all.
+                badImage $"DynamicScope entry %d{scopeIndex}'s %s{what} is a RuntimeFieldHandle whose m_ptr is null"
+            | CliType.ObjectRef (Some ptr) ->
+                match fieldOfRuntimeFieldHandlePtr operation state ptr with
+                | Some fieldHandle -> Ok fieldHandle
+                | None ->
+                    badImage
+                        $"DynamicScope entry %d{scopeIndex}'s %s{what} is a RuntimeFieldHandle whose m_fieldHandle is null"
+            | other ->
+                failwith
+                    $"%s{operation}: expected DynamicScope entry %d{scopeIndex}'s %s{what} to be a RuntimeFieldHandle holding an IRuntimeFieldInfo, got %O{other}"
+
+        match entryObject operation scopeIndex state handle with
+        | ScopeEntryLookup.PastEnd ->
+            Error (
+                baseClassTypes.ArgumentOutOfRangeException,
+                $"DynamicScope entry %d{scopeIndex} is exactly at the end of the scope's token list"
+            )
+        | ScopeEntryLookup.Absent -> invalidProgram $"DynamicScope entry %d{scopeIndex} is null, so it names no field"
+        | ScopeEntryLookup.Found entry ->
+
+        // Established before dereferencing, for the reason `closedType` gives: a rewritten slot can
+        // hold anything, including a `byte[]`, which `ManagedHeap.get` refuses outright.
+        match ManagedHeap.tryGetObjectConcreteType entry state.ManagedHeap with
+        | None -> failwith $"%s{operation}: DynamicScope entry %d{scopeIndex} is at %O{entry}, which is not on the heap"
+        | Some concreteType ->
+
+        let isBareHandle =
+            isCorelibType baseClassTypes.RuntimeFieldHandle state concreteType
+
+        if
+            not isBareHandle
+            && not (isCorelibType baseClassTypes.GenericFieldInfo state concreteType)
+        then
+            badImage
+                $"DynamicScope entry %d{scopeIndex} is neither a System.RuntimeFieldHandle nor a System.Reflection.Emit.GenericFieldInfo"
+        else
+
+        let held = ManagedHeap.get entry state.ManagedHeap
+
+        let resolved =
+            if isBareHandle then
+                let mPtrField =
+                    IlMachineState.requiredOwnInstanceFieldId state held.ConcreteType "m_ptr"
+
+                AllocatedNonArrayObject.DereferenceFieldById mPtrField held
+                |> ofHandleValue "boxed RuntimeFieldHandle"
+            else
+                let fieldHandleField =
+                    IlMachineState.requiredOwnInstanceFieldId state held.ConcreteType "m_fieldHandle"
+
+                // `m_fieldHandle` is a `RuntimeFieldHandle`, which is primitive-like and flattens to
+                // its single `m_ptr`, so this is the same value the boxed case reads out of the box.
+                AllocatedNonArrayObject.DereferenceFieldById fieldHandleField held
+                |> ofHandleValue "GenericFieldInfo.m_fieldHandle"
+
+        match resolved with
+        | Error e -> Error e
+        | Ok fieldHandle ->
+
+        let contextAgrees =
+            if isBareHandle then
+                // Nothing to disagree with: CoreCLR falls back to the field's own enclosing type in
+                // exactly this case (`LCGMethodResolver::ResolveToken`, `dynamicmethod.cpp:1371`),
+                // which is what the registry already recorded.
+                Ok ()
+            else
+                let contextField =
+                    IlMachineState.requiredOwnInstanceFieldId state held.ConcreteType "m_context"
+
+                match
+                    AllocatedNonArrayObject.DereferenceFieldById contextField held
+                    |> CliType.unwrapPrimitiveLikeDeep
+                with
+                | CliType.ObjectRef None ->
+                    badImage
+                        $"DynamicScope entry %d{scopeIndex} is a GenericFieldInfo whose m_context is a RuntimeTypeHandle with a null m_type"
+                | CliType.ObjectRef (Some runtimeType) ->
+                    // A `RuntimeTypeHandle`-typed *field* is primitive-like and flattens to its
+                    // single `m_type`, so this address is already the `RuntimeType` — unlike the
+                    // boxed handle `closedType` reads, which is an object with the field on it.
+                    let context = runtimeTypeHandleTargetOfRuntimeType operation state runtimeType
+
+                    if context = fieldHandle.GetDeclaringTypeHandle () then
+                        Ok ()
+                    else
+                        failwith
+                            $"TODO: %s{operation}: DynamicScope entry %d{scopeIndex} is a GenericFieldInfo whose m_context names %O{context}, but its m_fieldHandle was allocated against declaring type %O{fieldHandle.GetDeclaringTypeHandle ()}. `ILGenerator.Emit` writes both halves from one FieldInfo, so this needs the scope to have been rewritten. Real .NET resolves by the handle and ignores the context (measured through DynamicILInfo.GetTokenFor); PawPrint has no test for that because the rewrite is unreachable here"
+                | other ->
+                    failwith
+                        $"%s{operation}: expected DynamicScope entry %d{scopeIndex}'s GenericFieldInfo.m_context to be a RuntimeTypeHandle referencing a RuntimeType, got %O{other}"
+
+        match contextAgrees with
+        | Error e -> Error e
+        | Ok () ->
+
+        match fieldHandle.GetDeclaringTypeHandle () with
+        | RuntimeTypeHandleTarget.Closed _ -> Ok fieldHandle
+        | notClosed ->
+            invalidProgram
+                $"DynamicScope entry %d{scopeIndex} names a field of %O{notClosed}, whose declaring type is not a closed type"
+
     /// <summary>
     /// The dynamic method named by entry <paramref name="scopeIndex"/>, or the object to mint if it
     /// has not been minted yet.
@@ -447,7 +669,10 @@ module internal DynamicScopeOperand =
     /// <c>RuntimeMethodInfo</c> (which stops at the unimplemented
     /// <c>RuntimeMethodHandle::GetMethodDef</c>), <c>GetTokenFor</c> never hands out index 0 or an
     /// index at <c>Count</c>, and rewriting <c>m_tokens</c> needs reflection PawPrint does not
-    /// implement. Raising those exceptions would be three arms nothing could ever kill. Worse, the
+    /// implement — the missing piece is the <c>RuntimeFieldHandle_GetValue</c> QCall, everything
+    /// else on that route being interpreted code that already works, so implementing it reopens
+    /// every "the scope cannot be rewritten" argument in this file at once.
+    /// Raising those exceptions would be three arms nothing could ever kill. Worse, the
     /// obvious rule — "not a <c>DynamicMethod</c>, so bad token" — is *false*:
     /// <c>ResolveToken</c> resolves a <c>RuntimeMethodHandle</c>, a <c>GenericMethodInfo</c> and a
     /// <c>VarArgMethod</c> in method position perfectly happily, so a guest exception here would

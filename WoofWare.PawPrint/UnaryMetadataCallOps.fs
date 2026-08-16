@@ -574,7 +574,8 @@ module internal UnaryMetadataCallOps =
                     ctx.Thread
                     state
         | ResolvedMetadataOperand.FromMetadata _
-        | ResolvedMetadataOperand.ScopeType _ ->
+        | ResolvedMetadataOperand.ScopeType _
+        | ResolvedMetadataOperand.ScopeField _ ->
 
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes

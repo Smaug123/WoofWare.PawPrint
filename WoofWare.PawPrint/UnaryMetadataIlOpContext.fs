@@ -38,6 +38,16 @@ type internal ResolvedMetadataOperand =
     /// which belongs in a step whose whole job is to read the operand. The op does that, alongside
     /// everything else it does to state.
     | ScopeMethod of DynamicMethodHandle
+    /// A field read from entry <c>scopeIndex</c> of the executing dynamic method's `DynamicScope`,
+    /// as the identity the field-handle registry holds rather than as a projected
+    /// <see cref="FieldInfo"/>. Declaring types that are not closed never get here: they are an
+    /// invalid program, and <c>UnaryMetadataIlOp.execute</c> raises before dispatching.
+    ///
+    /// The identity rather than the projection: a <see cref="FieldHandle"/> is what the field-handle
+    /// registry recorded, and a <see cref="FieldInfo"/> is one view of it, which
+    /// <c>UnaryMetadataFieldOps.resolveFieldToken</c> builds by the same table read the metadata
+    /// path performs.
+    | ScopeField of FieldHandle
 
 /// <summary>
 /// <see cref="ResolvedMetadataOperand"/> as an op whose operand names a *type* sees it.
@@ -56,6 +66,23 @@ type internal ResolvedTypeOperand =
     | FromMetadata of assembly : DumpedAssembly * token : MetadataToken
     /// A closed type read from the executing dynamic method's `DynamicScope`.
     | FromScope of ConcreteTypeHandle
+
+/// <summary>
+/// <see cref="ResolvedMetadataOperand"/> as an op whose operand names a *field* sees it.
+/// </summary>
+/// <remarks>
+/// A separate two-case type for the reason <see cref="ResolvedTypeOperand"/> is one: the six field
+/// ops share <c>UnaryMetadataFieldOps.resolveFieldToken</c>, so the question "is this operand even a
+/// field?" is asked once there, and all six keep a total match without knowing that a second token
+/// universe exists.
+/// </remarks>
+[<RequireQualifiedAccess>]
+[<NoEquality ; NoComparison>]
+type internal ResolvedFieldOperand =
+    /// A token into the metadata tables of the assembly that owns it.
+    | FromMetadata of assembly : DumpedAssembly * token : MetadataToken
+    /// A field read from the executing dynamic method's `DynamicScope`.
+    | FromScope of FieldHandle
 
 type internal UnaryMetadataIlOpContext =
     {
@@ -80,7 +107,8 @@ type internal UnaryMetadataIlOpContext =
         match this.Operand with
         | ResolvedMetadataOperand.FromMetadata (assembly, _) -> assembly
         | ResolvedMetadataOperand.ScopeType _
-        | ResolvedMetadataOperand.ScopeMethod _ ->
+        | ResolvedMetadataOperand.ScopeMethod _
+        | ResolvedMetadataOperand.ScopeField _ ->
             failwith
                 $"TODO: %O{this.Op} read its operand as a metadata token, but this operand names a DynamicScope entry. IlDecoding.scopeOperandKind lists this opcode as scope-resolvable, so the op needs a matching ResolvedMetadataOperand arm; the two have gone out of step."
 
@@ -99,6 +127,24 @@ type internal UnaryMetadataIlOpContext =
         | ResolvedMetadataOperand.ScopeMethod handle ->
             failwith
                 $"BUG: %O{this.Op} reads its operand as a type, but this one names the DynamicScope's %O{handle}. IlDecoding.scopeOperandKind decides which kind an opcode's scope operand is read as, and it does not say Type for this opcode."
+        | ResolvedMetadataOperand.ScopeField _ ->
+            failwith
+                $"BUG: %O{this.Op} reads its operand as a type, but this one names a field in the DynamicScope. IlDecoding.scopeOperandKind decides which kind an opcode's scope operand is read as, and it does not say Type for this opcode."
+
+    /// <summary>
+    /// This operand, for an op whose operand names a field.
+    /// </summary>
+    /// <remarks>
+    /// Partial in the same way <see cref="TypeOperand"/> is, and for the same reason.
+    /// </remarks>
+    member this.FieldOperand : ResolvedFieldOperand =
+        match this.Operand with
+        | ResolvedMetadataOperand.FromMetadata (assembly, token) -> ResolvedFieldOperand.FromMetadata (assembly, token)
+        | ResolvedMetadataOperand.ScopeField handle -> ResolvedFieldOperand.FromScope handle
+        | ResolvedMetadataOperand.ScopeType _
+        | ResolvedMetadataOperand.ScopeMethod _ ->
+            failwith
+                $"BUG: %O{this.Op} reads its operand as a field, but this one names a type or a method in the DynamicScope. IlDecoding.scopeOperandKind decides which kind an opcode's scope operand is read as, and it does not say Field for this opcode."
 
     /// The metadata token this operand is. Partial in exactly the way <see cref="ActiveAssembly"/>
     /// is, and for the same reason.
@@ -106,6 +152,7 @@ type internal UnaryMetadataIlOpContext =
         match this.Operand with
         | ResolvedMetadataOperand.FromMetadata (_, token) -> token
         | ResolvedMetadataOperand.ScopeType _
-        | ResolvedMetadataOperand.ScopeMethod _ ->
+        | ResolvedMetadataOperand.ScopeMethod _
+        | ResolvedMetadataOperand.ScopeField _ ->
             failwith
                 $"TODO: %O{this.Op} read its operand as a metadata token, but this operand names a DynamicScope entry. IlDecoding.scopeOperandKind lists this opcode as scope-resolvable, so the op needs a matching ResolvedMetadataOperand arm; the two have gone out of step."

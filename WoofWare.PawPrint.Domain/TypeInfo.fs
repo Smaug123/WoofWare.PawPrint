@@ -303,6 +303,14 @@ type BaseClassTypes<'corelib> =
         /// plausibly counterfeit: the strength of the check should not depend on who happens to be
         /// able to reach it today.
         VarArgMethod : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// <c>System.Reflection.Emit.GenericFieldInfo</c>, the wrapper
+        /// <c>DynamicScope.GetTokenFor(RuntimeFieldHandle, RuntimeTypeHandle)</c> puts round a field
+        /// together with the declaring-type context it was observed on. Despite the name it is not
+        /// specific to generics: <c>DynamicILGenerator.Emit(OpCode, FieldInfo)</c> takes the
+        /// two-argument overload whenever the field has a declaring type at all, which is every
+        /// field a guest can obtain from <c>Type.GetField</c>. Recognised by identity, for the
+        /// reason <see cref="VarArgMethod"/> gives.
+        GenericFieldInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeMethodHandleInternal : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeFieldHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeTypeHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
