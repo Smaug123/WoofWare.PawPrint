@@ -1109,14 +1109,14 @@ module Intrinsics =
         | "System.Private.CoreLib", "BitConverter", "Int32BitsToSingle" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteSingle state.ConcreteTypes) -> ()
-            | _ -> failwith "bad signature BitConverter.Int64BitsToSingle"
+            | _ -> failwith "bad signature BitConverter.Int32BitsToSingle"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
 
             let arg =
                 match arg with
                 | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
-                | _ -> failwith "$TODO: {arr}"
+                | _ -> failwith $"TODO: BitConverter.Int32BitsToSingle of a non-verbatim int32 argument: %O{arg}"
 
             let result =
                 BitConverter.Int32BitsToSingle arg |> CliNumericType.Float32 |> CliType.Numeric
@@ -1136,7 +1136,7 @@ module Intrinsics =
             let arg =
                 match arg with
                 | EvalStackValue.Float i -> i
-                | _ -> failwith "$TODO: {arr}"
+                | _ -> failwith $"TODO: BitConverter.DoubleToUInt64Bits of a non-float argument: %O{arg}"
 
             let result =
                 BitConverter.DoubleToUInt64Bits arg
@@ -1153,14 +1153,14 @@ module Intrinsics =
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteUInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
                 ()
-            | _ -> failwith "bad signature BitConverter.DoubleToUInt64Bits"
+            | _ -> failwith "bad signature BitConverter.UInt64BitsToDouble"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
 
             let arg =
                 match arg with
                 | EvalStackValue.Int64 (Int64Source.Verbatim i) -> uint64<int64> i
-                | _ -> failwith "$TODO: {arr}"
+                | _ -> failwith $"TODO: BitConverter.UInt64BitsToDouble of a non-verbatim int64 argument: %O{arg}"
 
             let result =
                 BitConverter.UInt64BitsToDouble arg |> CliNumericType.Float64 |> CliType.Numeric
@@ -1179,7 +1179,7 @@ module Intrinsics =
             let arg =
                 match arg with
                 | EvalStackValue.Int64 (Int64Source.Verbatim i) -> i
-                | _ -> failwith "$TODO: {arr}"
+                | _ -> failwith $"TODO: BitConverter.Int64BitsToDouble of a non-verbatim int64 argument: %O{arg}"
 
             let result =
                 BitConverter.Int64BitsToDouble arg |> CliNumericType.Float64 |> CliType.Numeric
