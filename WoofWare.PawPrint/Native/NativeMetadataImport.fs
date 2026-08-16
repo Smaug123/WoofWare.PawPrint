@@ -222,16 +222,12 @@ module NativeMetadataImport =
     /// The properties declared by the TypeDef named by <paramref name="parent"/>, as raw metadata
     /// tokens, in the order the real runtime returns them.
     ///
-    /// This reads the PropertyMap run (ECMA-335 II.22.35) straight from the metadata rather than
-    /// from a parsed index, unlike the FieldDef sibling above: PawPrint models no properties at all,
-    /// and the QCall's contract is a list of raw tokens, so a domain model would be built for this
-    /// one call site. (<c>NestedTypeDefsByEnclosing</c> exists because the NestedClass table has no
-    /// per-parent grouping at all; PropertyMap does.) That means the parent must be validated here,
-    /// because an out-of-range handle reaches the reader as
-    /// <c>BadImageFormatException: Read out of bounds</c> — a PawPrint gap wearing a corrupt image's
-    /// clothes.
+    /// Reads the PropertyMap run (ECMA-335 II.22.35) straight from the metadata; PawPrint keeps no
+    /// parsed property index. The parent must be validated here, because an out-of-range handle
+    /// reaches the reader as <c>BadImageFormatException: Read out of bounds</c>, which reads as a
+    /// corrupt image when the real problem is a token PawPrint should never have minted.
     ///
-    /// Deliberately unfiltered and non-transitive: CoreCLR's fallback branch is a plain
+    /// Unfiltered and non-transitive: CoreCLR's fallback branch is a plain
     /// <c>EnumInit</c>/<c>EnumNext</c> over that run, so private, static and indexer properties are
     /// all returned, and inherited ones are not — <c>RuntimeType.PopulateProperties</c> applies
     /// binding flags itself and walks the base chain, calling this once per type.
@@ -255,13 +251,9 @@ module NativeMetadataImport =
             failwith
                 $"%s{operation}: expected TypeDef parent token for property enumeration, got %O{token} from 0x%08x{parent}"
 
-    /// One Property row, bounds-checked.
-    ///
-    /// The presence check is the same guard as <c>propertyDefinitionsForTypeDefinition</c>'s and
-    /// exists for the same reason; <c>MetadataReader</c> has no total lookup, so the row number is
-    /// compared against the table's length directly. An out-of-range handle otherwise reaches the
-    /// reader as <c>BadImageFormatException: Read out of bounds</c>, which reads as a corrupt image
-    /// when the truth is that PawPrint was handed a token it should never have seen.
+    /// One Property row, bounds-checked. <c>MetadataReader</c> has no total lookup, so the row
+    /// number is compared against the table's length directly; an out-of-range handle would
+    /// otherwise reach the reader as <c>BadImageFormatException: Read out of bounds</c>.
     let private propertyDefinition
         (operation : string)
         (assembly : DumpedAssembly)
@@ -327,8 +319,7 @@ module NativeMetadataImport =
                 assembly.NestedTypeDefsByEnclosing.TryGetValue (ComparableTypeDefinitionHandle.Make typeDefHandle)
             with
             | true, nested -> nested |> Seq.map metadataTokenOfTypeDefinitionHandle |> List.ofSeq
-            // Absent means "no nested types", which is the overwhelmingly common case; the index
-            // does not store empty entries.
+            // Absent means "no nested types"; the index does not store empty entries.
             | false, _ -> []
         | token ->
             failwith
@@ -350,12 +341,9 @@ module NativeMetadataImport =
     ///
     /// Deliberately a full scan collecting every match, where CoreCLR binary-searches for one row and
     /// expands to the contiguous group around it (metamodel.h:689-755), which is sound only because
-    /// ECMA-335 II.24.2.6 requires this table to be sorted by Association. The scan cannot produce a
-    /// false positive: a row's Association column *is* the coded index being compared, so only rows
-    /// that declare themselves associated with this token can match, whatever the header's sorted
-    /// bit claims — a claim CoreCLR does not verify against the content either. On a conforming
-    /// image the two agree exactly; on a non-conforming one PawPrint finds rows whose group
-    /// CoreCLR's binary search could miss entirely.
+    /// ECMA-335 II.24.2.6 requires this table to be sorted by Association — a claim CoreCLR does not
+    /// verify. On a conforming image the two agree exactly; on a non-conforming one PawPrint finds
+    /// rows CoreCLR's binary search could miss.
     let private methodSemanticsForAssociation
         (operation : string)
         (assembly : DumpedAssembly)
@@ -427,14 +415,13 @@ module NativeMetadataImport =
             )
 
         // Not a proof — a row size of 8 is ambiguous between (2, 4, 2) and (2, 2, 4) — but it does
-        // catch a wholesale wrong rule, and it is one comparison. The Semantics column is a fixed
-        // 2-byte constant.
+        // catch a wholesale wrong rule. The Semantics column is a fixed 2-byte constant.
         if rowSize <> 2 + methodIndexSize + associationIndexSize then
             failwith
                 $"%s{operation}: MethodSemantics row size %d{rowSize} in %s{assembly.Name.FullName} disagrees with the ECMA-335 II.24.2.6 widths derived from the table row counts (2 + %d{methodIndexSize} + %d{associationIndexSize})"
 
-        // The coded index for the target, computed once and compared as an integer against each
-        // row's raw Association column. `CodedIndex.HasSemantics` rather than a hand-rolled tag bit,
+        // The coded index for the target, compared as an integer against each row's raw
+        // Association column. `CodedIndex.HasSemantics` rather than a hand-rolled tag bit,
         // because getting the tag order backwards is the one mistake this encoding admits.
         let target = System.Reflection.Metadata.Ecma335.CodedIndex.HasSemantics association
 
@@ -446,8 +433,8 @@ module NativeMetadataImport =
                 System.Reflection.Metadata.Ecma335.TableIndex.MethodSemantics
             )
 
-        // `let mutable` is load-bearing: `BlobReader` is a struct, so an immutably-bound one is
-        // copied before each `Read*` call and every read would silently return the same bytes.
+        // `BlobReader` is a struct: an immutably-bound one is copied before each `Read*` call,
+        // so every read would silently return the same bytes. Hence `let mutable`.
         let mutable reader =
             (assembly.PeReader.GetMetadata ()).GetReader (tableOffset, rows * rowSize)
 
@@ -462,8 +449,6 @@ module NativeMetadataImport =
                 else
                     reader.ReadInt32 ()
 
-            // Named for the row rather than shadowing the outer `association`, which is the
-            // target handle `target` was derived from.
             let rowAssociation =
                 if associationIndexSize = 2 then
                     int (reader.ReadUInt16 ())
@@ -496,7 +481,7 @@ module NativeMetadataImport =
     /// The Constant table row (ECMA-335 II.22.9) attached to a field definition: its declared type
     /// code and a reader over its value blob. <c>None</c> when the field has no Constant row.
     ///
-    /// Deliberately raw, because the two callers disagree about what the answer means.
+    /// Raw, because the two callers disagree about what the answer means.
     /// <c>NativeEnum</c> requires the type code to match the enum's declared underlying type and
     /// fails otherwise, and treats a missing row as a corrupt image;
     /// <c>MetadataImport.GetDefaultValue</c> must do neither, because <c>MdConstant</c> is the thing
@@ -570,7 +555,7 @@ module NativeMetadataImport =
     /// only the member-width low bytes, so the rest is whatever was on the stack. That is
     /// unobservable upstream — <c>MdConstant</c> reinterprets only the low member-width bytes for
     /// every type code, so sign- versus zero-extension cannot be told apart by a guest — but a
-    /// replay must not depend on the host's stack, so we pick zeros and say so.
+    /// replay must not depend on the host's stack, so we pick zeros.
     /// Reads exactly <paramref name="width"/> bytes, which is what CoreCLR does: a blob longer than
     /// its type requires has its tail ignored rather than folded in.
     let private packConstantBuffer (width : int) (bytes : byte array) : int64 =
@@ -1012,24 +997,21 @@ module NativeMetadataImport =
             ConcreteByref (ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             // CoreCLR's FCall (`managedmdimport.cpp:204`) answers seven token kinds, forwarding each
-            // to a different `IMDInternalImport` accessor. This answers two, and the other five are
-            // out for two *different* reasons that are worth keeping apart.
+            // to a different `IMDInternalImport` accessor. This answers two.
             //
             // MethodDef, `mdtModule` and TypeDef have no managed caller at all: `RuntimeType.Name`
             // goes through `Cache.GetName()`/`ConstructName`, and methods and non-literal fields
             // have their own `RuntimeMethodHandle.GetName` / `RuntimeFieldHandle.GetName` QCalls.
-            // Arms for those could never run whatever else PawPrint grows.
             //
             // Event and ParamDef *do* have callers — the name filter in
             // `RuntimeType.PopulateEvents`, and `RuntimeParameterInfo.Name` — but their tokens are
-            // minted only by `MetadataImport.Enum`, which PawPrint still refuses for `mdtEvent` and
-            // `mdtParamDef`. That is contingent, not structural: Property was in this same group
-            // until property enumeration landed, and adding either enumeration means adding the
-            // matching arm here in the same change.
+            // minted only by `MetadataImport.Enum`, which PawPrint refuses for `mdtEvent` and
+            // `mdtParamDef`. Adding either enumeration means adding the matching arm here in the
+            // same change.
             //
-            // Any other kind reaching here is therefore a PawPrint gap rather than a bad image, and
-            // the lookups below say so. CoreCLR would instead return `E_FAIL` and the guest would
-            // see a `BadImageFormatException`, which would disguise the gap as a corrupt assembly.
+            // Any other kind reaching here is therefore a PawPrint gap rather than a bad image.
+            // CoreCLR would instead return `E_FAIL` and the guest would see a
+            // `BadImageFormatException`, which would disguise the gap as a corrupt assembly.
             let operation = "MetadataImport.GetName"
             let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
             let assembly = metadataImportAssembly operation state assemblyFullName
@@ -1182,8 +1164,7 @@ module NativeMetadataImport =
                     // An odd-length blob is *not* rejected. `_FillMDDefaultValue` applies no length
                     // check to STRING, and the FCall's `m_cbSize / sizeof(WCHAR)` is integer
                     // division, so CoreCLR silently drops a trailing half code unit. Refusing here
-                    // would make PawPrint decline metadata the real runtime reads without
-                    // complaint — a divergence, and one a differential test would catch.
+                    // would make PawPrint decline metadata the real runtime reads without complaint.
                     if bytes.Length = 0 then
                         // `_FillMDDefaultValue` nulls the pointer for an empty string blob
                         // (mdinternalro.cpp:3214), and the managed wrapper's `stringVal ?? string.Empty`
@@ -1486,9 +1467,9 @@ module NativeMetadataImport =
             let state =
                 writeInt32AtPointer ctx.BaseClassTypes state attributesOut (int32 property.Attributes)
 
-            // Writes the name, pushes S_OK and completes. The name is the `#Strings` entry itself,
-            // as `getNameOfProperty` hands back, so an indexer reports its metadata name (`Item`, or
-            // whatever `[IndexerName]` says) rather than its C# spelling.
+            // The name is the `#Strings` entry itself, as `getNameOfProperty` hands back, so an
+            // indexer reports its metadata name (`Item`, or whatever `[IndexerName]` says) rather
+            // than its C# spelling.
             //
             // Every failure above is instead a host-level crash rather than the negative HRESULT
             // CoreCLR would return, as in the sibling handlers: the only guest caller passes tokens

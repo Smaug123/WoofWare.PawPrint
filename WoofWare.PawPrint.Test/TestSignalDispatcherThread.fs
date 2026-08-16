@@ -9,10 +9,8 @@ open WoofWare.PawPrint
 /// spawns on the first call to
 /// `SystemNative_InitializeTerminalAndSignalHandling`. The dispatcher mirrors
 /// real CoreCLR's `SignalHandlerLoop` pthread: it exists permanently from
-/// init time, the scheduler never picks it (until a future slice wires
-/// up a wakeup edge), and it has no managed `Thread` heap mirror. These
-/// tests pin down the structural shape so the downstream slice that
-/// invokes handlers on this thread builds on a known-good foundation.
+/// init time, the scheduler never picks it while it is Parked, and it has no
+/// managed `Thread` heap mirror. These tests pin down that structural shape.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestSignalDispatcherThread =
@@ -124,7 +122,7 @@ module TestSignalDispatcherThread =
 
     [<Test>]
     let ``scheduler returns None when only Parked threads exist`` () : unit =
-        // A program whose only live threads are Parked is genuinely making no
+        // A program whose only live threads are Parked is making no
         // progress; the scheduler must return None and let the driver decide
         // (deadlock vs. NormalExit on entry-thread termination). Pin down the
         // None outcome so a future scheduler change doesn't quietly start

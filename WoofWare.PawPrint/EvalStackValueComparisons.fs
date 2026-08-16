@@ -245,7 +245,7 @@ module EvalStackValueComparisons =
         | EvalStackValue.ObjectRef _, EvalStackValue.NullObjectRef -> true
         | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 ->
             // According to the spec, cgt.un is verifiable on ObjectRefs and is used to compare with null.
-            // A direct comparison between two object refs is not specified, so we treat it as a pointer comparison.
+            // A direct ordering of two object refs is unspecified, so no answer is implemented.
             failwith "TODO"
         | EvalStackValue.NullObjectRef, other -> failwith $"Cgt.un invalid for comparing NullObjectRef with {other}"
         | EvalStackValue.ObjectRef _, other -> failwith $"Cgt.un invalid for comparing ObjectRef with {other}"
@@ -340,8 +340,8 @@ module EvalStackValueComparisons =
         | EvalStackValue.NullObjectRef, EvalStackValue.ObjectRef _ -> true
         | EvalStackValue.ObjectRef _, EvalStackValue.NullObjectRef -> false
         | EvalStackValue.ObjectRef var1, EvalStackValue.ObjectRef var2 ->
-            // According to the spec, cgt.un is verifiable on ObjectRefs and is used to compare with null.
-            // A direct comparison between two object refs is not specified, so we treat it as a pointer comparison.
+            // According to the spec, clt.un is verifiable on ObjectRefs and is used to compare with null.
+            // A direct ordering of two object refs is unspecified, so no answer is implemented.
             failwith "TODO"
         | EvalStackValue.NullObjectRef, other -> failwith $"Clt.un invalid for comparing NullObjectRef with {other}"
         | EvalStackValue.ObjectRef _, other -> failwith $"Clt.un invalid for comparing ObjectRef with {other}"
@@ -488,7 +488,7 @@ module EvalStackValueComparisons =
     /// `ceq`, but returning the byref case's deferral rather than failing on it, so a caller
     /// with `IlMachineState` can resolve it to byte coordinates (`StorageLocation.resolveCeq`).
     ///
-    /// Only the byref-vs-byref arm defers. Note the limit: a byref compared against a
+    /// Only the byref-vs-byref arm defers. The limit: a byref compared against a
     /// `NativeInt` re-enters `ceq` proper and so still fails loudly on an undecidable pair,
     /// because that recursion routes through `NativeIntSourceComparison` rather than through
     /// this function. Widening that is its own change.

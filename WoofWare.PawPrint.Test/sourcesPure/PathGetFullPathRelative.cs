@@ -1,7 +1,7 @@
 using System;
 using System.IO;
 
-// `Path.GetFullPath` on a genuinely *relative* path, which must first resolve the process's
+// `Path.GetFullPath` on a *relative* path, which must first resolve the process's
 // current directory before it can collapse segments. On Unix that is `Interop.Sys.GetCwd()`,
 // whose `SystemNative_GetCwd` PInvoke has no handler registered in PawPrint's NativeDispatch.
 // The already-rooted paths, which skip that lookup, are covered by the passing sibling

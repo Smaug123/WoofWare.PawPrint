@@ -4,31 +4,22 @@ using System.Threading.Tasks;
 //
 // A *second* blocking wait on thread-pool-scheduled work in the same process reaches .NET's
 // thread-pool blocking-adjustment heuristic, which calls the GC::GetMemoryInfo InternalCall.
-// Before that InternalCall was implemented, any test performing two such waits died there --
-// which is why the sibling Task cases are each written to perform only one. Two bare
-// `Task.Run(...).Result` calls in a row are sufficient to reach the heuristic; no Yield or
-// ContinueWith is needed.
+// Two bare `Task.Run(...).Result` calls in a row are sufficient to reach the heuristic; no
+// Yield or ContinueWith is needed.
 //
 // This case does twelve, mixing the shapes that reach it (plain Task.Run, and a continuation
 // resumed through an awaited Task.Yield), so the multiple-wait path stays covered even though
-// the other files stick to one wait apiece.
+// the sibling Task cases stick to one wait apiece.
 //
-// Why only twelve, when there is no longer a ceiling to stay clear of: the budget used to be
-// a handful of waits, because the pool's hill-climbing controller reaches the `Math`
-// intrinsics -- `[Intrinsic]` + `InternalCall`, with no IL body to fall back on -- as soon as
-// it has adjusted its thread count a few times. `Math.Pow` in the gain calculation
-// (PortableThreadPool.HillClimbing.cs:301, issue #755, implemented in #763), then `Math.Cos`
-// in `GetWaveComponent` (line 448, implemented in #779), then `Math.Sin` nine lines below it
-// (line 457), and then `Math.Sqrt` by way of the magnitude the controller takes of those wave
-// components -- its own private Complex.Abs is a bare Math.Sqrt
-// (PortableThreadPool.HillClimbing.Complex.cs:35), implemented on this branch.
-//
-// With that last one in, the ceiling is gone: measured on this branch with exactly the loop
-// below, 2400 blocking pool waits (1200 iterations) pass, where 240 failed before it. The
-// controller no longer reaches any unimplemented primitive, so what bounds this file now is
-// only how long the suite is willing to spend -- 2400 waits take about eight minutes under
-// the interpreter, and twelve take two seconds. Twelve is well past the two that were needed
-// to reach the heuristic in the first place, which is what this case exists to pin.
+// Repeated waits drive the pool's hill-climbing controller into the `Math` intrinsics --
+// `[Intrinsic]` + `InternalCall`, with no IL body to fall back on: `Math.Pow` in the gain
+// calculation (PortableThreadPool.HillClimbing.cs:301, issues #755, #763), `Math.Cos` in
+// `GetWaveComponent` (line 448, #779), `Math.Sin` nine lines below it (line 457), and
+// `Math.Sqrt` via the controller's private Complex.Abs
+// (PortableThreadPool.HillClimbing.Complex.cs:35). All are implemented: measured with exactly
+// the loop below, 2400 blocking pool waits (1200 iterations) pass. What bounds this file is
+// suite time -- 2400 waits take about eight minutes under the interpreter, twelve take two
+// seconds -- and twelve is well past the two needed to reach the heuristic.
 //
 // Every assertion is on a returned value, never on which worker thread ran something, nor on
 // timing, nor on ordering between independent tasks -- all of which are guaranteed under both

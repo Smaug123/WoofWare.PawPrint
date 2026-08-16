@@ -328,8 +328,7 @@ module TestVirtualMethodSlots =
     ///
     /// `vtableOfClosed` has no interface-specific branch: with no base slots to search, the general
     /// rule finds no match and gives the method a fresh slot, which is the same answer. This test is
-    /// what holds that equivalence down -- it was a hard-coded special case until the fresh-slot rule
-    /// existed to subsume it.
+    /// what holds that equivalence down.
     [<Test>]
     let ``every instance virtual an interface declares gets its own slot`` () : unit =
         let state = state ()
@@ -402,9 +401,9 @@ module TestVirtualMethodSlots =
 
     /// Strictly stronger than the length check above, and the reason it is worth reaching for an
     /// internal API: placing a method in the wrong slot, or appending a spurious slot while failing
-    /// to place a real one, leaves the length right and the layout wrong. That matters more now that
-    /// an unmatched non-newslot virtual *appends* instead of failing loudly -- a gap in
-    /// `candidateFillsSlot` no longer announces itself, and this is what catches it instead.
+    /// to place a real one, leaves the length right and the layout wrong. An unmatched non-newslot
+    /// virtual *appends* rather than failing loudly, so a gap in `candidateFillsSlot` does not
+    /// announce itself; this is what catches it instead.
     [<Test>]
     let ``vtable layout agrees with the host CLR slot for slot`` () : unit =
         let mutable exercised = 0

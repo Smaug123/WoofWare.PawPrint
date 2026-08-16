@@ -2,7 +2,7 @@ using System;
 using System.Runtime.InteropServices;
 
 // The parts of SystemNative_FLock's contract the differential oracle cannot be
-// asked about, because Linux and Darwin genuinely disagree about them and
+// asked about, because Linux and Darwin disagree about them and
 // PawPrint simulates Linux (SimulatedUnixPlatform defaults to LinuxX64).
 //
 // Measured on both, with the same C program run natively on macOS and inside a
@@ -97,7 +97,7 @@ class Program
         if (!Rejected(a, LOCK_SH | 16, EINVAL)) return check;
 
         // ...and every well-formed operation is accepted, so the validation is
-        // not simply "reject everything". LOCK_UN|LOCK_NB is legal and a no-op
+        // not "reject everything". LOCK_UN|LOCK_NB is legal and a no-op
         // modifier, which is the one combination that looks malformed but is
         // not.
         check = 8;

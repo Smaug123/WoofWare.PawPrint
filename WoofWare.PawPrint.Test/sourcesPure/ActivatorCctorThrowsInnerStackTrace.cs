@@ -11,8 +11,6 @@ using System.Reflection;
 // empty frame list would leave a wrapper with a non-null `_stackTrace` and a null
 // `_stackTraceString`, which sends `Exception.StackTrace` past its short-circuit into
 // `GetStackTrace()` and crashes at the unimplemented `StackTrace_GetStackFramesInternal` QCall.
-// Both wraps used to fire on the *same* frame, because T was initialised before its constructor
-// frame existed, and the inner one was then handed to the outer with no frame appended at all.
 //
 // Both wrappers must carry a trace, and this asserts that of each in turn: the outer
 // `TargetInvocationException` and the `TypeInitializationException` it holds. Real .NET gives the

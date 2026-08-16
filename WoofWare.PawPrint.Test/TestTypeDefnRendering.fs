@@ -185,8 +185,8 @@ module TestTypeDefnRendering =
             )
 
     /// The renderer entry points, which differ only in how they spell a TypeRef. Properties
-    /// which are about the *walk* rather than about that spelling must hold of both: the two
-    /// drifting apart underneath a wrapper is a real failure mode, not a hypothetical one.
+    /// which are about the *walk* rather than about that spelling must hold of both, or the
+    /// two can drift apart underneath a wrapper.
     let private renderers : (DumpedAssembly -> GenericScope -> TypeDefn -> string) list =
         [ IlFormatting.renderTypeDefn ; IlFormatting.renderTypeDefnAsName ]
 
@@ -232,8 +232,8 @@ module TestTypeDefnRendering =
 
     [<Test>]
     let ``no rendering is opaque, at any depth or under any scope`` () : unit =
-        // This is the bug, stated as an invariant: whatever the shape and whatever
-        // is in scope, IlDump never emits TypeDefn.ToString's placeholder text.
+        // The invariant: whatever the shape and whatever is in scope, IlDump never
+        // emits TypeDefn.ToString's placeholder text.
         checkAgainstEachAssembly (fun assembly (td, scope) ->
             renderers
             |> List.forall (fun render -> render assembly scope td |> containsOpaqueMarker |> not)
@@ -384,8 +384,9 @@ module TestTypeDefnRendering =
 
     [<Test>]
     let ``a method body names the enclosing type's generic parameter`` () : unit =
-        // List`1::Add(!T) touches List`1<!T>::_version, _items and _size. Before
-        // the fix every one of those read "<type defined in System.Private.CoreLib>".
+        // List`1::Add(!T) touches List`1<!T>::_version, _items and _size. An opaque
+        // FromDefinition rendering would report every one of those as
+        // "<type defined in System.Private.CoreLib>".
         let lines =
             IlFormatting.formatMethodLines
                 corelib
@@ -410,8 +411,8 @@ module TestTypeDefnRendering =
 
         let header = List.head lines
 
-        // The header used to contain the whole GenericParamFromMetadata record,
-        // newlines and all.
+        // A header that dumped the raw GenericParamFromMetadata record would
+        // contain "SequenceNumber", newlines and all.
         header.Contains ("SequenceNumber", StringComparison.Ordinal)
         |> shouldEqual false
 

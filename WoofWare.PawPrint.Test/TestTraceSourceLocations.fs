@@ -169,9 +169,10 @@ module TestTraceSourceLocations =
         guestLines |> List.filter (fun line -> line < 3 || line > 11) |> shouldEqual []
 
     /// `Program.buildStartupFrame` pumps class initialisers from a frame whose body is a lone
-    /// `ret`. That frame once kept `Main`'s metadata identity, so the `ret` resolved against
-    /// `Main`'s sequence points and the trace claimed a guest instruction had run when none had;
-    /// `SynthesisedMethod.EntryPointPlaceholder` now denies it a handle to resolve against.
+    /// `ret`; `SynthesisedMethod.EntryPointPlaceholder` denies that frame a handle to resolve
+    /// against. A frame that kept `Main`'s metadata identity would resolve the `ret` against
+    /// `Main`'s sequence points, and the trace would claim a guest instruction had run when
+    /// none had.
     ///
     /// The tell is the body's extent rather than the line: the synthetic body has exactly one
     /// instruction, so `MaxIlOpIndex` is 0, whereas real `Main` is longer. A line-based assertion

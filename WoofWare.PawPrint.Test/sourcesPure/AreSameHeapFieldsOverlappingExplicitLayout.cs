@@ -19,15 +19,14 @@ namespace AreSameHeapFieldsOverlappingExplicitLayoutTest
     // different `ByrefRoot.HeapObjectField` roots rather than two `Field` projections over
     // one root. Real .NET's `Unsafe.AreSame(ref c.A, ref c.B)` is `true`.
     //
-    // Distinct roots are ordinarily distinct storage, and comparison used to answer `false`
-    // on that basis — measured, returning 1 before the deferral existed. But "different root"
-    // is a fact about how each byref was built, not about where it points, and two fields of
-    // one object can share an address. So structural comparison declines this pair, and
+    // Distinct roots are ordinarily distinct storage, but "different root" is a fact about how
+    // each byref was built, not about where it points, and two fields of one object can share
+    // an address. So structural comparison declines this pair, and
     // `StorageLocation.resolveCeq` decides it: a `HeapObjectField` root resolves as the whole
     // object with a leading `Field` projection, so both sides land in one
-    // `ByteStorageIdentity.HeapObject` at the same byte coordinate. That re-rooting is what
-    // makes this reachable — while a field root was its own container, the two identities were
-    // unequal and `resolveCeq` would have declined rather than decided.
+    // `ByteStorageIdentity.HeapObject` at the same byte coordinate. If a field root resolved
+    // as its own container instead, the two identities would be unequal and `resolveCeq`
+    // would decline rather than decide.
     //
     // Kept separate from the struct sibling because it exercises a different arm: this one is
     // about *roots* being wrongly treated as disjoint storage, that one about *projections*.

@@ -8,7 +8,7 @@ using System;
 // returns `new T[length]` instead whenever the array is unpinned and either holds references or
 // is smaller than `2048 / sizeof(T)` (GC.CoreCLR.cs:800-815). The uninitialized cases here are
 // therefore sized at or past that threshold — 2048 for `byte`, 512 for `int` — so that they
-// genuinely reach the QCall rather than testing `newarr` under a different spelling.
+// reach the QCall rather than testing `newarr` under a different spelling.
 //
 // `AllocateArray<T>` is documented as zero-filled and CoreCLR never passes
 // GC_ALLOC_ZEROING_OPTIONAL for it, so asserting that its contents are `default` is a real

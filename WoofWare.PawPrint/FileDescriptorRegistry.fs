@@ -24,10 +24,6 @@ type OpenFileDescriptionId =
 
 /// What an open file description refers to — the kernel object on the far side
 /// of the descriptor.
-///
-/// **`File` carries an inode and nothing else, deliberately.** An inode is
-/// load-bearing immediately: an fd must keep naming the file it was opened on,
-/// not the path it was opened by.
 [<RequireQualifiedAccess>]
 type OpenFileObject =
     | StandardStream of FileDescriptorRole
@@ -37,12 +33,8 @@ type OpenFileObject =
     /// naming the same file, which is what a real kernel does.
     | File of inode : InodeNumber
 
-/// The mode of an advisory whole-file lock taken by `flock(2)`.
-///
-/// Two modes rather than three: "no lock" is the *absence* of one of these
-/// (`OpenFileDescription.Flock` is an option), because a description holding no
-/// lock and a description holding a hypothetical `Unlocked` mode would be the
-/// same state spelled two ways.
+/// The mode of an advisory whole-file lock taken by `flock(2)`. "No lock" is
+/// the absence of one of these (`OpenFileDescription.Flock` is an option).
 [<RequireQualifiedAccess>]
 type FlockMode =
     /// `LOCK_SH`. Any number of descriptions may hold this on one file at once.
@@ -54,29 +46,22 @@ type FlockMode =
 /// What an open file description refers to, together with the state that only
 /// that kind of object carries.
 ///
-/// **Distinct from `OpenFileObject`, which is the *identity*.** This type is
-/// the description's view of that object, and the two differ by exactly the
-/// file offset: two descriptions at different offsets are positioned
-/// differently on the *same* file, and `flock` must still see them as
-/// contending. Folding the offset into `OpenFileObject` would break that —
-/// the conflict test compares objects for equality, so two offsets on one
-/// inode would stop excluding each other. `OpenFileDescription.object` is the
-/// projection back to identity.
+/// Distinct from `OpenFileObject`, the *identity*: the two differ by exactly
+/// the file offset. Do not fold the offset into `OpenFileObject` — the `flock`
+/// conflict test compares objects for equality, and two descriptions at
+/// different offsets on one file must still contend.
+/// `OpenFileDescription.object` is the projection back to identity.
 ///
-/// The offset lives in the `File` case rather than beside it because a standard
-/// stream has no offset to hold: PawPrint models the standard streams as pipes
-/// (see `FileDescriptorRegistry.initial`), and a pipe is not seekable at all —
-/// `lseek` on one is `ESPIPE` and `read` from one consumes a queue rather than a
-/// position. A flat `Offset` field would have to lie for a third of the
-/// inhabitants; this way "a standard stream at offset 7" cannot be written down.
+/// A standard stream has no offset: PawPrint models the standard streams as
+/// pipes (see `FileDescriptorRegistry.initial`), which are not seekable —
+/// `lseek` on one is `ESPIPE`.
 [<RequireQualifiedAccess>]
 type OpenFileTarget =
     /// One of the inherited standard streams. No offset: not seekable.
     | StandardStream of role : FileDescriptorRole
     /// A regular file or directory, and where in it this description is
     /// positioned. `read(2)` consumes from here and advances it; `lseek(2)`
-    /// sets it; `pread(2)` deliberately leaves it alone, which is the whole
-    /// reason it exists as a separate syscall.
+    /// sets it; `pread(2)` leaves it alone.
     ///
     /// A real kernel permits an offset arbitrarily far past the end of the
     /// file (`lseek` beyond EOF is how sparse files are made), so this is not
@@ -88,27 +73,20 @@ type OpenFileTarget =
 /// description". Everything shared between file descriptors that `dup(2)`
 /// produced belongs here.
 ///
-/// One piece of state a real open file description also holds is absent,
-/// because no modelled syscall can yet make it differ: the **access mode and
-/// status flags** (`O_APPEND`, `O_NONBLOCK`). PawPrint refuses every write flag
-/// at `open` today, so the mode has exactly one inhabitant, and a field with one
-/// inhabitant records a decision nothing made. It becomes real with the write
-/// path.
+/// The access mode and status flags (`O_APPEND`, `O_NONBLOCK`) are absent:
+/// PawPrint refuses every write flag at `open`, so no modelled syscall can
+/// make them differ. They become real with the write path.
 type OpenFileDescription =
     {
         /// What this description refers to, and where in it.
         Target : OpenFileTarget
         /// The `flock(2)` lock this description holds, if any.
         ///
-        /// **On the description, not on the inode**, which is where POSIX puts
-        /// it and is the whole reason two `open(2)` calls on one path contend
-        /// while a `dup(2)` pair does not. Storing it here also keeps it
-        /// normalised: the description already records which object it names,
-        /// so there is no second copy of that association to drift out of step,
-        /// and closing the description destroys the lock with it rather than
-        /// leaving a phantom entry in a side table that nothing can now release.
+        /// On the description, not on the inode: that is where POSIX puts it,
+        /// and is why two `open(2)` calls on one path contend while a `dup(2)`
+        /// pair does not.
         ///
-        /// Note this is `flock(2)` specifically. `fcntl(2)` record locks — which
+        /// This is `flock(2)` specifically. `fcntl(2)` record locks — which
         /// CoreLib reaches through `SystemNative_LockFileRegion`, and hence
         /// `FileStream.Lock` — belong to a *(process, file)* pair instead, and
         /// so must not be stored here when they land; see the note on
@@ -121,10 +99,10 @@ module OpenFileDescription =
     /// Which kernel object this description names — its *identity*, with the
     /// per-description position discarded.
     ///
-    /// This is what `flock(2)` contention is decided on: two descriptions
-    /// contend exactly when they name the same object, whatever offsets they
-    /// happen to be at. Callers asking "are these the same file?" must compare
-    /// these rather than the descriptions.
+    /// `flock(2)` contention is decided on this: two descriptions contend
+    /// exactly when they name the same object, whatever their offsets. Callers
+    /// asking "are these the same file?" must compare these rather than the
+    /// descriptions.
     let object (description : OpenFileDescription) : OpenFileObject =
         match description.Target with
         | OpenFileTarget.StandardStream role -> OpenFileObject.StandardStream role
@@ -158,20 +136,17 @@ type FileDescriptorRegistry =
             /// file descriptor names.
             Fds : Map<int, OpenFileDescriptionId>
             /// The open file descriptions themselves. A description is live
-            /// exactly while some descriptor in `Fds` names it — there is no
-            /// stored reference count to drift, and PawPrint models none of
-            /// the references that would make liveness more than reachability
-            /// (`SCM_RIGHTS` descriptor passing, `mmap`).
+            /// exactly while some descriptor in `Fds` names it; PawPrint models
+            /// none of the references that would make liveness more than
+            /// reachability (`SCM_RIGHTS` descriptor passing, `mmap`).
             Descriptions : Map<OpenFileDescriptionId, OpenFileDescription>
             /// The identity the next `open` will allocate. Stored and
             /// monotonic rather than derived as one past the highest live id,
-            /// which would reuse the identity of a description that has been
-            /// closed. Nothing guest-visible could tell the difference — the
-            /// id is never reported by any syscall — but a replay trace could,
-            /// and "the same id names two different files at two different
-            /// times" is exactly the ambiguity a time-travel debugger must not
-            /// have. `VirtualFileSystem.NextInode` is stored for the stronger
-            /// version of this reason, inode reuse being guest-visible.
+            /// which would reuse the identity of a closed description. Nothing
+            /// guest-visible could tell the difference — the id is never
+            /// reported by any syscall — but a replay trace could.
+            /// `VirtualFileSystem.NextInode` is stored for the stronger version
+            /// of this reason, inode reuse being guest-visible.
             NextId : OpenFileDescriptionId
         }
 
@@ -190,11 +165,8 @@ type FileDescriptorCloseError =
 
 /// What `flock(2)` was asked to do, once the operation bits have been decoded.
 ///
-/// `LOCK_NB` is deliberately *not* part of this: whether the caller is willing
-/// to block is a property of the request that only matters once the answer is
-/// "this would block", so it is the handler's business rather than the
-/// registry's. The registry reports that the lock is unavailable and lets the
-/// caller decide between failing and waiting.
+/// `LOCK_NB` is not part of this: the registry reports that the lock is
+/// unavailable, and the handler decides between failing and waiting.
 [<RequireQualifiedAccess>]
 type FlockRequest =
     /// `LOCK_SH` or `LOCK_EX`. Replaces whatever lock this description already
@@ -225,24 +197,22 @@ type FileDescriptorRegistryDefect =
     | UnreferencedDescription of description : OpenFileDescriptionId
     /// A live description's identity is at or above the next one to allocate,
     /// so some future `open` would collide with it — silently retargeting
-    /// every descriptor that named it. Note "at or above" rather than "equal
-    /// to": a cursor *below* a live id is just as unsound, it merely takes a
-    /// few more opens to do the damage. `VirtualFileSystem`'s
-    /// `NextInodeNotFresh` is the same check for the same reason.
+    /// every descriptor that named it. "At or above" rather than "equal to":
+    /// a cursor *below* a live id is just as unsound, it merely takes a few
+    /// more opens to do the damage. `VirtualFileSystem`'s `NextInodeNotFresh`
+    /// is the same check for the same reason.
     | NextIdNotFresh of nextId : OpenFileDescriptionId * existing : OpenFileDescriptionId
     /// A description is positioned at a negative file offset. No kernel permits
     /// one: `lseek(2)` rejects a computation landing below zero with `EINVAL`
     /// rather than clamping, and `read(2)` never moves the offset backwards.
     ///
-    /// Unlike the offset's *upper* end, which is unbounded on purpose — seeking
-    /// arbitrarily far past EOF is legal, and is how sparse files are made — so
-    /// there is no matching "too large" defect to pair this with.
+    /// There is no matching "too large" defect: seeking arbitrarily far past
+    /// EOF is legal, and is how sparse files are made.
     | NegativeOffset of description : OpenFileDescriptionId * offset : int64
     /// Two distinct descriptions name the same file and hold locks that
     /// `flock(2)` would never have granted together — at least one of them
     /// exclusive. This is the mutual-exclusion property itself rather than a
-    /// bookkeeping check, so it is what a property test over random
-    /// open/lock/close sequences is really asserting.
+    /// bookkeeping check.
     | ConflictingFlocks of first : OpenFileDescriptionId * second : OpenFileDescriptionId
 
 [<RequireQualifiedAccess>]
@@ -259,8 +229,8 @@ module FileDescriptorRegistry =
     /// shape `RealRuntime` itself uses when it launches a guest on real .NET as
     /// PawPrint's differential oracle, giving it three separate pipes.
     ///
-    /// This is not the only shape a real process can inherit, and deliberately
-    /// not the terminal one. Under a tty, fds 0/1/2 are `dup`s of a *single*
+    /// This is not the only shape a real process can inherit, and not the
+    /// terminal one. Under a tty, fds 0/1/2 are `dup`s of a *single*
     /// `O_RDWR` description: measured via `forkpty`, setting `O_NONBLOCK`
     /// through fd 1 becomes visible on fds 0 and 2, and `write(0, _, _)`
     /// succeeds. PawPrint has already committed against that model elsewhere —
@@ -304,12 +274,8 @@ module FileDescriptorRegistry =
                     $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is an interpreter bug)"
         )
 
-    /// What `fd` refers to, if `fd` is live. For the majority of callers, which
-    /// want the file behind the descriptor and have no interest in the state the
-    /// description carries alongside it.
-    ///
-    /// Note this discards the offset, so it is the wrong lookup for `read(2)`
-    /// and `lseek(2)`; they want `tryFindTarget`.
+    /// What `fd` refers to, if `fd` is live. Discards the offset, so it is the
+    /// wrong lookup for `read(2)` and `lseek(2)`; they want `tryFindTarget`.
     let tryFindObject (fd : int) (registry : FileDescriptorRegistry) : OpenFileObject option =
         tryFind fd registry |> Option.map OpenFileDescription.object
 
@@ -326,9 +292,7 @@ module FileDescriptorRegistry =
         registry.Descriptions
 
     /// Lowest non-negative integer not currently used as a file descriptor.
-    /// O(n) in the number of live fds, which is fine: process fd tables are
-    /// small (typically a handful, rarely more than a few hundred), and the
-    /// interpreter is not a performance-critical workload.
+    /// O(n) in the number of live fds; process fd tables are small.
     let private lowestFree (fds : Map<int, OpenFileDescriptionId>) : int =
         let rec scan (candidate : int) =
             if Map.containsKey candidate fds then
@@ -340,9 +304,8 @@ module FileDescriptorRegistry =
 
     /// Mirrors `dup(2)`: allocate the lowest non-negative fd not in use, naming
     /// the *same* open file description as `oldFd`. No new description is
-    /// created, so any state the description carries (once it carries any) is
-    /// shared with `oldFd` rather than copied — which is the whole point of the
-    /// indirection. When `oldFd` is not a live entry, returns `Error BadFd`,
+    /// created, so the description's state is shared with `oldFd` rather than
+    /// copied. When `oldFd` is not a live entry, returns `Error BadFd`,
     /// matching the `EBADF` behaviour of `dup(2)`.
     let dup
         (oldFd : int)
@@ -402,17 +365,14 @@ module FileDescriptorRegistry =
     ///
     /// Fresh, unlike `dup`: two `open` calls on one path give two descriptions,
     /// which is why they can hold separate offsets and separate `flock` locks.
-    /// Sharing here would make the second open silently alias the first.
     ///
-    /// The offset starts at 0, and that is `open(2)`'s answer for *every* flag,
-    /// not merely the ones PawPrint accepts. `O_APPEND` is the tempting
-    /// exception and is not one: measured on both platforms, a descriptor
-    /// opened `O_WRONLY | O_APPEND` on a five-byte file reports 0 from
-    /// `lseek(0, SEEK_CUR)` immediately afterwards, and only reaches 6 after a
-    /// one-byte write. The flag repositions to the end before each individual
-    /// *write*, not at open time, so when the write path lands it belongs
-    /// there — seeding the offset at the end here would make a guest's first
-    /// `SEEK_CUR` report a position no kernel would.
+    /// The offset starts at 0 for *every* flag, not merely the ones PawPrint
+    /// accepts. `O_APPEND` is no exception: measured on both platforms, a
+    /// descriptor opened `O_WRONLY | O_APPEND` on a five-byte file reports 0
+    /// from `lseek(0, SEEK_CUR)` immediately afterwards, and only reaches 6
+    /// after a one-byte write. The flag repositions to the end before each
+    /// individual *write*, not at open time, so when the write path lands it
+    /// belongs there.
     ///
     /// The BCL would not exercise it in any case: `Interop.Sys.OpenFlags` has no
     /// append bit at all, and `SafeFileHandle.Init` implements `FileMode.Append`
@@ -439,8 +399,8 @@ module FileDescriptorRegistry =
                         Target = OpenFileTarget.File (inode, 0L)
                         // `open(2)` never takes a lock; `FileStream` issues a
                         // separate `flock` immediately afterwards, which is
-                        // exactly why `FileShare` is not atomic with opening on
-                        // Unix and CoreLib's own comment says so.
+                        // why `FileShare` is not atomic with opening on Unix
+                        // (CoreLib's own comment says so).
                         Flock = None
                     }
                     registry.Descriptions
@@ -448,12 +408,8 @@ module FileDescriptorRegistry =
         }
 
     /// May two *different* open file descriptions on one file hold these two
-    /// locks at the same time?
-    ///
-    /// Shared against shared is the only compatible pair; every other
-    /// combination involves an exclusive lock, which by definition excludes.
-    /// Symmetric, which is what lets `checkInvariants` apply it to an unordered
-    /// pair without asking which was taken first.
+    /// locks at the same time? Symmetric, so `checkInvariants` can apply it to
+    /// an unordered pair.
     let private locksConflict (a : FlockMode) (b : FlockMode) : bool =
         match a, b with
         | FlockMode.Shared, FlockMode.Shared -> false
@@ -464,26 +420,22 @@ module FileDescriptorRegistry =
     /// The lock belongs to the open file description `fd` names, so two
     /// descriptors from one `dup(2)` share a single lock (releasing through
     /// either releases it), while two separate `open(2)` calls on one path hold
-    /// two and therefore contend. That contention is the entire mechanism behind
-    /// `FileShare` on Unix, and it works *within* one process — which is why a
-    /// single-threaded guest can observe it at all.
+    /// two and therefore contend. That contention is the mechanism behind
+    /// `FileShare` on Unix, and it works *within* one process, so a
+    /// single-threaded guest can observe it.
     ///
     /// Contention is between descriptions naming the same `OpenFileObject`. For
     /// a standard stream that set is empty by construction — `initial` gives
     /// each role exactly one description and `dup` shares rather than copies —
     /// so `flock` on fd 0/1/2 succeeds and conflicts with nothing. That is what
-    /// Linux does (measured: `flock` on a pipe returns 0), and it falls out of
-    /// the general rule rather than being a special case.
+    /// Linux does (measured: `flock` on a pipe returns 0).
     ///
-    /// **This is Linux's mechanism, and it is flavour-agnostic on purpose.**
-    /// Darwin diverges in three measured ways — it answers `ENOTSUP` for a pipe,
-    /// it validates the operation differently, and it *keeps* a lock that a
-    /// failed conversion would drop here. None of those live in this module:
-    /// deciding what a Darwin-flavoured kernel does is the handler's job, and it
-    /// currently refuses rather than modelling it (see `SystemNative_FLock` in
-    /// `NativeSystemNative.fs`). Keeping the divergence out of here means this
-    /// type stays a single coherent set of rules rather than two interleaved
-    /// ones.
+    /// This is Linux's mechanism. Darwin diverges in three measured ways — it
+    /// answers `ENOTSUP` for a pipe, it validates the operation differently,
+    /// and it *keeps* a lock that a failed conversion would drop here. None of
+    /// those live in this module: deciding what a Darwin-flavoured kernel does
+    /// is the handler's job, and it currently refuses rather than modelling it
+    /// (see `SystemNative_FLock` in `NativeSystemNative.fs`).
     ///
     /// `Acquire` replaces any lock this description already held, so a
     /// conversion cannot conflict with itself: `SH` to `EX` succeeds when this
@@ -491,16 +443,15 @@ module FileDescriptorRegistry =
     /// still holds `SH`.
     ///
     /// **A failed conversion still drops the old lock**, which is why this
-    /// returns a table even on failure rather than an untouched one. `flock(2)`
-    /// converts by removing the existing lock and then establishing the new one,
-    /// and those two steps are not atomic — so when the second fails, the first
-    /// has already happened and the caller is left holding nothing. That is the
-    /// documented BSD-derived behaviour, and it is measured: with `a` and `b`
-    /// both holding `SH`, a failed `a: SH -> EX` leaves `a` unlocked on Linux
-    /// (a third description can then take `EX` once `b` releases) but still
-    /// holding `SH` on Darwin. PawPrint simulates Linux. Note the *error* is the
-    /// same on both platforms, so only a third description can tell them apart,
-    /// which is what the test for this uses.
+    /// returns a table even on failure. `flock(2)` converts by removing the
+    /// existing lock and then establishing the new one, non-atomically — when
+    /// the second step fails, the caller is left holding nothing. Documented
+    /// BSD-derived behaviour, and measured: with `a` and `b` both holding `SH`,
+    /// a failed `a: SH -> EX` leaves `a` unlocked on Linux (a third description
+    /// can then take `EX` once `b` releases) but still holding `SH` on Darwin.
+    /// PawPrint simulates Linux. The *error* is the same on both platforms, so
+    /// only a third description can tell them apart, which is what the test for
+    /// this uses.
     ///
     /// `Release` succeeds whether or not a lock was held.
     let flock
@@ -552,8 +503,7 @@ module FileDescriptorRegistry =
             )
 
         if blocked then
-            // The old lock is gone either way — see the note above. A caller
-            // that held nothing is unaffected, so this is not a special case.
+            // The old lock is gone either way — see the note above.
             withFlock None, Some FlockError.WouldBlock
         else
             withFlock (Some mode), None
@@ -562,12 +512,11 @@ module FileDescriptorRegistry =
     ///
     /// Total in the offset — every non-negative `int64` is a position a real
     /// kernel would accept, including far past the end of the file — and
-    /// deliberately *partial* in the descriptor: reaching this with an fd that
-    /// is not live, or one naming an unseekable object, is an interpreter bug
-    /// rather than a guest error. Both callers (`SystemNative_LSeek` and
-    /// `SystemNative_Read`) have already resolved the description and rejected
-    /// `EBADF`/`ESPIPE` before they get here, so a silent no-op would hide the
-    /// bug that a crash names.
+    /// *partial* in the descriptor: reaching this with an fd that is not live,
+    /// or one naming an unseekable object, is an interpreter bug rather than a
+    /// guest error. Both callers (`SystemNative_LSeek` and `SystemNative_Read`)
+    /// have already resolved the description and rejected `EBADF`/`ESPIPE`
+    /// before they get here.
     ///
     /// Deciding *which* offset is not this module's business: `lseek`'s
     /// arithmetic needs the file's size, which lives in the filesystem, and its
@@ -633,10 +582,6 @@ module FileDescriptorRegistry =
             |> List.filter (fun id -> id >= registry.NextId)
             |> List.map (fun id -> FileDescriptorRegistryDefect.NextIdNotFresh (registry.NextId, id))
 
-        // Every unordered pair of distinct locked descriptions naming one file.
-        // Quadratic in the number of live descriptions, which is a handful; the
-        // clarity is worth more here than the asymptotics, since this is the one
-        // check that states the actual `flock` guarantee.
         let negativeOffsets =
             registry.Descriptions
             |> Map.toList
@@ -658,6 +603,10 @@ module FileDescriptorRegistry =
                 |> Option.map (fun mode -> id, OpenFileDescription.object description, mode)
             )
 
+        // Every unordered pair of distinct locked descriptions naming one file.
+        // Quadratic in the number of live descriptions, which is a handful; the
+        // clarity is worth more here than the asymptotics, since this is the one
+        // check that states the actual `flock` guarantee.
         let conflicting =
             locked
             |> List.collect (fun (firstId, firstObject, firstMode) ->
@@ -685,10 +634,8 @@ module FileDescriptorRegistry =
 
     /// Construction that bypasses every invariant this module maintains.
     ///
-    /// Exists so that `checkInvariants` can be tested: a defect no test can
-    /// construct is documentation rather than a check. Deliberately one
-    /// greppable token, so that any interpreter code reaching for it is visible
-    /// in review — nothing outside tests should.
+    /// Exists so that `checkInvariants` can be tested. One greppable token;
+    /// nothing outside tests should use it.
     [<RequireQualifiedAccess>]
     module Unchecked =
         let ofParts

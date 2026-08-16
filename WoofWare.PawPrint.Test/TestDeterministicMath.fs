@@ -294,8 +294,8 @@ module TestDeterministicMath =
             ofBits 0xFFF8000000000123UL, 2.0, 0xFFF8000000000123UL
             // A *signaling* NaN must come back quieted -- IEEE 754 requires an operation
             // handed one to raise invalid-operation and deliver a quiet NaN -- but with its
-            // sign and payload otherwise intact. Simply returning the operand unchanged is
-            // observably wrong, and is what this arm originally did.
+            // sign and payload otherwise intact. Returning the operand unchanged is
+            // observably wrong.
             ofBits 0x7FF0000000000123UL, 2.0, 0x7FF8000000000123UL
             2.0, ofBits 0x7FF0000000000123UL, 0x7FF8000000000123UL
             ofBits 0xFFF0000000000123UL, 2.0, 0xFFF8000000000123UL

@@ -45,9 +45,8 @@ open System.Reflection.Metadata.Ecma335
 /// An enum is <em>not</em> an exception to that, despite <c>IsSimpleType</c> classifying by
 /// element type: measured against the real encoder, a parameter typed as an enum is spelled
 /// <c>ELEMENT_TYPE_INTERNAL</c> like any other value type, whatever its underlying integer.
-/// <c>TestMethodSignatureDecoding</c> pins that for two enums of different underlying width, so
-/// this claim cannot rot into a lie -- and it is worth pinning, because the natural guess is the
-/// opposite.
+/// <c>TestMethodSignatureDecoding</c> pins that for two enums of different underlying width;
+/// the natural guess is the opposite.
 /// </para>
 /// </remarks>
 [<RequireQualifiedAccess>]
@@ -70,11 +69,9 @@ module MethodSignatureDecoding =
     /// The result is faithful, not filtered: a vararg signature comes back with
     /// <c>Header.CallingConvention</c> saying so and <c>RequiredParameterCount</c> distinguishing
     /// the fixed parameters from the rest, and a generic method's arity comes back in
-    /// <c>GenericParameterCount</c>. Neither is rejected here. Whether PawPrint can *do* anything
+    /// <c>GenericParameterCount</c>. Neither is rejected here: whether PawPrint can *do* anything
     /// with such a method is a question for whoever is asking -- binding a delegate to it, say --
-    /// and that consumer has the context to say why not; a decoder that refused them would be
-    /// discarding information the returned type already carries perfectly well, and would be
-    /// answering a question it was not asked.
+    /// and that consumer has the context to say why not.
     /// </para>
     /// <para>
     /// What is refused is a blob this cannot decode *honestly*: one that is not a method signature
@@ -83,8 +80,7 @@ module MethodSignatureDecoding =
     /// bytes left over.
     /// </para>
     /// <para>
-    /// Those last two are corruption checks, and it is worth being precise about how corrupt a
-    /// blob can actually get here, because that bounds how much validation is worth doing. No
+    /// Those last two are corruption checks. No
     /// guest supplies these bytes directly: <c>ModuleHandle.GetDynamicMethod</c> is internal, and
     /// every route to it (<c>DynamicMethod.GetILGenerator</c>, <c>GetDynamicILInfo</c>) builds the
     /// signature with <c>SignatureHelper</c> from the <c>Type</c>s passed to the
@@ -140,8 +136,8 @@ module MethodSignatureDecoding =
             failwith
                 $"expected a method signature (one of the METHOD calling conventions), but the blob's calling convention is %O{headerKind}"
 
-        // This is a diagnosability check, not a safety one, and it is worth saying which because
-        // the obvious reason to write it is wrong. `SignatureDecoder` does *not* blow up on an
+        // This is a diagnosability check, not a safety one.
+        // `SignatureDecoder` does *not* blow up on an
         // absurd declared count: measured, a blob declaring half a billion parameters is refused
         // in under a millisecond with no large allocation attempted. What it is refused *with* is
         // the problem -- a bare `BadImageFormatException`, which this module's catch then reports

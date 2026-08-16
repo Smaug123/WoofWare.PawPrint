@@ -13,11 +13,11 @@ type FieldId =
     /// instance size by `N` (`MethodTableBuilder::PlaceInstanceFields`, methodtablebuilder.cpp:8612);
     /// the repeats are storage, not fields, and reflection never sees them. PawPrint's value storage
     /// is field-cell based, so each repeat needs a cell of its own, and each cell needs an identity.
-    /// Slot 0 deliberately keeps `FieldId.Metadata`, so `ldfld`/`ldflda`/`Marshal.OffsetOf` and
+    /// Slot 0 keeps `FieldId.Metadata`, so `ldfld`/`ldflda`/`Marshal.OffsetOf` and
     /// every other metadata-driven lookup resolve to it with no special-casing; only slots 1 and up
     /// are named this way.
     ///
-    /// `name` is the *storage* name (`_item[1]`), deliberately distinct from the declared field's,
+    /// `name` is the *storage* name (`_item[1]`), distinct from the declared field's,
     /// so that `CliValueType`'s name-keyed lookup fallback still resolves the declared name uniquely
     /// to slot 0 rather than reporting it ambiguous.
     | InlineArrayElement of

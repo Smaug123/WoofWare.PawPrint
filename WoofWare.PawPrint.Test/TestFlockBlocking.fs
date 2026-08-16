@@ -17,7 +17,7 @@ open WoofWare.PawPrint
 /// P/Invoke most naturally writes. Only genuine contention is refused. CoreLib never reaches
 /// either, because `SafeFileHandle.Init` always sets `LOCK_NB`.
 ///
-/// Note the guests below are single-threaded and hold the conflicting lock themselves, so on a real
+/// The guests below are single-threaded and hold the conflicting lock themselves, so on a real
 /// Linux kernel they would *hang forever* rather than return anything. That is not a defect in the
 /// tests: it is why the refusal is worth having, and it is also why these cannot be differential
 /// cases — the oracle would never terminate.

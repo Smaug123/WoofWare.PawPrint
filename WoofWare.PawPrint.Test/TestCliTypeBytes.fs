@@ -1613,8 +1613,8 @@ module TestCliTypeBytes =
         // Regression: structural equality on floats is IEEE, so `-0.0 = 0.0` is true. Deciding
         // "did zeroing change anything?" with `=` therefore reports a cell holding `-0.0` as
         // already-zero and leaves the sign bit set, even though every byte that matters
-        // differs. Caught originally by the signed-zero property in TestMethodTableProjection,
-        // which writes `+0.0` over `-0.0` through the array byte-write path this operation now
+        // differs. Caught by the signed-zero property in TestMethodTableProjection,
+        // which writes `+0.0` over `-0.0` through the array byte-write path this operation
         // serves; pinned here too, at the operation itself.
         let negativeZero = CliType.Numeric (CliNumericType.Float64 -0.0)
 
@@ -1655,7 +1655,7 @@ module TestCliTypeBytes =
         //
         // Asserted through the rendered bytes rather than by reading members back: projecting
         // any member of a union that overlaps a live reference reconstructs it from the union's
-        // bytes, and a reference has no byte rendering. That is a pre-existing limit of the
+        // bytes, and a reference has no byte rendering. That is a limit of the
         // value model, unrelated to zeroing.
         let heapRef = CliType.ObjectRef (Some (ManagedHeapAddress 13))
 

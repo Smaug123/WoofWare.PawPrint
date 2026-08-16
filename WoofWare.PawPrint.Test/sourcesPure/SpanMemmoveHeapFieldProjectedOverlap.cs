@@ -9,10 +9,9 @@ public class Program
     // same struct field), so the overlap is genuine but undecidable until
     // `Field` projections are folded into a flat byte offset.
     //
-    // Before the heap-root extension of the undecidable-overlap fail-loud
-    // landed, this would silently take the forward loop and produce
-    // memcpy-style corruption. After the fix it raises a clear host-level
-    // diagnostic.
+    // The undecidable-overlap fail-loud covers heap roots too, so this
+    // raises a clear host-level diagnostic rather than silently taking
+    // the forward loop (memcpy-style corruption).
     [StructLayout(LayoutKind.Sequential)]
     struct S
     {

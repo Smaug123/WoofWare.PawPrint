@@ -94,18 +94,14 @@ module NativeModuleHandle =
             // with.
             //
             // `SimulatedUnixPlatform` is not that identity, though two of its three cases do
-            // name an architecture. It models what the guest could learn by asking the OS,
-            // which AGENTS.md keeps deliberately separate from which runtime build is
-            // executing — and the latter is what this is. The separation is not academic:
-            // the CoreLib flavour comes from the runtime-dir list, not the kernel, so
-            // sourcing the machine from the kernel would let a guest read a linux-x64 native
-            // identity while interpreting a macOS-arm64 CoreLib. Its `Custom` case, which
-            // deliberately declines to say which platform it is, has no architecture at all.
+            // name an architecture: it models what the guest could learn by asking the OS,
+            // not which runtime build is executing. Do not source the machine from the
+            // kernel — the CoreLib flavour comes from the runtime-dir list, not the kernel,
+            // so a guest could read a linux-x64 native identity while interpreting a
+            // macOS-arm64 CoreLib; and the `Custom` case has no architecture at all.
             //
-            // This is the only place that identity is observable, because the branch above
-            // overwrites the machine unconditionally — so refusing here costs exactly the
-            // images whose answer we would have to invent. Every ReadyToRun assembly in a
-            // shipped shared framework sets the flag above.
+            // Every ReadyToRun assembly in a shipped shared framework sets the flag above,
+            // so refusing here costs only images whose answer we would have to invent.
             failwith
                 $"%s{context}: image has a ReadyToRun header without READYTORUN_FLAG_PLATFORM_NEUTRAL_SOURCE (flags 0x%08X{readyToRun.Flags}, R2R version %d{readyToRun.MajorVersion}.%d{readyToRun.MinorVersion}), so its machine depends on which architecture's native runtime is executing (CoreCLR's IMAGE_FILE_MACHINE_NATIVE), which PawPrint does not model"
 
@@ -158,12 +154,11 @@ module NativeModuleHandle =
             // Int32 with the major in the *senior* half. So a 2.0 image reports 0x20000, which
             // is `MD_STREAM_VER_2` in metadata.h, and a 1.x one 0x1000x (`MD_STREAM_VER_1X`).
             //
-            // The packing lives here rather than on `DumpedAssembly.MetadataTableStreamVersion`
-            // for the same reason `GetFlags`'s `afPublicKey` synthesis does: that member says
-            // what the file format says, and this is one particular CoreCLR API's encoding of
-            // it, reproduced at the seam that reproduces CoreCLR APIs.
+            // The packing lives here rather than on `DumpedAssembly.MetadataTableStreamVersion`,
+            // as with `GetFlags`'s `afPublicKey` synthesis: that member says what the file
+            // format says, and this is one particular CoreCLR API's encoding of it.
             //
-            // Note this is keyed by a module while PawPrint models one module per assembly, so
+            // This is keyed by a module while PawPrint models one module per assembly, so
             // it resolves through the assembly. That is what every other `QCallModule` handler
             // here does, and for `Assembly.GetName()` — which asks the *manifest* module — it
             // is exactly right regardless.

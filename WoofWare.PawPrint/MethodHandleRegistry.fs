@@ -29,7 +29,7 @@ type MetadataMethodIdentity =
 /// `DynamicResolver.GetCodeInfo` returns `m_method.InitLocals` at call time
 /// (`DynamicILGenerator.cs:729`), and the native `LCGMethodResolver::GetCodeInfo`
 /// (`vm/dynamicmethod.cpp`) calls that during the *first JIT* of the method and caches the answer
-/// under `if (!m_Code)`. So the flag simply is not known when the method is minted, and a type
+/// under `if (!m_Code)`. So the flag is not known when the method is minted, and a type
 /// that carried a field for it here would have to put something untrue in it.
 ///
 /// Everything else `GetCodeInfo` reports is frozen at resolver construction (bake time), so this
@@ -106,8 +106,8 @@ type PreparedDynamicMethod =
 /// garbage collection, of any kind, ever (see `Native/NativeGc.fs`), so nothing a weak handle
 /// would permit to be collected ever is, and the guest cannot ask after the handle's strength --
 /// `GetLCGMethodResolver` is reachable only from native code. Should a collector ever land, this
-/// is one of the places that has to grow a real weak reference -- and note that `Resolver` is now
-/// read *late* as well as at mint, by `latchPreparation`, so it is live for longer than it looks.
+/// is one of the places that has to grow a real weak reference -- and `Resolver` is read *late*
+/// as well as at mint, by `latchPreparation`, so it is live for longer than it looks.
 type DynamicMethodDefinition =
     private
         {
@@ -132,9 +132,8 @@ type DynamicMethodDefinition =
     ///
     /// Recorded eagerly and not as an option, so that a minted dynamic method is never in a
     /// half-built state where it has an identity but no body. A dynamic method carrying a token for
-    /// *itself* turns out not to disturb this, though an earlier revision of this comment predicted
-    /// it would: the cycle is broken by *when* a scope entry is read rather than by minting the
-    /// identity before the body. Decoding classifies the self-entry by its type alone and reads
+    /// *itself* does not disturb this: the cycle is broken by *when* a scope entry is read
+    /// rather than by minting the identity before the body. Decoding classifies the self-entry by its type alone and reads
     /// nothing out of it, and the read that needs `_methodHandle` happens when the `call` executes —
     /// by which point the executing method has necessarily been minted. So there is no moment at
     /// which a body must exist before its own identity does.
@@ -180,7 +179,7 @@ type MethodHandleRegistry =
             DynamicMethods : Map<DynamicMethodHandle, DynamicMethodDefinition>
             /// Dedup cache for `getOrAllocate`: when an F# caller asks for the stub address
             /// of a method we've previously allocated through this same path, return that
-            /// existing address rather than minting a fresh stub. Note that this dedup is
+            /// existing address rather than minting a fresh stub. This dedup is
             /// scoped to F#-side allocations — stubs the BCL constructs in managed code (via
             /// `new RuntimeMethodInfoStub(...)`) bypass this registry entirely. Like
             /// `MethodHandleToId`, this holds only `FromMetadata` handles: CoreCLR allocates a

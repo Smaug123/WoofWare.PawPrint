@@ -171,7 +171,7 @@ module ContextSwitchPrior =
         // has been published via `ldloca`/`ldarga` + an escape (e.g.
         // `Unsafe.AsPointer` writing the byref into shared storage).
         // Published-local escape is uncommon, but when it happens these
-        // ops genuinely race against another thread's load/store through
+        // ops race against another thread's load/store through
         // the escaped byref. The classifier is context-free and can't see
         // whether escape has occurred; under PCT we get to call it
         // "rarely visible" without losing soundness.
@@ -446,8 +446,8 @@ module ContextSwitchPrior =
         // instruction runs — `m_scope.m_tokens` is an ordinary `List<object>` that guest code holds
         // a reference to — so the instruction depends on mutable shared state whatever its opcode
         // would otherwise say. `sizeof` is the case that makes this visible: it is `InterpreterOnly`
-        // for a metadata operand, correctly, and would keep that 0.01 prior for a scope operand
-        // whose entry another thread can rewrite. The metadata classification is untouched.
+        // for a metadata operand, but must not keep that 0.01 prior for a scope operand
+        // whose entry another thread can rewrite.
         | IlOp.UnaryMetadataToken (_, MetadataOperand.FromDynamicScope _)
         | IlOp.UnaryStringToken (_, StringOperand.FromDynamicScope _) -> ContextSwitchPrior.AlwaysGuestVisible
         | IlOp.UnaryMetadataToken (op, MetadataOperand.FromMetadata _) -> ofUnaryMetadata op

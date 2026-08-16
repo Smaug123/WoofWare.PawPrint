@@ -296,7 +296,7 @@ module internal MethodTableProjection =
         =
         match methodTableFor with
         // `CreateMinimalMethodTable` sets no category flag at all, leaving the default: a plain
-        // class. It is emphatically not an interface, a value type or a nullable.
+        // class.
         | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> 0
         | RuntimeTypeHandleTarget.Closed handle -> categoryFlags baseClassTypes state handle
         // An open constructed type's category is its definition's: instantiating
@@ -760,16 +760,11 @@ module internal MethodTableProjection =
         | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> false, state
         | RuntimeTypeHandleTarget.Closed handle -> containsGcPointers loggerFactory baseClassTypes state handle
         // Answered from the definition's fields, without substituting the instantiation's
-        // arguments. That is exact for a bare definition, but an approximation for a partial
-        // construction: for `class C<A, B> { A field; }`, `C<int, T>` is reported as containing
-        // GC pointers because `A` is walked unbound, where an exact layout would clear the flag.
-        //
-        // Deliberately not fixed here, and deliberately not made to throw. The bit is inert for
-        // these targets — an open constructed type can never be allocated, and this flag only
-        // informs allocation and GC scanning — and answering conservatively extends the
-        // approximation `OpenGenericTypeDefinition` already makes rather than inventing a second
-        // one. An exact answer needs field-type substitution under a mixed
-        // closed/type-variable context, which is the same machinery the array/pointer TODO in
+        // arguments: for `class C<A, B> { A field; }`, `C<int, T>` is reported as containing
+        // GC pointers because `A` is walked unbound. The bit is inert for these targets — an
+        // open constructed type can never be allocated, and the flag only informs allocation
+        // and GC scanning. An exact answer needs field-type substitution under a mixed
+        // closed/type-variable context, the same machinery the array/pointer TODO in
         // `RuntimeTypeHandle_GetConstraints` is waiting on.
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
         | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
@@ -825,14 +820,13 @@ module internal MethodTableProjection =
             else
                 true
         | RuntimeTypeHandleTarget.Closed _ -> false
-        // Openness is the defining property of the case: `openConstructed` refuses an
-        // all-closed argument list, so reaching here means at least one argument transitively
-        // contains a variable.
+        // `openConstructed` refuses an all-closed argument list, so reaching here means at
+        // least one argument transitively contains a variable.
         | RuntimeTypeHandleTarget.OpenConstructed _ -> true
         | RuntimeTypeHandleTarget.GenericParameter _
         | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
             // A generic parameter T is itself an unbound variable, so its MethodTable contains
-            // generic variables. Treating this is conservatively correct for the flag's intent.
+            // generic variables.
             true
 
     let private containsGenericVariablesFlags
@@ -865,16 +859,15 @@ module internal MethodTableProjection =
             | RuntimeTypeHandleTarget.GenericParameter _
             | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
 
-        // Managed code consults this through `RuntimeType.IsByRefLike`, and several BCL guards
-        // are phrased entirely in terms of it — `RuntimeType.CreateInstanceDefaultCtor` throws
-        // `NotSupportedException` for a ref struct there, *after* the activation QCall has
-        // deliberately allowed it through (`allowByRefLike: true`). Leaving the flag clear does
-        // not merely lose information: it makes that guard pass and hands the guest a boxed ref
-        // struct, which is not a legal heap representation at all.
+        // Managed code consults this through `RuntimeType.IsByRefLike`:
+        // `RuntimeType.CreateInstanceDefaultCtor` throws `NotSupportedException` for a ref
+        // struct on this flag, after the activation QCall has allowed it through
+        // (`allowByRefLike: true`). Leaving the flag clear lets that guard pass and hands the
+        // guest a boxed ref struct, which is not a legal heap representation.
         //
-        // `DumpedAssembly.isByRefLike` is the classification, attribute presence gated on the
-        // type being a value class exactly as CoreCLR gates it; this is only the projection of
-        // that answer onto the MethodTable.
+        // `DumpedAssembly.isByRefLike` is the classification (attribute presence, gated on the
+        // type being a value class as CoreCLR gates it); this is only its projection onto the
+        // MethodTable.
         //
         // An open generic definition carries the flag too: `typeof(R<>).IsByRefLike` is true for
         // a `ref struct R<T>` (measured against .NET 10). A generic *parameter* does not, because

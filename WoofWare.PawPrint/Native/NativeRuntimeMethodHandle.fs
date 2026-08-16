@@ -76,8 +76,7 @@ module NativeRuntimeMethodHandle =
     /// returns TRUE outright for a generic method *definition*, falling back to
     /// `m_pPerInstInfo != NULL` otherwise -- so both the typical form and every instantiation of it
     /// answer true. `RuntimeMethodInfo.IsGenericMethod` is this predicate verbatim
-    /// (RuntimeMethodInfo.CoreCLR.cs:471), and an open generic method is `IsGenericMethod = true`,
-    /// which settles it.
+    /// (RuntimeMethodInfo.CoreCLR.cs:471), and an open generic method is `IsGenericMethod = true`.
     ///
     /// So the sole input is the method's declared generic-parameter count -- the same
     /// `methodGenericParamCount` that `isGenericMethodDefinition` above takes, and deliberately not
@@ -474,11 +473,11 @@ module NativeRuntimeMethodHandle =
     /// definitions) and refusing the TypeDesc-backed cases that
     /// <c>RuntimeMethodHandle_IsCAVisibleFromDecoratedType</c>'s CoreCLR
     /// sibling rejects with <c>Arg_InvalidHandle</c>
-    /// (arrays/byrefs/pointers/fnptrs and generic parameters). Note that
+    /// (arrays/byrefs/pointers/fnptrs and generic parameters).
     /// <c>typeof(G&lt;&gt;)</c> reaches this QCall as the decorated source
     /// when reflection walks custom attributes on a generic type definition,
-    /// so accepting <c>OpenGenericTypeDefinition</c> is load-bearing for
-    /// ordinary CA filtering on open generics.
+    /// so <c>OpenGenericTypeDefinition</c> must be accepted or ordinary CA
+    /// filtering on open generics breaks.
     let private resolveMethodTableType
         (operation : string)
         (label : string)

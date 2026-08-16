@@ -88,7 +88,7 @@ class Program
         // The distinction `IsActualEnum` exists to draw: a generic parameter constrained to
         // `Enum` reports `IsEnum` true (the constraint walk finds `System.Enum` as its base)
         // but is not itself an enum, so `IsActualEnum` is false and the enum reflection surface
-        // refuses it. An implementation that simply answered `IsEnum` would fail here.
+        // refuses it. An implementation that answered `IsEnum` would fail here.
         Type constrained = typeof(EnumConstrained<>).GetGenericArguments()[0];
         Check(constrained.IsEnum);
         Check(!IsActualEnum(constrained));

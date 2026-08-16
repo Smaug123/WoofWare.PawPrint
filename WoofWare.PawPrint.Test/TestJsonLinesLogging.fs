@@ -315,7 +315,7 @@ module TestJsonLinesLogging =
 
     [<Test>]
     let ``LoggingConfig.fromEnv returns None when PAWPRINT_LOG_DIR is unset`` () : unit =
-        // Sanity check on the single remaining env-reading boundary. We do not mutate any env
+        // Sanity check on the single env-reading boundary. We do not mutate any env
         // variable here; we only assert the "unset" branch behaves. (Tests that actually need
         // file logging go through `forRunDirectory` above, no environment required.)
         let previous = Environment.GetEnvironmentVariable "PAWPRINT_LOG_DIR"

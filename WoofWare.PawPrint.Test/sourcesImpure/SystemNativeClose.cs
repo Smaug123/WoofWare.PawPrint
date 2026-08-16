@@ -47,8 +47,8 @@ class Program
         if (SystemNative_Close(duped) != 0) return 3;
 
         // A second close of the same fd hits the now-empty slot and must
-        // return -1 (EBADF). This is the load-bearing case: closing the
-        // table entry actually removed it, so the slot is gone.
+        // return -1 (EBADF): proof that the first close removed the table
+        // entry rather than merely reporting success.
         if (SystemNative_Close(duped) != -1) return 4;
 
         // POSIX requires dup to allocate the lowest non-negative fd not in

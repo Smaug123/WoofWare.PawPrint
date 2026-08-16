@@ -121,7 +121,7 @@ namespace ReadOnlySpanOpEqualityTest
             }
 
             // Two zero-length slices at the *same* offset are equal, though, so the previous
-            // case is genuinely about the address and not about zero-length spans at large.
+            // case is about the address and not about zero-length spans at large.
             if (!(emptyButRooted == new ReadOnlySpan<int>(arr, 1, 0)))
             {
                 return 13;

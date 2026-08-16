@@ -43,14 +43,13 @@ namespace AreSameSequentialStructDistinctFieldsTest
             }
 
             // Positive control on the same struct, so the check above cannot pass merely
-            // because this shape answers `false` unconditionally — which is what it did before
-            // the refusal that preceded this, and would be a regression to it.
+            // because this shape answers `false` unconditionally.
             if (!Unsafe.AreSame(ref s.X, ref s.X))
             {
                 return 2;
             }
 
-            // The fields are genuinely independent, so the `false` above is not merely a
+            // The fields are independent, so the `false` above is not merely a
             // nominal distinction between two names for one address.
             s.Y = 5;
 

@@ -9,12 +9,10 @@ open WoofWare.PawPrint
 
 /// The end-to-end harness runs guests in-process, so a guest that never terminates does not
 /// fail its test — it wedges the whole suite, and CI reports a timeout with nothing in it.
-/// `BoundedRun` is the guard against that, and a guard nothing exercises is a guard you find
-/// out about the day it does not work.
+/// `BoundedRun` is the guard against that.
 ///
-/// The bound is a step count rather than a wall clock, so these tests can assert on it exactly:
-/// a livelocked guest fails at a *known* number of steps on every machine. That is the property
-/// a timeout could not have given, and it is why the bound is shaped this way.
+/// The bound is a step count rather than a wall clock, so these tests can assert on it
+/// exactly: a livelocked guest fails at a known number of steps on every machine.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestBoundedRun =
@@ -52,8 +50,7 @@ class SpinsForEver
 }
 """
 
-        // Small enough to trip in well under a second, which is the point of the bound being
-        // a parameter rather than a constant.
+        // Small enough to trip in well under a second.
         let exn =
             Assert.Throws (fun () -> runSource 50_000L "SpinsForEver.cs" source |> ignore<RunOutcome>)
 
@@ -132,24 +129,19 @@ class SpinsForEver
         exn.Message
 
     /// The budget counts *steps*, not time, so the same guest gives up in the same machine
-    /// state every run. Without that, the bound would be one more source of the flakiness this
-    /// interpreter exists to remove — a busy CI machine could fail a guest that a quiet laptop
-    /// passes, and the failure would not reproduce.
+    /// state every run.
     ///
-    /// This pairs with the test below, and neither is worth much alone. Equality here says the
-    /// stopping point is reproducible; the test below says the message can actually tell
-    /// stopping points apart, without which this one would hold for a wall-clock bound too.
+    /// Pairs with the test below: equality here says the stopping point is reproducible; that
+    /// test says the message can tell stopping points apart, without which this one would hold
+    /// for a wall-clock bound too.
     [<Test>]
     let ``the budget is deterministic: the same guest gives up in the same state every time`` () : unit =
         budgetFailure 50_000L |> shouldEqual (budgetFailure 50_000L)
 
-    /// The diagnostic distinguishes *where* the guest was stopped, so the equality above is a
-    /// claim about the machine state rather than about a message too coarse to disagree.
-    ///
-    /// One extra step of budget must move the stopping point, and does: the kernel's step
-    /// counter differs, and for this guest — a bare loop of more than one instruction — so does
-    /// the IL offset. A message reporting only the thread's status and method would be
-    /// identical across both, and this is what would catch that.
+    /// One extra step of budget must move the stopping point: the kernel's step counter
+    /// differs, and for this guest — a bare loop of more than one instruction — so does the
+    /// IL offset. A message reporting only the thread's status and method would be identical
+    /// across both.
     [<Test>]
     let ``the diagnostic distinguishes different stopping points`` () : unit =
         let atBudget = budgetFailure 50_000L
@@ -170,10 +162,9 @@ class SpinsForEver
     ///
     /// `ThreadStatus.hasNoActiveFrame` names two such states, `NotStarted` and `Parked`, and
     /// `ThreadState.MethodState` throws on both — it resolves the active frame, and there
-    /// isn't one. A summary that reached for the executing method unconditionally would
-    /// therefore crash with "Frame ... is not live" *instead of* reporting the stuck guest,
-    /// destroying the diagnostic exactly when it is needed. A guest holding a constructed but
-    /// unstarted thread is an entirely ordinary way to be in that state.
+    /// isn't one. A summary that reached for the executing method unconditionally would crash
+    /// with "Frame ... is not live" instead of reporting the stuck guest. A guest holding a
+    /// constructed but unstarted thread is an ordinary way to be in that state.
     [<Test>]
     let ``the diagnostic survives threads with no active frame`` () : unit =
         let source =
@@ -199,12 +190,7 @@ class SpinsWithUnstartedThread
         exn.Message |> shouldNotContainText "is not live"
 
     /// Guest code runs before `Main` — the entry type's static initialiser is pumped during
-    /// startup — so startup can wedge in exactly the way `Main` can, and must be bounded in
-    /// exactly the same way.
-    ///
-    /// This is the case the bound originally did not cover: startup ran to completion behind a
-    /// single call, so a `.cctor` that never returned hung the suite with no diagnostic at all,
-    /// which is precisely the failure mode `BoundedRun` exists to prevent.
+    /// startup — so startup can wedge just as `Main` can, and must be bounded the same way.
     let private wedgesInStaticInitialiser =
         """
 class WedgesInCctor
@@ -237,23 +223,21 @@ class WedgesInCctor
         message |> shouldContainText "WedgesInCctor.cs"
         message |> shouldContainText "50000"
 
-        // Said to be *startup*, not Main. The distinction is the whole diagnostic: "your static
-        // initialiser never returned" and "your Main never returned" are different bugs, and a
-        // message that conflated them would send you looking in the wrong place.
+        // Said to be *startup*, not Main: a wedged static initialiser and a wedged Main are
+        // different bugs.
         message |> shouldContainText "did not finish starting up"
         message |> shouldNotContainText "did not terminate"
 
-        // And it locates the guest within startup rather than merely reporting that startup was
-        // where we were: the thread summary names the initialiser itself.
+        // And it locates the guest within startup: the thread summary names the initialiser
+        // itself.
         message |> shouldContainText ".cctor"
 
     /// Startup and `Main` share one budget: `Main` resumes the count startup left off at, rather
     /// than each phase getting its own allowance.
     ///
-    /// The distinction is worth a test because the alternative silently doubles the worst-case
-    /// bound, and because it is not observable from any single-phase guest — a guest that wedges
-    /// in startup fails under either design. What separates them is a guest that *completes*:
-    /// give it a budget a little short of its whole run, and only the shared design fails it.
+    /// Not observable from any single-phase guest — a guest that wedges in startup fails under
+    /// either design. What separates them is a guest that *completes*: give it a budget a
+    /// little short of its whole run, and only the shared design fails it.
     ///
     /// Calibrated against the guest's own measured cost rather than hardcoded numbers. The slack
     /// below must be smaller than startup, which is what makes the two designs disagree:
@@ -289,8 +273,7 @@ class CompletesButNotCheaply
 
         // ...and the resulting budget must still be larger than startup, or the run would give
         // up before reaching `Main` and this would be testing the startup bound instead. Both
-        // facts are asserted rather than assumed, so editing the guest above cannot quietly turn
-        // this into a test of something else.
+        // facts are asserted rather than assumed.
         (total - slack) |> shouldBeGreaterThan 5_000L
 
         let exn =
@@ -351,10 +334,10 @@ class DeadlocksInCctor
     ///
     /// Observable because every `stepPrepared` call bumps the kernel's own step counter by one,
     /// and the diagnostic reports it — so "counter equals budget" says the harness counted every
-    /// step it took. The off-by-one this guards against is not hypothetical: handing the step
-    /// count across the startup-to-`Main` handoff unchanged drops the tick that retired the
-    /// startup frame's final `ret`, and only the `Main`-phase half of this test can see it (no
-    /// handoff happens when the guest never leaves startup).
+    /// step it took. The off-by-one this guards against: handing the step count across the
+    /// startup-to-`Main` handoff unchanged drops the tick that retired the startup frame's
+    /// final `ret`, and only the `Main`-phase half of this test can see it (no handoff happens
+    /// when the guest never leaves startup).
     [<Test>]
     let ``the budget is exact: a guest given N steps retires N`` () : unit =
         let budget = 40_000L
@@ -381,16 +364,16 @@ class DeadlocksInCctor
 
         exn.Message
 
-    /// The startup diagnostic is subject to the same pair of claims as the `Main` one, and for
-    /// the same reason: equality alone would hold for a message too coarse to distinguish
-    /// anything, so it is only worth something alongside the discrimination test below.
+    /// Same pair of claims as for the `Main` diagnostic: equality alone would hold for a
+    /// message too coarse to distinguish anything, so this pairs with the discrimination test
+    /// below.
     [<Test>]
     let ``the startup budget is deterministic: the same guest gives up in the same state every time`` () : unit =
         startupBudgetFailure 20_000L |> shouldEqual (startupBudgetFailure 20_000L)
 
     /// One extra step of startup budget must move the reported stopping point. Without this, the
     /// determinism test above would pass for a startup diagnostic that said nothing about where
-    /// the guest was — which is exactly what a wall-clock bound would have given us.
+    /// the guest was.
     [<Test>]
     let ``the startup diagnostic distinguishes different stopping points`` () : unit =
         let atBudget = startupBudgetFailure 20_000L

@@ -132,7 +132,7 @@ module TestSignalHandler =
 
     [<Test>]
     let ``SignalState structural equality survives an installed handler`` () : unit =
-        // Critical: `EmulatedKernel` (which embeds `SignalState`) is compared
+        // `EmulatedKernel` (which embeds `SignalState`) is compared
         // structurally for deterministic state dedup. Two states built
         // independently with the same logical handler installed must compare
         // equal — otherwise dedup would split semantically-equivalent states.

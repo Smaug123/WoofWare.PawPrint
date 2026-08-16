@@ -51,7 +51,7 @@ module TestReinterpretCellAccess =
     let private elementShapes : Map<string, ElementShape> =
         [
             // Reference declared last. Auto layout promotes it to offset 0, so `Tag` ends up
-            // *after* it — the arrangement that makes a field probe a genuine descent to a
+            // *after* it — the arrangement that makes a field probe a descent to a
             // non-zero offset rather than a whole-cell read.
             "refLastDeclared",
             {

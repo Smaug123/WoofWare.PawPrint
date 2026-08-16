@@ -105,8 +105,8 @@ module TestPointerHashSynthesis =
         bitsB_AB |> shouldEqual 8L
 
         // Register b then a: b gets counter 0, a gets counter 1. The bits depend only on
-        // registration order, not on the source identity — that is the load-bearing
-        // determinism contract.
+        // registration order, not on the source identity — the determinism contract
+        // replay depends on.
         let bitsB_BA, ba = materialise b PointerHashState.empty
         let bitsA_BA, _ = materialise a ba
         bitsB_BA |> shouldEqual 4L
@@ -538,7 +538,7 @@ module TestPointerHashSynthesis =
 
     [<Test>]
     let ``tryExistingHashBits reports a miss rather than assigning`` () : unit =
-        // The load-bearing half: `ceq` reads this, and `ContextSwitchPrior` bands comparisons
+        // `ceq` reads this, and `ContextSwitchPrior` bands comparisons
         // as never mutating `PointerHashState`. A lookup that answered on a state which had
         // assigned nothing would make that banding false and turn every comparison into a
         // scheduling-visible side effect.

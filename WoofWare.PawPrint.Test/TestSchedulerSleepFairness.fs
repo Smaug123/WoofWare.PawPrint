@@ -40,7 +40,7 @@ module TestSchedulerSleepFairness =
         |> List.singleton
         |> Roslyn.compile
 
-    /// What one run of the guest tells us. `ParkedTicks` is the load-bearing one: the count of
+    /// What one run of the guest tells us. The assertions rest on `ParkedTicks`: the count of
     /// driver steps at which *some* thread was observably in `BlockedOnSleep`. It is zero for
     /// any rate at which a `Sleep(1)` deadline expires before the next scheduling decision,
     /// however many times the guest sleeps.

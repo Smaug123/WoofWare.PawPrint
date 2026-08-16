@@ -16,7 +16,7 @@ open WoofWare.PawPrint
 module TestContextSwitchPrior =
 
     /// A dummy metadata token, only used to construct `IlOp` values for tests.
-    /// The classifier deliberately ignores token contents.
+    /// The classifier ignores token contents.
     let private dummyAssembly : AssemblyName =
         AssemblyName "dummy-for-context-switch-prior-tests"
 
@@ -32,10 +32,9 @@ module TestContextSwitchPrior =
 
     // ---------- Band weight monotonicity ----------
 
-    /// The whole point of having bands is that they admit a useful ordering
-    /// by "likelihood of context-switch-worthiness". If the weight function
-    /// ever loses that ordering, the bands no longer mean what their names
-    /// say they mean.
+    /// The bands admit an ordering by "likelihood of context-switch-worthiness".
+    /// If the weight function ever loses that ordering, the bands no longer
+    /// mean what their names say.
     [<Test>]
     let ``weight is strictly increasing across the bands`` () : unit =
         let w b = ContextSwitchPrior.weight b

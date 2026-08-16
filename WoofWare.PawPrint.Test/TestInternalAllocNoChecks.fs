@@ -505,7 +505,7 @@ public static class Program
         // refuses rather than creating one. This is a guard, not an unreachable arm: it is
         // provokeable, and this provokes it.
         //
-        // This pins a deliberate divergence, not a mere invariant. CoreCLR *does* allocate such
+        // This pins a deliberate divergence. CoreCLR *does* allocate such
         // an object, for `AsyncHelpers.AllocContinuationResultBox`, which preserves a nullable's
         // layout on purpose. No guest can reach that today — it is called from JIT-generated
         // runtime-async code, which PawPrint does not model — so crashing loudly is the right

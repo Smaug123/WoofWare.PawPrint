@@ -21,7 +21,7 @@ module ExecutionConcretization =
     /// <c>NativeDelegate</c> performs when it decides whether a delegate may bind at all.
     /// </para>
     /// <para>
-    /// Built at *invocation* rather than at bind time, deliberately: CoreCLR reads a dynamic
+    /// Built at *invocation* rather than at bind time: CoreCLR reads a dynamic
     /// method's <c>initLocals</c> once, at first JIT, and latches it, so a method built at
     /// <c>CreateDelegate</c> would have been built too early to know it. <paramref
     /// name="localsInit" /> is that latched value, and callers must obtain it from

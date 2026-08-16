@@ -3,8 +3,8 @@
 // symmetric `stobj`, with no explicit null check — the access at address 0 faults and the
 // runtime translates it into `NullReferenceException`.
 //
-// The write is the load-bearing half: a store cannot be elided, whereas a read whose result
-// is unused could in principle be. The read below therefore parks its result in a static.
+// A store cannot be elided, whereas a read whose result is unused could in principle be.
+// The read below therefore parks its result in a static.
 
 using System;
 using System.Runtime.CompilerServices;

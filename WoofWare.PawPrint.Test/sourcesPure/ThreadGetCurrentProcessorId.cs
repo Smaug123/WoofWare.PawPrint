@@ -34,7 +34,7 @@ class Program
         // On Linux, if `sched_getcpu` is fast enough (plausible via vDSO),
         // `ProcessorNumberSpeedCheck` sets `s_isProcessorNumberReallyFast` and
         // `GetCurrentProcessorId` bypasses its ThreadStatic cache entirely, so
-        // every call is a live kernel query and the OS may genuinely migrate
+        // every call is a live kernel query and the OS may migrate
         // the thread between two of them on a busy CI runner. PawPrint would
         // satisfy such an assertion trivially (it never migrates), so it would
         // buy no coverage while importing a real-runtime flake.

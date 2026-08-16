@@ -5,7 +5,7 @@ public unsafe class Program
 {
     // `Unsafe.CopyBlock` lowers to `cpblk` (ECMA-335 III.3.30). Under
     // PawPrint that drives the shared cell-aware copy primitive
-    // (`CellAwareCopy.copy` with `CpblkForward`), which detects
+    // (`CellAwareMemOps.copy` with `CpblkForward`), which detects
     // cell-aligned ranges anchored on cell-aware roots (arrays,
     // heap-value byrefs, heap-object-field byrefs) and moves whole typed
     // cells through `readManagedByref` / `writeManagedByrefWithBase`.

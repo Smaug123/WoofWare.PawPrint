@@ -46,15 +46,15 @@ type TaggedPointerBitsResult =
 ///
 /// * `&&&` preserves bit `i` when the mask bit is 1 and clears it when it is 0;
 /// * `|||` preserves bit `i` when the operand bit is 0 and forces it to 1 when it
-///   is 1 (1 is OR's absorbing element — this case is easy to miss, and dropping
-///   it would refuse an answer the model can give);
+///   is 1 (1 is OR's absorbing element; dropping this case would refuse an answer
+///   the model can give);
 /// * `^^^` preserves bit `i` when the operand bit is 0 and inverts it when it is
 ///   1, and inversion of an unknown bit is never constant, so XOR has no
 ///   `TagBitsOnly` case at all.
 ///
 /// This is sound (each stated answer holds for *every* admissible base) and
 /// complete (a high region that is neither wholly preserved nor wholly forced
-/// genuinely differs between two admissible bases, so no single answer exists).
+/// differs between two admissible bases, so no single answer exists).
 [<RequireQualifiedAccess>]
 module TaggedPointerBits =
 

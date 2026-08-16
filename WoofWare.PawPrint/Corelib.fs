@@ -339,7 +339,7 @@ type PrimitiveLikeKind =
     /// whoever constructs the value, since the classifier sees only a handle and a field list.
     /// Deciding it from the CLR-reserved field name `value__` instead was issue #996: that name is
     /// legal C#, so an ordinary struct could take this kind and be flattened. An enum over
-    /// `bool`, `char` or a native int is deliberately *not* this kind; see
+    /// `bool`, `char` or a native int is *not* this kind; see
     /// `CliValueType.EnumUnderlyingIsFlattenable`.
     | EnumLike
 

@@ -18,9 +18,9 @@ open System.Runtime.InteropServices
 /// <c>IsEnum</c> is the reason this type exists at all. Enum-ness is nominal — the immediate base
 /// type is <c>System.Enum</c> — so answering it needs metadata, and
 /// <c>CliValueType.ClassifyPrimitiveLike</c> has none: it sees a <c>ConcreteTypeHandle</c> and a
-/// field list. Before issue #996 it guessed structurally, from the CLR-reserved field name
-/// <c>value__</c>, and <c>struct Fake { public int value__; }</c> is legal C# that defeats the
-/// guess. Note the question cannot be answered lazily at construction either:
+/// field list. Guessing structurally from the CLR-reserved field name <c>value__</c> fails:
+/// <c>struct Fake { public int value__; }</c> is legal C# that defeats the
+/// guess (issue #996). The question cannot be answered lazily at construction either:
 /// <c>IlMachineRuntimeMetadata.isEnumValueType</c> returns an updated machine state because
 /// resolving a base type may load an assembly, and <c>CliValueType.OfFields</c> returns a bare
 /// value with nowhere to put one. So the answer must be computed by a caller that holds the load
@@ -47,9 +47,7 @@ type DeclaredTypeFacts =
         /// Which field-placement algorithm the type's metadata declares, before the promotion
         /// rule that can move a `Sequential` type onto the auto-layout path
         /// (`CliValueType.AutoLayoutGoverns`). Reference types report their declared kind just as
-        /// value types do: PawPrint used to suppress declared `Auto` for them, because it laid a
-        /// whole base chain out in one pass and would have sorted inherited fields in among the
-        /// derived type's own, but layout is per-level now (issue #994) so the suppression is gone.
+        /// value types do; layout is per-level (issue #994).
         LayoutKind : TypeLayoutKind
         /// The `ClassLayout` table's `Pack`/`Size` for the type, which only `Sequential` and
         /// `Explicit` placement read.
@@ -69,7 +67,7 @@ module DeclaredTypeFacts =
     /// types. `Int128`/`UInt128` are `__int128`/`unsigned __int128` (:10576), whose two `ulong`s
     /// would otherwise imply 8.
     ///
-    /// Two things about that function are load-bearing rather than incidental:
+    /// Two things about that function matter:
     ///
     /// * it runs only when `GetModule()->IsSystem()` (:11181), so a guest assembly defining its
     ///   own `System.Int128` gets an ordinary struct — hence the corelib gate below;
@@ -79,7 +77,7 @@ module DeclaredTypeFacts =
     ///   size. `CliValueType.SizeOf` applies it that way round.
     ///
     /// The `Vector64`/`Vector128`/`Vector256`/`Vector512` family is stamped by the same code and
-    /// is deliberately absent: `Vector256` and `Vector512` demand 32/64 on x64 but 16 on arm64
+    /// is absent here: `Vector256` and `Vector512` demand 32/64 on x64 but 16 on arm64
     /// (:10416, :10440), so modelling them means first deciding which target PawPrint's *layout*
     /// claims to be — a question `SimulatedUnixPlatform` answers for the guest's view of the OS
     /// but not for the type loader, and which nothing yet forces. `Int128`/`UInt128` are 16 on

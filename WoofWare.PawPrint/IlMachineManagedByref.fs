@@ -136,19 +136,18 @@ module IlMachineManagedByref =
     /// without any bytewise reinterpret step — i.e. reading the cell *is* reading the target, and
     /// writing the target into it *is* writing the cell.
     ///
-    /// This is deliberately type identity rather than layout compatibility. A cell's declared type
+    /// This is type identity rather than layout compatibility. A cell's declared type
     /// is not decoration: `CliValueType.Declared` decides primitive-like flattening at the eval
     /// stack boundary, so storing a value of some other equally-shaped type into a cell would leave
     /// the cell lying about what it holds. Anything this refuses falls through to the bytewise
     /// path, which is correct wherever it is defined and produces a useful diagnostic where it is
     /// not, so refusing costs nothing but a slower route.
     ///
-    /// Note that no test distinguishes this from the laxer "any two value types" rule, and that is
-    /// not an oversight: reaching the difference needs a reinterpret between two *distinct* value
-    /// types over reference-containing storage, which the real runtime performs happily and
-    /// PawPrint deliberately refuses. That divergence cannot be asserted differentially, so the
-    /// strictness here is a deliberate choice of the safe direction rather than a pinned-down
-    /// behaviour. Mutating it does not fail the suite; treat it as load-bearing anyway.
+    /// No test distinguishes this from the laxer "any two value types" rule: reaching the
+    /// difference needs a reinterpret between two *distinct* value types over
+    /// reference-containing storage, which the real runtime performs and PawPrint refuses, and
+    /// that divergence cannot be asserted differentially. Mutating it does not fail the suite;
+    /// keep the strictness anyway — it is the safe direction.
     let private isCellIdentityCompatible (cell : CliType) (target : CliType) : bool =
         match cell, target with
         | CliType.ObjectRef _, CliType.ObjectRef _ -> true
@@ -163,20 +162,13 @@ module IlMachineManagedByref =
     /// element `k` is `Unsafe.Add(ref Unsafe.As<TBuffer, T>(ref buffer), k)`, i.e.
     /// `[ReinterpretAs T; ByteOffset k * sizeof(T)]`.
     ///
-    /// Byte-addressable storage deliberately gets `None`, so this never changes which path serves
+    /// Byte-addressable storage gets `None`, so this never changes which path serves
     /// an access that already works: bytes remain the general mechanism and naming a cell is the
-    /// fallback for storage that has no byte image. That is not a new rule — it is the one the
-    /// object-reference-only predicate already encoded implicitly, since `ObjectRef` storage is
-    /// exactly the non-byte-addressable case. Stating it here keeps
-    /// `isCellIdentityCompatible` a predicate about types alone, rather than one that also
-    /// silently means "and bytes would not have worked".
+    /// fallback for storage that has no byte image.
     ///
     /// The gate is conservatism, not correctness: where both routes are defined they agree, which
-    /// is what `TestCliTypeCellPaths`'s "naming a cell agrees with the byte view" property pins.
-    /// Removing the gate accordingly fails no test. It earns its place by making that agreement
-    /// something this code does not have to rely on holding in every corner — provenance-carrying
-    /// numerics and pointer-shaped values have their own byte-rendering rules — rather than by
-    /// changing an answer.
+    /// is what `TestCliTypeCellPaths`'s "naming a cell agrees with the byte view" property pins,
+    /// so removing the gate fails no test.
     ///
     /// `CliType.CellPathsExactlyCovering` supplies the structural half: the range is exactly some
     /// cell's extent, unaliased by any sibling, so nothing outside it can be disturbed. It reports
@@ -185,9 +177,9 @@ module IlMachineManagedByref =
     /// `isCellIdentityCompatible`, widened by the one equivalence the eval stack already defines: a
     /// primitive-like single-field wrapper and the thing it wraps are the same cell.
     ///
-    /// The two disjuncts do genuinely different work and neither subsumes the other.
+    /// Neither disjunct subsumes the other.
     /// `isCellIdentityCompatible` is what accepts two value types of the same declared type, which
-    /// `sameCliConstructor` deliberately refuses (a value type is not a primitive cell shape).
+    /// `sameCliConstructor` refuses (a value type is not a primitive cell shape).
     /// `haveSameCliShape` is what accepts a `System.ByReference` against the bare
     /// `CliType.RuntimePointer` a `ref byte` cell holds — a pair the strict rule refuses twice
     /// over, since it has no runtime-pointer arm at all.
@@ -212,9 +204,8 @@ module IlMachineManagedByref =
         // The range can name the storage itself and not merely a field of it: an
         // `Unsafe.As<Elem, Wrapper>` over reference-containing storage reinterprets the whole
         // cell. `CellPathsExactlyCovering` reports *fields*, so the empty path is this function's
-        // own base case rather than something it can return — and deliberately so, since folding
-        // it into that recursion would give every exactly-covering field a second, laxer route to
-        // the same path, bypassing the field-consistency gate there.
+        // own base case rather than something it can return — folding it into that recursion
+        // would bypass the field-consistency gate there.
         if
             byteOffset = 0
             && targetSize = CliType.sizeOf storage
@@ -243,14 +234,13 @@ module IlMachineManagedByref =
     /// refuses: `MethodBaseInvoker` stores a `System.ByReference` — a single-field wrapper — into a
     /// cell declared `ref byte`, which holds a bare `CliType.RuntimePointer`. Those are the same
     /// eight bytes on a real runtime, and PawPrint already says so: `PrimitiveLikeStruct.kind`
-    /// classifies `ByReference` as `FlattenToManagedPointer`, which is exactly what
-    /// `haveSameCliShape` unwraps. Nothing new is being called compatible here — this is the one
-    /// equivalence the eval stack already defines, asked at a different boundary.
+    /// classifies `ByReference` as `FlattenToManagedPointer`, which is what
+    /// `haveSameCliShape` unwraps.
     ///
     /// It stays a *permission to coerce*, never a permission to install: writing the wrapper into
     /// the cell verbatim would restamp the cell's `Declared`, and `Declared` is what decides how
-    /// the next read of that cell flattens. That is precisely the hazard `haveSameCliShape`'s
-    /// "do NOT use on the write side" warning names, and coercing is what answers it.
+    /// the next read of that cell flattens — the hazard `haveSameCliShape`'s
+    /// "do NOT use on the write side" warning names.
     let private tryNameCellForByrefAccessCoercible
         (byteOffset : int)
         (storage : CliType)
@@ -728,14 +718,13 @@ module IlMachineManagedByref =
         let targetSize = CliType.sizeOf targetTemplate
         let shape = ManagedHeap.getArrayShape arr state.ManagedHeap
 
-        // Kept now that the stride no longer needs a cell: every byte-view read of an empty
-        // array is out of bounds anyway, and refusing here keeps a zero-width read from
-        // quietly succeeding against storage that has no bytes at all.
+        // Every byte-view read of an empty array is out of bounds anyway; refusing here keeps
+        // a zero-width read from quietly succeeding against storage that has no bytes at all.
         if shape.Length = 0 then
             failwith $"TODO: byte-view read from empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
         // The stride comes from the array's recorded element stride, not from measuring a
-        // cell. It is deliberately *not* `byteAddressableCellSize`: a cell may carry
+        // cell. It is *not* `byteAddressableCellSize`: a cell may carry
         // non-byte-renderable provenance — e.g. an `IntPtr[]` slot that now holds a
         // `TypeHandlePtr` after a typed store through a fixed-array pointer — and a
         // whole-cell-aligned read of such a cell is exactly what the short-circuit below
@@ -1118,21 +1107,6 @@ module IlMachineManagedByref =
         let buf = NativeMemoryPool.readBytes block byteOffset targetSize pool
         CliType.ofBytesLike targetTemplate buf
 
-    /// Read the byte range at `src` and rebuild a value of CLI shape compatible
-    /// with `targetTemplate`. **Output shape is path-dependent for primitive-
-    /// like wrapper templates against non-byte-addressable storage.** When a
-    /// typed storage cell starts at the byref, `haveSameCliShape` accepts it,
-    /// and the cell is non-byte-addressable, the cell is returned as-is — so
-    /// a wrapped `IntPtr` template against a bare tagged `Numeric (NativeInt
-    /// FieldHandlePtr ...)` cell returns the bare cell with its provenance
-    /// intact (the byte-walk fallback cannot serialise tagged sources, so
-    /// this fast path is load-bearing). When the cell is byte-addressable,
-    /// the fast path defers to the byte-walk, which produces a value with
-    /// the *template*'s exact CLI shape. Callers reading with a primitive
-    /// template that may land on tagged-pointer storage must reconcile the
-    /// returned shape via `EvalStackValue.ofCliType` (which flattens
-    /// primitive-like wrappers) or an explicit
-    /// `CliType.unwrapPrimitiveLikeDeep`.
     let internal zeroForConcreteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -1145,7 +1119,7 @@ module IlMachineManagedByref =
                 failwith $"ReinterpretAs target %O{ty} is not present in the concrete-type registry"
             )
 
-        // Deliberately the non-loading walk: this returns a bare `CliType`, so an updated
+        // The non-loading walk: this returns a bare `CliType`, so an updated
         // registry or load context would have to be dropped, and dropping the registry would
         // leave the returned value's `FieldId`s dangling. The precondition is discharged
         // upstream by `Concretization.concretizeMethod`'s priming sweep; should a reinterpret
@@ -1174,7 +1148,7 @@ module IlMachineManagedByref =
     /// calling in, which is why the suffix may *begin* with a `ByteOffset`:
     /// the anchor is then the `rootTemplate` the caller supplies.
     ///
-    /// The genuine violation is the mirror image — a `ByteOffset` hung off a
+    /// The violation is the mirror image — a `ByteOffset` hung off a
     /// `Field` navigation, with no reinterpret to say what type the raw bytes
     /// are being viewed as. `appendProjection` refuses to construct that, so
     /// reaching here with it means a chain was built directly and got it
@@ -1187,7 +1161,7 @@ module IlMachineManagedByref =
     /// `Unsafe.AddByteOffset (ref s.B, Int32.MaxValue)` gives
     /// `[Field B; ReinterpretAs byte; ByteOffset Int32.MaxValue]`, whose true
     /// coordinate is 2147483648. An `int` accumulator wrapped that onto
-    /// `ref s.A` displaced by `Int32.MinValue` — two genuinely different
+    /// `ref s.A` displaced by `Int32.MinValue` — two different
     /// addresses on one coordinate (issue #993), which `Unsafe.ByteOffset`
     /// then reported to the guest as a distance of zero.
     ///
@@ -1203,9 +1177,8 @@ module IlMachineManagedByref =
         (projs : ByrefProjection list)
         : int64
         =
-        // Structural precondition, checked once up front rather than woven
-        // through the fold: it is a property of the chain alone, and keeping
-        // it separate leaves the walk a plain accumulation.
+        // Structural precondition, a property of the chain alone; checked once
+        // up front so the walk stays a plain accumulation.
         let rec checkAnchored (remaining : ByrefProjection list) : unit =
             match remaining with
             | ByrefProjection.Field _ :: (ByrefProjection.ByteOffset n :: _) ->
@@ -1248,18 +1221,17 @@ module IlMachineManagedByref =
     /// offset of the field a chain starts at — with the coordinate peeled off its projection
     /// chain.
     ///
-    /// Both operands are `int` and each is separately in range, but their sum need not be — and
-    /// an `int32` addition here could wrap a coordinate that `byteViewOffsetWithinInt32` has just
-    /// refused back into a plausible in-container offset, which is exactly the failure that
-    /// narrowing was meant to prevent. So the sum is taken in `int64` and re-narrowed.
+    /// Both operands are `int` and each is separately in range, but their sum need not be — an
+    /// `int32` addition here could wrap a coordinate that `byteViewOffsetWithinInt32` has just
+    /// refused back into a plausible in-container offset. So the sum is taken in `int64` and
+    /// re-narrowed.
     ///
-    /// Said plainly, because a reviewer should not have to guess how load-bearing this is:
-    /// **no test kills a mutation of this back to `rootByteOffset + viewByteOffset`**, and that
-    /// is not a coverage gap so much as a fact about the operands. The peel result is already
-    /// bounded by `int32`, and a root's own byte offset is bounded by the block or object it
-    /// indexes, so reaching the wrap would take a container of nearly 2^31 bytes. This exists so
-    /// that the *only* thing standing between a 64-bit coordinate and an in-container `int` is
-    /// one explicit check, rather than a check followed by an unchecked addition.
+    /// No test kills a mutation of this back to `rootByteOffset + viewByteOffset`: the peel
+    /// result is already bounded by `int32`, and a root's own byte offset is bounded by the block
+    /// or object it indexes, so reaching the wrap would take a container of nearly 2^31 bytes.
+    /// This exists so that the *only* thing standing between a 64-bit coordinate and an
+    /// in-container `int` is one explicit check, rather than a check followed by an unchecked
+    /// addition.
     let private rootRelativeByteOffset
         (projs : ByrefProjection list)
         (containerBaseOffset : int)
@@ -1293,8 +1265,8 @@ module IlMachineManagedByref =
     /// construction-site invariant violation and is raised by the walk; see
     /// `walkProjectionByteOffset`.
     ///
-    /// The `offset` is an `int`, and that narrowing from the walk's `int64`
-    /// coordinate is deliberate rather than incidental: this function serves
+    /// The `offset` is an `int`, narrowed from the walk's `int64`
+    /// coordinate: this function serves
     /// the byte read/write paths, which index *inside one container*, and no
     /// container PawPrint can allocate is 2^31 bytes long. A chain whose
     /// coordinate exceeds that is refused by `byteViewOffsetWithinInt32`, not
@@ -1407,6 +1379,21 @@ module IlMachineManagedByref =
             | ByteStorageIdentity.StackArgument _
             | ByteStorageIdentity.StaticField _ -> None
 
+    /// Read the byte range at `src` and rebuild a value of CLI shape compatible
+    /// with `targetTemplate`. **Output shape is path-dependent for primitive-
+    /// like wrapper templates against non-byte-addressable storage.** When a
+    /// typed storage cell starts at the byref, `haveSameCliShape` accepts it,
+    /// and the cell is non-byte-addressable, the cell is returned as-is — so
+    /// a wrapped `IntPtr` template against a bare tagged `Numeric (NativeInt
+    /// FieldHandlePtr ...)` cell returns the bare cell with its provenance
+    /// intact (the byte-walk fallback cannot serialise tagged sources, so
+    /// only this fast path can serve them). When the cell is byte-addressable,
+    /// the fast path defers to the byte-walk, which produces a value with
+    /// the *template*'s exact CLI shape. Callers reading with a primitive
+    /// template that may land on tagged-pointer storage must reconcile the
+    /// returned shape via `EvalStackValue.ofCliType` (which flattens
+    /// primitive-like wrappers) or an explicit
+    /// `CliType.unwrapPrimitiveLikeDeep`.
     let readManagedByrefBytesAs
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -1443,7 +1430,7 @@ module IlMachineManagedByref =
             // cell, through `resolveCell`). The BCL's cast-cache walk
             // (`Unsafe.As<byte, CastCacheEntry>(...)` then `entry._version`
             // then `Volatile.Read` wrapping the result in `VolatileUInt32`)
-            // is the load-bearing example.
+            // is the canonical example.
             let byteViewShape : (ByrefProjection list * int) voption =
                 peelTrailingByteView (Some baseClassTypes) state outerProjs
 
@@ -1921,7 +1908,7 @@ module IlMachineManagedByref =
             failwith $"TODO: byte-view write to empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
         // Mirrors `readArrayBytesAs`: the stride is the array's recorded element stride, and
-        // is deliberately not `byteAddressableCellSize`, because the stride does not require
+        // is not `byteAddressableCellSize`, because the stride does not require
         // any cell to be byte-renderable. Consider `fixed (IntPtr* p = arr)` where
         // `p[0] = typeof(int).TypeHandle.Value` populates element 0 with
         // non-byte-addressable provenance, then `p[1] = IntPtr.Zero` byte-scatters into
@@ -2234,7 +2221,7 @@ module IlMachineManagedByref =
     /// `WithFieldSetById` and return the new state. Returns `None` when no such field
     /// exists, so the caller falls through to byte scatter (which itself rejects when
     /// the heap object's storage isn't byte-addressable). Symmetric in *shape* to
-    /// `tryReadHeapValueFieldPrecise`, but deliberately stricter on the shape predicate:
+    /// `tryReadHeapValueFieldPrecise`, but stricter on the shape predicate:
     /// the comparator here is `sameCliConstructor` (no primitive-like unwrap), so a
     /// wrapper-vs-bare `newValue` mismatch does *not* fire the install. Widening to
     /// `haveSameCliShape` here would let `WithFieldSetById` overwrite the field's CLI
@@ -2324,7 +2311,7 @@ module IlMachineManagedByref =
     /// place and write to another. They are separate functions rather than one parameterised
     /// over an operation because the container writers thread state and the readers return a
     /// value; the shared decision — which container, and at what offset — is the call to
-    /// `ByrefContainer.tryOfRoot`, and that is genuinely shared.
+    /// `ByrefContainer.tryOfRoot`.
     ///
     /// `None` for the same containers, and for the same reasons: a local, an argument and a
     /// static slot are a single typed cell that the caller's walk has already reached, and no
@@ -2567,11 +2554,9 @@ module IlMachineManagedByref =
         // Shape acceptance uses the shared `cellShapeMatches` (see its
         // docstring for why declared-handle equality is the right rule for
         // user structs), against the element type's zero rather than against
-        // cell 0. "Is this value shaped like a cell of this array" is a
-        // question about the element type, and cell 0 answers it only by
-        // accident: it is a sample, so a store to cell 5 was being validated
-        // against whatever provenance cell 0 had picked up, and an empty array
-        // had no sample at all and was declined outright.
+        // cell 0: "is this value shaped like a cell of this array" is a
+        // question about the element type, and cell 0 is only a sample whose
+        // provenance need not match (and an empty array has no sample at all).
         let arrayElementTypedCellWrite =
             match src with
             | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, _) ->
@@ -2652,10 +2637,9 @@ module IlMachineManagedByref =
                 // reference anyway. `tryNameCellForByrefAccess` yields `None` for byte-addressable
                 // storage, so nothing that reaches the writers below today is diverted.
                 //
-                // This does read the root value for `ArrayElement` and `HeapValue`, which
-                // previously went straight to a specialised byte writer. Both reads are total:
-                // those roots are only ever built by `ldelema` and by boxing, which validate the
-                // element and the payload respectively.
+                // This reads the root value for `ArrayElement` and `HeapValue`. Both reads are
+                // total: those roots are only ever built by `ldelema` and by boxing, which
+                // validate the element and the payload respectively.
                 let namedWrite : IlMachineState voption =
                     match outerRoot with
                     | ByrefRoot.PeByteRange _
@@ -3034,7 +3018,7 @@ module IlMachineManagedByref =
             // This is *not* the array-element zero-fill that `writeArrayBytes` handles via
             // `CliType.WithZeroedRangeIfChanged`: the value written here is an arbitrary
             // reference rather than a zero, so there is nothing to decompose — the field is
-            // simply replaced.
+            // replaced.
             | []
             | [ ByrefProjection.ByteOffset _ ] ->
                 let trailingOffset =
@@ -3043,8 +3027,8 @@ module IlMachineManagedByref =
                     | _ -> 0
 
                 // The extent of the write is the *value's*, not the reinterpret view's. Those
-                // coincide for `Unsafe.As<TBuffer, T>(ref buffer)` followed by a `T` store, which
-                // is why taking it from the view worked until now. They come apart the moment the
+                // coincide for `Unsafe.As<TBuffer, T>(ref buffer)` followed by a `T` store, but
+                // come apart the moment the
                 // view is a byte cursor: `(ByReference*)((byte*)&byrefs + 8) = b` reinterprets as
                 // `System.Byte` and then stores eight bytes, and asking for a one-byte cell at
                 // offset 8 finds nothing — the storage has an eight-byte pointer cell there.
@@ -3353,7 +3337,7 @@ module IlMachineManagedByref =
     /// destination cell*, because that cell has no byte image for a byte scatter to write
     /// into.
     ///
-    /// This is deliberately broader than `isNumericProvenanceRejection`, which asks a
+    /// This is broader than `isNumericProvenanceRejection`, which asks a
     /// different question about the *payload*: "does this value carry provenance we must not
     /// flatten". A pointer-typed slot (`void*`, `T*`, `delegate*<...>`) holds a
     /// `CliType.RuntimePointer` whose zero is `Managed Null`, and every `stind.i` into one —
@@ -3501,7 +3485,7 @@ module IlMachineManagedByref =
     /// and `[ReinterpretAs T; ByteOffset n]`, which is what a `Span<T>`
     /// element indexer or `GetPinnableReference` over stackalloc/native
     /// memory produces, plus the chained forms with interior `Field` steps.
-    /// This is deliberately the same reduction
+    /// This is the same reduction
     /// `writeManagedByrefBytesOrTypedCell` performs one layer down, so that
     /// the caller's typed-write-safety test is asked about exactly the byte
     /// range the eventual write will touch.
@@ -3530,11 +3514,11 @@ module IlMachineManagedByref =
     /// Byte-addressable values take the byte-scatter path, so `stind.i1` over
     /// an existing `Int32` slot updates one byte rather than replacing the slot
     /// with an `Int8`. Numeric provenance-bearing values (for example
-    /// `NativeIntSource.FieldHandlePtr`) deliberately cannot be flattened to
+    /// `NativeIntSource.FieldHandlePtr`) cannot be flattened to
     /// bytes. For those, and for exact-width replacement of an existing
     /// provenance-bearing numeric cell, use a typed store when the destination
     /// width proves that byte scatter and whole-cell replacement have the same
-    /// address range. This intentionally records the payload's primitive shape
+    /// address range. This records the payload's primitive shape
     /// when it differs from the previous same-width primitive template: the
     /// tag is part of the value being stored. `StackMemoryByte` and
     /// `NativeMemoryByte` byrefs use the same whole-cell test as
@@ -3637,7 +3621,7 @@ module IlMachineManagedByref =
                                 // `writeExactWidthPrimitiveTypedStore` demands
                                 // `haveSameCliShape` and fails loudly otherwise, while the
                                 // non-array path checks width only and restamps the cell with
-                                // the payload's shape. That asymmetry predates this change.)
+                                // the payload's shape.)
                                 // An array element cell really can be a
                                 // `CliType.RuntimePointer` — C# has no `int*[]` syntax, but
                                 // `Array.CreateInstance(typeof(int*), n)` succeeds and
@@ -3649,11 +3633,9 @@ module IlMachineManagedByref =
                                 // `writeExactWidthPrimitiveTypedStore` and stops at its
                                 // `haveSameCliShape` check, because a `stind.i` payload
                                 // arrives as `Numeric NativeInt` while the cell is a
-                                // `RuntimePointer`. That is a separate, pre-existing gap in
+                                // `RuntimePointer`. That is a separate gap in
                                 // the byte-view typed store, and it fails loudly with a
-                                // message naming the shapes. Routing here is still the honest
-                                // classification, and it only ever diverts cases that
-                                // previously failed too.
+                                // message naming the shapes.
                                 let cellValue = ManagedHeap.getArrayValue arr targetCell state.ManagedHeap
 
                                 match byteAddressabilityRejection cellValue with

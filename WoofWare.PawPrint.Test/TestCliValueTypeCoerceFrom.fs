@@ -35,7 +35,7 @@ module TestCliValueTypeCoerceFrom =
     /// `ResolvedTypeIdentity`. We can't fabricate such an identity from an external test (the
     /// constructor is `internal`) and running a full concretisation of a synthetic assembly
     /// would be overkill for a pure-algebra test, so we reuse `bct.TypedReference`'s handle:
-    /// it's already in `allCt`, it's a value type, and crucially it's *not* in the primitive-like
+    /// it's already in `allCt`, it's a value type, and it's *not* in the primitive-like
     /// wrapper registry (`PrimitiveLikeStruct.kind` lists `IntPtr`/`UIntPtr`/the runtime handles/
     /// `ByReference`, and nothing else). The only part of `_Declared` that `CoerceFrom`
     /// inspects is that registry classification; the handle's nominal identity is otherwise just

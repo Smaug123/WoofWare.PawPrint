@@ -1030,8 +1030,6 @@ public static class StreamVersionLibrary
 
         actual |> shouldEqual expected
 
-    /// Asserts that `addr` is a genuine `System.String` heap object carrying `expected`,
-    /// rather than merely a side-table entry.
     /// Runs `AssemblyNative_GetFullName` for `assemblyFullName` and reads back the string it
     /// wrote. Unlike the other `StringHandleOnStack` entry points in this family the answer is
     /// compared as a whole string rather than asserted piecewise, so it is read out rather
@@ -1056,6 +1054,8 @@ public static class StreamVersionLibrary
 
         state, contents
 
+    /// Asserts that `addr` is a genuine `System.String` heap object carrying `expected`,
+    /// rather than merely a side-table entry.
     let private assertIsString
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -1194,7 +1194,7 @@ public static class StreamVersionLibrary
 
         // Sanity: the compiler honoured the [assembly: AssemblyVersion] we asked for, so
         // the four expected components below really are four distinct non-zero numbers
-        // and the ordering assertions are load-bearing.
+        // and the ordering assertions can catch a transposition.
         let _, metadataVersion = metadataAssemblyDefinition image
         metadataVersion |> shouldEqual guestAssemblyVersion
 
@@ -1281,8 +1281,8 @@ public static class StreamVersionLibrary
 
         assembly.CultureName |> shouldEqual culturedColumn
 
-        // Sanity: the two really do disagree, so the assertion above is load-bearing rather
-        // than accidentally passing because the compiler already canonicalised the column.
+        // Sanity: the two really do disagree, so the assertion above cannot pass merely
+        // because the compiler already canonicalised the column.
         culturedColumn |> shouldNotEqual culturedNormalised
         assembly.Name.CultureName |> shouldEqual culturedNormalised
 
@@ -1409,7 +1409,7 @@ public static class StreamVersionLibrary
         assembly.PublicKey.IsDefault |> shouldEqual false
         assembly.PublicKey.Length |> shouldEqual 0
 
-        // Sanity: the two really do disagree, so the assertion above is load-bearing.
+        // Sanity: the two really do disagree, so the assertion above distinguishes them.
         assembly.Name.GetPublicKey () |> isNull |> shouldEqual true
 
     [<Test>]
@@ -1502,7 +1502,7 @@ public static class StreamVersionLibrary
 
         int assembly.Flags |> shouldEqual maskedFlagsColumn
 
-        // Sanity: the two really do disagree here, so the assertion above is load-bearing.
+        // Sanity: the two really do disagree here, so the assertion above distinguishes them.
         int assembly.Name.Flags |> shouldEqual 0
 
     [<Test>]

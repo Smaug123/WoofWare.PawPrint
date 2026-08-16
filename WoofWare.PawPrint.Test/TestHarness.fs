@@ -51,7 +51,7 @@ type EndToEndTestCase =
 /// so a static initialiser that never returns is just as capable of hanging the suite as a
 /// `Main` that never returns, and is harder to diagnose when it does.
 ///
-/// The bound is a **step count, not a wall-clock timeout**, and that is deliberate. A timeout
+/// The bound is a **step count, not a wall-clock timeout**. A timeout
 /// would make the suite's verdict depend on how loaded the machine is: the same guest could
 /// pass on a quiet laptop and fail on a busy CI runner, which is precisely the flakiness this
 /// interpreter exists to eliminate. A step budget is a property of the guest, so it gives the
@@ -68,7 +68,7 @@ module BoundedRun =
     /// How many interpreted IL steps a guest may retire, startup and `Main` together, before
     /// the harness calls it stuck.
     ///
-    /// Chosen from measurement, not taste. Across the whole end-to-end corpus (596 guests at
+    /// Chosen from measurement. Across the whole end-to-end corpus (596 guests at
     /// the time of writing) the mean guest retires ~22k steps and the heaviest —
     /// `RegexConstructionRepeatedNonBacktracking.cs` — retires 1,817,355. This bound is ~11x
     /// that worst case.
@@ -168,7 +168,7 @@ module BoundedRun =
                 failwith
                     $"%s{description} deadlocked during startup: no runnable threads and startup has not finished. Threads: %s{stuck}"
             // Every remaining outcome yields a new `Startup`, and each costs a step. Counting
-            // `PhaseAdvanced` — which retires no guest instruction — is deliberate: it makes the
+            // `PhaseAdvanced` — which retires no guest instruction — makes the
             // loop bounded by `maxSteps` iterations whatever sequence of outcomes occurs, rather
             // than only when the outcomes are the ones we expect.
             | Program.StartupStepOutcome.Stepped (startup, _, _, _)

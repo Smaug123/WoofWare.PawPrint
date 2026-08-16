@@ -21,11 +21,9 @@ type GuestFrame =
 /// Where one guest thread is, in the terms a developer asking "why is this stuck?" needs.
 /// </summary>
 /// <remarks>
-/// The three framed cases are distinguished rather than folded into one record with an optional
-/// location because they are answers to different questions, and a caller that conflates them
-/// reports a framework method as though it were the guest's own. Only the shared framework
-/// routinely ships without a PDB, so which case a thread falls into is largely a statement about
-/// whose code the thread is currently inside.
+/// A caller that conflates the framed cases reports a framework method as though it were the
+/// guest's own. Only the shared framework routinely ships without a PDB, so which case a thread
+/// falls into is largely a statement about whose code the thread is currently inside.
 /// </remarks>
 [<RequireQualifiedAccess>]
 type GuestThreadPosition =
@@ -75,7 +73,7 @@ type GuestThreadLocation =
 /// </summary>
 /// <remarks>
 /// <para>
-/// Strictly a read over existing state, and deliberately not reachable by guest code: this is
+/// Strictly a read over existing state, and not reachable by guest code: this is
 /// what PawPrint tells the person debugging PawPrint, and it may say things — absolute paths from
 /// the machine that built the guest, frame counts — that the real runtime would never expose. The
 /// guest-observable rendering of a stack lives in
@@ -121,11 +119,10 @@ module GuestLocation =
     /// <paramref name="method" />, when that instruction is a call. <c>None</c> otherwise.
     /// </summary>
     /// <remarks>
-    /// The cross-check that keeps <c>ThreadStatus.parksPastTheBlockingCall</c> honest. That
-    /// classifier knows how a status is reached but not what the frame actually contains, so
-    /// stepping back on its word alone would move the report onto whatever happened to precede
-    /// the PC. Requiring a call there means a misclassified status costs the step-back — which
-    /// is where we started — instead of naming an unrelated instruction.
+    /// The cross-check that keeps <c>ThreadStatus.parksPastTheBlockingCall</c> honest: that
+    /// classifier knows how a status is reached but not what the frame contains, so requiring a
+    /// call before the PC means a misclassified status costs only the step-back instead of naming
+    /// an unrelated instruction.
     /// </remarks>
     let private precedingCallOffset
         (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
@@ -165,11 +162,10 @@ module GuestLocation =
     /// attribution — the innermost frame enclosing it that has.
     /// </summary>
     let positionOfThread (state : IlMachineState) (thread : ThreadState) : GuestThreadPosition =
-        // `thread.MethodState` resolves the active frame and throws when there isn't one, which
-        // `NotStarted` and `Parked` threads genuinely have. A guest holding a constructed but
-        // unstarted `Thread` while another thread wedges is entirely ordinary, so reaching for
-        // the frame unconditionally would replace the diagnostic about the guest with one about
-        // this function.
+        // `thread.MethodState` resolves the active frame and throws when there isn't one, as for
+        // `NotStarted` and `Parked` threads. A guest holding a constructed but unstarted `Thread`
+        // while another thread wedges is ordinary, so reaching for the frame unconditionally
+        // would replace the diagnostic about the guest with one about this function.
         if ThreadStatus.hasNoActiveFrame thread.Status then
             GuestThreadPosition.NoFrame
         else
@@ -188,10 +184,9 @@ module GuestLocation =
         | Some source -> GuestThreadPosition.AtSource (activeFrame, source)
         | None ->
 
-        // Walk outwards for the innermost frame that *does* have attribution. Without this the
-        // answer for a guest blocked in the BCL is a framework method name, which is the case
-        // this whole module exists to improve on: the shared framework ships without PDBs, so
-        // the innermost frame of a stuck guest usually has nothing to say.
+        // Walk outwards for the innermost frame that *does* have attribution: the shared
+        // framework ships without PDBs, so the innermost frame of a stuck guest usually has
+        // nothing to say.
         //
         // Bounded by the number of live frames. A valid return chain is strictly decreasing in
         // frame id and so cannot cycle, but this runs on a failure path, where looping forever
@@ -385,14 +380,13 @@ type GuestFailureException (inner : exn, guest : GuestThreadLocation list) =
     /// <paramref name="state" />, or <c>None</c> if that cannot be done.
     /// </summary>
     /// <remarks>
-    /// Total, and deliberately covers the *construction* as well as the lookup. Callers run this
-    /// while an exception is already propagating, so anything that throws here would replace the
-    /// diagnostic PawPrint is trying to deliver with one about the diagnostic machinery — the
-    /// single worst outcome available. Building the message walks every live thread and formats
-    /// each one, so it allocates; when the failure being reported is itself
-    /// <c>OutOfMemoryException</c>, that is exactly the allocation most likely to fail. The
-    /// caller reraises the original on <c>None</c>, so the guarantee is that annotation can cost
-    /// the annotation and nothing else.
+    /// Total, and covers the *construction* as well as the lookup. Callers run this while an
+    /// exception is already propagating, so anything that throws here would replace the
+    /// diagnostic PawPrint is trying to deliver with one about the diagnostic machinery.
+    /// Building the message walks every live thread and formats each one, so it allocates; when
+    /// the failure being reported is itself <c>OutOfMemoryException</c>, that is the allocation
+    /// most likely to fail. The caller reraises the original on <c>None</c>, so annotation can
+    /// cost the annotation and nothing else.
     /// </remarks>
     static member TryCreate (inner : exn, state : IlMachineState) : GuestFailureException option =
         try

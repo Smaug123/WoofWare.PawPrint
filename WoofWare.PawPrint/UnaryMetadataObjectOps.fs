@@ -374,7 +374,7 @@ module internal UnaryMetadataObjectOps =
         let state, fields =
             IlMachineState.buildInstanceStorage loggerFactory baseClassTypes state declaringTypeHandle
 
-        // Note: this is a bit unorthodox for value types, which *aren't* heap-allocated.
+        // This is a bit unorthodox for value types, which *aren't* heap-allocated.
         // We'll perform their construction on the heap, though, to keep the interface
         // of Newobj uniform.
         // On completion of the constructor, we'll copy the value back off the heap,
@@ -577,8 +577,7 @@ module internal UnaryMetadataObjectOps =
         // A byref-like type is stack-only, so boxing one is not a program the runtime will accept:
         // measured on real .NET as InvalidProgramException, against `sizeof Span<int>` as a control
         // (legal, answers 16). Universe-independent, because the same IL is illegal either way; it
-        // is only *reachable* from a `DynamicScope` operand, because no compiler emits it, and it
-        // was silently putting a stack-only value on the heap until now.
+        // is only *reachable* from a `DynamicScope` operand, because no compiler emits it.
         match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes typeHandle with
         | Some (_, boxedDefn) when DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies boxedDefn ->
             // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
@@ -1117,7 +1116,7 @@ module internal UnaryMetadataObjectOps =
     /// differs: `unbox` pushes a managed pointer *into* the boxed object rather than a copy of
     /// its contents, so a `stobj`/`stfld` through the result is visible through the box.
     ///
-    /// The `Nullable<T>` target is deliberately unimplemented; see the `failwith` below.
+    /// The `Nullable<T>` target is unimplemented; see the `failwith` below.
     let executeUnbox (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes

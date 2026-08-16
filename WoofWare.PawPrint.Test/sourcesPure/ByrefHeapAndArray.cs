@@ -2,9 +2,8 @@ using System;
 
 /// <summary>
 /// Characterization tests for byref semantics through heap object fields, array elements,
-/// and nested struct fields via projection chains.
-/// These exercise stind/stfld through managed pointer paths that previously lacked
-/// full interpreter coverage.
+/// and nested struct fields via projection chains, exercising stind/stfld through managed
+/// pointer paths.
 /// </summary>
 class ByrefHeapAndArray
 {

@@ -8,7 +8,7 @@ using System.Text;
 //
 // The kernel this runs against is configured as **macOS**, which is the whole
 // point: Linux performs no such check at any length, so on the default kernel
-// every path here would simply resolve. That also means the raw errno is the
+// every path here would resolve. That also means the raw errno is the
 // Darwin one (63), not the Linux one (36) that PathLengthLimitsSeeded.cs reads.
 //
 // PawPrint-only, and not a cross-runtime fact: it is a claim about the kernel

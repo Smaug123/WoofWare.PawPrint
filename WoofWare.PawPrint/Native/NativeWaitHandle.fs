@@ -55,7 +55,7 @@ module NativeWaitHandle =
     /// returning, so the LibraryImport stub's last-error copy never runs and
     /// `Marshal.GetLastPInvokeError` is *not* updated — unlike the
     /// return-a-BOOL entry points above. We still set the kernel slot, because
-    /// the PAL genuinely sets it before returning `WAIT_FAILED` and
+    /// the PAL sets it before returning `WAIT_FAILED` and
     /// `Marshal.GetLastSystemError` reads that slot directly, so a guest can
     /// observe it after catching.
     let private errorInvalidParameter : int = 87
@@ -281,7 +281,7 @@ module NativeWaitHandle =
     ///    loop's deadline-firing pass picks it up.
     ///
     /// Returns the new `IlMachineState` and the Int32 return value the
-    /// guest sees. Note that the `Blocked` outcome pushes `WAIT_OBJECT_0`
+    /// guest sees. The `Blocked` outcome pushes `WAIT_OBJECT_0`
     /// at park time even for a finite-timeout wait — the deadline-fire
     /// path rewrites the slot to `WAIT_TIMEOUT` when it expires.
     ///
@@ -614,8 +614,8 @@ module NativeWaitHandle =
             // `PAL_WaitForSingleObjectPrioritized`'s LIFO release policy:
             // new waiters are registered at the head of the wait queue
             // and a later `Release` wakes the most recent one first.
-            // This is load-bearing for `LowLevelLifoSemaphore` (and hence
-            // `PortableThreadPool`) — that's exactly why it has its own
+            // `LowLevelLifoSemaphore` (and hence `PortableThreadPool`)
+            // depends on that LIFO policy — that is why it has its own
             // entry point separate from `WaitOneCore`.
             let operation = "WaitHandle_WaitOnePrioritized"
             // Enforce the semaphore-only contract at the decoder layer so

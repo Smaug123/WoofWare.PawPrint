@@ -14,7 +14,7 @@ type MemoryBlockInitialization =
 /// Cells preserve provenance — for example, `NativeIntSource.FieldHandlePtr`
 /// stays a tagged pointer rather than collapsing to its bit pattern. A byte
 /// view of a non-byte-addressable cell intentionally fails through the
-/// `CliType` byte helpers; that fail-fast is the seam that catches accidental
+/// `CliType` byte helpers; that fail-fast is what catches accidental
 /// provenance loss.
 ///
 /// Pointers into a block are valid only while the owning method frame is live;

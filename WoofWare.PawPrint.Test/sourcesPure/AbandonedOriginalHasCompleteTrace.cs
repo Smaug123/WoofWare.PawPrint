@@ -17,13 +17,11 @@ class AbandonedReplacement : Exception
 // dispatched as far as `Handler`, and the trace it is left holding says so.
 //
 // Measured on .NET 10 before this was written: the original carries `Thrower`, `Cleaner`,
-// `Handler` — three frames, ending at the frame whose `catch` it was on its way to. PawPrint
-// used to freeze the trace at the moment it entered the `finally`, so the original was left with
-// two.
+// `Handler` — three frames, ending at the frame whose `catch` it was on its way to.
 //
-// This is the one shape where the restructure changes the *content* of a trace rather than only
-// when it is written, so it is worth pinning explicitly rather than leaving to the tests that
-// cover concluded dispatches.
+// This is the one shape where the *content* of a trace is at stake, rather than only when it is
+// written, so it is pinned explicitly rather than left to the tests that cover concluded
+// dispatches.
 class AbandonedOriginalHasCompleteTrace
 {
     static bool ContainsSubstring(string haystack, string needle)

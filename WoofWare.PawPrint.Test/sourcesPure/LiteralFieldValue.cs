@@ -4,7 +4,7 @@ using System.Reflection;
 // `FieldInfo.GetRawConstantValue` on a literal reaches `MdConstant.GetValue`, which calls the
 // `MetadataImport.GetDefaultValue` InternalCall to read the field's Constant-table row.
 //
-// Two constraints, both load-bearing, and both the same as in the sibling LiteralFieldType.cs.
+// Two constraints, both the same as in the sibling LiteralFieldType.cs.
 // Every subject must be `const`: a literal has no FieldDesc, so it is reflected over by
 // `MdFieldInfo`, and only that class reaches `MdConstant`. And fields are reached through
 // `GetFields()` rather than `GetField(name)`, so that this case depends on nothing but the

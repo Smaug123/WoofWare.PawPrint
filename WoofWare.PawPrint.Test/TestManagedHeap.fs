@@ -350,8 +350,8 @@ module TestManagedHeap =
 
     [<Test>]
     let ``allocateMultiDimArray: prefix that overflows UInt32 still throws even if a later dim is zero`` () : unit =
-        // 65536 * 65536 = 2^32 overflows UInt32 itself, so codex's "trailing zero rescues"
-        // fix must NOT extend to the case where the multiply genuinely overflows. CoreCLR
+        // 65536 * 65536 = 2^32 overflows UInt32 itself, so the trailing-zero rescue above
+        // must NOT extend to the case where the multiply genuinely overflows. CoreCLR
         // throws OutOfMemoryException at the multiplication step here, regardless of the
         // final 0 dimension.
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -643,14 +643,9 @@ module TestManagedHeap =
         // The oracle is the allocation record itself: `getArrayShape` must project it
         // field-for-field, never derive or normalise. `Length` in particular is stored,
         // not recomputed from `Lengths`, and the projection must not start recomputing it.
-        //
-        // This used to allocate `Length = total` with an *empty* backing store, so that a
-        // projection deriving `Length` from `Elements.Length` would be caught. That
-        // discrimination has moved: `allocateArray` now rejects a length that disagrees with
-        // the cell count outright (see the test below), because `getArrayValue` bounds-checks
-        // against the shape and then indexes the cells, which is only sound while the two
-        // agree. Distinguishing stored from derived is no longer possible here — and no
-        // longer meaningful, since the allocator makes them provably equal.
+        // (`allocateArray` rejects a length that disagrees with the cell count — see the
+        // test below — because `getArrayValue` bounds-checks against the shape and then
+        // indexes the cells, which is only sound while the two agree.)
         //
         // Bounding the rank to 6 dimensions of at most 4 keeps the product well inside Int32
         // and the materialised array small, so no seed can make this test fail for reasons
@@ -688,11 +683,8 @@ module TestManagedHeap =
     // Field stores.
     //
     // `setFieldById` is the one read-modify-write primitive for storing to a
-    // field of a non-array object. It exists so that every field store is a
-    // single identifiable event on the heap: `stfld` and delegate
-    // construction used to rebuild `NonArrayObjects` inline instead, which
-    // left three separately-maintained copies of "overwrite one field" and
-    // two of them invisible to anything watching the heap API.
+    // field of a non-array object, so that every field store is a single
+    // identifiable event on the heap.
     // ---------------------------------------------------------------------
 
     let private int32Handle : ConcreteTypeHandle =
@@ -817,9 +809,9 @@ module TestManagedHeap =
 
     [<Test>]
     let ``setFieldById agrees with the open-coded read-modify-write it replaces`` () : unit =
-        // The oracle is precisely the code `stfld` and `executeDelegateConstructor` ran
-        // before this primitive existed. Any divergence means the refactor changed
-        // behaviour rather than merely relocating it.
+        // The oracle is the open-coded read-modify-write: `get`, then
+        // `AllocatedNonArrayObject.SetFieldById`, then `set`. The primitive must agree
+        // with it exactly.
         let _, loggerFactory = LoggerFactory.makeTest ()
         let initialState = state loggerFactory
 
@@ -927,8 +919,8 @@ module TestManagedHeap =
 
     [<Test>]
     let ``an empty array records the same stride as a populated one`` () : unit =
-        // The whole reason the stride is recorded rather than measured: `Array.Empty<T>()`
-        // has no cell to measure, and used to leave callers with no answer at all. Every
+        // The reason the stride is recorded rather than measured: `Array.Empty<T>()`
+        // has no cell to measure. Every
         // element type is checked, not just one, because a fallback that happened to return
         // a plausible constant would pass a single-type test.
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -1032,9 +1024,8 @@ module TestManagedHeap =
     let ``allocateArray rejects a non-positive stride`` () : unit =
         // The element-zero check subsumes this one — it forces the stride to equal a
         // `CliType.sizeOf`, which is never below 1 — so this fires only because it runs
-        // first. It is kept as a direct assertion of what consumers depend on: `floorDivRem`
-        // divides by the stride, and that shouldn't rest on a two-step argument through a
-        // different check in a different file.
+        // first. `floorDivRem` divides by the stride, so positivity gets its own direct
+        // assertion.
         //
         // Zero is rejected as well as negative, and is the more dangerous of the two: it is
         // the plausible-looking value for "an array with nothing in it", and it fails
@@ -1087,11 +1078,11 @@ module TestManagedHeap =
     // ---------------------------------------------------------------------
     // Element zero.
     //
-    // The witness for "what shape is a cell of this array". Cell 0 used to
-    // serve, which was wrong three ways: it is a guest-visible read performed
-    // to answer a question about a type, it does not exist for an empty
-    // array, and it is only a *sample* — a store to cell 5 was validated
-    // against whatever provenance cell 0 had picked up.
+    // The witness for "what shape is a cell of this array". Recorded rather
+    // than sampled from cell 0, for three reasons: a cell read is a
+    // guest-visible memory access performed to answer a question about a
+    // type, cell 0 does not exist for an empty array, and a sample carries
+    // whatever provenance that cell has picked up.
     // ---------------------------------------------------------------------
 
     /// Allocate a `len`-element array of `elementHandle` and report its recorded element
@@ -1181,8 +1172,7 @@ module TestManagedHeap =
     let ``cloneArray distinguishes a non-array from a dangling address`` () : unit =
         // Same discrimination as `getArrayShape` / `get`, for the same reason: a non-array
         // address means the caller misjudged the kind of the reference it holds, whereas an
-        // unallocated address means the reference itself is bogus. Before `cloneArray` moved
-        // into `ManagedHeap` it reached into `Arrays` directly from the state layer.
+        // unallocated address means the reference itself is bogus.
         let objAddr, heap = ManagedHeap.allocateNonArray stubNonArray ManagedHeap.empty
 
         let notAnArray =
@@ -1214,12 +1204,10 @@ module TestManagedHeap =
     // ---------------------------------------------------------------------
     // Non-array reads.
     //
-    // `tryGet` / `get` / `isLive` are the read half of the non-array seam,
-    // the counterparts of `tryGetArrayShape` / `getArrayShape` / `isArray`.
-    // Before them, seventeen sites indexed `NonArrayObjects` directly, so a
-    // read of a guest object was not an identifiable event and the
-    // "array" / "never allocated" distinction was open-coded where it was
-    // made at all.
+    // `tryGet` / `get` / `isLive` are the read half of the non-array access
+    // surface, the counterparts of `tryGetArrayShape` / `getArrayShape` /
+    // `isArray`; they make a read of a guest object a single identifiable
+    // event.
     // ---------------------------------------------------------------------
 
     [<Test>]
@@ -1238,8 +1226,7 @@ module TestManagedHeap =
     let ``get fails loudly, and distinguishably, for an array and for a dangling address`` () : unit =
         // Same discrimination as `getArrayShape`, and for the same reason: an array address
         // means the caller misjudged the kind of reference it holds, whereas an unallocated
-        // address means the reference itself is bogus. This used to be a bare
-        // `KeyNotFoundException` from indexing the map, which distinguished neither.
+        // address means the reference itself is bogus.
         let arrAddr, heap = ManagedHeap.allocateArray (stubArray 1) ManagedHeap.empty
 
         let isArray =
@@ -1296,8 +1283,7 @@ module TestManagedHeap =
         )
 
     // ---------------------------------------------------------------------
-    // Sync-block queries. Both were open-coded at their single call site
-    // before; the ordering each guarantees is what makes them worth naming.
+    // Sync-block queries. The ordering each guarantees is its contract.
     // ---------------------------------------------------------------------
 
     /// Three live addresses, allocated in ascending order, with the given headers.

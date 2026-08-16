@@ -384,16 +384,17 @@ public class TestBulkMoveCellAccessSweep
     /// which `MemoryMarshal.Cast` makes ordinary. Both sides are byte-addressable, so the byte path
     /// serves it and the reinterpreted bit patterns must come back out unchanged.
     ///
-    /// Reclassifying stack slots as cell-aware is what brings this shape to the cell step at all —
-    /// before, a local-rooted endpoint declined before anything was examined — so it is here as
-    /// cover for that widening rather than as an assertion about any one guard.
+    /// Cell-aware classification of stack slots is what brings this shape to the cell step at
+    /// all, so this test is cover for that classification rather than an assertion about any
+    /// one guard.
     ///
     /// In particular it does **not** pin `cellsHaveCompatibleShape`, and that is measured, not
-    /// assumed: the guard demonstrably fires on exactly this copy (`Numeric Int64` against
+    /// assumed: the guard fires on exactly this copy (`Numeric Int64` against
     /// `Numeric Float64`), yet removing it changes no answer here, because PawPrint's read path
     /// carries the 64-bit payload through either cell shape. The guard refuses shapes the real
     /// runtime accepts, so no differential test can distinguish it — the same position #797
-    /// records for `isCellIdentityCompatible` one layer up. Treat it as load-bearing anyway.
+    /// records for `isCellIdentityCompatible` one layer up. Do not delete the guard on the
+    /// strength of this test.
     [<Test>]
     let ``a same-width copy between differently-typed cells goes by bytes`` () : unit =
         let text =

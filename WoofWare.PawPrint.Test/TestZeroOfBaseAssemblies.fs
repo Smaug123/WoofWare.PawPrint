@@ -33,9 +33,9 @@ module TestZeroOfBaseAssemblies =
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory path
 
-    /// The production loader, pointed at a set of directories on disk. Deliberately not a
-    /// hand-rolled fake: the ref-vs-def keying bug was invisible to this suite for exactly as
-    /// long as the test fake keyed its dictionary differently from production.
+    /// The production loader, pointed at a set of directories on disk. Not a hand-rolled
+    /// fake: a fake that keys its dictionary differently from production hides ref-vs-def
+    /// keying bugs.
     let private onDemandAssemblyLoad (searchDirs : string seq) : IAssemblyLoad =
         let _, loggerFactory = LoggerFactory.makeTest ()
         TypeResolution.directoryLoader loggerFactory searchDirs
@@ -253,8 +253,8 @@ public struct Outer
 
         let loadAssembly = onDemandAssemblyLoad [ runtimeDir ]
 
-        // Prime with corelib + FSharp.Core + the wrapper. Deliberately leave
-        // netstandard out; the wrapper's own base chain doesn't need it.
+        // Prime with corelib + FSharp.Core + the wrapper, leaving netstandard
+        // out; the wrapper's own base chain doesn't need it.
         let loaded : LoadedAssemblies =
             LoadedAssemblies.ofAssemblies [ corelib ; fsharpCore ; outerAssembly ]
 

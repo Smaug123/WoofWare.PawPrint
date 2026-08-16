@@ -9,9 +9,8 @@ open WoofWare.PawPrint
 
 /// CoreCLR lays a parent type out first and starts a derived type's own fields *after* the
 /// parent's instance size (`HandleAutoLayout`, methodtablebuilder.cpp:8283-8296), so a base
-/// field's offset is a property of the base alone. PawPrint used to flatten the whole base chain
-/// into one field list and lay it out in a single pass, which made an inherited field's offset
-/// depend on what derived from it (issue #994).
+/// field's offset is a property of the base alone: it must not depend on what derives from it
+/// (issue #994).
 ///
 /// The oracle here is real .NET itself. One Roslyn-compiled corpus is read by PawPrint *and*
 /// loaded into this process, and the corpus carries its own probe methods that report each type's
@@ -314,7 +313,7 @@ public static class LayoutProbe
         let gd = offsetsOf "GD"
         gd.["GD_C"] |> shouldEqual 9
 
-        // A three-level chain, so a mid-chain instance size is load-bearing.
+        // A three-level chain, so a mid-chain instance size feeds the next level's start.
         let d4 = offsetsOf "D4"
         d4.["M4_I"] |> shouldEqual 4
         (d4.["D4_O"] >= 8) |> shouldEqual true

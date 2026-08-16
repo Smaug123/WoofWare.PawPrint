@@ -27,11 +27,9 @@ public class Program
         // natural routes need a metadata token (`newobj` for the exception, `callvirt` for a member
         // that throws), and a dynamic method carrying one is refused when it is minted.
         //
-        // Dividing by zero would also work now that #989 raises a guest `DivideByZeroException`
-        // rather than crashing the interpreter — an earlier draft of this file did exactly that,
-        // and stopped. Taking the exception as a parameter is kept because it depends on nothing
-        // but `throw`: which exception reaches the handler is then chosen by the caller rather
-        // than by arithmetic, so this stays a test about the *frame* and not about `div`.
+        // Taking the exception as a parameter depends on nothing but `throw`: which exception
+        // reaches the handler is chosen by the caller rather than by arithmetic, so this stays
+        // a test about the *frame* and not about `div`.
         //
         // The parameter is typed `object` rather than `Exception` for the same class of reason:
         // `SignatureHelper` spells any type that is not a primitive, string or object as

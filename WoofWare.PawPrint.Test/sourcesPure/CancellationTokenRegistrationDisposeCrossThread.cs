@@ -34,7 +34,7 @@ using System.Threading;
 // CurrentManagedThreadId` all three true, so it spins in `WaitForCallbackToComplete(id)`
 // awaiting an `ExecutingCallbackId` nothing would ever clear.
 //
-// The cross-thread part is load-bearing: disposing on the same thread that ran `Cancel()`
+// The cross-thread part is the point: disposing on the same thread that ran `Cancel()`
 // short-circuits on the `ThreadIDExecutingCallbacks` check and returns even with stale
 // state, so a single-threaded cancel/dispose guest passed throughout and pins nothing here.
 class CancellationTokenRegistrationDisposeCrossThread

@@ -491,7 +491,7 @@ type CeqOutcome =
 module ManagedPointerSource =
     /// A *bit-pattern byref* is one that carries a raw native-int value rather
     /// than referring to any storage: the `Unsafe.AsRef<T>((void*)bits)`
-    /// placeholder, and `Null`, which is simply the bit pattern 0. Arithmetic
+    /// placeholder, and `Null`, which is the bit pattern 0. Arithmetic
     /// on these is plain int64 bit arithmetic — there is no root to walk and
     /// no int32 offset model involved, so callers must handle them before
     /// decomposing a byref into root-plus-offset.
@@ -648,8 +648,7 @@ module ManagedPointerSource =
             // still fall through to `None`: those have no defensible ordering,
             // and refusing loudly beats inventing one. This arm exists because
             // `EventSource`'s manifest handling compares a byref to the start of
-            // a name against one part-way into that same string, and answering
-            // "no common root" for two offsets into one object was simply wrong.
+            // a name against one part-way into that same string.
             | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str1, idx1), projs1),
               ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str2, idx2), projs2) when
                 str1 = str2 && idx1 <> idx2 && projs1 = projs2
@@ -682,12 +681,11 @@ module ManagedPointerSource =
     /// not a real loaded module address; callers may use it only for low-bit
     /// alignment masks where the unknown image base contributes zero low bits.
     ///
-    /// The cursor fold below accumulates in `int64`, matching the result type.
-    /// It used to fold in `int32` and widen only at the end, which was a limit
-    /// the address model does not have: a synthetic address is 64-bit, so the
-    /// displacement folded into it is too. Because this file is `Checked`, a
-    /// chain carrying several large cursors aborted the guest on that limit
-    /// rather than answering (issue #993).
+    /// The cursor fold below accumulates in `int64`, matching the result type:
+    /// a synthetic address is 64-bit, so the displacement folded into it is
+    /// too. Folding in `int32` would abort the guest under this file's
+    /// `Checked` arithmetic for a chain carrying several large cursors
+    /// (issue #993).
     let tryStableAddressBits (src : ManagedPointerSource) : int64 option =
         let rec foldCursor (byteOffset : int64) (projs : ByrefProjection list) : int64 option =
             match projs with
@@ -1099,14 +1097,9 @@ module ManagedPointerSource =
     ///
     /// Summed in `int64`, because a byref's displacement is address arithmetic and that is
     /// 64-bit: two cursors of `Int32.MaxValue` and `1` put a byref 2147483648 bytes along, which
-    /// no `int` can hold however the addition behaves.
-    ///
-    /// It is worth saying what the `int` version actually did, because this file used to say —
-    /// and issue #993 repeated — that it wrapped. Measured, it did not: `List.sumBy` over `int`
-    /// is `Checked.(+)` inside FSharp.Core, independently of this file's `open Checked`. So the
-    /// old sum *threw* `System.OverflowException`, aborting the guest out of a byref comparison
-    /// whose answer is perfectly well defined. Wrapping would have been a wrong answer and this
-    /// was a crash, but neither is the answer, and `int64` gives it.
+    /// no `int` can hold however the addition behaves. (An `int` sum would not wrap anyway:
+    /// `List.sumBy` over `int` is `Checked.(+)` inside FSharp.Core, independently of this file's
+    /// `open Checked`, so it throws `System.OverflowException` — issue #993.)
     let private knownByteDisplacement (projs : ByrefProjection list) : int64 =
         projs
         |> List.sumBy (fun p ->
@@ -1121,9 +1114,8 @@ module ManagedPointerSource =
     /// root names and into somebody else's.
     ///
     /// This is a statement about *extent*, not about normalisation, and each case must say
-    /// which one it is. Getting that wrong is how `PeByteRange` came to be refused: it was
-    /// grouped with the roots that have no stride to fold against, on the strength of a
-    /// predicate named after folding, when in fact it carries its own size.
+    /// which one it is: conflating the two mislabels `PeByteRange`, which has no stride to
+    /// fold against but does carry its own size.
     [<RequireQualifiedAccess>]
     type private RootCursorBound =
         /// The root carries its own index (element, character, byte) and
@@ -1177,18 +1169,17 @@ module ManagedPointerSource =
     ///
     /// For an `Unbounded` root any non-zero cursor is unbounded, and that is not a
     /// hypothetical: `Unsafe.AddByteOffset` applies to a `LocalVariable` root with no
-    /// special-casing, and `Byref (local 0, [ReinterpretAs byte; ByteOffset 1000])` against
-    /// `Byref (local 1, [])` was measured *answering* `false` while the predicate here still
-    /// justified itself by folding that had never happened.
+    /// special-casing, so `Byref (local 0, [ReinterpretAs byte; ByteOffset 1000])` against
+    /// `Byref (local 1, [])` is a pair this predicate really receives.
     ///
     /// Whether such a pair should be answered at all is a genuine policy question rather than
     /// a fact: ECMA-335 promises no relative address between two independently declared
     /// locals, so a real JIT could place them any distance apart. LLVM's alias analysis
     /// assumes distinct identified objects never alias however the arithmetic goes; CompCert
     /// declines to compare pointers from different blocks. This takes CompCert's side, per
-    /// this project's preference for crashing over quiet divergence. Note that a root which
-    /// knows its own size poses no such question — "did this cursor stay inside" is then a
-    /// fact, and answering it is not a policy choice.
+    /// this project's preference for crashing over quiet divergence. A root which knows its
+    /// own size poses no such question — "did this cursor stay inside" is then a fact, and
+    /// answering it is not a policy choice.
     ///
     /// This is what makes root disjointness insufficient on its own: two byrefs on different
     /// roots are different addresses only while each stays within the root it started from.
@@ -1200,13 +1191,9 @@ module ManagedPointerSource =
         //
         // It is written as a sum anyway, because it is the *total* displacement that decides
         // whether the root's extent was left, and testing each step in turn gets that wrong:
-        // two offsets each inside a range can sum to one outside it. That robustness now holds
-        // for a chain carrying several offsets too, which it did not when this comment claimed
-        // it: `knownByteDisplacement` sums in `int64` (issue #993), so a total that leaves the
-        // range can neither wrap back inside it nor abort the guest on the way. The caveat this
-        // comment used to carry — that `List.sumBy` was unchecked whatever the file's
-        // `open Checked` said — was wrong on the facts; it is `Checked.(+)` inside FSharp.Core,
-        // so the failure mode was a host `OverflowException`, not a wrap.
+        // two offsets each inside a range can sum to one outside it. `knownByteDisplacement`
+        // sums in `int64` (issue #993), so a total that leaves the range can neither wrap
+        // back inside it nor abort the guest on the way.
         let cursor = knownByteDisplacement projs
 
         if cursor = 0L then
@@ -1237,7 +1224,7 @@ module ManagedPointerSource =
         let known2 = knownByteDisplacement rest2
 
         match containsField rest1, containsField rest2 with
-        // Neither side's displacement has an unknown component, so it is simply arithmetic.
+        // Neither side's displacement has an unknown component, so it is arithmetic.
         | false, false -> Some (known1 = known2)
         // Exactly one side walks through fields, so its displacement is `known + (unknown
         // >= 0)` while the other's is exactly `known`. The unknown part can only push the
@@ -1253,9 +1240,9 @@ module ManagedPointerSource =
             // differ — but that is false under explicit layout, where
             // `[FieldOffset(0)] int A; [FieldOffset(0)] int B;` puts two distinct fields on
             // one address, and such values stay field-backed rather than becoming byte
-            // ranges. `Unsafe.AreSame(ref u.A, ref u.B)` is `true` on real .NET and was
-            // measured answering `false` here. Nothing short of the declaring type's field
-            // offsets separates that from an ordinary sequential struct, so refuse.
+            // ranges. `Unsafe.AreSame(ref u.A, ref u.B)` is `true` on real .NET. Nothing
+            // short of the declaring type's field offsets separates that from an ordinary
+            // sequential struct, so refuse.
             None
 
     /// CEQ semantics for two normalised byref sources. Trailing address-
@@ -1326,7 +1313,7 @@ module ManagedPointerSource =
             // — again a statement about how each byref was built, not about where it points.
             // Under `[StructLayout(LayoutKind.Explicit)]` on a class, two fields share an
             // address: measured, `Unsafe.AreSame(ref c.A, ref c.B)` for two `[FieldOffset(0)]`
-            // fields is `true` on real .NET and was answering `false` here.
+            // fields is `true` on real .NET.
             CeqOutcome.NeedsByteLocation (
                 raw1,
                 raw2,
@@ -1343,8 +1330,8 @@ module ManagedPointerSource =
             CeqOutcome.Decided (stripped1 = stripped2)
 
     /// `ceqNormalisedDeferred` for callers too early in the build to resolve a byte location,
-    /// or which have no `IlMachineState` to hand. Behaviour is exactly as before the deferral
-    /// existed: an undecidable pair fails loudly, with the same message.
+    /// or which have no `IlMachineState` to hand. An undecidable pair fails loudly, with the
+    /// deferred diagnostic as the message.
     let ceqNormalised
         (context : string)
         (p1 : NormalisedManagedPointerSource)

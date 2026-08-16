@@ -11,12 +11,10 @@ class FilterTraceBoom : Exception
 // including the filter's own. Measured on .NET 10 before this was written: three frames,
 // `Thrower`, `Middle`, `Outer` — and `Outer` is the frame hosting the `when`.
 //
-// This is a regression guard rather than a fix. PawPrint projected the partial trace on filter
-// entry before it had two passes at all, and the obvious way to restructure it — project only
-// once, when the search reaches a verdict — would silently move filter entry to *before* any
-// projection, so a `when` clause would read `StackTrace == null` on an exception that has
-// genuinely been thrown, and `Exception.HasBeenThrown` (which keys off the same frozen token)
-// would answer false.
+// This is a regression guard: a dispatcher that projects only once, when the search reaches
+// a verdict, would silently move filter entry to *before* any projection, so a `when` clause
+// would read `StackTrace == null` on an exception that has been thrown, and
+// `Exception.HasBeenThrown` (which keys off the same frozen token) would answer false.
 class FilterSeesTraceSoFar
 {
     static bool ContainsSubstring(string haystack, string needle)

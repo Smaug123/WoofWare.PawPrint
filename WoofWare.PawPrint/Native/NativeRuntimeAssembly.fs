@@ -637,10 +637,9 @@ module NativeRuntimeAssembly =
             // flag were written inconsistently, which no compiler emits but the format
             // permits, so reproduce the normalisation rather than the column.
             //
-            // It lives here rather than on `DumpedAssembly.Flags` deliberately: that member
-            // is the manifest column and should stay exactly that, while this is the
-            // behaviour of a particular CoreCLR API being reproduced at the seam that
-            // reproduces CoreCLR APIs.
+            // It lives here rather than on `DumpedAssembly.Flags`: that member is the
+            // manifest column and should stay exactly that, while this is the behaviour of
+            // one particular CoreCLR API.
             let afPublicKey = 0x0001
 
             let flags =

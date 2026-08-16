@@ -40,7 +40,7 @@ type PctState =
     }
 
 /// The scheduling policy in effect for the current run. `RoundRobin` is
-/// the default and reproduces the legacy deterministic-ordering behaviour:
+/// the default, deterministic ordering:
 /// among the Runnable threads, prefer the lowest id strictly greater than
 /// `lastRan`, wrapping to the lowest id overall. `Pct` carries the live
 /// PCT state for schedule fuzzing and is selected by the harness via a

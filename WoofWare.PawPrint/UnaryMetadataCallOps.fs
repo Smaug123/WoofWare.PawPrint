@@ -425,7 +425,7 @@ module internal UnaryMetadataCallOps =
     /// which one hit it rather than always blaming `call`.
     ///
     /// The instance-receiver forms of the prefix (`CORINFO_DEREF_THIS` / `CORINFO_BOX_THIS`) are
-    /// deliberately not implemented: Roslyn emits `constrained.` before `ldftn` only for static
+    /// not implemented: Roslyn emits `constrained.` before `ldftn` only for static
     /// abstract interface members, and before `call`/`callvirt` the instance cases are handled by
     /// `executeCallvirt`'s own transformation. Anything else fails loudly here rather than being
     /// guessed at.
@@ -503,8 +503,8 @@ module internal UnaryMetadataCallOps =
     ///
     /// No class-initialisation check here: `callMethod` arms it on the callee's frame and the
     /// dispatch loop runs it as that frame's prologue, which is where the CLR puts it. This call
-    /// therefore always commits, and the opcode never re-executes — which is why nothing reinstalls
-    /// the `constrained.` prefix any more.
+    /// therefore always commits, and the opcode never re-executes, so nothing needs to reinstall
+    /// the `constrained.` prefix.
     let private enterCallee
         (ctx : UnaryMetadataIlOpContext)
         (concretizedMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
@@ -674,8 +674,8 @@ module internal UnaryMetadataCallOps =
 
         // Capture the pending `constrained.` prefix up front and clear it from the current frame,
         // so a stale prefix cannot leak to a later call in the same frame. Nothing reinstalls it:
-        // the class-initialisation check that used to make this opcode re-execute now runs as the
-        // callee's prologue, so this instruction commits exactly once.
+        // the class-initialisation check runs as the callee's prologue, so this instruction
+        // commits exactly once.
         let activeFrameId = state.ThreadState.[thread].ActiveMethodState
 
         let pendingConstrained, state =
@@ -840,11 +840,9 @@ module internal UnaryMetadataCallOps =
                     state
 
         // Capture the pending `constrained.` prefix up front and clear it from the current
-        // frame before attempting class init. This ensures that if the class initializer
-        // throws an exception that lands in a catch handler within the same method, a
-        // later unrelated callvirt in that handler won't inherit a stale prefix. If the
-        // class hasn't been initialized yet we re-install the prefix on this frame so that
-        // re-entry (after the cctor completes) sees it again.
+        // frame. This ensures that if the callee's class initializer throws an exception
+        // that lands in a catch handler within the same method, a later unrelated callvirt
+        // in that handler won't inherit a stale prefix.
         let activeFrameId = state.ThreadState.[thread].ActiveMethodState
 
         let pendingConstrained, state =
@@ -1190,8 +1188,7 @@ module internal UnaryMetadataCallOps =
         // `case CEE_CONSTRAINED`, rejects anything else with
         // `BADCODE("constrained. has to be followed by callvirt, call or ldftn")`). Anything
         // else here means the prefix would sit armed on this frame and be silently applied to
-        // some later call — the shape that made `constrained. ldftn` corrupt an unrelated
-        // `callvirt` before `executeLdftn` learned to consume it.
+        // some later call.
         //
         // "Followed by" is the next *non-prefix* opcode, not the next opcode: the importer asks
         // `impGetNonPrefixOpcode`, so `constrained. tail. callvirt` is legal and must not be
@@ -1226,7 +1223,7 @@ module internal UnaryMetadataCallOps =
     /// reading a `float32` return slot as `float64` yields garbage on CoreCLR, not the target's
     /// value, so permitting that pun would make PawPrint silently return the plausible answer
     /// where the real runtime returns nonsense. The integer widths and signedness are
-    /// deliberately *not* split, because there the two runtimes do agree. Both halves of that
+    /// *not* split, because there the two runtimes do agree. Both halves of that
     /// were measured rather than reasoned about: a bitmask probe over five puns
     /// (`short`/`byte`/`uint`/`float` returns and a signedness-punned parameter) on osx-arm64
     /// gave CoreCLR 23 and PawPrint 31 — differing on the float bit alone. Splitting the
@@ -1417,14 +1414,14 @@ module internal UnaryMetadataCallOps =
                 )
             | k -> failwith $"calli: expected a StandaloneSignature metadata token describing the call site, got %O{k}"
 
-        // Peek rather than pop: `loadClass` below may suspend this instruction for class
-        // initialisation, in which case the PC is not advanced and the whole `calli` is
-        // re-executed later. Popping here would lose the function pointer on that retry.
+        // Peek rather than pop: this read only inspects the pointer for validation. It stays
+        // on the stack (above the arguments) until the call is actually made, and is popped
+        // exactly once there.
         let fnPtr = IlMachineState.peekEvalStack thread state
 
         // A function pointer is recognised by its `FunctionPointer` provenance; anything
         // that is semantically zero is a null pointer. Matching `FunctionPointer` first is
-        // not load-bearing for correctness — `NativeIntSource.isZero` answers `false` for
+        // not required for correctness — `NativeIntSource.isZero` answers `false` for
         // it, because a function pointer is never null — but it keeps the two arms readable
         // as "is it a pointer to something" then "is it null".
         let target =
@@ -1528,7 +1525,7 @@ module internal UnaryMetadataCallOps =
         // spuriously rejected.
         // Only a declared method has a raw signature. A synthesised target has none — there is no
         // metadata form of a method the runtime supplies — so there is nothing to disagree with
-        // and the comparison is simply skipped. That is sound precisely because this check is a
+        // and the comparison is simply skipped. That is sound because this check is a
         // source of *refusals* and never of permission: declining to run it forfeits an error we
         // might have caught, not a guarantee we were relying on. The slot-count and return-shape
         // checks above, which are what guard frame integrity, apply to every target.
@@ -1575,11 +1572,10 @@ module internal UnaryMetadataCallOps =
             )
 
         // No class-initialisation check here: `callMethodWithCommitment` arms it on the callee's
-        // frame, and it is the callee's prologue that runs it. The per-kind question of whether a
-        // *synthesised* method's declaring type is initialised at all —
-        // `SynthesisedMethod.initialisesDeclaringType`, which a struct-marshal stub answers no, as
-        // `sourcesPure/MarshalStructureToPtrStaticCtorDormant.cs` pins — moved there with it, and
-        // is now asked once for every call rather than at each call site.
+        // frame, and it is the callee's prologue that runs it. That includes the per-kind
+        // question of whether a *synthesised* method's declaring type is initialised at all —
+        // `SynthesisedMethod.initialisesDeclaringType`, which a struct-marshal stub answers no,
+        // as `sourcesPure/MarshalStructureToPtrStaticCtorDormant.cs` pins.
 
         // The pointer sits above the arguments, and arguments are popped from the top of the
         // stack, so it has to come off before we call in.
@@ -1605,11 +1601,8 @@ module internal UnaryMetadataCallOps =
                 state
 
         // This `calli` commits exactly once, so the function pointer popped above is simply gone
-        // and nothing has to put it back. It used to be restorable state: a callee needing its
-        // class initialiser run first left our program counter unadvanced so the instruction
-        // re-executed, and the retry would have looked for a pointer we had already consumed.
-        // Class initialisation now happens in the callee's own frame, after this instruction is
-        // finished with, so there is no retry to prepare for.
+        // and nothing has to put it back: class initialisation happens in the callee's own frame,
+        // after this instruction is finished with, so there is no retry to prepare for.
         match commitment with
         | IlMachineStateExecution.CallCommitment.Committed
         | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed

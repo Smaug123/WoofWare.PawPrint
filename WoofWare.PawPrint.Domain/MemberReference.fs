@@ -68,7 +68,6 @@ module MemberReference =
         {
             Name = name
             PrettyName = getString mr.Name
-            // Horrible abuse to get this as an int
             Parent = makeParent mr.Parent
             Signature = signature
         }

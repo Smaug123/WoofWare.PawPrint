@@ -291,8 +291,8 @@ module TestEvalStackBoxedPrimitiveView =
 
     [<Test>]
     let ``the int32 width reinterprets like every other width`` () : unit =
-        // `ldind.i4` over a leading float32 cell. The int32 arm predates the shared projector and
-        // used to have its own hand-rolled unwrap that accepted only an int32 cell.
+        // `ldind.i4` over a leading float32 cell: the int32 arm must reinterpret via the shared
+        // projector, not accept only an int32 cell.
         let f = 3.14159274f
         let vt = leadingField (CliType.Numeric (CliNumericType.Float32 f))
 

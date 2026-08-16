@@ -10,7 +10,7 @@ using System.Diagnostics;
 // both: the origin, granularity, and rate of PawPrint's clock are pinned by the
 // sibling impure case `StopwatchTimestampGranularity.cs`, not here.
 //
-// Note that `Stopwatch` scales raw timestamps to `TimeSpan` ticks through a
+// `Stopwatch` scales raw timestamps to `TimeSpan` ticks through a
 // `double` (`s_tickFrequency`), so nothing here uses integer arithmetic as an
 // oracle for that conversion — the assertions below rely only on the
 // conversion being monotone and zero-preserving.

@@ -22,9 +22,8 @@ module NativeSignature =
     /// the other. The live route today — `ConstArray.m_constArray` (an `IntPtr` field) through
     /// `MdFieldInfo.FieldType` — produces only the `RuntimePointer` spelling; the `NativeInt` arm
     /// is a guard, matching how `requireNullCorSig` below lists every spelling of a null pointer.
-    /// That guard is not idle caution: recognising only one encoding of an argument is how
-    /// `Signature_Init` broke once already, while every unit test still passed (see
-    /// `nullFieldHandleSpellings` in `TestNativeSignature.fs`).
+    /// Recognising only one encoding of an argument can pass every unit test and still throw at
+    /// runtime (see `nullFieldHandleSpellings` in `TestNativeSignature.fs`).
     let private corSigPeByteRange (operation : string) (sigArg : CliType) : PeByteRangePointer option =
         match CliType.unwrapPrimitiveLikeDeep sigArg with
         | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
@@ -77,13 +76,10 @@ module NativeSignature =
             assembly, methodDef.Signature
         | PeByteRangePointerSource.PropertySignatureBlob _ ->
             // This one *is* a signature blob, so it does not belong with the arm below. It is
-            // mintable as of `MetadataImport.GetPropertyProps`, and reaches here only through
+            // minted by `MetadataImport.GetPropertyProps`, and reaches here only through
             // `RuntimePropertyInfo.Signature` — which needs a fully constructed
-            // `RuntimePropertyInfo`. `Associates.AssignAssociates` no longer blocks that (the
-            // associates branch of `MetadataImport.Enum` is implemented); what does is the
-            // vtable-slot duplicate check in `RuntimeType.PopulateProperties`
-            // (`RuntimeType.CoreCLR.cs:1358`), which needs `RuntimeMethodHandle.GetSlot`. Parsing an
-            // ECMA II.23.2.5 PropertySig is the feature that unblocks this arm once that lands.
+            // `RuntimePropertyInfo`. Parsing an ECMA II.23.2.5 PropertySig is the feature that
+            // unblocks this arm.
             failwith
                 $"TODO: %s{operation} on a property signature blob is not implemented (%O{peByteRange}); PROPERTY signatures are not yet parsed"
         | PeByteRangePointerSource.FieldRva _
@@ -353,11 +349,9 @@ module NativeSignature =
             | other ->
                 // A method-signature blob cannot arrive here: every managed `Signature` constructor
                 // that has a method passes the *handle*, and CoreCLR overwrites the blob from it.
-                // A *property*-signature blob is a different story — `RuntimePropertyInfo.Signature`
-                // does use the handle-less constructor, and `MetadataImport.GetPropertyProps` now
-                // mints such blobs — but it is still unreachable, because constructing the
-                // `RuntimePropertyInfo` that owns it needs `RuntimeMethodHandle.GetSlot`, for the
-                // vtable-slot duplicate check in `RuntimeType.PopulateProperties`.
+                // A *property*-signature blob could — `RuntimePropertyInfo.Signature` uses the
+                // handle-less constructor, and `MetadataImport.GetPropertyProps` mints such blobs —
+                // but PROPERTY signatures are not yet parsed (see `resolveSignatureBlobHandle`).
                 failwith
                     $"TODO: %s{operation} on a raw %O{other} blob is not implemented; only FieldDef signature blobs reach the handle-less constructor today"
 

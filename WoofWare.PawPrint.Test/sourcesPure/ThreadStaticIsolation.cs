@@ -76,7 +76,7 @@ namespace ThreadStaticIsolation
             if (workerObservedStructX != 0) return 3;
             if (workerObservedStructY != 0) return 4;
 
-            // ... but the ordinary static is genuinely shared.
+            // ... but the ordinary static is shared.
             if (workerObservedShared != 104) return 5;
 
             // The main thread's slots survive the worker's writes to its own.

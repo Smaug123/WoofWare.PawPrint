@@ -13,10 +13,9 @@ open WoofWare.PawPrint
 /// `GetUInt64OSThreadId` under `TARGET_OSX` and `TryGetUInt32OSThreadId` everywhere else, and
 /// that is one example of many. Every other entry point in the repo resolves the *host's*
 /// shared framework, so a macOS dev box can only ever exercise the macOS BCL while production
-/// and CI run the Linux one — genuinely different guest code, previously with no way to reach
-/// it locally.
+/// and CI run the Linux one — different guest code.
 ///
-/// These tests pin the seam that closes that gap: a pinned linux-x64 framework (Nix's
+/// These tests pin the mechanism that closes that gap: a pinned linux-x64 framework (Nix's
 /// `dotnet-linux-framework`, surfaced as `$DOTNET_LINUX_FRAMEWORK_DIR`) placed at the head of
 /// the interpreter's runtime-dir list, which binds by simple name and takes the first hit.
 [<TestFixture>]
@@ -129,7 +128,7 @@ module TestLinuxCoreLibFlavour =
             failwith
                 $"""Expected exactly one loaded System.Private.CoreLib, got %d{many.Length}: %s{String.Join (", ", paths)}"""
 
-    /// The load-bearing test: not just that we passed a directory, but that the interpreter
+    /// Not just that we passed a directory: the interpreter
     /// really bound CoreLib out of it and ran a guest to completion against that image.
     /// Deliberately reaches past pure arithmetic into string and collection code, since that is
     /// where the two flavours' CoreLib IL actually differs and where a flavour-specific

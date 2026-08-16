@@ -74,7 +74,7 @@ module GcHandleRegistry =
 
     /// Allocate a `GcHandleKind.Dependent` cell carrying both the weak `target` and the
     /// strong `dependent` object addresses. CoreCLR's DependentHandle keeps the dependent
-    /// alive only while the target is reachable; PawPrint has no GC, so we simply store
+    /// alive only while the target is reachable; PawPrint has no GC, so we store
     /// both slots and expose them via `target` / `dependent`.
     let allocateDependent
         (owner : GcHandleOwner)

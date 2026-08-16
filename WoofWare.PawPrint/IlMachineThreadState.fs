@@ -546,19 +546,14 @@ module IlMachineThreadState =
                 // Likewise its OS thread id. A real kernel gives a thread one
                 // tid for its whole lifetime, and the dispatcher's lifetime
                 // spans every signal it handles — this transition is between
-                // handler invocations, not between threads. (Carrying `existing`
-                // forward and re-deriving from `thread` would agree here, since
-                // `osThreadId` is a function of the unchanged `ThreadId`; the
-                // field is copied like every other per-thread fact rather than
-                // recomputed, so it stays correct if that ever stops holding.)
+                // handler invocations, not between threads.
                 OsThreadId = existing.OsThreadId
                 YieldDebt = Set.empty
                 // Carried forward for the same reason as the fields above: re-parking is a
                 // status transition on one thread, and it does not cancel a pending
                 // foreign-exception raise. In practice this is always `false` here — the flag
                 // is set and consumed within a single guest `throw`, and the transition
-                // happens at a handler frame's bottom `ret` — but copying says why rather
-                // than relying on that being true.
+                // happens at a handler frame's bottom `ret`.
                 IsRaisingForeignException = existing.IsRaisingForeignException
             }
 

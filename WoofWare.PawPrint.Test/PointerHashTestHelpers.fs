@@ -6,10 +6,9 @@ open WoofWare.PawPrint
 ///
 /// These live in the test project rather than beside the type because they are
 /// counter-scheme-specific: a keyed assignment rule has no counter and no memo
-/// table, so there is nothing for them to return under such a case. Tests that use
-/// them are asserting the counter scheme's contract specifically, and the match
-/// below will fail to compile the moment a second case lands — which is correct,
-/// because those assertions would not describe the new case either.
+/// table, so there is nothing for them to return under such a case. The match
+/// below is meant to fail to compile the moment a second case lands, because
+/// these assertions would not describe it.
 [<RequireQualifiedAccess>]
 module PointerHashTestHelpers =
     /// Counter that will be spent on the next not-yet-seen canonical key.

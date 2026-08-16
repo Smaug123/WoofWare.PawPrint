@@ -7,10 +7,9 @@ open System.Collections.Immutable
 /// Why a file descriptor cannot be seeked, as a *fault* rather than as the errno
 /// it becomes.
 ///
-/// The distinction is load-bearing for `SystemNative_LSeek`, which is why this
-/// is not simply a `UnixError`: the two faults sit at different points in the
-/// two platforms' check orders — measured, Linux validates `whence` between them
-/// while Darwin does not — so an ordering written over errnos would let a future
+/// Not a `UnixError`, because `SystemNative_LSeek` orders the two faults
+/// differently per platform: measured, Linux validates `whence` between them
+/// while Darwin does not, so an ordering written over errnos would let a future
 /// third fault inherit whichever position its errno's arm happened to occupy.
 [<RequireQualifiedAccess>]
 type internal DescriptorFault =
@@ -71,12 +70,10 @@ module NativeSystemNative =
     /// P/Invoke may instead declare the return as a plain `int`, which is the
     /// same thing at the ABI, so both are accepted.
     ///
-    /// Deliberately not assembly-qualified, unlike `PosixSignalParam` above.
-    /// `Interop.Error` is `internal` to CoreLib, so a guest cannot name *that*
-    /// type; requiring it would leave this arm reachable only by real BCL code
-    /// and hence untestable. The entry-point name already identifies the call
-    /// uniquely, so the assembly adds no discrimination here — it would only
-    /// cost the ability to test the arm.
+    /// Not assembly-qualified, unlike `PosixSignalParam` above: `Interop.Error`
+    /// is `internal` to CoreLib, so requiring its assembly would leave this arm
+    /// reachable only by real BCL code and hence untestable. The entry-point
+    /// name already identifies the call uniquely.
     let private (|PalErrorReturn|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
         match handle with
         | ConcretePrimitive concreteTypes PrimitiveType.Int32 -> Some ()
@@ -169,7 +166,7 @@ module NativeSystemNative =
     /// the interpreter — see `UnixError.EFAULT`. A guest reaches this only by
     /// hand-rolling a P/Invoke; the BCL's own wrappers null-check upstream.
     ///
-    /// Note this is a question about *dereferenceability*, so callers that need
+    /// This is a question about *dereferenceability*, so callers that need
     /// to tell null from unmapped (because their C counterpart treats the two
     /// differently) must ask `isNullPointerArgument` first.
     let private dereferenceablePointerArgument
@@ -236,12 +233,12 @@ module NativeSystemNative =
     /// Turn the NUL-terminated bytes a guest passed as a pathname into a
     /// `UnixPath`, applying the length rule a kernel applies at *its* boundary.
     ///
-    /// Deliberately takes bytes rather than machine state, so the boundary — the
+    /// Takes bytes rather than machine state, so the boundary — the
     /// one part of the length rules that the resolver can never see — is
     /// testable without a heap. `readGuestPathBytes` is the half that needs a
     /// machine.
     ///
-    /// The **order** of the three stages is load-bearing, not incidental:
+    /// The three stages must run in this order:
     ///
     ///  1. **Length first.** `PATH_MAX` is enforced by `getname()`/`copyinstr`
     ///     when the kernel copies the string in, before anything looks at what
@@ -256,7 +253,7 @@ module NativeSystemNative =
     ///     it should say so rather than answer about the wrong file.
     ///  3. **Parse.**
     ///
-    /// Note the limit counts the NUL, and `readNullTerminatedBytes` has already
+    /// The limit counts the NUL, and `readNullTerminatedBytes` has already
     /// dropped it, so the comparison is against `pathMaxBytes - 1`. Measured:
     /// 1023 bytes resolves on macOS and 1024 does not.
     let internal parseGuestPathBytes
@@ -302,7 +299,7 @@ module NativeSystemNative =
     /// it has no honest errno: ENOENT would blame the guest's path, and any
     /// other answer would invent a directory. Crash, naming both knobs.
     ///
-    /// Note the common case never reaches it: CoreLib `Path.GetFullPath`s
+    /// The common case never reaches it: CoreLib `Path.GetFullPath`s
     /// before every `Stat`/`LStat`, so the path arriving here is normally
     /// already absolute and the current directory is not consulted at all.
     ///
@@ -315,13 +312,11 @@ module NativeSystemNative =
     /// PawPrint implements neither, so it answers as Linux does on both.
     ///
     /// Reproducing Darwin's rule needs the byte length of the *unconsumed*
-    /// remainder, which this walk no longer has: it holds a `PathComponent
+    /// remainder, which this walk does not have: it holds a `PathComponent
     /// list`. Threading a length through it is its own change, and the trigger
-    /// has to be designed against measurement rather than arithmetic — a first
-    /// attempt reasoned that collapsed `//` runs would make a rendered length an
-    /// unsound under-estimate, and probing showed XNU consumes such runs before
-    /// splicing, so the sound-looking argument was simply wrong about the
-    /// kernel.
+    /// has to be designed against measurement rather than arithmetic: probing
+    /// showed XNU consumes `//` runs before splicing, contradicting a
+    /// plausible-looking argument about how the kernel counts.
     ///
     /// Only a hand-written seed reaches it: symlinks enter the filesystem only
     /// through seeds, and the differential oracle's validator permits only
@@ -381,12 +376,9 @@ module NativeSystemNative =
     /// The output struct is written as a **byte image at ABI offsets**, not by
     /// setting fields on the pointee type by name. That is what the C does — it
     /// receives a `FileStatus*` and writes through it, and the guest's own
-    /// declaration is merely its view of the same bytes. Deriving the offsets
-    /// from the pointee instead would honour whatever names and order *that*
-    /// declaration happened to use, so a guest whose layout-identical struct
-    /// named its fields differently would abort the interpreter, and one that
-    /// reordered them would be handed a struct no real kernel would have
-    /// written. The pointee handle is still used, for the one thing it is
+    /// declaration is merely its view of the same bytes; deriving the offsets
+    /// from the pointee would honour that declaration's names and order rather
+    /// than the ABI. The pointee handle is still used, for the one thing it is
     /// authoritative about: how much room the caller actually provided.
     let private writeFileStatus
         (ctx : NativeCallContext)
@@ -496,16 +488,8 @@ module NativeSystemNative =
     /// differ only in whether a symbolic link in the final position is
     /// followed.
     ///
-    /// The output struct is written as a **byte image at ABI offsets**, not by
-    /// setting fields on the pointee type by name. That is what the C does — it
-    /// receives a `FileStatus*` and writes through it, and the guest's own
-    /// declaration is merely its view of the same bytes. Deriving the offsets
-    /// from the pointee instead would honour whatever names and order *that*
-    /// declaration happened to use, so a guest whose layout-identical struct
-    /// named its fields differently would abort the interpreter, and one that
-    /// reordered them would be handed a struct no real kernel would have
-    /// written. The pointee handle is still used, for the one thing it is
-    /// authoritative about: how much room the caller actually provided.
+    /// The output struct is written as a byte image at ABI offsets; see
+    /// `writeFileStatus`.
     ///
     /// `ConvertFileStatus` in `pal_io.c` writes the output struct only when the
     /// underlying `stat_`/`lstat_` succeeded, so every failure path here must
@@ -707,10 +691,10 @@ module NativeSystemNative =
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Double) ->
             // `double SystemNative_GetCpuUtilization(ProcessCpuInformation* previous)`
             // (declared in `src/native/libs/System.Native/pal_time.h`, defined
-            // in `pal_time.c` -- note *not* `pal_process.c`, where you might
+            // in `pal_time.c` -- *not* `pal_process.c`, where you might
             // reasonably look first. That tree is outside our sparse
-            // dotnet/runtime checkout, so it was checked by fetching the file
-            // at the pinned commit rather than from `$DOTNET_RUNTIME_SRC`.)
+            // dotnet/runtime checkout, so fetch the file at the pinned commit
+            // rather than looking in `$DOTNET_RUNTIME_SRC`.)
             // It is a stateful sampler: it reads the process's cumulative user/kernel CPU
             // time, diffs it against whatever `*previous` held from the
             // caller's last call, overwrites `*previous` with the fresh
@@ -741,8 +725,7 @@ module NativeSystemNative =
             // executing this guest's instructions" as a quantity, and there
             // is no simulated contention for a virtual CPU that would make
             // "utilization" mean anything for a guest's own workload either.
-            // We just return a constant 0; this function is only used to tune the thread pool's performance, for
-            // AppDomain.MonitoringTotalProcessorTime, for certain tracing, and System.Environment.ProcessCpuUsage.
+            // We return a constant 0.
             let ptr =
                 NativeCall.managedPointerOfPointerArgument
                     "SystemNative_GetCpuUtilization"
@@ -767,7 +750,7 @@ module NativeSystemNative =
             // Known tech debt: this width is a literal with no structural link to either
             // declaration, and nothing would catch it drifting. The managed-BCL drift test
             // does not cover native `pal_*` headers. It is a literal because the boundary here
-            // is genuinely untyped (`void*`), so deriving it would mean resolving
+            // is untyped (`void*`), so deriving it would mean resolving
             // `ProcessCpuInformation`'s own ConcreteTypeHandle purely to describe three
             // all-zero `ulong`s. Note the bounds check in `MemoryBlock.writeBytes` is only a
             // partial safety net: it bounds against the whole backing memory block, not
@@ -827,29 +810,21 @@ module NativeSystemNative =
             // allocation pattern and its timer bucketing — depend on which
             // core the *interpreter* happened to be running on.
             //
-            // We report a real per-thread placement rather than a constant.
+            // We report a real per-thread placement, not the `-1` "platform
+            // lacks sched_getcpu" sentinel (legitimate on macOS, and handled by
+            // CoreLib via a `Environment.CurrentManagedThreadId` fallback):
+            // PawPrint reports a Linux platform identity through
+            // `SystemNative_GetUnixRelease`, and on Linux the call works.
+            //
             // The value is fixed at thread creation by
             // `EmulatedKernel.cpuForRotation` and stored in
             // `ThreadState.Cpu`; see there for why round-robin, and why
             // "pinned to" and "currently running on" coincide under a
-            // scheduler that never migrates threads. Returning the stored
-            // value verbatim (rather than re-deriving it here) is deliberate:
-            // `effectiveProcessorCount` reads the kernel's env table live, so
-            // two derivations at different moments could in principle
-            // disagree. Nothing can make them disagree today — PawPrint
-            // implements no `setenv`, and `KernelConfig` is applied before the
-            // entry thread exists — but deriving once and storing means a
-            // future PR that adds environment mutation cannot silently turn a
-            // guest's shard index into an out-of-range one.
-            //
-            // Returning `-1` — claiming the platform lacks `sched_getcpu`, as
-            // it genuinely does on macOS — was the alternative. It is a
-            // legitimate answer that CoreLib handles (it falls back to
-            // `Environment.CurrentManagedThreadId` as a shard proxy), and it
-            // has the side effect of short-circuiting `ProcessorNumberSpeedCheck`.
-            // We do not take it: PawPrint reports a Linux platform identity
-            // through `SystemNative_GetUnixRelease`, and on Linux the call
-            // works.
+            // scheduler that never migrates threads. It is returned verbatim
+            // rather than re-derived here: `effectiveProcessorCount` reads the
+            // kernel's env table live, so if environment mutation is ever
+            // added, a re-derivation could silently turn a guest's shard index
+            // into an out-of-range one.
             let cpu =
                 match Map.tryFind ctx.Thread state.ThreadState with
                 | Some threadState -> threadState.Cpu
@@ -885,14 +860,11 @@ module NativeSystemNative =
             // resolves, not on anything about the guest.
             //
             // We return a real id rather than the `(uint32)-1` "this platform
-            // cannot determine a thread id" sentinel. Returning the sentinel
-            // would work — CoreLib substitutes `Environment.CurrentManagedThreadId`,
-            // which PawPrint also models deterministically — but it is the same
-            // answer `SystemNative_SchedGetCpu` above declines to give, and for
-            // the same reason: PawPrint presents a Linux platform identity
-            // (`SimulatedUnixPlatform`), and on Linux this call works. It also
-            // would not answer `GetUInt64OSThreadId`, which has no sentinel, so
-            // a real id has to exist regardless.
+            // cannot determine a thread id" sentinel (which CoreLib handles by
+            // substituting `Environment.CurrentManagedThreadId`): PawPrint
+            // presents a Linux platform identity (`SimulatedUnixPlatform`), and
+            // on Linux this call works. `GetUInt64OSThreadId` has no sentinel,
+            // so a real id has to exist regardless.
             //
             // The value is minted at thread creation and stored in
             // `ThreadState.OsThreadId`; see `OsThreadId` for why it must be
@@ -1078,7 +1050,7 @@ module NativeSystemNative =
             // runtime — so the pointer is only decoded on the success path,
             // which is the one place it is actually dereferenced.
             if bufferSize < 0 then
-                // The shim's own guard. Note it *also* `assert`s this, so a
+                // The shim's own guard. It *also* `assert`s this, so a
                 // checked native build would abort instead; EINVAL is what a
                 // guest running against a retail runtime can observe, and it
                 // is the only one of the two behaviours we can reproduce.
@@ -1101,10 +1073,10 @@ module NativeSystemNative =
                 fail UnixError.ERANGE
             else
 
-            // The buffer is genuinely dereferenced from here on, so this is
+            // The buffer is dereferenced from here on, so this is
             // where it must resolve to storage. A pointer that does not is an
             // unmapped address (null was already handled above), which real
-            // `getcwd` reports as EFAULT after writing nothing — note that the
+            // `getcwd` reports as EFAULT after writing nothing — the
             // size checks above come first, so `getcwd((byte*)123, 1)` is
             // ERANGE rather than EFAULT, as on the real kernel.
             match dereferenceablePointerArgument operation "buffer" bufferArgument with
@@ -1383,7 +1355,7 @@ module NativeSystemNative =
                 // stream, so there is nothing to report and no way for a test
                 // to say the invention was wrong. Refuse loudly instead; the
                 // BCL reaches `FStat` only through a `SafeFileHandle` it opened
-                // itself, so this is a hand-rolled P/Invoke or a genuinely new
+                // itself, so this is a hand-rolled P/Invoke or a new
                 // code path, and either wants a decision rather than a guess.
                 failwith
                     $"%s{operation}: fd %d{fd} is the standard stream %O{role}, and PawPrint holds no inode for one. Every field `fstat` owes a pipe would be invented here; decide what a stream's `struct stat` is (issue #956) rather than guessing."
@@ -1447,7 +1419,7 @@ module NativeSystemNative =
                 |> Some
 
             // `flock` is one of the places where the two Unixes PawPrint models
-            // genuinely disagree, and not only about errno numbering. PawPrint
+            // disagree, and not only about errno numbering. PawPrint
             // models Linux's rules and refuses under Darwin rather than
             // guessing, because what has been *measured* about Darwin is its
             // return codes and not the lock state they leave behind: Darwin
@@ -1550,10 +1522,8 @@ module NativeSystemNative =
                     // same process, PawPrint simulating exactly one — but not
                     // necessarily another *thread*. A single-threaded guest that
                     // opens one file twice and blocks on its own lock is
-                    // deadlocked, and a real kernel duly hangs it forever. So
-                    // refusing here is not merely the conservative option: for
-                    // the single-threaded case it is strictly more useful than
-                    // what Linux does, and it never converts the request into a
+                    // deadlocked, and a real kernel duly hangs it forever. The
+                    // refusal must never convert the request into a
                     // non-blocking one, which would hand the guest an
                     // `EWOULDBLOCK` no kernel would have produced.
                     //
@@ -1608,10 +1578,9 @@ module NativeSystemNative =
             // platform, and a silent one at that.
             //
             // Refusing first means a negative size beats an otherwise-diagnosable
-            // bad fd, which real kernels would report as EBADF. That is a
-            // deliberate over-refusal on a two-fault input, recorded here because
-            // a green suite cannot show it; the alternative is to answer a
-            // question whose premise PawPrint has already refused.
+            // bad fd, which real kernels would report as EBADF — a known
+            // over-refusal on a two-fault input, recorded here because a green
+            // suite cannot show it.
             //
             // CoreLib never sends one: every caller is `RandomAccess`, whose
             // sizes come from span lengths.
@@ -1641,7 +1610,7 @@ module NativeSystemNative =
             // whose resulting lock state is not, and which therefore refuses.
             // Where the answer is known, PawPrint gives it rather than crashing.
             //
-            // Note `EISDIR` follows the offset check on *both* platforms, so
+            // `EISDIR` follows the offset check on *both* platforms, so
             // only the descriptor and seekability steps actually move; that is
             // why one flag suffices rather than two separate orderings.
             let offsetCheckedBeforeDescriptor =
@@ -1676,12 +1645,9 @@ module NativeSystemNative =
                 // Reachable from the BCL, and handled by it:
                 // `RandomAccess.ReadAtOffset` catches ESPIPE (and ENXIO), clears
                 // `SupportsRandomAccess`, and retries through
-                // `SystemNative_Read`. So a `FileStream` over a pipe gets one
-                // step further than it used to and then stops at that
-                // unimplemented handler, which is the honest outcome — the
-                // sequential read path is not this slice. Note the Darwin answer
-                // for stdout/stderr does *not* get that retry, EBADF not being
-                // one of the errnos that clears the flag.
+                // `SystemNative_Read`. The Darwin answer for stdout/stderr does
+                // *not* get that retry, EBADF not being one of the errnos that
+                // clears the flag.
                 let unreadable =
                     match role with
                     | FileDescriptorRole.StandardInput -> false
@@ -1756,19 +1722,18 @@ module NativeSystemNative =
             // fails inside `MemoryBlock.writeBytes`, naming the block rather
             // than the syscall.
             //
-            // Left as it is, deliberately. That is a property of the shared
-            // `writeBytesThrough` seam rather than of this handler: measured,
-            // `SystemNative_ReadLink` fails identically for a target longer than
-            // the buffer it was given, and `Stat`/`LStat`/`FStat` write through
-            // the same helper. Fixing it means giving that seam a "is this whole
-            // range writable" query, which has to understand every
-            // `ManagedPointerSource` shape — its own change, and one that should
-            // improve every caller at once rather than this one quietly.
+            // This is a property of the shared `writeBytesThrough` helper
+            // rather than of this handler: measured, `SystemNative_ReadLink`
+            // fails identically for a target longer than the buffer it was
+            // given, and `Stat`/`LStat`/`FStat` write through the same helper.
+            // Fixing it means giving `writeBytesThrough` an "is this whole
+            // range writable" query over every `ManagedPointerSource` shape —
+            // its own change, and one that should improve every caller at once.
             //
-            // Nor is the behaviour wrong, exactly: the guest has overflowed its
-            // own buffer, which a real kernel services by corrupting whatever
-            // follows it. Detecting that is more useful than reproducing it.
-            // What is missing is a message that names the syscall.
+            // The guest has overflowed its own buffer, which a real kernel
+            // services by corrupting whatever follows it; detecting that is
+            // more useful than reproducing it. What is missing is a message
+            // that names the syscall.
             match dereferenceablePointerArgument operation "buffer" instruction.Arguments.[1] with
             | None -> fail UnixError.EFAULT
             | Some buffer ->
@@ -1816,7 +1781,7 @@ module NativeSystemNative =
         // space an unmapped pointer lies, so it cannot tell 0x7ffffffff000 from
         // 0xffffffffffff — and the two differ on Linux.
         //
-        // Left alone here deliberately, for the same reason as the
+        // Left alone here for the same reason as the
         // whole-range writability gap `SystemNative_PRead` records: this is a
         // property of PawPrint's address-space fidelity shared by every
         // buffer-taking handler rather than of this one. Measured, `PRead` and
@@ -1858,7 +1823,7 @@ module NativeSystemNative =
             // is a fact about the shim rather than about any kernel, which is
             // why it can be stated without a platform.
             //
-            // Note EINVAL, not ERANGE: `Common_Write` answers ERANGE for the
+            // EINVAL, not ERANGE: `Common_Write` answers ERANGE for the
             // same mistake, and the asymmetry is upstream's rather than a typo
             // here (pal_io_common.h:41-45 against :59-63).
             if bufferSize < 0 then
@@ -2228,7 +2193,7 @@ module NativeSystemNative =
                 // syscall answers 0 on macOS and EINVAL on Linux for
                 // `bufsiz == 0`, and the guard means neither answer escapes.
                 //
-                // Note the C `assert`s `bufferSize >= 0` first, so a checked
+                // The C `assert`s `bufferSize >= 0` first, so a checked
                 // build would abort on a negative size rather than reach this;
                 // EINVAL is what a guest running against a retail runtime can
                 // observe, exactly as for `SystemNative_GetCwd`.
@@ -2278,8 +2243,8 @@ module NativeSystemNative =
                     $"%s{operation}: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
             | Some (InodeContent.Directory _)
             | Some (InodeContent.RegularFile _) ->
-                // Not a link. EINVAL rather than any other errno is
-                // load-bearing rather than cosmetic: `FileSystem.ResolveLinkTarget`
+                // Not a link. It must be EINVAL and no other errno:
+                // `FileSystem.ResolveLinkTarget`
                 // (FileSystem.Unix.cs:679) answers *null* for EINVAL and
                 // rethrows every other errno as an exception, so this single
                 // choice is the difference between `File.ResolveLinkTarget`
@@ -2315,13 +2280,12 @@ module NativeSystemNative =
                     ImmutableArray.CreateRange (Seq.truncate count all)
 
             // **Known omission: the link's `atime` does not move**, though
-            // POSIX says a successful `readlink` marks it for update. This is
-            // deferred rather than overlooked, and it is not dead state: the
+            // POSIX says a successful `readlink` marks it for update. The
             // virtual clock advances as the driver loop runs, so a guest that
             // `LStat`s a link before and after reading it really could see the
             // difference.
             //
-            // It is deferred because it cannot be settled *here*. Whether the
+            // Deferred because it cannot be settled *here*. Whether the
             // access time moves is a property of the mount, not of this
             // syscall, and the two platforms modelled disagree: measured on
             // macOS — lstat, sleep, readlink, lstat — `st_atime` does not
@@ -2336,8 +2300,8 @@ module NativeSystemNative =
             // It would also be the first mutation of the emulated filesystem
             // in the interpreter: the graph is built once from the seed
             // (`EmulatedKernel.fs`) and no handler writes back
-            // `Kernel.FileSystem` today, so there is no write-back seam to
-            // reuse. Note the divergence is also not something the differential
+            // `Kernel.FileSystem` today, so there is no write-back path to
+            // reuse. The divergence is also not something the differential
             // oracle can arbitrate, since the answer depends on which host ran
             // it.
             //
@@ -2539,7 +2503,7 @@ module NativeSystemNative =
                 )
 
             // Decoding the `buffer` pointer is deferred until we are
-            // genuinely about to dereference it. `Common_Write` is
+            // about to dereference it. `Common_Write` is
             // documented (in `pal_io_common.h`) to perform no dereference
             // for `bufferSize < 0` (ERANGE bail) or `bufferSize = 0`
             // (no-op on every Unix we model), so a guest calling e.g.
@@ -2592,11 +2556,7 @@ module NativeSystemNative =
                         // kernel answers for a write to an `O_RDONLY`
                         // descriptor, and every descriptor PawPrint hands out
                         // today is one — `SystemNative_Open` refuses every
-                        // write flag loudly, so no other kind can exist. That
-                        // makes this arm honest rather than a stand-in: it is
-                        // not "writing is unimplemented", it is "this
-                        // descriptor is read-only", which is a true statement
-                        // about every descriptor that can reach it.
+                        // write flag loudly, so no other kind can exist.
                         //
                         // When the write path lands, the open file description
                         // gains an access mode and this arm must consult it
@@ -2622,7 +2582,7 @@ module NativeSystemNative =
                                 // `bufferSize = 0` (it bails in
                                 // `Stream.Write`), but honour the C contract
                                 // so guests that DllImport directly behave
-                                // the same as on the host. Crucially, do
+                                // the same as on the host. Do
                                 // NOT touch `buffer` here: the pointer is
                                 // permitted to be any bit pattern (incl.
                                 // garbage) because it is not dereferenced.
@@ -2732,7 +2692,7 @@ module NativeSystemNative =
             // would mask guest memory-corruption bugs.
             //
             // Accumulated in `int64`: this file is not `Checked`, so an `int` fold could wrap a
-            // genuinely interior pointer back onto zero and free a block from the middle of it,
+            // interior pointer back onto zero and free a block from the middle of it,
             // which is precisely the guest memory-corruption bug the check exists to expose
             // (issue #993).
             let rec projectionByteOffset (acc : int64) (ps : ByrefProjection list) : Result<int64, ByrefProjection> =

@@ -5,13 +5,8 @@ module ManagedPointerByteView =
     let private arrayElementHandle : ArrayShape -> ConcreteTypeHandle =
         ArrayElementType.ofShape
 
-    /// The byte stride between cells of the array at `arr`.
-    ///
-    /// This used to measure cell 0 when the array was non-empty and fall back to the
-    /// element type when it was empty. Both branches computed the same number — the
-    /// stride is a property of the element type — so the non-empty branch was reading
-    /// guest memory to answer a question the type already answers. The array now records
-    /// the stride at allocation; see `ArrayShape.ElementStride`.
+    /// The byte stride between cells of the array at `arr`, recorded at
+    /// allocation (`ArrayShape.ElementStride`).
     let arrayElementSize (state : IlMachineState) (arr : ManagedHeapAddress) : int =
         ManagedHeap.getArrayElementStride arr state.ManagedHeap
 
@@ -129,7 +124,7 @@ module ManagedPointerByteView =
     /// legal-IL shape needs, without forcing the byte-addressability promise
     /// we cannot keep. Subsequent pointer arithmetic on the structural-element
     /// byref will still use element-stride semantics. A byref whose declared
-    /// pointee genuinely is `byte` does not need that surrogate at all and can
+    /// pointee really is `byte` does not need that surrogate at all and can
     /// be anchored unconditionally — see `anchorByteStrideOverArrayData` below.
     let anchorByteViewIfPlainArrayByref
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

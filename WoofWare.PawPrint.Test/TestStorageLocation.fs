@@ -8,14 +8,14 @@ open WoofWare.PawPrint
 
 /// Laws of `StorageLocation.overlapVerdict`.
 ///
-/// `overlapVerdict` is pure over `LocationResolution`, which is the whole point of splitting
-/// it out of `shouldCopyBackwards`: the interesting failure mode has nothing to do with how a
+/// `overlapVerdict` is pure over `LocationResolution`, split out of `shouldCopyBackwards`
+/// precisely so this is possible: the interesting failure mode has nothing to do with how a
 /// pointer resolves and everything to do with how two resolutions of *differing precision*
 /// combine. Testing it here needs no `IlMachineState`, so the laws can be stated directly
 /// rather than smuggled through a guest program.
 ///
-/// Note what is deliberately *not* asserted: that `resolve` produces any particular
-/// resolution. That would restate `byteLocation`, whose behaviour this stage does not change.
+/// Not asserted: that `resolve` produces any particular resolution — that would restate
+/// `byteLocation`.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestStorageLocation =
@@ -43,9 +43,7 @@ module TestStorageLocation =
     /// Offsets and byte counts are drawn with an explicit `Gen.choose`, not from FsCheck's
     /// default `int`: under `Quick` that is size-bounded to roughly [-100, 100], and deriving
     /// a whole case from one such value would explore only ~100 distinct cases however high
-    /// `MaxTest` is set. The distribution checks below caught exactly that — the first draft
-    /// of this file drove everything from one `NonNegativeInt` seed and never once produced a
-    /// `CopyBackwards` verdict.
+    /// `MaxTest` is set.
     let private genPrecise : Gen<(ByteStorageIdentity * int64) option> =
         Gen.frequency
             [
@@ -83,10 +81,9 @@ module TestStorageLocation =
         | StorageLocation.LocationResolution.Located (_, precise) -> precise
         | StorageLocation.LocationResolution.Unrelatable -> None
 
-    /// The pre-refactor decision, transcribed from `CellAwareMemOps.shouldCopyBackwards` as it
-    /// stood before this stage. An independent statement of the arithmetic, so that a slip in
-    /// rewriting the `match` shows up as a disagreement rather than as a silently reordered
-    /// guard.
+    /// The pre-refactor decision, transcribed from `CellAwareMemOps.shouldCopyBackwards`.
+    /// An independent statement of the arithmetic, so that a slip in rewriting the `match`
+    /// shows up as a disagreement rather than as a silently reordered guard.
     let private referenceBackwards
         (src : (ByteStorageIdentity * int64) option)
         (dest : (ByteStorageIdentity * int64) option)
@@ -98,10 +95,10 @@ module TestStorageLocation =
             srcOffset < destOffset && destOffset < srcOffset + int64 byteCount
         | _ -> false
 
-    /// The law Codex's review of the plan was about: when two byrefs share a coarse key but
-    /// either lacks a flat coordinate, the direction is *not derivable*, and the verdict must
-    /// say so. A resolution type that dropped its coarse key once a precise one was available
-    /// could not state this law at all, because the pair would be incomparable.
+    /// When two byrefs share a coarse key but either lacks a flat coordinate, the direction is
+    /// *not derivable*, and the verdict must say so. A resolution type that dropped its coarse
+    /// key once a precise one was available could not state this law at all, because the pair
+    /// would be incomparable.
     [<Test>]
     let ``equal coarse keys with either side imprecise is undecidable`` () : unit =
         let mutable observed = 0
@@ -350,9 +347,9 @@ module TestStorageLocationResolve =
         | other -> failwith $"expected both byrefs to resolve precisely, got %A{other}"
 
         // End-to-end at this level: a four-byte copy from A to B overlaps (src 0 < dest 2
-        // < src + 4), so the verdict must be the backwards loop. Before the fix the two
-        // sides carried distinct per-field containers and this was CopyForwards — the
-        // measured corruption in SpanMemmoveOverlappingExplicitLayoutClassFields.cs.
+        // < src + 4), so the verdict must be the backwards loop. With distinct per-field
+        // containers this would be CopyForwards — the corruption measured in
+        // SpanMemmoveOverlappingExplicitLayoutClassFields.cs.
         StorageLocation.overlapVerdict resolvedA resolvedB 4
         |> shouldEqual StorageLocation.OverlapVerdict.CopyBackwards
 
@@ -407,7 +404,7 @@ module TestStorageLocationResolve =
 
         // The verdict the coarse keys exist to force: same object, cross-field, no
         // precise coordinate on one side — undecidable, so the caller fails loud. With
-        // per-field coarse keys this arm answered CopyForwards, silently reasserting the
+        // per-field coarse keys this arm would answer CopyForwards, silently reasserting
         // disjointness the layout does not guarantee.
         StorageLocation.overlapVerdict resolvedDegraded resolvedB 4
         |> shouldEqual (
@@ -465,9 +462,9 @@ module TestStorageLocationResolve =
     /// `Unsafe.AddByteOffset (ref o.B, Int32.MaxValue)` and
     /// `Unsafe.AddByteOffset (ref o.A, Int32.MinValue)` are `Int32.MaxValue + 1` and
     /// `Int32.MinValue` bytes from the object base — 2^32 apart, and real .NET reports them as
-    /// different addresses. Folded into an `int`, `B`'s coordinate wrapped onto exactly
-    /// `Int32.MinValue`, so the two resolved to *one* coordinate in *one* container: an
-    /// arbitrarily strong claim of aliasing, from arithmetic that had silently lost a bit.
+    /// different addresses. Folded into an `int`, `B`'s coordinate would wrap onto exactly
+    /// `Int32.MinValue`, so the two would resolve to *one* coordinate in *one* container: an
+    /// arbitrarily strong claim of aliasing, from arithmetic that has silently lost a bit.
     [<Test>]
     let ``two byrefs 2^32 bytes apart do not resolve to one coordinate`` () : unit =
         let state, addr = allocateAdjacentByteFieldObject (freshState ())
@@ -503,9 +500,9 @@ module TestStorageLocationResolve =
     ///
     /// The destination here is 2^32 + 2 bytes past the source, so the two ranges are nowhere
     /// near each other and a forward loop is correct. Folded into an `int` the destination
-    /// landed at *2*, two bytes inside a four-byte source range, and `overlapVerdict` claimed
-    /// the backwards loop — a copy run in the wrong direction, which is the shape that corrupts
-    /// data rather than merely reporting a wrong number.
+    /// would land at *2*, two bytes inside a four-byte source range, and `overlapVerdict` would
+    /// claim the backwards loop — a copy run in the wrong direction, which is the shape that
+    /// corrupts data rather than merely reporting a wrong number.
     ///
     /// The chain is constructed directly because `appendProjection` coalesces adjacent
     /// `ByteOffset`s, so no sequence of `Unsafe.AddByteOffset` calls produces this exact shape;

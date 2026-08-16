@@ -12,14 +12,14 @@ open WoofWare.PawPrint
 /// offset. `Field` consults the current type cursor; `ReinterpretAs` re-anchors it; `ByteOffset`
 /// advances the offset and leaves the cursor alone.
 ///
-/// The interesting question is what a `Field` *after* a `ByteOffset` means. It is exactly what
+/// A `Field` *after* a `ByteOffset` means exactly what
 /// `ldflda` on a `ref T` sitting `n` bytes along means in the real runtime: `base + n +
 /// offsetof(field, T)`, with no check on `n`. The cursor is still `T`-typed because
 /// `ManagedPointerSource.appendProjection` only ever appends a `ByteOffset` to a chain already
 /// ending in a `ReinterpretAs` — so the byte cursor always qualifies a reinterpret, and the
 /// reinterpret target is the anchor a following `Field` resolves against.
 ///
-/// The genuine violation is the mirror image: a `ByteOffset` hung off a `Field` navigation, with no
+/// The violation is the mirror image: a `ByteOffset` hung off a `Field` navigation, with no
 /// reinterpret to say what type the raw bytes are being viewed as. `appendProjection` refuses to
 /// construct that, and the walk refuses to fold it.
 [<TestFixture>]
@@ -114,7 +114,7 @@ module TestProjectionByteOffset =
         IlMachineManagedByref.walkProjectionByteOffset templateFor (fun () -> root) projs
 
     // ----------------------------------------------------------------------------------------
-    // The shape the guard used to refuse
+    // Field after ByteOffset: the accepted shapes
     // ----------------------------------------------------------------------------------------
 
     /// `buffer[k].Tag` for `k > 0`. `peelTrailingByteView` strips the leading `ReinterpretAs Elem`
@@ -125,7 +125,7 @@ module TestProjectionByteOffset =
         walk noTemplate (elem ()) [ ByrefProjection.ByteOffset elemSize ; ByrefProjection.Field tagField ]
         |> shouldEqual (int64<int> (elemSize + tagOffset))
 
-    /// Slot 0 is the degenerate case and already worked; asserting it alongside pins the stride.
+    /// Slot 0 is the degenerate case; asserting it alongside pins the stride.
     [<Test>]
     let ``slot zero and slot one differ by exactly one element`` () : unit =
         let atSlot (k : int) : int64 =
@@ -143,7 +143,7 @@ module TestProjectionByteOffset =
         |> shouldEqual (int64<int> (3 + tagOffset))
 
     /// Two `Field`s past a `ByteOffset`: the second's layout depends on the type the first selected,
-    /// so this only works if the cursor is genuinely threaded through rather than reset.
+    /// so this only works if the cursor is threaded through rather than reset.
     [<Test>]
     let ``a ByteOffset followed by nested Field navigation threads the cursor`` () : unit =
         let projs =
@@ -171,7 +171,7 @@ module TestProjectionByteOffset =
         |> shouldEqual (int64<int> (elemSize + tagOffset))
 
     // ----------------------------------------------------------------------------------------
-    // The shape that is a genuine violation
+    // The shape that is a violation
     // ----------------------------------------------------------------------------------------
 
     /// A `ByteOffset` hung off a `Field` navigation has no reinterpret saying what type the raw
@@ -202,7 +202,7 @@ module TestProjectionByteOffset =
         exc.Message |> shouldContainText "Field navigation followed by ByteOffset"
 
     // ----------------------------------------------------------------------------------------
-    // Shapes that already worked, pinned so the relaxation doesn't disturb them
+    // Simple chains
     // ----------------------------------------------------------------------------------------
 
     [<Test>]
@@ -239,10 +239,10 @@ module TestProjectionByteOffset =
     // ----------------------------------------------------------------------------------------
 
     /// The chain `Unsafe.AddByteOffset (ref s.B, Int32.MaxValue)` builds, over a template whose
-    /// second field sits at offset 1. Its true coordinate is 2147483648, which is precisely the
-    /// coordinate an `int` accumulator wrapped onto `Int32.MinValue` — the value the *first*
-    /// field displaced by `Int32.MinValue` resolves to, so two genuinely different addresses
-    /// landed on one number. `Unsafe.ByteOffset` then reported their distance as zero.
+    /// second field sits at offset 1. Its true coordinate is 2147483648, which an `int`
+    /// accumulator wraps onto `Int32.MinValue` — the value the *first* field displaced by
+    /// `Int32.MinValue` resolves to, so two different addresses land on one number and
+    /// `Unsafe.ByteOffset` reports their distance as zero (issue #993).
     [<Test>]
     let ``a Field offset plus a maximal ByteOffset does not wrap`` () : unit =
         let twoBytes =
@@ -406,9 +406,9 @@ module TestProjectionByteOffset =
 
         go root 0I projs
 
-    /// What the old `int` accumulator computed, so the distribution check below can assert that
-    /// the generator actually reaches inputs on which the two disagree. Plain `+` on `int` in
-    /// F# is unchecked, which is the whole bug.
+    /// What an `int` accumulator computes, so the distribution check below can assert that
+    /// the generator reaches inputs on which the two disagree. Plain `+` on `int` in F#
+    /// is unchecked.
     let private wrappingCoordinate (root : CliType) (projs : ByrefProjection list) : int =
         let rec go (template : CliType) (acc : int) (remaining : ByrefProjection list) : int =
             match remaining with

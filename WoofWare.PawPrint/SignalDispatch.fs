@@ -39,7 +39,7 @@ open System.Collections.Immutable
 /// "handler runs on the kernel-owned dispatcher thread" branch (which matches
 /// CoreCLR's `SignalHandlerLoop`). When PawPrint grows the
 /// `pthread_kill`-style branch where the receiver thread itself takes the
-/// hit, the receiver id becomes load-bearing and this discard goes away.
+/// hit, the receiver id will be needed and this discard goes away.
 ///
 /// The handler's `int` return value (real CoreCLR's "0 = run default
 /// disposition, 1 = consumed") is dropped on the floor; modelling default
@@ -70,8 +70,8 @@ module SignalDispatch =
     ///
     /// The explicit `tid <> dispatcher` exclusion is redundant today (the
     /// dispatcher is `Parked`, so `hasNoActiveFrame` already drops it),
-    /// but is kept because it documents a load-bearing architectural
-    /// invariant: the dispatcher runs the handler *for* a receiver and
+    /// but enforces an invariant that must survive refactoring: the
+    /// dispatcher runs the handler *for* a receiver and
     /// is never itself a candidate, even if a future change gave the
     /// dispatcher live frames between handler invocations.
     let private liveExcludingDispatcher (dispatcher : ThreadId) (state : IlMachineState) : ImmutableArray<ThreadId> =
@@ -218,7 +218,7 @@ module SignalDispatch =
         // `MethodInfo.arity mi` (plus 1 if non-static). The handler is
         // expected to be the static `OnPosixSignal`; if a test installs an
         // instance stand-in, that's a configuration error in the test, not
-        // something this seam should silently paper over.
+        // something this dispatch path should silently paper over.
         let newMethodState =
             match
                 MethodState.Empty

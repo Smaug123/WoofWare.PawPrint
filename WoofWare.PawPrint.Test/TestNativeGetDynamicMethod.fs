@@ -15,25 +15,23 @@ open WoofWare.PawPrint
 /// `RuntimeMethodInfoStub` naming it.
 ///
 /// The outside oracle for this QCall is the guest-level case
-/// (`sourcesImpure/DynamicMethodStubFromModule.cs`), which is differential against real .NET; but
-/// all it can see is *that* a non-null stub came back. Nothing yet reads the name or the signature
-/// back out, so no guest can observe those, and this file pins them instead.
+/// (`sourcesImpure/DynamicMethodStubFromModule.cs`), differential against real .NET; but all it
+/// can see is *that* a non-null stub came back. Nothing yet reads the name or the signature back
+/// out, so no guest can observe those, and this file pins them instead.
 ///
-/// Read honestly, that makes most of these consistency checks rather than appeals to CoreCLR: they
-/// assert that the QCall handler and the rest of PawPrint agree, not that either matches the real
-/// runtime. One consequence is worth stating because no test here can catch it: these tests build
-/// the six native arguments at the same indices the handler reads them from, so a handler and a
-/// test that agreed on the *wrong* index for `name` versus `sig` would both pass, and the guest
-/// case would too, since nothing downstream observes either value. The order was checked by hand
-/// against the pinned managed signature (RuntimeHandles.cs:1773-1780). Whoever implements the
-/// first consumer of the recorded name or signature should bring a differential guest assertion
-/// with it.
+/// That makes most of these consistency checks rather than appeals to CoreCLR: they assert that
+/// the QCall handler and the rest of PawPrint agree, not that either matches the real runtime.
+/// No test here can catch a wrong argument index: these tests build the six native arguments at
+/// the same indices the handler reads them from, so a handler and a test that agreed on the
+/// *wrong* index for `name` versus `sig` would both pass, and the guest case would too. The order
+/// was checked by hand against the pinned managed signature (RuntimeHandles.cs:1773-1780).
+/// Whoever implements the first consumer of the recorded name or signature should bring a
+/// differential guest assertion with it.
 ///
-/// The body-reading tests are the exception, and are better supported than that. The handler now
-/// reads the `DynamicResolver`'s fields by name, and the guest case above drives a *real*
-/// `DynamicILGenerator` through this same handler — so a field name that had drifted from CoreLib
-/// would make that guest fail, differentially, rather than merely making these tests disagree with
-/// the handler. What the guest cannot see is the decoded *result*, which is what this file pins.
+/// The body-reading tests are better supported: the handler reads the `DynamicResolver`'s fields
+/// by name, and the guest case above drives a *real* `DynamicILGenerator` through this same
+/// handler, so a field name that had drifted from CoreLib would make that guest fail
+/// differentially. What the guest cannot see is the decoded *result*, which this file pins.
 [<TestFixture>]
 module TestNativeGetDynamicMethod =
 
@@ -269,11 +267,10 @@ public static class Entry
         let bytes = Array.append (System.Text.Encoding.UTF8.GetBytes value) [| 0uy |]
         bytePointer baseClassTypes bytes state
 
-    /// Runs `entryPoint` against the entry thread. Deliberately through `NativeQCall.tryExecute`
-    /// rather than straight at `NativeModuleHandle.tryExecuteQCall`: that is the path the
-    /// interpreter takes, and it derives the entry point from the method's own import metadata, so
-    /// this also fails if the handler exists but was never registered in the dispatch table --
-    /// which is otherwise an entirely silent mistake.
+    /// Runs `entryPoint` against the entry thread, through `NativeQCall.tryExecute` rather than
+    /// straight at `NativeModuleHandle.tryExecuteQCall`: that is the path the interpreter takes,
+    /// and it derives the entry point from the method's own import metadata, so this also fails if
+    /// the handler exists but was never registered in the dispatch table.
     let private invokeQCall
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (prepared : Program.PreparedProgram)
@@ -313,11 +310,11 @@ public static class Entry
     /// Runs the `RuntimeMethodHandle.IsDynamicMethod` FCall over a `RuntimeMethodHandleInternal`.
     ///
     /// This is PawPrint's model of `MethodDesc::IsNoMetadata()` — the bit
-    /// `RuntimeType.GetMethodBase` branches on first, precisely because such a method has no token
-    /// to look up — so asserting through it pins that the QCall handler and that FCall handler
-    /// agree. It is a cross-component consistency check, not an outside oracle; what makes it
-    /// non-vacuous is that the polarity is pinned in both directions, by the pre-existing
-    /// `IsDynamicMethod is false for a registry-minted handle` in `TestMethodHandleRegistry.fs`.
+    /// `RuntimeType.GetMethodBase` branches on first, because such a method has no token to look
+    /// up — so asserting through it pins that the QCall handler and that FCall handler agree. It
+    /// is a cross-component consistency check, not an outside oracle; the opposite polarity is
+    /// pinned by `IsDynamicMethod is false for a registry-minted handle` in
+    /// `TestMethodHandleRegistry.fs`.
     let private invokeIsDynamicMethod
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (prepared : Program.PreparedProgram)
@@ -609,9 +606,9 @@ public static class Entry
 
     /// A `System.Reflection.Emit.DynamicScope` whose `m_tokens` holds <paramref name="entries"/>.
     ///
-    /// Built as a real `List&lt;object&gt;` — a genuine generic instantiation with a real `_items`
-    /// and `_size` — rather than as any object that happens to have fields of those names, because
-    /// the over-allocation `_size` exists to describe is exactly what one of the tests below is for.
+    /// Built as a real `List&lt;object&gt;` — a generic instantiation with a real `_items` and
+    /// `_size` — rather than as any object that happens to have fields of those names, because
+    /// the over-allocation `_size` exists to describe is what one of the tests below is for.
     let private allocateScope
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -990,9 +987,6 @@ public static class Entry
         let stubAddress, _, state =
             mintOne loggerFactory prepared "Probe" signatureWithInteriorNuls doublingBody state
 
-        // The whole point. Before this QCall existed, every handle the registry could mint
-        // answered `false` here, because `MethodHandle` had no case that could denote a
-        // no-metadata method.
         invokeIsDynamicMethod loggerFactory prepared (internalHandleOfStub state stubAddress) state
         |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
 
@@ -1035,7 +1029,7 @@ public static class Entry
 
         definition.GetResolver () |> shouldEqual (Some resolverObj)
 
-    /// The property Option B of the design exists to get right. CoreCLR mints a fresh
+    /// CoreCLR mints a fresh
     /// `DynamicMethodDesc` per call, so two `DynamicMethod`s agreeing on name, signature and
     /// module are still different methods; a registry that deduped them structurally would fuse
     /// two guest objects into one and make `dm1.CreateDelegate` and `dm2.CreateDelegate` run the
@@ -1115,9 +1109,8 @@ public static class Entry
         // region bounds are expressed in, so a decoder that produced the right instructions at the
         // wrong offsets would still misplace every jump.
         // Unwrapped to the nullary payload because `IlOp` has no equality: it carries a
-        // `SourcedMetadataToken`, whose `AssemblyName` has none. The match is not a workaround —
-        // a body that decoded to anything token-bearing here would fail this test rather than
-        // silently compare unequal.
+        // `SourcedMetadataToken`, whose `AssemblyName` has none. A body that decoded to anything
+        // token-bearing here fails this test rather than silently comparing unequal.
         instructions.Instructions
         |> List.map (fun (op, offset) ->
             match op with
@@ -1150,7 +1143,7 @@ public static class Entry
     /// `LCGMethodResolver::GetCodeInfo`). A mint that recorded the current value would capture one
     /// the guest is still entitled to change.
     ///
-    /// Both `TestCase`s assert the *same* thing — that nothing was decided — precisely because the
+    /// Both `TestCase`s assert the *same* thing — that nothing was decided — because the
     /// field's value at mint must make no difference at all.
     [<TestCase(true)>]
     [<TestCase(false)>]
@@ -1240,7 +1233,7 @@ public static class Entry
 
     /// ...and never read again. `LCGMethodResolver::GetCodeInfo` computes `m_Options` only under
     /// `if (!m_Code)`, so the first compilation fixes the flag for the method's whole life; a guest
-    /// that assigns `InitLocals` afterwards is not refused, it is simply ignored.
+    /// that assigns `InitLocals` afterwards is not refused, it is ignored.
     [<Test>]
     let ``initLocals is latched by the first execution`` () : unit =
         let loggerFactory, prepared, state = loadFixture ()
@@ -1294,18 +1287,18 @@ public static class Entry
         |> shouldEqual (Some false)
 
     /// A preparation that fails leaves the method exactly as unprepared as it found it — including
-    /// its `initLocals`, which is read *after* the clause types precisely so that this holds.
+    /// its `initLocals`, which is read *after* the clause types so that this holds.
     ///
     /// Measured on real .NET: a first invocation that fails to compile latches nothing, and a
     /// second invocation after the guest repairs the scope compiles and runs. No guest can reach
-    /// that today (repairing `m_tokens` needs reflection PawPrint does not implement), so this is
-    /// the only thing standing between the rule and a build that latches `initLocals` on the way
-    /// past and then refuses.
+    /// that today (repairing `m_tokens` needs reflection PawPrint does not implement), so this
+    /// test is the only guard against a build that latches `initLocals` on the way past and then
+    /// refuses.
     ///
     /// The clause names entry 2, which holds an *open generic definition* rather than a closed
     /// type: `BeginCatchBlock` accepts one, because it is a perfectly good `RuntimeType`, and real
     /// .NET raises `InvalidProgramException` for it when it compiles the method. Entry 2 is a
-    /// genuine `RuntimeTypeHandle`, so the mint-time check passes and the refusal lands here.
+    /// real `RuntimeTypeHandle`, so the mint-time check passes and the refusal lands here.
     [<Test>]
     let ``a failed preparation latches nothing`` () : unit =
         let loggerFactory, prepared, state = loadFixture ()
@@ -1359,9 +1352,8 @@ public static class Entry
     /// The `DynamicScope` index every `ldstr` in a body names.
     ///
     /// Projected rather than compared as a `StringOperand`, which has no equality: its other case
-    /// carries a `SourcedStringToken`, hence an `AssemblyName`, which has none. The projection is
-    /// not a workaround — an `ldstr` that had decoded to the metadata case here would fail this
-    /// rather than silently compare unequal.
+    /// carries a `SourcedStringToken`, hence an `AssemblyName`, which has none. An `ldstr` that
+    /// decoded to the metadata case here fails rather than silently comparing unequal.
     let private scopeStringOperands (body : MintedDynamicMethodBody) : int list =
         body.Instructions
         |> List.map fst
@@ -1375,7 +1367,7 @@ public static class Entry
             | _ -> None
         )
 
-    /// The refusal the design still turns on for every operand kind but `ldstr`. A `DynamicScope`
+    /// A `DynamicScope`
     /// operand is a well-formed `MethodDef`/`TypeDef` token that names an unrelated *real* row, so
     /// a body carrying one must not be stored: decoded as-is it would execute against whatever
     /// happened to sit at that index in the scope assembly.
@@ -1407,7 +1399,7 @@ public static class Entry
 
         scopeStringOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
 
-    /// The finding that forces demand-driven resolution: `DynamicILGenerator`'s constructor puts the
+    /// Resolution must be demand-driven: `DynamicILGenerator`'s constructor puts the
     /// method's own signature blob in the scope before any user code runs, and nothing ever names
     /// it. A reader that required every entry to be resolvable would refuse *every* dynamic method,
     /// including this one, whose body is nothing but `ldstr; ret`.
@@ -1555,7 +1547,7 @@ public static class Entry
         RuntimeTypeHandleTarget.Closed handle, state
 
     /// The scope entry a `newarr` names becomes the operand, exactly as an `ldstr`'s does — the
-    /// point being that the *tag* in the token (0x02, TypeDef) is not what decided it. `DynamicScope`
+    /// *tag* in the token (0x02, TypeDef) is not what decided it. `DynamicScope`
     /// masks the tag off and ignores it, so the entry is the only authority on what an index holds.
     [<Test>]
     let ``a newarr resolves against the DynamicScope`` () : unit =
@@ -1579,15 +1571,14 @@ public static class Entry
 
         scopeTypeOperands minted |> shouldEqual [ 2 ]
 
-        // Nothing about *where* the entry lives is recorded, deliberately: the object is read out of
+        // Nothing about *where* the entry lives is recorded: the object is read out of
         // the live `m_scope.m_tokens` when the instruction runs, because a guest can replace a slot
-        // between minting and first invocation and real .NET compiles against the replacement. There
-        // is no captured address here to go stale, which is a stronger guarantee than a test for one.
+        // between minting and first invocation and real .NET compiles against the replacement.
         minted.LocalVars |> Option.map Seq.toList |> shouldEqual (Some [])
 
-    /// The kind check is real, and it is the entry that supplies it. A `newarr` whose index holds a
+    /// A `newarr` whose index holds a
     /// string is a program CoreCLR would reject at JIT; PawPrint rejects it when the method is
-    /// minted, as it already does for the mirror-image `ldstr`.
+    /// minted, as it does for the mirror-image `ldstr`.
     [<Test>]
     let ``a newarr naming a string entry is refused`` () : unit =
         let body =
@@ -1641,7 +1632,7 @@ public static class Entry
     /// "This opcode is not wired for scope operands yet" and "this entry is the wrong kind" are
     /// different facts and must read differently: a guest that trips either just gets parked, so the
     /// message is the only diagnostic anyone gets. A method-shaped opcode naming a perfectly good
-    /// *method* entry is the case that separates them, and `callvirt` is the one to use now that
+    /// *method* entry is the case that separates them, and `callvirt` is the one to use, since
     /// `call` is wired: a `DynamicMethod` is always static, so real .NET answers a `callvirt` naming
     /// one with MissingMethodException (measured) rather than by resolving it.
     [<Test>]
@@ -1674,8 +1665,8 @@ public static class Entry
         // opcode is what is missing.
         message |> shouldNotContainText "which holds"
 
-    /// The other half of that distinction, and the case the previous slice pinned the opposite way:
-    /// now that `call` *is* wired, a `call` naming a type entry is a wrong-kind refusal rather than
+    /// The other half of that distinction:
+    /// `call` is wired, so a `call` naming a type entry is a wrong-kind refusal rather than
     /// an unsupported-opcode one.
     [<Test>]
     let ``a call naming a type entry is refused as wrong-kind`` () : unit =
@@ -1706,9 +1697,9 @@ public static class Entry
         message |> shouldContainText "entry 2"
         message |> shouldContainText "a type handle rather than a method"
 
-    /// The accepting direction, which is what this slice adds: a `call` naming a `DynamicMethod`
+    /// The accepting direction: a `call` naming a `DynamicMethod`
     /// entry is a body PawPrint will mint. Nothing is read out of the entry here — the method it
-    /// names lives in its `_methodHandle`, which is still null at this point precisely because a
+    /// names lives in its `_methodHandle`, which is still null at this point because a
     /// dynamic method may name *itself* and so cannot be minted before its own body is decoded.
     [<Test>]
     let ``a call naming a dynamic-method entry is minted`` () : unit =
@@ -1904,7 +1895,7 @@ public static class Entry
     /// The one arithmetic special case: a `finally` clause's try length comes from `m_endFinally`
     /// and every other kind's from `m_endAddr`. Measured on a real `try/catch/finally`, where a
     /// single `__ExceptionInfo` yields a catch covering `[0,+11)` and a finally covering `[0,+25)`
-    /// — so the two clauses of one region genuinely have different try ranges, and a projection
+    /// — so the two clauses of one region have different try ranges, and a projection
     /// that hoisted the length out of the clause loop gets one of them wrong.
     [<Test>]
     let ``a finally clause takes its try length from m_endFinally`` () : unit =
@@ -2139,7 +2130,7 @@ public static class Entry
         let _, definition = definitionBehindStub state stubAddress
         (definition.GetBody ()).ExceptionRegions |> Seq.toList |> shouldEqual []
 
-    /// The two EH sources are genuinely different: `DynamicILInfo` supplies a fat/thin blob in
+    /// The two EH sources are different: `DynamicILInfo` supplies a fat/thin blob in
     /// `m_exceptionHeader` and leaves `m_exceptions` null, so an implementation that looked only at
     /// `m_exceptions` would see nothing and silently lose every clause. Refuse by name instead.
     [<Test>]
@@ -2259,11 +2250,9 @@ public static class Entry
         message |> shouldContainText "LOCAL_SIG"
         message |> shouldContainText "Field"
 
-    /// A body containing `localloc` used to be refused here, because `localloc` is the one
-    /// instruction whose behaviour depends on `initLocals` and the flag was being snapshotted at
-    /// mint. Now that the flag is read late and latched at first execution, there is nothing to
-    /// refuse: such a body stores like any other, and the flag it will run under is not decided
-    /// yet.
+    /// `localloc` is the one instruction whose behaviour depends on `initLocals`, but the flag is
+    /// read late and latched at first execution, so there is nothing to refuse at mint: such a
+    /// body stores like any other, and the flag it will run under is not decided yet.
     [<Test>]
     let ``a body containing localloc is stored`` () : unit =
         let loggerFactory, prepared, state = loadFixture ()
@@ -2349,18 +2338,15 @@ public static class Entry
         invokeGetMethodTable loggerFactory prepared (internalHandleOfStub state stubAddress) state
         |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr expected))
 
-    /// Why the synthetic case has to exist at all, rather than the scope module's `<Module>` type
+    /// Why the synthetic case exists, rather than the scope module's `<Module>` type
     /// standing in for it: `TypeHandleRegistry` keys guest `Type` object identity on
     /// `RuntimeTypeHandleTarget`, so under that design a global (`<Module>`-declared) method and a
     /// dynamic method in one assembly would come back as the *same* `Type`, where CoreCLR keeps them
     /// distinct.
     ///
-    /// Read precisely: the test above is what rejects that design — mutating the handler to answer
-    /// with `Closed <Module>` fails it, and was measured doing so. This one guards the *consequence*
-    /// that made the design wrong, and so is the test that would fail if someone later reintroduced
-    /// the collapse further down — by resolving the synthetic target to `<Module>` inside
-    /// `getOrAllocateType`, say, which is the shape the mistake would most naturally take once the
-    /// producer is correct.
+    /// The test above rejects that design (mutating the handler to answer with `Closed <Module>`
+    /// fails it, measured); this one fails if the collapse is reintroduced further down — by
+    /// resolving the synthetic target to `<Module>` inside `getOrAllocateType`, say.
     [<Test>]
     let ``the dynamic-methods class is distinct from the module type`` () : unit =
         let loggerFactory, prepared, state = loadFixture ()
@@ -2389,13 +2375,12 @@ public static class Entry
     /// methods minted against the same module share one declaring type however they differ
     /// otherwise.
     ///
-    /// Read precisely, this pins invariance across the two things a mint can vary here — the name
+    /// This pins invariance across the two things a mint can vary here — the name
     /// and the signature blob — and nothing stronger. The owner cannot be varied and so cannot be
     /// tested: `ModuleHandle_GetDynamicMethod` receives only a `QCall::ModuleHandle`, and
     /// `DynamicMethod._typeOwner` never crosses that boundary, so PawPrint's registry never learns
     /// it (`DynamicMethodDefinition` carries only the scope assembly). An owner-keyed answer is
-    /// unrepresentable rather than merely untested, which is the reason it is safe to leave
-    /// unasserted.
+    /// unrepresentable rather than merely untested.
     [<Test>]
     let ``two dynamic methods in one module share a declaring type`` () : unit =
         let loggerFactory, prepared, state = loadFixture ()

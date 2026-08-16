@@ -14,7 +14,7 @@ open System.Collections.Immutable
 ///   - `AcquireQueue` is the FIFO list of threads parked in
 ///     `BlockedOnMonitorAcquire`. The head is the next thread that will
 ///     receive ownership when the current owner releases. FIFO order is
-///     load-bearing for `LowLevelLock` fairness; switching to LIFO or
+///     required for `LowLevelLock` fairness; switching to LIFO or
 ///     arbitrary order would change the program's observable interleaving.
 ///   - `WaitQueue` is the FIFO list of threads parked in
 ///     `BlockedOnMonitorWait`. `Signal_Release` moves the head of this queue
@@ -93,14 +93,9 @@ type SpuriousWakeupStrategy =
 /// the documented usage pattern always wraps `Wait` in a predicate loop.
 /// This type is the deterministic knob for forcing those wakeups in PawPrint.
 ///
-/// Kept structurally parallel-but-separate from `SpuriousWakeupStrategy` so
-/// a guest's LowLevelMonitor-level fuzz schedule and its SyncBlock-level
-/// schedule are independent dials: a single strategy covering both would
-/// either be hard to script (per-tick wakeups tagged by which queue family
-/// they target) or coarsely tied together (any waiter is fair game on a
-/// given tick), neither of which the user wants when they're trying to
-/// reproduce a specific managed-Monitor bug without disturbing the
-/// LowLevelMonitor schedule.
+/// Parallel but separate from `SpuriousWakeupStrategy`, so the
+/// LowLevelMonitor-level and SyncBlock-level fuzz schedules are
+/// independent dials.
 [<RequireQualifiedAccess>]
 type SyncBlockSpuriousWakeupStrategy =
     /// Default. Only `Pulse` / `PulseAll` wakes a waiter. Equivalent to a
@@ -138,7 +133,7 @@ type SyncBlockSpuriousWakeupStrategy =
 ///   - `WaitQueue` is the FIFO list of threads parked in
 ///     `BlockedOnWaitHandle` or `BlockedOnWaitHandles`. The head-most
 ///     *satisfiable* entry is woken first by a subsequent `Release`; FIFO
-///     order is load-bearing for the higher-level `LowLevelLifoSemaphore`
+///     order is required by the higher-level `LowLevelLifoSemaphore`
 ///     fairness contract.
 ///
 /// Queue invariant (weakened by multi-handle wait): `Count > 0` does *not*
@@ -148,10 +143,10 @@ type SyncBlockSpuriousWakeupStrategy =
 /// at least one of its *other* handles. Skipping such an entry rather than
 /// blocking behind it is what the PAL does (`CSynchData`'s waiting-thread
 /// walk consults `IsRestOfWaitAllSatisfied` and `continue`s past a node it
-/// cannot satisfy, leaving it registered). One consequence is worth stating
-/// because it looks like a bug: a *fresh* `WaitOne` arriving afterwards takes
+/// cannot satisfy, leaving it registered). One consequence looks like a bug
+/// but is faithful: a *fresh* `WaitOne` arriving afterwards takes
 /// the fast path and acquires ahead of that still-parked wait-all waiter. The
-/// fast paths deliberately do not consult `WaitQueue`; adding a queue check
+/// fast paths do not consult `WaitQueue`; adding a queue check
 /// there would be a fidelity regression, not a fix.
 type SemaphoreState =
     {
@@ -287,7 +282,7 @@ module OutputLogEntry =
 
 /// Which Unix a simulated platform *is*.
 ///
-/// The axis along which the systems PawPrint models genuinely differ, and the
+/// The axis along which the systems PawPrint models differ, and the
 /// only one: everything else it needs to know about a platform — the errno
 /// numbering, a symlink's permission bits, whether `stat` reports a creation
 /// time — is a consequence of this rather than an independent choice. Those
@@ -303,7 +298,7 @@ type SimulatedUnixFlavour =
     /// Linux, whose `<errno.h>` numbering, always-0o777 symlink modes and
     /// birth-time-less `stat` PawPrint follows.
     | Linux
-    /// Darwin, i.e. macOS. Note that `uname -r` reports the *Darwin* kernel
+    /// Darwin, i.e. macOS. `uname -r` reports the *Darwin* kernel
     /// release rather than the macOS product version.
     | Darwin
 
@@ -338,11 +333,9 @@ type SimulatedUnixReleaseError =
 /// flavour, not a new independently-settable string that could claim a Darwin
 /// release alongside an x86_64 machine.
 ///
-/// One representation per platform, which is what the flavour buys. An earlier shape had two presets plus a
-/// `Custom of release`, which could not answer anything *but* the release —
-/// so every platform-dependent fact had a failure arm for it, and a guest on a
-/// `Custom` platform could abort the interpreter by stat-ing a symlink. Making
-/// the flavour explicit removes those arms rather than handling them.
+/// One representation per platform, which is what the flavour buys: every
+/// platform-dependent fact below is a total function of it, with no failure
+/// arms for an unclassifiable platform.
 ///
 /// Construct with `SimulatedUnixPlatform.linuxX64`, `macOsArm64`, or `create`
 /// for a specific release string.
@@ -482,7 +475,7 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Darwin -> true
 
     /// The permission bits this platform reports for a symbolic link, which no
-    /// syscall can set and which the two Unixes genuinely disagree about.
+    /// syscall can set and which the two Unixes disagree about.
     ///
     /// Measured rather than read: with `umask 022` macOS reports 0o755 for a
     /// fresh symlink, with `umask 077` it reports 0o700 and with `umask 000`
@@ -640,12 +633,11 @@ type EmulatedKernel =
         /// Reading the field never mutates it: the BCL's `TickCount64`
         /// observers stay pure, and the consistency property "two threads
         /// reading on the same tick observe the same value" falls out of
-        /// the scheduler being the sole writer. Deliberately *not* derived
-        /// from `StepCounter`: a future PR adding deadline-aware waits
-        /// will want to jump the clock forward to the next deadline when
-        /// no thread is Runnable, and that jump must not require a
-        /// matching jump in `StepCounter` (which would skew the spurious-
-        /// wakeup schedule).
+        /// the scheduler being the sole writer. *Not* derived
+        /// from `StepCounter`: the driver's deadline jump moves the clock
+        /// forward to the next deadline when no thread is Runnable, and
+        /// that jump must not require a matching jump in `StepCounter`
+        /// (which would skew the spurious-wakeup schedule).
         VirtualClockTicks : int64
         /// Wall-clock time, in milliseconds since the Unix epoch, that the
         /// simulated process boots at — i.e. the wall-clock reading that
@@ -879,10 +871,9 @@ module EmulatedKernel =
     let cryptoRandomInitialState : uint64 = 0x243F6A8885A308D3UL
 
     /// Logical-processor count a freshly-minted simulated process reports.
-    /// One, because that is the value every existing run already observed
-    /// (the test harness hard-coded it and the CLI read the host's count, so
-    /// only single-processor behaviour has ever been exercised end-to-end),
-    /// and because a fixed default is a prerequisite for replayability.
+    /// One, because only single-processor behaviour has been exercised
+    /// end-to-end, and because a fixed default is a prerequisite for
+    /// replayability.
     /// Hosts that want to exercise the guest's multi-processor code paths
     /// raise it via `KernelConfig.ProcessorCount`.
     [<Literal>]
@@ -920,17 +911,14 @@ module EmulatedKernel =
     /// which is a more defensible fixed point than either extreme
     /// (`1`, degenerate minimum spinning; `12`, the hard ceiling).
     ///
-    /// There is in fact a stronger justification than that derivation:
-    /// CoreCLR ships exactly this number as its own literal
-    /// pre-measurement default. `src/coreclr/utilcode/yieldprocessornormalized.cpp`
+    /// CoreCLR also ships exactly this number as its own literal
+    /// pre-measurement default: `src/coreclr/utilcode/yieldprocessornormalized.cpp`
     /// initialises `s_optimalMaxNormalizedYieldsPerSpinIteration` to
     /// `(unsigned int)(272.0 / 37.0 + 0.5)` = `7`, commented "Defaults are for
-    /// when normalization has not yet been done". So 7 is not merely what the
-    /// formula *would* yield for an idealised host -- it is the value a real
-    /// CoreCLR process genuinely reports for the entire window before its
-    /// background measurement completes. A simulated process that never
-    /// performs that measurement reporting the never-measured default is
-    /// about as faithful as this can be.
+    /// when normalization has not yet been done". So 7 is the value a real
+    /// CoreCLR process reports for the entire window before its background
+    /// measurement completes; a simulated process that never performs that
+    /// measurement reports the never-measured default.
     [<Literal>]
     let defaultOptimalMaxSpinWaitsPerSpinIteration : int = 7
 
@@ -1023,8 +1011,7 @@ module EmulatedKernel =
 
     /// Effective user ID a freshly-minted simulated process runs as.
     ///
-    /// 1000 rather than 0, and the choice is load-bearing rather than
-    /// cosmetic: `Environment.IsPrivilegedProcess` is literally
+    /// 1000 rather than 0: `Environment.IsPrivilegedProcess` is literally
     /// `GetEUid() == 0`, so a guest that defaulted to root would silently take
     /// the privileged branch of every check it makes about itself — the
     /// uninteresting one, and not the one most programs are written for. 1000
@@ -1043,7 +1030,7 @@ module EmulatedKernel =
     /// value itself is unobservable beyond comparison — the BCL reads
     /// `(st_dev, st_ino)` pairs to decide whether two paths name the same file
     /// (`File.Copy`, `File.Move`, `File.Replace`) and never interprets the
-    /// device number — but it is deliberately *non-zero*: no mounted filesystem
+    /// device number — but it is *non-zero*: no mounted filesystem
     /// reports 0, so a zero here would be indistinguishable from a field
     /// nobody remembered to write.
     let simulatedDeviceId : int64 = 0x1000001L
@@ -1081,8 +1068,8 @@ module EmulatedKernel =
 
     /// Set the Unix platform identity the simulated process reports.
     ///
-    /// No eager validation of the release string, unlike the shape this
-    /// replaced: `SimulatedUnixPlatform.create` validates at construction, so a
+    /// No eager validation of the release string:
+    /// `SimulatedUnixPlatform.create` validates at construction, so a
     /// value of the type is already a platform some Unix could be. `assertValid`
     /// still catches the one value that can bypass that — a forged
     /// `Unchecked.defaultof`, whose null release would otherwise reach a guest
@@ -1123,9 +1110,6 @@ module EmulatedKernel =
             GroupId = groupId
         }
 
-    /// Set the logical-processor count the simulated process reports. Rejects
-    /// non-positive values at the boundary rather than letting them reach a
-    /// guest that will divide by them.
     /// Set the virtual time charged per retired instruction. See
     /// `EmulatedKernel.InstructionCostTicks` for what the number means and why it is
     /// configurable; `defaultInstructionCostTicks` for how the default was calibrated.
@@ -1138,6 +1122,9 @@ module EmulatedKernel =
             InstructionCostTicks = cost
         }
 
+    /// Set the logical-processor count the simulated process reports. Rejects
+    /// non-positive values at the boundary rather than letting them reach a
+    /// guest that will divide by them.
     let withProcessorCount (count : int) (kernel : EmulatedKernel) : EmulatedKernel =
         if count < 1 then
             failwith $"ProcessorCount must be at least 1; got %d{count}"
@@ -1306,10 +1293,9 @@ module EmulatedKernel =
     /// the same `VirtualClockTicks` that already backs
     /// `SystemNative_GetLowResolutionTimestamp` — which upstream is
     /// `minipal_lowres_ticks()`, *the same clock* read in milliseconds. Making
-    /// both PawPrint entry points views of one field is therefore not merely
-    /// convenient: it reproduces a relationship the guest can observe, since
-    /// `Environment.TickCount64` and `Stopwatch` must not disagree about how
-    /// much time has passed.
+    /// both PawPrint entry points views of one field reproduces a relationship
+    /// the guest can observe: `Environment.TickCount64` and `Stopwatch` must
+    /// not disagree about how much time has passed.
     ///
     /// Unlike `systemTimeAsTicks` this is *not* offset by
     /// `WallClockEpochMs`: the monotonic clock counts from boot, and CoreLib

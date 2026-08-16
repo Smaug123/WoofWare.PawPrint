@@ -7,19 +7,19 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// `PathCursor` replaced a `PathComponent list` as the resolution walk's spine,
-/// so that the walk knows where in the pathname buffer it is — which is what
-/// Darwin's symlink-splice length rule needs and a component list cannot say.
+/// `PathCursor` is the resolution walk's spine; unlike a `PathComponent list`
+/// it knows where in the pathname buffer it is — which is what Darwin's
+/// symlink-splice length rule needs and a component list cannot say.
 ///
-/// Two things therefore need pinning, and they are different in kind:
+/// Two things need pinning, and they are different in kind:
 ///
-///   * that the cursor **decomposes** a path exactly as the old parser did, and
-///     that a whole resolution walk over it answers exactly as the old walk
-///     did. These are equivalence claims, checked against reference
-///     implementations vendored below;
+///   * that the cursor **decomposes** a path exactly as splitting on the
+///     separator does, and that a whole resolution walk over it answers
+///     exactly as a component-list walk does. These are equivalence claims,
+///     checked against reference implementations vendored below;
 ///   * that `remainingBytes` reports what a **real kernel** would have left in
 ///     its buffer. That is not an equivalence claim and has no reference
-///     implementation — writing one would just restate the code under test — so
+///     implementation — writing one would restate the code under test — so
 ///     it is checked against numbers bisected out of a live Darwin kernel.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -74,9 +74,9 @@ module TestPathCursor =
 
     // -------------------------------------------------- reference decomposition
 
-    /// How `UnixPath.parse` used to decompose a path, written out independently:
-    /// split on the separator and drop the empty segments. The cursor scans
-    /// instead, so agreeing with this is a real claim rather than a tautology.
+    /// Reference decomposition, independent of the cursor: split on the
+    /// separator and drop the empty segments. The cursor scans instead, so
+    /// agreeing with this is a real claim rather than a tautology.
     let private referenceSegments (raw : string) : string list =
         raw.Split UnixPathText.separator
         |> Array.filter (fun segment -> segment.Length > 0)
@@ -148,9 +148,9 @@ module TestPathCursor =
 
     [<Test>]
     let ``splicing a target agrees with appending its components, wherever the walk has got to`` () : unit =
-        // The old walk spliced by list append: `components target @ rest`. The
+        // The reference splice is list append: `components target @ rest`. The
         // cursor concatenates *text* instead, because only text carries the byte
-        // count. Those must decompose the same way, or resolution changed.
+        // count. Those must decompose the same way.
         let property (targetText : string, remainderText : string, skip : int) : unit =
             let target = path targetText
             let segments = referenceSegments remainderText
@@ -192,9 +192,9 @@ module TestPathCursor =
 
     [<Test>]
     let ``splicing onto a cursor that has consumed nothing is refused`` () : unit =
-        // Not a hypothetical: the first draft of the property above generated
-        // this case and it silently fused "🐶" with "a" into an entry name of
-        // "🐶a", which would have resolved a path no kernel would.
+        // A splice onto a fresh cursor would silently fuse the target with the
+        // next component ("🐶" + "a" becoming the entry name "🐶a"), resolving
+        // a path no kernel would.
         let fresh = PathCursor.ofPath (path "abc/d")
 
         let exn =
@@ -310,10 +310,9 @@ module TestPathCursor =
 
     // ------------------------------------------------- whole-walk equivalence
 
-    /// The resolution walk exactly as it stood before the cursor replaced its
-    /// spine, transcribed here so that "no behaviour changed" is measured rather
-    /// than asserted. Deliberately a copy: if the production walk is edited,
-    /// this must not follow, or the property stops meaning anything.
+    /// A reference resolution walk over a component-list spine, independent of
+    /// the cursor. Deliberately a copy: if the production walk is edited, this
+    /// must not follow, or the property stops meaning anything.
     let private referenceResolveFull
         (limits : PathLimits)
         (startDirectory : InodeNumber)

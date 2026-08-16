@@ -3,9 +3,7 @@ using System.Reflection.Emit;
 
 public class Program
 {
-    // Executing the body of a method minted by `Reflection.Emit`. The previous slices could mint
-    // one (#952), give it an identity (#977), decode its signature (#980) and bind a delegate to
-    // it (#985); this is the first that actually runs the IL.
+    // Executing the body of a method minted by `Reflection.Emit`.
     //
     // Every body here is token-free — `ldarg`, `ldloc`, `stloc`, `ldc`, `add`, `br`, `ret` —
     // because a dynamic method whose IL carries a metadata token is refused when it is minted:
@@ -87,8 +85,7 @@ public class Program
         }
 
         // Locals: a body that declares one, stores through it and reads it back, so the
-        // concretised `LocalVars` are actually exercised. Nothing before this slice ever ran a
-        // dynamic method's locals, though they were decoded at mint time.
+        // concretised `LocalVars` are actually exercised.
         DynamicMethod withLocal =
             new DynamicMethod("WithLocal", typeof(int), new Type[] { typeof(int) }, typeof(Program).Module);
         ILGenerator localIl = withLocal.GetILGenerator();

@@ -336,8 +336,7 @@ module TestFaultHandlers =
         // `conv.i4` on a byref keeps the pointer alive so an alignment mask can be
         // asked of it; the low half of that address is unknown and may be zero. A
         // "non-zero, so accept" answer here would run an exception handler the guest
-        // did not select — the kind of divergence that surfaces nowhere near its
-        // cause.
+        // did not select.
         let narrowedByref =
             EvalStackValue.Int32 (
                 Int32Source.NarrowedManagedPointer (

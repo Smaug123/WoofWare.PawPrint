@@ -72,11 +72,9 @@ module TestMonotonicTimestamp =
     [<Test>]
     let ``the bound is tighter than the wall clock's`` () =
         // A virtual-clock reading `systemTimeAsTicks` still accepts can be too
-        // large for the nanosecond derivation. This is a real asymmetry between
-        // the two clock views, not an oversight, and the guard exists precisely
-        // because of it. Compared against the wall clock's ceiling in the same
-        // unit — both are now 100 ns ticks, where the wall-clock bound used to
-        // be stated in milliseconds.
+        // large for the nanosecond derivation: a real asymmetry between the
+        // two clock views. Compared against the wall clock's ceiling in the
+        // same unit (100 ns ticks).
         maxClockTicks < EmulatedKernel.maxWallClockTicks |> shouldEqual true
 
     [<Test>]
@@ -245,13 +243,13 @@ module TestMonotonicTimestamp =
 
     [<Test>]
     let ``the clock writer rejects moving past the representable horizon`` () : unit =
-        // Regression guard for an overflow the re-denomination made reachable. A finite deadline
-        // is `clock + timeoutMs * ticksPerMillisecond`; `Thread.Sleep(Int32.MaxValue)` adds about
+        // Regression guard for a reachable overflow. A finite deadline is
+        // `clock + timeoutMs * ticksPerMillisecond`; `Thread.Sleep(Int32.MaxValue)` adds about
         // 2.1e13 ticks, and the driver's deadline jump advances the clock to a deadline *without*
         // retiring a step. So a guest looping on that sleep reaches `Int64.MaxValue` in ~430,000
-        // cheap iterations, where the millisecond-denominated clock needed 4.3 billion. Wrapping
-        // would hand the next sleeper a negative deadline that fires immediately, and time would
-        // stop advancing — a silent wrong answer, so the writer faults instead.
+        // cheap iterations. Wrapping would hand the next sleeper a negative deadline that fires
+        // immediately, and time would stop advancing — a silent wrong answer, so the writer
+        // faults instead.
         let atHorizon =
             { EmulatedKernel.initial with
                 VirtualClockTicks = EmulatedKernel.maxMonotonicTimestampClockTicks

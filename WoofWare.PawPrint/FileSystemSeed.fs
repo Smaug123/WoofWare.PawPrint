@@ -4,35 +4,23 @@ open System.Collections.Immutable
 
 /// One entry in the filesystem a host hands to the emulated kernel.
 ///
-/// A *tree*, rather than the list of absolute paths a manifest format would
-/// use, and deliberately so: with the children of a directory held in its own
-/// `Map`, "the same path declared twice", "a child declared before its parent"
-/// and "the order of the declarations matters" are all unrepresentable rather
-/// than checked. What is left to go wrong — a name that is not a legal
-/// `FileName`, a symlink target that is not a legal `SymlinkTarget` — is
-/// already refused by those types' own constructors, so a seed that type-checks
-/// describes a filesystem, full stop.
+/// A tree, so duplicate paths, orphaned children, and declaration order are
+/// unrepresentable rather than checked.
 ///
 /// The tree cannot express a hard link, since every inode has exactly one
-/// container here. `VirtualFileSystem` can, so the day something needs a
-/// seeded hard link this type grows a case; it is not a limit of the model.
+/// container here. `VirtualFileSystem` can, so a seeded hard link would mean
+/// growing a case here; it is not a limit of the model.
 ///
-/// A file's or directory's **permission bits are part of the seed**, and are
-/// required rather than optional. Silence would not be neutrality: the realiser
-/// has to give every inode *some* mode, so an absent field is an undeclared
-/// decision rather than the absence of one. Naming it has a concrete payoff —
-/// the differential oracle chmods the host tree to the same bits, which makes
-/// the mode a cross-runtime fact. Before this, `File.GetUnixFileMode` had to be
-/// excluded from `FileMetadataSeeded.cs`, because PawPrint answered 0644 while
-/// the host answered whatever its umask produced.
+/// A file's or directory's permission bits are part of the seed, and are
+/// required rather than optional: the differential oracle chmods the host tree
+/// to the same bits, which makes the mode a cross-runtime fact.
 ///
 /// `SeedEntry.file` and `SeedEntry.directory` supply the modes a `umask 022`
 /// process would have created, for the many seeds that only care about shape.
 ///
-/// A symlink has no such field, and must not: Linux ignores a symlink's own
+/// A symlink has no mode field, and must not: Linux ignores a symlink's own
 /// mode entirely, `lchmod` is not portable, and `VirtualFileSystem` already
-/// models this with `InodePermissions.PlatformSymlinkDefault`. A field here
-/// would be a value no filesystem could honour.
+/// models this with `InodePermissions.PlatformSymlinkDefault`.
 [<RequireQualifiedAccess>]
 type SeedEntry =
     | File of contents : ImmutableArray<byte> * permissions : PermissionBits
@@ -67,9 +55,8 @@ module FileSystemSeed =
     /// is a regular file" unrepresentable instead of an error to report.
     ///
     /// `createdAt` is every seeded inode's birth, mtime, ctime and atime — the
-    /// filesystem springs into existence at one instant, which is the honest
-    /// story for an image that was never written to. Passed in rather than read
-    /// from a clock: this file compiles before `EmulatedKernel`, and a
+    /// filesystem springs into existence at one instant. Passed in rather than
+    /// read from a clock: this file compiles before `EmulatedKernel`, and a
     /// filesystem that read the host's clock would make a replay depend on when
     /// it was recorded.
     let toVirtualFileSystem (createdAt : UnixTimestamp) (entries : Map<FileName, SeedEntry>) : VirtualFileSystem =

@@ -2,9 +2,9 @@
 // `ArrayShapeQueries.cs` covers the caught case (including the message); this covers the
 // uncaught one, where the exception escapes `Main` and the guest process dies.
 //
-// The `Array.GetLength` intrinsic used to dispatch the exception itself and had nowhere to
-// report "no handler was found", so an uncaught one took the interpreter down rather than
-// being reported as a dead guest.
+// An `Array.GetLength` intrinsic that dispatched the exception itself would have nowhere to
+// report "no handler was found", so an uncaught one would take the interpreter down rather
+// than being reported as a dead guest.
 
 using System;
 

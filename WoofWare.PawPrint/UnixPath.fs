@@ -164,7 +164,7 @@ type UnixPathError =
 /// decomposition: the structure is recovered on demand by `UnixPath.components`
 /// and `PathCursor`, and the stored text stays authoritative.
 ///
-/// That is not tidy-mindedness. A kernel resolves a path out of a byte buffer,
+/// A kernel resolves a path out of a byte buffer,
 /// and Darwin's length rules count the bytes *in that buffer* — so "a//b" and
 /// "a/b" are behaviourally distinct on a real kernel (measured: a symlink
 /// splice with an "/a//b" remainder refuses a target one byte shorter than the
@@ -291,7 +291,7 @@ module PathCursor =
         // and a run with nothing after it is consumed entirely — so "a//b"
         // leaves "/b" but "a//" leaves nothing.
         //
-        // That is not cosmetic. Expanding a symbolic link copies from exactly
+        // Expanding a symbolic link copies from exactly
         // here, so these bytes are absent from the resulting buffer, and Darwin
         // compares that buffer's length against PATH_MAX. Measured on Darwin
         // 25.6.0: an "//a" remainder costs the same as "/a", while an "/a//b"
@@ -318,10 +318,9 @@ module PathCursor =
     /// limits are byte counts. Measured on Darwin 25.6.0, with U+4E2D (three
     /// UTF-8 bytes, one UTF-16 code unit): a symlink target of 1022 raw bytes
     /// spelled in CJK is refused where 1019 resolves, i.e. the budget tracks
-    /// bytes and not `String.Length`. The distinction matters here more than it
-    /// looks, because the *other* limit next door — `PathLimits.nameWithinLimit`
-    /// — genuinely does count UTF-16 code units on Darwin, so the wrong
-    /// function is right often enough to look correct.
+    /// bytes and not `String.Length`. The *other* limit next door —
+    /// `PathLimits.nameWithinLimit` — does count UTF-16 code units on Darwin,
+    /// so the wrong function is right often enough to look correct.
     let remainingBytes (cursor : PathCursor) : int =
         UnixPathText.utf8.GetByteCount (remainder cursor)
 
@@ -430,7 +429,7 @@ module UnixPath =
     /// to survive as a C string (see `UnixPathText`). That is what makes the
     /// projections total.
     ///
-    /// Note POSIX leaves a path beginning with exactly two separators
+    /// POSIX leaves a path beginning with exactly two separators
     /// implementation-defined (it may denote a distinct namespace). Every Unix
     /// PawPrint models treats it as the root, and so does this.
     let parse (candidate : string) : Result<UnixPath, UnixPathError> =

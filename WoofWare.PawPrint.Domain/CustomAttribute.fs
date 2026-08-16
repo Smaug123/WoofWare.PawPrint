@@ -377,9 +377,8 @@ module CustomAttribute =
     /// </summary>
     /// <remarks>
     /// Callers that can resolve types use this first and fall back to resolution only on
-    /// <c>None</c>, so that the attributes which decode today keep costing exactly what they cost
-    /// today. Callers that cannot resolve types (the IL dumper) treat <c>None</c> as "cannot
-    /// decode this blob".
+    /// <c>None</c>. Callers that cannot resolve types (the IL dumper) treat <c>None</c> as
+    /// "cannot decode this blob".
     /// </remarks>
     let rec tryShapeWithoutResolution (paramType : TypeDefn) : CustomAttribArgShape option =
         match paramType with

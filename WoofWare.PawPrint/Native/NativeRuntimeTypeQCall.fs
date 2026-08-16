@@ -844,7 +844,7 @@ module NativeRuntimeTypeQCall =
                     // away from this path elsewhere; the only documented consumer
                     // (ArraySortHelper) instantiates reference types. If a value-type ever
                     // reaches us, calling the parameterless ctor with `this`-as-ObjectRef
-                    // would silently boxsem the receiver, so reject it explicitly.
+                    // would silently box the receiver, so reject it explicitly.
                     failwith $"TODO: %s{operation} for value type %s{typeInfo.Namespace}.%s{typeInfo.Name}"
 
                 let objectAddr, state =
@@ -1909,7 +1909,7 @@ module NativeRuntimeTypeQCall =
             // `RuntimeTypeHandle.InternalAllocNoChecks_FastPath` in Native/NativeRuntimeTypeFCall.fs
             // for why.
             //
-            // "NoChecks" is load-bearing, and is what separates this from
+            // "NoChecks" is what separates this from
             // `RuntimeTypeHandle_InternalAlloc`: it runs no class initialiser and performs no
             // activation or instantiability check, because its callers already know the type is
             // initialised and allocatable (`MethodTable::AllocateNoChecks`, methodtable.h:2701,
@@ -1931,8 +1931,7 @@ module NativeRuntimeTypeQCall =
             // MethodTable is a shape no reader here is prepared for. Creating one would be silent
             // corruption; refusing is a loud failure. CoreCLR needs no such guard — its readers
             // cope with a raw-layout box — so this is PawPrint's invariant, not upstream
-            // behaviour, and it is a genuine (if currently unreachable) divergence rather than
-            // tidiness.
+            // behaviour.
             //
             // Unlike the same refusal in the `calli` allocation helper
             // (UnaryMetadataCallOps.executeAllocationHelperCall), this is a guard rather than a
@@ -1945,7 +1944,7 @@ module NativeRuntimeTypeQCall =
             // — that method is called from JIT-generated code (`corelib.h`,
             // `ALLOC_CONTINUATION_RESULT_BOX`), never from IL a guest can execute — and until
             // that changes there is no way to exercise, or therefore to test, a raw-layout
-            // Nullable box. So the guard stays and names the situation: when runtime-async
+            // Nullable box. When runtime-async
             // arrives, this failure is what will fire, and the fix is a heap representation for a
             // layout-preserving Nullable box, not a wider predicate here. The other two callers
             // avoid the shape for good: `MulticastDelegate.NewMulticastDelegate` passes a
@@ -1953,8 +1952,7 @@ module NativeRuntimeTypeQCall =
             // `CastHelpers.Box_Nullable`, which substitutes the underlying `T`.
             //
             // The invariant properly belongs at the chokepoint
-            // (`IlMachineState.allocateUninitialisedInstance`), which would subsume both copies;
-            // that is a wider change than this one and wants measuring against the whole suite.
+            // (`IlMachineState.allocateUninitialisedInstance`), which would subsume both copies.
             match AllConcreteTypes.lookup typeHandle state.ConcreteTypes with
             | Some ct when InternalTypeKind.kind ctx.BaseClassTypes ct = InternalTypeKind.Nullable ->
                 failwith
@@ -2038,7 +2036,7 @@ module NativeRuntimeTypeQCall =
             // on a method with a `Nullable<T>` parameter reaches it. The fix is a layout-preserving
             // boxed-Nullable heap representation, which is the same thing the "NoChecks" arm above
             // says it needs for `AsyncHelpers.AllocContinuationResultBox`; one representation would
-            // serve both, and neither is in scope here. Refusing loudly beats corrupting.
+            // serve both. Refusing loudly beats corrupting.
             match InternalTypeKind.kind ctx.BaseClassTypes concreteType with
             | InternalTypeKind.Nullable ->
                 failwith

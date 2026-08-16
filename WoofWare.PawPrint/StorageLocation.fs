@@ -75,8 +75,8 @@ module internal StorageLocation =
     ///
     /// The coordinate is `int64` and is taken as-is. It is not an access offset — nothing
     /// here dereferences either byref — so a coordinate beyond `int32` is a perfectly good
-    /// answer, and one that `Unsafe.ByteOffset` reports to the guest. Narrowing it (as this
-    /// used to) wrapped `ref s.B` displaced by `Int32.MaxValue` onto `ref s.A` displaced by
+    /// answer, and one that `Unsafe.ByteOffset` reports to the guest. Narrowing it to int32
+    /// wraps `ref s.B` displaced by `Int32.MaxValue` onto `ref s.A` displaced by
     /// `Int32.MinValue`: issue #993.
     let private byteLocation
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -108,7 +108,7 @@ module internal StorageLocation =
     /// *could* share underlying storage when `byteLocation` cannot derive a
     /// flat byte offset (e.g. an unresolved concrete-type for a
     /// `ReinterpretAs` target, or a `StackMemoryByte` whose root offset has
-    /// no covering typed cell). `byteLocation` now folds `Field` projections
+    /// no covering typed cell). `byteLocation` folds `Field` projections
     /// into a precise byte offset whenever the root template is available,
     /// so the fallback path here is reached only when that resolution
     /// fails; equal keys then mean an overlapping `Memmove` is undecidable
@@ -237,14 +237,13 @@ module internal StorageLocation =
     ///
     /// **This decides only what it can positively prove**, and refuses everything else by
     /// re-raising the deferral's own diagnostic. In particular it does *not* infer inequality
-    /// from two byrefs landing in different containers, even though that is the tempting rule
-    /// and would decide more pairs. Three separate review rounds each produced a different
-    /// counterexample to it: two fields of one explicit-layout object overlap; a byref
+    /// from two byrefs landing in different containers, even though that rule would decide
+    /// more pairs; counterexamples: two fields of one explicit-layout object overlap; a byref
     /// displaced past its root's extent lands in another root, and ECMA-335 promises no
     /// relative placement between independently declared locals, so `local0 + 1000` may *be*
     /// `local1`; and a `Field` resolved against a reinterpreted larger type can sit outside
-    /// the original slot while `mayLeaveRootExtent` still reports it in-extent. Rather than
-    /// gate on a predicate that has been wrong three times, the distinct-container case is
+    /// the original slot while `mayLeaveRootExtent` still reports it in-extent. The
+    /// distinct-container case is
     /// simply not decided here — it is exactly the set of pairs `ceqNormalised` already
     /// answers correctly on its own, so declining costs nothing.
     let resolveCeq

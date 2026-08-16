@@ -40,8 +40,8 @@ module TestSchedulerPct =
     [<Test>]
     let ``resamplePriority puts the priority in [0, 1) and advances the Rng`` () : unit =
         // Try a handful of seeds so a single accidentally-zero output can't hide a
-        // bug in the scale factor — the range invariant is the algorithm's
-        // load-bearing precondition for argmax correctness.
+        // bug in the scale factor — argmax correctness depends on the range
+        // invariant.
         for seed in [ 0UL ; 1UL ; 0xDEADBEEFUL ; 0xFFFFFFFFFFFFFFFFUL ] do
             let before = PctState.ofSeed seed
             let after = PctState.resamplePriority (ThreadId 7) before
@@ -298,7 +298,7 @@ module TestSchedulerPct =
     [<Test>]
     let ``Pct consumes no randomness when the decision is forced`` () : unit =
         // The invariant the whole fork-point-sharing feature rests on: the policy's state
-        // changes only at genuine choice points, so a prefix during which the scheduler
+        // changes only at contended choice points, so a prefix during which the scheduler
         // never had a choice leaves `PctState.ofSeed s` untouched and can therefore be
         // computed once and shared across every seed.
         //
@@ -321,8 +321,7 @@ module TestSchedulerPct =
     [<Test>]
     let ``onThreadTerminated leaves a RoundRobin schedule alone`` () : unit =
         // The Pct cleanup branch must not introduce a behavioural difference for
-        // RoundRobin runs. Anything else would mean PR B silently perturbed the
-        // default policy — which is exactly what PR A took pains to avoid.
+        // RoundRobin runs.
         let terminated = ThreadId 0
 
         let initial =

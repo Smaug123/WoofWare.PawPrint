@@ -398,8 +398,8 @@ public static class Entry
         // Pins the wcstoul-compatible behaviour: CoreCLR's
         // `GetConfigDWORD` accepts the leading sign, two's-complement
         // wraps the value, and the gate reads any non-zero DWORD as
-        // enabled. A strict UInt32.TryParse would have rejected this and
-        // disabled the gate — that divergence is what Codex caught.
+        // enabled. A strict UInt32.TryParse would reject this and disable
+        // the gate.
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
         let prepared = prepareProgram loggerFactory
@@ -438,9 +438,9 @@ public static class Entry
         // applies two's-complement negation, and the PAL's final
         // `(ULONG)res` cast truncates to the low 32 bits without setting
         // ERANGE. -0x100000001 mod 2^64 = 0xFFFFFFFEFFFFFFFF, low 32
-        // bits = 0xFFFFFFFF, gate non-zero → enabled. The previous
-        // UInt32-only parser rejected this magnitude before applying
-        // the sign and would have disabled the gate.
+        // bits = 0xFFFFFFFF, gate non-zero → enabled. A UInt32-only
+        // parser would reject this magnitude before applying the sign
+        // and disable the gate.
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
         let prepared = prepareProgram loggerFactory
@@ -469,8 +469,7 @@ public static class Entry
 
     [<Test>]
     let ``LogEventSource: dispatch fires loud failwith (the gate that protects against silent event loss)`` () : unit =
-        // This is the test the user explicitly asked for: flip
-        // `DOTNET_EnableEventLog=1`, drive the dispatcher into the
+        // Flip `DOTNET_EnableEventLog=1`, drive the dispatcher into the
         // `LogEventSource` arm, and observe that PawPrint raises rather
         // than silently no-opping. Even on macOS where the host CoreLib
         // omits `XplatEventLogger`, the synthetic context still exercises

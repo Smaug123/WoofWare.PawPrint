@@ -16,7 +16,7 @@ namespace HelloWorldApp
         // That second stage is easy to miss, and getting it wrong is silent
         // rather than loud: `WaitHandle.WaitMultiple` never special-cases
         // WAIT_FAILED, and the abandoned-mutex range check does not match -1,
-        // so simply returning WAIT_FAILED would make `WaitAll` report *success*
+        // so returning WAIT_FAILED would make `WaitAll` report *success*
         // (`-1 != WaitTimeout`) for a wait that acquired nothing. Returning
         // WAIT_TIMEOUT would report a plain failure, also wrong. Only the
         // throw is faithful, and only a differential test distinguishes the
@@ -92,7 +92,7 @@ namespace HelloWorldApp
 
                 sem.Release();
 
-                // Distinct handles are of course fine.
+                // Distinct handles are fine.
                 if (!WaitHandle.WaitAll(new WaitHandle[] { signalled, sem }))
                 {
                     return 6;

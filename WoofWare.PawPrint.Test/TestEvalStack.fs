@@ -505,8 +505,8 @@ module TestEvalStack =
 
     [<Test>]
     let ``toCliTypeCoerced Int64 target preserves SyntheticCrossArrayOffset provenance`` () : unit =
-        // Regression: Int64-target slots used to widen synthetic cross-array offsets to NativeInt,
-        // erasing the Int64Source wrapper. The coercion must preserve the variant unchanged so the
+        // Widening a synthetic cross-array offset to NativeInt in an Int64-target slot erases
+        // the Int64Source wrapper. The coercion must preserve the variant unchanged so the
         // value can flow back through arithmetic that's only defined for Int64Source.
         let synthetic : SyntheticCrossArrayOffset =
             SyntheticCrossArrayOffset.make
@@ -733,9 +733,8 @@ module TestEvalStack =
     let ``unsigned comparisons order two byrefs into the same string by character index`` () : unit =
         // `EventSource`'s manifest handling compares a byref to the start of a name
         // against one part-way into the *same* string, which reaches `clt.un` as two
-        // `StringCharAt` byrefs sharing an object. Refusing that was needlessly
-        // conservative: they plainly have a common root, and two characters of one
-        // string sit at known, ordered addresses.
+        // `StringCharAt` byrefs sharing an object. They have a common root, and two
+        // characters of one string sit at known, ordered addresses.
         //
         // The justification mirrors the `ArrayElement` arm of
         // `tryByteAddressDeltaSign`: a char cell is two bytes — strictly positive —
@@ -761,8 +760,8 @@ module TestEvalStack =
         if EvalStackValueComparisons.cgtUn atStart later then
             failwith "Expected cgt.un to report char 0 as not strictly above char 28 of the same string"
 
-        // The same character is neither above nor below itself. This case already
-        // worked, via the identical-root path; it is here so that a fix which
+        // The same character is neither above nor below itself. This case takes the
+        // identical-root path; it is here so that an implementation which
         // answers only for *differing* indices is still caught.
         if EvalStackValueComparisons.cltUn atStart (at 0) then
             failwith "Expected clt.un to report a character as not strictly below itself"
@@ -1187,7 +1186,7 @@ module TestEvalStack =
 
     [<Test>]
     let ``Int64 GetHashCode of a method handle xors two halves of one materialisation`` () : unit =
-        // The guest shape this change exists for. `RuntimeMethodInfo.GetHashCode` ->
+        // The motivating guest shape. `RuntimeMethodInfo.GetHashCode` ->
         // `IntPtr.GetHashCode` -> `Int64.GetHashCode`, which on 64-bit is
         // `(int)l ^ (int)(l >> 32)` (Int64.cs:106-109). Both halves must derive from
         // the *same* materialisation, or the hash would not be a function of the handle.

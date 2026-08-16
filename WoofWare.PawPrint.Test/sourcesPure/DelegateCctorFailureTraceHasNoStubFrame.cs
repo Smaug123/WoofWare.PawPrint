@@ -9,7 +9,7 @@ using System;
 // anything can throw, the frame is gone. Class initialization is the one exception: it runs
 // while that frame is deliberately still active, so that the invocation can be retried once
 // the `.cctor` returns. Both routes are checked below, since it is the *contrast* that
-// makes the point — the ordinary route has always been clean, and only the initializer
+// makes the point — the ordinary route is clean by construction, and only the initializer
 // route could regress.
 //
 // What this file does not check is that the trace names the target method. It does not, on
@@ -69,7 +69,7 @@ class Program
         }
 
         // Route 2: an ordinary throw from the target body, where the synthetic frame has
-        // already been popped. This has always been clean; it is the control.
+        // already been popped. This is the control.
         Action viaBody = ThrowingBody.M;
 
         try

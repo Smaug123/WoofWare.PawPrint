@@ -28,7 +28,7 @@ module DelegateBindingFlags =
     /// accepts — see the enumeration of callers there, and `NativeDelegate.isCompatible`'s remarks
     /// for why the other filters are absent rather than transcribed.
     ///
-    /// Note that a *strict* comparison is nonetheless reachable even so, because
+    /// A *strict* comparison is nonetheless reachable even so, because
     /// `isLocationAssignable` suppresses relaxation itself for a byref: strictness is not only
     /// something a caller can ask for.
     let relaxedSignature = 0x00000040
@@ -169,22 +169,16 @@ module NativeDelegate =
         // refusal instead, which is the same answer: with relaxation off the only remaining path
         // is the enum arm, every byref has verifier element type BYREF and none is an enum, so two
         // distinct byrefs fail on enum-ness and a byref against a non-byref fails on element type.
-        //
-        // Written as a guard rather than transcribed because the transcription would be *inert*
-        // here and this is not: `isConcreteTypeAssignableTo` refuses a byref structurally (a byref
-        // has no base type, no interfaces and no array shape, IlMachineRuntimeMetadata.fs), so
-        // clearing a flag that only gates a call which already answers false would change nothing.
-        // The hazard the guard exists against is the day that stops being true: if assignability
-        // ever learns byref variance, the objref-ness check below would then decide the pair, and
-        // it answers "both are non-objref, so they match" — silently admitting `string&` where an
-        // `object&` was wanted.
+        // (`isConcreteTypeAssignableTo` already refuses a byref structurally, so today clearing
+        // the flag would change nothing; the guard is against assignability ever learning byref
+        // variance, at which point the objref-ness check below would silently admit `string&`
+        // where an `object&` was wanted.)
         //
         // No test kills this, and none can today: reaching it from the target side needs a dynamic
         // method with a byref parameter, which needs `typeof(int).MakeByRefType()`, and
         // `RuntimeTypeHandle_MakeByRef` is unimplemented (measured). The delegate-side direction is
         // reachable and `DynamicMethodDelegateBinding.cs` exercises it, but the enum arm gives the
-        // same answer there, so the check survives mutation. That is recorded rather than resolved
-        // by deletion: a type-safety guard that the current suite cannot reach is still a guard.
+        // same answer there.
         let eitherIsByref =
             let isByref (handle : ConcreteTypeHandle) : bool =
                 match handle with
@@ -295,8 +289,7 @@ module NativeDelegate =
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Being specialised to a dynamic method removes three of CoreCLR's cases outright, and it is
-    /// worth naming them rather than leaving their absence to be inferred. A
+    /// Being specialised to a dynamic method removes three of CoreCLR's cases outright. A
     /// <c>DynamicMethod</c> is always static (<c>DynamicMethod</c>'s constructors set
     /// <c>mdStatic</c> unconditionally), so every "is the target an instance method" branch takes
     /// its static side; it is never virtual, so the open path's virtual sub-branch is dead; and it
@@ -310,10 +303,8 @@ module NativeDelegate =
     /// flags are exactly <c>DBF_RelaxedSignature</c> — see the handler for the enumeration of
     /// callers that makes that exhaustive — so <c>DBF_StaticMethodOnly</c>,
     /// <c>DBF_InstanceMethodOnly</c>, <c>DBF_OpenDelegateOnly</c>, <c>DBF_ClosedDelegateOnly</c>
-    /// and <c>DBF_NeverCloseOverNull</c> are all unset on every reachable call. Transcribing their
-    /// arms anyway would put five branches here that no test could ever execute, let alone kill;
-    /// whoever makes the second caller reachable should add them back with the tests that exercise
-    /// them.
+    /// and <c>DBF_NeverCloseOverNull</c> are all unset on every reachable call. Whoever makes a
+    /// second caller reachable should add their arms back with the tests that exercise them.
     /// </para>
     /// </remarks>
     let private isCompatible
@@ -330,11 +321,8 @@ module NativeDelegate =
         =
         // "Check that there is no vararg mismatch." A vararg dynamic method is not constructible
         // (`DynamicMethod`'s constructors pass `CallingConventions.Standard`), and neither is a
-        // vararg delegate type from any language PawPrint's tests compile, so this is checked
-        // rather than exercised — no test kills it, and none can until something can produce a
-        // vararg signature on either side. It is checked because the alternative is to assume it,
-        // and the assumption is not one this function is in a position to make: it is handed two
-        // signatures, and the headers say.
+        // vararg delegate type from any language PawPrint's tests compile, so no test can
+        // exercise this check.
         if
             invokeSignature.Header.Get.CallingConvention
             <> targetSignature.Header.Get.CallingConvention
@@ -364,12 +352,10 @@ module NativeDelegate =
         // "If, on the other hand, we're looking at an open delegate but the caller has provided a
         // target it's also not a match."
         //
-        // Note the direction of the inference: the shape comes from the *arity*, and the supplied
-        // target is then checked against it. It is not the other way round. A closed delegate over
-        // a null first argument is a real and reachable shape — `CreateDelegate(t, null)` on a
-        // dynamic method taking one more argument than the delegate — and an implementation that
-        // read "target is null" as "must be open" would classify it wrongly and then, under
-        // PawPrint's field convention, produce a delegate indistinguishable from the open one.
+        // The shape comes from the *arity*, and the supplied target is then checked against it —
+        // not the other way round. A closed delegate over a null first argument is a real and
+        // reachable shape (`CreateDelegate(t, null)` on a dynamic method taking one more argument
+        // than the delegate), so "target is null" must not be read as "must be open".
         if isOpen && firstArgType.IsSome then
             state, None
         else
@@ -561,8 +547,8 @@ module NativeDelegate =
 
             DelegateBindingFlags.requireKnown operation flags
 
-            // Every reachable caller passes exactly `RelaxedSignature`, and the enumeration is
-            // exhaustive rather than hopeful. `Delegate.CreateDelegateNoSecurityCheck` — the only
+            // Every reachable caller passes exactly `RelaxedSignature`.
+            // `Delegate.CreateDelegateNoSecurityCheck` — the only
             // route `DynamicMethod.CreateDelegate` takes — passes exactly that
             // (Delegate.CoreCLR.cs:387-391). The two public `Delegate.CreateDelegate(Type,
             // MethodInfo, ...)` overloads pass `RelaxedSignature` or `OpenDelegateOnly |
@@ -570,10 +556,6 @@ module NativeDelegate =
             // (Delegate.CoreCLR.cs:304, 339), and a `DynamicMethod` is not one — so they cannot
             // deliver a `FromDynamic` handle here at all, and the `FromMetadata` arm below refuses
             // them anyway. `BindToMethodName`'s flag sets belong to a different QCall.
-            //
-            // Asserting that is stronger than implementing the other filters would be: an
-            // unimplemented filter that silently binds something it should have refused is a wrong
-            // answer, where this is a crash naming the flag that arrived.
             if flags <> DelegateBindingFlags.relaxedSignature then
                 failwith
                     $"TODO: %s{operation} was passed DelegateBindingFlags 0x%08x{flags}; PawPrint implements only DBF_RelaxedSignature (0x%08x{DelegateBindingFlags.relaxedSignature}), which is what every caller that can reach this QCall with a Reflection.Emit method passes"
@@ -599,8 +581,7 @@ module NativeDelegate =
             | MethodHandle.FromMetadata identity ->
                 // Deliberately a host crash and not FALSE, per the note above. This is reachable:
                 // `Delegate.CreateDelegate(type, someMethodInfo)` takes exactly this path
-                // (Delegate.CoreCLR.cs:395-403). Before this handler existed it crashed as an
-                // unimplemented QCall; it still crashes, now saying which half is missing.
+                // (Delegate.CoreCLR.cs:395-403).
                 failwith
                     $"TODO: %s{operation} was asked to bind a delegate to the metadata method %O{identity.GetMethodDefinitionHandle ()} in %s{identity.GetAssemblyFullName ()}; PawPrint implements this QCall only for a method minted by Reflection.Emit, which is what DynamicMethod.CreateDelegate reaches it with"
             | MethodHandle.FromDynamic dynamicHandle ->
@@ -632,12 +613,11 @@ module NativeDelegate =
                     failwith $"%s{operation}: the scope assembly %s{scopeAssemblyFullName} is not loaded"
                 )
 
-            // The blob `ModuleHandle_GetDynamicMethod` recorded verbatim. Its practical ceiling is
-            // narrow and is worth stating here, because it — not the compatibility rules below —
-            // is what a guest actually runs into: `SignatureHelper` spells any type that is not a
-            // primitive, string or object as `ELEMENT_TYPE_INTERNAL`, which the decoder refuses by
-            // name, so a dynamic method with a `MyClass` or enum parameter dies at this line
-            // rather than being declared incompatible. That is a separate, pre-existing gap.
+            // The blob `ModuleHandle_GetDynamicMethod` recorded verbatim. `SignatureHelper`
+            // spells any type that is not a primitive, string or object as
+            // `ELEMENT_TYPE_INTERNAL`, which the decoder refuses by name, so a dynamic method
+            // with a `MyClass` or enum parameter dies at this line rather than being declared
+            // incompatible — a separate gap from the compatibility rules below.
             let targetSignature =
                 MethodSignatureDecoding.decode
                     scopeAssembly.Name
@@ -686,7 +666,7 @@ module NativeDelegate =
                     // `NeedsWrapperDelegate` is ARM32-only and instance-virtual-only
                     // (comdelegate.cpp:2053); the open path's virtualisation sub-branch needs a
                     // virtual target; and the `SetMethodBase` tail fires only for a collectible
-                    // `LoaderAllocator`, which PawPrint does not model. (Note that `_methodBase`
+                    // `LoaderAllocator`, which PawPrint does not model. (`_methodBase`
                     // still ends up holding the `DynamicMethod` — `DynamicMethod.CreateDelegate`
                     // assigns it in managed code straight after this QCall returns, via
                     // `StoreDynamicMethod`, which is why `d.Method` works without anything here.)
@@ -697,8 +677,7 @@ module NativeDelegate =
                     // `_methodPtr` and the real code address in `_methodPtrAux`. PawPrint has no
                     // shuffle thunks, and `IlMachineRuntimeMetadata.executeDelegateConstructor`
                     // already puts the target in `_target` and the method in `_methodPtr` for
-                    // *every* delegate, so this is that existing convention applied consistently
-                    // rather than a new divergence minted here.
+                    // *every* delegate; this follows that convention.
                     let delegateTypeHandle =
                         AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes ctx.BaseClassTypes.DelegateType
 
@@ -711,10 +690,8 @@ module NativeDelegate =
                     // `firstArgType` is exactly `targetAddr` mapped. So this is a postcondition to
                     // assert rather than a case to branch on — CoreCLR asserts the same thing at
                     // the top of its open path, `_ASSERTE(pRefFirstArg == NULL || *pRefFirstArg ==
-                    // NULL)` (comdelegate.cpp:1215). Written as a branch it would be a third arm
-                    // no test could distinguish from this one, which is how a stale invariant
-                    // hides; written as an assertion it fails loudly if the guard above is ever
-                    // weakened.
+                    // NULL)` (comdelegate.cpp:1215) — and the assertion fails loudly if the guard
+                    // above is ever weakened.
                     match shape, targetAddr with
                     | DelegateBindingShape.Open, Some _ ->
                         failwith

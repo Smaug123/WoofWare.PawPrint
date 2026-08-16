@@ -109,8 +109,7 @@ module TestInlineArrayLayout =
             // classlayoutinfo.cpp:326-341), so this element's own size is *not* a multiple of its
             // own alignment. That is the only way to make "round the slot then multiply" and
             // "multiply then round" disagree on the sequential route: every other element here is
-            // already its own rounded size, which is why the sweep passed while that route was
-            // computing the wrong thing.
+            // already its own rounded size.
             "sizeFloor",
             {
                 Declarations = "[StructLayout(LayoutKind.Sequential, Size = 5)] private struct Floor { public int I; }"
@@ -309,8 +308,7 @@ public class TestInlineArrayLayoutSweep
 
         actual |> shouldEqual expected
 
-    /// The carve-out above is only defensible while it is true, and it is a claim about the *host*
-    /// runtime rather than about anything in this repository — so it is measured, not assumed. A
+    /// The carve-out above is a claim about the *host* runtime, so it is measured, not assumed. A
     /// runtime that fixed the upstream bug would make these shapes oracle-checkable again, and this
     /// test is what would say so.
     [<TestCaseSource(nameof unrunnableCases)>]

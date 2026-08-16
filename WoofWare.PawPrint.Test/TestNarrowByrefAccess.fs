@@ -184,9 +184,8 @@ module TestNarrowByrefAccess =
         let after = contentsOf state addr
 
         // The slot is still four pointers wide and still declares the type it was allocated as.
-        // Getting this wrong is not a wrong number but a wrong *shape*: before this was modelled
-        // the 32-byte slot became an 8-byte `ByReference` and the three cells after it ceased to
-        // exist.
+        // Getting this wrong is not a wrong number but a wrong *shape*: the 32-byte slot would
+        // become an 8-byte `ByReference` and the three cells after it would cease to exist.
         CliType.sizeOf (CliType.ValueType after) |> shouldEqual 32
         after.Declared |> shouldEqual (pointerSlots []).Declared
 

@@ -6,28 +6,27 @@
 // non-virtual and `newslot` candidates. So any same-signature method on the way down wins,
 // whether or not it has anything to do with the slot.
 //
-// Both cases below are that gap. They are deliberately the two directions of it, so that a fix
-// has to get ownership genuinely right rather than flip a bias:
+// Both cases below are that gap. They are the two directions of it, so that a fix has to get
+// ownership right rather than flip a bias:
 //
 //   * `Hidden` — the derived type must NOT take the slot. It only hides (`new`) the base's
 //     implicit implementation and never declares the interface, so the slot stays on the base.
-//     We answer with the derived method. This half involves no variance at all and fails
-//     identically on `main`.
+//     We answer with the derived method. This half involves no variance at all.
 //
 //   * `Redeclared` — the derived type MUST take the slot. It re-declares the base's
 //     instantiation *and* supplies a matching method, which re-implements the slot. We answer
 //     with the derived type's other overload instead, because we pick the interface-map entry by
-//     order and never ask which type implements each slot. (Note the metadata cannot be read by
+//     order and never ask which type implements each slot. (The metadata cannot be read by
 //     entry order alone here: `Redeclared` and the *passing* `InheritedParent` case in
 //     `VariantInterfaceMapOrder.cs` have the same InterfaceImpl row shape and opposite correct
 //     answers, because the C# compiler flattens the interface closure into the row list. Only
 //     slot ownership separates them.)
 //
-// The variance work deliberately did not try to fix this: `tryResolveVirtualImplementation`
-// scopes each retargeted entry to the entry's owner, which is as far as the interface map alone
-// can go (see the cases it *does* fix in `VariantInterfaceSlotOwnership.cs`). Getting the rest
-// right needs a real dispatch map — slot to implementing method, per interface entry — which
-// changes ordinary non-variant interface dispatch too and so wants its own change.
+// `tryResolveVirtualImplementation` scopes each retargeted entry to the entry's owner, which is
+// as far as the interface map alone can go (see the cases it *does* fix in
+// `VariantInterfaceSlotOwnership.cs`). Getting the rest right needs a real dispatch map — slot
+// to implementing method, per interface entry — which changes ordinary non-variant interface
+// dispatch too and so wants its own change.
 
 using System;
 

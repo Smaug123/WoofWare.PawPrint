@@ -159,8 +159,7 @@ public class TestUnsafeArrayArithmetic
     {
         int[] a = new int[4];
         System.IntPtr delta = Unsafe.ByteOffset(ref a[3], ref a[0]);
-        // The cast below is a Conv_U on a negative native int. Before the fix
-        // this threw inside the interpreter.
+        // The cast below is a Conv_U on a negative native int.
         nuint unsignedDelta = (nuint)delta;
         if ((long)delta >= 0L)
             return 19;
@@ -209,8 +208,8 @@ public class TestUnsafeArrayArithmetic
     }
 
     // Writing through a size-preserving reinterpret (int <-> uint) must land
-    // in the underlying storage. Read-only reinterprets already worked; this
-    // exercises the write path that previously threw inside applyProjectionsForWrite.
+    // in the underlying storage: the write path through applyProjectionsForWrite,
+    // where the read-only tests above cannot reach.
     public static int Test16()
     {
         int[] a = { 10, 20, 30, 40 };

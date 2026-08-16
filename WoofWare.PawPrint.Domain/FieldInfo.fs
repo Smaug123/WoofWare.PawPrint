@@ -5,7 +5,7 @@ open System.Reflection.Metadata
 open System.Runtime.InteropServices
 
 /// Parsed form of a field's marshalling descriptor (ECMA-335 §II.23.4).
-/// Only the cases load-bearing for the interpreter today are decoded structurally; everything
+/// Only the cases the interpreter consumes are decoded structurally; everything
 /// else is stashed in `Other` so callers can reject explicitly rather than silently treating a
 /// field as having no descriptor.
 type FieldMarshalDescriptor =

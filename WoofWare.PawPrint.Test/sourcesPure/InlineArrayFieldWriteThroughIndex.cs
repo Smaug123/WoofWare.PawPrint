@@ -11,7 +11,7 @@ using System.Runtime.CompilerServices;
 // writer, and a reference (`Payload`) at the structural one.
 //
 // Only slot 0 is exercised here. `InlineArrayFieldWriteAtLaterSlot.cs` is the same access at a
-// later slot, which is parked behind a different blocker.
+// later slot.
 public class TestInlineArrayFieldWriteThroughIndex
 {
     private sealed class Box { public int V; }

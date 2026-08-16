@@ -67,10 +67,10 @@ module Program =
         /// possible: `StepEffect.WroteToFd` carries exactly the bytes this step
         /// appended to `EmulatedKernel.OutputLog`, so a driver can write them to
         /// a real stream as they are produced instead of waiting for a
-        /// `RunOutcome` and draining the log. That distinction is not cosmetic —
-        /// a run that never produces a `RunOutcome` (a livelocked guest, a guest
-        /// killed from outside, `Deadlocked`) has no end-of-run drain to reach,
-        /// so without streaming its output is lost entirely.
+        /// `RunOutcome` and draining the log. A run that never produces a
+        /// `RunOutcome` (a livelocked guest, a guest killed from outside,
+        /// `Deadlocked`) has no end-of-run drain to reach, so without streaming
+        /// its output is lost entirely.
         ///
         /// Steps that terminate the run do not carry an effect: those outcomes
         /// are `Completed`, and their `RunOutcome` carries the final state whose
@@ -240,8 +240,8 @@ module Program =
     ///
     /// Cross-primitive ordering is irrelevant — each fire touches a
     /// disjoint primitive/thread — so `WaitHandle` entries are ordered
-    /// last and by ThreadId, which is deterministic and matches the
-    /// pre-fix behaviour for the subsystem where order is unobservable.
+    /// last and by ThreadId, which is deterministic; order is
+    /// unobservable for that subsystem.
     /// Queue positions are computed against the input state, before any
     /// fires mutate `WaitQueue`s.
     let private fireExpiredDeadlines (state : IlMachineState) : IlMachineState =
@@ -424,12 +424,10 @@ module Program =
         // Apply the spurious-wakeup strategies at the current tick, then
         // advance the counter so the next iteration sees a fresh tick.
         // For the default (`Disabled`) strategy each application is a fold
-        // over the identity and a single integer add — bit-for-bit
-        // identical to pre-feature behaviour. The two layers (LowLevel and
-        // SyncBlock) are independent waiters on disjoint primitive types,
-        // so the order between them at a given tick is not load-bearing;
-        // we apply LowLevel first for parity with the pre-SyncBlock
-        // codepath.
+        // over the identity and a single integer add. The two layers
+        // (LowLevel and SyncBlock) are independent waiters on disjoint
+        // primitive types, so the order between them at a given tick is
+        // unobservable; LowLevel is applied first.
         let state =
             LowLevelMonitor.applySpuriousWakeups
                 prepared.State.Kernel.SpuriousWakeup
@@ -602,7 +600,7 @@ module Program =
                     // The dispatcher retired a step and this branch reports it as
                     // `WhatWeDid.Executed`, so give it that outcome's consequences — waking
                     // anything parked BlockedOnClassInit behind it. (The yield-debt half of
-                    // the bookkeeping has already happened at the seam above.)
+                    // the bookkeeping has already happened, in the discharge above.)
                     let state = Scheduler.onStepOutcome terminatingThread WhatWeDid.Executed state
 
                     ProgramStepOutcome.InstructionStepped (
@@ -1029,8 +1027,7 @@ module Program =
                 failwith "TypeInitializationException during initial class load of entry point type"
             | StateLoadResult.Blocked _ ->
                 // Unreachable at startup: only the entry thread exists, so no other thread can
-                // be mid-cctor on the entry type. Listing the case explicitly keeps the match
-                // exhaustive and pins the invariant for future readers.
+                // be mid-cctor on the entry type.
                 failwith
                     "logic error: initial loadClass for entry point cannot block on another thread (no other threads exist yet)"
 
@@ -1293,7 +1290,7 @@ module Program =
     /// once this tick's preamble has run, more than one thread is Runnable, so which of them runs
     /// is a genuine choice — and it is the first such choice since this snapshot's run began.
     ///
-    /// Note the "once the preamble has run". Contention is a property of the state the *policy*
+    /// Contention is a property of the state the *policy*
     /// sees, which is not the state held here: a deadline expiring or the signal dispatcher waking
     /// can make a second thread Runnable inside the tick. So `State` may well show only one
     /// Runnable thread, and `Contenders` may name a thread that is blocked in it. Guests reaching
@@ -1310,7 +1307,7 @@ module Program =
     /// run's instructions and ~90% of its wall clock.
     ///
     /// The state held is the one from *before* the tick's preamble, not from between the preamble
-    /// and the choice. That is deliberate: a mid-tick value would be a new kind of resumable
+    /// and the choice: a mid-tick value would be a new kind of resumable
     /// thing, and handing it to the ordinary driver would run the preamble twice — advancing
     /// `StepCounter` twice and shifting the spurious-wakeup schedule. Resuming therefore re-runs
     /// the contended tick's preamble, which is policy-independent (see `advanceToDecision`) and
@@ -1331,9 +1328,9 @@ module Program =
 
         /// The threads whose contention makes this a fork point: at least two, ascending by
         /// `ThreadId`. Runnable *at the decision point* — i.e. after this tick's preamble — which
-        /// is not necessarily the same as Runnable in `State`. Ascending order is not cosmetic:
-        /// it is the order `PctState.ensurePriorityFor` samples in, so it is part of what makes a
-        /// seeded schedule reproducible.
+        /// is not necessarily the same as Runnable in `State`. Ascending order is the order
+        /// `PctState.ensurePriorityFor` samples in, so it is part of what makes a seeded
+        /// schedule reproducible.
         member this.Contenders : ThreadId list = this.Contending
 
     /// How far a run got before it first had a scheduling choice to make.
@@ -1356,13 +1353,11 @@ module Program =
         /// detector finds the exact point — but resuming it means handing the caller a
         /// half-finished `Startup` rather than a `PreparedProgram`, so `resumeFork` would have to
         /// return a two-shape value and every caller would have to drive both phases. No guest in
-        /// this repository does it, so that surface would be speculative; refusing loudly keeps
-        /// the caller honest until something needs it. To lift the restriction, give
-        /// `ForkSnapshot` a startup arm — nothing else here has to change.
+        /// this repository does it, so refuse loudly rather than build the surface. To lift the
+        /// restriction, give `ForkSnapshot` a startup arm — nothing else here has to change.
         ///
-        /// Carries the contenders rather than a rendered message: the detector has the witness in
-        /// hand, and a caller deciding what to do about a refusal (report it, fall back to
-        /// per-seed runs) is better served by the threads than by a sentence about them.
+        /// Carries the contenders rather than a rendered message, so a caller can decide what to
+        /// do about the refusal (report it, fall back to per-seed runs).
         | ForkedDuringStartup of contenders : ThreadId list
 
     /// Guard against a yield retiring at a tick we classified as forced whose *post*-step state is
@@ -1403,8 +1398,8 @@ module Program =
     /// `IlMachineState.withPctSeed` — but finding the point does not.
     ///
     /// Each *retired* tick's preamble runs exactly once: the probe consumes it and hands the
-    /// advanced state straight to the decision half. The fork tick itself is the exception, by
-    /// design — its preamble runs here to answer the probe, and again on every resume.
+    /// advanced state straight to the decision half. The fork tick itself is the exception:
+    /// its preamble runs here to answer the probe, and again on every resume.
     let rec runToNextFork
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)

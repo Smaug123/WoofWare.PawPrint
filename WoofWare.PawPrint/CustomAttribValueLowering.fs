@@ -49,12 +49,11 @@ module CustomAttribValueLowering =
         | CustomAttribFixedArg.String (Some _) ->
             Error "CustomAttribFixedArg.String (Some _) requires allocation; use CustomAttribValueLowering.toCliType"
         // An enum argument lowers to the bare underlying integer, with no enum wrapper built here.
-        // That is not a shortcut: `IlMachineStateExecution.callMethod` derives each parameter's
+        // `IlMachineStateExecution.callMethod` derives each parameter's
         // zero value from the ctor's *declared* parameter type — for an enum parameter, the
         // `value__` struct — and `EvalStackValue.toCliTypeCoerced` rewraps the popped integer into
         // that slot. Enums flatten to their underlying integer on the eval stack
-        // (`PrimitiveLikeKind.EnumLike`), so pushing the wrapper here would be the thing that was
-        // wrong.
+        // (`PrimitiveLikeKind.EnumLike`), so pushing the wrapper here would be wrong.
         | CustomAttribFixedArg.Enum underlying -> tryToPureCliType underlying
         | CustomAttribFixedArg.Array _ ->
             Error

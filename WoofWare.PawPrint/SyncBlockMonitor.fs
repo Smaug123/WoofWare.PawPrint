@@ -11,9 +11,8 @@ namespace WoofWare.PawPrint
 /// The module is pure: every transition is `IlMachineState -> IlMachineState`
 /// and never reads from a real clock, the host's mutex implementation, or any
 /// nondeterministic source. All ordering decisions are FIFO over the
-/// `AcquireQueue` / `WaitQueue`, which is load-bearing for fairness:
-/// deviating from FIFO changes the observable interleaving and is not a
-/// refactor.
+/// `AcquireQueue` / `WaitQueue`; deviating from FIFO changes the observable
+/// interleaving and is not a refactor.
 ///
 /// Reentrancy: SyncBlocks ARE reentrant (unlike `LowLevelMonitor`).
 /// `Monitor.Wait` snapshots the caller's `ReentrancyCount`, fully releases

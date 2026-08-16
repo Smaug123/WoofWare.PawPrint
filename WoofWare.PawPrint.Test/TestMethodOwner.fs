@@ -8,22 +8,17 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 /// <summary>
-/// Tests for <see cref="MethodOwner" />'s custom equality, which is the only new logic in the
-/// change that introduced it — everything else was a rename driven by the compiler.
+/// Tests for <see cref="MethodOwner" />'s custom equality.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Custom equality rather than structural for two reasons, and both are tested here because
-/// neither is visible from reading the call sites. A declared owner compares on identity plus
-/// instantiation and deliberately not on the whole <c>ConcreteType</c> record, preserving what
-/// <c>MethodInfo.NominallyEqual</c> has always compared. And <c>AssemblyName</c> is a BCL class
-/// with reference equality, so the dynamic case has to compare <c>FullName</c>.
+/// A declared owner compares on identity plus instantiation, not on the whole
+/// <c>ConcreteType</c> record (matching <c>MethodInfo.NominallyEqual</c>). <c>AssemblyName</c>
+/// is a BCL class with reference equality, so the dynamic case has to compare <c>FullName</c>.
 /// </para>
 /// <para>
-/// The dynamic arms are unreachable in production today — nothing constructs a
-/// <c>DynamicMethodsClass</c> owner until dynamic methods become executable — so this fixture is
-/// what stops them being written wrong and staying wrong. A test is able to construct one
-/// directly where the interpreter cannot.
+/// Nothing in production constructs a <c>DynamicMethodsClass</c> owner until dynamic methods
+/// become executable, so the dynamic arms are covered only here.
 /// </para>
 /// </remarks>
 [<TestFixture>]
@@ -99,12 +94,12 @@ module TestMethodOwner =
     /// Equal owners must hash equally when their instantiations were built from separate arrays.
     /// </summary>
     /// <remarks>
-    /// The trap that makes this worth its own test: F#'s <c>=</c> on an <c>ImmutableArray</c>
-    /// compares elementwise, but the array's own <c>GetHashCode</c> reflects the identity of its
-    /// backing storage — so <c>HashCode.Combine</c>, which calls that, disagrees with the equality
-    /// right beside it. Measured, on two three-element arrays with equal contents: <c>=</c> is
-    /// true, <c>GetHashCode</c> differs. Every non-generic owner hashes fine either way, which is
-    /// why the whole suite passed with this wrong and why the generic case has to be written down.
+    /// F#'s <c>=</c> on an <c>ImmutableArray</c> compares elementwise, but the array's own
+    /// <c>GetHashCode</c> reflects the identity of its backing storage — so
+    /// <c>HashCode.Combine</c>, which calls that, disagrees with the equality right beside it.
+    /// Measured, on two three-element arrays with equal contents: <c>=</c> is true,
+    /// <c>GetHashCode</c> differs. Non-generic owners hash correctly either way, so only the
+    /// generic case observes the difference.
     /// </remarks>
     [<Test>]
     let ``equal generic owners hash equally`` () : unit =
@@ -129,15 +124,13 @@ module TestMethodOwner =
         left |> shouldEqual right
         hash left |> shouldEqual (hash right)
 
-        // ...and a differing instantiation is still a different owner, so the fix cannot have been
-        // to stop looking at the generics at all.
+        // ...and a differing instantiation is still a different owner: equality must consult the
+        // generics.
         owner [ 7 ; 8 ] |> shouldNotEqual (owner [ 7 ; 9 ])
 
     /// `Assembly` and `Generics` are projected as total because both cases have a truthful answer;
-    /// `TryDeclaringType` is an option because only one does. Pinned because the totality is what
-    /// let roughly half the call sites of the old `DeclaringType` become renames rather than
-    /// decisions, and a future edit that made either of them fabricate something for the dynamic
-    /// case would silently undo that reasoning.
+    /// `TryDeclaringType` is an option because only one does. Neither total projection may
+    /// fabricate anything for the dynamic case.
     [<Test>]
     let ``the total projections answer for a dynamic owner`` () : unit =
         let owner =
@@ -166,10 +159,10 @@ module TestMethodOwner =
         owner.Generics |> shouldEqual declaringType.Generics
         owner.TryDeclaringType |> shouldEqual (Some declaringType)
 
-    /// `describe` is what every diagnostic that used to interpolate `Namespace.Name` now calls, so
-    /// it has to render *something* for a dynamic owner rather than throwing — a message that
-    /// fails while being built is worse than the failure it was reporting. It must also not look
-    /// like a type name, or a reader will go hunting for a type that does not exist.
+    /// `describe` is used in diagnostics, so it has to render *something* for a dynamic owner
+    /// rather than throwing — a message that fails while being built is worse than the failure it
+    /// was reporting. It must also not look like a type name, or a reader will go hunting for a
+    /// type that does not exist.
     [<Test>]
     let ``describe renders both cases, and the dynamic one is not a plausible type name`` () : unit =
         MethodOwner.describe (declaredOn "Guest, Version=1.0.0.0" 1)

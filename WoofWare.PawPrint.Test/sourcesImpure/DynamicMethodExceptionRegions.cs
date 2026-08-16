@@ -365,7 +365,7 @@ public class Program
         }
 
         // 14. A value-type catch clause. `BeginCatchBlock` accepts any `RuntimeType`, and measured
-        // on real .NET the clause is legal and simply never matches -- so this must *not* be
+        // on real .NET the clause is legal and never matches -- so this must *not* be
         // refused, and must not accidentally match either.
         {
             DynamicMethod dm = New("CatchValueType");

@@ -180,10 +180,10 @@ module internal UnaryMetadataMemoryOps =
             // pointer becomes (`*(S*)null` is `ldc.i4.0; conv.u; ldobj S`), and it is also
             // what a null managed pointer normalises to on any `conv` round-trip — see the
             // "Conv.U8 of a null managed pointer normalises to verbatim zero" case in
-            // `TestBinaryArithmetic.fs`. A non-zero `Verbatim` is a genuine unimplemented
+            // `TestBinaryArithmetic.fs`. A non-zero `Verbatim` is an unimplemented
             // path, not a null, and still fails below.
             //
-            // Deliberately no `advanceProgramCounter`: dispatch reads the faulting
+            // No `advanceProgramCounter`: dispatch reads the faulting
             // instruction's PC to decide which handler regions are active and to build the
             // stack trace.
             IlMachineStateExecution.raiseRuntimeException

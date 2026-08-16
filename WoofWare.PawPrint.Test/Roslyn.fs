@@ -39,7 +39,7 @@ module Roslyn =
 
     /// Whether the compilation is optimized.
     ///
-    /// Off by default, matching what the harness has always produced. It matters to more than
+    /// Off by default. It matters to more than
     /// speed: unoptimized C# emits a `nop` after every call statement, and that `nop` carries
     /// the *call's* sequence point. So in a debug build a program counter parked just past a
     /// call still resolves to the call's own line, and a diagnostic that confuses the two looks
@@ -70,8 +70,7 @@ module Roslyn =
 
                 // The source text must carry an encoding or emitting debug information fails
                 // with CS8055: a PDB records each document's encoding so that a consumer can
-                // re-read the file. Supplying it unconditionally costs nothing when no PDB is
-                // emitted, and keeps a single parse path.
+                // re-read the file.
                 CSharpSyntaxTree.ParseText (SourceText.From (src, Encoding.UTF8), parseOptions, fileName)
             )
             |> List.toArray

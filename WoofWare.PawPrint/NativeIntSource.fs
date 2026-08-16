@@ -115,7 +115,7 @@ type FunctionPointerTarget =
     ///
     /// Carries no payload, for two reasons.
     ///
-    /// The argument is not baked in because CoreCLR's helper genuinely takes the
+    /// The argument is not baked in because CoreCLR's helper takes the
     /// `MethodTable*` as its argument, and `ActivatorCache` passes it separately as
     /// `_allocatorFirstArg`; reading the type off the call site keeps a single source of truth.
     /// A per-type payload would also invert CoreCLR's identity semantics, where types
@@ -133,8 +133,8 @@ type FunctionPointerTarget =
     /// Collapsing them is at least right under some: the same selector also consults
     /// `GCStress&lt;cfg_alloc&gt;::IsEnabled()` and `TrackAllocationsEnabled()`, and under either
     /// of those every type takes the slow helper and they all share one address. That is a
-    /// diagnostics-on configuration rather than the default one, so this is a genuine
-    /// divergence and not a free lunch — see docs/divergences.md — but it is a divergence
+    /// diagnostics-on configuration rather than the default one, so this is a real
+    /// divergence — see docs/divergences.md — but it is a divergence
     /// towards an answer some real runtime gives, rather than towards one none does.
     | RuntimeAllocator
 
@@ -263,7 +263,7 @@ type NativeIntSource =
     /// has imposed on it, and is always inside
     /// `TaggedPointerBits.tagMask TaggedPointerBits.gcHandleTagWidthBits`.
     ///
-    /// CoreLib genuinely does this: `System.WeakReference` stores
+    /// CoreLib does this: `System.WeakReference` stores
     /// `handle | TracksResurrectionBit` and masks the bit off again on every read,
     /// and `GCHandle` marks pinned handles with bit 0. PawPrint models neither the
     /// handle's numeric address nor a fake stand-in for it, so the tag has to
@@ -293,8 +293,8 @@ type NativeIntSource =
     /// `Verbatim 0L` so the BCL's allocation-failure check (`if _nativeMonitor
     /// == IntPtr.Zero throw new OutOfMemoryException()`) does not fire.
     | LowLevelMonitorPtr of LowLevelMonitorId
-    /// Opaque handle returned by `CreateSemaphoreExW` (and, in future PRs,
-    /// `CreateEventExW` / `CreateMutexExW`). Round-trips through the guest as
+    /// Opaque handle returned by `CreateSemaphoreExW`, `CreateEventExW`, and
+    /// `PAL_CreateMutexW`. Round-trips through the guest as
     /// an `IntPtr` wrapped in a `SafeWaitHandle`, and is fed back into
     /// `WaitHandle_WaitOneCore`, `ReleaseSemaphore`, and `CloseHandle`. The
     /// handle is distinguished by tag so a foreign `IntPtr` cannot be mistaken
@@ -309,7 +309,7 @@ type NativeIntSource =
     /// when `conv.u` / `conv.i` narrows an `Int64Source.OpaqueHashBits` back
     /// to native-int width (e.g. `BitOperations.RotateLeft(nuint, int)`
     /// inlines `(nuint)RotateLeft((ulong)value, offset)` — the final `(nuint)`
-    /// cast is exactly this round-trip). Carries the same load-bearing
+    /// cast is exactly this round-trip). Carries the same
     /// contract as `Int64Source.OpaqueHashBits`: the bits are deterministic
     /// and bit-mixing safe, but they must NOT be used as a real pointer —
     /// `ldind` / `stind` / dereference must reject them, and the `conv.i8`

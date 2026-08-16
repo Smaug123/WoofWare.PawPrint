@@ -7,8 +7,8 @@ open NUnit.Framework
 /// Two distinct things are under test here, and they need three assemblies to
 /// separate them:
 ///
-/// * the token is a `MemberReference` rather than a `FieldDefinition`, which
-///   `executeLdsflda` used to reject outright;
+/// * the token is a `MemberReference` rather than a `FieldDefinition`, and
+///   `executeLdsflda` must accept it;
 /// * the field's *own type* is expressed in the declaring assembly's metadata as
 ///   a `TypeDefn.FromReference`, i.e. a `TypeRefResolutionScope.Assembly` row
 ///   index into the *declaring* assembly's `AssemblyRef` table. Concretizing that

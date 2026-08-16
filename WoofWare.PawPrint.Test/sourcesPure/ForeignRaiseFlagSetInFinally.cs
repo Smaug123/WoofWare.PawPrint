@@ -9,13 +9,11 @@ using System.Reflection;
 // raise has no appends left, so the flag it sets survives to be spent by the *next* raise. The
 // unwinding exception gets no boundary at all.
 //
-// PawPrint gets this from the same place CoreCLR does, now that its dispatcher has a genuine
-// first pass: the unwinding raise has finished appending before the `finally` body starts, so the
-// unconditional read-and-reset at each append cannot reach the flag this one sets. It used to
-// need telling explicitly — the interleaved dispatcher carried an eligibility bit on the raise —
-// and the failure mode that bit existed to prevent is what makes this file worth its length: the
-// boundary landing on the unwinding exception, which must have none, *and* the next raise being
-// left with nothing, when it must have one. Both wrong at once.
+// PawPrint gets this from the same place CoreCLR does — its dispatcher has a first pass, so
+// the unwinding raise has finished appending before the `finally` body starts, and the
+// unconditional read-and-reset at each append cannot reach the flag this one sets. The failure
+// mode guarded against: the boundary landing on the unwinding exception, which must have none,
+// *and* the next raise being left with nothing, when it must have one. Both wrong at once.
 //
 // Measured on .NET 10 before being written: 0 boundaries, then 1.
 class ForeignRaiseFlagSetInFinally

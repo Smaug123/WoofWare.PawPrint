@@ -15,7 +15,7 @@
 // Selecting the first entry outright gets this case wrong.
 //
 // `VariantInterfaceMapOrder.cs` covers the complementary case, where all the compatible entries
-// have real implementations and first-declared genuinely does win.
+// have real implementations and first-declared wins.
 
 using System;
 

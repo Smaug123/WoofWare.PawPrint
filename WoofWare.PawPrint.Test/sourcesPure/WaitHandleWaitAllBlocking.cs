@@ -38,7 +38,7 @@ namespace HelloWorldApp
                     return 1;
                 }
 
-                // Both must genuinely be signalled by the time the wait
+                // Both must be signalled by the time the wait
                 // returns — manual-reset events are not consumed by acquiring
                 // them, so this reads the state the wait observed.
                 if (!first.WaitOne(0) || !second.WaitOne(0))

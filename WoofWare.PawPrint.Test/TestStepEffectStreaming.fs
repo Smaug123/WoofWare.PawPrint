@@ -13,14 +13,12 @@ open WoofWare.PawPrint
 /// `SystemNative_Write` does two things with each guest write — appends it to
 /// `EmulatedKernel.OutputLog` and reports it as `StepEffect.WroteToFd` — and the effect is
 /// what lets a driver write to a real stream while the guest is still running.
-/// `Program.stepPrepared` used to discard it (`ExecutionResult.Stepped (state, whatWeDid, _)`),
-/// so the only way to see guest output was to wait for a `RunOutcome` and drain the log.
 ///
-/// The difference is not cosmetic: a run that never yields a `RunOutcome` has no end-of-run
-/// drain to reach. A guest that livelocks, or is killed from outside, or that this interpreter
-/// reports as `Deadlocked`, loses everything it printed — which is exactly when the output is
-/// most wanted. `WoofWare.PawPrint.App` therefore consumes these effects, and the two tests
-/// here pin the two halves it relies on.
+/// A run that never yields a `RunOutcome` has no end-of-run drain to reach: a guest that
+/// livelocks, or is killed from outside, or that this interpreter reports as `Deadlocked`,
+/// would otherwise lose everything it printed — which is exactly when the output is most
+/// wanted. `WoofWare.PawPrint.App` consumes these effects, and the tests here pin the
+/// behaviour it relies on.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestStepEffectStreaming =
@@ -127,8 +125,8 @@ module TestStepEffectStreaming =
     /// The driver sees every write, once each, with the right bytes and the right stream — the
     /// effects reconstruct the `OutputLog` exactly.
     ///
-    /// Comparing against the log rather than against a hard-coded list is what makes this
-    /// load-bearing in both directions: an effect that went missing shortens the left side, and
+    /// Comparing against the log rather than against a hard-coded list makes the test
+    /// sensitive in both directions: an effect that went missing shortens the left side, and
     /// one reported twice (or with the wrong role or bytes) breaks the match, without the test
     /// having to enumerate what the BCL start-up path might legitimately write.
     [<Test>]
@@ -220,10 +218,9 @@ class Program
     /// Startup runs guest code too, and it must be streamable for the same reason `Main` is: a
     /// static initialiser that prints and then wedges has to deliver what it printed.
     ///
-    /// `prepare` used to pump the AppContext seed and the class initialisers internally, so a
-    /// driver saw nothing until all of that had finished — and if it never finished, nothing at
-    /// all. `beginStartup`/`stepStartup` expose those steps, and this pins that a `.cctor`'s
-    /// write is reported *during* startup rather than merely turning up in the log afterwards.
+    /// `beginStartup`/`stepStartup` expose the AppContext-seed and class-initialiser steps,
+    /// and this pins that a `.cctor`'s write is reported *during* startup rather than merely
+    /// turning up in the log afterwards.
     [<Test>]
     let ``a static initialiser's write is reported while startup is still running`` () : unit =
         let source =

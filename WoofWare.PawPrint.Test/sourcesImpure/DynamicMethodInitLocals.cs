@@ -42,8 +42,7 @@ public class Program
     {
         // Control: `localloc` runs at all in a dynamic method's frame. Writes before reading, so it
         // holds whichever way the flag went -- it isolates "localloc works in a synthesised frame"
-        // from "the flag was captured correctly", and it is the only check here that a body
-        // carrying `localloc` could pass before this slice, when such a body was refused outright.
+        // from "the flag was captured correctly".
         DynamicMethod control =
             new DynamicMethod("Control", typeof(int), new Type[0], typeof(Program).Module);
         ILGenerator cil = control.GetILGenerator();

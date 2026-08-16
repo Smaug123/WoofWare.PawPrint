@@ -25,7 +25,7 @@ module AbstractMachine =
     /// Returns `Choice2Of2` when the check has finished and the frame may execute, and
     /// `Choice1Of2` when it has not — the initialiser is now the active frame, the thread is
     /// parked on another thread's, or a cached failure has been raised. The flag survives the
-    /// first two, so re-entering this frame simply asks again; the third clears it, because the
+    /// first two, so re-entering this frame asks again; the third clears it, because the
     /// type is now `Failed` and asking again would raise a second time at every step if the
     /// frame's own handler caught the first.
     let private runPendingTypeInit
@@ -102,8 +102,6 @@ module AbstractMachine =
 
             match outcome with
             | NativeHandlerResult.Completed (state, effect) ->
-                // Native handler ran to completion. Pop the native frame and surface
-                // WhatWeDid.Executed; this is the common case.
                 match IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state with
                 | ReturnFrameResult.NormalReturn state -> ExecutionResult.Stepped (state, WhatWeDid.Executed, effect)
                 | result -> failwith $"unexpected ReturnFrameResult from extern method return: %A{result}"
@@ -111,7 +109,7 @@ module AbstractMachine =
                 // Native handler ran to completion AND requested a scheduler yield. Frame
                 // management is identical to Completed (pop the native frame); the
                 // distinction is carried in `WhatWeDid.VoluntaryYield` for the Scheduler,
-                // which is where the yield is actually acted on. Note the frame pop happens
+                // which is where the yield is actually acted on. The frame pop happens
                 // *before* the Scheduler sees the outcome, which is what puts any optimistic
                 // return value the handler pushed onto the caller's eval stack in time for
                 // `Scheduler.onStepOutcome` to rewrite it.
@@ -225,29 +223,24 @@ module AbstractMachine =
             let originalCallSitePC =
                 instruction.ReturnState |> Option.map (fun rs -> rs.CallSiteIlOpIndex)
 
-            // Calling a method runs its declaring type's initialiser first, and invoking a
-            // delegate is a call like any other: every sibling call op does this
-            // (`UnaryMetadataCallOps.executeCall`, `executeCallvirt`, `executeCalli`,
-            // `UnaryMetadataObjectOps`' `newobj`), and only this path was missing it.
-            //
-            // The rule is not narrowed to static targets. ECMA-335 II.10.5.3.1 also triggers on
-            // the first invocation of an instance method of a *value type*, which is the one
-            // receiver whose existence does not already imply initialisation — for a class,
-            // holding an instance means `base..ctor()` ran up the chain. Measured against real
-            // .NET 10: a delegate over a struct's instance method leaves the initialiser
-            // unrun at construction and runs it at invocation, exactly as a static target does.
+            // Invoking a delegate triggers the target's declaring-type initialiser, and the rule
+            // is not narrowed to static targets: ECMA-335 II.10.5.3.1 also triggers on the first
+            // invocation of an instance method of a *value type*, the one receiver whose
+            // existence does not already imply initialisation (for a class, holding an instance
+            // means `base..ctor()` ran up the chain). Measured against real .NET 10: a delegate
+            // over a struct's instance method leaves the initialiser unrun at construction and
+            // runs it at invocation, exactly as a static target does.
             // `sourcesPure/DelegateToValueTypeInstanceMethodRunsCctor.cs` pins that.
             //
-            // Deferring to invocation rather than running it at `ldftn` is likewise measured, not
-            // assumed: taking a function pointer is not a use of the type, and CoreCLR's
-            // `comdelegate.cpp` contains no class-init call at all.
+            // The initialiser runs at invocation, not at `ldftn`: taking a function pointer is
+            // not a use of the type, and CoreCLR's `comdelegate.cpp` contains no class-init call
+            // at all.
+            //
             // No class-initialisation check here: the target's frame carries it and runs it as its
-            // own prologue. That is what lets this synthetic frame be popped unconditionally
-            // below. Previously the check ran first precisely *because* the frame was still up —
-            // a suspension left it in place to be re-entered and recomputed — and getting that
-            // ordering wrong is what once put a `System.Action.Invoke` stub frame into a failing
-            // `.cctor`'s stack trace, which `DelegateCctorFailureTraceHasNoStubFrame.cs` pins. The
-            // stub frame is now gone before the initialiser can run, so it cannot appear at all.
+            // own prologue, which is what lets this synthetic frame be popped unconditionally
+            // below. Running the check while the stub frame was still up would put a
+            // `System.Action.Invoke` stub frame into a failing `.cctor`'s stack trace;
+            // `DelegateCctorFailureTraceHasNoStubFrame.cs` pins its absence.
 
             // When we return, we need to go back up the stack
             match state |> IlMachineState.returnFromSyntheticStackFrame thread with
@@ -358,13 +351,9 @@ module AbstractMachine =
                     false // wrapExceptionInTargetInvocation
                     state
 
-            // A call cannot fail to happen any more, so there is nothing here to refuse. It used
-            // to be able to: `Activator.CreateInstance<T>()` is serviced as an intrinsic and
-            // suspended to run `T`'s initialiser, and `Func<Foo> f = Activator.CreateInstance<Foo>;`
-            // is legal C#, which reached a suspension after the delegate's synthetic frame had
-            // been popped — nothing left to re-execute, so it had to fail loudly rather than
-            // silently drop the call. Initialising `T` in its constructor's own prologue removes
-            // the suspension, and with it that whole class of shape.
+            // A suspension here would be unrecoverable — the delegate's synthetic frame is
+            // already popped, so there is nothing to re-execute — but none can occur: a callee's
+            // type initialiser runs in the callee frame's own prologue.
             match commitment with
             | IlMachineStateExecution.CallCommitment.Committed
             | IlMachineStateExecution.CallCommitment.Raised -> ExecutionResult.stepped (state, WhatWeDid.Executed)
@@ -436,15 +425,10 @@ module AbstractMachine =
                     assy.TryResolveMethodSource instruction.ExecutingMethod instruction.IlOpIndex
                 )
 
-            // Two templates rather than one carrying a "no source" sentinel. Absence is then the
-            // absence of the fields, which a structured consumer can filter on without knowing a
-            // magic string, and `SourceLine` stays a number rather than text to be parsed back out
-            // of `path:line`. It also keeps the rendered message clean in the overwhelmingly
-            // common case: the framework assemblies ship no symbols, so most instructions have no
-            // source and would otherwise all carry a dangling `at <no source>`.
-            //
-            // Unlike the `<unloaded assembly>` sentinel above, which fills a field that must always
-            // name *something*, there is nothing here that a reader needs in place of the location.
+            // Two templates rather than one carrying a "no source" sentinel: absence is then the
+            // absence of the fields, which a structured consumer can filter on, and `SourceLine`
+            // stays a number. The framework assemblies ship no symbols, so most instructions
+            // would otherwise carry a dangling `at <no source>`.
             match source with
             | None ->
                 logger.LogTrace (
@@ -467,8 +451,6 @@ module AbstractMachine =
                     executingInstruction
                 )
 
-        // `executingInstruction` is the value `TryGetValue` above already produced for this
-        // index; re-indexing `Locations` would be a second lookup for the same key.
         match executingInstruction with
         | IlOp.Nullary op -> NullaryIlOp.execute loggerFactory baseClassTypes state thread op
         | IlOp.UnaryConst unaryConstIlOp ->

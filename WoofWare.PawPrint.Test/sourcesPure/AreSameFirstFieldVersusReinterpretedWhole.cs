@@ -19,15 +19,13 @@ namespace AreSameFirstFieldVersusReinterpretedWholeTest
     // guessing, and `StorageLocation.resolveCeq` decides it by resolving both to byte
     // coordinates in the one local's storage: `X`'s offset is 0, so both are 0.
     //
-    // It used to answer `false` and return 3 (both halves diverging, 1 for the direct
-    // `Unsafe.AreSame` and 2 for the same comparison through `ReadOnlySpan<T>.op_Equality`),
-    // and then, once the refusal landed, to fail loudly at the first half. The two halves are
-    // still reported as independent bits rather than short-circuiting, so a regression in
-    // either says which one.
+    // The two halves (1 for the direct `Unsafe.AreSame`, 2 for the same comparison through
+    // `ReadOnlySpan<T>.op_Equality`) are reported as independent bits rather than
+    // short-circuiting, so a regression in either says which one.
     //
     // The first half is the point: it involves no span at all, so this is a byref-comparison
     // fact rather than anything about spans, and it is reachable by any guest calling
-    // `Unsafe.AreSame` directly. Note the resolution is *not* total — a reference- or
+    // `Unsafe.AreSame` directly. The resolution is *not* total — a reference- or
     // pointer-containing value has no byte image, so such a pair still gets no coordinate and
     // is still refused; `TestByrefComparison.fs` covers that side, which no guest can assert.
     class Program

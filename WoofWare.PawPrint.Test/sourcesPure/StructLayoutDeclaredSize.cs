@@ -9,8 +9,7 @@ using System.Runtime.InteropServices;
 //                 : AlignSize(lastFieldEnd, alignmentRequirement)         // classlayoutinfo.cpp:543-550
 //
 // so a declared `Size` never rounds, and one that is too small loses to the fields rather than
-// truncating them. PawPrint used to do both -- round *and* apply the floor -- so `S13` came out 16
-// rather than 13.
+// truncating them.
 //
 // The one rounding that does survive a declared `Size` is the GC one: a value type containing
 // object references is sized to a multiple of the pointer size, because the GC requires it

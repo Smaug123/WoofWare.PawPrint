@@ -260,7 +260,7 @@ module TestMarshalLayout =
 
     [<Test>]
     let ``Dropping trailing fields leaves the remaining placements untouched`` () : unit =
-        // The load-bearing one. Sequential layout is a left fold, so the placement of field k
+        // The strongest property here. Sequential layout is a left fold, so the placement of field k
         // depends only on fields 0..k-1. An implementation whose recorded offset drifted from the
         // cursor it advances would still agree with itself on the total for a fixed field list,
         // but could not survive this.

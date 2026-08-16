@@ -174,10 +174,8 @@ unsafe class VarObjSizeNewobjSpan
     /// not assertable. A *differential* count is: these two programs are identical
     /// except that the second performs two extra `newobj String::.ctor(char*)`
     /// instructions, so the heap must end up with exactly two more String objects.
-    ///
-    /// This is the sharp statement of the calling convention. When `newobj`
-    /// allocated a placeholder as well, each extra `newobj` cost *two* String
-    /// objects, and the delta was 4.
+    /// A `newobj` that allocated a placeholder as well would cost *two* String
+    /// objects per extra `newobj`, giving a delta of 4.
     let private oneNewobjSource =
         """
 using System;

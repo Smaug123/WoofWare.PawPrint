@@ -15,18 +15,18 @@ namespace SpanBulkWritePrimitiveLikeTest
     // Intrinsics.fs) and `Span<T>.Fill` (which runs the BCL's IL) reach that state, so each
     // case below is driven through Clear first and Fill second.
     //
-    // This used to fail on the subsequent ordinary read, because the concrete-width
-    // `ldelem.*` arms matched strictly on `CliType.Numeric` and so rejected the declared
-    // form outright:
+    // The sensitive step is the subsequent ordinary read: a concrete-width `ldelem.*` arm
+    // that matches strictly on `CliType.Numeric` rejects the declared form outright:
     //
     //     bool   -> expected one-byte integer in Ldelem.u1, got: Bool 0uy
     //     nint   -> expected native int in Ldelem.i
     //     enum   -> expected two-byte integer in Ldelem.i2, got: ValueType ... EnumLike
     //
-    // The bug was never in the span write. A fresh `new bool[2]` read with no span anywhere
-    // in the program failed identically; `stelem.*` merely masked it by stamping the
-    // opcode's raw primitive over the cell, so only a read of a still-declared-form cell
-    // tripped it. ArrayPrimitiveLikeElementRead.cs covers that span-free half directly.
+    // The span write is not the sensitive part: a fresh `new bool[2]` read with no span
+    // anywhere in the program fails the same way, and `stelem.*` masks the problem by
+    // stamping the opcode's raw primitive over the cell, so only a read of a
+    // still-declared-form cell trips it. ArrayPrimitiveLikeElementRead.cs covers that
+    // span-free half directly.
     class Program
     {
         static int Main(string[] args)

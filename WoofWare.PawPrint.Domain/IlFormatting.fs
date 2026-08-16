@@ -16,7 +16,7 @@ open System.Reflection.Metadata.Ecma335
 /// it, which is not always the code the reader is looking at: the signature of a member
 /// referenced from inside a method is written in the scope of the type that declares that
 /// member, not in the scope of the calling method. So the binding is passed in explicitly, and
-/// callers must supply the scope that genuinely binds the indices in the signature they are
+/// callers must supply the scope that binds the indices in the signature they are
 /// rendering.
 /// </para>
 /// <para>
@@ -144,8 +144,7 @@ module IlFormatting =
     /// <remarks>
     /// This is the only axis on which a disassembly rendering and a display name differ, so it
     /// is the only thing the two entry points below vary. Everything else about them is then
-    /// identical by construction — in particular they cannot drift apart underneath a wrapper,
-    /// which is exactly what happens if the two are written as separate walks.
+    /// identical by construction — separate walks would drift apart.
     /// </remarks>
     type private TypeRefStyle =
         /// <c>ref[System.Object]</c>: a disassembly distinguishes a reference from a definition.

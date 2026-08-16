@@ -114,7 +114,7 @@ module AbsoluteUnixPath =
     /// Parse a host-supplied string into an absolute Unix path, or explain why
     /// it is not one. Total: never throws, for any input including null.
     ///
-    /// This deliberately *rejects* rather than normalises. A caller who passes
+    /// This *rejects* rather than normalises. A caller who passes
     /// "/a/../b" or "/a/" has a path the kernel would never have produced, and
     /// silently rewriting it would both hide the caller's bug and — for ".." —
     /// perform a resolution that is only correct in the absence of symlinks.
@@ -181,7 +181,7 @@ module AbsoluteUnixPath =
         | Error error -> failwith $"%s{context}: %s{describe error} (got %s{candidate})"
 
     /// The path as the NUL-free byte string a Unix kernel would hand back.
-    /// Note this is the encoding *without* a terminator; callers that need a C
+    /// This is the encoding *without* a terminator; callers that need a C
     /// string append the NUL themselves, because whether there is room for it
     /// is exactly what `getcwd`'s ERANGE check is about.
     let toUtf8 (path : AbsoluteUnixPath) : ImmutableArray<byte> =

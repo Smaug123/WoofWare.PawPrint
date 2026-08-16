@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-// Codex flagged a potential bug in MethodSpec(MemberReference) ldftn handling: if
+// A potential bug in MethodSpec(MemberReference) ldftn handling: if
 // the spec's method-generic args reference the caller's class generic (e.g.
 // `class C<A,B>` calling `Other<X>.Generic<B>`), the path passes spec.Signature
 // raw to concretizeMethodForExecution alongside `extractedTypeArgs` (the
