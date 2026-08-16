@@ -9,7 +9,9 @@ using System.Reflection.Emit;
 //
 // Two constraints shape every case, and both are about what a dynamic method body can reach
 // today rather than about exception handling. A dynamic method body cannot *construct* an exception --
-// `newobj` naming a reflected `ConstructorInfo` stops at `RuntimeMethodHandle::GetMethodDef` -- so
+// `newobj` naming a reflected `ConstructorInfo` stops at `MetadataImport.Enum` for `mdtParamDef`
+// (0x08000000), the unimplemented token type behind `GetParameters()`, which `Emit` needs in order
+// to build the call-site signature (measured) -- so
 // exception objects are passed in, and the signature is `(object, object) -> int`: `object` is one
 // of `SignatureHelper.IsSimpleType`'s types, so the signature needs no `ELEMENT_TYPE_INTERNAL`.
 // And a dynamic method body cannot touch a field, so a cleanup clause running on the *exceptional*

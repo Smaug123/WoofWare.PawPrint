@@ -1065,3 +1065,243 @@ public static class InstantiationHolder
 
         invokeHasMethodInstantiation loggerFactory baseClassTypes (CliType.ValueType internalHandle) state
         |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
+
+    let private invokeGetMethodDef = invokeRuntimeMethodHandleFCall "GetMethodDef"
+
+    [<Test>]
+    let ``mdMethodDefNil is the token of a nil MethodDefinitionHandle`` () : unit =
+        // The literal in `NativeRuntimeMethodHandle.mdMethodDefNil` is CoreCLR's `mdMethodDefNil`
+        // (corhdr.h:1525). Deriving it a second way keeps the literal honest: a nil MethodDef
+        // handle tokenises to the bare table tag, since a token is `(table <<< 24) ||| rid` and a
+        // nil handle has rid 0.
+        //
+        // The value is deliberately NOT zero, which is what CoreCLR *stores* for such a method
+        // (`SetMemberDef(0)`); `MergeToken` (method.hpp:148) ORs `mdtMethodDef` back in on the way
+        // out. `MdToken.IsNullToken` masks the table byte off, so no BCL caller can tell the two
+        // apart -- this assertion, and the dynamic-method test below, are the only things that can.
+        let nilHandle : System.Reflection.Metadata.EntityHandle =
+            System.Reflection.Metadata.MethodDefinitionHandle.op_Implicit (
+                Unchecked.defaultof<System.Reflection.Metadata.MethodDefinitionHandle>
+            )
+
+        System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken nilHandle
+        |> shouldEqual NativeRuntimeMethodHandle.mdMethodDefNil
+
+        NativeRuntimeMethodHandle.mdMethodDefNil |> shouldEqual 0x06000000
+
+    /// Every method the host CLR says the type declares, paired with the MetadataToken the host
+    /// reports for it. `GetMethods` alone is not that -- it never returns constructors -- so the
+    /// instance constructors and the class constructor are fetched separately.
+    let private hostDeclaredMethods (t : System.Type) : System.Reflection.MethodBase list =
+        let flags =
+            System.Reflection.BindingFlags.DeclaredOnly
+            ||| System.Reflection.BindingFlags.Instance
+            ||| System.Reflection.BindingFlags.Static
+            ||| System.Reflection.BindingFlags.Public
+            ||| System.Reflection.BindingFlags.NonPublic
+
+        [
+            yield! (t.GetMethods flags |> Seq.cast<System.Reflection.MethodBase>)
+            yield! (t.GetConstructors flags |> Seq.cast<System.Reflection.MethodBase>)
+        ]
+
+    /// PawPrint's `methodDefToken` for every method the given corelib type declares, keyed by the
+    /// method's metadata name.
+    ///
+    /// Deliberately routed through the real minting path (`getOrAllocateInternalHandle`) rather
+    /// than fabricating a `MethodHandle`, so that what is measured is the token a guest could
+    /// actually obtain, registry plumbing included.
+    let private pawPrintTokensOfCorelibType
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (namespaceName : string)
+        (typeName : string)
+        : (WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> * int) list
+        =
+        let typeInfo = requiredTopLevelType baseClassTypes.Corelib namespaceName typeName
+
+        match typeInfo.Methods with
+        | [] -> failwith $"corelib type %s{namespaceName}.%s{typeName} declares no methods"
+        | firstMethod :: _ ->
+
+        let state, declaringType =
+            concretizeDeclaringType loggerFactory baseClassTypes baseClassTypes.Corelib firstMethod state
+
+        let mutable registry = state.MethodHandles
+
+        typeInfo.Methods
+        |> List.map (fun method ->
+            let internalHandle, reg =
+                MethodHandleRegistry.getOrAllocateInternalHandle
+                    baseClassTypes
+                    state.ConcreteTypes
+                    declaringType
+                    method
+                    registry
+
+            registry <- reg
+
+            let registryId =
+                NativeCall.methodHandleIdOfRuntimeMethodHandleInternal "test" (CliType.ValueType internalHandle)
+                |> Option.defaultWith (fun () -> failwith $"minting %s{method.Name} produced a null handle")
+
+            let methodHandle =
+                MethodHandleRegistry.resolveMethodFromId registryId registry
+                |> Option.defaultWith (fun () -> failwith $"registry id %d{registryId} did not resolve")
+
+            method, NativeRuntimeMethodHandle.methodDefToken methodHandle
+        )
+
+    /// Corelib types chosen so that between them they cover the MethodDesc flavours whose
+    /// `GetMemberDef` answers could plausibly differ: instance and static methods, instance
+    /// constructors, a class constructor, property and operator accessors, explicit interface
+    /// implementations, generic methods, and methods on both a reference type and a value type.
+    ///
+    /// A hand-picked list of individual *methods* would be weaker: it can only cover flavours
+    /// somebody thought of. Sweeping every MethodDef row these types declare cannot miss one.
+    let private tokenSweepCorpus : obj array list =
+        [
+            // A reference type with many overloads, operators, explicit interface
+            // implementations, generic methods, a class constructor and several instance
+            // constructors.
+            [| box "System" ; box "String" |]
+            // A value type, whose methods CoreCLR duplicates into unboxing stubs.
+            [| box "System" ; box "Guid" |]
+            // Properties, operators, and `IComparable`/`IEquatable` implementations.
+            [| box "System" ; box "Version" |]
+            // Static-only, so every row is a static method with no `this`.
+            [| box "System" ; box "Math" |]
+        ]
+
+    [<TestCaseSource(nameof tokenSweepCorpus)>]
+    let ``GetMethodDef agrees with the host CLR for every method a corelib type declares``
+        (namespaceName : string, typeName : string)
+        : unit
+        =
+        // PawPrint reads the host's own corelib (`typeof<obj>.Assembly.Location`), so the host CLR
+        // is an independent implementation reading the *same* metadata -- an outside oracle rather
+        // than a second derivation of the thing under test.
+        //
+        // The comparison is deliberately made in the token->row direction as well as by set
+        // equality. Set equality alone would accept a permutation of the type's tokens among
+        // themselves; `Module.ResolveMethod`, which is the host's independent token->row map,
+        // pins each token to a row with the right name.
+        let loggerFactory, baseClassTypes, _, state =
+            loadAssemblyFromSource "TokenSweepAssembly" "public class Unused { }"
+
+        let hostType =
+            typeof<obj>.Assembly.GetType ($"%s{namespaceName}.%s{typeName}", true)
+
+        let measured =
+            pawPrintTokensOfCorelibType loggerFactory baseClassTypes state namespaceName typeName
+
+        // A sweep that swept nothing would pass every assertion below.
+        measured.Length |> shouldBeGreaterThan 10
+
+        let hostTokens =
+            hostDeclaredMethods hostType |> List.map _.MetadataToken |> Set.ofList
+
+        let pawPrintTokens = measured |> List.map snd
+
+        // Distinct rows get distinct tokens: a token is a row identity, so a duplicate would mean
+        // two methods had collapsed onto one row.
+        pawPrintTokens
+        |> List.length
+        |> shouldEqual (pawPrintTokens |> Set.ofList |> Set.count)
+
+        // Exactly the rows the host says this type declares -- neither a token from some other
+        // type nor a missing one.
+        Set.ofList pawPrintTokens |> shouldEqual hostTokens
+
+        // ... and each token names the row it came from, not merely *a* row of this type.
+        for method, token in measured do
+            let resolved = hostType.Module.ResolveMethod token
+
+            if isNull resolved then
+                failwith $"host CLR could not resolve token 0x%08x{token}, produced for %s{method.Name}"
+
+            resolved.Name |> shouldEqual method.Name
+
+            if resolved.DeclaringType <> hostType then
+                failwith
+                    $"token 0x%08x{token} for %s{method.Name} resolved to a method on %O{resolved.DeclaringType}, not %O{hostType}"
+
+    [<Test>]
+    let ``GetMethodDef pushes the MethodDef token through the FCall`` () : unit =
+        // The sweep above exercises `methodDefToken`; this pins that the FCall arm calls it and
+        // pushes the answer as an Int32, which is the half a pure-function test cannot see.
+        let loggerFactory, baseClassTypes, _, targetMethod, _, state = loadFixture ()
+        let declaringType = findDeclaringConcreteType state targetMethod
+
+        let internalHandle, registry =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                declaringType
+                targetMethod
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = registry
+            }
+
+        let expected =
+            let handle : System.Reflection.Metadata.EntityHandle =
+                System.Reflection.Metadata.MethodDefinitionHandle.op_Implicit (
+                    MethodInfo.requireMetadata "test" targetMethod |> fun facts -> facts.Handle
+                )
+
+            System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken handle
+
+        // Sanity: the fixture's method really is a MethodDef row with a non-nil rid, so an
+        // implementation returning the nil token would not accidentally satisfy this.
+        expected |> shouldNotEqual NativeRuntimeMethodHandle.mdMethodDefNil
+
+        invokeGetMethodDef loggerFactory baseClassTypes (CliType.ValueType internalHandle) state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim expected))
+
+    [<Test>]
+    let ``GetMethodDef fails loudly for an unregistered handle id`` () : unit =
+        // CoreCLR dereferences the MethodDesc* and asserts non-null. An id the registry never
+        // minted is a PawPrint contract violation, and answering some plausible token for it would
+        // send the guest on to enumerate the parameters of a method that does not exist.
+        let loggerFactory, baseClassTypes, _, _, _, state = loadFixture ()
+
+        let bogusHandle =
+            MethodHandleRegistry.internalHandleFromId baseClassTypes state.ConcreteTypes 999L
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeGetMethodDef loggerFactory baseClassTypes (CliType.ValueType bogusHandle) state
+                |> ignore
+            )
+
+        ex.Message
+        |> shouldContainText "RuntimeMethodHandle.GetMethodDef: registry id 999 did not resolve"
+
+    [<Test>]
+    let ``the host CLR reports one MethodDef token for every instantiation of a method`` () : unit =
+        // The CoreCLR fact `methodDefToken` relies on, asserted where it can be *observed*: on the
+        // host runtime, whose behaviour PawPrint is copying. `MethodDesc::GetMemberDef` reads a
+        // stored token, and `InstantiatedMethodDesc::CreateMethodDesc` (genmeth.cpp:85,134) copies
+        // the generic definition's token onto every instantiation it builds.
+        //
+        // The PawPrint-side counterpart of this is *structurally* true rather than testable: two
+        // handles for the same method differing only in instantiation carry one and the same
+        // `ComparableMethodDefinitionHandle`, and `methodDefToken` is a pure function of it, so
+        // no implementation of it could make them disagree. Asserting it here instead is the
+        // honest placement -- it pins the claim against something that could refute it.
+        // `typedefof<List<int>>` is `List<>`, the generic type definition.
+        let openAdd : System.Reflection.MethodInfo =
+            typedefof<System.Collections.Generic.List<int>>.GetMethod "Add"
+
+        let closedAdd : System.Reflection.MethodInfo =
+            typeof<System.Collections.Generic.List<int>>.GetMethod "Add"
+
+        let otherClosedAdd : System.Reflection.MethodInfo =
+            typeof<System.Collections.Generic.List<string>>.GetMethod "Add"
+
+        closedAdd.MetadataToken |> shouldEqual openAdd.MetadataToken
+        otherClosedAdd.MetadataToken |> shouldEqual openAdd.MetadataToken

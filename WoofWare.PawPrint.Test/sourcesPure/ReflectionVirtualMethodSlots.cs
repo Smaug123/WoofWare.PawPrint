@@ -9,8 +9,8 @@ using System.Reflection;
 // it overrides.
 //
 // Everything here is asserted through `Name` / `DeclaringType` / `ReturnType` / `CallingConvention`,
-// never `GetParameters()` — that is blocked on the unimplemented `RuntimeMethodHandle::GetMethodDef`
-// InternalCall, which has nothing to do with slots. Overloads are therefore given *different return
+// never `GetParameters()` — that is blocked on `MetadataImport.Enum` for `mdtParamDef` (0x08000000),
+// an unimplemented token type, which has nothing to do with slots. Overloads are therefore given *different return
 // types* purely so they can be told apart, except for the vararg pair at the end, which differs only
 // in calling convention and is read back that way.
 

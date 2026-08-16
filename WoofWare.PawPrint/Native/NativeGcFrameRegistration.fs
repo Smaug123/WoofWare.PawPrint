@@ -20,10 +20,11 @@ module NativeGcFrameRegistration =
     ///
     /// Only the first entry is exercised by a test; the others are unreachable today because a
     /// guest calling `ConstructorInfo.Invoke` with six arguments (the shape that would reach
-    /// `InvokeConstructorWithoutAlloc`) stops much earlier at the unimplemented InternalCall
-    /// `RuntimeMethodHandle::GetMethodDef` (measured). They are on the list on the authority of
-    /// the upstream grep; leaving a real caller off would turn a working path into a loud
-    /// failure the moment it became reachable.
+    /// `InvokeConstructorWithoutAlloc`) stops earlier, in the
+    /// `RuntimeMethodHandle_InvokeMethod` QCall: "InvokeMethod with isConstructor=true;
+    /// ConstructorInfo.Invoke allocates its own instance and is not implemented" (measured). They
+    /// are on the list on the authority of the upstream grep; leaving a real caller off would turn
+    /// a working path into a loud failure the moment it became reachable.
     let private permittedCallers : (string * string) list =
         [
             "MethodBaseInvoker", "InvokeWithManyArgs"
