@@ -12,10 +12,11 @@ using System.Reflection;
 // different method and the name comparison fails; a "table byte is 0x06" check cannot see that.
 // Keep them if this file is ever trimmed.
 //
-// Everything is asserted through `Name` / `DeclaringType` / `MetadataToken`, never `GetParameters()`
-// and never a binder overload such as `GetMethod(string, Type[])` or `GetConstructor(Type[])`: the
-// binder calls `GetParameters()`, which goes on to `MetadataImport.Enum` for `mdtParamDef`, an
-// unimplemented token type. That is the next blocker on this path, not this one.
+// Everything is asserted through `Name` / `DeclaringType` / `MetadataToken`, never a binder overload
+// such as `GetMethod(string, Type[])` or `GetConstructor(Type[])`. The binder calls
+// `GetParameters()` on every candidate, so an unrelated regression in the parameter path would
+// surface here as an AmbiguousMatchException rather than in `ReflectionParameterInfo.cs`, which is
+// the file that covers it.
 
 public class Sample
 {

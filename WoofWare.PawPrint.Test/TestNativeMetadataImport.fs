@@ -209,6 +209,39 @@ public class TypesWithMembers
 
     public int MyProperty { get; set; }
 }
+
+// The `Enum` QCall over `mdtParamDef` walks the method's Param run verbatim, and that run is not the
+// method's parameter list: `Sequence` 0 is the return value, and a parameter with neither a name nor
+// attributes gets no row at all. `ReturnRow` is what puts a sequence-0 row in a run — C# emits one
+// only when the return value carries an attribute — so without it every method here would have
+// exactly one row per parameter and a handler that confused the two would pass everything.
+public class ParameterShapes
+{
+    public int Several(int alpha, string beta, double gamma) => alpha;
+
+    public void None() { }
+
+    public void Modifiers(out int outArg, ref string refArg, in double inArg) { outArg = 0; refArg = null; }
+
+    public void Defaulted(int mandatory, int optional = 7) { }
+
+    public void Variadic(params int[] rest) { }
+
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    public bool ReturnRow(int only) => true;
+
+    // `maß` is three characters and four UTF-8 bytes, which is what separates a real UTF-8 encode
+    // from an ASCII or UTF-16 one.
+    public int NonAsciiParam(int maß) => maß;
+
+    // Seventeen parameters: one more than the QCall's inline buffer holds, so this is the method
+    // whose enumeration must take the large-result escape hatch.
+    public void ManyParameters(
+        int p00, int p01, int p02, int p03, int p04, int p05, int p06, int p07, int p08,
+        int p09, int p10, int p11, int p12, int p13, int p14, int p15, int p16)
+    {
+    }
+}
 """
 
     type private MetadataImportFixture =
@@ -234,6 +267,7 @@ public class TypesWithMembers
             PropertyShapesType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             GenericPropertyType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             MembersType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            ParameterShapesType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             InstanceField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             StaticField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             LiteralField : FieldInfo<GenericParamFromMetadata, TypeDefn>
@@ -330,6 +364,8 @@ public class TypesWithMembers
 
         let membersType = requiredTopLevelType assembly "" "TypesWithMembers"
 
+        let parameterShapesType = requiredTopLevelType assembly "" "ParameterShapes"
+
         let constArrayType = requiredTopLevelType corelib "System.Reflection" "ConstArray"
 
         let fieldByName (name : string) : FieldInfo<GenericParamFromMetadata, TypeDefn> =
@@ -385,6 +421,7 @@ public class TypesWithMembers
             PropertyShapesType = propertyShapesType
             GenericPropertyType = genericPropertyType
             MembersType = membersType
+            ParameterShapesType = parameterShapesType
             InstanceField = fieldByName "InstanceField"
             StaticField = fieldByName "StaticField"
             LiteralField = fieldByName "LiteralField"
@@ -2349,7 +2386,7 @@ public class TypesWithMembers
             |> shouldEqual (Array.append (System.Text.Encoding.UTF8.GetBytes property.Name) [| 0uy |])
 
     [<Test>]
-    let ``MetadataImport GetName rejects a token that is neither a FieldDef nor a PropertyDef`` () : unit =
+    let ``MetadataImport GetName rejects a token of an unsupported kind`` () : unit =
         let fixture = makeFixture ()
 
         // CoreCLR would answer a TypeDef token here (with the type's name), but no managed caller
@@ -2361,7 +2398,8 @@ public class TypesWithMembers
                 |> ignore
             )
 
-        ex.Message |> shouldContainText "expected FieldDef or PropertyDef token"
+        ex.Message
+        |> shouldContainText "expected FieldDef, PropertyDef or ParamDef token"
 
     [<Test>]
     let ``MetadataImport GetName rejects a FieldDef token that is absent from the assembly`` () : unit =
@@ -2854,3 +2892,458 @@ public class TypesWithMembers
                 Assert.Throws (fun () -> invokeEnumAssociates fixture token fixture.State |> ignore)
 
             ex.ToString () |> shouldContainText "was not present in"
+
+    /// `MetadataTokenType.ParamDef`, as `MetadataImport.EnumParams` passes it.
+    let private invokeEnumParams
+        (fixture : MetadataImportFixture)
+        (methodToken : int32)
+        (state : IlMachineState)
+        : int32 * int32 list * EnumResultStorage * IlMachineState
+        =
+        invokeEnum fixture 0x08000000 methodToken state
+
+    let private invokeGetParamDefProps
+        (fixture : MetadataImportFixture)
+        (mdToken : int32)
+        (state : IlMachineState)
+        : EvalStackValue * int32 * int32 * IlMachineState
+        =
+        let state, metadataImportType, getParamDefPropsMethod =
+            metadataImportMethod fixture state "GetParamDefProps" 4
+
+        let sequenceOut, state = allocateInt32Out fixture -1 state
+        let attributesOut, state = allocateInt32Out fixture -1 state
+
+        let state =
+            invokeMetadataImportNative
+                fixture
+                metadataImportType
+                getParamDefPropsMethod
+                [
+                    metadataImportHandle fixture
+                    CliType.Numeric (CliNumericType.Int32 mdToken)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed sequenceOut)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed attributesOut)
+                ]
+                state
+
+        let returnValue, state = IlMachineState.popEvalStack (ThreadId 0) state
+
+        returnValue,
+        readInt32Out fixture.BaseClassTypes state sequenceOut,
+        readInt32Out fixture.BaseClassTypes state attributesOut,
+        state
+
+    let private paramTableRowCount (fixture : MetadataImportFixture) : int =
+        System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetTableRowCount (
+            fixture.Assembly.PeReader.GetMetadataReader (),
+            System.Reflection.Metadata.Ecma335.TableIndex.Param
+        )
+
+    /// The Param rows of one method, read straight out of the image with `MetadataReader`. Used to
+    /// build the *expected* token list, so the expectation does not come from the handler under test.
+    let private parametersOfMethod
+        (assembly : DumpedAssembly)
+        (methodHandle : MethodDefinitionHandle)
+        : ParameterHandle list
+        =
+        let mr = assembly.PeReader.GetMetadataReader ()
+
+        (mr.GetMethodDefinition methodHandle).GetParameters () |> Seq.toList
+
+    /// Every method the host CLR reports for a type in the fixture's image, constructors included.
+    /// `DeclaredOnly` because the Param run is per-MethodDef and inherited methods belong to their
+    /// own declaring type's rows.
+    let private hostDeclaredMethods (hostType : System.Type) : System.Reflection.MethodBase array =
+        let flags =
+            System.Reflection.BindingFlags.DeclaredOnly
+            ||| System.Reflection.BindingFlags.Public
+            ||| System.Reflection.BindingFlags.NonPublic
+            ||| System.Reflection.BindingFlags.Instance
+            ||| System.Reflection.BindingFlags.Static
+
+        Array.append
+            (hostType.GetMethods flags
+             |> Array.map (fun m -> m :> System.Reflection.MethodBase))
+            (hostType.GetConstructors flags
+             |> Array.map (fun c -> c :> System.Reflection.MethodBase))
+
+    /// The ParamDef tokens the *host* CLR reports for one method, as a set. This is an oracle from
+    /// outside PawPrint's own parse: `ParameterInfo.MetadataToken` is the raw `mdtParamDef` token,
+    /// and `RuntimeParameterInfo` reports `mdParamDefNil` (the bare table tag) for a parameter that
+    /// has no Param row at all — those are the ones the enumeration must *not* contain.
+    ///
+    /// `ReturnParameter` is folded in because it is the sequence-0 row, which is in the Param run
+    /// but not in `GetParameters()`. Constructors have no `ReturnParameter`.
+    let private hostParameterTokens (method : System.Reflection.MethodBase) : Set<int32> =
+        let isNilToken (token : int32) : bool = token &&& 0x00FFFFFF = 0
+
+        let returnRow =
+            match method with
+            | :? System.Reflection.MethodInfo as methodInfo -> [ methodInfo.ReturnParameter.MetadataToken ]
+            | _ -> []
+
+        (method.GetParameters () |> Array.map (fun p -> p.MetadataToken) |> List.ofArray)
+        @ returnRow
+        |> List.filter (isNilToken >> not)
+        |> Set.ofList
+
+    let private parameterShapeMethod (fixture : MetadataImportFixture) (name : string) : MethodDefinitionHandle =
+        methodHandleByName fixture.ParameterShapesType name
+
+    [<Test>]
+    let ``MetadataImport Enum reports a method's ParamDef tokens in table order`` () : unit =
+        let fixture = makeFixture ()
+
+        let methodHandle = parameterShapeMethod fixture "Several"
+
+        let length, tokens, storage, _ =
+            invokeEnumParams fixture (methodDefToken methodHandle) fixture.State
+
+        length |> shouldEqual 3
+
+        tokens
+        |> shouldEqual (parametersOfMethod fixture.Assembly methodHandle |> List.map parameterToken)
+
+        storage |> shouldEqual EnumResultStorage.ShortResult
+
+    [<Test>]
+    let ``MetadataImport Enum reports no ParamDef tokens for a parameterless method`` () : unit =
+        let fixture = makeFixture ()
+
+        let length, tokens, _, _ =
+            invokeEnumParams fixture (methodDefToken (parameterShapeMethod fixture "None")) fixture.State
+
+        length |> shouldEqual 0
+        tokens |> shouldEqual []
+
+    [<Test>]
+    let ``MetadataImport Enum includes the sequence-0 return row in a method's ParamDef run`` () : unit =
+        let fixture = makeFixture ()
+
+        // `ReturnRow` takes one parameter but owns two Param rows, because `[return: MarshalAs]`
+        // gives its return value a row of its own. A handler that answered "one token per signature
+        // parameter" — rather than walking the Param run — would report one token here and pass
+        // every other test in this file.
+        let methodHandle = parameterShapeMethod fixture "ReturnRow"
+
+        let length, tokens, _, state =
+            invokeEnumParams fixture (methodDefToken methodHandle) fixture.State
+
+        length |> shouldEqual 2
+
+        tokens
+        |> shouldEqual (parametersOfMethod fixture.Assembly methodHandle |> List.map parameterToken)
+
+        // ...and it is the *first* of the two, so the run is in `Sequence` order rather than
+        // parameter order with the return value appended.
+        let mutable state = state
+
+        let sequences =
+            tokens
+            |> List.map (fun token ->
+                let _, sequence, _, nextState = invokeGetParamDefProps fixture token state
+                state <- nextState
+                sequence
+            )
+
+        sequences |> shouldEqual [ 0 ; 1 ]
+
+    [<Test>]
+    let ``MetadataImport Enum uses the large result for a method with more parameters than the inline buffer``
+        ()
+        : unit
+        =
+        let fixture = makeFixture ()
+
+        // Seventeen rows against an inline buffer of sixteen: this is the only method in the image
+        // whose ParamDef enumeration overflows, so without it the escape hatch is unexercised for
+        // this token type.
+        let methodHandle = parameterShapeMethod fixture "ManyParameters"
+
+        let length, tokens, storage, _ =
+            invokeEnumParams fixture (methodDefToken methodHandle) fixture.State
+
+        length |> shouldEqual 17
+        storage |> shouldEqual EnumResultStorage.LongResult
+
+        tokens
+        |> shouldEqual (parametersOfMethod fixture.Assembly methodHandle |> List.map parameterToken)
+
+    [<Test>]
+    let ``MetadataImport Enum agrees with the host runtime for every method in the image`` () : unit =
+        let fixture = makeFixture ()
+
+        // Outside oracle over the whole image rather than the handful of shapes anyone thought to
+        // write down, so a method added to the fixture is covered without extending a list.
+        //
+        // Compared as sets: order is pinned by the table-order tests above, and the host reports the
+        // return row through a separate property rather than in sequence position.
+        let hostMethods =
+            (System.Reflection.Assembly.Load fixture.Image).GetTypes ()
+            |> Array.collect hostDeclaredMethods
+
+        hostMethods.Length |> shouldEqual (fixture.Assembly.Methods.Count)
+
+        let mutable state = fixture.State
+        let mutable methodsWithRows = 0
+
+        for method in hostMethods do
+            let length, tokens, _, nextState =
+                invokeEnumParams fixture method.MetadataToken state
+
+            state <- nextState
+
+            let expected = hostParameterTokens method
+
+            Set.ofList tokens |> shouldEqual expected
+            length |> shouldEqual expected.Count
+            // No duplicates: a set comparison alone would tolerate a repeated token.
+            tokens.Length |> shouldEqual expected.Count
+
+            if not expected.IsEmpty then
+                methodsWithRows <- methodsWithRows + 1
+
+        // The sweep is worthless if every method turns out to have no parameters at all.
+        methodsWithRows |> shouldBeGreaterThan 10
+
+    [<Test>]
+    let ``MetadataImport Enum rejects a ParamDef enumeration with a non-MethodDef parent`` () : unit =
+        let fixture = makeFixture ()
+
+        // CoreCLR asserts `TypeFromToken(tkParent) == mdtMethodDef` here (mdinternalro.cpp:428) and
+        // in a release build would read a MethodDef record at whatever rid the token happens to
+        // carry. PawPrint refuses instead.
+        let ex =
+            Assert.Throws (fun () ->
+                invokeEnumParams fixture (typeDefToken fixture.ParameterShapesType.TypeDefHandle) fixture.State
+                |> ignore
+            )
+
+        ex.ToString ()
+        |> shouldContainText "expected MethodDef parent token for parameter enumeration"
+
+    [<Test>]
+    let ``MetadataImport Enum rejects a ParamDef enumeration whose parent is absent from the assembly`` () : unit =
+        let fixture = makeFixture ()
+
+        // Row 0xFFFFFF dies under almost any guard; the first row past the end is the one an
+        // off-by-one guard would wave through; row 0 is the nil MethodDef token, which
+        // `MetadataToken.ofInt` builds a handle for perfectly happily.
+        let methodTableRowCount =
+            System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetTableRowCount (
+                fixture.Assembly.PeReader.GetMetadataReader (),
+                System.Reflection.Metadata.Ecma335.TableIndex.MethodDef
+            )
+
+        for token in [ 0x06FFFFFF ; 0x06000000 ||| (methodTableRowCount + 1) ; 0x06000000 ] do
+            let ex =
+                Assert.Throws (fun () -> invokeEnumParams fixture token fixture.State |> ignore)
+
+            ex.ToString () |> shouldContainText "was not present in"
+
+    [<Test>]
+    let ``MetadataImport GetParamDefProps reports the sequence and flags of each parameter shape`` () : unit =
+        let fixture = makeFixture ()
+
+        // `Sequence` is 1-based over the method's parameters; `RuntimeParameterInfo.GetParameters`
+        // is what subtracts one. The flags are the raw `Param.Flags` column: `out` sets Out (0x0002)
+        // and `in` sets In (0x0001), while a plain `ref` sets neither — so a handler that read the
+        // signature's byref-ness rather than the row's flags would get `refArg` wrong.
+        let methodHandle = parameterShapeMethod fixture "Modifiers"
+        let mutable state = fixture.State
+
+        let actual =
+            parametersOfMethod fixture.Assembly methodHandle
+            |> List.map (fun paramHandle ->
+                let returnValue, sequence, attributes, nextState =
+                    invokeGetParamDefProps fixture (parameterToken paramHandle) state
+
+                state <- nextState
+                returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+                sequence, attributes
+            )
+
+        let inFlag = int System.Reflection.ParameterAttributes.In
+        let outFlag = int System.Reflection.ParameterAttributes.Out
+
+        actual |> shouldEqual [ (1, outFlag) ; (2, 0) ; (3, inFlag) ]
+
+    [<Test>]
+    let ``MetadataImport GetParamDefProps reports Optional and HasDefault for a defaulted parameter`` () : unit =
+        let fixture = makeFixture ()
+
+        // The only shape in the image whose Param row carries flags a signature cannot supply, so
+        // without it a handler that always answered 0 would survive everything but `Modifiers`.
+        let methodHandle = parameterShapeMethod fixture "Defaulted"
+        let mutable state = fixture.State
+
+        let actual =
+            parametersOfMethod fixture.Assembly methodHandle
+            |> List.map (fun paramHandle ->
+                let _, sequence, attributes, nextState =
+                    invokeGetParamDefProps fixture (parameterToken paramHandle) state
+
+                state <- nextState
+                sequence, attributes
+            )
+
+        let optionalWithDefault =
+            int (
+                System.Reflection.ParameterAttributes.Optional
+                ||| System.Reflection.ParameterAttributes.HasDefault
+            )
+
+        actual |> shouldEqual [ (1, 0) ; (2, optionalWithDefault) ]
+
+    [<Test>]
+    let ``MetadataImport GetParamDefProps agrees with the host runtime for every parameter in the image`` () : unit =
+        let fixture = makeFixture ()
+
+        // Outside oracle again, and the one that pins `Sequence` across the whole image:
+        // `ParameterInfo.Position` is the value CoreCLR derived by subtracting one from this row's
+        // `Sequence`, and `ReturnParameter` is position -1, i.e. sequence 0.
+        let hostMethods =
+            (System.Reflection.Assembly.Load fixture.Image).GetTypes ()
+            |> Array.collect hostDeclaredMethods
+
+        let expectations =
+            hostMethods
+            |> Array.collect (fun method ->
+                let returnRow =
+                    match method with
+                    | :? System.Reflection.MethodInfo as methodInfo -> [| methodInfo.ReturnParameter |]
+                    | _ -> [||]
+
+                Array.append (method.GetParameters ()) returnRow
+            )
+            |> Array.filter (fun p -> p.MetadataToken &&& 0x00FFFFFF <> 0)
+
+        expectations.Length |> shouldEqual (paramTableRowCount fixture)
+
+        let mutable state = fixture.State
+
+        for parameter in expectations do
+            let returnValue, sequence, attributes, nextState =
+                invokeGetParamDefProps fixture parameter.MetadataToken state
+
+            state <- nextState
+
+            returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+            sequence |> shouldEqual (parameter.Position + 1)
+            attributes |> shouldEqual (int parameter.Attributes)
+
+    [<Test>]
+    let ``MetadataImport GetParamDefProps rejects a token that is not a ParamDef`` () : unit =
+        let fixture = makeFixture ()
+
+        let ex =
+            Assert.Throws (fun () ->
+                invokeGetParamDefProps fixture (methodDefToken (parameterShapeMethod fixture "Several")) fixture.State
+                |> ignore
+            )
+
+        ex.ToString () |> shouldContainText "expected ParamDef token"
+
+    [<Test>]
+    let ``MetadataImport GetParamDefProps rejects a ParamDef token absent from the assembly`` () : unit =
+        let fixture = makeFixture ()
+
+        // Unguarded, the first two reach `MetadataReader.GetParameter` and surface as
+        // `BadImageFormatException: Read out of bounds`, which reads as "your assembly is corrupt"
+        // when the truth is that PawPrint was handed a token it should never have seen. Row 0 is the
+        // nil ParamDef token, which a guard written as `row > rowCount` alone would wave through.
+        for token in [ 0x08FFFFFF ; 0x08000000 ||| (paramTableRowCount fixture + 1) ; 0x08000000 ] do
+            let ex =
+                Assert.Throws (fun () -> invokeGetParamDefProps fixture token fixture.State |> ignore)
+
+            ex.ToString () |> shouldContainText "was not present in"
+
+    [<Test>]
+    let ``MetadataImport GetName agrees with the host runtime for every parameter`` () : unit =
+        let fixture = makeFixture ()
+
+        let hostMethods =
+            (System.Reflection.Assembly.Load fixture.Image).GetTypes ()
+            |> Array.collect hostDeclaredMethods
+
+        let named =
+            hostMethods
+            |> Array.collect (fun method -> method.GetParameters ())
+            |> Array.filter (fun p -> p.MetadataToken &&& 0x00FFFFFF <> 0)
+
+        named.Length |> shouldBeGreaterThan 10
+
+        let mutable state = fixture.State
+
+        for parameter in named do
+            let returnValue, bytes, nextState =
+                invokeGetName fixture parameter.MetadataToken state
+
+            state <- nextState
+
+            returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+            bytes
+            |> shouldEqual (Array.append (System.Text.Encoding.UTF8.GetBytes parameter.Name) [| 0uy |])
+
+    [<Test>]
+    let ``MetadataImport GetName encodes a non-ASCII parameter name as UTF-8, not one byte per character`` () : unit =
+        let fixture = makeFixture ()
+
+        let paramHandle =
+            parametersOfMethod fixture.Assembly (parameterShapeMethod fixture "NonAsciiParam")
+            |> List.exactlyOne
+
+        let _, bytes, _ = invokeGetName fixture (parameterToken paramHandle) fixture.State
+
+        // Three characters, four UTF-8 bytes: `ß` is two. An ASCII or Latin-1 encode would produce
+        // three bytes and a UTF-16 one seven, so the length alone separates all three.
+        bytes |> shouldEqual [| 0x6Duy ; 0x61uy ; 0xC3uy ; 0x9Fuy ; 0x00uy |]
+
+    [<Test>]
+    let ``MetadataImport GetName reports the empty string for a Param row with no name`` () : unit =
+        let fixture = makeFixture ()
+
+        // The sequence-0 row `[return: MarshalAs]` produces carries a nil Name (ECMA-335 II.22.33
+        // makes the column optional). CoreCLR hands back a pointer to offset 0 of `#Strings` for
+        // that, so the guest sees `""` rather than a null `MdUtf8String`; this is the one row in the
+        // image that distinguishes the two.
+        let returnRow =
+            parametersOfMethod fixture.Assembly (parameterShapeMethod fixture "ReturnRow")
+            |> List.head
+
+        let mr = fixture.Assembly.PeReader.GetMetadataReader ()
+        (mr.GetParameter returnRow).Name.IsNil |> shouldEqual true
+
+        let returnValue, bytes, _ =
+            invokeGetName fixture (parameterToken returnRow) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+        bytes |> shouldEqual [| 0uy |]
+
+    [<Test>]
+    let ``MetadataImport GetDefaultValue refuses a ParamDef token rather than reporting no constant`` () : unit =
+        let fixture = makeFixture ()
+
+        // Now that ParamDef tokens exist, `ParameterInfo.HasDefaultValue` / `DefaultValue` /
+        // `RawDefaultValue` can put one here, and `Defaulted`'s second parameter is exactly the row
+        // that has a Constant. The handler covers FieldDef parents only, and the failure must stay
+        // loud: reporting ELEMENT_TYPE_VOID instead would turn "PawPrint has not implemented this"
+        // into "this optional parameter has no default", which the guest cannot tell from the truth.
+        let defaultedParameter =
+            parametersOfMethod fixture.Assembly (parameterShapeMethod fixture "Defaulted")
+            |> List.item 1
+
+        let mr = fixture.Assembly.PeReader.GetMetadataReader ()
+
+        (mr.GetParameter defaultedParameter).GetDefaultValue().IsNil
+        |> shouldEqual false
+
+        let ex =
+            Assert.Throws (fun () ->
+                invokeGetDefaultValue fixture (parameterToken defaultedParameter) fixture.State
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "expected FieldDef token"

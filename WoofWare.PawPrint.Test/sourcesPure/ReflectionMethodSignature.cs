@@ -7,9 +7,10 @@ class Program
     // Every method here has its whole signature parsed by the Signature_Init QCall, not just the
     // part this program can read back: the QCall fills `_arguments` eagerly (CoreCLR allocates the
     // array even for a nullary method). So the byref and generic-instantiation parameters below are
-    // exercised even though `GetParameters()` is not reachable yet — reading `ReturnType` is enough
+    // exercised without this program reading a single `ParameterInfo` — `ReturnType` alone is enough
     // to make the QCall concretize every parameter type, and an unsupported parameter shape would
-    // fail the run rather than go unnoticed.
+    // fail the run rather than go unnoticed. What `GetParameters()` adds on top is the Param
+    // *metadata* rows (names, flags, tokens), which `ReflectionParameterInfo.cs` covers.
 
     static int Twice (int x, string s) => x * 2;
 
