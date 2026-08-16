@@ -99,6 +99,9 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 * When writing a "TODO" `failwith`, specify in the error message what the condition is that triggers the failure, so that a failing run can easily be traced back to its cause.
 * If a field name begins with an underscore (like `_LoadedAssemblies`), do not mutate it directly. Only mutate it via whatever intermediate methods have been defined for that purpose (like `WithLoadedAssembly`).
 * Recall that in F#, compilation order matters: new functions must go after their dependencies, and later files can only depend on earlier ones from the `.fsproj`.
+* I know LLMs often love the words "load-bearing" and "seam", but those words are very general; please use more specific descriptions instead.
+* When writing docstrings, put only what's relevant to a *caller* on the docstring. If a caller doesn't need to know,it, it should be an inline comment instead.
+* No backward-looking or one-time review-focused narrative comments. For example, don't describe what the code used to look like (that's why Git exists!), and don't discuss alternative counterfactual implementations.
 
 ### Architecture guidelines
 
