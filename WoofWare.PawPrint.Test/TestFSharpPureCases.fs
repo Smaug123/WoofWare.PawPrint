@@ -5,6 +5,7 @@ open System.Collections.Immutable
 open System.Diagnostics
 open System.IO
 open System.Runtime.InteropServices
+open System.Text.RegularExpressions
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
@@ -119,6 +120,7 @@ module TestFSharpPureCases =
             "SprintfBasic"
             "UnionVirtualSlots"
             "UnionReflection"
+            "PrintfCacheHit"
         ]
 
     /// F# cases not expected to pass under PawPrint.
@@ -127,7 +129,14 @@ module TestFSharpPureCases =
     /// behaviour is checked. Nothing therefore detects a parked case that has started passing, so
     /// before recording that a case is blocked on a named primitive, un-park it and observe the
     /// failure: parking it is what stops the claim being checked.
-    let unimplemented : Set<string> = Set.ofList []
+    ///
+    /// `PrintfCacheHit` is parked for a different reason from the usual "PawPrint cannot do this
+    /// yet": PawPrint refuses it on purpose, because the guest image FSC produced contains an
+    /// unverifiable call (see the guest's own comment, and dotnet/fsharp#20270). Real .NET runs it,
+    /// so the case cannot pass the differential comparison, and should not — its passing would mean
+    /// PawPrint had started accepting IL it is designed to reject. The refusal is asserted by
+    /// `PawPrint refuses the unverifiable call in PrintfCacheHit` instead.
+    let unimplemented : Set<string> = Set.ofList [ "PrintfCacheHit" ]
 
     // F# test cases that legitimately throw under both runtimes. Without this set, a test
     // that crashes both runtimes would silently pass — see TestPureCases.fs for the same
@@ -342,6 +351,69 @@ module TestFSharpPureCases =
         (match bump.Signature.ParameterTypes.[0] with
          | TypeDefn.Byref _ -> ()
          | other -> failwith $"expected ByrefDispatch.Base::Bump's sole parameter to be a byref, got %O{other}")
+
+    /// A parked case never runs under PawPrint, so nothing in the fixture above exercises
+    /// `refuseUnverifiableArguments` at all. This is the only test that does.
+    ///
+    /// The rendered instantiations are asserted, not merely the fact of refusal: both types are
+    /// instantiations of `PrintfFormat`4`, so a report that dropped their generic arguments would
+    /// name the same type twice while still throwing.
+    [<Test>]
+    let ``PawPrint refuses the unverifiable call in PrintfCacheHit`` () : unit =
+        let image = loadImage ()
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let dotnetRuntimes =
+            seq {
+                yield publishDir
+                yield! DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
+            }
+            |> ImmutableArray.CreateRange
+
+        use peImage = new MemoryStream (image)
+
+        let message =
+            try
+                Program.run
+                    loggerFactory
+                    (Some dllPath)
+                    peImage
+                    { HostConfig.Default dotnetRuntimes with
+                        Guest =
+                            { GuestConfig.Default dotnetRuntimes with
+                                Argv = [ "PrintfCacheHit" ]
+                            }
+                    }
+                |> ignore
+
+                failwith
+                    "expected PawPrint to refuse PrintfCacheHit's unverifiable call, but the guest ran to completion"
+            with :? GuestFailureException as e ->
+                e.Message
+
+        // `describe` tags every type with its concrete handle, whose numbering depends on the order
+        // types happen to be concretised; the instantiations are what this test is about, so the
+        // tags are stripped before comparing. That a tag is there at all is asserted separately,
+        // since stripping would otherwise hide the renderer dropping them.
+        message |> shouldContainText "PrintfCacheHit+Widget#"
+
+        let withoutHandles = Regex.Replace (message, "#[0-9]+", "")
+
+        // `PrintfFormat`5<obj, obj, obj, obj, Widget>` is what the guest's `newobj` allocates;
+        // `PrintfFormat`4<obj, Unit, string, string>` is what the `call` two instructions later
+        // declares. That mismatch is the defect, so both spellings are pinned.
+        let expected =
+            [
+                "Unverifiable call"
+                "PrintFormatToStringThen"
+                "PrintfFormat`5<System.Object, System.Object, System.Object, System.Object, PrintfCacheHit+Widget>"
+                "PrintfFormat`4<System.Object, Microsoft.FSharp.Core.Unit, System.String, System.String>"
+            ]
+
+        for fragment in expected do
+            if not (withoutHandles.Contains fragment) then
+                failwith $"expected the refusal to mention '%s{fragment}', but it was:\n%s{message}"
 
     [<TestCaseSource(nameof unimplemented)>]
     let ``Unimplemented F# tests have correct real-runtime behaviour`` (testCaseName : string) =
