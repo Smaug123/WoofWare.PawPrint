@@ -42,6 +42,9 @@ public sealed class CctorAttribute : System.Attribute
             GuestAssembly : DumpedAssembly
             CustomAttributeType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             QCallMethod : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+            /// The `CustomAttribute_CreatePropertyOrFieldData` stub, concretized alongside the
+            /// instance-creating one so that both QCalls' parameter types are registered.
+            NamedArgQCallMethod : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
             AttributeType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             AttributeTypeHandle : ConcreteTypeHandle
             AttributeRuntimeTypeAddr : ManagedHeapAddress
@@ -179,11 +182,18 @@ public sealed class CctorAttribute : System.Attribute
             0x00uy
         |]
 
-    /// Allocates the byte[14] blob, plus a one-cell IntPtr[] holding the current cursor
-    /// (a byref into the blob's cell 0). Returns the blob array address and the IntPtr[]
+    /// Allocates a byte[] holding `bytes`, plus a one-cell IntPtr[] holding the current cursor
+    /// (a byref into the blob's cell `cursorIdx`). Returns the blob array address and the IntPtr[]
     /// address so the test can later read back the updated cursor cell.
-    let private allocateBlobArrays
+    ///
+    /// `cursorIdx` is a parameter because the named-arg QCall is normally entered with the cursor
+    /// already partway through the blob — the fixed-args section and the NumNamed count sit in
+    /// front of it — and feeding one call's written cursor into the next is how the back-to-back
+    /// test works.
+    let private allocateBlobArraysFrom
         (fixture : Fixture)
+        (bytes : byte array)
+        (cursorIdx : int)
         (state : IlMachineState)
         : ManagedHeapAddress * ManagedHeapAddress * IlMachineState
         =
@@ -194,13 +204,13 @@ public sealed class CctorAttribute : System.Attribute
             IlMachineState.allocateArray
                 (ConcreteTypeHandle.OneDimArrayZero byteHandle)
                 (fun () -> CliType.Numeric (CliNumericType.UInt8 0uy))
-                blobBytes.Length
+                bytes.Length
                 state
 
         let state =
-            (state, [ 0 .. blobBytes.Length - 1 ])
+            (state, [ 0 .. bytes.Length - 1 ])
             ||> List.fold (fun state i ->
-                IlMachineState.setArrayValue blobArr (CliType.Numeric (CliNumericType.UInt8 blobBytes.[i])) i state
+                IlMachineState.setArrayValue blobArr (CliType.Numeric (CliNumericType.UInt8 bytes.[i])) i state
             )
 
         let intPtrHandle =
@@ -215,12 +225,19 @@ public sealed class CctorAttribute : System.Attribute
 
         let cursorStart =
             CliType.RuntimePointer (
-                CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (blobArr, 0), []))
+                CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (blobArr, cursorIdx), []))
             )
 
         let state = IlMachineState.setArrayValue intPtrArr cursorStart 0 state
 
         blobArr, intPtrArr, state
+
+    let private allocateBlobArrays
+        (fixture : Fixture)
+        (state : IlMachineState)
+        : ManagedHeapAddress * ManagedHeapAddress * IlMachineState
+        =
+        allocateBlobArraysFrom fixture blobBytes 0 state
 
     /// Allocates a single-cell Int32[] zero-initialised. The QCall writes `pcNamedArgs`
     /// into cell 0.
@@ -238,30 +255,28 @@ public sealed class CctorAttribute : System.Attribute
             1
             state
 
-    /// Locates the static partial PInvoke stub for `CustomAttribute_CreateCustomAttributeInstance`
-    /// on the corelib's `System.Reflection.CustomAttribute` type. The wrapper method has IL;
-    /// the QCall target is the same-named static stub whose `NativeImport` points at
-    /// `QCall::CustomAttribute_CreateCustomAttributeInstance`.
+    /// Locates the static partial PInvoke stub for the named QCall entry point on the corelib's
+    /// `System.Reflection.CustomAttribute` type. The wrapper method has IL; the QCall target is the
+    /// static stub whose `NativeImport` points at `QCall::<entryPoint>`. Roslyn mangles the stub's
+    /// own name (`<CreateCustomAttributeInstance>g____PInvoke|30_0`), so the entry point is the
+    /// only stable way to find it.
     let private findQCallStub
+        (entryPoint : string)
         (customAttributeType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
         =
         customAttributeType.Methods
         |> List.filter (fun method ->
             match method.TryNativeImport with
-            | Some import ->
-                import.ModuleName = "QCall"
-                && import.EntryPointName = "CustomAttribute_CreateCustomAttributeInstance"
+            | Some import -> import.ModuleName = "QCall" && import.EntryPointName = entryPoint
             | None -> false
         )
         |> function
             | [ method ] -> method
-            | [] ->
-                failwith
-                    "QCall entry point CustomAttribute_CreateCustomAttributeInstance not found on System.Reflection.CustomAttribute"
+            | [] -> failwith $"QCall entry point %s{entryPoint} not found on System.Reflection.CustomAttribute"
             | methods ->
                 failwith
-                    $"QCall entry point CustomAttribute_CreateCustomAttributeInstance was ambiguous on System.Reflection.CustomAttribute: %d{methods.Length} matches"
+                    $"QCall entry point %s{entryPoint} was ambiguous on System.Reflection.CustomAttribute: %d{methods.Length} matches"
 
     /// Compile the given attribute source, load corelib, find and concretize the QCall method
     /// and the named attribute type, allocate the RuntimeType and RuntimeMethodInfoStub for
@@ -301,7 +316,8 @@ public sealed class CctorAttribute : System.Attribute
         let customAttributeType =
             requiredTopLevelType corelib "System.Reflection" "CustomAttribute"
 
-        let rawQCallStub = findQCallStub customAttributeType
+        let rawQCallStub =
+            findQCallStub "CustomAttribute_CreateCustomAttributeInstance" customAttributeType
 
         // Concretize the QCall method; this also concretizes its parameter types so the
         // active-pattern match (QCallModule / ObjectHandleOnStack / pointer-to-Int32 etc.)
@@ -312,6 +328,17 @@ public sealed class CctorAttribute : System.Attribute
                 baseClassTypes
                 ImmutableArray.Empty
                 rawQCallStub
+                None
+                corelib.Name
+                ImmutableArray.Empty
+                state
+
+        let state, namedArgQCallMethod, _ =
+            ExecutionConcretization.concretizeMethodWithTypeGenerics
+                loggerFactory
+                baseClassTypes
+                ImmutableArray.Empty
+                (findQCallStub "CustomAttribute_CreatePropertyOrFieldData" customAttributeType)
                 None
                 corelib.Name
                 ImmutableArray.Empty
@@ -359,6 +386,7 @@ public sealed class CctorAttribute : System.Attribute
             GuestAssembly = guestAssembly
             CustomAttributeType = customAttributeType
             QCallMethod = qCallMethod
+            NamedArgQCallMethod = namedArgQCallMethod
             AttributeType = attributeType
             AttributeTypeHandle = attributeTypeHandle
             AttributeRuntimeTypeAddr = attributeRuntimeTypeAddr
@@ -624,3 +652,462 @@ public sealed class CctorAttribute : System.Attribute
         match IlMachineState.getArrayValue prep.InstanceArr 0 state with
         | CliType.ObjectRef None -> ()
         | other -> failwithf "Expected instance slot to remain null after suspension, got %A" other
+
+    // ------------------------------------------------------------------
+    // CustomAttribute_CreatePropertyOrFieldData
+    // ------------------------------------------------------------------
+
+    /// Builds a `StringHandleOnStack` whose `_ptr` targets `target`. Structurally identical to
+    /// `objectHandleOnStackValue` — both are a one-field struct wrapping a `_ptr` — but they are
+    /// distinct corelib types and the QCall's signature match distinguishes them.
+    let private stringHandleOnStackValue
+        (fixture : Fixture)
+        (target : ManagedPointerSource)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        let stringHandleOnStackType =
+            requiredTopLevelType fixture.Corelib "System.Runtime.CompilerServices" "StringHandleOnStack"
+
+        let state, handle =
+            concretizeTypeInfo fixture.LoggerFactory fixture.BaseClassTypes state stringHandleOnStackType
+
+        let zero, state =
+            IlMachineState.cliTypeZeroOfHandle state fixture.BaseClassTypes handle
+
+        let value =
+            match zero with
+            | CliType.ValueType vt ->
+                let ptrField = IlMachineState.requiredOwnInstanceFieldId state handle "_ptr"
+
+                CliValueType.WithFieldSetById ptrField (CliType.RuntimePointer (CliRuntimePointer.Managed target)) vt
+                |> CliType.ValueType
+            | other -> failwith $"StringHandleOnStack zero value was not a value type: %O{other}"
+
+        value, state
+
+    /// Every out-slot starts holding this, never null.
+    ///
+    /// The managed caller pre-nulls its own locals, and so does the obvious fixture, so a handler
+    /// that simply never wrote the type slot would pass a `type slot is null` assertion by reading
+    /// back the fixture's own initialisation. Seeding a non-null sentinel is what makes
+    /// "the handler wrote null" distinguishable from "the handler did nothing", which is the whole
+    /// content of the explicit-null contract.
+    let private outSlotSentinel (fixture : Fixture) : CliType =
+        CliType.ObjectRef (Some fixture.AttributeRuntimeTypeAddr)
+
+    let private prepareNamedArgInvocation
+        (fixture : Fixture)
+        (blob : byte array)
+        (cursorIdx : int)
+        : {|
+              BlobArr : ManagedHeapAddress
+              IntPtrArr : ManagedHeapAddress
+              IsPropertyArr : ManagedHeapAddress
+              NameArr : ManagedHeapAddress
+              TypeArr : ManagedHeapAddress
+              ValueArr : ManagedHeapAddress
+              Thread : ThreadId
+              State : IlMachineState
+          |}
+        =
+        let state = fixture.State
+
+        let qCallModule, state = qCallModuleValue fixture state
+
+        let blobArr, intPtrArr, state = allocateBlobArraysFrom fixture blob cursorIdx state
+
+        let ppBlobStart =
+            CliType.RuntimePointer (
+                CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (intPtrArr, 0), []))
+            )
+
+        let pBlobEnd =
+            CliType.RuntimePointer (
+                CliRuntimePointer.Managed (
+                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (blobArr, blob.Length), [])
+                )
+            )
+
+        let nameArr, nameSlot, state =
+            allocateObjectRefSlot fixture (outSlotSentinel fixture) state
+
+        let pName, state = stringHandleOnStackValue fixture nameSlot state
+
+        let isPropertyArr, state = allocateInt32OutSlot fixture state
+
+        let pbIsProperty =
+            CliType.RuntimePointer (
+                CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (isPropertyArr, 0), []))
+            )
+
+        let typeArr, typeSlot, state =
+            allocateObjectRefSlot fixture (outSlotSentinel fixture) state
+
+        let pType, state = objectHandleOnStackValue fixture typeSlot state
+
+        let valueArr, valueSlot, state =
+            allocateObjectRefSlot fixture (outSlotSentinel fixture) state
+
+        let pValue, state = objectHandleOnStackValue fixture valueSlot state
+
+        let methodArgs =
+            ImmutableArray.CreateRange [ qCallModule ; ppBlobStart ; pBlobEnd ; pName ; pbIsProperty ; pType ; pValue ]
+
+        let methodState =
+            match
+                MethodState.Empty
+                    state.ConcreteTypes
+                    fixture.BaseClassTypes
+                    state._LoadedAssemblies
+                    fixture.Corelib
+                    fixture.NamedArgQCallMethod
+                    ImmutableArray.Empty
+                    methodArgs
+                    None
+            with
+            | Ok methodState -> methodState
+            | Error missing -> failwith $"Unexpected missing assembly references creating QCall frame: %O{missing}"
+
+        let thread = ThreadId 0
+
+        let state =
+            { state with
+                ThreadState =
+                    Map.empty
+                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
+            }
+
+        {|
+            BlobArr = blobArr
+            IntPtrArr = intPtrArr
+            IsPropertyArr = isPropertyArr
+            NameArr = nameArr
+            TypeArr = typeArr
+            ValueArr = valueArr
+            Thread = thread
+            State = state
+        |}
+
+    let private invokeNamedArgHandler
+        (fixture : Fixture)
+        (thread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let ctx : NativeCallContext =
+            {
+                LoggerFactory = fixture.LoggerFactory
+                BaseClassTypes = fixture.BaseClassTypes
+                Thread = thread
+                State = state
+                Instruction = state.ThreadState.[thread].MethodState
+                TargetAssembly = fixture.Corelib
+                TargetType = fixture.CustomAttributeType
+            }
+
+        match NativeCustomAttribute.tryExecuteQCall "CustomAttribute_CreatePropertyOrFieldData" ctx with
+        | Some (NativeHandlerResult.Completed (state, _)) -> state
+        | Some other -> failwithf "expected Completed, got %A" other
+        | None -> failwith "NativeCustomAttribute handler did not match CreatePropertyOrFieldData"
+
+    /// Encode one NamedArg: kind tag, one-byte FieldOrPropType, SerString name, then value bytes.
+    let private namedArgBlob (kindTag : byte) (typeTag : byte) (name : string) (value : byte array) : byte array =
+        let nameUtf8 = System.Text.Encoding.UTF8.GetBytes name
+
+        if nameUtf8.Length >= 0x80 then
+            failwith "test helper only encodes short (single-byte PackedLen) names"
+
+        Array.concat [ [| kindTag ; typeTag ; byte nameUtf8.Length |] ; nameUtf8 ; value ]
+
+    let private readCursorIndex (arr : ManagedHeapAddress) (state : IlMachineState) : ManagedHeapAddress * int =
+        match IlMachineState.getArrayValue arr 0 state with
+        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (a, idx),
+                                                                                         []))) -> a, idx
+        | other -> failwithf "expected the cursor cell to hold an ArrayElement byref, got %A" other
+
+    let private readObjectSlot (arr : ManagedHeapAddress) (state : IlMachineState) : ManagedHeapAddress option =
+        match IlMachineState.getArrayValue arr 0 state with
+        | CliType.ObjectRef addr -> addr
+        | other -> failwithf "expected an object ref in the out-slot, got %A" other
+
+    let private readInt32Slot (arr : ManagedHeapAddress) (state : IlMachineState) : int =
+        match IlMachineState.getArrayValue arr 0 state with
+        | CliType.Numeric (CliNumericType.Int32 v) -> v
+        | other -> failwithf "expected an Int32 in the out-slot, got %A" other
+
+    /// The corelib type an allocated object was stamped with, as "Namespace.Name".
+    let private objectTypeName (fixture : Fixture) (addr : ManagedHeapAddress) (state : IlMachineState) : string =
+        let obj = ManagedHeap.get addr state.ManagedHeap
+
+        let concrete =
+            AllConcreteTypes.lookup obj.ConcreteType state.ConcreteTypes
+            |> Option.defaultWith (fun () -> failwithf "object at %O had an unregistered concrete type" addr)
+
+        let assembly = state._LoadedAssemblies.[concrete.Assembly]
+        let defn = assembly.TypeDefs.[concrete.Definition.Get]
+        $"%s{defn.Namespace}.%s{defn.Name}"
+
+    let private readManagedString (addr : ManagedHeapAddress) (state : IlMachineState) : string =
+        match ManagedHeap.getStringContents addr state.ManagedHeap with
+        | Some s -> s
+        | None -> failwithf "object at %O was not a managed string" addr
+
+    [<Test>]
+    let ``property named arg with a string value`` () : unit =
+        let fixture = makeFixture ()
+
+        // 0x54 PROPERTY, 0x0E STRING, name "Label", SerString "hi"
+        let blob = namedArgBlob 0x54uy 0x0Euy "Label" [| 0x02uy ; byte 'h' ; byte 'i' |]
+
+        let prep = prepareNamedArgInvocation fixture blob 0
+        let state = invokeNamedArgHandler fixture prep.Thread prep.State
+
+        readInt32Slot prep.IsPropertyArr state |> shouldEqual 1
+
+        readObjectSlot prep.NameArr state
+        |> Option.map (fun a -> readManagedString a state)
+        |> shouldEqual (Some "Label")
+
+        readObjectSlot prep.ValueArr state
+        |> Option.map (fun a -> readManagedString a state)
+        |> shouldEqual (Some "hi")
+
+        // A non-null string leaves pType alone in CoreCLR; we write the null explicitly, and the
+        // slot was seeded non-null, so this asserts the write happened.
+        readObjectSlot prep.TypeArr state |> shouldEqual None
+
+        readCursorIndex prep.IntPtrArr state |> shouldEqual (prep.BlobArr, blob.Length)
+
+    [<Test>]
+    let ``field named arg boxes an Int32`` () : unit =
+        let fixture = makeFixture ()
+
+        // 0x53 FIELD, 0x08 I4, name "Count", 42
+        let blob =
+            namedArgBlob 0x53uy 0x08uy "Count" [| 0x2Auy ; 0x00uy ; 0x00uy ; 0x00uy |]
+
+        let prep = prepareNamedArgInvocation fixture blob 0
+        let state = invokeNamedArgHandler fixture prep.Thread prep.State
+
+        readInt32Slot prep.IsPropertyArr state |> shouldEqual 0
+
+        readObjectSlot prep.NameArr state
+        |> Option.map (fun a -> readManagedString a state)
+        |> shouldEqual (Some "Count")
+
+        match readObjectSlot prep.ValueArr state with
+        | None -> failwith "expected a boxed value"
+        | Some addr ->
+            objectTypeName fixture addr state |> shouldEqual "System.Int32"
+
+            match ManagedHeap.get addr state.ManagedHeap with
+            | box ->
+                match AllocatedNonArrayObject.DereferenceField "m_value" box with
+                | CliType.Numeric (CliNumericType.Int32 v) -> v |> shouldEqual 42
+                | other -> failwithf "expected Int32 payload in the box, got %A" other
+
+        readObjectSlot prep.TypeArr state |> shouldEqual None
+        readCursorIndex prep.IntPtrArr state |> shouldEqual (prep.BlobArr, blob.Length)
+
+    /// The box's corelib type comes from the *blob's* type byte, not from the decoded value's F#
+    /// shape. Each row here is a distinct way for that to go wrong and still pass an Int32-only
+    /// test: U4/U8 are the widths CLI eval-stack rules normalise to Int32/Int64, Boolean and Char
+    /// are sub-word narrowings, and R4 is the float width — the eval stack has a single float type,
+    /// so narrowing to float32 inside a System.Single box is a mode no integer row exercises.
+    [<Test>]
+    let ``box type comes from the blob type byte, not the decoded value`` () : unit =
+        let cases : (byte * byte array * string * (CliType -> unit)) list =
+            [
+                0x09uy,
+                [| 0xFFuy ; 0xFFuy ; 0xFFuy ; 0xFFuy |],
+                "System.UInt32",
+                fun v ->
+                    match v with
+                    | CliType.Numeric (CliNumericType.Int32 x) -> x |> shouldEqual -1
+                    | other -> failwithf "UInt32 box payload: %A" other
+                0x02uy,
+                [| 0x01uy |],
+                "System.Boolean",
+                fun v ->
+                    match v with
+                    | CliType.Bool b -> b |> shouldEqual 1uy
+                    | other -> failwithf "Boolean box payload: %A" other
+                0x03uy,
+                [| 0x5Auy ; 0x00uy |],
+                "System.Char",
+                fun v ->
+                    match v with
+                    | CliType.Char (hi, lo) -> (hi, lo) |> shouldEqual (0uy, byte 'Z')
+                    | other -> failwithf "Char box payload: %A" other
+                0x0Cuy,
+                System.BitConverter.GetBytes 1.5f,
+                "System.Single",
+                fun v ->
+                    match v with
+                    | CliType.Numeric (CliNumericType.Float32 f) -> f |> shouldEqual 1.5f
+                    | other -> failwithf "Single box payload: %A" other
+                0x0Buy,
+                System.BitConverter.GetBytes System.UInt64.MaxValue,
+                "System.UInt64",
+                fun v ->
+                    match v with
+                    | CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim v)) -> v |> shouldEqual -1L
+                    | other -> failwithf "UInt64 box payload: %A" other
+            ]
+
+        for typeTag, valueBytes, expectedTypeName, checkPayload in cases do
+            let fixture = makeFixture ()
+            let blob = namedArgBlob 0x53uy typeTag "F" valueBytes
+            let prep = prepareNamedArgInvocation fixture blob 0
+            let state = invokeNamedArgHandler fixture prep.Thread prep.State
+
+            match readObjectSlot prep.ValueArr state with
+            | None -> failwithf "type tag 0x%02X: expected a boxed value" typeTag
+            | Some addr ->
+                objectTypeName fixture addr state |> shouldEqual expectedTypeName
+
+                let box = ManagedHeap.get addr state.ManagedHeap
+                checkPayload (AllocatedNonArrayObject.DereferenceField "m_value" box)
+
+            readCursorIndex prep.IntPtrArr state |> shouldEqual (prep.BlobArr, blob.Length)
+
+    [<Test>]
+    let ``null string value yields a null value and typeof string`` () : unit =
+        let fixture = makeFixture ()
+
+        // 0x54 PROPERTY, 0x0E STRING, name "Label", 0xFF null SerString sentinel
+        let blob = namedArgBlob 0x54uy 0x0Euy "Label" [| 0xFFuy |]
+
+        let prep = prepareNamedArgInvocation fixture blob 0
+        let state = invokeNamedArgHandler fixture prep.Thread prep.State
+
+        // The value slot was seeded non-null, so this asserts the handler nulled it.
+        readObjectSlot prep.ValueArr state |> shouldEqual None
+
+        // ... and the one in-scope case where CoreCLR writes a real type, so that the managed
+        // caller can pick the string-typed GetProperty overload.
+        match readObjectSlot prep.TypeArr state with
+        | None -> failwith "expected typeof(string) in the type slot"
+        | Some addr -> objectTypeName fixture addr state |> shouldEqual "System.RuntimeType"
+
+        readCursorIndex prep.IntPtrArr state |> shouldEqual (prep.BlobArr, blob.Length)
+
+    [<Test>]
+    let ``empty string value routes through the canonical empty string`` () : unit =
+        let fixture = makeFixture ()
+        let blob = namedArgBlob 0x54uy 0x0Euy "Label" [| 0x00uy |]
+        let prep = prepareNamedArgInvocation fixture blob 0
+        let state = invokeNamedArgHandler fixture prep.Thread prep.State
+
+        match readObjectSlot prep.ValueArr state with
+        | None -> failwith "expected an empty string, got null"
+        | Some addr ->
+            readManagedString addr state |> shouldEqual ""
+
+            let canonical, _ =
+                IlMachineState.internCanonicalEmptyString fixture.LoggerFactory fixture.BaseClassTypes state
+
+            addr |> shouldEqual canonical
+
+    [<Test>]
+    let ``null member name is passed through`` () : unit =
+        let fixture = makeFixture ()
+
+        // 0x53 FIELD, 0x08 I4, 0xFF null name sentinel, then the value.
+        let blob =
+            Array.concat [ [| 0x53uy ; 0x08uy ; 0xFFuy |] ; [| 0x07uy ; 0x00uy ; 0x00uy ; 0x00uy |] ]
+
+        let prep = prepareNamedArgInvocation fixture blob 0
+        let state = invokeNamedArgHandler fixture prep.Thread prep.State
+
+        // Seeded non-null, so this is the handler's write, not the fixture's initialisation.
+        readObjectSlot prep.NameArr state |> shouldEqual None
+        readCursorIndex prep.IntPtrArr state |> shouldEqual (prep.BlobArr, blob.Length)
+
+    /// Feeds the first call's written cursor into a second call, so that the cursor arithmetic is
+    /// checked against a following argument rather than only against blob end. A real guest gets
+    /// the equivalent check from the managed caller's `blobStart != blobEnd`.
+    [<Test>]
+    let ``two named args back to back`` () : unit =
+        let fixture = makeFixture ()
+
+        let first = namedArgBlob 0x54uy 0x0Euy "Label" [| 0x02uy ; byte 'h' ; byte 'i' |]
+
+        let second =
+            namedArgBlob 0x53uy 0x08uy "Count" [| 0x2Auy ; 0x00uy ; 0x00uy ; 0x00uy |]
+
+        let blob = Array.append first second
+
+        let prep = prepareNamedArgInvocation fixture blob 0
+        let state = invokeNamedArgHandler fixture prep.Thread prep.State
+
+        let _, afterFirst = readCursorIndex prep.IntPtrArr state
+        afterFirst |> shouldEqual first.Length
+
+        // Second call starts exactly where the first left off.
+        let prep2 = prepareNamedArgInvocation fixture blob afterFirst
+        let state2 = invokeNamedArgHandler fixture prep2.Thread prep2.State
+
+        readInt32Slot prep2.IsPropertyArr state2 |> shouldEqual 0
+
+        readObjectSlot prep2.NameArr state2
+        |> Option.map (fun a -> readManagedString a state2)
+        |> shouldEqual (Some "Count")
+
+        readCursorIndex prep2.IntPtrArr state2
+        |> shouldEqual (prep2.BlobArr, blob.Length)
+
+    /// Each out-of-scope serialization type fails with its own message, naming the construct and
+    /// the capability it needs, so a diagnostic identifies which feature the blob required.
+    [<Test>]
+    let ``out-of-scope serialization types each fail with their own message`` () : unit =
+        let cases =
+            [
+                // SZARRAY of I4: element count then elements.
+                [|
+                    0x53uy
+                    0x1Duy
+                    0x08uy
+                    0x01uy
+                    byte 'F'
+                    0x00uy
+                    0x00uy
+                    0x00uy
+                    0x00uy
+                |],
+                "SZARRAY"
+                // ENUM naming its type by a SerString.
+                Array.concat
+                    [
+                        [| 0x53uy ; 0x55uy ; 0x04uy |]
+                        System.Text.Encoding.UTF8.GetBytes "MyEn"
+                        [| 0x01uy ; byte 'F' ; 0x00uy ; 0x00uy ; 0x00uy ; 0x00uy |]
+                    ],
+                "ENUM"
+                [| 0x53uy ; 0x50uy ; 0x01uy ; byte 'F' ; 0xFFuy |], "TYPE (0x50)"
+                [| 0x53uy ; 0x51uy ; 0x01uy ; byte 'F' ; 0x0Euy ; 0xFFuy |], "TAGGED_OBJECT (0x51)"
+            ]
+
+        for blob, expectedFragment in cases do
+            let fixture = makeFixture ()
+            let prep = prepareNamedArgInvocation fixture blob 0
+
+            let exn =
+                Assert.Throws (fun () -> invokeNamedArgHandler fixture prep.Thread prep.State |> ignore)
+
+            exn.Message |> shouldContainText expectedFragment
+
+    [<Test>]
+    let ``a malformed kind tag fails loudly`` () : unit =
+        let fixture = makeFixture ()
+
+        let blob =
+            [| 0x52uy ; 0x08uy ; 0x01uy ; byte 'F' ; 0x00uy ; 0x00uy ; 0x00uy ; 0x00uy |]
+
+        let prep = prepareNamedArgInvocation fixture blob 0
+
+        let exn =
+            Assert.Throws (fun () -> invokeNamedArgHandler fixture prep.Thread prep.State |> ignore)
+
+        exn.Message |> shouldContainText "neither FIELD (0x53) nor PROPERTY (0x54)"

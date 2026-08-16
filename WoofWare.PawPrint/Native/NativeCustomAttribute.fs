@@ -135,6 +135,42 @@ module NativeCustomAttribute =
             failwith
                 $"%s{operation}: ctor parameter of type %O{paramType} is an enum whose `value__` did not concretize to a primitive, got %O{other}"
 
+    /// <summary>
+    /// Resolve a named argument's blob-declared <c>FieldOrPropType</c> to the shape the value
+    /// decoder needs. Throws for every serialization type outside the supported set (<c>SzArray</c>,
+    /// <c>Enum</c>, <c>Type</c>, <c>TaggedObject</c>), with a message naming the construct and the
+    /// capability it needs.
+    /// </summary>
+    /// <remarks>
+    /// <c>resolveArgShape</c> above is the fixed-arg counterpart, resolving a ctor parameter's
+    /// <c>TypeDefn</c>. Both exist because an enum's value width lives in the enum's metadata
+    /// rather than in the blob.
+    /// </remarks>
+    let private resolveNamedArgShape
+        (operation : string)
+        (elemType : CustomAttribFieldOrPropType)
+        : CustomAttribArgShape
+        =
+        match elemType with
+        | CustomAttribFieldOrPropType.Primitive pt -> CustomAttribArgShape.Primitive pt
+        | CustomAttribFieldOrPropType.SzArray elt ->
+            failwith
+                $"TODO: %s{operation}: named argument has SZARRAY type (element %O{elt}); lowering a decoded array to a managed array is not implemented in CustomAttribValueLowering, which blocks the fixed-arg path identically, so both should be fixed together"
+        | CustomAttribFieldOrPropType.Enum typeName ->
+            let described =
+                match typeName with
+                | Some name -> $"\"%s{name}\""
+                | None -> "the SerString null sentinel"
+
+            failwith
+                $"TODO: %s{operation}: named argument has ENUM type named by %s{described}; resolving a custom-attribute type name needs the reflection type-name parser (CoreCLR's TypeName::GetTypeReferencedByCustomAttribute), which PawPrint does not have"
+        | CustomAttribFieldOrPropType.Type ->
+            failwith
+                $"TODO: %s{operation}: named argument has TYPE (0x50) type; its value is a reflection type name, so it needs the same type-name parser as the ENUM case"
+        | CustomAttribFieldOrPropType.TaggedObject ->
+            failwith
+                $"TODO: %s{operation}: named argument has TAGGED_OBJECT (0x51) type; its value carries its own FieldOrPropType recursively, so it depends on the SZARRAY and TYPE cases first"
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -534,4 +570,236 @@ module NativeCustomAttribute =
             | other ->
                 failwith
                     $"%s{operation}: expected at most one re-entry marker on the eval stack, got %d{other.Length} value(s): %A{other}"
+        | "CustomAttribute_CreatePropertyOrFieldData",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "CustomAttribute",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallModule",
+                                              moduleGenerics)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "StringHandleOnStack",
+                                              nameGenerics)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              typeGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              valueGenerics) ],
+          MethodReturnType.Void when
+            moduleGenerics.IsEmpty
+            && nameGenerics.IsEmpty
+            && typeGenerics.IsEmpty
+            && valueGenerics.IsEmpty
+            ->
+            let operation = "CustomAttribute.CreatePropertyOrFieldData"
+
+            if instruction.Arguments.Length <> 7 then
+                failwith $"%s{operation}: expected seven native arguments, got %d{instruction.Arguments.Length}"
+
+            // Single-phase: nothing in the supported set runs guest code or triggers class
+            // initialisation. `boxValueType` allocates without running a cctor (matching CoreCLR's
+            // `MethodTable::Box`), `concretizeType` on a primitive is a pure lookup, and
+            // `getOrAllocateType` has no suspension path. So there is no re-entry marker, and
+            // `*ppBlobStart` is written last, as CoreCLR does.
+
+            // QCallModule is not consulted while only primitive named args are supported; CoreCLR
+            // threads it into `GetDataFromBlob` for the ENUM / TYPE / TAGGED_OBJECT cases, all of
+            // which `resolveNamedArgShape` refuses. Decode and ignore, so that wiring it up later
+            // doesn't reshuffle argument positions.
+            let _moduleAssemblyFullName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            // `BYTE** ppBlobStart` is a managed byref to an IntPtr cell. The byref is what lets us
+            // write the advanced cursor back; the cursor itself is the IntPtr stored in that cell,
+            // so reading it takes a second dereference. Same shape as `ppBlob` in the sibling
+            // handler.
+            let blobCursorSlot =
+                NativeCall.managedPointerOfPointerArgument operation "ppBlobStart" instruction.Arguments.[1]
+
+            let blobCursorIntPtr =
+                IlMachineState.readManagedByref ctx.BaseClassTypes state blobCursorSlot
+
+            let blobCursorPtr =
+                NativeCall.managedPointerOfPointerArgument operation "*ppBlobStart" blobCursorIntPtr
+
+            // `pBlobEnd` is `BYTE*` by value, so it already *is* the cursor.
+            let blobEndPtr =
+                NativeCall.managedPointerOfPointerArgument operation "pBlobEnd" instruction.Arguments.[2]
+
+            let nameHandle =
+                NativeCall.stringHandleOnStackTarget operation state "pName" instruction.Arguments.[3]
+
+            // `[MarshalAs(UnmanagedType.Bool)] out bool` lowers to `int32*`: the managed wrapper
+            // passes `&` of an int32 local and does `cgt.un` against 0 after the call.
+            let isPropertySlot =
+                NativeCall.managedPointerOfPointerArgument operation "pbIsProperty" instruction.Arguments.[4]
+
+            let typeSlot =
+                NativeCall.objectHandleOnStackTarget operation state "pType" instruction.Arguments.[5]
+
+            let valueSlot =
+                NativeCall.objectHandleOnStackTarget operation state "pValue" instruction.Arguments.[6]
+
+            let blobStartArr, blobStartIdx =
+                blobPointerBounds operation "*ppBlobStart" blobCursorPtr
+
+            let blobEndArr, blobEndIdx = blobPointerBounds operation "pBlobEnd" blobEndPtr
+
+            if blobStartArr <> blobEndArr then
+                failwith
+                    $"%s{operation}: ppBlobStart (array %O{blobStartArr}) and pBlobEnd (array %O{blobEndArr}) point into different arrays; the bounds must straddle a single contiguous byte buffer"
+
+            let blobBytes =
+                materialiseBytes operation state blobStartArr blobStartIdx blobEndIdx
+
+            let header, valueOffset =
+                match CustomAttribute.readNamedArgHeader blobBytes 0 with
+                | Ok (header, next) -> header, next
+                | Error msg -> failwith $"%s{operation}: failed to parse named arg from CustomAttrib blob: %s{msg}"
+
+            let shape = resolveNamedArgShape operation header.ElemType
+
+            let decoded, consumed =
+                match CustomAttribute.readElem shape blobBytes valueOffset with
+                | Ok (value, next) -> value, next
+                | Error msg ->
+                    failwith $"%s{operation}: failed to parse named arg value from CustomAttrib blob: %s{msg}"
+
+            let isProperty =
+                match header.Kind with
+                | CustomAttribNamedArgKind.Field -> 0
+                | CustomAttribNamedArgKind.Property -> 1
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    isPropertySlot
+                    (CliType.Numeric (CliNumericType.Int32 isProperty))
+
+            // CoreCLR passes a null name straight through (`pName.Set(NULL)`), and the managed
+            // caller then throws out of `GetProperty(null)` into a CustomAttributeFormatException.
+            // Reproduce the null rather than inventing a name.
+            let state, nameValue =
+                match header.Name with
+                | None -> state, CliType.ObjectRef None
+                | Some "" ->
+                    let addr, state =
+                        IlMachineState.internCanonicalEmptyString ctx.LoggerFactory ctx.BaseClassTypes state
+
+                    state, CliType.ObjectRef (Some addr)
+                | Some name ->
+                    let addr, state =
+                        IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes name state
+
+                    state, CliType.ObjectRef (Some addr)
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state nameHandle nameValue
+
+            // `pType` carries a real type only where CoreCLR writes one. For a non-null string or
+            // a boxed primitive it is null, and the managed caller then infers the member's type
+            // from `value.GetType()`; null picks `GetProperty(name)` over the type-filtered
+            // `GetProperty(name, type, Type.EmptyTypes)` overload, so the difference is observable.
+            // This handler always writes the slot, so its result does not depend on how the caller
+            // initialised it.
+            let state, valueCli, typeCli =
+                match decoded with
+                | CustomAttribFixedArg.String None ->
+                    // The one in-scope case where CoreCLR sets a real type: a null SerString value
+                    // leaves pValue null, so it hands back typeof(string) to disambiguate.
+                    let state, stringHandle =
+                        IlMachineTypeResolution.concretizeType
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            state
+                            ctx.BaseClassTypes.Corelib.Name
+                            ImmutableArray.Empty
+                            ImmutableArray.Empty
+                            (TypeDefn.PrimitiveType PrimitiveType.String)
+
+                    let typeAddr, state =
+                        IlMachineState.getOrAllocateType
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            (RuntimeTypeHandleTarget.Closed stringHandle)
+                            state
+
+                    state, CliType.ObjectRef None, CliType.ObjectRef (Some typeAddr)
+                | CustomAttribFixedArg.String (Some _) ->
+                    let value, state =
+                        CustomAttribValueLowering.toCliType ctx.LoggerFactory ctx.BaseClassTypes decoded state
+
+                    state, value, CliType.ObjectRef None
+                | _ ->
+
+                // A primitive boxes as the corelib type named by the *blob's* type byte, not by the
+                // decoded value's F# shape: `U4` boxes as System.UInt32 even though CLI eval-stack
+                // rules normalise its value to Int32. Mirrors CoreCLR's
+                // `CoreLibBinder::GetElementType((CorElementType)fieldType)`.
+                let boxPrimitive =
+                    match shape with
+                    | CustomAttribArgShape.Primitive pt -> pt
+                    | other ->
+                        failwith
+                            $"%s{operation}: logic error: decoded value %O{decoded} came from non-primitive shape %O{other}, which resolveNamedArgShape should have refused"
+
+                let state, boxHandle =
+                    IlMachineTypeResolution.concretizeType
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        state
+                        ctx.BaseClassTypes.Corelib.Name
+                        ImmutableArray.Empty
+                        ImmutableArray.Empty
+                        (TypeDefn.PrimitiveType boxPrimitive)
+
+                let payload, state =
+                    CustomAttribValueLowering.toCliType ctx.LoggerFactory ctx.BaseClassTypes decoded state
+
+                let boxAddr, state =
+                    UnaryMetadataObjectOps.boxValueType
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        boxHandle
+                        (EvalStackValue.ofCliType payload)
+                        state
+
+                state, CliType.ObjectRef (Some boxAddr), CliType.ObjectRef None
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state valueSlot valueCli
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state typeSlot typeCli
+
+            // Written last, as CoreCLR does. The managed caller checks `blobStart != blobEnd` after
+            // the whole named-arg loop, so an error here surfaces to the guest as a
+            // CustomAttributeFormatException rather than silently mis-decoding the next arg.
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    blobCursorSlot
+                    (CliType.RuntimePointer (
+                        CliRuntimePointer.Managed (
+                            ManagedPointerSource.Byref (
+                                ByrefRoot.ArrayElement (blobStartArr, blobStartIdx + consumed),
+                                []
+                            )
+                        )
+                    ))
+
+            NativeHandlerResult.completed state |> Some
         | _ -> None

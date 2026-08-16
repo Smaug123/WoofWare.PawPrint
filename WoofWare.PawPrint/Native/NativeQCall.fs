@@ -122,6 +122,8 @@ module NativeQCall =
             NativeMetadataUpdater.tryExecuteQCall "AssemblyNative_IsApplyUpdateSupported"
             "CustomAttribute_CreateCustomAttributeInstance",
             NativeCustomAttribute.tryExecuteQCall "CustomAttribute_CreateCustomAttributeInstance"
+            "CustomAttribute_CreatePropertyOrFieldData",
+            NativeCustomAttribute.tryExecuteQCall "CustomAttribute_CreatePropertyOrFieldData"
             // The primitive underneath every `BindingFlags.IgnoreCase` reflection
             // member lookup: `RuntimeType.RuntimeTypeCache.Filter.Match` routes a
             // case-insensitive list type through `MdUtf8String.EqualsCaseInsensitive`.
