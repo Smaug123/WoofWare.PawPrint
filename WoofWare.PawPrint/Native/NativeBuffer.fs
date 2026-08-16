@@ -91,17 +91,7 @@ module NativeBuffer =
     ///
     /// This handler wires `BulkMoveWithWriteBarrierInternal` into native
     /// dispatch and implements CoreCLR's FCall short-circuits
-    /// (`dst != src && byteCount != 0`, see comutilnative.cpp); the actual
-    /// move reuses the shared `CellAwareMemOps.copy` helper. The BCL's primary
-    /// callers (`Buffer.Memmove<T>` for `T` containing references,
-    /// `Array.Copy` of reference-typed arrays, the reflection-cache growth
-    /// path, etc.) hand in byrefs that land on non-byte-addressable cells
-    /// (object references, value types containing object references);
-    /// `CellAwareMemOps.copy` names the cell each endpoint's cursor addresses
-    /// — which may be a *field* of the storage rather than the whole of it,
-    /// as it is for one slot of an `[InlineArray(N)]` — and moves it through
-    /// `readManagedByref` / `writeManagedByrefWithBase` so the dest cell's
-    /// CLI shape and the stored ObjectRef provenance are preserved.
+    /// (`dst != src && byteCount != 0`, see comutilnative.cpp).
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -142,6 +132,18 @@ module NativeBuffer =
             // byte-addressable in PawPrint, so a self-copy of such storage
             // must not fall through to `CellAwareMemOps.copy` — the byte-walk
             // fallback would reject it.
+            //
+            // The actual move reuses the shared `CellAwareMemOps.copy` helper.
+            // The BCL's primary callers (`Buffer.Memmove<T>` for `T` containing
+            // references, `Array.Copy` of reference-typed arrays, the
+            // reflection-cache growth path, etc.) hand in byrefs that land on
+            // non-byte-addressable cells (object references, value types
+            // containing object references); `CellAwareMemOps.copy` names the
+            // cell each endpoint's cursor addresses — which may be a *field* of
+            // the storage rather than the whole of it, as it is for one slot of
+            // an `[InlineArray(N)]` — and moves it through `readManagedByref` /
+            // `writeManagedByrefWithBase` so the dest cell's CLI shape and the
+            // stored ObjectRef provenance are preserved.
             let state =
                 if byteCount = 0 || dest = src then
                     state

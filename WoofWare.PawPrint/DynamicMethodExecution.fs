@@ -56,8 +56,6 @@ module internal DynamicMethodExecution =
     /// Nothing is latched on that path. Measured: after a first invocation that failed this way, a
     /// guest that repairs the scope slot and invokes again gets a method that compiles and runs — so
     /// a failed preparation must leave the method entirely unprepared, <c>initLocals</c> included.
-    /// That is why the clause types are resolved *before* anything is written, and why
-    /// <see cref="PreparedDynamicMethod"/> latches as one value.
     /// </para>
     /// </remarks>
     let concretize
@@ -95,6 +93,10 @@ module internal DynamicMethodExecution =
                 // names an open generic is an InvalidProgramException on real .NET even when it
                 // never throws at all (measured). Doing this lazily, at dispatch, would let such a
                 // body run.
+                //
+                // The clause types are resolved *before* anything is written, and
+                // `PreparedDynamicMethod` latches as one value, so a failed preparation leaves the
+                // method entirely unprepared.
                 let clauseTypes =
                     definition.GetBody().ExceptionRegions
                     |> Seq.choose (fun region ->

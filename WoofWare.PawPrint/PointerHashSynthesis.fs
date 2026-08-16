@@ -223,11 +223,6 @@ module PointerHashSynthesis =
     /// perturbing the numbering that every later synthesised value depends on. The signature
     /// is what guarantees that: there is no state to hand back.
     ///
-    /// Shares `canonicalKey` and `lowBitsForSource` with the minting path rather than
-    /// re-deriving them, which is what makes a tagged view answer with the bits the guest
-    /// would actually have observed: a `TypeDescPtr` masked out of a `TypeHandlePtr` differs
-    /// from it in exactly bit 1, and a tagged GC handle in its own low bits.
-    ///
     /// The domain is the canonicalisable pointer shapes only. `Verbatim`, `OpaqueHashBits`,
     /// managed pointers and cross-array offsets are values whose bits are known (or knowably
     /// absent) without any assignment, so asking this question about them is a category
@@ -237,6 +232,10 @@ module PointerHashSynthesis =
     /// synthesised method — which crash here with `canonicalKey`'s diagnostic rather than a
     /// comparison-flavoured one.
     let tryExistingHashBits (counters : PointerHashState) (src : NativeIntSource) : int64 option =
+        // Shares `canonicalKey` and `lowBitsForSource` with the minting path rather than
+        // re-deriving them, which is what makes a tagged view answer with the bits the guest
+        // would actually have observed: a `TypeDescPtr` masked out of a `TypeHandlePtr` differs
+        // from it in exactly bit 1, and a tagged GC handle in its own low bits.
         let key = canonicalKey src
         let tagBits = lowBitsForSource src
 

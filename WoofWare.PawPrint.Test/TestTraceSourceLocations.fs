@@ -52,12 +52,11 @@ module TestTraceSourceLocations =
         }
 
     /// Harvests the distinct <c>TracedStep</c>s the trace log emits.
-    ///
-    /// Reads the structured state rather than the formatted message, and keeps a *set*: the trace
-    /// log fires once per interpreted IL instruction, so formatting each message — or retaining
-    /// one record per instruction — would dominate this test's time and memory. Distinct steps are
-    /// bounded by the sequence points of the methods actually executed.
     let private harvestingLoggerFactory () : (unit -> TracedStep list) * ILoggerFactory =
+        // Read the structured state rather than the formatted message, and keep a *set*: the
+        // trace log fires once per interpreted IL instruction, so formatting each message — or
+        // retaining one record per instruction — would dominate this test's time and memory.
+        // Distinct steps are bounded by the sequence points of the methods actually executed.
         let seen = HashSet<TracedStep> ()
 
         let logger =

@@ -151,14 +151,14 @@ module CrossAssemblyHarness =
             failwith $"Real runtime terminated with an unhandled exception:\n%s{report}"
         | RealRuntimeResult.FailFast report -> failwith $"Real runtime called Environment.FailFast:\n%s{report}"
 
-    /// The `AssemblyRef` table's names in row order. Enumeration of
-    /// `MetadataReader.AssemblyReferences` walks rows 1..N in order, and row order is precisely what
+    /// The `AssemblyRef` table's names in row order, and row order is precisely what
     /// a `TypeRefResolutionScope.Assembly` handle indexes into.
     let private assemblyRefNames (image : byte[]) : string list =
         use stream = new MemoryStream (image)
         use peReader = new PEReader (stream)
         let metadata = peReader.GetMetadataReader ()
 
+        // Enumeration of `MetadataReader.AssemblyReferences` walks rows 1..N in order.
         metadata.AssemblyReferences
         |> Seq.map (fun handle -> metadata.GetString (metadata.GetAssemblyReference handle).Name)
         |> List.ofSeq

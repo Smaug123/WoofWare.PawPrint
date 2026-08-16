@@ -61,23 +61,23 @@ module SignalDispatch =
     ///   * `Terminated` — the thread has exited; its final frames are
     ///     intentionally retained so other threads can observe state for
     ///     `Join`, but the OS thread is gone.
-    ///
-    /// `NotStarted` and `Parked` are both classified as `hasNoActiveFrame`,
-    /// so the `not hasNoActiveFrame` arm covers them and a new frameless
-    /// `ThreadStatus` variant is automatically excluded. `Terminated`
-    /// retains its frames (so `hasNoActiveFrame` returns `false` for it),
-    /// hence the explicit `<> Terminated` arm.
-    ///
-    /// The explicit `tid <> dispatcher` exclusion is redundant today (the
-    /// dispatcher is `Parked`, so `hasNoActiveFrame` already drops it),
-    /// but enforces an invariant that must survive refactoring: the
-    /// dispatcher runs the handler *for* a receiver and
-    /// is never itself a candidate, even if a future change gave the
-    /// dispatcher live frames between handler invocations.
     let private liveExcludingDispatcher (dispatcher : ThreadId) (state : IlMachineState) : ImmutableArray<ThreadId> =
         let builder = ImmutableArray.CreateBuilder<ThreadId> ()
 
         for KeyValue (tid, ts) in state.ThreadState do
+            // `NotStarted` and `Parked` are both classified as
+            // `hasNoActiveFrame`, so the `not hasNoActiveFrame` arm covers
+            // them and a new frameless `ThreadStatus` variant is
+            // automatically excluded. `Terminated` retains its frames (so
+            // `hasNoActiveFrame` returns `false` for it), hence the explicit
+            // `<> Terminated` arm.
+            //
+            // The explicit `tid <> dispatcher` exclusion is redundant today
+            // (the dispatcher is `Parked`, so `hasNoActiveFrame` already
+            // drops it), but enforces an invariant that must survive
+            // refactoring: the dispatcher runs the handler *for* a receiver
+            // and is never itself a candidate, even if a future change gave
+            // the dispatcher live frames between handler invocations.
             if
                 tid <> dispatcher
                 && ts.Status <> ThreadStatus.Terminated

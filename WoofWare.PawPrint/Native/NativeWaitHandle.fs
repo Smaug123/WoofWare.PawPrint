@@ -41,8 +41,8 @@ module NativeWaitHandle =
     /// `ReleaseMutex` when the calling thread does not own the mutex
     /// (either the mutex is free, or another thread holds it). The
     /// BCL's `Mutex.ReleaseMutex` checks the BOOL return and throws
-    /// `ApplicationException` (today: `SynchronizationLockException`)
-    /// without inspecting the error code, but the source-generator
+    /// `ApplicationException` (with the `Arg_SynchronizationLockException`
+    /// message resource) without inspecting the error code, but the source-generator
     /// wrapper still propagates the last error into
     /// `LastPInvokeError`, so we set it for fidelity with any guest
     /// that reads `Marshal.GetLastPInvokeError` after the throw.
@@ -419,11 +419,6 @@ module NativeWaitHandle =
     /// `GetPinnableReference` + `conv.u`. Each element is therefore a
     /// `WaitHandlePtr`-tagged native int, which has no bit pattern: the read
     /// has to come back as a whole typed cell or the identity is lost.
-    /// `readManagedByrefBytesAs` with an `IntPtr` template does exactly that
-    /// — its cell-aligned fast path (`readStackMemoryBytesAs`) returns a
-    /// non-byte-addressable cell as-is when a same-shaped cell starts at the
-    /// offset — which is why this steps a byte view rather than reinterpreting
-    /// the buffer.
     let private readWaitHandleArray
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -439,6 +434,10 @@ module NativeWaitHandle =
         let stride =
             CliType.sizeOf (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
 
+        // `readManagedByrefBytesAs` with an `IntPtr` template reads each element back as a whole
+        // typed cell — its cell-aligned fast path (`readStackMemoryBytesAs`) returns a
+        // non-byte-addressable cell as-is when a same-shaped cell starts at the offset — which is
+        // why this steps a byte view rather than reinterpreting the buffer.
         [ 0 .. count - 1 ]
         |> List.map (fun index ->
             let elementPtr =

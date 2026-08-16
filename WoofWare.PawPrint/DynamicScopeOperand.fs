@@ -92,24 +92,22 @@ module internal DynamicScopeOperand =
     /// <summary>
     /// The type a guest <c>System.RuntimeType</c> object stands for.
     /// </summary>
-    /// <remarks>
-    /// <c>RuntimeType.m_handle</c> is an <c>IntPtr</c> whose provenance is the target itself
-    /// (<c>TypeHandleRegistry.getOrAllocate</c> plants a <c>NativeIntSource.TypeHandlePtr</c> there),
-    /// so this is a read rather than a registry search. Lives here rather than beside its
-    /// <c>EvalStackValue</c>-flavoured wrapper in <c>NativeCall</c> because the ops need it and
-    /// <c>NativeCall</c> compiles after them.
-    /// </remarks>
     let runtimeTypeHandleTargetOfRuntimeType
         (operation : string)
         (state : IlMachineState)
         (runtimeType : ManagedHeapAddress)
         : RuntimeTypeHandleTarget
         =
+        // Lives here rather than beside its EvalStackValue-flavoured wrapper in NativeCall because
+        // the ops need it and NativeCall compiles after them.
         let heapObj = ManagedHeap.get runtimeType state.ManagedHeap
 
         let handleField =
             IlMachineState.requiredOwnInstanceFieldId state heapObj.ConcreteType "m_handle"
 
+        // RuntimeType.m_handle is an IntPtr whose provenance is the target itself
+        // (TypeHandleRegistry.getOrAllocate plants a NativeIntSource.TypeHandlePtr there), so this
+        // is a read rather than a registry search.
         match
             AllocatedNonArrayObject.DereferenceFieldById handleField heapObj
             |> CliType.unwrapPrimitiveLike
@@ -174,11 +172,7 @@ module internal DynamicScopeOperand =
     /// </summary>
     /// <remarks>
     /// Reached through the executing method rather than through the operand, because the operand is
-    /// an <see cref="IlOp"/> and must not carry a heap address. A dynamic method's
-    /// <c>MethodInfo</c> is <c>Synthesised</c> with a <c>SynthesisedMethod.DynamicMethod</c> kind
-    /// carrying its <c>DynamicMethodHandle</c> — that handle is the method's identity precisely
-    /// because every dynamic method in a module shares one owner — so the resolver, and with it the
-    /// scope, is one registry lookup away.
+    /// an <see cref="IlOp"/> and must not carry a heap address.
     ///
     /// Only correct for something the *executing* method names. A clause or operand belonging to a
     /// method that is not the one running — a <c>catch</c> clause resolved while its method is being
@@ -189,6 +183,10 @@ module internal DynamicScopeOperand =
     let executingScope (operation : string) (state : IlMachineState) (thread : ThreadId) : DynamicMethodHandle =
         let executing = state.ThreadState.[thread].MethodState.ExecutingMethod
 
+        // A dynamic method's MethodInfo is Synthesised with a SynthesisedMethod.DynamicMethod kind
+        // carrying its DynamicMethodHandle — that handle is the method's identity precisely
+        // because every dynamic method in a module shares one owner — so the resolver, and with it
+        // the scope, is one registry lookup away.
         match executing.SynthesisedKind with
         | Some (SynthesisedMethod.DynamicMethod handle) -> handle
         | _ ->
@@ -197,7 +195,8 @@ module internal DynamicScopeOperand =
 
     /// <summary>
     /// The guest object that entry <paramref name="scopeIndex"/> of <paramref name="handle"/>'s
-    /// <c>DynamicScope</c> holds *right now*. <c>None</c> if that slot is null or does not exist.
+    /// <c>DynamicScope</c> holds *right now*: <c>Found</c> with the object, <c>Absent</c> for a
+    /// null slot, or <c>PastEnd</c> when the index is beyond the scope's `m_size`.
     /// </summary>
     /// <remarks>
     /// Read out of the live <c>m_tokens</c> rather than out of anything captured when the method was
@@ -299,8 +298,9 @@ module internal DynamicScopeOperand =
 
     /// <summary>
     /// The closed type named by entry <paramref name="scopeIndex"/>, or a description of why the
-    /// entry does not name one — which the caller turns into the guest's
-    /// <c>InvalidProgramException</c>.
+    /// entry does not name one — which the caller turns into a guest exception (the description
+    /// names the exception type to raise: <c>InvalidProgramException</c>,
+    /// <c>BadImageFormatException</c> or <c>ArgumentOutOfRangeException</c>, per arm).
     /// </summary>
     /// <remarks>
     /// <para>
@@ -589,20 +589,6 @@ module internal DynamicScopeOperand =
     /// caller to a delegate gets the later body, as measured on real .NET.
     /// </para>
     /// <para>
-    /// No re-entry marker is needed, and none is wanted. Whether the mint has happened is a fact
-    /// about the guest heap — <c>_methodHandle</c> is null or it is not — exactly as it is for
-    /// class initialisation, so the re-executed instruction can ask again. A marker would
-    /// be a second copy of that answer, free to disagree with it.
-    /// </para>
-    /// <para>
-    /// The caller's evaluation stack already holds the naming instruction's operands, and they must
-    /// still be there when it re-executes. <c>callMethod</c> pops exactly the one <c>this</c>
-    /// pushed here (<c>GetMethodDescriptor</c> takes no arguments and is not virtual, so nothing
-    /// peeks deeper), and <c>ReturnValueDisposition.Discard</c> stops the <c>RuntimeMethodHandle</c>
-    /// it returns from landing on top of them. The value is redundant: it wraps the same
-    /// <c>_methodHandle</c> the re-execution reads off the heap.
-    /// </para>
-    /// <para>
     /// <b>Divergence.</b> Real .NET mints as part of *compiling* the caller, not of running it, so
     /// it mints every callee the JIT's importer reaches before the body's first instruction — even
     /// one behind an untaken conditional branch — and a callee that cannot be minted therefore
@@ -640,6 +626,10 @@ module internal DynamicScopeOperand =
         (state : IlMachineState)
         : IlMachineState
         =
+        // No re-entry marker is needed, and none is wanted. Whether the mint has happened is a
+        // fact about the guest heap — _methodHandle is null or it is not — exactly as it is for
+        // class initialisation, so the re-executed instruction can ask again. A marker would be a
+        // second copy of that answer, free to disagree with it.
         let dynamicMethodType = baseClassTypes.DynamicMethod
         let assy = state._LoadedAssemblies.[dynamicMethodType.Assembly]
         let typeDef = assy.TypeDefs.[dynamicMethodType.Identity.TypeDefinition.Get]
@@ -671,6 +661,12 @@ module internal DynamicScopeOperand =
                 None
                 state
 
+        // The caller's evaluation stack already holds the naming instruction's operands, and they
+        // must still be there when it re-executes. callMethod pops exactly the one `this` pushed
+        // here (GetMethodDescriptor takes no arguments and is not virtual, so nothing peeks
+        // deeper), and ReturnValueDisposition.Discard stops the RuntimeMethodHandle it returns
+        // from landing on top of them. The value is redundant: it wraps the same _methodHandle the
+        // re-execution reads off the heap.
         let state =
             IlMachineState.pushToEvalStack (CliType.ObjectRef (Some callee)) thread state
 

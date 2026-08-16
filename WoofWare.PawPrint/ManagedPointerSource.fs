@@ -548,7 +548,7 @@ module ManagedPointerSource =
         | _ -> None
 
     /// Validate the byref-projection list invariant for a byref reaching
-    /// `tryByteAddressDeltaSign`'s array fallback: `ByteOffset` only appears
+    /// `tryByteAddressDeltaSign`'s array and string-char arms: `ByteOffset` only appears
     /// as the final element preceded by `ReinterpretAs`, and is non-negative
     /// (the construction-site canonicaliser establishes this via
     /// floor-division in `normaliseTrailingByteOffset`). Throws on violation —
@@ -680,13 +680,12 @@ module ManagedPointerSource =
     /// synthetic address model. For PE byte ranges this is `RVA + byteOffset`,
     /// not a real loaded module address; callers may use it only for low-bit
     /// alignment masks where the unknown image base contributes zero low bits.
-    ///
-    /// The cursor fold below accumulates in `int64`, matching the result type:
-    /// a synthetic address is 64-bit, so the displacement folded into it is
-    /// too. Folding in `int32` would abort the guest under this file's
-    /// `Checked` arithmetic for a chain carrying several large cursors
-    /// (issue #993).
     let tryStableAddressBits (src : ManagedPointerSource) : int64 option =
+        // The cursor fold accumulates in `int64`, matching the result type:
+        // a synthetic address is 64-bit, so the displacement folded into it is
+        // too. Folding in `int32` would abort the guest under this file's
+        // `Checked` arithmetic for a chain carrying several large cursors
+        // (issue #993).
         let rec foldCursor (byteOffset : int64) (projs : ByrefProjection list) : int64 option =
             match projs with
             | [] -> Some byteOffset
@@ -1094,13 +1093,12 @@ module ManagedPointerSource =
     /// `ReinterpretAs` is address-preserving and contributes nothing; `Field` steps
     /// contribute an unknown non-negative amount and are counted by `containsField`
     /// instead.
-    ///
-    /// Summed in `int64`, because a byref's displacement is address arithmetic and that is
-    /// 64-bit: two cursors of `Int32.MaxValue` and `1` put a byref 2147483648 bytes along, which
-    /// no `int` can hold however the addition behaves. (An `int` sum would not wrap anyway:
-    /// `List.sumBy` over `int` is `Checked.(+)` inside FSharp.Core, independently of this file's
-    /// `open Checked`, so it throws `System.OverflowException` — issue #993.)
     let private knownByteDisplacement (projs : ByrefProjection list) : int64 =
+        // Summed in `int64`, because a byref's displacement is address arithmetic and that is
+        // 64-bit: two cursors of `Int32.MaxValue` and `1` put a byref 2147483648 bytes along,
+        // which no `int` can hold however the addition behaves. (An `int` sum would not wrap
+        // anyway: `List.sumBy` over `int` is `Checked.(+)` inside FSharp.Core, independently of
+        // this file's `open Checked`, so it throws `System.OverflowException` — issue #993.)
         projs
         |> List.sumBy (fun p ->
             match p with

@@ -398,7 +398,8 @@ type UnaryConstIlOp =
     | Bge_un_s of int8
     | Bgt_un_s of int8
     | Ble_un_s of int8
-    /// Transfers control to a target instruction if the first value is less than the second value.
+    /// Transfers control to a target instruction if the first value is less than the second,
+    /// comparing unsigned integer values or unordered float values (ECMA-335 III.3.10).
     | Blt_un_s of int8
     | Bne_un of int32
     | Bge_un of int32

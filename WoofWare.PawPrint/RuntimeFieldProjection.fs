@@ -1,12 +1,12 @@
 namespace WoofWare.PawPrint
 
+/// Field address projections for runtime-managed layouts. These are fields
+/// whose metadata names an ordinary field, but whose address in the real CLR
+/// is a view over structured runtime storage rather than a standalone object
+/// field cell. Keep new trailing-data cases here so IL op execution stays
+/// generic.
 [<RequireQualifiedAccess>]
 module internal RuntimeFieldProjection =
-    /// Field address projections for runtime-managed layouts. These are fields
-    /// whose metadata names an ordinary field, but whose address in the real CLR
-    /// is a view over structured runtime storage rather than a standalone object
-    /// field cell. Keep new trailing-data cases here so IL op execution stays
-    /// generic.
     let private isCorelibType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
@@ -99,6 +99,18 @@ module internal RuntimeFieldProjection =
     let private describeConcreteType (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
         AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes handle
 
+    /// Per-byte safety is enforced when the byref is read or written, so the projection
+    /// itself only needs to confirm a heap object exists.
+    let private requireHeapObject (addr : ManagedHeapAddress) (state : IlMachineState) : unit =
+        if not (ManagedHeap.isLive addr state.ManagedHeap) then
+            failwith $"RawData::Data projection expected heap object at %O{addr}, but no such object exists"
+
+    /// Size of `nint` on the guest. PawPrint targets 64-bit guests exclusively, so this is
+    /// always 8, but routing through `CliType.sizeOf` keeps the contract explicit and matches
+    /// the helper in `Native/NativeRuntimeType.fs`.
+    let private nativeIntSize : int =
+        CliType.sizeOf (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+
     /// `RawData::Data` projects to a byref over the instance data of any heap object.
     /// For boxed value types this is the boxed payload; for reference types this is the
     /// instance fields (the method-table header is implicit in PawPrint's storage model).
@@ -117,19 +129,6 @@ module internal RuntimeFieldProjection =
     /// element 0. `MethodTableProjection.baseSize` already accounts for this with
     /// `(3 + rank) * NATIVE_INT_SIZE`. We fail loudly here rather than silently produce a
     /// byref to the wrong location.
-    ///
-    /// Per-byte safety is enforced when the byref is read or written, so the projection
-    /// itself only needs to confirm a heap object exists.
-    let private requireHeapObject (addr : ManagedHeapAddress) (state : IlMachineState) : unit =
-        if not (ManagedHeap.isLive addr state.ManagedHeap) then
-            failwith $"RawData::Data projection expected heap object at %O{addr}, but no such object exists"
-
-    /// Size of `nint` on the guest. PawPrint targets 64-bit guests exclusively, so this is
-    /// always 8, but routing through `CliType.sizeOf` keeps the contract explicit and matches
-    /// the helper in `Native/NativeRuntimeType.fs`.
-    let private nativeIntSize : int =
-        CliType.sizeOf (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
-
     let private tryProjectRawDataFieldAddress
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (field : FieldInfo<'typeGeneric, 'fieldGeneric>)

@@ -32,13 +32,11 @@ module AppContextSeed =
     /// Write `s` as NUL-terminated UTF-16 into a fresh native-heap block, and return a
     /// pointer to its first code unit — a `char*` as CoreLib's `Setup` will consume it.
     ///
-    /// A .NET string is already UTF-16, so each `char` becomes one 2-byte cell verbatim;
-    /// no encoding decision arises. Interior NULs do not arise either: `AppContextProperties`
-    /// guarantees they have been truncated already, at the same point hostpolicy truncates
-    /// them (assigning a `char_t*` into a `pal::string_t`). That matters for *names* rather
-    /// than values — truncating late would let two names that a real host merges into one
-    /// property arrive here as two, and `Setup`'s `Dictionary.Add` would throw on the
-    /// duplicate.
+    /// Interior NULs do not arise: `AppContextProperties` guarantees they have been
+    /// truncated already, at the same point hostpolicy truncates them (assigning a
+    /// `char_t*` into a `pal::string_t`). That matters for *names* rather than values —
+    /// truncating late would let two names that a real host merges into one property
+    /// arrive here as two, and `Setup`'s `Dictionary.Add` would throw on the duplicate.
     let private allocateWideString (s : string) (state : IlMachineState) : ManagedPointerSource * IlMachineState =
         let ptr, state =
             IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized ((s.Length + 1) * 2) state
@@ -50,6 +48,8 @@ module AppContextSeed =
                 failwith
                     $"logic error: allocateNativeMemory returned %O{other} rather than a byref to byte 0 of a fresh native block"
 
+        // A .NET string is already UTF-16, so each `char` becomes one 2-byte cell
+        // verbatim; no encoding decision arises.
         let pool =
             (IlMachineState.getNativeMemoryPool state, seq { 0 .. s.Length - 1 })
             ||> Seq.fold (fun pool i -> NativeMemoryPool.writeCell blockId (i * 2) (CliType.ofChar s.[i]) pool)
@@ -63,14 +63,6 @@ module AppContextSeed =
     /// The cells hold pointers, not synthesised bit patterns, so that when the guest's
     /// `ldind.i` reads a slot back it gets a pointer with its provenance intact rather than
     /// an integer we would then have to re-interpret.
-    ///
-    /// Native-int rather than `CliType.RuntimePointer`, because indirect memory in this
-    /// machine is untyped: `stind.i` coerces a pointer to
-    /// `Numeric (NativeInt (ManagedPointer …))` (`EvalStack.toCliTypeCoerced`), and
-    /// `ldind.i` reads with a matching native-int template. Writing these cells the way a
-    /// guest's own `stind.i` would have written them is what lets `Setup`'s `ldind.i` find
-    /// them; a `RuntimePointer` cell is the right shape for a *typed* pointer slot such as a
-    /// parameter, but it is not what an untyped indirect load expects.
     let private allocatePointerArray
         (targets : ManagedPointerSource list)
         (state : IlMachineState)
@@ -89,6 +81,13 @@ module AppContextSeed =
                 failwith
                     $"logic error: allocateNativeMemory returned %O{other} rather than a byref to byte 0 of a fresh native block"
 
+        // Native-int rather than `CliType.RuntimePointer`, because indirect memory in this
+        // machine is untyped: `stind.i` coerces a pointer to
+        // `Numeric (NativeInt (ManagedPointer …))` (`EvalStack.toCliTypeCoerced`), and
+        // `ldind.i` reads with a matching native-int template. Writing these cells the way a
+        // guest's own `stind.i` would have written them is what lets `Setup`'s `ldind.i` find
+        // them; a `RuntimePointer` cell is the right shape for a *typed* pointer slot such as
+        // a parameter, but it is not what an untyped indirect load expects.
         let pool =
             (IlMachineState.getNativeMemoryPool state, List.indexed targets)
             ||> List.fold (fun pool (i, target) ->
@@ -147,10 +146,7 @@ module AppContextSeed =
     /// state with the argument buffers allocated and a frame ready to be installed and run.
     ///
     /// `None` when there is nothing to seed, which skips the call rather than making it with a
-    /// count of zero. The two differ internally — `Setup` assigns a fresh dictionary to
-    /// `s_dataStore`, where skipping leaves it null — but not observably: `GetData` returns
-    /// null for a null store, and `SetData` lazily installs one. So this buys the cheaper path
-    /// without changing what a guest can see.
+    /// count of zero; the difference is not observable to the guest.
     ///
     /// The native blocks allocated here are never freed. `hostpolicy`'s arrays
     /// outlive the call too, and a guest is entitled to have kept a `char*` into one — so
@@ -163,6 +159,11 @@ module AppContextSeed =
         : (IlMachineState * MethodState) option
         =
         if AppContextProperties.isEmpty properties then
+            // Skipping differs from calling with a count of zero internally — `Setup`
+            // assigns a fresh dictionary to `s_dataStore`, where skipping leaves it null —
+            // but not observably: `GetData` returns null for a null store, and `SetData`
+            // lazily installs one. So this buys the cheaper path without changing what a
+            // guest can see.
             None
         else
 

@@ -538,11 +538,10 @@ module ExecutionResult =
     /// that per-step bookkeeping which must happen *whatever the step turned out to be* can be
     /// written once, at the driver's single call site of `AbstractMachine.executeOneStep`,
     /// rather than being repeated in each arm of the driver's match on the outcome.
-    ///
-    /// The match is written out rather than wildcarded so that adding a variant fails to
-    /// compile here, forcing a decision about whether the new outcome represents a retired
-    /// step.
     let mapState (f : IlMachineState -> IlMachineState) (result : ExecutionResult) : ExecutionResult =
+        // The match is written out rather than wildcarded so that adding a variant fails to
+        // compile here, forcing a decision about whether the new outcome represents a retired
+        // step.
         match result with
         | ExecutionResult.Terminated (state, terminatingThread) ->
             ExecutionResult.Terminated (f state, terminatingThread)

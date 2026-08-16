@@ -222,11 +222,6 @@ module NativeMetadataImport =
     /// The properties declared by the TypeDef named by <paramref name="parent"/>, as raw metadata
     /// tokens, in the order the real runtime returns them.
     ///
-    /// Reads the PropertyMap run (ECMA-335 II.22.35) straight from the metadata; PawPrint keeps no
-    /// parsed property index. The parent must be validated here, because an out-of-range handle
-    /// reaches the reader as <c>BadImageFormatException: Read out of bounds</c>, which reads as a
-    /// corrupt image when the real problem is a token PawPrint should never have minted.
-    ///
     /// Unfiltered and non-transitive: CoreCLR's fallback branch is a plain
     /// <c>EnumInit</c>/<c>EnumNext</c> over that run, so private, static and indexer properties are
     /// all returned, and inherited ones are not — <c>RuntimeType.PopulateProperties</c> applies
@@ -239,11 +234,16 @@ module NativeMetadataImport =
         =
         match MetadataToken.ofInt parent with
         | MetadataToken.TypeDefinition typeDefHandle ->
+            // The parent must be validated here, because an out-of-range handle reaches the
+            // reader as `BadImageFormatException: Read out of bounds`, which reads as a corrupt
+            // image when the real problem is a token PawPrint should never have minted.
             if not (assembly.TypeDefs.ContainsKey typeDefHandle) then
                 failwith $"%s{operation}: TypeDef token 0x%08x{parent} was not present in %s{assembly.Name.FullName}"
 
             let metadataReader = metadataReaderOf assembly
 
+            // Reads the PropertyMap run (ECMA-335 II.22.35) straight from the metadata;
+            // PawPrint keeps no parsed property index.
             (metadataReader.GetTypeDefinition typeDefHandle).GetProperties ()
             |> Seq.map metadataTokenOfPropertyDefinitionHandle
             |> List.ofSeq
@@ -251,9 +251,7 @@ module NativeMetadataImport =
             failwith
                 $"%s{operation}: expected TypeDef parent token for property enumeration, got %O{token} from 0x%08x{parent}"
 
-    /// One Property row, bounds-checked. <c>MetadataReader</c> has no total lookup, so the row
-    /// number is compared against the table's length directly; an out-of-range handle would
-    /// otherwise reach the reader as <c>BadImageFormatException: Read out of bounds</c>.
+    /// One Property row, bounds-checked: an out-of-range handle fails loudly here.
     let private propertyDefinition
         (operation : string)
         (assembly : DumpedAssembly)
@@ -262,6 +260,9 @@ module NativeMetadataImport =
         =
         let metadataReader = metadataReaderOf assembly
 
+        // `MetadataReader` has no total lookup, so the row number is compared against the
+        // table's length directly; an out-of-range handle would otherwise reach the reader as
+        // `BadImageFormatException: Read out of bounds`.
         let rowNumber =
             System.Reflection.Metadata.Ecma335.MetadataTokens.GetRowNumber (
                 System.Reflection.Metadata.PropertyDefinitionHandle.op_Implicit propertyHandle
@@ -330,14 +331,9 @@ module NativeMetadataImport =
     /// token type whose INT32 buffer is not a list of tokens. CoreCLR fills the buffer with
     /// <c>ASSOCIATE_RECORD</c>s, which are pairs of INT32s (inc/metadata.h:252-257), and
     /// <c>Associates.AssignAssociates</c> reads them back at <c>[i * 2]</c> and <c>[i * 2 + 1]</c>.
-    ///
-    /// Read straight from the metadata bytes, because <c>MetadataReader</c> does not expose the
-    /// MethodSemantics table at all. It exposes only <c>PropertyDefinition.GetAccessors</c> and
-    /// <c>EventDefinition.GetAccessors</c>, which are a *view*: they classify each row into a named
-    /// slot and drop the row's real <c>Semantics</c> value for everything that is not a getter or
-    /// setter (respectively adder, remover or raiser). The QCall's contract is the rows themselves —
+    /// The QCall's contract is the rows themselves, with their real <c>Semantics</c> values —
     /// <c>AssignAssociates</c> switches on the raw value and assigns <c>addOn</c> for an AddOn row
-    /// even on a *property* — so the view would be lossy in a way that is visible to a guest.
+    /// even on a *property*.
     ///
     /// Deliberately a full scan collecting every match, where CoreCLR binary-searches for one row and
     /// expands to the contiguous group around it (metamodel.h:689-755), which is sound only because
@@ -391,6 +387,13 @@ module NativeMetadataImport =
                 failwith
                     $"%s{operation}: expected Property or Event parent token for associate enumeration, got %O{token} from 0x%08x{parent}"
 
+        // Read straight from the metadata bytes, because `MetadataReader` does not expose the
+        // MethodSemantics table at all. It exposes only `PropertyDefinition.GetAccessors` and
+        // `EventDefinition.GetAccessors`, which are a *view*: they classify each row into a
+        // named slot and drop the row's real `Semantics` value for everything that is not a
+        // getter or setter (respectively adder, remover or raiser) — lossy in a way that is
+        // visible to a guest.
+        //
         // ECMA-335 II.24.2.6 column widths. A simple index is 2 bytes while its target table has
         // fewer than 2^16 rows; a coded index with `n` tag bits is 2 bytes while every table it spans
         // has fewer than 2^(16-n). HasSemantics spans Event and Property with one tag bit.
@@ -510,15 +513,14 @@ module NativeMetadataImport =
     ///
     /// <c>ELEMENT_TYPE_STRING</c> has no fixed width; its blob is however many UTF-16 code units
     /// the string has, so it carries width 0 and is handled separately by the caller.
-    ///
-    /// <c>System.Reflection.Metadata</c>'s <c>ConstantTypeCode</c> values happen to be the same
-    /// numbers as the element types, but this maps them explicitly rather than casting: they are
-    /// two separate contracts, and a cast would silently follow either one if it moved.
     let private elementTypeOfConstantTypeCode
         (operation : string)
         (code : System.Reflection.Metadata.ConstantTypeCode)
         : int32 * int
         =
+        // `System.Reflection.Metadata`'s `ConstantTypeCode` values happen to be the same
+        // numbers as the element types, but this maps them explicitly rather than casting: they
+        // are two separate contracts, and a cast would silently follow either one if it moved.
         match code with
         | System.Reflection.Metadata.ConstantTypeCode.Boolean -> 0x02, 1
         | System.Reflection.Metadata.ConstantTypeCode.Char -> 0x03, 2
@@ -793,14 +795,6 @@ module NativeMetadataImport =
     /// which is safe only because these strings are consumed purely as bytes: the caller wraps the
     /// pointer in <c>MdUtf8String</c>, which compares contents (<c>SequenceEqual</c>) or decodes
     /// them, and nothing anywhere compares the pointer itself.
-    ///
-    /// The copy must be null-terminated because <c>MdUtf8String</c>'s constructor measures it with
-    /// <c>string.strlen</c> — <c>SpanHelpers.IndexOfNullByte</c>, which deliberately over-reads in
-    /// its vector paths. Those are all behind <c>VectorNNN.IsHardwareAccelerated</c>, and PawPrint
-    /// only ever reports <c>HardwareIntrinsicsProfile.ScalarOnly</c>, so what runs is the scalar
-    /// loop: one byte at a time, stopping at the first zero, never reading past the terminator.
-    /// Giving the guest an accelerated profile would invalidate that, and this buffer would need to
-    /// be padded to a vector width.
     let private completeWithUtf8String
         (ctx : NativeCallContext)
         (out : ManagedPointerSource)
@@ -808,6 +802,13 @@ module NativeMetadataImport =
         (state : IlMachineState)
         : NativeHandlerResult option
         =
+        // The copy must be null-terminated because `MdUtf8String`'s constructor measures it
+        // with `string.strlen` — `SpanHelpers.IndexOfNullByte`, which deliberately over-reads
+        // in its vector paths. Those are all behind `VectorNNN.IsHardwareAccelerated`, and
+        // PawPrint only ever reports `HardwareIntrinsicsProfile.ScalarOnly`, so what runs is
+        // the scalar loop: one byte at a time, stopping at the first zero, never reading past
+        // the terminator. Giving the guest an accelerated profile would invalidate that, and
+        // this buffer would need to be padded to a vector width.
         let ptr, state =
             NativeCall.allocateNullTerminatedUtf8 ctx.BaseClassTypes value state
 

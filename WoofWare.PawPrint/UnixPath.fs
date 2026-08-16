@@ -336,13 +336,14 @@ module PathCursor =
     /// component just consumed*, so a cursor that has consumed nothing has
     /// nothing to replace: joining a target onto it would run the target's last
     /// component into the path's first, and splicing "l" onto "abc" would look
-    /// up "labc". `next` never returns offset zero — a component is at least one
-    /// character — so that is exactly the condition checked here.
+    /// up "labc".
     let splice (target : UnixPath) (cursor : PathCursor) : PathCursor =
         // Validity first: a forged default has offset zero too, and would
         // otherwise be reported as the wrong mistake.
         let buffer = bufferOf cursor
 
+        // `next` never returns offset zero — a component is at least one
+        // character — so offset zero is exactly the condition to check.
         if cursor.Offset = 0 then
             failwith
                 $"PathCursor.splice: the cursor into \"%s{buffer}\" has not consumed a component, so there is no symbolic link here to expand. Splice onto the cursor `next` returned, not one straight from `ofPath`."

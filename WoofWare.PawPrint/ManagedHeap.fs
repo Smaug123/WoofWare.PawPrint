@@ -269,10 +269,7 @@ module ManagedHeap =
 
     /// Update a character in the runtime string data side-table. `charIndex` equal
     /// to the string length addresses the null terminator; that updates
-    /// `StringArrayData` but not the logical `StringContents` value. The metadata-
-    /// level `_firstChar` field is a synthetic projection over
-    /// `StringArrayData[dataOffset]` (see `RuntimeFieldProjection`) and therefore
-    /// requires no separate mirror.
+    /// `StringArrayData` but not the logical `StringContents` value.
     let setStringChar (addr : ManagedHeapAddress) (charIndex : int) (value : char) (heap : ManagedHeap) : ManagedHeap =
         if charIndex < 0 then
             failwith $"string character index must be non-negative, got %d{charIndex} for %O{addr}"
@@ -285,6 +282,9 @@ module ManagedHeap =
 
         let dataOffset = getStringDataOffset addr heap
         let newArr = heap.StringArrayData.ToBuilder ()
+        // The metadata-level `_firstChar` field is a synthetic projection over
+        // `StringArrayData[dataOffset]` (see `RuntimeFieldProjection`) and therefore
+        // requires no separate mirror.
         newArr.[dataOffset + charIndex] <- value
 
         let heap =
@@ -342,11 +342,12 @@ module ManagedHeap =
     /// Whether `addr` is a live heap allocation of either kind.
     ///
     /// Asked by callers that only need to know a reference points at *something* — the
-    /// object's kind and payload are then somebody else's question. Deliberately derived
-    /// from the two payload maps rather than from `SyncBlocks`, whose key set is documented
-    /// to be their union: that invariant is asserted elsewhere, and an accessor that assumed
-    /// it would turn a broken invariant into a wrong answer instead of a caught one.
+    /// object's kind and payload are then somebody else's question.
     let isLive (addr : ManagedHeapAddress) (heap : ManagedHeap) : bool =
+        // Deliberately derived from the two payload maps rather than from `SyncBlocks`, whose
+        // key set is documented to be their union: that invariant is asserted elsewhere, and
+        // an accessor that assumed it would turn a broken invariant into a wrong answer
+        // instead of a caught one.
         heap.NonArrayObjects.ContainsKey addr || heap.Arrays.ContainsKey addr
 
     /// The dimensions and element type of the array at `addr`, or `None` if `addr` is not
@@ -426,9 +427,7 @@ module ManagedHeap =
     /// either array replaces only that array's cell, while reference-typed elements continue
     /// to name the same heap objects from both arrays.
     ///
-    /// Reuses the source `AllocatedArray` wholesale, so the clone is *identical* rather than
-    /// merely equivalent — there is no second construction of the shape to get wrong. The
-    /// clone still gets a fresh address, and with it a fresh `SyncBlock`: the source's
+    /// The clone gets a fresh address, and with it a fresh `SyncBlock`: the source's
     /// monitor state belongs to the source's identity, not to its contents.
     ///
     /// The two rejection cases are reported differently because they are different bugs: a
@@ -436,6 +435,8 @@ module ManagedHeap =
     /// whereas an unallocated address means the reference itself is bogus.
     let cloneArray (source : ManagedHeapAddress) (heap : ManagedHeap) : ManagedHeapAddress * ManagedHeap =
         match heap.Arrays.TryGetValue source with
+        // Reuses the source `AllocatedArray` wholesale, so the clone is *identical* rather
+        // than merely equivalent — there is no second construction of the shape to get wrong.
         | true, arr -> allocateArray arr heap
         | false, _ ->
             if heap.NonArrayObjects.ContainsKey source then

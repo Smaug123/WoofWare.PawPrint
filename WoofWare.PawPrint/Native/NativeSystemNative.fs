@@ -195,12 +195,9 @@ module NativeSystemNative =
             failwith
                 $"%s{operation}: expected %s{argName} to be a managed pointer, raw verbatim address, or null literal, got %O{other} (this is an interpreter bug)"
 
-    /// Write `bytes` through a caller-supplied `byte*`, one cell at a time.
-    /// The simulated address space is a graph of typed cells rather than a flat
-    /// byte array, so "memcpy into the caller's buffer" is necessarily this
-    /// per-byte walk; `ManagedPointerByteView.addByteOffset` is what resolves
-    /// each offset back to a cell, whatever storage the pointer actually names
-    /// (a `localloc` block, a pinned `byte[]`, native heap).
+    /// Write `bytes` through a caller-supplied `byte*`, whatever storage the
+    /// pointer actually names (a `localloc` block, a pinned `byte[]`, native
+    /// heap).
     ///
     /// `buffer` must not be null and must have room for every byte: both are
     /// the caller's business, because what a too-small or null buffer *means*
@@ -213,6 +210,11 @@ module NativeSystemNative =
         (state : IlMachineState)
         : IlMachineState
         =
+        // One cell at a time: the simulated address space is a graph of typed
+        // cells rather than a flat byte array, so "memcpy into the caller's
+        // buffer" is necessarily this per-byte walk;
+        // `ManagedPointerByteView.addByteOffset` is what resolves each offset
+        // back to a cell, whatever storage the pointer actually names.
         let byteConcreteType =
             NativeCall.requiredByteConcreteType operation ctx.BaseClassTypes state
 

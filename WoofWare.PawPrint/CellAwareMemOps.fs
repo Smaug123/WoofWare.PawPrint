@@ -100,17 +100,17 @@ module internal CellAwareMemOps =
             // loop cannot clobber a byte it has yet to read.
             false
 
-    /// All residual projections must be plain `Field` projections. The
-    /// fast-path uses `readManagedByref` on the residual, which dispatches
-    /// through `readProjectedValue`: that helper supports `Field` cleanly,
-    /// short-circuits `ReinterpretAs` only for same-width primitive families
-    /// (and throws otherwise), and unconditionally throws on `ByteOffset`.
-    /// Allowing interior `ReinterpretAs` here would turn the fast path into
-    /// a host failure for shapes the byte-walk fallback would otherwise
-    /// service (e.g. a byte view built from a non-trailing `ReinterpretAs`
-    /// such as `Unsafe.As<int, S>(ref arr[0]).B`), so the fast path
-    /// declines and lets the byte-walk peel the projection.
+    /// All residual projections must be plain `Field` projections.
     let private isPlainResidual (projs : ByrefProjection list) : bool =
+        // The fast-path uses `readManagedByref` on the residual, which dispatches
+        // through `readProjectedValue`: that helper supports `Field` cleanly,
+        // short-circuits `ReinterpretAs` only for same-width primitive families
+        // (and throws otherwise), and unconditionally throws on `ByteOffset`.
+        // Allowing interior `ReinterpretAs` here would turn the fast path into
+        // a host failure for shapes the byte-walk fallback would otherwise
+        // service (e.g. a byte view built from a non-trailing `ReinterpretAs`
+        // such as `Unsafe.As<int, S>(ref arr[0]).B`), so the fast path
+        // declines and lets the byte-walk peel the projection.
         projs
         |> List.forall (fun proj ->
             match proj with
@@ -242,32 +242,6 @@ module internal CellAwareMemOps =
     /// walks up through one cell). Object references have no byte image, so there is no bytewise
     /// route to fall back to: naming the cell is the only way to serve this at all.
     ///
-    /// Widths are proposed from the *source* by `CliType.CandidateCellExtentsContainingByte` and
-    /// validated on both sides by `CliType.CellPathsExactlyCovering`, which stays the authority on
-    /// whether a range names a cell. Proposing from one side suffices because a width the
-    /// destination can name and the source cannot is not a width we could move anyway, and because
-    /// the generator is complete for the source (argued at its definition).
-    ///
-    /// Three properties this relies on:
-    ///
-    /// - **Largest width first is a preference, not a correctness question.** Every validated
-    ///   candidate at a given width covers the identical byte range on both sides, so the choices
-    ///   differ only in which level of a nesting chain is replaced wholesale, and a same-`Declared`
-    ///   value-type replacement over the same extent is not observable. Across widths, one step of
-    ///   `n` bytes and `n / k` steps of `k` bytes move the same bytes.
-    /// - **Variable widths keep `shouldCopyBackwards`'s overlap guarantee**, which was written when
-    ///   every step was one whole cell. A step reads its entire source range before writing its
-    ///   destination range, and the cursor then advances by exactly the width moved. So for a
-    ///   forward loop (used when the destination is at or before the source in shared storage), a
-    ///   step's writes land at or before the bytes it just read, and every later step reads from
-    ///   strictly beyond the cursor — untouched. The backward loop is the mirror image. The
-    ///   argument never mentions the width, so letting it vary changes nothing.
-    /// - **A step always advances.** Widths are positive and at most `cap`, so the caller cannot
-    ///   spin. A zero-sized cell would return a zero-width "success" and loop forever, so it is
-    ///   rejected here rather than being left to the byte step. No value type can present that
-    ///   shape — `CliValueType.SizeOfFieldStorage` models CoreCLR's floor of one byte per value
-    ///   class — so this is a guard on the termination invariant rather than a live case.
-    ///
     /// Cells must additionally have compatible CLI shape (`cellsHaveCompatibleShape`), so that the
     /// wholesale typed write does not silently rewrite what the destination cell claims to hold.
     let private tryWholeCellMoveAt
@@ -332,6 +306,35 @@ module internal CellAwareMemOps =
 
                 whole @ CliType.CellPathsExactlyCovering start width cell
 
+            // Widths are proposed from the *source* by `CliType.CandidateCellExtentsContainingByte`
+            // and validated on both sides by `CliType.CellPathsExactlyCovering`, which stays the
+            // authority on whether a range names a cell. Proposing from one side suffices because a
+            // width the destination can name and the source cannot is not a width we could move
+            // anyway, and because the generator is complete for the source (argued at its
+            // definition).
+            //
+            // Three properties this relies on:
+            //
+            // - **Largest width first is a preference, not a correctness question.** Every validated
+            //   candidate at a given width covers the identical byte range on both sides, so the
+            //   choices differ only in which level of a nesting chain is replaced wholesale, and a
+            //   same-`Declared` value-type replacement over the same extent is not observable.
+            //   Across widths, one step of `n` bytes and `n / k` steps of `k` bytes move the same
+            //   bytes.
+            // - **Variable widths keep `shouldCopyBackwards`'s overlap guarantee**, which was
+            //   written when every step was one whole cell. A step reads its entire source range
+            //   before writing its destination range, and the cursor then advances by exactly the
+            //   width moved. So for a forward loop (used when the destination is at or before the
+            //   source in shared storage), a step's writes land at or before the bytes it just
+            //   read, and every later step reads from strictly beyond the cursor — untouched. The
+            //   backward loop is the mirror image. The argument never mentions the width, so
+            //   letting it vary changes nothing.
+            // - **A step always advances.** Widths are positive and at most `cap`, so the caller
+            //   cannot spin. A zero-sized cell would return a zero-width "success" and loop
+            //   forever, so it is rejected here rather than being left to the byte step. No value
+            //   type can present that shape — `CliValueType.SizeOfFieldStorage` models CoreCLR's
+            //   floor of one byte per value class — so this is a guard on the termination
+            //   invariant rather than a live case.
             let candidateWidths : int list =
                 CliType.CandidateCellExtentsContainingByte srcInCell srcCell
                 |> List.choose (fun (offset, width) ->
@@ -411,10 +414,6 @@ module internal CellAwareMemOps =
     /// is the byte path's job; taking a padding step there would silently write the destination's
     /// *filler* instead and lose the bytes. Declining leaves the byte path to serve it, or to fail
     /// loudly if it cannot.
-    ///
-    /// The overlap-safety argument documented on `tryWholeCellMoveAt` carries over verbatim: this
-    /// step also reads its whole source range before writing its destination range, and advances
-    /// the cursor by exactly the width moved, so the direction the driver chose still holds.
     let private tryPaddingMoveAt
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -462,6 +461,10 @@ module internal CellAwareMemOps =
                 let startOf (inCell : int) : int =
                     if backwards then inCell - width + 1 else inCell
 
+                // The overlap-safety argument documented in `tryWholeCellMoveAt`'s body carries
+                // over verbatim: this step also reads its whole source range before writing its
+                // destination range, and advances the cursor by exactly the width moved, so the
+                // direction the driver chose still holds.
                 let bytes = CliType.PaddingBytesAt (startOf srcInCell) width srcCell
 
                 let state =

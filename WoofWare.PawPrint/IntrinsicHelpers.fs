@@ -8,11 +8,9 @@ module internal IntrinsicHelpers =
     /// CoreCLR's `MethodTable::IsValueTypeImpl`, as the reflection surface sees it.
     ///
     /// Byrefs, pointers, function pointers and arrays are TypeDescs, for which it resolves to
-    /// `IsSubclassOf(typeof(ValueType))` and so answers false; they are absent from the nominal
-    /// `AllConcreteTypes` mapping, so they must be answered from the shape rather than by
-    /// failing the lookup. `operation` names the caller in the diagnostic raised when a
-    /// `Concrete` handle turns out to have no row, which is a broken interpreter invariant
-    /// rather than anything the guest did.
+    /// `IsSubclassOf(typeof(ValueType))` and so answers false. `operation` names the caller in
+    /// the diagnostic raised when a `Concrete` handle turns out to have no row, which is a
+    /// broken interpreter invariant rather than anything the guest did.
     let isValueTypeHandleAsCoreClr
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -21,6 +19,8 @@ module internal IntrinsicHelpers =
         : bool
         =
         match handle with
+        // TypeDescs are absent from the nominal `AllConcreteTypes` mapping, so they must be
+        // answered from the shape rather than by failing the lookup.
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _
@@ -175,6 +175,8 @@ module internal IntrinsicHelpers =
         (handle : ConcreteTypeHandle)
         : IlMachineState * bool
         =
+        // The empty dictionary hides the cycle-detection memo table used by the
+        // implementation (`containsRefType` threads it through the walk).
         containsRefType loggerFactory baseClassTypes state ImmutableDictionary.Empty handle
         |> fun (state, _, result) -> state, result
 

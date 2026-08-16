@@ -149,12 +149,11 @@ module NativeRuntimeHelpers =
             // has been assigned yet, and the public GetHashCode wraps it as
             //     int h = TryGetHashCode(o); if (h == 0) return GetHashCodeWorker(o); return h;
             // We don't model lazy hash assignment, so we always return the same identity
-            // hash GetHashCode would, keeping the wrapper's short-circuit consistent. The
-            // 9.0.15 CoreLib still declares both methods as InternalCall and we currently
-            // intercept the public GetHashCode directly; intercepting TryGetHashCode here
-            // covers callers (e.g. ConditionalWeakTable) that bypass the public wrapper,
-            // and survives the SDK move to the managed wrapper that already exists in the
-            // dotnet/main source.
+            // hash GetHashCode would, keeping the wrapper's short-circuit consistent. In
+            // the pinned .NET 10 CoreLib only TryGetHashCode is InternalCall — the public
+            // GetHashCode is that managed wrapper — but we also intercept the public
+            // GetHashCode directly; intercepting TryGetHashCode here covers callers
+            // (e.g. ConditionalWeakTable) that bypass the public wrapper.
             let hash =
                 identityHash "RuntimeHelpers.TryGetHashCode" (EvalStackValue.ofCliType instruction.Arguments.[0])
 

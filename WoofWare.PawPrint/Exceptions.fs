@@ -229,14 +229,6 @@ module ExceptionHandling =
     /// The regions accepted by `isWanted` whose `try` covers `currentPC` but not `boundary`,
     /// ordered innermost first. `None` for `boundary` means nothing in this method is the
     /// destination, so every covering region qualifies.
-    ///
-    /// The ordering key is `(-TryOffset, TryLength)`. Sorting on `-TryOffset` alone is not
-    /// total: a `try` may begin at the same IL offset as the `try` enclosing it, and then only
-    /// the extent distinguishes them, the shorter being the inner. ECMA-335 II.25.4.6 does
-    /// require the table itself to list more deeply nested clauses first, so a stable sort on
-    /// the offset alone happens to work today — but that leaves correctness resting on both
-    /// the producer's clause order and `Seq.sortBy`'s stability, neither of which is stated
-    /// where a reader of this function would look.
     let private regionsBetween
         (regions : ExceptionRegion seq)
         (isWanted : ExceptionRegion -> bool)
@@ -261,7 +253,12 @@ module ExceptionHandling =
         )
         |> Seq.sortBy (fun region ->
             // Inner to outer: later-starting first, and among regions that start together,
-            // the shorter one is the nested one.
+            // the shorter one is the nested one. Sorting on `-TryOffset` alone is not total:
+            // a `try` may begin at the same IL offset as the `try` enclosing it, and then only
+            // the extent distinguishes them. ECMA-335 II.25.4.6 does require the table itself
+            // to list more deeply nested clauses first, so a stable sort on the offset alone
+            // happens to work today — but that would leave correctness resting on both the
+            // producer's clause order and `Seq.sortBy`'s stability.
             let offset = regionOffset region
             -offset.TryOffset, offset.TryLength
         )
@@ -341,13 +338,6 @@ module ExceptionHandling =
     /// innermost first. `None` means `justRan` is not in that chain at all, which is a caller
     /// contract violation rather than an empty tail — the two are distinguished so the
     /// `MethodInfo` wrapper can report the former loudly.
-    ///
-    /// `justRan.TryOffset` stands in for the original leave site, which the continuation does
-    /// not carry, and it selects the same remaining regions. Any region still to run properly
-    /// encloses `justRan`: it contained the leave site, and two protected regions sharing a
-    /// point must nest (ECMA-335 II.12.4.2.7 forbids partial overlap), so one that began after
-    /// `justRan.TryOffset` would be nested *inside* `justRan` and would therefore already have
-    /// run before it. Enclosing regions contain the whole of `justRan`, hence its first byte.
     let finallyBlocksAfter
         (regions : ExceptionRegion seq)
         (justRan : ExceptionOffset)
@@ -359,6 +349,12 @@ module ExceptionHandling =
             | [] -> None
             | candidate :: rest -> if candidate = justRan then Some rest else afterJustRan rest
 
+        // `justRan.TryOffset` stands in for the original leave site, which the continuation does
+        // not carry, and it selects the same remaining regions. Any region still to run properly
+        // encloses `justRan`: it contained the leave site, and two protected regions sharing a
+        // point must nest (ECMA-335 II.12.4.2.7 forbids partial overlap), so one that began after
+        // `justRan.TryOffset` would be nested *inside* `justRan` and would therefore already have
+        // run before it. Enclosing regions contain the whole of `justRan`, hence its first byte.
         finallyBlocksBetween regions justRan.TryOffset targetPC |> afterJustRan
 
     /// The next `finally` a `leave` bound for `targetPC` must run, given that `justRan` — the

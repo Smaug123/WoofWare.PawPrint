@@ -248,15 +248,14 @@ module UnixTimestamp =
     /// Floor division, so that a negative millisecond count keeps the
     /// nanosecond part non-negative rather than producing a `timespec` no
     /// kernel would write: -1 ms is (-1 s, 999 000 000 ns), not (0 s, -1e6 ns).
-    ///
-    /// Derived from the truncating quotient and remainder rather than by
-    /// biasing the dividend. `(milliseconds - 999L) / 1000L` is the obvious way
-    /// to floor a negative, and it silently overflows for the bottom 999 values
-    /// of `int64`: it does not throw, it hands back a *positive* second count
-    /// and a nanosecond part outside `[0, 1e9)` — a value that breaks the very
-    /// invariant `create` exists to enforce, while bypassing it. Neither `/`
-    /// nor `%` can overflow for any input here.
     let ofMillisecondsSinceEpoch (milliseconds : int64) : UnixTimestamp =
+        // Derived from the truncating quotient and remainder rather than by
+        // biasing the dividend. `(milliseconds - 999L) / 1000L` is the obvious
+        // way to floor a negative, and it silently overflows for the bottom 999
+        // values of `int64`: it does not throw, it hands back a *positive*
+        // second count and a nanosecond part outside `[0, 1e9)` — a value that
+        // breaks the very invariant `create` exists to enforce, while bypassing
+        // it. Neither `/` nor `%` can overflow for any input here.
         let quotient = milliseconds / 1000L
         let remainder = milliseconds % 1000L
 
@@ -728,24 +727,22 @@ module PathLimits =
     /// where the mistakes are. Takes the target and the cursor rather than two
     /// byte counts, so that neither can be measured with the wrong function nor
     /// passed in the wrong order.
-    ///
-    /// The rule transcribes XNU's `linklen + ni_pathlen > MAXPATHLEN`, where
-    /// `linklen` is the target's raw byte length and `ni_pathlen` counts the
-    /// unconsumed remainder *including* the NUL — hence the `+ 1`, and hence
-    /// `<=` rather than `<`. Measured on Darwin 25.6.0: through a remainder of
-    /// "/a", a 1021-byte target resolves (1021 + 2 + 1 = 1024) and a 1022-byte
-    /// one does not.
-    ///
-    /// Bytes throughout, never UTF-16 code units — measured with CJK, and the
-    /// distinction matters because `nameWithinLimit` next door legitimately
-    /// *does* count code units on Darwin.
     let spliceWithinLimit (limits : PathLimits) (target : SymlinkTarget) (remaining : PathCursor) : bool =
         match limits.SpliceRecheck with
         | SpliceLengthRecheck.NoRecheck -> true
         | SpliceLengthRecheck.Recheck ->
 
+        // Bytes throughout, never UTF-16 code units — measured with CJK, and
+        // the distinction matters because `nameWithinLimit` next door
+        // legitimately *does* count code units on Darwin.
         let targetBytes = UnixPathText.utf8.GetByteCount (SymlinkTarget.toString target)
 
+        // The rule transcribes XNU's `linklen + ni_pathlen > MAXPATHLEN`, where
+        // `linklen` is the target's raw byte length and `ni_pathlen` counts the
+        // unconsumed remainder *including* the NUL — hence the `+ 1`, and hence
+        // `<=` rather than `<`. Measured on Darwin 25.6.0: through a remainder
+        // of "/a", a 1021-byte target resolves (1021 + 2 + 1 = 1024) and a
+        // 1022-byte one does not.
         targetBytes + PathCursor.remainingBytes remaining + 1 <= limits.PathMaxBytes
 
     /// Re-check the invariant of a value that may not have come from `create`.

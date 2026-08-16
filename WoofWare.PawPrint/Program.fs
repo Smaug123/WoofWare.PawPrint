@@ -229,21 +229,10 @@ module Program =
     /// Fire order matters for `LowLevelMonitor` and `SyncBlockMonitor`
     /// wait-timeout fires. When two waiters on the same primitive expire
     /// in the same tick, the fire grants ownership to whichever fires
-    /// first against the unowned primitive — so iterating
-    /// `state.ThreadState` (a Map keyed on ThreadId) would let a
-    /// later-parked waiter with a smaller thread id steal the lock from
-    /// the FIFO head. We sort entries by their position in the owning
-    /// primitive's `WaitQueue` (or `AcquireQueue`, for acquire-timeouts)
-    /// so that the head fires first, matching the FIFO contract enforced
+    /// first against the unowned primitive, so the head of the owning
+    /// primitive's queue fires first, matching the FIFO contract enforced
     /// everywhere else in the state machines (release, signalRelease,
     /// pulse/pulseAll, applySpuriousWakeups AlwaysAll).
-    ///
-    /// Cross-primitive ordering is irrelevant — each fire touches a
-    /// disjoint primitive/thread — so `WaitHandle` entries are ordered
-    /// last and by ThreadId, which is deterministic; order is
-    /// unobservable for that subsystem.
-    /// Queue positions are computed against the input state, before any
-    /// fires mutate `WaitQueue`s.
     let private fireExpiredDeadlines (state : IlMachineState) : IlMachineState =
         let now = state.Kernel.VirtualClockTicks
 
@@ -289,6 +278,17 @@ module Program =
                     failwith
                         $"fireExpiredDeadlines: thread %O{thread} has BlockedOnSyncBlockAcquire status against object %O{addr} but is not in its AcquireQueue %A{locked.AcquireQueue}; structural invariant violated."
 
+        // Iterating `state.ThreadState` (a Map keyed on ThreadId) would let a
+        // later-parked waiter with a smaller thread id steal the lock from the
+        // FIFO head, so entries are sorted by their position in the owning
+        // primitive's `WaitQueue` (or `AcquireQueue`, for acquire-timeouts).
+        // Cross-primitive ordering is irrelevant — each fire touches a
+        // disjoint primitive/thread — so `WaitHandle` entries are ordered
+        // last and by ThreadId, which is deterministic; order is
+        // unobservable for that subsystem.
+        // Queue positions are computed against the input state, before any
+        // fires mutate `WaitQueue`s.
+        //
         // Sort key: LowLevelMonitor entries first (group=0), then
         // SyncBlock wait entries (group=1), then SyncBlock acquire
         // entries (group=2), then WaitHandle entries (group=3), then
@@ -412,9 +412,8 @@ module Program =
     /// and hand a schedule-sweeping harness a prefix that is not actually forced. See
     /// `runToNextFork`.
     ///
-    /// Deliberately policy-independent: nothing here reads `state.Scheduling`, and
-    /// `advanceUntilRunnableOrQuiescent` goes out of its way to use `Scheduler.hasAnyRunnable`
-    /// rather than `chooseNext` so that a stochastic policy's RNG is not advanced by a probe. That
+    /// Deliberately policy-independent: nothing here reads `state.Scheduling`, and a stochastic
+    /// policy's RNG is not advanced by a probe. That
     /// is what makes it safe to run this, look at the result, and then run it again from the
     /// original state on a later resume.
     ///
@@ -755,8 +754,8 @@ module Program =
 
     /// Reads the guest assembly and performs the one-time setup needed before Main is ready to schedule.
     ///
-    /// `kernelConfig` carries the host's choices for the simulated process's kernel and is
-    /// applied here rather than by the caller afterwards, because this function pumps the entry
+    /// `hostConfig.Guest.Kernel` carries the host's choices for the simulated process's kernel and
+    /// is applied here rather than by the caller afterwards, because this function pumps the entry
     /// type's `.cctor` and CoreLib latches some of these values during static initialisation
     /// (notably `Environment.ProcessorCount`). `KernelConfig.Default` is the no-preference
     /// choice. Its `Environment` is overlaid on top of `EmulatedKernel.defaultEnvironment`, so
@@ -764,7 +763,7 @@ module Program =
     /// `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` default, and keys the caller does set win over
     /// it — that's how the CLI lets the host process override the seed if it really needs to.
     ///
-    /// `pctSeed = Some s` selects the PCT scheduling policy seeded with `s`; `None` keeps the
+    /// `hostConfig.PctSeed = Some s` selects the PCT scheduling policy seeded with `s`; `None` keeps the
     /// default round-robin policy. Applied before any cctor frame is pushed so the very first
     /// `chooseNext` decision is policy-correct — `IlMachineState.initial` defaults the field
     /// to `RoundRobin`, and `withPctSeed` simply overwrites it.
@@ -1247,7 +1246,7 @@ module Program =
     /// rather than throwing out of it — should drive those two directly instead; guest code
     /// runs during startup, and this function gives back nothing until all of it has finished.
     ///
-    /// See `beginStartup` for the `kernelConfig` and `pctSeed` timing contracts.
+    /// See `beginStartup` for the kernel-config and PCT-seed timing contracts.
     let prepare
         (loggerFactory : ILoggerFactory)
         (originalPath : string option)
@@ -1270,7 +1269,7 @@ module Program =
 
     /// Returns the outcome of the program run: normal exit or unhandled guest exception.
     ///
-    /// `pctSeed` flows through to `prepare`: `Some s` selects PCT with seed `s`,
+    /// `hostConfig.PctSeed` flows through to `prepare`: `Some s` selects PCT with seed `s`,
     /// `None` keeps the default round-robin scheduler. See `prepare` for the
     /// timing contract (applied before the first cctor frame is pushed).
     let run

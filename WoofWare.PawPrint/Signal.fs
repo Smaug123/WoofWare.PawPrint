@@ -212,17 +212,18 @@ module Signal =
     /// to process termination, and (in a later slice) by the dispatcher's
     /// handler-return-0 path that mirrors the same decision.
     ///
-    /// The lookup keys off the Linux signo, not the `Signal` DU case
-    /// directly, so unmodelled-but-known signals carried as
-    /// `Signal.Other rawSigno` still classify correctly: `Signal.Other 23`
-    /// (SIGURG, signo 23 on Linux) returns `Ignore`, matching the kernel
-    /// default rather than falling through to the conservative
-    /// `Terminate` catch-all. Unknown signos that don't correspond to a
-    /// kernel default we recognise classify as `Terminate`, which is the
-    /// POSIX default for unrecognised signals and matches the trailing
-    /// `default:` branch in `pal_signal.c`'s
-    /// `SystemNative_HandleNonCanceledPosixSignal` switch.
+    /// Unmodelled-but-known signals carried as `Signal.Other rawSigno`
+    /// still classify correctly: `Signal.Other 23` (SIGURG, signo 23 on
+    /// Linux) returns `Ignore`, matching the kernel default rather than
+    /// falling through to the conservative `Terminate` catch-all. Unknown
+    /// signos that don't correspond to a kernel default we recognise
+    /// classify as `Terminate`, which is the POSIX default for
+    /// unrecognised signals and matches the trailing `default:` branch in
+    /// `pal_signal.c`'s `SystemNative_HandleNonCanceledPosixSignal` switch.
     let defaultDisposition (signal : Signal) : DefaultDisposition =
+        // Key off the Linux signo, not the `Signal` DU case directly, so
+        // unmodelled-but-known signals carried as `Signal.Other` classify
+        // by their raw signo.
         match toLinuxSigno signal with
         // Ignore-by-default: SIGCHLD (17), SIGURG (23), SIGWINCH (28).
         // SIGURG isn't in our `Signal` DU but reaches us via

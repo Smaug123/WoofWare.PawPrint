@@ -46,8 +46,6 @@ module TestSchedulerYieldFairness =
         |> Roslyn.compile
 
     /// Run the guest to completion under one PCT seed, returning (exit code, total steps).
-    /// Drives `Program.stepPrepared` directly so the step counter is observable; `Program.run`
-    /// would hide it.
     let private runOne (seed : uint64) : int * int64 =
         let _messages, loggerFactory =
             LoggerFactory.makeTestWithProperties [ "pct_seed", string seed ]
@@ -56,6 +54,8 @@ module TestSchedulerYieldFairness =
         use peImage = new MemoryStream (image)
         let logger = loggerFactory.CreateLogger "TestSchedulerYieldFairness"
 
+        // Drive `Program.stepPrepared` directly so the step counter is observable;
+        // `Program.run` would hide it.
         match
             Program.prepare
                 loggerFactory

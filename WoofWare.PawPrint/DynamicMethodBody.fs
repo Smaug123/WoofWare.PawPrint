@@ -87,9 +87,7 @@ module internal DynamicMethodBody =
     /// <para>
     /// The scope is <c>List&lt;object?&gt; m_tokens</c> (<c>DynamicILGenerator.cs:972</c>), seeded
     /// with a single <c>null</c> so that index 0 is never a real entry, and appended to by
-    /// <c>GetTokenFor</c>, which returns <c>m_tokens.Count - 1 ||| tag</c>. Read
-    /// <c>_items[0 .. _size)</c> and not the whole backing array: <c>List</c> over-allocates, and
-    /// the slots past <c>_size</c> hold whatever was last there.
+    /// <c>GetTokenFor</c>, which returns <c>m_tokens.Count - 1 ||| tag</c>.
     /// </para>
     /// <para>
     /// Classification is *total*: an entry whose kind PawPrint cannot resolve becomes
@@ -108,6 +106,8 @@ module internal DynamicMethodBody =
         (resolver : ManagedHeapAddress)
         : Map<int, DynamicScopeEntry>
         =
+        // Read _items[0 .. _size) and not the whole backing array: List over-allocates, and the
+        // slots past _size hold whatever was last there.
         let items, size = DynamicScopeOperand.tokenList operation state resolver
 
         // Classify on the entry's *type*, not on whether string contents happen to be recorded for
@@ -248,32 +248,12 @@ module internal DynamicMethodBody =
     /// <c>m_currentCatch</c> clauses.
     /// </para>
     /// <para>
-    /// <c>m_currentCatch</c> and not the arrays' length: <c>__ExceptionInfo</c> allocates its five
-    /// parallel arrays four entries at a time and doubles them
-    /// (<c>RuntimeILGenerator.cs:1282-1307</c>), so the tail holds zeroes that would decode as
-    /// catch clauses covering <c>[0, 0)</c> and naming scope entry 0 — well-formed nonsense.
-    /// </para>
-    /// <para>
     /// The array arrives already sorted innermost-first, by <c>GetExceptions</c>'s call to
     /// <c>SortExceptions</c> (<c>RuntimeILGenerator.cs:336</c>), which is what ECMA-335 II.25.4.6
     /// requires and what <c>ExceptionDispatching.findAcceptingClause</c>'s tie-break expects. That
     /// sort's own comment notes its <c>IsInner</c> comparison gives an arbitrary answer for two
     /// clauses that do not nest; harmless here, because dispatch re-sorts candidates by try length
     /// and non-nested try ranges are disjoint, so no pair of them is ever both candidates.
-    /// </para>
-    /// <para>
-    /// The one arithmetic wrinkle is <c>TryLength</c>, which a <c>finally</c> clause takes from
-    /// <c>m_endFinally</c> where every other kind takes it from <c>m_endAddr</c>. Measured on a
-    /// <c>try/catch/finally</c>, where one <c>__ExceptionInfo</c> yields a catch covering
-    /// <c>[0,+11)</c> and a finally covering <c>[0,+25)</c>: the two clauses of one region
-    /// have different try ranges, so a projection hoisting the length out of the loop is wrong.
-    /// </para>
-    /// <para>
-    /// <c>Fault</c> and <c>PreserveStack</c> are both <c>0x0004</c>, so reading that value as
-    /// <c>Fault</c> is only safe because <c>MarkHelper</c> writes nothing but
-    /// <c>None</c>/<c>Filter</c>/<c>Finally</c>/<c>Fault</c> into <c>m_type</c>. A
-    /// <c>PreserveStack</c> flag could only arrive through <c>DynamicILInfo</c>'s raw EH blob, which
-    /// <see cref="read"/> refuses by name before reaching here.
     /// </para>
     /// </remarks>
     let private readExceptionRegions
@@ -313,6 +293,10 @@ module internal DynamicMethodBody =
             let startAddr = int32Field "m_startAddr"
             let endAddr = int32Field "m_endAddr"
             let endFinally = int32Field "m_endFinally"
+            // m_currentCatch and not the arrays' length: __ExceptionInfo allocates its five
+            // parallel arrays four entries at a time and doubles them
+            // (RuntimeILGenerator.cs:1282-1307), so the tail holds zeroes that would decode as
+            // catch clauses covering [0, 0) and naming scope entry 0 — well-formed nonsense.
             let numberOfCatches = int32Field "m_currentCatch"
             let filterAddr = int32ArrayField "m_filterAddr"
             let catchAddr = int32ArrayField "m_catchAddr"
@@ -329,6 +313,11 @@ module internal DynamicMethodBody =
             for c in 0 .. numberOfCatches - 1 do
                 let flags = clauseType.[c]
 
+                // A finally clause takes TryLength from m_endFinally where every other kind takes
+                // it from m_endAddr. Measured on a try/catch/finally, where one __ExceptionInfo
+                // yields a catch covering [0,+11) and a finally covering [0,+25): the two clauses
+                // of one region have different try ranges, so a projection hoisting the length out
+                // of the loop is wrong.
                 let tryLength =
                     if flags &&& COR_ILEXCEPTION_CLAUSE_FINALLY <> COR_ILEXCEPTION_CLAUSE_FINALLY then
                         endAddr - startAddr
@@ -357,6 +346,10 @@ module internal DynamicMethodBody =
                         ExceptionRegion.Filter (filterAddr.[c], offset)
                     elif flags = COR_ILEXCEPTION_CLAUSE_FINALLY then
                         ExceptionRegion.Finally offset
+                    // Fault and PreserveStack are both 0x0004, so reading that value as Fault is
+                    // only safe because MarkHelper writes nothing but None/Filter/Finally/Fault
+                    // into m_type. A PreserveStack flag could only arrive through DynamicILInfo's
+                    // raw EH blob, which `read` refuses by name before reaching here.
                     elif flags = COR_ILEXCEPTION_CLAUSE_FAULT then
                         ExceptionRegion.Fault offset
                     else

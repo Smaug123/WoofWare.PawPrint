@@ -698,22 +698,6 @@ module IlMachineRuntimeMetadata =
     /// take the `TableMask == 1` early-return on the sentinel and never mutate it, but
     /// in any case PawPrint never invokes the instance `TrySet` (CoreCLR only writes to
     /// the cache from native code).
-    ///
-    /// Layout under managed `CastCache.CreateCastCache(2)` on a 64-bit guest:
-    /// * `int32[]` length = `(size + 1) * sizeof(CastCacheEntry) / 4` = `3 * 24 / 4` = 18.
-    /// * `TableData(table)` is `ref array[0]`: it loads `RawData::Data` (which on an array
-    ///   points at the length field) and then skips `sizeof(nint)` bytes, landing at the
-    ///   first element. So the `HashShift`/`TableMask`/`VictimCounter` accessors in
-    ///   `CastCache.cs:113-130` index from `array[0]`, putting the auxiliary header at
-    ///   element indices 0, 1, 2. The remaining ints are zero-initialised — in particular
-    ///   indices 3..5 are the unused tail of the aux-slot `CastCacheEntry`, and indices
-    ///   6..17 are entries 0 and 1 (zero `_version` triggers the immediate `break` in
-    ///   `TryGet`).
-    /// * `hashShift = BitOperations.LeadingZeroCount((nuint)1)` = 63 on 64-bit; PawPrint
-    ///   targets 64-bit guests exclusively, so we hard-code 63. This bounds the initial
-    ///   `KeyToBucket` index to {0, 1}, keeping `Element(tableData, k)` inside the
-    ///   `int[18]` table.
-    /// * `tableMask = size - 1 = 1`.
     let internCastCacheSentinelTable
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -735,6 +719,11 @@ module IlMachineRuntimeMetadata =
         let zeroInt () : CliType =
             CliType.Numeric (CliNumericType.Int32 0)
 
+        // Layout under managed `CastCache.CreateCastCache(2)` on a 64-bit guest: the `int32[]`
+        // length is `(size + 1) * sizeof(CastCacheEntry) / 4` = `3 * 24 / 4` = 18. The ints
+        // beyond the auxiliary header are zero-initialised — indices 3..5 are the unused tail
+        // of the aux-slot `CastCacheEntry`, and indices 6..17 are entries 0 and 1 (zero
+        // `_version` triggers the immediate `break` in `TryGet`).
         let addr, state =
             IlMachineThreadState.allocateArray arrayTypeHandle zeroInt 18 state
 
@@ -743,7 +732,11 @@ module IlMachineRuntimeMetadata =
         // These live at element indices 0, 1, 2 because `CastCache.TableData` resolves
         // `GetRawData(table) + sizeof(nint)` to the first int element — `GetRawData` on
         // arrays returns a pointer at `RawArrayData.Length`, so the 8-byte skip walks past
-        // `Length` + 64-bit padding and lands at element 0.
+        // `Length` + 64-bit padding and lands at element 0. The `HashShift`/`TableMask`/
+        // `VictimCounter` accessors in `CastCache.cs:113-130` therefore index from `array[0]`.
+        // PawPrint targets 64-bit guests exclusively, so 63 is hard-coded; it bounds the
+        // initial `KeyToBucket` index to {0, 1}, keeping `Element(tableData, k)` inside the
+        // `int[18]` table.
         let state =
             state
             |> IlMachineThreadState.setArrayValue addr (CliType.Numeric (CliNumericType.Int32 63)) 0

@@ -2425,10 +2425,6 @@ module IlMachineStateExecution =
     /// would have used a message-taking ctor overload. Most callers want `None` — the CLR
     /// throws the great majority of these with no argument — and should use
     /// `raiseRuntimeException` below, which is this function with `None` supplied.
-    ///
-    /// This is part of the `callMethod` recursion group only because it needs to call
-    /// `callMethod` to run the ctor, and `callMethod` needs to call it to service
-    /// `IntrinsicResult.RaiseException`.
     and raiseRuntimeExceptionWithMessage
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -2438,6 +2434,10 @@ module IlMachineStateExecution =
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
         =
+        // This is part of the `callMethod` recursion group only because it needs to call
+        // `callMethod` to run the ctor, and `callMethod` needs to call it to service
+        // `IntrinsicResult.RaiseException`.
+        //
         // 1. Allocate the zero-initialised exception with _HResult pre-set.  This deliberately
         //    bypasses ensureTypeInitialised: opcode-manufactured exceptions are produced by the
         //    runtime rather than by guest `newobj` class-initialisation semantics.

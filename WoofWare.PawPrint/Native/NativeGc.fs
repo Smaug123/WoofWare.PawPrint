@@ -5,9 +5,7 @@ open System.Collections.Immutable
 [<RequireQualifiedAccess>]
 module NativeGc =
     /// Zero out a field whose declared type is itself a value type (`GCGenerationInfo`,
-    /// `TimeSpan`) rather than a primitive: looks up the field's declared signature so the
-    /// zero value gets the field's own concrete shape (recursing into that struct's fields),
-    /// rather than assuming a shape here that could drift from the real declaration.
+    /// `TimeSpan`) rather than a primitive.
     let private zeroStructField
         (ctx : NativeCallContext)
         (state : IlMachineState)
@@ -26,6 +24,9 @@ module NativeGc =
 
         let fieldInfo = FieldIdentity.requiredOwnInstanceField declaringTypeInfo fieldName
 
+        // Look up the field's declared signature so the zero value gets the field's own
+        // concrete shape (recursing into that struct's fields), rather than assuming a shape
+        // here that could drift from the real declaration.
         let state, zero, _handle =
             IlMachineState.cliTypeZeroOf
                 ctx.LoggerFactory
@@ -228,9 +229,8 @@ module NativeGc =
     ///
     ///   * `GC_ALLOC_ZEROING_OPTIONAL` (set by `AllocateUninitializedArray`) *permits* the
     ///     runtime to skip zeroing; it does not require it, and the API's contract states the
-    ///     contents are unspecified. PawPrint always zeroes, because that is the only content it
-    ///     can produce: `allocateArray` fills from a `CliType` template and the heap model has no
-    ///     representation for unset storage. The consequence is worth knowing when writing a
+    ///     contents are unspecified. PawPrint always zeroes.
+    ///     The consequence is worth knowing when writing a
     ///     differential test: reading an element of an uninitialized array before writing it
     ///     yields 0 here and arbitrary bytes on CoreCLR. See `docs/divergences.md`.
     ///   * `GC_ALLOC_PINNED_OBJECT_HEAP` (set by `pinned: true`) asks for the pinned object heap.
@@ -311,6 +311,9 @@ module NativeGc =
                 |> Some
             | None ->
 
+            // Zeroing happens even under GC_ALLOC_ZEROING_OPTIONAL because it is the only
+            // content we can produce: `allocateArray` fills from a `CliType` template and the
+            // heap model has no representation for unset storage.
             let zero, state =
                 IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes elementType
 

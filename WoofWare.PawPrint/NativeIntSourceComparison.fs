@@ -18,8 +18,8 @@ module NativeIntSourceComparison =
     /// dense with stride 4, so `((ulong)hA + 4) == (ulong)hB` is exactly such a case and
     /// answers `false` here while the same comparison after `hB` has been materialised
     /// answers `true` by bit equality. Refusing instead would abort on the
-    /// overwhelmingly common case of comparing unrelated values, and the
-    /// bit-equality arms above already have the same exposure. The root cause is that
+    /// overwhelmingly common case of comparing unrelated values, and
+    /// `equalsForCli`'s bit-equality arms already have the same exposure. The root cause is that
     /// PawPrint's synthesised addresses are small where real addresses are not, which is
     /// what makes a manufactured collision reachable at all.
     let private hashBitsEqualHandle (counters : PointerHashState) (bits : int64) (handle : NativeIntSource) : bool =

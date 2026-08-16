@@ -27,14 +27,13 @@ module TestFinallyChain =
     /// other. Successive levels may share a start offset, an end offset, or neither, but must
     /// differ somewhere — the share-a-start case is the one that makes `TryOffset` alone an
     /// insufficient sort key, and it is why the generator emits it.
-    ///
-    /// Built from the innermost region outward, each level growing by a non-zero amount at one
-    /// or both ends. Constructing it this way makes proper nesting structural rather than
-    /// something the generator has to check: growing outward cannot overshoot, whereas shrinking
-    /// inward has to be clamped against an empty `try`, and a clamped level can escape its
-    /// parent's end, producing towers that are not nested at all.
     let private towerGen : Gen<ExceptionOffset list> =
         gen {
+            // Built from the innermost region outward, each level growing by a non-zero amount at
+            // one or both ends. Constructing it this way makes proper nesting structural rather
+            // than something the generator has to check: growing outward cannot overshoot, whereas
+            // shrinking inward has to be clamped against an empty `try`, and a clamped level can
+            // escape its parent's end, producing towers that are not nested at all.
             let! depth = Gen.choose (1, 6)
             // Enough headroom that growing leftwards by at most 2 per level stays non-negative.
             let! innerStart = Gen.choose (2 * depth, 2 * depth + 20)

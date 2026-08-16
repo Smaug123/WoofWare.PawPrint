@@ -70,10 +70,11 @@ module AbsoluteUnixPath =
         | AbsoluteUnixPath path -> path
 
     /// First encoding defect in `candidate`, scanning left to right, or `None`
-    /// if there is none. Shared with `UnixPath` via `UnixPathText`, so that the
-    /// two path shapes cannot drift on which strings survive the `char*`
-    /// boundary; only the mapping into this type's error DU is local.
+    /// if there is none.
     let private firstCharacterDefect (candidate : string) : AbsoluteUnixPathError option =
+        // Shared with `UnixPath` via `UnixPathText`, so that the two path shapes
+        // cannot drift on which strings survive the `char*` boundary; only the
+        // mapping into this type's error DU is local.
         UnixPathText.firstDefect candidate
         |> Option.map (fun defect ->
             match defect with

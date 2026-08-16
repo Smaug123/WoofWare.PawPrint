@@ -413,11 +413,6 @@ module IlMachineThreadState =
     /// has no managed `Thread` heap mirror — it is not entered in
     /// `ManagedThreadObjects` — and its `ThreadState` is frameless with
     /// status `ThreadStatus.Parked`, so the scheduler never picks it.
-    /// `ActiveMethodState` points at a sentinel `FrameId` that is not
-    /// live in the empty `MethodStates` map, mirroring the
-    /// `allocateUnstartedThread` shape: any attempt to dereference it
-    /// crashes loudly rather than executing arbitrary IL on an
-    /// unprepared thread.
     ///
     /// A future slice that wires signal dispatch will introduce an
     /// explicit transition out of `Parked` (driven by the signal
@@ -430,6 +425,11 @@ module IlMachineThreadState =
             {
                 MethodStates = Map.empty
                 NextFrameId = 0
+                // `ActiveMethodState` points at a sentinel `FrameId` that is not
+                // live in the empty `MethodStates` map, mirroring the
+                // `allocateUnstartedThread` shape: any attempt to dereference it
+                // crashes loudly rather than executing arbitrary IL on an
+                // unprepared thread.
                 ActiveMethodState = FrameId -1
                 Status = ThreadStatus.Parked
                 IsBackground = false
@@ -741,15 +741,6 @@ module IlMachineThreadState =
     /// Allocate a fresh object that is a shallow copy of whatever is at `source`: the primitive
     /// behind `Object.MemberwiseClone`.
     ///
-    /// CoreCLR spells this as `AllocateUninitializedClone` followed by a raw byte copy of the
-    /// object payload (Object.CoreCLR.cs). That formulation is not the primitive available here,
-    /// for the same reason `Array.Clone` does not use it: PawPrint stores fields and elements as
-    /// `CliType` cells rather than bytes, and flattening them to bytes would lose the provenance
-    /// of non-`Verbatim` cells. "Allocate a same-shaped object holding the same cells" is the
-    /// primitive on our side of that boundary, and it *is* the shallow copy — `CliType` cells are
-    /// immutable, so a later write through either object replaces only that object's cell, while
-    /// reference-typed fields keep naming the same heap objects from both.
-    ///
     /// The clone gets a fresh address, so it has its own identity for reference equality, for the
     /// synthesised pointer hash, and for monitors.
     let cloneObject (source : ManagedHeapAddress) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
@@ -764,6 +755,15 @@ module IlMachineThreadState =
                 failwith
                     $"TODO: MemberwiseClone of the string at %O{source}; PawPrint keys string character data by heap address, so the clone would have none. Copy StringContents and the StringArrayData range if this becomes reachable."
 
+            // CoreCLR spells this as `AllocateUninitializedClone` followed by a raw byte copy of
+            // the object payload (Object.CoreCLR.cs). That formulation is not the primitive
+            // available here, for the same reason `Array.Clone` does not use it: PawPrint stores
+            // fields and elements as `CliType` cells rather than bytes, and flattening them to
+            // bytes would lose the provenance of non-`Verbatim` cells. "Allocate a same-shaped
+            // object holding the same cells" is the primitive on our side of that boundary, and
+            // it *is* the shallow copy — `CliType` cells are immutable, so a later write through
+            // either object replaces only that object's cell, while reference-typed fields keep
+            // naming the same heap objects from both.
             let alloc, heap = state.ManagedHeap |> ManagedHeap.allocateNonArray sourceObj
 
             let state =
