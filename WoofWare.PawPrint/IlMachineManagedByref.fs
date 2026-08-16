@@ -1352,6 +1352,61 @@ module IlMachineManagedByref =
             ValueSome (structuralPrefix, totalOffset)
 
 
+    /// Serve a byte read from the container that holds `root`, `rootRelativeOffset` bytes
+    /// from where the root's own storage begins.
+    ///
+    /// This is the step *out* of a view root. An array element, a class field, a string
+    /// character and a byte of a memory block are all windows into something larger, and CLR
+    /// pointer arithmetic on a byref may leave the window: `Unsafe.Add (ref a[0].Y, 1)`
+    /// reaches `a[1]`, and `MemoryMarshal.CreateReadOnlySpan (ref o._first, 5)` reaches the
+    /// four sibling fields after `_first`. The bare-root readers already cross cells within
+    /// their container, so the only thing missing was a way to reach them from a byref whose
+    /// root is a view — issue #729.
+    ///
+    /// `None` for the three containers that are a single typed cell rather than a
+    /// byte-addressable allocation: a local slot, an argument slot and a static slot. Those
+    /// roots *are* their container, so the caller's cell walk has already lifted as far as
+    /// the container goes, and an access that still does not fit is outside it. There is
+    /// nothing to step out into and the caller's refusal stands.
+    ///
+    /// `PeByteRange` is `None` for a different reason: PE storage is byte-addressable and
+    /// could be served, but no caller gets here with one. The read path refuses a PE root
+    /// carrying projections before it reaches the cell walk, and the write path refuses every
+    /// PE write as read-only.
+    let private tryReadThroughContainer
+        (state : IlMachineState)
+        (projs : ByrefProjection list)
+        (root : ByrefRoot)
+        (rootRelativeOffset : int)
+        (targetTemplate : CliType)
+        : CliType option
+        =
+        match ByrefContainer.tryOfRoot state.ManagedHeap root with
+        | None -> None
+        | Some (container, rootOffset) ->
+            // Summed in `int64` and re-narrowed for the same reason as `rootRelativeByteOffset`:
+            // both operands are separately in range but their sum need not be, and a wrap here
+            // would turn an access far outside every container into a plausible in-container
+            // offset.
+            let offset =
+                rootOffset + int64<int> rootRelativeOffset |> byteViewOffsetWithinInt32 projs
+
+            match container with
+            | ByteStorageIdentity.Array arr ->
+                // Index 0 plus the whole container offset, rather than the root's own element
+                // index plus a residue: `readArrayBytesAs` divides the offset by the stride to
+                // find its starting cell, so the two spellings are the same read.
+                Some (readArrayBytesAs state arr 0 offset targetTemplate)
+            | ByteStorageIdentity.HeapObject addr -> Some (readHeapValueBytesAs state addr offset targetTemplate)
+            | ByteStorageIdentity.String str -> Some (readStringBytesAs state str 0 offset targetTemplate)
+            | ByteStorageIdentity.StackMemory (thread, frame, block) ->
+                Some (readStackMemoryBytesAs state thread frame block offset targetTemplate)
+            | ByteStorageIdentity.NativeMemory block -> Some (readNativeMemoryBytesAs state block offset targetTemplate)
+            | ByteStorageIdentity.PeByteRange _
+            | ByteStorageIdentity.StackLocal _
+            | ByteStorageIdentity.StackArgument _
+            | ByteStorageIdentity.StaticField _ -> None
+
     let readManagedByrefBytesAs
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -1428,12 +1483,25 @@ module IlMachineManagedByref =
                     // the byte read overflows the immediate cell, lift back
                     // through trailing `Field` projections, accumulating each
                     // field's offset within its parent until the read fits.
-                    let rec resolveCell (projs : ByrefProjection list) (offset : int) : CliType * int =
+                    //
+                    // `Error (offset, cellSize)` when the lift runs out at the root — the read
+                    // does not fit in the root's own storage, `offset` is where it starts
+                    // relative to that storage, and `cellSize` is how big it is. The root may
+                    // still be a *view* into something larger, which the caller tries next.
+                    // Exhaustion can only happen with an empty projection list: the structural
+                    // prefix contains nothing but `Field`s, since `peelTrailingByteView` cut it
+                    // at the first `ReinterpretAs` and a `ByteOffset` may not follow a `Field`
+                    // unanchored.
+                    let rec resolveCell
+                        (projs : ByrefProjection list)
+                        (offset : int)
+                        : Result<CliType * int, int * int>
+                        =
                         let cell = readProjectedValue rootValue projs
                         let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
 
                         if offset >= 0 && targetSize <= cellSize - offset then
-                            cell, offset
+                            Ok (cell, offset)
                         else
                             match List.tryLast projs with
                             | Some (ByrefProjection.Field field) ->
@@ -1441,9 +1509,10 @@ module IlMachineManagedByref =
                                 let parentValue = readProjectedValue rootValue parentProjs
                                 let fieldOffset, _ = CliType.getFieldLayoutById field parentValue
                                 resolveCell parentProjs (offset + fieldOffset)
-                            | _ ->
+                            | Some _ ->
                                 failwith
-                                    $"TODO: byte-view read at offset %d{offset} for %d{targetSize} bytes does not fit in single primitive cell of size %d{cellSize}: %O{src}"
+                                    $"TODO: byte-view read at offset %d{offset} for %d{targetSize} bytes does not fit in single primitive cell of size %d{cellSize}, and the remaining projections %O{projs} are not a `Field` to lift through: %O{src}"
+                            | None -> Error (offset, cellSize)
 
                     // Storage with no byte image — a value type holding object references — cannot
                     // be indexed by `resolveCell`, which lifts scope outward until a *byte* read
@@ -1460,12 +1529,19 @@ module IlMachineManagedByref =
                     | Some cell -> cell
                     | None ->
 
-                    let cell, finalOffset = resolveCell prefixProjs byteOffset
+                    match resolveCell prefixProjs byteOffset with
+                    | Ok (cell, finalOffset) ->
+                        let bytes =
+                            byteAddressableCellBytesAt $"single-cell byref %O{src}" finalOffset targetSize cell
 
-                    let bytes =
-                        byteAddressableCellBytesAt $"single-cell byref %O{src}" finalOffset targetSize cell
+                        CliType.ofBytesLike targetTemplate bytes
+                    | Error (rootRelativeOffset, rootCellSize) ->
 
-                    CliType.ofBytesLike targetTemplate bytes
+                    match tryReadThroughContainer state outerProjs outerRoot rootRelativeOffset targetTemplate with
+                    | Some value -> value
+                    | None ->
+                        failwith
+                            $"TODO: byte-view read at offset %d{rootRelativeOffset} for %d{targetSize} bytes does not fit in single primitive cell of size %d{rootCellSize}, and the root is its own storage container so there is nothing larger to read it from: %O{src}"
             | ValueNone ->
                 let raw = readProjectedValue (readRootValue state outerRoot) outerProjs
                 let rawSize = byteAddressableCellSize $"plain byref %O{src}" raw
@@ -2241,6 +2317,45 @@ module IlMachineManagedByref =
         | CliByteAddressability.ByteAddressable -> None
         | CliByteAddressability.Rejected _ -> IlMachineThreadState.setArrayValue arr newValue index state |> Some
 
+    /// The write mirror of `tryReadThroughContainer`: serve a byte write to the container that
+    /// holds `root`, `rootRelativeOffset` bytes from where the root's own storage begins.
+    ///
+    /// The two must agree on which roots they step out of, or a byref would read from one
+    /// place and write to another. They are separate functions rather than one parameterised
+    /// over an operation because the container writers thread state and the readers return a
+    /// value; the shared decision — which container, and at what offset — is the call to
+    /// `ByrefContainer.tryOfRoot`, and that is genuinely shared.
+    ///
+    /// `None` for the same containers, and for the same reasons: a local, an argument and a
+    /// static slot are a single typed cell that the caller's walk has already reached, and no
+    /// caller arrives here with a PE range (every PE write is refused as read-only well
+    /// before this point).
+    let private tryWriteThroughContainer
+        (state : IlMachineState)
+        (projs : ByrefProjection list)
+        (root : ByrefRoot)
+        (rootRelativeOffset : int)
+        (bytes : byte[])
+        : IlMachineState option
+        =
+        match ByrefContainer.tryOfRoot state.ManagedHeap root with
+        | None -> None
+        | Some (container, rootOffset) ->
+            let offset =
+                rootOffset + int64<int> rootRelativeOffset |> byteViewOffsetWithinInt32 projs
+
+            match container with
+            | ByteStorageIdentity.Array arr -> Some (writeArrayBytes state arr 0 offset bytes)
+            | ByteStorageIdentity.HeapObject addr -> Some (writeHeapValueBytes state addr offset bytes)
+            | ByteStorageIdentity.String str -> Some (writeStringBytes state str 0 offset bytes)
+            | ByteStorageIdentity.StackMemory (thread, frame, block) ->
+                Some (writeStackMemoryBytesAt state thread frame block offset bytes)
+            | ByteStorageIdentity.NativeMemory block -> Some (writeNativeMemoryBytesAt state block offset bytes)
+            | ByteStorageIdentity.PeByteRange _
+            | ByteStorageIdentity.StackLocal _
+            | ByteStorageIdentity.StackArgument _
+            | ByteStorageIdentity.StaticField _ -> None
+
     let private writeManagedByrefBytesOrTypedCellCore
         (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
         (state : IlMachineState)
@@ -2627,17 +2742,19 @@ module IlMachineManagedByref =
                     // Symmetric to the read path: when the byte write overflows
                     // the immediate cell, lift back through trailing `Field`
                     // projections so a write through e.g. `Unsafe.Add(ref s.A, 1)`
-                    // updates the parent struct's sibling field.
+                    // updates the parent struct's sibling field. `Error` on
+                    // exhaustion at the root, exactly as on the read side, so the
+                    // caller can step out into the root's container.
                     let rec resolveCell
                         (projs : ByrefProjection list)
                         (offset : int)
-                        : ByrefProjection list * int * CliType
+                        : Result<ByrefProjection list * int * CliType, int * int>
                         =
                         let cell = readProjectedValue rootValue projs
                         let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
 
                         if offset >= 0 && bytes.Length <= cellSize - offset then
-                            projs, offset, cell
+                            Ok (projs, offset, cell)
                         else
                             match List.tryLast projs with
                             | Some (ByrefProjection.Field field) ->
@@ -2645,20 +2762,28 @@ module IlMachineManagedByref =
                                 let parentValue = readProjectedValue rootValue parentProjs
                                 let fieldOffset, _ = CliType.getFieldLayoutById field parentValue
                                 resolveCell parentProjs (offset + fieldOffset)
-                            | _ ->
+                            | Some _ ->
                                 failwith
-                                    $"TODO: byte-view write at offset %d{offset} for %d{bytes.Length} bytes does not fit in single primitive cell of size %d{cellSize}: %O{src}"
+                                    $"TODO: byte-view write at offset %d{offset} for %d{bytes.Length} bytes does not fit in single primitive cell of size %d{cellSize}, and the remaining projections %O{projs} are not a `Field` to lift through: %O{src}"
+                            | None -> Error (offset, cellSize)
 
-                    let liftedProjs, finalOffset, cell = resolveCell prefixProjs byteOffset
-
-                    match
-                        withByteAddressableCellBytesAtIfChanged $"single-cell byref %O{src}" finalOffset bytes cell
-                    with
-                    | None -> state
-                    | Some updatedCell ->
-                        match applyProjectionsForWriteIfChanged rootValue liftedProjs updatedCell with
+                    match resolveCell prefixProjs byteOffset with
+                    | Ok (liftedProjs, finalOffset, cell) ->
+                        match
+                            withByteAddressableCellBytesAtIfChanged $"single-cell byref %O{src}" finalOffset bytes cell
+                        with
                         | None -> state
-                        | Some updatedRoot -> writeRootValue state outerRoot updatedRoot
+                        | Some updatedCell ->
+                            match applyProjectionsForWriteIfChanged rootValue liftedProjs updatedCell with
+                            | None -> state
+                            | Some updatedRoot -> writeRootValue state outerRoot updatedRoot
+                    | Error (rootRelativeOffset, rootCellSize) ->
+
+                    match tryWriteThroughContainer state outerProjs outerRoot rootRelativeOffset bytes with
+                    | Some state -> state
+                    | None ->
+                        failwith
+                            $"TODO: byte-view write at offset %d{rootRelativeOffset} for %d{bytes.Length} bytes does not fit in single primitive cell of size %d{rootCellSize}, and the root is its own storage container so there is nothing larger to write it to: %O{src}"
             | ValueNone ->
                 let rootValue = readRootValue state outerRoot
                 let cell = readProjectedValue rootValue outerProjs

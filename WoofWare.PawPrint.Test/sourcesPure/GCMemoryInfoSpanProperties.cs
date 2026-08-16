@@ -6,7 +6,11 @@ using System;
 // (ref _pauseDuration0, 2) -- i.e. it takes a byref to the *first* of a run of sibling fields
 // and walks forward by sizeof(element), relying on [StructLayout(Sequential)] having laid them
 // out contiguously. PawPrint models a heap object as named field cells rather than a byte
-// block, so indices past 0 walk off the end of the first field's cell.
+// block, so every index past 0 is an access that leaves the cell its byref is rooted at: the
+// byref access path has to recognise that a class field is a *view* into its object and serve
+// the read from the object. That is issue #729, and until it was fixed this guest stopped at
+// GenerationInfo[1] with "byte-view read at offset 32 for 32 bytes does not fit in single
+// primitive cell of size 32". Length and index 0 always worked.
 //
 // Differentially safe: every assertion below is a bound that holds no matter how many real
 // GCs have happened by the time this runs. Sizes and fragmentations are byte counts, never
