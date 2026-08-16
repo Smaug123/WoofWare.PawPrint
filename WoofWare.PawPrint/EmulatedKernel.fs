@@ -314,6 +314,64 @@ type SimulatedUnixReleaseError =
     /// silently truncate what the guest sees.
     | NotPrintableAscii of index : int * character : char
 
+/// Whether a kernel validates the whole of a user buffer before it performs a
+/// read or write, and if so which ranges it accepts.
+///
+/// The two Unixes differ, and the difference is observable: a platform that
+/// checks up front refuses an out-of-range buffer even when the call would have
+/// transferred nothing, and even when the descriptor names something the call
+/// would have refused for another reason.
+[<RequireQualifiedAccess>]
+type UserBufferCheck =
+    /// `vfs_read` and `vfs_write` run `access_ok(buf, count)` before reaching
+    /// the file operation. A range is accepted when `address + length`, in
+    /// exact arithmetic, is at most this value — the machine's
+    /// `EmulatedKernel.UserAddressLimit`.
+    | BeforeOperation of highestRangeEnd : uint64
+    /// No up-front check, so a bad address is discovered by the copy itself and
+    /// a call that copies nothing never faults.
+    | AtCopyTime
+
+/// Limits on the user half of the address space that real machines have been
+/// observed to impose, for a host picking an `EmulatedKernel.UserAddressLimit`.
+///
+/// Every one of these is `TASK_SIZE_MAX` for some real configuration; the value
+/// is a property of the *machine* (its paging depth, its virtual-address width)
+/// rather than of the kernel or the distribution, which is why the simulated
+/// one is configuration rather than a constant derived from the platform.
+[<RequireQualifiedAccess>]
+module ObservedUserAddressLimit =
+    /// x86-64 with four-level paging: 2^47 less one page. Measured on a GitHub
+    /// `ubuntu-latest` runner.
+    [<Literal>]
+    let X64FourLevelPaging : uint64 = 0x0000_7FFF_FFFF_F000UL
+
+    /// x86-64 with five-level paging (LA57): 2^56 less one page. Measured on a
+    /// different `ubuntu-latest` runner in the same CI run as the above, which
+    /// is what shows this varies by machine rather than by kernel.
+    [<Literal>]
+    let X64FiveLevelPaging : uint64 = 0x00FF_FFFF_FFFF_F000UL
+
+    /// arm64 with a 48-bit virtual address: 2^48 exactly, the one observed
+    /// value that is not a page short of a power of two. Measured on a Linux
+    /// guest under Apple's `container`.
+    [<Literal>]
+    let Arm64FortyEightBit : uint64 = 0x0001_0000_0000_0000UL
+
+[<RequireQualifiedAccess>]
+module UserBufferCheck =
+    /// Whether this platform refuses a buffer of `length` bytes at `address`
+    /// before performing the operation at all.
+    let faultsBeforeOperation (check : UserBufferCheck) (address : uint64) (length : uint64) : bool =
+        match check with
+        | UserBufferCheck.AtCopyTime -> false
+        | UserBufferCheck.BeforeOperation highestRangeEnd ->
+            // Rearranged to subtract rather than add, so that a range end past
+            // `UInt64.MaxValue` is a refusal instead of wrapping onto a low
+            // address the check would accept. The first disjunct is what keeps
+            // the subtraction in the second from underflowing.
+            length > highestRangeEnd || address > highestRangeEnd - length
+
 /// Identity of the Unix-shaped platform the simulated process believes it is
 /// running on. Consulted by the `SystemNative_*` entry points that report
 /// host identity — today only `SystemNative_GetUnixRelease`, which surfaces
@@ -407,13 +465,21 @@ module SimulatedUnixPlatform =
         | Ok platform -> platform
         | Error error -> failwith $"%s{context}: %s{describe error}"
 
-    /// 64-bit x86 Linux, kernel release shaped like Ubuntu 24.04 LTS. The
-    /// default: it is the platform PawPrint's CI runs on, and the one whose
-    /// CoreLib actually routes `Environment.OSVersion` through
+    /// 64-bit x86 Linux, at the exact kernel PawPrint's CI runs: the release
+    /// this reports and the behaviour derived from it below therefore describe
+    /// one real machine rather than a plausible composite. The default, and the
+    /// flavour whose CoreLib actually routes `Environment.OSVersion` through
     /// `SystemNative_GetUnixRelease` at all (the macOS CoreLib goes via
     /// `Interop.libobjc.GetOperatingSystemVersion` instead).
+    ///
+    /// Naming a real kernel rather than a plausible one matters because facts
+    /// derived from a platform are claims about a machine somebody could be
+    /// running. Note the division of labour with `EmulatedKernel`: identity
+    /// that a guest reads back, like this release, belongs here; a fact that
+    /// varies between two machines running this very kernel, like
+    /// `UserAddressLimit`, is configuration instead.
     let linuxX64 : SimulatedUnixPlatform =
-        createOrFail "SimulatedUnixPlatform.linuxX64" SimulatedUnixFlavour.Linux "6.8.0-51-generic"
+        createOrFail "SimulatedUnixPlatform.linuxX64" SimulatedUnixFlavour.Linux "6.17.0-1022-azure"
 
     /// 64-bit ARM macOS. The release is the *Darwin* kernel's, so `24.6.0`
     /// (macOS 15.6) rather than `15.6.0`.
@@ -494,6 +560,29 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> PermissionBits.parseOrFail "SimulatedUnixPlatform.symlinkPermissions" 0o777
         | SimulatedUnixFlavour.Darwin ->
             PermissionBits.parseOrFail "SimulatedUnixPlatform.symlinkPermissions" (0o777 &&& ~~~0o022)
+
+    /// Whether this platform's kernel screens a read or write buffer before it
+    /// performs the operation.
+    ///
+    /// Linux's `vfs_read`/`vfs_write` (fs/read_write.c) reject an out-of-range
+    /// buffer with EFAULT between the descriptor's access-mode check and the
+    /// file operation, so the fault beats EISDIR and fires for a zero-length
+    /// request. macOS screens nothing up front, so a call that transfers no
+    /// bytes never looks at the buffer: measured, `read(f, (void*)-1, 5)` on a
+    /// descriptor at end-of-file is EFAULT on Linux and 0 on macOS.
+    ///
+    /// *Where* it screens is the machine's `UserAddressLimit`, not a property
+    /// of the flavour: both architectures compare the range end against
+    /// `TASK_SIZE_MAX` (`valid_user_address` against `USER_PTR_MAX` in
+    /// arch/x86/include/asm/uaccess_64.h, and the
+    /// `(u65)addr + (u65)size <= (u65)TASK_SIZE_MAX` that
+    /// arch/arm64/include/asm/uaccess.h documents), and that value varies with
+    /// paging depth and virtual-address width — measured, two GitHub runners in
+    /// one CI run disagreed. `EmulatedKernel.userBufferCheck` combines the two.
+    let screensUserBufferUpFront (platform : SimulatedUnixPlatform) : bool =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> true
+        | SimulatedUnixFlavour.Darwin -> false
 
     /// The bounds this platform's kernel puts on path resolution.
     ///
@@ -754,6 +843,20 @@ type EmulatedKernel =
         /// and BCL callers divide by it, so `NativeEnvironment` asserts the
         /// invariant at the point of use rather than trusting construction.
         ProcessorCount : int
+        /// Greatest value `address + length` may take for a user buffer the
+        /// kernel will accept — the machine's `TASK_SIZE_MAX`. Consulted only
+        /// where `SimulatedUnixPlatform.screensUserBufferUpFront` says the
+        /// kernel screens before performing the operation, but a real fact
+        /// about every machine regardless.
+        ///
+        /// Configuration rather than a constant derived from the platform
+        /// because it varies by *machine*: 2^47 less a page with four-level
+        /// paging on x86-64, 2^56 less a page with five-level, 2^48 on a
+        /// 48-bit-VA arm64. Two GitHub runners of the same image were measured
+        /// disagreeing, so no value derived from the flavour or the kernel
+        /// release could be right everywhere. See `ObservedUserAddressLimit`
+        /// for the values real machines have been seen to have.
+        UserAddressLimit : uint64
         /// Virtual time charged for one retired IL instruction, in 100 ns ticks — how fast the
         /// simulated machine is. Must be >= 1; a cost of zero would freeze the clock and make
         /// every guest polling loop diverge.
@@ -878,6 +981,11 @@ module EmulatedKernel =
     /// raise it via `KernelConfig.ProcessorCount`.
     [<Literal>]
     let defaultProcessorCount : int = 1
+
+    /// The commonest configuration a guest could be running on: x86-64 with
+    /// four-level paging. A host simulating a machine with a different
+    /// address-space width sets `KernelConfig.UserAddressLimit`.
+    let defaultUserAddressLimit : uint64 = ObservedUserAddressLimit.X64FourLevelPaging
 
     /// Ceiling `Thread.OptimalMaxSpinWaitsPerSpinIteration` can legally report,
     /// mirroring CoreCLR's own compile-time ceiling
@@ -1057,6 +1165,7 @@ module EmulatedKernel =
             OutputLog = ImmutableArray<OutputLogEntry>.Empty
             Environment = defaultEnvironment
             ProcessorCount = defaultProcessorCount
+            UserAddressLimit = defaultUserAddressLimit
             OptimalMaxSpinWaitsPerSpinIteration = defaultOptimalMaxSpinWaitsPerSpinIteration
             UnixPlatform = defaultUnixPlatform
             CurrentDirectory = defaultCurrentDirectory
@@ -1125,6 +1234,25 @@ module EmulatedKernel =
     /// Set the logical-processor count the simulated process reports. Rejects
     /// non-positive values at the boundary rather than letting them reach a
     /// guest that will divide by them.
+    /// Set the greatest range end a user buffer may reach. Rejects zero, which
+    /// leaves no address usable as a buffer and so describes no machine.
+    let withUserAddressLimit (limit : uint64) (kernel : EmulatedKernel) : EmulatedKernel =
+        if limit = 0UL then
+            failwith "UserAddressLimit must be positive; got 0, which is a machine with no user address space"
+
+        { kernel with
+            UserAddressLimit = limit
+        }
+
+    /// Whether, and where, this machine's kernel screens a read or write buffer
+    /// before performing the operation: the flavour decides whether, the
+    /// machine's address-space limit decides where.
+    let userBufferCheck (kernel : EmulatedKernel) : UserBufferCheck =
+        if SimulatedUnixPlatform.screensUserBufferUpFront kernel.UnixPlatform then
+            UserBufferCheck.BeforeOperation kernel.UserAddressLimit
+        else
+            UserBufferCheck.AtCopyTime
+
     let withProcessorCount (count : int) (kernel : EmulatedKernel) : EmulatedKernel =
         if count < 1 then
             failwith $"ProcessorCount must be at least 1; got %d{count}"
@@ -1574,6 +1702,12 @@ type KernelConfig =
         /// Logical processor count the guest observes via
         /// `Environment.ProcessorCount`. Must be at least 1.
         ProcessorCount : int
+        /// Greatest value `address + length` may take for a user buffer the
+        /// simulated kernel will accept — the machine's `TASK_SIZE_MAX`. Must
+        /// be positive. See `EmulatedKernel.UserAddressLimit` for why this is
+        /// configuration rather than a property of the platform, and
+        /// `ObservedUserAddressLimit` for values real machines have.
+        UserAddressLimit : uint64
         /// Virtual time charged per retired IL instruction, in 100 ns ticks — the speed of the
         /// simulated machine. Must be at least 1. See
         /// `EmulatedKernel.InstructionCostTicks` for why this is part of the replay contract,
@@ -1636,6 +1770,7 @@ type KernelConfig =
         {
             Environment = Map.empty
             ProcessorCount = EmulatedKernel.defaultProcessorCount
+            UserAddressLimit = EmulatedKernel.defaultUserAddressLimit
             InstructionCostTicks = EmulatedKernel.defaultInstructionCostTicks
             OptimalMaxSpinWaitsPerSpinIteration = EmulatedKernel.defaultOptimalMaxSpinWaitsPerSpinIteration
             WallClockEpochMs = 0L
@@ -1656,6 +1791,7 @@ module KernelConfig =
         kernel
         |> EmulatedKernel.withEnvironment config.Environment
         |> EmulatedKernel.withProcessorCount config.ProcessorCount
+        |> EmulatedKernel.withUserAddressLimit config.UserAddressLimit
         |> EmulatedKernel.withInstructionCostTicks config.InstructionCostTicks
         |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs

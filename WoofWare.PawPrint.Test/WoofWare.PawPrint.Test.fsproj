@@ -130,6 +130,9 @@
     <Compile Include="TestFlockBlocking.fs" />
     <Compile Include="TestPReadNegativeSize.fs" />
     <Compile Include="TestLSeek.fs" />
+    <Compile Include="TestUserBufferCheck.fs" />
+    <Compile Include="TestUserBufferFault.fs" />
+    <Compile Include="TestUserBufferCheckAgainstHost.fs" />
     <Compile Include="TestNonCryptoRandom.fs" />
     <Compile Include="TestDeterministicMath.fs" />
     <Compile Include="TestPrimitiveLikeStructRegistry.fs" />
