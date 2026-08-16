@@ -51,6 +51,7 @@
     <Compile Include="ManagedHeapTypes.fs" />
     <Compile Include="ManagedHeap.fsi" />
     <Compile Include="ManagedHeap.fs" />
+    <Compile Include="ByrefContainer.fs" />
     <Compile Include="StaticStorage.fsi" />
     <Compile Include="StaticStorage.fs" />
     <Compile Include="ArrayElementType.fs" />
