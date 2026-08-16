@@ -138,13 +138,25 @@ public static class Entry
         let declaringType =
             requiredTopLevelType baseClassTypes.Corelib declaringNamespace declaringTypeName
 
+        // Several of these natives share a name with a managed wrapper that forwards to them --
+        // `RuntimeMethodHandle.GetMethodDef(IRuntimeMethodInfo)` calls
+        // `GetMethodDef(RuntimeMethodHandleInternal)` (RuntimeHandles.cs:1123-1129), and
+        // `GetSlot`/`GetDeclaringType` are the same shape. The InternalCall is the one this helper
+        // exists to drive; the wrapper is ordinary IL and would reach no native handler at all.
+        // Same approach as `invokeRuntimeMethodHandleFCall` in `TestMethodHandleRegistry.fs`.
         let rawMethod =
             declaringType.Methods
-            |> List.filter (fun method -> method.Name = methodName)
+            |> List.filter (fun method ->
+                method.Name = methodName
+                && (MethodInfo.requireMetadata "test" method).ImplAttributes.HasFlag
+                    System.Reflection.MethodImplAttributes.InternalCall
+            )
             |> function
                 | [ method ] -> method
-                | [] -> failwith $"method %s{methodName} not found on %s{declaringTypeName}"
-                | methods -> failwith $"method %s{methodName} was ambiguous on %s{declaringTypeName}"
+                | [] -> failwith $"InternalCall %s{methodName} not found on %s{declaringTypeName}"
+                | methods ->
+                    failwith
+                        $"InternalCall %s{methodName} was ambiguous on %s{declaringTypeName}: %d{methods.Length} matches"
 
         let state, method, _ =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
@@ -385,6 +397,42 @@ public static class Entry
             IlMachineState.popEvalStack prepared.EntryThread state |> fst
         | Some result -> failwith $"unexpected GetMethodTable execution result: %O{result}"
         | None -> failwith "GetMethodTable did not match any native handler"
+
+    /// Drives the `RuntimeMethodHandle.GetMethodDef` FCall and hands back what it pushed.
+    let private invokeGetMethodDef
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (internalHandle : CliType)
+        (state : IlMachineState)
+        : EvalStackValue
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let state, declaringTypeInfo, method =
+            fcallMethod loggerFactory baseClassTypes runtimeMethodHandle "GetMethodDef" state
+
+        let instruction =
+            { state.ThreadState.[prepared.EntryThread].MethodState with
+                ExecutingMethod = method
+                Arguments = ImmutableArray.CreateRange [ internalHandle ]
+            }
+
+        let ctx : NativeCallContext =
+            {
+                LoggerFactory = loggerFactory
+                BaseClassTypes = baseClassTypes
+                Thread = prepared.EntryThread
+                State = state
+                Instruction = instruction
+                TargetAssembly = baseClassTypes.Corelib
+                TargetType = declaringTypeInfo
+            }
+
+        match NativeDispatch.tryExecute ctx with
+        | Some (NativeHandlerResult.Completed (state, _)) ->
+            IlMachineState.popEvalStack prepared.EntryThread state |> fst
+        | Some result -> failwith $"unexpected GetMethodDef execution result: %O{result}"
+        | None -> failwith "GetMethodDef did not match any native handler"
 
     /// A signature blob deliberately containing interior zero bytes. A real method signature does:
     /// `void` is `ELEMENT_TYPE_VOID` = 0x01, but `ELEMENT_TYPE_END` is 0x00 and padded blobs and
@@ -2567,6 +2615,32 @@ public static class Entry
 
         invokeGetMethodTable loggerFactory prepared (internalHandleOfStub state stubAddress) state
         |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr expected))
+
+    /// `RuntimeMethodHandle.GetMethodDef` is legal on a dynamic method, and CoreCLR's answer for one
+    /// is `mdMethodDefNil` (0x06000000) rather than a refusal: `DynamicMethodTable::MakeMethodDescChunk`
+    /// calls `SetMemberDef(0)` on every `DynamicMethodDesc` it builds (dynamicmethod.cpp:178), and
+    /// `MergeToken` (method.hpp:148) ORs the `mdtMethodDef` table tag back in on the way out.
+    ///
+    /// That is a real answer that managed code is written to consume: `RuntimeParameterInfo.GetParameters`
+    /// tests `MdToken.IsNullToken` (RuntimeParameterInfo.cs:49) and skips enumerating ParamDef rows,
+    /// which is how a method with no metadata row gets the empty parameter metadata it should have.
+    ///
+    /// No guest can observe this: `DynamicMethod` does not override `MemberInfo.MetadataToken`, whose
+    /// base implementation throws `InvalidOperationException`. So it is driven directly, and the
+    /// assertion is on the exact value -- the plausible-but-wrong `0` (what CoreCLR *stores*, as
+    /// against what it *reports*) must fail here, as must a refusal.
+    [<Test>]
+    let ``GetMethodDef answers the nil MethodDef token for a dynamic method`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" [| 0x01uy |] doublingBody state
+
+        invokeGetMethodDef loggerFactory prepared (internalHandleOfStub state stubAddress) state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim NativeRuntimeMethodHandle.mdMethodDefNil))
+
+        // Spelled out, so that a change to `mdMethodDefNil` cannot silently carry this test with it.
+        NativeRuntimeMethodHandle.mdMethodDefNil |> shouldEqual 0x06000000
 
     /// Why the synthetic case exists, rather than the scope module's `<Module>` type
     /// standing in for it: `TypeHandleRegistry` keys guest `Type` object identity on

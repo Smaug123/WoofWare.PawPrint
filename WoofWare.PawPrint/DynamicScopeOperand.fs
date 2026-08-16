@@ -696,8 +696,9 @@ module internal DynamicScopeOperand =
     /// <c>BadImageFormatException</c> with the fixed message "Bad method token.", and an index
     /// exactly at the list's length is <c>ArgumentOutOfRangeException</c> — but no guest can provoke
     /// any of them today: <c>Emit(OpCode, MethodInfo)</c> accepts only a <c>DynamicMethod</c> or a
-    /// <c>RuntimeMethodInfo</c> (which stops at the unimplemented
-    /// <c>RuntimeMethodHandle::GetMethodDef</c>), <c>GetTokenFor</c> never hands out index 0 or an
+    /// <c>RuntimeMethodInfo</c> (which stops at <c>MetadataImport.Enum</c> for <c>mdtParamDef</c>,
+    /// the unimplemented token type behind <c>GetParameters()</c>, from which <c>Emit</c> builds
+    /// the call-site signature — measured), <c>GetTokenFor</c> never hands out index 0 or an
     /// index at <c>Count</c>, and rewriting <c>m_tokens</c> needs reflection PawPrint does not
     /// implement — the missing piece is the <c>RuntimeFieldHandle_GetValue</c> QCall, everything
     /// else on that route being interpreted code that already works, so implementing it reopens
@@ -757,8 +758,9 @@ module internal DynamicScopeOperand =
                     | CliType.ObjectRef (Some inner) -> inner
                     | CliType.ObjectRef None ->
                         // A wrapper round a *reflected* method, which `ResolveToken` resolves
-                        // through `m_method`. Unreachable today: obtaining a `RuntimeMethodInfo` at
-                        // all stops at the unimplemented `RuntimeMethodHandle::GetMethodDef`.
+                        // through `m_method`. Unreachable today: emitting a `RuntimeMethodInfo`
+                        // stops at `MetadataImport.Enum` for `mdtParamDef` (measured), because
+                        // `Emit` builds the call-site signature from `GetParameters()`.
                         failwith
                             $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, a VarArgMethod whose m_dynamicMethod is null, so it wraps a reflected method; PawPrint resolves only dynamic methods in method position"
                     | other ->
@@ -863,13 +865,20 @@ module internal DynamicScopeOperand =
     /// honest version of that fix.
     /// </para>
     /// <para>
-    /// No test pins this, because no guest can currently observe it. Seeing the difference requires
-    /// a dynamic method body that either performs an externally-visible side effect before the call
-    /// site or catches the failure itself, and a body can do neither today: every field-shaped
-    /// opcode is <c>ScopeOperandKind.NotYetSupported</c>, a metadata callee needs the unimplemented
-    /// <c>RuntimeMethodHandle::GetMethodDef</c>, and <c>DynamicMethodBody.read</c> refuses a body
-    /// with any exception region. Whichever of those lands first makes this observable, and should
-    /// bring a test with it.
+    /// Seeing the difference requires a dynamic method body that either performs an
+    /// externally-visible side effect before the call site or catches the failure itself. That is
+    /// now buildable, via the first of those: field-shaped opcodes became resolvable against a
+    /// scope (<c>ScopeOperandKind.Field</c>), so a body can write a static field. Measured, with a
+    /// caller that does <c>stsfld</c> and then names an empty-bodied callee behind an untaken
+    /// branch — real .NET mints at compile time and throws <c>InvalidOperationException</c> with the
+    /// field unwritten, while PawPrint runs the prefix, skips the unreached mint and returns
+    /// normally. <b>No test pins this yet, and one is wanted.</b>
+    /// </para>
+    /// <para>
+    /// The other two routes to observing it remain closed: a metadata callee needs
+    /// <c>MetadataImport.Enum</c> for <c>mdtParamDef</c> (unimplemented, and what <c>Emit</c> needs
+    /// to build the call-site signature — measured), and <c>DynamicMethodBody.read</c> refuses a
+    /// body with any exception region.
     /// </para>
     /// </remarks>
     let mintDynamicMethod

@@ -105,6 +105,49 @@ module NativeRuntimeMethodHandle =
         | MethodHandle.FromMetadata _ -> false
         | MethodHandle.FromDynamic _ -> true
 
+    /// The nil MethodDef token, `mdMethodDefNil` (corhdr.h:1525, `(mdMethodDef)mdtMethodDef`), which
+    /// CoreCLR reports for a method that no MethodDef row names. Note it is 0x06000000, not zero:
+    /// `MdToken.IsNullToken` (MdImport.cs:149) recognises it by masking the table byte off, so both
+    /// spellings satisfy every BCL caller and only the exact value is right.
+    ///
+    /// Sibling of `NativeRuntimeTypeHelpers.mdTypeDefNil`.
+    let mdMethodDefNil : int32 = 0x06000000
+
+    /// The token CoreCLR's `RuntimeMethodHandle::GetMethodDef` FCall (runtimehandles.cpp:1577)
+    /// returns: `pMethod->GetMemberDef()` (method.hpp:3703).
+    ///
+    /// This is a function of the MethodDef row identity alone, so it needs no assembly, no
+    /// `MethodInfo` and no concretization; in particular the instantiations bound to the handle do
+    /// not affect it, and every instantiation of a method reports the generic definition's token.
+    /// Measured on real .NET: `Gen&lt;int&gt;.Id`, `Gen&lt;string&gt;.Id` and `Gen&lt;&gt;.Id` all
+    /// report one token, as do `Map` and `Map&lt;string&gt;`, and `List&lt;int&gt;.Add` and
+    /// `List&lt;&gt;.Add`.
+    ///
+    /// A method with no metadata row reports `mdMethodDefNil`. That is an answer rather than a
+    /// refusal, and callers rely on it: `RuntimeParameterInfo.GetParameters`
+    /// (RuntimeParameterInfo.cs:49) tests `MdToken.IsNullToken` and skips enumerating ParamDef rows,
+    /// which is how such a method gets the empty parameter metadata it should have.
+    let methodDefToken (handle : MethodHandle) : int32 =
+        match handle with
+        | MethodHandle.FromMetadata identity ->
+            // `GetMemberDef` reads a value stored on the MethodDesc at construction rather than
+            // looking anything up, and `InstantiatedMethodDesc::CreateMethodDesc`
+            // (genmeth.cpp:85,134) copies the generic definition's token onto every instantiation,
+            // unboxing stub and instantiating stub it builds -- hence the row identity alone.
+            let definitionHandle : System.Reflection.Metadata.EntityHandle =
+                System.Reflection.Metadata.MethodDefinitionHandle.op_Implicit (identity.GetMethodDefinitionHandle().Get)
+
+            System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken definitionHandle
+        | MethodHandle.FromDynamic _ ->
+            // CoreCLR calls `SetMemberDef(0)` for every MethodDesc that no MethodDef row names: LCG
+            // methods (dynamicmethod.cpp:178), array `Get`/`Set`/`Address` stubs (array.cpp:194),
+            // and IL stubs (ilstubcache.cpp:172); `MergeToken` (method.hpp:148) then ORs
+            // `mdtMethodDef` back in, so what comes out is `mdMethodDefNil` rather than 0. Dynamic
+            // methods are merely the only one of those three PawPrint can be holding here:
+            // `methodTableOfDeclaringType` above refuses to mint a handle for an array method, and
+            // PawPrint has no IL stubs.
+            mdMethodDefNil
+
     /// The `MethodTable*` CoreCLR's `RuntimeMethodHandle::GetMethodTable` FCall
     /// (runtimehandles.cpp:1344) returns: `pMethod->GetMethodTable()`, i.e. the MethodTable of the
     /// chunk the MethodDesc lives in (method.hpp:3687). `Error` carries the reason this declaring
@@ -1164,6 +1207,35 @@ module NativeRuntimeMethodHandle =
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 slot)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
+          "GetMethodDef",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System",
+                                              "RuntimeMethodHandleInternal",
+                                              generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when generics.IsEmpty ->
+            // CoreCLR (runtimehandles.cpp:1577): asserts non-null and returns
+            // (INT32)pMethod->GetMemberDef(). See `methodDefToken` above for what that token is and
+            // why neither the declaring assembly nor the handle's instantiations come into it.
+            //
+            // Resolves the handle rather than the `MethodInfo` behind it, unlike its neighbours
+            // here: this native is legal on a dynamic method, which has no `MethodInfo` to find, so
+            // routing it through `resolveMethodInfoFromHandleArg` for consistency with `GetSlot`
+            // and friends would turn a valid call into a failure.
+            let operation = "RuntimeMethodHandle.GetMethodDef"
+
+            let methodHandle =
+                resolveMethodHandleFromArg operation state instruction.Arguments.[0]
+
+            let state =
+                IlMachineState.pushToEvalStack
+                    (CliType.Numeric (CliNumericType.Int32 (methodDefToken methodHandle)))
+                    ctx.Thread
+                    state
 
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",

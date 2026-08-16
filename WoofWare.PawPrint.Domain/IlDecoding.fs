@@ -59,8 +59,9 @@ module IlDecoding =
         /// or inside the `VarArgMethod` wrapper `EmitCall` always stores. The other kinds
         /// `ResolveToken` accepts in method position — a `RuntimeMethodHandle`, a
         /// `GenericMethodInfo`, or a `VarArgMethod` wrapping a *reflected* method — all require the
-        /// guest to obtain a reflected `MethodInfo` first, which stops at the unimplemented
-        /// `RuntimeMethodHandle::GetMethodDef`.
+        /// guest to `Emit` a reflected `MethodInfo` first, which stops at `MetadataImport.Enum` for
+        /// `mdtParamDef` (0x08000000): `Emit` builds the call-site signature from
+        /// `GetParameters()`, and that token type is unimplemented (measured).
         | Method
         /// A field: a `GenericFieldInfo`, which is what everything reachable through
         /// `Type.GetField` arrives as, or a bare `RuntimeFieldHandle`, which is what a
@@ -114,8 +115,8 @@ module IlDecoding =
         | UnaryMetadataTokenIlOp.Ldftn
         | UnaryMetadataTokenIlOp.Ldvirtftn ->
             // `Emit` refuses a DynamicMethod operand for these outright (measured: ArgumentException
-            // at emit), so an entry here is necessarily one of the reflected kinds, and obtaining a
-            // reflected MethodInfo stops at the unimplemented RuntimeMethodHandle::GetMethodDef.
+            // at emit), so an entry here is necessarily one of the reflected kinds, and emitting a
+            // reflected MethodInfo stops at MetadataImport.Enum for mdtParamDef (measured).
             ScopeOperandKind.NotYetSupported
                 "ldftn/ldvirtftn refuse a DynamicMethod operand at emit, so their scope entries are the reflected method kinds (RuntimeMethodHandle, GenericMethodInfo, VarArgMethod), which PawPrint cannot yet resolve"
 
