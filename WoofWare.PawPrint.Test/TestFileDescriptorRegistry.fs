@@ -14,13 +14,13 @@ module TestFileDescriptorRegistry =
 
     let private standardStream (role : FileDescriptorRole) : OpenFileDescription =
         {
-            Object = OpenFileObject.StandardStream role
+            Target = OpenFileTarget.StandardStream role
             Flock = None
         }
 
     let private openOn (inode : InodeNumber) : OpenFileDescription =
         {
-            Object = OpenFileObject.File inode
+            Target = OpenFileTarget.File (inode, 0L)
             Flock = None
         }
 
@@ -770,7 +770,7 @@ module TestFileDescriptorRegistry =
     let ``checkInvariants rejects two conflicting locks on one file`` () : unit =
         let locked (mode : FlockMode) : OpenFileDescription =
             {
-                Object = OpenFileObject.File someInode
+                Target = OpenFileTarget.File (someInode, 0L)
                 Flock = Some mode
             }
 
@@ -807,7 +807,7 @@ module TestFileDescriptorRegistry =
     let ``checkInvariants accepts conflicting locks on different files`` () : unit =
         let locked (inode : InodeNumber) : OpenFileDescription =
             {
-                Object = OpenFileObject.File inode
+                Target = OpenFileTarget.File (inode, 0L)
                 Flock = Some FlockMode.Exclusive
             }
 
@@ -995,3 +995,166 @@ module TestFileDescriptorRegistry =
             Assert.Throws<System.Exception> (fun () -> FileDescriptorRegistry.tryFind 0 registry |> ignore)
 
         exc.Message |> shouldContainText "not present in the table"
+
+    // --- the file offset ---
+
+    /// Which offset each live descriptor is positioned at. `None` for a descriptor naming something
+    /// unseekable, so the tests below can assert about standard streams without a projection that
+    /// invents a number for them.
+    let private offsetOf (fd : int) (registry : FileDescriptorRegistry) : int64 option =
+        match FileDescriptorRegistry.tryFindTarget fd registry with
+        | None -> failwith $"fd %d{fd} is not live"
+        | Some (OpenFileTarget.StandardStream _) -> None
+        | Some (OpenFileTarget.File (_, offset)) -> Some offset
+
+    [<Test>]
+    let ``a fresh description starts at offset zero`` () : unit =
+        let fd, registry =
+            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+
+        offsetOf fd registry |> shouldEqual (Some 0L)
+
+    [<Test>]
+    let ``the standard streams have no offset at all`` () : unit =
+        for fd in 0..2 do
+            offsetOf fd FileDescriptorRegistry.initial |> shouldEqual None
+
+    /// The offset belongs to the *description*, so `dup` shares it: this is the same indirection
+    /// that makes two descriptors from one `dup` share a `flock` lock, and it is why the offset
+    /// cannot live in the per-descriptor table.
+    [<Test>]
+    let ``dup shares one offset`` () : unit =
+        let fd, registry =
+            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+
+        let copy, registry =
+            match FileDescriptorRegistry.dup fd registry with
+            | Ok result -> result
+            | Error error -> failwith $"dup failed: %O{error}"
+
+        let registry = FileDescriptorRegistry.setOffset fd 7L registry
+
+        offsetOf copy registry |> shouldEqual (Some 7L)
+
+        // ...and moving it through the copy is seen by the original, so the sharing is not
+        // one-directional.
+        let registry = FileDescriptorRegistry.setOffset copy 3L registry
+        offsetOf fd registry |> shouldEqual (Some 3L)
+
+    /// Two `open` calls on one inode are two descriptions, so their offsets are independent. The
+    /// mirror image of the `dup` case: a model keyed on the *file* rather than the description
+    /// would pass that test and fail this one.
+    [<Test>]
+    let ``two opens on one file hold independent offsets`` () : unit =
+        let first, registry =
+            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+
+        let second, registry = FileDescriptorRegistry.openFile someInode registry
+
+        let registry = FileDescriptorRegistry.setOffset first 9L registry
+
+        offsetOf first registry |> shouldEqual (Some 9L)
+        offsetOf second registry |> shouldEqual (Some 0L)
+
+    /// Moving the offset does not disturb the identity the description names, which is what `flock`
+    /// contention is decided on. Without this, seeking would silently stop two descriptions on one
+    /// file from excluding each other.
+    [<Test>]
+    let ``seeking leaves the object identity alone`` () : unit =
+        let first, registry =
+            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+
+        let second, registry = FileDescriptorRegistry.openFile someInode registry
+
+        // Positioned differently, and still the same file.
+        let registry = FileDescriptorRegistry.setOffset first 40L registry
+        let registry = FileDescriptorRegistry.setOffset second 2L registry
+
+        FileDescriptorRegistry.tryFindObject first registry
+        |> shouldEqual (FileDescriptorRegistry.tryFindObject second registry)
+
+        let registry, error =
+            FileDescriptorRegistry.flock first (FlockRequest.Acquire FlockMode.Exclusive) registry
+
+        error |> shouldEqual None
+
+        let _, error =
+            FileDescriptorRegistry.flock second (FlockRequest.Acquire FlockMode.Shared) registry
+
+        error |> shouldEqual (Some FlockError.WouldBlock)
+
+    /// `setOffset` is deliberately partial in the descriptor: both callers have already resolved the
+    /// description and answered EBADF/ESPIPE, so reaching it otherwise is an interpreter bug, and a
+    /// silent no-op would hide it.
+    [<Test>]
+    let ``setOffset refuses a descriptor that cannot hold an offset`` () : unit =
+        let onStream =
+            Assert.Catch (fun () ->
+                FileDescriptorRegistry.setOffset 1 4L FileDescriptorRegistry.initial
+                |> ignore<FileDescriptorRegistry>
+            )
+
+        onStream.Message |> shouldContainText "ESPIPE"
+
+        let onMissing =
+            Assert.Catch (fun () ->
+                FileDescriptorRegistry.setOffset 4242 4L FileDescriptorRegistry.initial
+                |> ignore<FileDescriptorRegistry>
+            )
+
+        onMissing.Message |> shouldContainText "EBADF"
+
+        let fd, registry =
+            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+
+        let negative =
+            Assert.Catch (fun () ->
+                FileDescriptorRegistry.setOffset fd -1L registry
+                |> ignore<FileDescriptorRegistry>
+            )
+
+        negative.Message |> shouldContainText "negative"
+
+    /// Closing the last descriptor destroys the offset with the description, rather than leaving it
+    /// behind for the next `open` to inherit.
+    [<Test>]
+    let ``a reopened file starts from zero again`` () : unit =
+        let fd, registry =
+            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+
+        let registry = FileDescriptorRegistry.setOffset fd 11L registry
+
+        let registry =
+            match FileDescriptorRegistry.close fd registry with
+            | Ok registry -> registry
+            | Error error -> failwith $"close failed: %O{error}"
+
+        let reopened, registry = FileDescriptorRegistry.openFile someInode registry
+        offsetOf reopened registry |> shouldEqual (Some 0L)
+
+    /// A negative offset is the one unsound position still representable, so `checkInvariants` names
+    /// it. Reachable only through `Unchecked.ofParts`: every operation in the module maintains it.
+    [<Test>]
+    let ``checkInvariants rejects a negative offset`` () : unit =
+        let table (offset : int64) =
+            FileDescriptorRegistry.Unchecked.ofParts
+                (Map.ofList [ 0, OpenFileDescriptionId 7L ])
+                (Map.ofList
+                    [
+                        OpenFileDescriptionId 7L,
+                        {
+                            Target = OpenFileTarget.File (someInode, offset)
+                            Flock = None
+                        }
+                    ])
+                (OpenFileDescriptionId 9L)
+
+        FileDescriptorRegistry.checkInvariants (table -1L)
+        |> shouldEqual [ FileDescriptorRegistryDefect.NegativeOffset (OpenFileDescriptionId 7L, -1L) ]
+
+        // Zero and any positive offset are sound, including one far past any file's end: seeking
+        // beyond EOF is legal, so there is no upper bound to check.
+        FileDescriptorRegistry.checkInvariants (table 0L) |> shouldEqual []
+
+        FileDescriptorRegistry.checkInvariants (table System.Int64.MaxValue)
+        |> shouldEqual []

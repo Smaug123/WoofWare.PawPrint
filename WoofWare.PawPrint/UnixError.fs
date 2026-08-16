@@ -168,11 +168,16 @@ type UnixError =
     /// `EDOM` — Mathematics argument out of domain of function.
     | EDOM
     /// `ERANGE` — Result too large.
-    /// Used by PawPrint's `SystemNative_Write` / `SystemNative_Read` shims
-    /// when the caller supplies a negative `bufferSize`, matching
-    /// `Common_Write` / `Common_Read` in `pal_io_common.h`, which set
-    /// `errno = ERANGE` and return -1 for negative sizes before the real
-    /// `read(2)` / `write(2)` is invoked.
+    /// Used by PawPrint's `SystemNative_Write` shim when the caller supplies a
+    /// negative `bufferSize`, matching `Common_Write` in `pal_io_common.h`,
+    /// which sets `errno = ERANGE` and returns -1 before the real `write(2)` is
+    /// invoked.
+    ///
+    /// **Not the answer for the reading half.** `Common_Read`, immediately
+    /// above it in the same header, guards the same mistake with
+    /// `errno = EINVAL` — so `SystemNative_Read` reports EINVAL where
+    /// `SystemNative_Write` reports ERANGE. The asymmetry is upstream's; it
+    /// looks enough like a copy-paste slip in this file to be worth naming.
     | ERANGE
     /// `ELOOP` — Too many levels of symbolic links.
     ///
@@ -217,6 +222,19 @@ type UnixError =
     /// respectively give `EDEADLK`. Measured on both platforms rather than read
     /// off a header.
     | EAGAIN
+    /// `EOVERFLOW` — Value too large to be stored in data type.
+    ///
+    /// Reported by `SystemNative_LSeek` under the Darwin flavour when the
+    /// computed file offset does not fit in a signed 64-bit `off_t`. Linux
+    /// answers `EINVAL` for the same input, which is the entire divergence
+    /// between the two once the *filesystem* is held constant — measured on a
+    /// tmpfs-backed file, since ext4's much lower `s_maxbytes` otherwise makes
+    /// Linux look as though it rejects large offsets outright.
+    ///
+    /// Platform-dependent like `ELOOP`: raw 75 is `EOVERFLOW` on Linux but
+    /// `EPROGMISMATCH` on Darwin, and raw 84 is `EOVERFLOW` on Darwin but
+    /// `EILSEQ` on Linux (both read off the two `strerror` tables).
+    | EOVERFLOW
 
 /// The raw and PAL numbering of one `UnixError`.
 type UnixErrorNumbering =
@@ -289,6 +307,7 @@ module UnixError =
             UnixError.ELOOP
             UnixError.ENAMETOOLONG
             UnixError.EAGAIN
+            UnixError.EOVERFLOW
         ]
 
     let private portable (pal : int) (raw : int) : UnixErrorNumbering =
@@ -352,6 +371,9 @@ module UnixError =
         // The V7 transposition itself: raw 11 is EAGAIN on Linux but EDEADLK on
         // Darwin, and raw 35 is EAGAIN on Darwin but EDEADLK on Linux.
         | UnixError.EAGAIN -> platformDependent 0x10006 11 35
+        // Measured on both: raw 75 is EOVERFLOW on Linux and EPROGMISMATCH on
+        // Darwin; raw 84 is EOVERFLOW on Darwin and EILSEQ on Linux.
+        | UnixError.EOVERFLOW -> platformDependent 0x10040 75 84
 
     /// The `Interop.Error` value CoreLib switches on. Total: the PAL numbering is
     /// platform-independent, so it is always answerable.

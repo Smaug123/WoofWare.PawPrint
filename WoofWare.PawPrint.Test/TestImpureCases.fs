@@ -390,6 +390,30 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The `SystemNative_LSeek` rows on which Linux and Darwin
+                // disagree: the order `whence` validity and seekability are
+                // checked in, and the errno for an offset that leaves `int64`.
+                // PawPrint answers Linux's. Everything portable — which is most
+                // of the syscall, and all of `SystemNative_Read` — is in
+                // `ReadSeekSeeded.cs`, the differential half.
+                FileName = "LSeekRawSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        FileSystem =
+                            let name (s : string) = FileName.parseOrFail "test seed" s
+
+                            Map.ofList
+                                [
+                                    name "f",
+                                    SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                                ]
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // Pins `open(2)`'s lowest-free-descriptor rule against the
                 // emulated kernel's own table. Impure because the *numbers*
                 // are not cross-runtime: the oracle's process holds the

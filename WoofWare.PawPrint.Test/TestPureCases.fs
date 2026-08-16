@@ -193,6 +193,16 @@ module TestPureCases =
                     // one's phase and an off-by-one shifts visible bytes.
                     name "big", file (String.init 10000 (fun i -> string<char> (char (int 'a' + (i % 251) % 26))))
                 ]
+            "FileStreamHandleSeeded.cs", Map.ofList [ name "f", file "hello" ]
+            "ReadSeekSeeded.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    // A directory, because `read` and `lseek` disagree about
+                    // one: reading it is EISDIR while seeking it (SEEK_SET and
+                    // SEEK_CUR, the portable pair) succeeds.
+                    name "d", SeedEntry.directory (Map.ofList [ name "g", file "nested" ])
+                ]
             "FlockContentionSeeded.cs",
             Map.ofList
                 [
