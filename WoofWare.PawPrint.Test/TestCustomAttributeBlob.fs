@@ -683,3 +683,500 @@ module TestCustomAttributeBlob =
             EnumUnderlyingType.toPrimitive underlying
             |> EnumUnderlyingType.ofPrimitive
             |> shouldEqual (Some underlying)
+
+    // ------------------------------------------------------------------
+    // Named args (ECMA-335 II.23.3 `NamedArg`)
+    // ------------------------------------------------------------------
+
+    /// Encode a `FieldOrPropType`. Byte values are `CorSerializationType` (corhdr.h), which
+    /// aliases `CorElementType` for BOOLEAN..R8, STRING and SZARRAY.
+    let rec private encodeFieldOrPropType (t : CustomAttribFieldOrPropType) : byte array =
+        match t with
+        | CustomAttribFieldOrPropType.Primitive pt ->
+            let b =
+                match pt with
+                | PrimitiveType.Boolean -> 0x02uy
+                | PrimitiveType.Char -> 0x03uy
+                | PrimitiveType.SByte -> 0x04uy
+                | PrimitiveType.Byte -> 0x05uy
+                | PrimitiveType.Int16 -> 0x06uy
+                | PrimitiveType.UInt16 -> 0x07uy
+                | PrimitiveType.Int32 -> 0x08uy
+                | PrimitiveType.UInt32 -> 0x09uy
+                | PrimitiveType.Int64 -> 0x0Auy
+                | PrimitiveType.UInt64 -> 0x0Buy
+                | PrimitiveType.Single -> 0x0Cuy
+                | PrimitiveType.Double -> 0x0Duy
+                | PrimitiveType.String -> 0x0Euy
+                | other -> failwithf "%O has no CorSerializationType byte, so it is not encodable here" other
+
+            [| b |]
+        | CustomAttribFieldOrPropType.SzArray elt -> Array.append [| 0x1Duy |] (encodeFieldOrPropType elt)
+        | CustomAttribFieldOrPropType.Type -> [| 0x50uy |]
+        | CustomAttribFieldOrPropType.TaggedObject -> [| 0x51uy |]
+        | CustomAttribFieldOrPropType.Enum typeName ->
+            let name =
+                match typeName with
+                | None -> [| 0xFFuy |]
+                | Some n ->
+                    let utf8 = Encoding.UTF8.GetBytes (n : string)
+                    Array.append (encodePackedLen utf8.Length) utf8
+
+            Array.append [| 0x55uy |] name
+
+    let private encodeSerString (s : string option) : byte array =
+        match s with
+        | None -> [| 0xFFuy |]
+        | Some str ->
+            let utf8 = Encoding.UTF8.GetBytes (str : string)
+            Array.append (encodePackedLen utf8.Length) utf8
+
+    /// Encode a whole `NamedArg`: kind tag, FieldOrPropType, member name, then the value.
+    let private encodeNamedArg (header : CustomAttribNamedArgHeader) (value : CustomAttribFixedArg) : byte array =
+        let kind =
+            match header.Kind with
+            | CustomAttribNamedArgKind.Field -> 0x53uy
+            | CustomAttribNamedArgKind.Property -> 0x54uy
+
+        Array.concat
+            [
+                [| kind |]
+                encodeFieldOrPropType header.ElemType
+                encodeSerString header.Name
+                encodeFixedArg value
+            ]
+
+    let private immutable (bytes : byte array) : ImmutableArray<byte> = ImmutableArray.Create<byte> bytes
+
+    [<Test>]
+    let ``readFieldOrPropType decodes every primitive`` () : unit =
+        let cases =
+            [
+                0x02uy, PrimitiveType.Boolean
+                0x03uy, PrimitiveType.Char
+                0x04uy, PrimitiveType.SByte
+                0x05uy, PrimitiveType.Byte
+                0x06uy, PrimitiveType.Int16
+                0x07uy, PrimitiveType.UInt16
+                0x08uy, PrimitiveType.Int32
+                0x09uy, PrimitiveType.UInt32
+                0x0Auy, PrimitiveType.Int64
+                0x0Buy, PrimitiveType.UInt64
+                0x0Cuy, PrimitiveType.Single
+                0x0Duy, PrimitiveType.Double
+                0x0Euy, PrimitiveType.String
+            ]
+
+        for tag, expected in cases do
+            match CustomAttribute.readFieldOrPropType (immutable [| tag |]) 0 with
+            | Ok (decoded, next) ->
+                decoded |> shouldEqual (CustomAttribFieldOrPropType.Primitive expected)
+                next |> shouldEqual 1
+            | Error e -> failwithf "byte 0x%02X: expected Ok, got Error %s" tag e
+
+    [<Test>]
+    let ``readFieldOrPropType decodes Type and TaggedObject`` () : unit =
+        match CustomAttribute.readFieldOrPropType (immutable [| 0x50uy |]) 0 with
+        | Ok (decoded, next) ->
+            decoded |> shouldEqual CustomAttribFieldOrPropType.Type
+            next |> shouldEqual 1
+        | Error e -> failwithf "expected Ok Type, got Error %s" e
+
+        match CustomAttribute.readFieldOrPropType (immutable [| 0x51uy |]) 0 with
+        | Ok (decoded, next) ->
+            decoded |> shouldEqual CustomAttribFieldOrPropType.TaggedObject
+            next |> shouldEqual 1
+        | Error e -> failwithf "expected Ok TaggedObject, got Error %s" e
+
+    [<Test>]
+    let ``readFieldOrPropType decodes SzArray and nests`` () : unit =
+        let single =
+            CustomAttribFieldOrPropType.SzArray (CustomAttribFieldOrPropType.Primitive PrimitiveType.Int32)
+
+        match CustomAttribute.readFieldOrPropType (immutable (encodeFieldOrPropType single)) 0 with
+        | Ok (decoded, next) ->
+            decoded |> shouldEqual single
+            next |> shouldEqual 2
+        | Error e -> failwithf "expected Ok, got Error %s" e
+
+        // ECMA-335's grammar is recursive here even though CoreCLR's named-arg path reads only one
+        // element byte and refuses the nesting later, inside ReadArray. This reader follows the
+        // grammar; the resolution step is what refuses arrays today.
+        let nested = CustomAttribFieldOrPropType.SzArray single
+
+        match CustomAttribute.readFieldOrPropType (immutable (encodeFieldOrPropType nested)) 0 with
+        | Ok (decoded, next) ->
+            decoded |> shouldEqual nested
+            next |> shouldEqual 3
+        | Error e -> failwithf "expected Ok nested, got Error %s" e
+
+    [<Test>]
+    let ``readFieldOrPropType decodes Enum with its type name`` () : unit =
+        let name = "MyNs.MyEnum, MyAsm, Version=1.0.0.0"
+        let t = CustomAttribFieldOrPropType.Enum (Some name)
+        let encoded = encodeFieldOrPropType t
+
+        match CustomAttribute.readFieldOrPropType (immutable encoded) 0 with
+        | Ok (decoded, next) ->
+            decoded |> shouldEqual t
+            next |> shouldEqual encoded.Length
+        | Error e -> failwithf "expected Ok, got Error %s" e
+
+    [<Test>]
+    let ``readFieldOrPropType rejects an unknown tag`` () : unit =
+        match CustomAttribute.readFieldOrPropType (immutable [| 0x99uy |]) 0 with
+        | Ok other -> failwithf "expected Error for tag 0x99, got Ok %A" other
+        | Error e -> e |> shouldContainText "not a valid FieldOrPropType"
+
+    [<Test>]
+    let ``readFieldOrPropType rejects an empty slice`` () : unit =
+        match CustomAttribute.readFieldOrPropType (immutable [||]) 0 with
+        | Ok other -> failwithf "expected Error, got Ok %A" other
+        | Error e -> e |> shouldContainText "FieldOrPropType begins at offset 0"
+
+    [<Test>]
+    let ``readNamedArgHeader distinguishes field from property`` () : unit =
+        for tag, expected in
+            [
+                0x53uy, CustomAttribNamedArgKind.Field
+                0x54uy, CustomAttribNamedArgKind.Property
+            ] do
+            let bytes = Array.concat [ [| tag ; 0x08uy |] ; encodeSerString (Some "N") ]
+
+            match CustomAttribute.readNamedArgHeader (immutable bytes) 0 with
+            | Ok (header, next) ->
+                header.Kind |> shouldEqual expected
+
+                header.ElemType
+                |> shouldEqual (CustomAttribFieldOrPropType.Primitive PrimitiveType.Int32)
+
+                header.Name |> shouldEqual (Some "N")
+                next |> shouldEqual bytes.Length
+            | Error e -> failwithf "tag 0x%02X: expected Ok, got Error %s" tag e
+
+    /// The type name and the member name are *both* SerStrings, so an implementation that swapped
+    /// them decodes cleanly with the two exchanged. Only a case carrying two distinct strings, with
+    /// assertions on both fields, can tell the difference — the truncation cases cannot.
+    [<Test>]
+    let ``readNamedArgHeader reads the enum type name before the member name`` () : unit =
+        let header =
+            {
+                Kind = CustomAttribNamedArgKind.Property
+                ElemType = CustomAttribFieldOrPropType.Enum (Some "Some.Enum.Type")
+                Name = Some "TheMemberName"
+            }
+
+        let bytes =
+            Array.concat
+                [
+                    [| 0x54uy |]
+                    encodeFieldOrPropType header.ElemType
+                    encodeSerString header.Name
+                ]
+
+        match CustomAttribute.readNamedArgHeader (immutable bytes) 0 with
+        | Ok (decoded, next) ->
+            decoded.ElemType
+            |> shouldEqual (CustomAttribFieldOrPropType.Enum (Some "Some.Enum.Type"))
+
+            decoded.Name |> shouldEqual (Some "TheMemberName")
+            next |> shouldEqual bytes.Length
+        | Error e -> failwithf "expected Ok, got Error %s" e
+
+    [<Test>]
+    let ``readNamedArgHeader preserves a null member name`` () : unit =
+        let bytes = [| 0x53uy ; 0x08uy ; 0xFFuy |]
+
+        match CustomAttribute.readNamedArgHeader (immutable bytes) 0 with
+        | Ok (header, next) ->
+            header.Name |> shouldEqual None
+            next |> shouldEqual 3
+        | Error e -> failwithf "expected Ok, got Error %s" e
+
+    [<Test>]
+    let ``readNamedArgHeader rejects a bad kind tag`` () : unit =
+        match CustomAttribute.readNamedArgHeader (immutable [| 0x52uy ; 0x08uy ; 0x00uy |]) 0 with
+        | Ok other -> failwithf "expected Error, got Ok %A" other
+        | Error e -> e |> shouldContainText "neither FIELD (0x53) nor PROPERTY (0x54)"
+
+    /// Truncate a well-formed named arg at every length short of complete and assert each one is a
+    /// clean Error rather than a crash or a silent short read. This covers "before the kind tag",
+    /// "before the type byte", "mid enum name", "mid member name" and "mid value" without having to
+    /// hand-pick the offsets.
+    [<Test>]
+    let ``readNamedArgHeader and readElem reject every truncation`` () : unit =
+        let header =
+            {
+                Kind = CustomAttribNamedArgKind.Property
+                ElemType = CustomAttribFieldOrPropType.Primitive PrimitiveType.String
+                Name = Some "Label"
+            }
+
+        let full = encodeNamedArg header (CustomAttribFixedArg.String (Some "hello"))
+
+        for len in 0 .. full.Length - 1 do
+            let truncated = immutable (Array.sub full 0 len)
+
+            let outcome =
+                match CustomAttribute.readNamedArgHeader truncated 0 with
+                | Error _ -> Error "header"
+                | Ok (h, valueOffset) ->
+                    CustomAttribute.readElem (CustomAttribArgShape.Primitive PrimitiveType.String) truncated valueOffset
+                    |> Result.map (fun _ -> h)
+
+            match outcome with
+            | Error _ -> ()
+            | Ok _ -> failwithf "truncation to %d byte(s) of %d decoded successfully; it must not" len full.Length
+
+    [<Test>]
+    let ``readNamedArgHeader plus readElem round-trips an arbitrary primitive named arg`` () : unit =
+        let genKind =
+            Gen.elements [ CustomAttribNamedArgKind.Field ; CustomAttribNamedArgKind.Property ]
+
+        // Include the empty string, the null string and non-ASCII: a narrowed alphabet is exactly
+        // what hides an encoder-and-decoder-agree bug.
+        let genName =
+            Gen.oneof
+                [
+                    Gen.constant None
+                    Gen.constant (Some "")
+                    Gen.constant (Some "é中\U0001F600")
+                    ArbMap.defaults
+                    |> ArbMap.generate<NonNull<string>>
+                    |> Gen.map (fun s -> Some s.Get)
+                ]
+
+        // Full-range numerics: FsCheck's default int generator is size-bounded to roughly
+        // [-100, 100] under Quick, which would never exercise the wide encodings.
+        let genValue : Gen<CustomAttribFixedArg> =
+            Gen.oneof
+                [
+                    Gen.elements [ true ; false ] |> Gen.map CustomAttribFixedArg.Bool
+                    Gen.choose (0, 0xFFFF) |> Gen.map (fun c -> CustomAttribFixedArg.Char (char c))
+                    Gen.choose (-128, 127) |> Gen.map (sbyte >> CustomAttribFixedArg.I1)
+                    Gen.choose (0, 255) |> Gen.map (byte >> CustomAttribFixedArg.U1)
+                    Gen.choose (-32768, 32767) |> Gen.map (int16 >> CustomAttribFixedArg.I2)
+                    Gen.choose (0, 65535) |> Gen.map (uint16 >> CustomAttribFixedArg.U2)
+                    Gen.choose (System.Int32.MinValue, System.Int32.MaxValue)
+                    |> Gen.map CustomAttribFixedArg.I4
+                    Gen.choose (System.Int32.MinValue, System.Int32.MaxValue)
+                    |> Gen.map (uint32 >> CustomAttribFixedArg.U4)
+                    Gen.choose64 (System.Int64.MinValue, System.Int64.MaxValue)
+                    |> Gen.map CustomAttribFixedArg.I8
+                    Gen.choose64 (System.Int64.MinValue, System.Int64.MaxValue)
+                    |> Gen.map (uint64 >> CustomAttribFixedArg.U8)
+                    // Generated from raw bits rather than via NormalFloat, so NaN payloads and
+                    // infinities are in the alphabet; comparison below is bitwise for the same
+                    // reason.
+                    Gen.choose (System.Int32.MinValue, System.Int32.MaxValue)
+                    |> Gen.map (fun b -> CustomAttribFixedArg.R4 (System.BitConverter.Int32BitsToSingle b))
+                    Gen.choose64 (System.Int64.MinValue, System.Int64.MaxValue)
+                    |> Gen.map (fun b -> CustomAttribFixedArg.R8 (System.BitConverter.Int64BitsToDouble b))
+                    genName |> Gen.map CustomAttribFixedArg.String
+                ]
+
+        let property (kind : CustomAttribNamedArgKind) (name : string option) (value : CustomAttribFixedArg) =
+            let primitive =
+                match shapeOfArg value with
+                | CustomAttribArgShape.Primitive pt -> pt
+                | other -> failwithf "generator produced non-primitive shape %O" other
+
+            let header =
+                {
+                    Kind = kind
+                    ElemType = CustomAttribFieldOrPropType.Primitive primitive
+                    Name = name
+                }
+
+            let bytes = immutable (encodeNamedArg header value)
+
+            match CustomAttribute.readNamedArgHeader bytes 0 with
+            | Error e -> failwithf "header decode failed: %s" e
+            | Ok (decodedHeader, valueOffset) ->
+
+            decodedHeader |> shouldEqual header
+
+            match CustomAttribute.readElem (CustomAttribArgShape.Primitive primitive) bytes valueOffset with
+            | Error e -> failwithf "value decode failed: %s" e
+            | Ok (decodedValue, next) ->
+
+            // Bitwise for floats, so a NaN round-trip is a pass rather than a structural mismatch.
+            let sameValue =
+                match value, decodedValue with
+                | CustomAttribFixedArg.R4 a, CustomAttribFixedArg.R4 b ->
+                    System.BitConverter.SingleToInt32Bits a = System.BitConverter.SingleToInt32Bits b
+                | CustomAttribFixedArg.R8 a, CustomAttribFixedArg.R8 b ->
+                    System.BitConverter.DoubleToInt64Bits a = System.BitConverter.DoubleToInt64Bits b
+                | a, b -> a = b
+
+            if not sameValue then
+                failwithf "value round-trip mismatch: encoded %A, decoded %A" value decodedValue
+
+            next |> shouldEqual bytes.Length
+
+        let arb = Gen.zip3 genKind genName genValue |> Arb.fromGen
+
+        Prop.forAll arb (fun (kind, name, value) -> property kind name value)
+        |> Check.QuickThrowOnFailure
+
+    /// Minimal `ICustomAttributeTypeProvider` for the oracle test below. The corpus is primitives
+    /// and strings only, so the type-name-resolving members are unreachable and say so.
+    type private OracleTypeProvider () =
+        interface System.Reflection.Metadata.ICustomAttributeTypeProvider<string> with
+            member _.GetPrimitiveType (code : System.Reflection.Metadata.PrimitiveTypeCode) : string = string code
+            member _.GetSystemType () : string = "System.Type"
+            member _.GetSZArrayType (elementType : string) : string = elementType + "[]"
+            member _.IsSystemType (_ : string) : bool = false
+
+            member _.GetTypeFromSerializedName (name : string) : string =
+                failwithf "oracle corpus should contain no serialized type names, got %s" name
+
+            member _.GetUnderlyingEnumType (type_ : string) : System.Reflection.Metadata.PrimitiveTypeCode =
+                failwithf "oracle corpus should contain no enums, got %s" type_
+
+            member _.GetTypeFromDefinition (_, _, _) : string =
+                failwith "oracle corpus should reference no TypeDefs"
+
+            member _.GetTypeFromReference (_, _, _) : string =
+                failwith "oracle corpus should reference no TypeRefs"
+
+    /// <summary>
+    /// Differential test against <c>System.Reflection.Metadata</c>'s own <c>CustomAttributeDecoder</c>.
+    /// </summary>
+    /// <remarks>
+    /// The round-trip property above encodes with a reference encoder that this repository also
+    /// wrote, so it cannot catch a misreading of ECMA-335 II.23.3 that the encoder shares. This can:
+    /// the blob comes from Roslyn and the expectation comes from an independent decoder shipped by
+    /// the BCL.
+    /// </remarks>
+    [<Test>]
+    let ``named-arg decode agrees with System.Reflection.Metadata`` () : unit =
+        let source =
+            """
+using System;
+
+[AttributeUsage(AttributeTargets.Class, AllowMultiple = true)]
+public sealed class SampleAttribute : Attribute
+{
+    public SampleAttribute(int ctorArg) { CtorArg = ctorArg; }
+    public int CtorArg { get; }
+
+    public string Str { get; set; }
+    public bool Flag { get; set; }
+    public char Ch { get; set; }
+    public sbyte I1 { get; set; }
+    public byte U1 { get; set; }
+    public short I2 { get; set; }
+    public ushort U2 { get; set; }
+    public int I4;
+    public uint U4;
+    public long I8;
+    public ulong U8;
+    public float R4 { get; set; }
+    public double R8 { get; set; }
+    public string Empty { get; set; }
+    public string Nul { get; set; }
+}
+
+[Sample(7, Str = "hello", Flag = true, Ch = 'Z', I1 = -128, U1 = 255, I2 = -32768, U2 = 65535,
+        I4 = int.MinValue, U4 = uint.MaxValue, I8 = long.MinValue, U8 = ulong.MaxValue,
+        R4 = 1.5f, R8 = -2.25, Empty = "", Nul = null)]
+public sealed class Decorated { }
+
+public static class Program { public static int Main() => 0; }
+"""
+
+        let image = Roslyn.compile [ source ]
+
+        use peReader =
+            new System.Reflection.PortableExecutable.PEReader (ImmutableArray.Create<byte> image)
+
+        let reader : System.Reflection.Metadata.MetadataReader =
+            System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader peReader
+
+        let decoratedHandle =
+            reader.TypeDefinitions
+            |> Seq.find (fun h -> reader.GetString ((reader.GetTypeDefinition h).Name) = "Decorated")
+
+        let attrHandle =
+            (reader.GetTypeDefinition decoratedHandle).GetCustomAttributes ()
+            |> Seq.exactlyOne
+
+        let attr = reader.GetCustomAttribute attrHandle
+        let blob = ImmutableArray.CreateRange (reader.GetBlobBytes attr.Value)
+
+        // The oracle: the BCL's own decoder over the same bytes.
+        let oracle = attr.DecodeValue (OracleTypeProvider ())
+
+        // Walk to the named-args region using readFixedArgs (separately tested), then read the
+        // uint16 NumNamed count that follows it.
+        let afterFixed =
+            match CustomAttribute.readFixedArgs [ CustomAttribArgShape.Primitive PrimitiveType.Int32 ] blob with
+            | Ok (_, next) -> next
+            | Error e -> failwithf "could not walk the fixed args: %s" e
+
+        let namedCount =
+            int (uint16 blob.[afterFixed] ||| (uint16 blob.[afterFixed + 1] <<< 8))
+
+        namedCount |> shouldEqual oracle.NamedArguments.Length
+
+        let mutable cursor = afterFixed + 2
+
+        for i in 0 .. namedCount - 1 do
+            let expected = oracle.NamedArguments.[i]
+
+            match CustomAttribute.readNamedArgHeader blob cursor with
+            | Error e -> failwithf "named arg %d: header decode failed: %s" i e
+            | Ok (header, valueOffset) ->
+
+            let expectedKind =
+                match expected.Kind with
+                | System.Reflection.Metadata.CustomAttributeNamedArgumentKind.Field -> CustomAttribNamedArgKind.Field
+                | System.Reflection.Metadata.CustomAttributeNamedArgumentKind.Property ->
+                    CustomAttribNamedArgKind.Property
+                | other -> failwithf "unexpected named-arg kind %O" other
+
+            header.Kind |> shouldEqual expectedKind
+            header.Name |> shouldEqual (Some expected.Name)
+
+            let shape =
+                match header.ElemType with
+                | CustomAttribFieldOrPropType.Primitive pt -> CustomAttribArgShape.Primitive pt
+                | other -> failwithf "named arg %d (%s): corpus should be primitives only, got %O" i expected.Name other
+
+            match CustomAttribute.readElem shape blob valueOffset with
+            | Error e -> failwithf "named arg %d (%s): value decode failed: %s" i expected.Name e
+            | Ok (decoded, next) ->
+
+            // SRM hands back the value boxed as its CLR type; compare against ours unwrapped.
+            let ours : obj =
+                match decoded with
+                | CustomAttribFixedArg.Bool b -> box b
+                | CustomAttribFixedArg.Char c -> box c
+                | CustomAttribFixedArg.I1 v -> box v
+                | CustomAttribFixedArg.U1 v -> box v
+                | CustomAttribFixedArg.I2 v -> box v
+                | CustomAttribFixedArg.U2 v -> box v
+                | CustomAttribFixedArg.I4 v -> box v
+                | CustomAttribFixedArg.U4 v -> box v
+                | CustomAttribFixedArg.I8 v -> box v
+                | CustomAttribFixedArg.U8 v -> box v
+                | CustomAttribFixedArg.R4 v -> box v
+                | CustomAttribFixedArg.R8 v -> box v
+                | CustomAttribFixedArg.String None -> null
+                | CustomAttribFixedArg.String (Some s) -> box s
+                | other -> failwithf "named arg %d (%s): unexpected decoded shape %A" i expected.Name other
+
+            if not (System.Object.Equals (ours, expected.Value)) then
+                failwithf
+                    "named arg %d (%s): we decoded %A, System.Reflection.Metadata decoded %A"
+                    i
+                    expected.Name
+                    ours
+                    expected.Value
+
+            cursor <- next
+
+        // Mirrors the managed caller's `blobStart != blobEnd` check: a cursor that drifts anywhere
+        // in the loop above lands here even if every individual value happened to match.
+        cursor |> shouldEqual blob.Length
