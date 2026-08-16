@@ -32,11 +32,12 @@ module TestSystemTimeAsTicks =
     /// A kernel booting at `epochMs` whose virtual clock has since advanced to
     /// `clockTicks` — note the units differ: the boot instant is a millisecond
     /// offset (that is what `KernelConfig` takes), while the clock is in the
-    /// 100 ns ticks it is denominated in. The clock is set by record-copy
-    /// because the driver loop is its only production writer.
+    /// 100 ns ticks it is denominated in.
     let private kernelWith (epochMs : int64) (clockTicks : int64) : EmulatedKernel =
         let kernel = EmulatedKernel.initial |> EmulatedKernel.withWallClockEpochMs epochMs
 
+        // The clock is set by record-copy because the driver loop is its only
+        // production writer.
         { kernel with
             VirtualClockTicks = clockTicks
         }

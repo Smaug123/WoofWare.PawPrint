@@ -13,15 +13,6 @@ open WoofWare.PawPrint
 /// range of PCT seeds and asserts at least one of them produces the
 /// targeted bad outcome.
 ///
-/// The sweep does not re-run the whole guest per seed. Everything up to
-/// the first tick at which two threads are Runnable is forced — no policy
-/// has a choice there, so every seed executes it identically — so it is
-/// computed once, under the randomness-free round-robin policy, and each
-/// seed resumes from that snapshot. `Program.resumeFork` makes a resumed
-/// run bit-identical to the from-scratch `PctSeed = Some s` run it
-/// replaces, which `TestScheduleFork` pins over this exact guest corpus.
-/// The prefix is 74-94% of a run's instructions on these guests.
-///
 /// Each guest must encode the invariant violation as a deterministic,
 /// host-visible event: a sentinel exit code from Main, an unhandled
 /// guest exception, a call to Environment.FailFast, or a natural
@@ -163,11 +154,11 @@ module TestConcurrencyBugs =
             sprintf "<unresolved type %O>" handle
 
     /// Read the guest exception's `Exception._message` field via the host's view of
-    /// the managed heap. Returns `None` if the field is null. We extract this on
-    /// the host side (rather than calling guest code) so we don't perturb the
-    /// state we're about to discard, and so the scenario classifier never depends
-    /// on the guest's `ToString()` being available.
+    /// the managed heap. Returns `None` if the field is null.
     let private exceptionMessage (state : IlMachineState) (addr : ManagedHeapAddress) : string option =
+        // Extracted on the host side (rather than calling guest code) so we don't
+        // perturb the state we're about to discard, and so the scenario classifier
+        // never depends on the guest's `ToString()` being available.
         let obj = ManagedHeap.get addr state.ManagedHeap
 
         match AllocatedNonArrayObject.DereferenceField "_message" obj with
@@ -219,23 +210,22 @@ module TestConcurrencyBugs =
                 $"%s{scenario.SourceName}: a static initialiser started a thread, so the first contended decision happens during startup (contenders: %A{contenders}) and `Program.runToFirstFork` refuses to snapshot it. Start the guest's threads from Main."
 
     /// Resume the shared prefix under one PCT seed, returning a host-level
-    /// summary of where the run ended up. Drives `Program.stepPrepared`
-    /// directly instead of `Program.pumpPrepared` so that
-    /// `ProgramStepOutcome.Deadlocked` surfaces as a classifier-friendly
-    /// `RunSummary.Deadlock` rather than the `failwith "Deadlock: ..."` the
-    /// pump would raise.
-    ///
-    /// The factory here is this seed's own: `resumeFork` rebinds the machine's
-    /// logging sink to it, so each seed's trace still carries its own
-    /// `pct_seed` property even though the prefix was logged through the
-    /// sweep's factory.
+    /// summary of where the run ended up.
     let private runOne (sourceName : string) (snapshot : Program.ForkSnapshot) (seed : uint64) : RunSummary =
+        // The factory here is this seed's own: `resumeFork` rebinds the machine's
+        // logging sink to it, so each seed's trace still carries its own
+        // `pct_seed` property even though the prefix was logged through the
+        // sweep's factory.
         let _messages, loggerFactory =
             LoggerFactory.makeTestWithProperties [ "source_file", sourceName ; "pct_seed", string seed ]
 
         use _loggerFactoryResource = loggerFactory
         let logger = loggerFactory.CreateLogger "TestConcurrencyBugs"
 
+        // Drives `Program.stepPrepared` directly instead of `Program.pumpPrepared` so
+        // that `ProgramStepOutcome.Deadlocked` surfaces as a classifier-friendly
+        // `RunSummary.Deadlock` rather than the `failwith "Deadlock: ..."` the pump
+        // would raise.
         let rec loop (prepared : Program.PreparedProgram) : RunSummary =
             match Program.stepPrepared loggerFactory logger prepared with
             | Program.ProgramStepOutcome.Completed outcome -> classifyRunOutcome outcome
@@ -272,8 +262,8 @@ module TestConcurrencyBugs =
 
     /// Reasonable default sweep, sized to catch one-shot two-thread
     /// races (e.g. a single-iteration shared-counter `++`) at the
-    /// current `P_BASE = 0.01` preemption density. Sweeps short-circuit
-    /// on the first matching seed via `List.tryFind`, so widening this
+    /// current `P_BASE = 0.01` preemption density. Sweeps stop at a
+    /// matching seed (`Array.Parallel.tryFind`), so widening this
     /// is cheap for scenarios whose bad interleaving is common; the
     /// 4096-seed cap matters only when the scenario never reaches the
     /// bad outcome.
@@ -390,6 +380,14 @@ module TestConcurrencyBugs =
 
         use _prefixLoggerFactoryResource = prefixLoggerFactory
 
+        // The sweep does not re-run the whole guest per seed. Everything up to the
+        // first tick at which two threads are Runnable is forced — no policy has a
+        // choice there, so every seed executes it identically — so it is computed
+        // once, under the randomness-free round-robin policy, and each seed resumes
+        // from that snapshot. `Program.resumeFork` makes a resumed run bit-identical
+        // to the from-scratch `PctSeed = Some s` run it replaces, which
+        // `TestScheduleFork` pins over this exact guest corpus. The prefix is 74-94%
+        // of a run's instructions on these guests.
         let snapshot = forkOf prefixLoggerFactory scenario image
 
         // Sweep seeds lazily and stop at the first match. The wider the

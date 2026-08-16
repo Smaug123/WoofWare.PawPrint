@@ -402,13 +402,15 @@ type CliType =
                 Array.blit bytes offset result 0 count
                 result
 
-    /// Did zeroing actually change anything? Deliberately not `=`: structural equality on
-    /// floats follows IEEE, so it calls `-0.0` equal to `0.0` even though they differ in every
-    /// byte that matters. Zeroing a cell holding `-0.0` really does change memory, and
-    /// reporting "unchanged" would leave the sign bit set. Where a byte rendering exists it is
-    /// the ground truth; where it does not (references, provenance-carrying native ints) there
-    /// is no such subtlety and structural equality is exactly right.
+    /// Did zeroing actually change anything? Zeroing a cell holding `-0.0` really does change
+    /// memory, and reporting "unchanged" would leave the sign bit set, so `-0.0` versus `0.0`
+    /// counts as a change.
     static member internal ZeroingChangedAnything (before : CliType) (after : CliType) : bool =
+        // Deliberately not `=`: structural equality on floats follows IEEE, so it calls `-0.0`
+        // equal to `0.0` even though they differ in every byte that matters. Where a byte
+        // rendering exists it is the ground truth; where it does not (references,
+        // provenance-carrying native ints) there is no such subtlety and structural equality is
+        // exactly right.
         match CliType.ByteAddressability before, CliType.ByteAddressability after with
         | CliByteAddressability.ByteAddressable, CliByteAddressability.ByteAddressable ->
             CliType.ToBytes before <> CliType.ToBytes after
@@ -1989,12 +1991,10 @@ and CliValueType =
 
     /// The materialised bytes of `[offset, offset + count)`.
     ///
-    /// Only fields that overlap the requested range are serialised. A disjoint field cannot
-    /// affect these bytes by construction, and may have no byte rendering at all — `CliType.ToBytes`
-    /// refuses to express an object reference or a provenance-carrying native int — so rendering
-    /// the whole value first would make a perfectly answerable slice fail because of a field it
-    /// does not cover. Overlapping fields are replayed in the same `EditedAtTime` order `ToBytes`
-    /// uses, so the two agree byte for byte wherever `ToBytes` succeeds.
+    /// Defined even when the whole value has no byte rendering — `CliType.ToBytes` refuses to
+    /// express an object reference or a provenance-carrying native int — provided no such field
+    /// overlaps the requested range. Agrees byte for byte with `ToBytes` wherever `ToBytes`
+    /// succeeds.
     static member BytesAt (offset : int) (count : int) (cvt : CliValueType) : byte[] =
         match cvt._Storage with
         | CliValueTypeStorage.RawBytes bytes ->
@@ -2017,6 +2017,12 @@ and CliValueType =
             let result : byte[] = Array.zeroCreate count
             Array.blit storage.PreservedBytes offset result 0 count
 
+            // Only fields that overlap the requested range are serialised. A disjoint field
+            // cannot affect these bytes by construction, and may have no byte rendering at all,
+            // so rendering the whole value first would make a perfectly answerable slice fail
+            // because of a field it does not cover. Overlapping fields are replayed in the same
+            // `EditedAtTime` order `ToBytes` uses, so the two agree byte for byte wherever
+            // `ToBytes` succeeds.
             storage.Fields
             |> List.filter (fun f -> f.Offset < endExclusive && offset < f.Offset + f.Size)
             |> List.sortBy _.EditedAtTime
@@ -2062,17 +2068,6 @@ and CliValueType =
         | CliValueTypeStorage.Fields _, CliValueTypeStorage.RawBytes _ -> true
 
     /// Zero the byte range `[offset, offset + count)`. See `CliType.WithZeroedRangeIfChanged`.
-    ///
-    /// Walks fields structurally rather than going through `ToBytes`, which is the whole point:
-    /// `ToBytes` materialises *every* field, so it cannot render a struct that holds a live
-    /// object reference, even when the requested range covers only plain fields.
-    ///
-    /// Field write timestamps are preserved, not refreshed. `ToBytes` replays
-    /// overlapping fields in timestamp order, and a field that only partially overlaps the
-    /// requested range extends outside it, so promoting it to "newest" would let its untouched
-    /// bytes win over a sibling and change memory outside the range. Keeping the original order
-    /// is safe both ways: inside the range every intersecting field has had its covered bytes
-    /// zeroed, so whichever wins writes zeros, and outside it nothing about the order changed.
     static member WithZeroedRangeIfChanged (offset : int) (count : int) (cvt : CliValueType) : CliValueType option =
         let size = CliValueType.SizeOf(cvt).Size
 
@@ -2098,6 +2093,10 @@ and CliValueType =
                         _Storage = CliValueTypeStorage.RawBytes updated
                     }
         | CliValueTypeStorage.Fields storage ->
+            // Walk fields structurally rather than going through `ToBytes`, which is the whole
+            // point: `ToBytes` materialises *every* field, so it cannot render a struct that
+            // holds a live object reference, even when the requested range covers only plain
+            // fields.
             let mutable changed = false
 
             let updatedFields =
@@ -2970,9 +2969,7 @@ and CliValueType =
 
     /// True iff `handle` names the given non-generic corelib type.
     ///
-    /// The corelib-assembly and no-generics test runs before the TypeDef lookup: it is cheaper,
-    /// and it is what lets a handle from any other assembly answer without resolving at all. A
-    /// structural handle answers `false` because `AllConcreteTypes.lookup` has no row for one.
+    /// A structural handle answers `false` because `AllConcreteTypes.lookup` has no row for one.
     static member private IsNominallyCorelibType
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
@@ -2985,6 +2982,9 @@ and CliValueType =
         | None -> false
         | Some concreteType ->
 
+        // The corelib-assembly and no-generics test runs before the TypeDef lookup: it is
+        // cheaper, and it is what lets a handle from any other assembly answer without resolving
+        // at all.
         if
             concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
             && concreteType.Generics.IsEmpty
@@ -3561,10 +3561,6 @@ and CliValueType =
     /// rendering (a struct holding an unmanaged pointer, e.g. `struct S { int N; int* P; }`,
     /// is a legitimate element type for a bulk zeroing: raw pointers are not GC-tracked, so
     /// such an array reports `ContainsGCPointers = false`).
-    ///
-    /// Field write timestamps are replayed in declaration order, as `OfBytesLike` does: a
-    /// zeroed struct has no meaningful overlapping-field write history to preserve, and every
-    /// order produces the same all-zero result anyway.
     static member ZeroLike (template : CliValueType) : CliValueType =
         match template._Storage with
         | CliValueTypeStorage.RawBytes bytes ->
@@ -3572,6 +3568,9 @@ and CliValueType =
                 _Storage = CliValueTypeStorage.RawBytes (Array.zeroCreate bytes.Length)
             }
         | CliValueTypeStorage.Fields storage ->
+            // Field write timestamps are replayed in declaration order, as `OfBytesLike` does: a
+            // zeroed struct has no meaningful overlapping-field write history to preserve, and
+            // every order produces the same all-zero result anyway.
             let fields =
                 storage.Fields
                 |> List.mapi (fun index field ->

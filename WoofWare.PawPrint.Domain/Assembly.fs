@@ -220,11 +220,6 @@ type DumpedAssembly =
         /// SHA-256 of the entire PE image: the identity of this assembly's <em>content</em>, as
         /// opposed to the identity it declares for itself. See <c>HasSameContentAs</c>.
         /// </summary>
-        /// <remarks>
-        /// Computed while the backing stream is known to be open, because it cannot be computed
-        /// later: <c>PEReader</c> reads lazily, and callers of <c>Assembly.read</c> own the stream
-        /// they pass and may close it as soon as the parse returns.
-        /// </remarks>
         ContentHash : ImmutableArray<byte>
 
         /// <summary>
@@ -300,9 +295,7 @@ type DumpedAssembly =
         /// <summary>
         /// Friend-assembly declarations parsed from assembly-level
         /// <c>InternalsVisibleTo</c> and <c>IgnoresAccessChecksTo</c> custom
-        /// attributes on this assembly. Cached eagerly so visibility checks
-        /// (e.g. CA filtering via <c>IsCAVisibleFromDecoratedType</c>) do not
-        /// re-walk the assembly-level attribute list per call.
+        /// attributes on this assembly.
         /// </summary>
         Friends : FriendAssemblies
     }
@@ -493,22 +486,20 @@ type DumpedAssembly =
     /// <see cref="MetadataTableStreamVersion"/> for which of the several "metadata version"
     /// fields this is.
     /// </summary>
-    /// <remarks>
-    /// Parsed out of the image by hand because <c>System.Reflection.Metadata</c> does not
-    /// expose it: <c>MetadataReader</c> reads these two bytes to decide how to interpret the
-    /// tables but publishes neither them nor anything derived from them.
-    ///
-    /// Hand-parsing is worth it rather than assuming 2.0, because the assumption is not safe
-    /// even here: <c>MetadataReader</c> will happily open an image whose table stream says
-    /// 1.0, so a <c>DumpedAssembly</c> really can hold one. The value also routes guest
-    /// control flow — <c>Assembly.GetName()</c> only reads the PE kind when this exceeds
-    /// <c>0x10000</c> — so answering 2.0 unconditionally would silently take the wrong
-    /// branch rather than fail.
-    ///
-    /// Every offset here is relative to the metadata root, which is where the stream headers'
-    /// own offsets are measured from, so no PE file offsets are involved.
-    /// </remarks>
     member this.MetadataTableStreamVersion : MetadataTableStreamVersion =
+        // Parsed out of the image by hand because System.Reflection.Metadata does not expose
+        // it: MetadataReader reads these two bytes to decide how to interpret the tables but
+        // publishes neither them nor anything derived from them.
+        //
+        // Hand-parsing is worth it rather than assuming 2.0, because the assumption is not
+        // safe even here: MetadataReader will happily open an image whose table stream says
+        // 1.0, so a DumpedAssembly really can hold one. The value also routes guest control
+        // flow — Assembly.GetName() only reads the PE kind when this exceeds 0x10000 — so
+        // answering 2.0 unconditionally would silently take the wrong branch rather than
+        // fail.
+        //
+        // Every offset here is relative to the metadata root, which is where the stream
+        // headers' own offsets are measured from, so no PE file offsets are involved.
         let block = this.PeReader.GetMetadata ()
         let mutable reader = block.GetReader ()
 
@@ -571,14 +562,6 @@ type DumpedAssembly =
     /// <see cref="PEImageHeaders"/>.
     /// </summary>
     /// <remarks>
-    /// The first three come straight off <c>System.Reflection.Metadata</c>'s parsed headers.
-    /// The ReadyToRun header does not: nothing in that library exposes it, so it is located
-    /// and parsed here by the same rule <c>PEDecoder::FindReadyToRunHeader</c> uses — the COR
-    /// header's <c>ManagedNativeHeader</c> directory, if it declares at least a whole
-    /// <c>READYTORUN_HEADER</c>, lies within the image, and starts with the
-    /// <c>RTR\0</c> signature. There is no version check: CoreCLR does not gate this
-    /// recognition on the R2R format version, and neither can anything reproducing it.
-    ///
     /// Every assembly in a shipped shared framework is
     /// ReadyToRun, and such an image does <em>not</em> set <c>COMIMAGE_FLAGS_ILONLY</c> and
     /// carries a machine value that is the real one XORed with an OS discriminator — so an
@@ -586,6 +569,13 @@ type DumpedAssembly =
     /// architecture, for corelib among others.
     /// </remarks>
     member this.PEImageHeaders : PEImageHeaders =
+        // The first three fields come straight off System.Reflection.Metadata's parsed
+        // headers. The ReadyToRun header does not: nothing in that library exposes it, so it
+        // is located and parsed here by the same rule PEDecoder::FindReadyToRunHeader uses —
+        // the COR header's ManagedNativeHeader directory, if it declares at least a whole
+        // READYTORUN_HEADER, lies within the image, and starts with the RTR\0 signature.
+        // There is no version check: CoreCLR does not gate this recognition on the R2R format
+        // version, and neither can anything reproducing it.
         let headers = this.PeReader.PEHeaders
 
         // A COR header is reached through the optional header's data directories, so this
@@ -890,13 +880,14 @@ type LoadedAssemblies =
     /// metadata to resolve and execute against; there is no safe choice, so crash.
     ///
     /// Sameness is decided by comparing metadata content, not by trusting any identifier the image
-    /// carries — see <c>DumpedAssembly.HasSameContentAs</c>. The comparison only runs when two
-    /// non-reference-equal instances collide, which is rare.
+    /// carries — see <c>DumpedAssembly.HasSameContentAs</c>.
     /// </remarks>
     member private this.Canonicalise (assy : DumpedAssembly) (describeRequester : unit -> string) : DumpedAssembly =
         match this.ByDefinition.TryGetValue assy.Name.FullName with
         | false, _ -> assy
         | true, existing ->
+            // The content comparison only runs when two non-reference-equal instances
+            // collide, which is rare.
             if not (existing.HasSameContentAs assy) then
                 failwithf
                     "Two different assemblies both claim definition identity %s (module version IDs %O and %O, and their metadata differs). Refusing to guess which one %s refers to."
@@ -1232,6 +1223,9 @@ module Assembly =
         // this record's `Dispose` may close while the parsed assembly lives on.
         let sequencePoints = PortablePdb.readSequencePoints logger peReader originalPath
 
+        // Cached eagerly so visibility checks (e.g. CA filtering via
+        // `IsCAVisibleFromDecoratedType`) do not re-walk the assembly-level attribute list
+        // per call.
         let friends =
             let input : FriendAssembliesScanInput =
                 {

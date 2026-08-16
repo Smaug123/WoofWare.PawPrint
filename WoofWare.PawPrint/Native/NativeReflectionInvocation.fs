@@ -144,12 +144,6 @@ module internal NativeReflectionInvocation =
     /// `(IntPtr*)&byrefs + i`, so stride the cursor by pointer-widths and let the byref model
     /// resolve what that lands on — the same rule `sourcesPure/StructLocalPointerArithmetic.cs`
     /// pins for `(T*)&local + i`.
-    ///
-    /// The stride *establishes* the byte view rather than assuming one: the four-argument buffer
-    /// arrives as the bare address of the struct local (`p + 0` is `p`, BinaryArithmetic.fs:347),
-    /// so there is no cursor there to advance. Anchoring one is exactly what the guest's own
-    /// `(IntPtr*)&byrefs + i` does for `i > 0`, and appending to an existing cursor — which the
-    /// `stackalloc` buffer does carry — accumulates rather than restarts, so one call serves both.
     /// `sourcesPure/ReflectionInvokeMethodMultipleArguments.cs` covers both buffer shapes.
     let private argumentByrefSlot
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -158,6 +152,12 @@ module internal NativeReflectionInvocation =
         (index : int)
         : ManagedPointerSource
         =
+        // The stride *establishes* the byte view rather than assuming one: the four-argument
+        // buffer arrives as the bare address of the struct local (`p + 0` is `p`,
+        // BinaryArithmetic.fs:347), so there is no cursor there to advance. Anchoring one is
+        // exactly what the guest's own `(IntPtr*)&byrefs + i` does for `i > 0`, and appending
+        // to an existing cursor — which the `stackalloc` buffer does carry — accumulates rather
+        // than restarts, so one call serves both.
         if index = 0 then
             buffer
         else

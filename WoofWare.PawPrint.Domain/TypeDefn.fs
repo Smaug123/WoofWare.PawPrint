@@ -130,7 +130,7 @@ type PrimitiveType =
     /// I.8.2.1.1
     /// contains both a managed pointer to a location and a runtime representation of the type that can be stored at that location.
     ///
-    /// Sonnet 4 says this is "rather obscure", encountered only with varargs (which is very rare) or low-level interop.
+    /// In practice encountered only with varargs (which C# barely exposes) or `__makeref`-style low-level interop.
     | TypedReference
     | IntPtr
     | UIntPtr

@@ -60,14 +60,13 @@ module Scheduler =
     /// Enumerate the Runnable threads in ascending id order. Used by every
     /// policy: the set of candidates is policy-independent, only the choice
     /// among them differs. Kept private so policies stay enumerable here.
-    ///
-    /// Written as a fold rather than a `Map.toSeq |> Seq.choose |> Seq.sortBy |> Seq.toList`
-    /// pipeline because this runs on every scheduler tick, i.e. once per interpreted IL
-    /// instruction, and that pipeline allocates several enumerators plus the sort's scratch
-    /// array per call. `Map.foldBack` visits keys in descending order, so consing during the
-    /// fold produces the ascending list directly; `ThreadId` is a single-field wrapper over the
-    /// `int`, so map-key order *is* ascending `ThreadId` order.
     let private runnableThreads (state : IlMachineState) : ThreadId list =
+        // Written as a fold rather than a `Map.toSeq |> Seq.choose |> Seq.sortBy |> Seq.toList`
+        // pipeline because this runs on every scheduler tick, i.e. once per interpreted IL
+        // instruction, and that pipeline allocates several enumerators plus the sort's scratch
+        // array per call. `Map.foldBack` visits keys in descending order, so consing during the
+        // fold produces the ascending list directly; `ThreadId` is a single-field wrapper over the
+        // `int`, so map-key order *is* ascending `ThreadId` order.
         (state.ThreadState, [])
         ||> Map.foldBack (fun tid ts acc ->
             match ts.Status with

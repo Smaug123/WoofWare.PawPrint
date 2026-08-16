@@ -349,11 +349,6 @@ module EvalStackValue =
     /// refuses exactly the shapes a narrowing must refuse — a real byref, whose
     /// address PawPrint does not model, and a cross-array offset, which is a
     /// difference of two such addresses.
-    ///
-    /// The two spellings of the operation share an arm, so `(sbyte)ptr` and
-    /// `(sbyte)(long)ptr` agree by construction rather than by coincidence.
-    /// CoreLib chooses between those spellings with `#if TARGET_64BIT` inside
-    /// `IntPtr.GetHashCode` (IntPtr.cs:90-97), so they have to.
     let convToInt8 (value : EvalStackValue) (counters : PointerHashState) : int32 * PointerHashState =
         match value with
         | EvalStackValue.Int32 int32Source ->
@@ -362,6 +357,10 @@ module EvalStackValue =
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI1FromInt64 i, counters
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convI1FromInt64 bits, counters
+        // The two spellings of the operation share this arm, so `(sbyte)ptr` and
+        // `(sbyte)(long)ptr` agree by construction rather than by coincidence.
+        // CoreLib chooses between those spellings with `#if TARGET_64BIT` inside
+        // `IntPtr.GetHashCode` (IntPtr.cs:90-97), so they have to.
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _))
         | EvalStackValue.NativeInt src ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_I1" src counters
@@ -451,7 +450,7 @@ module EvalStackValue =
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I8" value
 
-    /// Then truncates to int64.
+    /// `conv.u8`, then truncates to int64.
     let convToUInt64 (value : EvalStackValue) : Int64Source =
         match value with
         | EvalStackValue.Int32 int32Source ->

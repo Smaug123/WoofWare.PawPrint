@@ -272,11 +272,12 @@ module TestPureCases =
 
     let runTest (case : EndToEndTestCase) : unit =
         if not (AppContextProperties.isEmpty case.AppContext) then
-            // The oracle below loads the guest in-process on the *host* runtime, whose
-            // AppContext was seeded by the real host before this test process started and
-            // cannot be reseeded. A case with properties would therefore be comparing a
-            // seeded PawPrint against an unseeded oracle — a PawPrint-only fact dressed up
-            // as a cross-runtime one. Those belong in `sourcesImpure`.
+            // The oracle runs the guest out of process under a fixed `runtimeconfig.json`
+            // (`RealRuntime.runtimeConfig`) that carries no `configProperties`, so a case's
+            // AppContext properties never reach the real runtime. A case with properties
+            // would therefore be comparing a seeded PawPrint against an unseeded oracle —
+            // a PawPrint-only fact dressed up as a cross-runtime one. Those belong in
+            // `sourcesImpure`.
             failwith
                 $"%s{case.FileName} sets AppContext properties (%O{case.AppContext}), but it is registered as a *pure* differential case. Move it to sourcesImpure."
 

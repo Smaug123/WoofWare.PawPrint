@@ -64,8 +64,7 @@ type FieldInfo<'typeGeneric, 'fieldGeneric> =
 
         /// True when this is a static field carrying `[System.ThreadStaticAttribute]`, i.e. one
         /// whose storage is per-thread rather than per-process. `[ThreadStatic]` is a custom
-        /// attribute rather than a `FieldAttributes` flag, so this is computed once at parse
-        /// time (see `FieldInfo.make`) rather than re-walking metadata at each access.
+        /// attribute rather than a `FieldAttributes` flag, so it cannot be read off `Attributes`.
         ///
         /// The runtime ignores `[ThreadStatic]` on an instance field, and so do we: this is
         /// false for instance fields regardless of the attribute.
@@ -179,6 +178,8 @@ module FieldInfo =
             else
                 None
 
+        // `[ThreadStatic]` is a custom attribute rather than a `FieldAttributes` flag, so it is
+        // computed once here at parse time rather than re-walking metadata at each access.
         // The runtime ignores `[ThreadStatic]` on an instance field, and so must we; checking
         // staticness first also short-circuits the metadata walk for the common case.
         let isThreadStatic =

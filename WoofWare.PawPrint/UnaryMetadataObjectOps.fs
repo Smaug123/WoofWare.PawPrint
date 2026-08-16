@@ -788,18 +788,6 @@ module internal UnaryMetadataObjectOps =
 
         state, WhatWeDid.Executed
 
-    /// The CLI value logically held by a boxed object whose runtime type is `handle`; the inverse
-    /// of the shape `executeBox` writes. Callers must already have established that
-    /// `contents.Declared = handle` — both `executeBox` paths guarantee it, by constructing the
-    /// heap object's contents with `CliValueType.OfFields ... handle`.
-    ///
-    /// Three shapes come back out, matching the three `executeBox` writes:
-    ///   - primitive-like (IntPtr, RuntimeTypeHandle, an enum, ...): keep it wrapped, since the
-    ///     push path flattens it via the `PrimitiveLikeKind` invariant;
-    ///   - a genuine multi-field value type: keep it wrapped;
-    ///   - a bare primitive (Int32, Float64, ...), which `box` stored in a synthetic single-field
-    ///     struct: read field 0 back by offset and size. `box` guarantees that shape, so this is a
-    ///     nominal dereference rather than a structural guess.
     /// `Some zero` exactly when `executeBox` stored a *bare* primitive inside a synthetic
     /// single-field struct, `zero` being the zero of that primitive (whose size is the field's
     /// extent). `None` when the boxed storage is the value type's own fields — either because it
@@ -825,6 +813,18 @@ module internal UnaryMetadataObjectOps =
             | CliType.ValueType _ -> None, state
             | bare -> Some bare, state
 
+    /// The CLI value logically held by a boxed object whose runtime type is `handle`; the inverse
+    /// of the shape `executeBox` writes. Callers must already have established that
+    /// `contents.Declared = handle` — both `executeBox` paths guarantee it, by constructing the
+    /// heap object's contents with `CliValueType.OfFields ... handle`.
+    ///
+    /// Three shapes come back out, matching the three `executeBox` writes:
+    ///   - primitive-like (IntPtr, RuntimeTypeHandle, an enum, ...): keep it wrapped, since the
+    ///     push path flattens it via the `PrimitiveLikeKind` invariant;
+    ///   - a genuine multi-field value type: keep it wrapped;
+    ///   - a bare primitive (Int32, Float64, ...), which `box` stored in a synthetic single-field
+    ///     struct: read field 0 back by offset and size. `box` guarantees that shape, so this is a
+    ///     nominal dereference rather than a structural guess.
     let private unboxedContents
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (handle : ConcreteTypeHandle)

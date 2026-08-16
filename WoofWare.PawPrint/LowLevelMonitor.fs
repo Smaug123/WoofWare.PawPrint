@@ -108,12 +108,6 @@ module LowLevelMonitor =
     /// waiting — i.e. the monitor is fully quiescent. We enforce that contract
     /// loudly: destroying a monitor with an owner or a non-empty queue is a
     /// guest bug that would otherwise present as a use-after-free later.
-    ///
-    /// The AcquireQueue check is also a defensive assertion of the
-    /// owner/queue invariant (`Owner = None` implies `AcquireQueue = []`):
-    /// a non-empty queue with no owner means a transition somewhere
-    /// violated the invariant, and surfacing that here is cheaper than
-    /// chasing it from a downstream symptom.
     let destroy (id : LowLevelMonitorId) (state : IlMachineState) : IlMachineState =
         let monitor = lookup id state
 
@@ -121,6 +115,11 @@ module LowLevelMonitor =
         | Some owner -> failwith $"LowLevelMonitor %O{id}: refusing to Destroy a monitor still held by thread %O{owner}"
         | None -> ()
 
+        // The AcquireQueue check is also a defensive assertion of the
+        // owner/queue invariant (`Owner = None` implies `AcquireQueue = []`):
+        // a non-empty queue with no owner means a transition somewhere
+        // violated the invariant, and surfacing that here is cheaper than
+        // chasing it from a downstream symptom.
         match monitor.AcquireQueue with
         | [] -> ()
         | waiters ->

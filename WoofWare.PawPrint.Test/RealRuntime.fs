@@ -239,10 +239,6 @@ module RealRuntime =
 
         result
 
-    /// Run a single-file guest image as its own process on the real .NET runtime, and report how it
-    /// terminated. The image must be self-contained in the sense of referencing nothing but the
-    /// shared framework, which is what `Roslyn.compile` produces; an assembly with its own
-    /// dependencies needs them laid out beside it, so use `executePublishedApp` instead.
     /// Reject a seed the real filesystem cannot faithfully stand in for.
     ///
     /// Every rule here blocks a case where the two sides would silently answer
@@ -428,8 +424,7 @@ module RealRuntime =
     /// Give every directory under `root` (and `root` itself) owner rwx, so that
     /// the tree can be enumerated and deleted.
     ///
-    /// Top-down: a directory must be made searchable before its own children
-    /// can be listed. Symlinks are not followed — `Directory.GetDirectories`
+    /// Symlinks are not followed — `Directory.GetDirectories`
     /// reports them, but chmod through one would change the mode of whatever
     /// it points at, which may be outside the scratch tree entirely.
     ///
@@ -448,6 +443,7 @@ module RealRuntime =
     /// directly.
     let rec makeTreeDeletable (root : string) : unit =
         if not (RuntimeInformation.IsOSPlatform OSPlatform.Windows) then
+            // Top-down: a directory must be made searchable before its own children can be listed.
             File.SetUnixFileMode (root, UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute)
 
             for child in Directory.GetDirectories root do
@@ -456,13 +452,12 @@ module RealRuntime =
 
     /// Remove a scratch tree, including one a seed left with directories their
     /// owner cannot write.
-    ///
-    /// The chmod lives *inside* this function rather than beside its call site
-    /// deliberately: the caller swallows the failure (a leaked temp directory
-    /// must not fail a test), so a call site that forgot to restore the modes
-    /// first would be silent. Here, `TestRealRuntimeCleanup` covers both halves
-    /// as one unit.
     let deleteScratchTree (root : string) : unit =
+        // The chmod lives *inside* this function rather than beside its call site
+        // deliberately: the caller swallows the failure (a leaked temp directory
+        // must not fail a test), so a call site that forgot to restore the modes
+        // first would be silent. Here, `TestRealRuntimeCleanup` covers both halves
+        // as one unit.
         makeTreeDeletable root
         Directory.Delete (root, true)
 
@@ -555,7 +550,10 @@ module RealRuntime =
 
     /// Run a single-file guest image as its own process on the real .NET
     /// runtime, with `seed` materialised into its working directory, and report
-    /// how it terminated.
+    /// how it terminated. The image must be self-contained in the sense of
+    /// referencing nothing but the shared framework, which is what
+    /// `Roslyn.compile` produces; an assembly with its own dependencies needs
+    /// them laid out beside it, so use `executePublishedApp` instead.
     ///
     /// The guest's working directory is the scratch directory this owns, so a
     /// guest should probe **relative** paths: PawPrint's side of the comparison
@@ -620,6 +618,7 @@ module RealRuntime =
             | :? IOException
             | :? UnauthorizedAccessException -> ()
 
+    /// As `executeWithTimeoutAndSeed`, with an empty filesystem seed.
     let executeWithTimeout (timeout : TimeSpan) (args : string[]) (assemblyBytes : byte array) : RealRuntimeResult =
         executeWithTimeoutAndSeed timeout FileSystemSeed.empty args assemblyBytes
 

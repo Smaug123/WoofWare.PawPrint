@@ -17,9 +17,9 @@ namespace WoofWare.PawPrint
 /// wrong answer; see `docs/plans/2026-08-14-storage-location-identity.md` §2.
 [<RequireQualifiedAccess>]
 module internal StorageLocation =
-    /// Lazy resolution of the root's `CliType` template. Used by
-    /// `tryProjectionByteOffset` only when a `Field` projection appears in
-    /// the chain. Variants whose `Field`-projection layout cannot be
+    /// Lazy resolution of the root's `CliType` template. Consumed by
+    /// `byteLocation` (via `IlMachineManagedByref.walkProjectionByteOffset`)
+    /// only when a `Field` projection appears in the chain. Variants whose `Field`-projection layout cannot be
     /// resolved (e.g. `PeByteRange`, `ExposedClassObject`) or
     /// where no typed cell starts at the root byte offset
     /// (`StackMemoryByte` / `NativeMemoryByte`) raise — the caller wraps

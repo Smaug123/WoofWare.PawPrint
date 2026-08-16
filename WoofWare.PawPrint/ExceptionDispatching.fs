@@ -23,15 +23,10 @@ type ExceptionDispatchResult =
 module ExceptionDispatching =
 
     /// <summary>
-    /// The type a <c>catch</c> clause of <paramref name="method"/> names.
+    /// The type a <c>catch</c> clause of <paramref name="method"/> names. For a dynamic method's
+    /// clause this is the handle resolved when the method was first prepared for execution, not
+    /// whatever its scope holds at throw time.
     /// </summary>
-    /// <remarks>
-    /// The dynamic case is a lookup and not a resolution: a dynamic method's clause types were all
-    /// resolved when the method was first prepared for execution, which is where CoreCLR's JIT
-    /// resolves them (see <c>DynamicMethodExecution.concretize</c>). Resolving one here instead
-    /// would read the scope as it stands during the *throw*, and a guest that rewrote the slot in
-    /// between is measured not to be heard by real .NET.
-    /// </remarks>
     let private catchClauseType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -66,6 +61,11 @@ module ExceptionDispatching =
                 methodGenerics
                 catchTypeDefn
         | ExceptionCatchType.FromDynamicScope index ->
+            // This arm is a lookup and not a resolution: a dynamic method's clause types were all
+            // resolved when the method was first prepared for execution, which is where CoreCLR's
+            // JIT resolves them (see DynamicMethodExecution.concretize). Resolving one here instead
+            // would read the scope as it stands during the *throw*, and a guest that rewrote the
+            // slot in between is measured not to be heard by real .NET.
             let handle =
                 match method.SynthesisedKind with
                 | Some (SynthesisedMethod.DynamicMethod handle) -> handle
@@ -163,17 +163,16 @@ module ExceptionDispatching =
             |> Option.map (fun (_, _, exn) -> exn)
 
     /// The assembly whose metadata a method's own tokens are to be resolved against.
-    ///
-    /// Read from the method rather than from `state.ActiveAssembly`, which answers for whichever
-    /// frame the thread happens to be executing. Those coincided while handler search only ever
-    /// looked at the active frame; the first pass below searches frames the thread is *not* in,
-    /// so relying on the coincidence would resolve a `catch`'s type token against the wrong
-    /// assembly as soon as an exception crossed an assembly boundary.
     let private assemblyOfMethod
         (state : IlMachineState)
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, 'methodVar>)
         : DumpedAssembly
         =
+        // Read from the method rather than from `state.ActiveAssembly`, which answers for
+        // whichever frame the thread happens to be executing. Those coincided while handler
+        // search only ever looked at the active frame; the first pass below searches frames the
+        // thread is *not* in, so relying on the coincidence would resolve a `catch`'s type token
+        // against the wrong assembly as soon as an exception crossed an assembly boundary.
         let name = method.DeclaringAssembly
 
         match state.LoadedAssembly name with
@@ -569,15 +568,14 @@ module ExceptionDispatching =
         }
 
     /// The innermost `filter` clause of this frame that is currently being evaluated, if any.
-    ///
-    /// Scanning the continuation stack rather than reading only its top is what lets the first
-    /// pass abandon an exception at a filter boundary: the first pass asks before running any
-    /// cleanup, so a cleanup scope belonging to a superseded raise can sit above the filter that
-    /// still owns the frame.
     let private activeFilterOf
         (methodState : MethodState)
         : ExceptionFilterContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
         =
+        // Scanning the continuation stack rather than reading only its top is what lets the first
+        // pass abandon an exception at a filter boundary: the first pass asks before running any
+        // cleanup, so a cleanup scope belonging to a superseded raise can sit above the filter
+        // that still owns the frame.
         methodState.ExceptionContinuations
         |> List.tryPick (fun frame ->
             match frame.Scope, frame.Continuation with
@@ -1193,12 +1191,6 @@ module ExceptionDispatching =
 
     /// Resume a second-pass unwind that suspended to run a `finally` or `fault` clause, now that
     /// its `endfinally` has been reached. The caller has already popped the clause's continuation.
-    ///
-    /// The resume PC is the frame's *live* program counter — the `endfinally` itself — rather
-    /// than the PC the unwind was parked with. That is what terminates a tower of nested cleanup
-    /// clauses: the just-run clause's `try` does not cover its own handler body, while a `try`
-    /// enclosing it still does, so re-searching from here finds the next clause out and nothing
-    /// else.
     let resumeUnwindAfterCleanup
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
@@ -1213,6 +1205,11 @@ module ExceptionDispatching =
             failwith
                 $"Logic error: endfinally resumed an unwind parked on frame %O{unwind.Frame} while the thread was executing frame %O{threadState.ActiveMethodState}"
 
+        // The resume PC is the frame's *live* program counter — the `endfinally` itself — rather
+        // than the PC the unwind was parked with. That is what terminates a tower of nested
+        // cleanup clauses: the just-run clause's `try` does not cover its own handler body, while
+        // a `try` enclosing it still does, so re-searching from here finds the next clause out
+        // and nothing else.
         secondPass
             loggerFactory
             corelib

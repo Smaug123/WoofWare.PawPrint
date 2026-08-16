@@ -22,9 +22,9 @@ module internal UnaryMetadataCallOps =
 
     /// Row-major flatten: ECMA layout for `arr[i_0, ..., i_{n-1}]` with lengths
     /// `[L_0, ..., L_{n-1}]` is `((((i_0)*L_1)+i_1)*L_2 + i_2)*...*L_{n-1} + i_{n-1}`.
-    /// The iterative form starting from `flat = 0` reproduces this because the first
-    /// multiplication (by L_0) is on a zero accumulator.
     let private rowMajorOffset (lengths : ImmutableArray<int>) (indices : int[]) : int =
+        // The iterative form starting from `flat = 0` reproduces the ECMA formula because
+        // the first multiplication (by L_0) is on a zero accumulator.
         let mutable flat = 0
 
         for k = 0 to indices.Length - 1 do

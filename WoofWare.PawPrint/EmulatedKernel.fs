@@ -1066,15 +1066,15 @@ module EmulatedKernel =
             Signals = SignalState.empty
         }
 
-    /// Set the Unix platform identity the simulated process reports.
-    ///
-    /// No eager validation of the release string:
-    /// `SimulatedUnixPlatform.create` validates at construction, so a
-    /// value of the type is already a platform some Unix could be. `assertValid`
-    /// still catches the one value that can bypass that — a forged
-    /// `Unchecked.defaultof`, whose null release would otherwise reach a guest
-    /// as its `uname -r`.
+    /// Set the Unix platform identity the simulated process reports. Rejects a
+    /// forged `Unchecked.defaultof` platform, whose null release would
+    /// otherwise reach a guest as its `uname -r`.
     let withUnixPlatform (platform : SimulatedUnixPlatform) (kernel : EmulatedKernel) : EmulatedKernel =
+        // No eager validation of the release string:
+        // `SimulatedUnixPlatform.create` validates at construction, so a value
+        // of the type is already a platform some Unix could be. `assertValid`
+        // still catches the one value that can bypass that — the forged
+        // `Unchecked.defaultof`.
         { kernel with
             UnixPlatform = SimulatedUnixPlatform.assertValid "EmulatedKernel.UnixPlatform" platform
         }
@@ -1254,15 +1254,6 @@ module EmulatedKernel =
     /// the writer means a guest that runs the clock off the end faults at the wait that did it,
     /// naming the operation responsible, rather than at whichever unlucky later `Stopwatch` read
     /// happens to trip over the value.
-    ///
-    /// It also keeps deadline arithmetic total. A finite deadline is
-    /// `clock + timeoutMs * ticksPerMillisecond`, and `Thread.Sleep(Int32.MaxValue)` contributes
-    /// about 2.1e13 ticks; with the clock bounded at 9.2e16 the sum cannot approach
-    /// `Int64.MaxValue`, so the seven deadline sites need no checked arithmetic of their own.
-    /// Without the bound they would need it, and the horizon is close enough to matter: the
-    /// deadline jump advances the clock to a deadline *without* retiring a step, so a loop of
-    /// `Sleep(Int32.MaxValue)` reaches the wrap in about 430,000 iterations — a few million
-    /// interpreted instructions.
     let withVirtualClockTicks (ticks : int64) (kernel : EmulatedKernel) : EmulatedKernel =
         // Checked independently of the monotonicity comparison below, which on its own would
         // wave through a negative target whenever the current value is more negative still —
@@ -1275,6 +1266,14 @@ module EmulatedKernel =
             failwith
                 $"virtual clock would move backwards, from %d{kernel.VirtualClockTicks} to %d{ticks} ticks; it is monotonic by construction and every guest-visible clock derives from it"
 
+        // The bound also keeps deadline arithmetic total. A finite deadline is
+        // `clock + timeoutMs * ticksPerMillisecond`, and `Thread.Sleep(Int32.MaxValue)`
+        // contributes about 2.1e13 ticks; with the clock bounded at 9.2e16 the sum cannot
+        // approach `Int64.MaxValue`, so the seven deadline sites need no checked arithmetic of
+        // their own. Without the bound they would need it, and the horizon is close enough to
+        // matter: the deadline jump advances the clock to a deadline *without* retiring a step,
+        // so a loop of `Sleep(Int32.MaxValue)` reaches the wrap in about 430,000 iterations — a
+        // few million interpreted instructions.
         if ticks > maxMonotonicTimestampClockTicks then
             failwith
                 $"simulated uptime has reached %d{ticks} ticks (100 ns each), past the %d{maxMonotonicTimestampClockTicks} from which a monotonic nanosecond timestamp can still be derived — about 292 years. The guest has almost certainly been jumping the clock with long timed waits; PawPrint cannot represent time beyond this."
@@ -1324,18 +1323,20 @@ module EmulatedKernel =
     /// The guest-visible `Environment.TickCount64`, in whole milliseconds:
     /// `SystemNative_GetLowResolutionTimestamp`'s reading.
     ///
-    /// Lives here beside `monotonicTimestampNanos` and `systemTimeAsTicks` rather than inline in
-    /// the PAL handler, so that all three projections of the one clock sit together and can be
-    /// checked against each other without a test having to restate the arithmetic of any of
-    /// them. Upstream these two monotonic entry points (`minipal_lowres_ticks` and
+    /// Upstream the two monotonic entry points (`minipal_lowres_ticks` and
     /// `minipal_hires_ticks`) read the same clock at two resolutions, and the contract a guest
     /// depends on is that they never disagree — so this must be exactly the high-resolution
     /// reading truncated to milliseconds.
     ///
     /// Truncating rather than rounding is faithful: upstream's coarse clock truncates too.
-    /// Unguarded, unlike its siblings, because dividing a clock already bounded below
-    /// `Int64.MaxValue` cannot overflow or go negative.
     let lowResolutionTimestampMs (kernel : EmulatedKernel) : int64 =
+        // Lives here beside `monotonicTimestampNanos` and `systemTimeAsTicks` rather than
+        // inline in the PAL handler, so that all three projections of the one clock sit
+        // together and can be checked against each other without a test having to restate the
+        // arithmetic of any of them.
+        //
+        // Unguarded, unlike its siblings, because dividing a clock already bounded below
+        // `Int64.MaxValue` cannot overflow or go negative.
         kernel.VirtualClockTicks / ticksPerMillisecond
 
 
@@ -1509,14 +1510,6 @@ module EmulatedKernel =
     /// signal-handling thread is an ordinary `pthread_create` and consumes a
     /// tid like any other, shifting every tid minted after it.
     ///
-    /// The `+ 1` dodges `0`, which CoreLib's
-    /// `Lock.ThreadId.InitializeForCurrentThread` (Lock.NonNativeAot.cs) maps
-    /// to `0xFFFF_FFFF` by decrement — so every thread that minted `0` would
-    /// end up sharing one id. The other sentinel, the `(uint32)-1` that
-    /// `TryGetUInt32OSThreadId` returns to mean "this platform cannot determine
-    /// a thread id", is unreachable by construction: `ThreadId` wraps an `int`,
-    /// and `Int32.MaxValue + 1` is less than half of `0xFFFF_FFFF`.
-    ///
     /// A negative `ThreadId` is rejected rather than wrapped, because `-1`
     /// would mint exactly the `0` this function exists to avoid. No allocator
     /// produces one (`NextThreadId` counts up from `0`), but `FrameId -1` is an
@@ -1529,6 +1522,13 @@ module EmulatedKernel =
             failwith
                 $"thread id must be non-negative to mint an OS thread id (a negative id would wrap onto the fatal 0, which CoreLib maps to the (uint32)-1 sentinel); got %d{i}"
 
+        // The `+ 1` dodges `0`, which CoreLib's
+        // `Lock.ThreadId.InitializeForCurrentThread` (Lock.NonNativeAot.cs) maps
+        // to `0xFFFF_FFFF` by decrement — so every thread that minted `0` would
+        // end up sharing one id. The other sentinel, the `(uint32)-1` that
+        // `TryGetUInt32OSThreadId` returns to mean "this platform cannot determine
+        // a thread id", is unreachable by construction: `ThreadId` wraps an `int`,
+        // and `Int32.MaxValue + 1` is less than half of `0xFFFF_FFFF`.
         OsThreadId (uint32 i + 1u)
 
     /// Overlay the supplied environment variables on top of the kernel's

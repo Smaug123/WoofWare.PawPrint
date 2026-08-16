@@ -22,11 +22,7 @@ module NativeString =
         state
         |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread
 
-    /// Decode an `nint`-typed length argument. CoreLib's .NET 10 `FastAllocateString`
-    /// wrapper widens `int` to `nint` via `Conv.I`, which materialises as
-    /// `NativeInt.Verbatim`, but accept the broader set of representations that other
-    /// nint-length sites already produce so a future BCL refactor doesn't silently
-    /// degrade. Mirrors `NativeBuffer.byteCountOfArgument`. Reject negatives and
+    /// Decode an `nint`-typed length argument. Reject negatives and
     /// values that exceed `Int32.MaxValue`; CoreCLR throws OOM in both cases, but
     /// we don't yet plumb guest exceptions through here.
     let private nintLengthOfArgument (operation : string) (arg : CliType) : int =
@@ -40,6 +36,10 @@ module NativeString =
 
             int count
 
+        // CoreLib's .NET 10 `FastAllocateString` wrapper widens `int` to `nint` via `Conv.I`,
+        // which materialises as `NativeInt.Verbatim`, but accept the broader set of
+        // representations that other nint-length sites already produce so a future BCL refactor
+        // doesn't silently degrade. Mirrors `NativeBuffer.byteCountOfArgument`.
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim count)) -> checkedLength count
         | CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim count)) -> checkedLength count

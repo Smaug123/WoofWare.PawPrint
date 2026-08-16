@@ -323,11 +323,9 @@ module TypeResolution =
     type private SubstitutionMemo = System.Collections.Generic.Dictionary<SubstitutionKey, TypeDefn>
 
     /// Substitute generic parameters in a TypeDefn while preserving the structure of
-    /// constructed types (arrays, pointers, byrefs). For "leaf" types (FromReference,
-    /// FromDefinition, PrimitiveType), falls through to resolveTypeFromDefn and converts
-    /// back via typeInfoToTypeDefn, which is lossless for those cases. For constructed
-    /// types, recurses structurally so that e.g. OneDimensionalArrayLowerBoundZero is
-    /// preserved rather than being collapsed to System.Array.
+    /// constructed types (arrays, pointers, byrefs): e.g. OneDimensionalArrayLowerBoundZero
+    /// is preserved rather than being collapsed to System.Array. "Leaf" types
+    /// (FromReference, FromDefinition, PrimitiveType) round-trip losslessly.
     ///
     /// <c>expanding</c> is the chain of parameter expansions currently in flight; see
     /// <c>ExpandingParam</c>. <c>memo</c> must have been created for this environment; see

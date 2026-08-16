@@ -106,10 +106,11 @@ module MemoryBlock =
         aOffset < bOffset + bSize && bOffset < aOffset + aSize
 
     /// Find the unique cell whose covered range contains `offset`, if any.
-    /// Cells don't overlap, so at most one matches. F# `Map` iterates entries
-    /// in key order, so we can stop as soon as a cell starts past `offset`
-    /// (no later cell can contain `offset`) or as soon as we find a cover.
+    /// Cells don't overlap, so at most one matches.
     let private tryFindCellCoveringRaw (offset : int) (block : MemoryBlock) : (int * CliType) option =
+        // F# `Map` iterates entries in key order, so we can stop as soon as a
+        // cell starts past `offset` (no later cell can contain `offset`) or as
+        // soon as we find a cover.
         use enumerator =
             (block.Cells :> System.Collections.Generic.IEnumerable<_>).GetEnumerator ()
 

@@ -590,10 +590,10 @@ public static class StreamVersionLibrary
         | other -> failwith $"QCallModule zero value was not a value type: %O{other}"
 
     /// Mirrors the `new StringHandleOnStack(ref name)` the C# wrapper builds over a local
-    /// preinitialised to null; the object[1] cell stands in for that stack slot.
-    /// `StringHandleOnStack` and `ObjectHandleOnStack` are both a lone `void* _ptr` wrapping a
-    /// byref to the caller's local; only the name differs. The object[1] cell stands in for
-    /// that stack slot, and starts null exactly as the C# wrappers' locals do.
+    /// preinitialised to null. `StringHandleOnStack` and `ObjectHandleOnStack` are both a
+    /// lone `void* _ptr` wrapping a byref to the caller's local; only the name differs.
+    /// The object[1] cell stands in for that stack slot, and starts null exactly as the
+    /// C# wrappers' locals do.
     let private handleOnStackValue
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

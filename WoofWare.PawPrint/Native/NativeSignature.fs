@@ -14,17 +14,16 @@ module NativeSignature =
 
     /// Classify a `void*` COR signature pointer argument as null or as a pointer over a PE byte
     /// range, rejecting anything else.
-    ///
-    /// Two spellings of each case are listed on purpose. `CliType.unwrapPrimitiveLikeDeep` unwraps
-    /// primitive-like value-type wrappers but does *not* canonicalise
-    /// `Numeric (NativeInt (ManagedPointer p))` into `RuntimePointer (Managed p)`, so the two are
-    /// the same pointer in different encodings and a classifier that lists one of them throws on
-    /// the other. The live route today — `ConstArray.m_constArray` (an `IntPtr` field) through
-    /// `MdFieldInfo.FieldType` — produces only the `RuntimePointer` spelling; the `NativeInt` arm
-    /// is a guard, matching how `requireNullCorSig` below lists every spelling of a null pointer.
-    /// Recognising only one encoding of an argument can pass every unit test and still throw at
-    /// runtime (see `nullFieldHandleSpellings` in `TestNativeSignature.fs`).
     let private corSigPeByteRange (operation : string) (sigArg : CliType) : PeByteRangePointer option =
+        // Two spellings of each case are listed on purpose. `CliType.unwrapPrimitiveLikeDeep` unwraps
+        // primitive-like value-type wrappers but does *not* canonicalise
+        // `Numeric (NativeInt (ManagedPointer p))` into `RuntimePointer (Managed p)`, so the two are
+        // the same pointer in different encodings and a classifier that lists one of them throws on
+        // the other. The live route today — `ConstArray.m_constArray` (an `IntPtr` field) through
+        // `MdFieldInfo.FieldType` — produces only the `RuntimePointer` spelling; the `NativeInt` arm
+        // is a guard, matching how `requireNullCorSig` below lists every spelling of a null pointer.
+        // Recognising only one encoding of an argument can pass every unit test and still throw at
+        // runtime (see `nullFieldHandleSpellings` in `TestNativeSignature.fs`).
         match CliType.unwrapPrimitiveLikeDeep sigArg with
         | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
         | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
@@ -88,8 +87,9 @@ module NativeSignature =
             failwith $"%s{operation}: signature `_sig` byref points at non-signature PE byte range %O{peByteRange}"
 
     /// Resolve a Signature `_sig` argument to the COR signature blob bytes it
-    /// points at. Built on top of `resolveSignatureBlobHandle`.
+    /// points at.
     let private resolveSignatureBlob (operation : string) (state : IlMachineState) (sigArg : CliType) : byte[] =
+        // Built on top of `resolveSignatureBlobHandle`.
         let assembly, blobHandle = resolveSignatureBlobHandle operation state sigArg
         let mdReader = assembly.PeReader.GetMetadataReader ()
         mdReader.GetBlobBytes blobHandle
@@ -321,15 +321,9 @@ module NativeSignature =
     /// the only reachable caller: a literal field has no `FieldDesc`, so it is reflected over from
     /// metadata tokens alone.
     ///
-    /// The blob is not re-parsed. `pCorSig` carries its own provenance — it is the pointer
-    /// `MetadataImport.GetSigOfFieldDef` handed back, a PE byte range naming the FieldDef — so the
-    /// field's type comes from the `FieldInfo.Signature` PawPrint already parsed, concretized under
-    /// the generics of `_declaringType`. That is the same source the interpreter binds field access
-    /// against, so a reflected field type cannot disagree with the one the machine uses; a second,
-    /// byte-level decoder could. CoreCLR reaches the same answer by a different route:
-    /// `MetaSig::NextArgNormalized` computes a *normalised* element type but the FIELD arm discards
-    /// it, taking the type from `GetLastTypeHandleThrowing()` on the raw signature position, so
-    /// (for instance) an enum-typed field reports the enum, not its underlying type.
+    /// A reflected field type cannot disagree with the one the machine uses: the field's type is
+    /// derived from the same source the interpreter binds field access against, and (for instance)
+    /// an enum-typed field reports the enum, not its underlying type.
     let private fillRawFieldBlobSignature
         (ctx : NativeCallContext)
         (operation : string)
@@ -392,6 +386,15 @@ module NativeSignature =
 
         let typeGenerics = declaringTypeGenericsOfSignature operation state signatureObj
 
+        // The blob is not re-parsed. `pCorSig` carries its own provenance — it is the pointer
+        // `MetadataImport.GetSigOfFieldDef` handed back, a PE byte range naming the FieldDef — so the
+        // field's type comes from the `FieldInfo.Signature` PawPrint already parsed, concretized under
+        // the generics of `_declaringType`. That is the same source the interpreter binds field access
+        // against, so a reflected field type cannot disagree with the one the machine uses; a second,
+        // byte-level decoder could. CoreCLR reaches the same answer by a different route:
+        // `MetaSig::NextArgNormalized` computes a *normalised* element type but the FIELD arm discards
+        // it, taking the type from `GetLastTypeHandleThrowing()` on the raw signature position, so
+        // (for instance) an enum-typed field reports the enum, not its underlying type.
         let fieldTypeAddr, state =
             runtimeTypeOfFieldSignature ctx assembly fieldInfo typeGenerics state
 
@@ -519,11 +522,10 @@ module NativeSignature =
     /// `Signature_Init` (runtimehandles.cpp:1585) when `pMethodDesc != NULL`. `_declaringType` is
     /// supplied by the managed constructor, so this helper only fills the runtime-derived fields.
     ///
-    /// The types come from PawPrint's already-parsed `MethodInfo.Signature` rather than from a
-    /// second parse of the COR blob, so a method's reflected parameter types cannot disagree with
-    /// the types the interpreter binds calls against. `_sig`/`_csig` still point at the blob,
-    /// because the byte-level readers (`GetParameterOffsetInternal`,
-    /// `Signature_GetCustomModifiersAtOffset`, `Signature_AreEqual`) work from the bytes.
+    /// A method's reflected parameter types cannot disagree with the types the interpreter binds
+    /// calls against. `_sig`/`_csig` still point at the blob, because the byte-level readers
+    /// (`GetParameterOffsetInternal`, `Signature_GetCustomModifiersAtOffset`,
+    /// `Signature_AreEqual`) work from the bytes.
     let private fillMethodSignature
         (ctx : NativeCallContext)
         (operation : string)
@@ -535,6 +537,9 @@ module NativeSignature =
         let assembly, methodInfo, identity, typeGenerics, methodGenerics =
             methodSignatureTypeContext operation state methodHandleArg
 
+        // The types come from PawPrint's already-parsed `MethodInfo.Signature` rather than from a
+        // second parse of the COR blob, which is what makes the reflected parameter types agree
+        // with the types the interpreter binds calls against.
         let concretize (state : IlMachineState) (defn : TypeDefn) : IlMachineState * ConcreteTypeHandle =
             IlMachineState.concretizeType
                 ctx.LoggerFactory

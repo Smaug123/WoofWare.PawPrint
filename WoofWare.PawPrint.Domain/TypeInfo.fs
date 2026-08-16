@@ -42,10 +42,10 @@ type TypeLayoutKind =
 [<RequireQualifiedAccess>]
 module TypeLayoutKind =
     /// Project a `TypeAttributes` value's `LayoutMask` bits onto the layout kind they denote.
-    /// `LayoutMask = 0x18`; `AutoLayout = 0x00`, `SequentialLayout = 0x08`, `ExplicitLayout = 0x10`.
     /// The zero-valued bits are AutoLayout by ECMA §II.10.1.2, which is why a type carrying no
     /// `[StructLayout]` at all — every C# class — reports `Auto`.
     let ofTypeAttributes (attrs : TypeAttributes) : TypeLayoutKind =
+        // LayoutMask = 0x18; AutoLayout = 0x00, SequentialLayout = 0x08, ExplicitLayout = 0x10.
         match attrs &&& TypeAttributes.LayoutMask with
         | TypeAttributes.AutoLayout -> TypeLayoutKind.Auto
         | TypeAttributes.SequentialLayout -> TypeLayoutKind.Sequential

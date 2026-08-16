@@ -1165,8 +1165,6 @@ module internal MethodTableProjection =
     /// whose layout we model directly. The `ExposedClassObjectRaw` cell is the
     /// CoreCLR-side cache of the type's `RuntimeType`; managed code reads it via
     /// `ldflda → Unsafe.AsPointer → ldind.ref` and treats it as a `RuntimeType*`.
-    /// We pre-allocate the canonical `RuntimeType` so that subsequent reads of
-    /// the byref are pure registry lookups.
     let tryProjectAuxiliaryDataFieldAddress
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

@@ -19,8 +19,7 @@ module internal IntrinsicHelpers =
             bool
 
     /// Walk a value-type's fields to decide whether its storage contains any managed references
-    /// (object references or by-refs), hiding the cycle-detection memo table used by the
-    /// implementation. The walk is in the concrete domain, so a field typed `T` is resolved
+    /// (object references or by-refs). The walk is in the concrete domain, so a field typed `T` is resolved
     /// against the instantiation `handle` names rather than against a generic parameter.
     val concreteTypeContainsReferences :
         loggerFactory : ILoggerFactory ->

@@ -257,10 +257,7 @@ module NullaryIlOp =
     /// bit patterns — PawPrint models `Null` as the bit pattern 0 throughout, and
     /// a `NativeIntPlaceholder` is by construction nothing but the raw bits that
     /// produced it — so their complement is an honest `Verbatim`, which keeps
-    /// composing with the verbatim arms of `And` / `Or` / comparisons. (The
-    /// result is an integer, not a pointer, so the placeholder-to-`Null`
-    /// normalisation that applies when *constructing* byrefs is not needed
-    /// here.) Everything else routes
+    /// composing with the verbatim arms of `And` / `Or` / comparisons. Everything else routes
     /// through `PointerHashSynthesis.materialiseHashBits` and is tagged
     /// `OpaqueHashBits`, propagating the synthesised-bits contract: the result is
     /// deterministic but MUST NOT be used as a real pointer. `materialiseHashBits`
@@ -282,6 +279,8 @@ module NullaryIlOp =
         match source with
         | NativeIntSource.Verbatim i -> NativeIntSource.Verbatim ~~~i, counters
         | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> NativeIntSource.Verbatim ~~~0L, counters
+        // The result is an integer, not a pointer, so the placeholder-to-`Null`
+        // normalisation that applies when *constructing* byrefs is not needed here.
         | NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
             NativeIntSource.Verbatim ~~~bits, counters
         | _ ->
@@ -447,10 +446,7 @@ module NullaryIlOp =
     /// Run one arithmetic instruction that can fault on its operands, and either push its result or
     /// hand the guest the exception the CLR would have thrown.
     ///
-    /// The host's own `div`/`rem` instructions are what actually detect these faults — PawPrint
-    /// delegates the arithmetic to them via `BinaryArithmetic`, so there is no separate table of
-    /// faulting operand values here that could drift from the semantics the host implements. The
-    /// cost is that the fault arrives as a host exception, so `compute` must stay as tight as
+    /// The fault arrives as a host exception, so `compute` must stay as tight as
     /// possible around the arithmetic itself: anything else caught in here would be silently
     /// reinterpreted as a guest fault.
     ///
@@ -466,6 +462,10 @@ module NullaryIlOp =
         (compute : unit -> EvalStackValue * IlMachineState)
         : ExecutionResult
         =
+        // The host's own `div`/`rem` instructions are what actually detect these faults —
+        // PawPrint delegates the arithmetic to them via `BinaryArithmetic`, so there is no
+        // separate table of faulting operand values here that could drift from the semantics
+        // the host implements.
         let outcome =
             try
                 compute () |> Ok
@@ -1208,9 +1208,7 @@ module NullaryIlOp =
     /// `readManagedByrefBytesAs`, which is what every other byref root already does for it
     /// (`readArrayBytesAs`, `readStackMemoryBytesAs`, `tryReadHeapValueFieldPrecise`).
     ///
-    /// The test is on *width* alone, with no same-kind clause: `CliNumericType.SizeOf` is a
-    /// function of the kind constructor, so a same-kind pair can never be strictly narrower
-    /// and a `not (SameKind ...)` conjunct would be unfalsifiable. Same-width kind changes
+    /// The test is on *width* alone, with no same-kind clause. Same-width kind changes
     /// (`ldind.i4` over a `Float32` cell, `ldind.i` over an `Int64` one) therefore keep the
     /// incumbent answer, which is what preserves provenance through `ldind.i8` over a
     /// native-int cell.
@@ -1219,13 +1217,17 @@ module NullaryIlOp =
     /// unwrapped first, because this predicate's contract is "classify what
     /// `EvalStackValue.ofCliType` will hand to `toCliTypeCoerced`", and that function
     /// flattens them through `CliValueType.PrimitiveLikeField` before the coercion sees
-    /// them. Classifying the wrapper itself would answer a different question. The recursion
-    /// is unguarded for the same reason `ofCliType`'s is: a value type cannot contain itself
-    /// in well-formed metadata, and both downstream routes walk the identical structure.
+    /// them. Classifying the wrapper itself would answer a different question.
     let rec private ldindNeedsByteView (target : CliNumericType) (cell : CliType) : bool =
         match cell with
+        // The recursion is unguarded for the same reason `ofCliType`'s is: a value type
+        // cannot contain itself in well-formed metadata, and both downstream routes walk the
+        // identical structure.
         | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome ->
             ldindNeedsByteView target (CliValueType.PrimitiveLikeField vt).Contents
+        // `CliNumericType.SizeOf` is a function of the kind constructor, so a same-kind pair
+        // can never be strictly narrower and a `not (SameKind ...)` conjunct would be
+        // unfalsifiable.
         | CliType.Numeric c -> CliNumericType.SizeOf target < CliNumericType.SizeOf c
         | CliType.ValueType _
         | CliType.Bool _
@@ -1483,10 +1485,7 @@ module NullaryIlOp =
     /// Array cells hold the element type's *declared* `CliType` — `CliType.Bool` for `bool[]`,
     /// `CliType.Char` for `char[]`, a primitive-like value type for `nint[]`/`nuint[]`/enum
     /// arrays — which is the same representation locals, fields and statics use. The opcode is
-    /// asking for a *view* of that cell at a given width, so this is the identical two-step
-    /// projection `executeLdind` performs: `ofCliType` canonically widens the stored form
-    /// (flattening `Bool`, `Char` and primitive-like wrappers to their underlying primitive),
-    /// and `toCliTypeCoerced` narrows that to the requested template.
+    /// asking for a *view* of that cell at a given width.
     let internal ldElem
         (targetCliType : CliType)
         (index : EvalStackValue)
@@ -1497,6 +1496,10 @@ module NullaryIlOp =
         =
         let value = getArrayElt index arr currentThread state
 
+        // The identical two-step projection `executeLdind` performs: `ofCliType` canonically
+        // widens the stored form (flattening `Bool`, `Char` and primitive-like wrappers to
+        // their underlying primitive), and `toCliTypeCoerced` narrows that to the requested
+        // template.
         let coerced =
             value
             |> EvalStackValue.ofCliType

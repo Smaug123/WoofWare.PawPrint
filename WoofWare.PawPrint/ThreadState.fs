@@ -241,12 +241,11 @@ module ThreadStatus =
     /// (and so the debugger can show what was running when the thread
     /// ended). The set is therefore exactly `NotStarted` and `Parked`,
     /// the two states a thread enters before any IL has executed on it.
-    ///
-    /// Implemented as a fully-enumerated match (not `| _ -> false`) so a
-    /// new frameless `ThreadStatus` variant fires an exhaustiveness
-    /// error here instead of silently masking bugs in the dozens of
-    /// callers that read frame data behind this guard.
     let hasNoActiveFrame (status : ThreadStatus) : bool =
+        // Fully-enumerated match (not `| _ -> false`) so a new frameless
+        // `ThreadStatus` variant fires an exhaustiveness error here instead of
+        // silently masking bugs in the dozens of callers that read frame data
+        // behind this guard.
         match status with
         | ThreadStatus.NotStarted -> true
         | ThreadStatus.Parked -> true
@@ -282,10 +281,9 @@ module ThreadStatus =
     /// must still confirm that the preceding instruction really is a call before stepping
     /// back onto it, because this classifier is a statement about how a status is *reached*
     /// and cannot see the frame it is asked about.
-    ///
-    /// Fully enumerated, like `hasNoActiveFrame` above, so a new `ThreadStatus` forces an
-    /// answer here rather than silently inheriting one.
     let parksPastTheBlockingCall (status : ThreadStatus) : bool =
+        // Fully enumerated, like `hasNoActiveFrame` above, so a new `ThreadStatus`
+        // forces an answer here rather than silently inheriting one.
         match status with
         | ThreadStatus.NotStarted -> false
         | ThreadStatus.Parked -> false

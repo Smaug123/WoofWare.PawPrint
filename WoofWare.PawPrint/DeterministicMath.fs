@@ -383,12 +383,6 @@ module DeterministicMath =
         if signIsNegative then -result else result
 
     /// The integer square root of a non-negative `n`: the greatest `r` with `r * r <= n`.
-    ///
-    /// Newton's iteration, run entirely in integers so that it is exact rather than
-    /// approximate. Starting at or above the answer, `x -> (x + n/x) / 2` decreases strictly
-    /// until it reaches `floor(sqrt n)` and never goes below it, so the first non-decrease is
-    /// the termination condition and the value before it is the answer. `2^ceil(b/2)` is such
-    /// a starting point: `n < 2^b` gives `sqrt n < 2^(b/2)`.
     let internal integerSqrt (n : BigInteger) : BigInteger =
         if n.Sign < 0 then
             failwith $"DeterministicMath: integerSqrt of the negative value %O{n}"
@@ -397,6 +391,11 @@ module DeterministicMath =
             BigInteger.Zero
         else
 
+        // Newton's iteration, run entirely in integers so that it is exact rather than
+        // approximate. Starting at or above the answer, `x -> (x + n/x) / 2` decreases strictly
+        // until it reaches `floor(sqrt n)` and never goes below it, so the first non-decrease is
+        // the termination condition and the value before it is the answer. `2^ceil(b/2)` is such
+        // a starting point: `n < 2^b` gives `sqrt n < 2^(b/2)`.
         let mutable current = BigInteger.One <<< ((int (n.GetBitLength ()) + 1) / 2)
         let mutable next = (current + (n / current)) >>> 1
 

@@ -33,8 +33,10 @@ module TestMonotonicTimestamp =
         let modulus = bound + 1L
         ((seed % modulus) + modulus) % modulus
 
-    /// A kernel whose virtual clock has advanced to `clockMs`. Set by
-    /// record-copy because the driver loop is its only production writer.
+    /// A kernel whose virtual clock has advanced to the given number of
+    /// 100 ns ticks (despite the parameter's name, this is `VirtualClockTicks`,
+    /// not milliseconds). Set by record-copy because the driver loop is its
+    /// only production writer.
     let private kernelWith (clockMs : int64) : EmulatedKernel =
         { EmulatedKernel.initial with
             VirtualClockTicks = clockMs

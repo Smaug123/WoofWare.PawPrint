@@ -351,13 +351,13 @@ module SynthesisedMethod =
     /// synthesised method's semantics require is part of those semantics and is
     /// discharged by its interpreter: the struct-marshal stub, for instance, runs `loadClass` on
     /// `StubHelpers.DateMarshaler` itself before calling into it.
-    ///
-    /// This is a total function on purpose. Answering `false` for every kind would be a fine
-    /// approximation today and a silent trap tomorrow: a future kind whose semantics *do* require
-    /// its subject initialised — a JIT-style allocation helper for a precise-init type, say, where
-    /// CoreCLR emits the check at the call site — would inherit the skip without anyone being
-    /// asked. Adding a case here breaks the build, which is where the question should be put.
     let initialisesDeclaringType (kind : SynthesisedMethod) : bool =
+        // A total match on purpose. Answering `false` for every kind would be a fine
+        // approximation today and a silent trap tomorrow: a future kind whose semantics *do*
+        // require its subject initialised — a JIT-style allocation helper for a precise-init
+        // type, say, where CoreCLR emits the check at the call site — would inherit the skip
+        // without anyone being asked. Adding a case here breaks the build, which is where the
+        // question should be put.
         match kind with
         | SynthesisedMethod.StructMarshalStub -> false
         // Never reached: the placeholder is pushed onto the entry thread directly rather than
@@ -506,16 +506,14 @@ type MethodOwner<'typeGenerics> =
             | MethodOwner.DynamicMethodsClass _, MethodOwner.DeclaredOn _ -> false
         | _ -> false
 
-    /// <remarks>
-    /// F#'s structural <c>hash</c> throughout, and <em>not</em> <c>HashCode.Combine</c>, which is
-    /// the trap here. The generic arguments are an <c>ImmutableArray</c>, whose own
-    /// <c>GetHashCode</c> reflects the identity of the backing array while F#'s <c>=</c> — which
-    /// <c>Equals</c> above uses — compares it elementwise. Combining them the .NET way therefore
-    /// gives two equal owners different hashes whenever their instantiations were built from
-    /// separate arrays, which is most of the time. <c>ConcreteType.GetHashCode</c> is spelled the
-    /// same way for the same reason.
-    /// </remarks>
     override this.GetHashCode () : int =
+        // F#'s structural `hash` throughout, and *not* `HashCode.Combine`, which is the trap
+        // here. The generic arguments are an `ImmutableArray`, whose own `GetHashCode` reflects
+        // the identity of the backing array while F#'s `=` — which `Equals` above uses —
+        // compares it elementwise. Combining them the .NET way therefore gives two equal owners
+        // different hashes whenever their instantiations were built from separate arrays, which
+        // is most of the time. `ConcreteType.GetHashCode` is spelled the same way for the same
+        // reason.
         match this with
         | MethodOwner.DeclaredOn declaringType -> hash (0, declaringType.Identity, declaringType.Generics)
         | MethodOwner.DynamicMethodsClass scopeAssembly -> hash (1, scopeAssembly.FullName)

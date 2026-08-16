@@ -100,10 +100,6 @@ module NativeGcFrameRegistration =
     /// constructor (to zero) and by the native `Push`, and are read only by the native `Remove`
     /// — a grep of `System.Private.CoreLib` finds no other mention of either field.
     ///
-    /// The alternative to refusing is modelling the frame chain in guest memory, which needs a
-    /// `Thread*` representation PawPrint does not have and would have to invent a bit pattern
-    /// for.
-    ///
     /// The equivalence has a second boundary, this one on the argument rather than the caller:
     /// it holds for a pointer to a registration the managed constructor built, which is every
     /// call CoreLib can make. It does *not* extend to a forged pointer, which reflection can
@@ -112,29 +108,9 @@ module NativeGcFrameRegistration =
     /// methods). CoreCLR has no defined behaviour there — its `_ASSERTE(frame != NULL)` compiles
     /// out of a release build, leaving `Push` to write `m_Next`/`m_pCurThread` straight through
     /// the pointer — so a null is refused loudly here rather than silently succeeding, which is
-    /// as close as PawPrint gets to "the runtime faulted". `ManagedPointerSource.Null` is the
-    /// only spelling of null the refusal has to catch: `ofBitPattern` normalises a zero
-    /// `NativeIntPlaceholder` into it, so the placeholder case never carries zero. A *non-null*
+    /// as close as PawPrint gets to "the runtime faulted". A *non-null*
     /// forged pointer is accepted and no-opped: CoreCLR has no defined behaviour for it either,
     /// and with no chain to link it onto there is nothing here for it to corrupt.
-    ///
-    /// No guest can reach that refusal today (measured): a guest doing exactly the above
-    /// (`GetType("System.Runtime.GCFrameRegistration")`, then
-    /// `Invoke(null, new object[] { IntPtr.Zero })`) stops one level earlier, in
-    /// `RuntimeMethodHandle_InvokeMethod`, with "parameter 0 is a pointer or function pointer,
-    /// whose argument buffer entry addresses a boxed IntPtr payload rather than an object slot"
-    /// — the gap the parked `sourcesPure/ReflectionInvokePointerSignature.cs` is filed against.
-    /// So the only live route into this handler is CoreLib's own, and CoreLib always passes
-    /// `&someLocal`. No test can currently kill the refusal below; without it PawPrint would
-    /// *silently succeed* where CoreCLR faults, and un-parking that reflection gap makes it
-    /// reachable.
-    ///
-    /// No registration is recorded anywhere: PawPrint has no collector to consult a table of
-    /// registered blocks, so it would be write-only, and building one means reading the struct
-    /// back through a pointer into a guest stack frame. Such a table is what to add if a
-    /// collector ever lands; it is also where an "every `Register` is balanced by an
-    /// `Unregister`" invariant check would live (today, unbalanced registration is unobservable
-    /// by construction).
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -179,15 +155,40 @@ module NativeGcFrameRegistration =
                 && permittedCallers
                    |> List.contains (caller.RequiredDeclaringType.Name, caller.Name)
 
+            // The alternative to refusing is modelling the frame chain in guest memory, which
+            // needs a `Thread*` representation PawPrint does not have and would have to invent
+            // a bit pattern for.
             if not callerIsPermitted then
                 failwith
                     $"%s{operation}: called from %s{callerAssembly.Name} %s{MethodOwner.describe caller.Owner}::%s{caller.Name}, which is not one of the CoreLib invoker frames PawPrint implements this for. Those frames never read the registration back, which is what makes doing nothing an exact match; a caller that can see `_reserved1`/`_reserved2` would see them stay zero where CoreCLR writes the frame link and the thread pointer. Modelling those two words means modelling the GC frame chain itself. Note that the caller being CoreLib is not enough on its own: a guest that reaches this through `RuntimeMethodHandle.InvokeMethod` presents a CoreLib frame too, and can inspect the registration afterwards."
 
+            // `ManagedPointerSource.Null` is the only spelling of null the refusal has to
+            // catch: `ofBitPattern` normalises a zero `NativeIntPlaceholder` into it, so the
+            // placeholder case never carries zero.
+            //
+            // No guest can reach this refusal today (measured): a guest doing exactly the
+            // forged-pointer reflection call from the doc comment
+            // (`GetType("System.Runtime.GCFrameRegistration")`, then
+            // `Invoke(null, new object[] { IntPtr.Zero })`) stops one level earlier, in
+            // `RuntimeMethodHandle_InvokeMethod`, with "parameter 0 is a pointer or function
+            // pointer, whose argument buffer entry addresses a boxed IntPtr payload rather than
+            // an object slot" — the gap the parked
+            // `sourcesPure/ReflectionInvokePointerSignature.cs` is filed against. So the only
+            // live route into this handler is CoreLib's own, and CoreLib always passes
+            // `&someLocal`. No test can currently kill this refusal; without it PawPrint would
+            // *silently succeed* where CoreCLR faults, and un-parking that reflection gap makes
+            // it reachable.
             match NativeCall.managedPointerOfPointerArgument operation "pRegistration" instruction.Arguments.[0] with
             | ManagedPointerSource.Null ->
                 failwith
                     $"%s{operation}: pRegistration was null. Every CoreLib caller passes the address of a live local, so this is a forged pointer; CoreCLR's own behaviour here is an assert that compiles out of a release build, leaving it to fault writing through the pointer."
             | _ ->
-                // The registration itself has nothing to do; see this module's doc comment.
+                // The registration itself has nothing to do; see `tryExecute`'s doc comment.
+                // No registration is recorded anywhere: PawPrint has no collector to consult a
+                // table of registered blocks, so it would be write-only, and building one means
+                // reading the struct back through a pointer into a guest stack frame. Such a
+                // table is what to add if a collector ever lands; it is also where an "every
+                // `Register` is balanced by an `Unregister`" invariant check would live (today,
+                // unbalanced registration is unobservable by construction).
                 NativeHandlerResult.completed state |> Some
         | _ -> None

@@ -22,21 +22,6 @@ module NativeEventSource =
     /// CoreCLR — the 64-bit two's-complement wrap leaves the low 32
     /// bits at `0xFFFFFFFF`, non-zero.
     ///
-    /// To mirror that here we:
-    ///   * skip leading whitespace;
-    ///   * accept a single optional `+` / `-` sign;
-    ///   * accept (but do not require) an optional `0x` / `0X` radix
-    ///     prefix, but only when it is followed by at least one hex
-    ///     digit (otherwise the leading `0` is itself the digit and the
-    ///     `x` becomes a stop character);
-    ///   * consume the longest hex-digit prefix and ignore everything
-    ///     after it (so `1garbage` parses as 1, matching `wcstoul`);
-    ///   * parse the magnitude as `uint64` to capture values that fit in
-    ///     `unsigned long` but exceed `UInt32.MaxValue`;
-    ///   * apply the sign in 64-bit arithmetic (so `-1` becomes
-    ///     `0xFFFFFFFFFFFFFFFF`), then truncate to `uint32` to mirror
-    ///     the final `(ULONG)res` cast.
-    ///
     /// We return `None` in CoreCLR's two failure arms only:
     ///   * `endPtr == val` — no digits were consumed.
     ///   * `errno == ERANGE` — either the magnitude exceeded `uint64`
@@ -55,11 +40,13 @@ module NativeEventSource =
         let isHexDigit (c : char) : bool =
             (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 
+        // Skip leading whitespace, as `wcstoul` does.
         let trimmed = raw.TrimStart ()
 
         if System.String.IsNullOrEmpty trimmed then
             None
         else
+            // A single optional `+` / `-` sign.
             let signStart, negate =
                 match trimmed.[0] with
                 | '+' -> 1, false
@@ -84,6 +71,8 @@ module NativeEventSource =
 
             let mutable idx = bodyStart
 
+            // Consume the longest hex-digit prefix and ignore everything
+            // after it (so `1garbage` parses as 1, matching `wcstoul`).
             while idx < trimmed.Length && isHexDigit trimmed.[idx] do
                 idx <- idx + 1
 
@@ -92,6 +81,8 @@ module NativeEventSource =
             else
                 let hexBody = trimmed.Substring (bodyStart, idx - bodyStart)
 
+                // Parse the magnitude as `uint64` to capture values that fit
+                // in `unsigned long` but exceed `UInt32.MaxValue`.
                 match
                     System.UInt64.TryParse (
                         hexBody,

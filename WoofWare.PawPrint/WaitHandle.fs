@@ -461,11 +461,11 @@ module WaitHandle =
     /// Rewrite the top of `thread`'s eval stack — the optimistic
     /// `WAIT_OBJECT_0` its park-time push installed — to `value`.
     ///
-    /// Pop-then-push rather than peek-and-mutate because the eval stack
-    /// surface only exposes those primitives; the net stack depth is
-    /// unchanged, just the top value. Shared by the multi-wait signal wake and
-    /// by every timeout fire.
+    /// Shared by the multi-wait signal wake and by every timeout fire.
     let private rewriteWaitResult (thread : ThreadId) (value : int) (state : IlMachineState) : IlMachineState =
+        // Pop-then-push rather than peek-and-mutate because the eval stack
+        // surface only exposes those primitives; the net stack depth is
+        // unchanged, just the top value.
         let _, state = IlMachineState.popEvalStack thread state
         IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim value)) thread state
 
@@ -537,8 +537,8 @@ module WaitHandle =
     /// appends to the tail for FIFO, `waitOnePrioritized` prepends for LIFO —
     /// and this walk preserves it among satisfiable entries.
     ///
-    /// `id` not being acquirable at all short-circuits the walk: no waiter can
-    /// be satisfied by a handle that has nothing to give.
+    /// A handle that has nothing to give satisfies no waiter: each queued
+    /// candidate's acquirability is tested as part of the walk.
     let private tryGrantOne (id : WaitHandleId) (state : IlMachineState) : IlMachineState option =
         let handle = lookup id state
 
@@ -552,11 +552,10 @@ module WaitHandle =
         candidate |> Option.map (fun thread -> grantTo thread id state)
 
     /// Repeatedly grant `id` until no queued waiter can be satisfied.
-    ///
-    /// Every grant consumes something from `id` (a semaphore unit, the mutex's
-    /// ownership, an auto-event's signal) or dequeues a waiter from a manual
-    /// event, so the loop always makes progress and terminates.
     let private drainGrants (id : WaitHandleId) (state : IlMachineState) : IlMachineState =
+        // Every grant consumes something from `id` (a semaphore unit, the
+        // mutex's ownership, an auto-event's signal) or dequeues a waiter from
+        // a manual event, so the loop always makes progress and terminates.
         let rec loop (state : IlMachineState) : IlMachineState =
             match tryGrantOne id state with
             | None -> state
@@ -564,9 +563,8 @@ module WaitHandle =
 
         loop state
 
-    /// Internal: kind-private semaphore waitOne. Used by the kind
-    /// dispatcher in `waitOne` and the property tests that exercise the
-    /// semaphore path directly. `deadlineTicks` is the absolute virtual-clock
+    /// Internal: kind-private semaphore waitOne, reached through the kind
+    /// dispatcher in `waitOne`. `deadlineTicks` is the absolute virtual-clock
     /// millisecond at which the wait expires (or `None` for an infinite
     /// wait); the value is recorded on the parked thread's `BlockedOn
     /// WaitHandle` status when the slow path fires, so the driver loop's
@@ -879,9 +877,9 @@ module WaitHandle =
     /// returns FALSE.
     ///
     /// The wake step transfers ownership of the freshly-added units
-    /// directly: each woken waiter consumes one unit before we add it
-    /// to `Count`, so a release of N that wakes K waiters (K ≤ N) leaves
-    /// only `(N - K)` units accumulated in `Count`. This mirrors the
+    /// directly: the N units are published to `Count` and each woken
+    /// waiter then consumes one, so a release of N that wakes K waiters
+    /// (K ≤ N) leaves only `(N - K)` units in `Count`. This mirrors the
     /// CoreCLR direct-handoff posture used by `Monitor.Exit` and
     /// `LowLevelMonitor.release` — the woken thread resumes past its
     /// `WaitOne` call site already holding a unit, so its IL flow is
@@ -1330,12 +1328,6 @@ module WaitHandle =
     ///  - Flip the thread's status back to `Runnable`. The deadline is
     ///    implicitly forgotten — the new status carries no deadline
     ///    field, which is exactly the invariant the variant encodes.
-    ///
-    /// Why pop-then-push rather than peek-and-mutate: the eval stack
-    /// surface only exposes push/pop primitives, and popping the
-    /// previously-pushed slot before pushing the timeout slot keeps the
-    /// stack depth invariant across the wake (no net change in depth,
-    /// just the top value).
     let fireTimeout (thread : ThreadId) (id : WaitHandleId) (state : IlMachineState) : IlMachineState =
         let handle = lookup id state
 

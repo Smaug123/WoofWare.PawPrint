@@ -1108,11 +1108,6 @@ module NativeRuntimeTypeHelpers =
     /// This is recomputed on every `GetSlot`/`GetNumVirtuals` query, and `PopulateMethods` issues
     /// one query per virtual method: the walk is not memoised, so populating a type is quadratic in
     /// its virtual count before counting the concretisation each signature comparison performs.
-    /// That is affordable at this interpreter's speed and has not been measured as a bottleneck. If
-    /// it ever is, note that the cache key must be the `ConcreteTypeHandle` and not the underlying
-    /// type definition: `List&lt;int&gt;` and `List&lt;string&gt;` share a definition, and the whole
-    /// point of this walk is that it compares *substituted* signatures, so a definition-keyed cache
-    /// would serve one instantiation's layout for another.
     let rec vtableOfClosed
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1121,6 +1116,12 @@ module NativeRuntimeTypeHelpers =
         (concreteType : ConcreteTypeHandle)
         : IlMachineState * VtableSlot list
         =
+        // The un-memoised quadratic walk is affordable at this interpreter's speed and has not
+        // been measured as a bottleneck. If it ever is, note that the cache key must be the
+        // `ConcreteTypeHandle` and not the underlying type definition: `List<int>` and
+        // `List<string>` share a definition, and the whole point of this walk is that it compares
+        // *substituted* signatures, so a definition-keyed cache would serve one instantiation's
+        // layout for another.
         match concreteType with
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
@@ -1624,10 +1625,7 @@ module NativeRuntimeTypeHelpers =
             |> Option.map (fun index -> List.length table.Vtable + index)
 
     /// The size of the instance vtable for a closed type, matching CoreCLR's
-    /// `MethodTable::GetNumVirtuals()`. This is the length of `vtableOfClosed` by definition rather
-    /// than an independently-computed sum, because `PopulateMethods` compares it against
-    /// `RuntimeMethodHandle.GetSlot`'s answer: two walks that had to agree by discipline would
-    /// disagree silently, and the symptom would be a wrong `isVirtual` rather than a crash.
+    /// `MethodTable::GetNumVirtuals()`.
     let numVirtualsOfClosed
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1636,6 +1634,10 @@ module NativeRuntimeTypeHelpers =
         (concreteType : ConcreteTypeHandle)
         : IlMachineState * int
         =
+        // The length of `vtableOfClosed` by definition rather than an independently-computed sum,
+        // because `PopulateMethods` compares it against `RuntimeMethodHandle.GetSlot`'s answer:
+        // two walks that had to agree by discipline would disagree silently, and the symptom
+        // would be a wrong `isVirtual` rather than a crash.
         let state, slots =
             vtableOfClosed loggerFactory baseClassTypes operation state concreteType
 

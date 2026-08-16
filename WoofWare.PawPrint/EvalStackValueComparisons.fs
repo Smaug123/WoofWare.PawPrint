@@ -117,20 +117,21 @@ module EvalStackValueComparisons =
             failwith "TODO: Cgt UserDefinedValueType vs UserDefinedValueType comparison unimplemented"
 
     /// Ordered "less than or equal". For floats this is IEEE `<=` (NaN ⇒ false), which is the
-    /// correct ECMA-335 ordered ble semantics. For other types we defer to `not (cgt v1 v2)` —
-    /// note that for floats this would be wrong (`not cgt` is the *unordered* ble, since
-    /// `cgt(NaN, _)` is false), so the Float × Float arm overrides explicitly. Cross-type
-    /// (Float vs Int / NativeInt) is inherited from `cgt`'s "invalid comparison" failwith.
+    /// correct ECMA-335 ordered ble semantics.
     let cle (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
+        // Non-float types defer to `not (cgt v1 v2)` — note that for floats this would be
+        // wrong (`not cgt` is the *unordered* ble, since `cgt(NaN, _)` is false), so the
+        // Float × Float arm overrides explicitly. Cross-type (Float vs Int / NativeInt) is
+        // inherited from `cgt`'s "invalid comparison" failwith.
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 <= var2
         | _ -> not (cgt var1 var2)
 
-    /// Ordered "greater than or equal". Mirrors `cle`: Float × Float uses IEEE `>=`
-    /// (NaN ⇒ false); other types defer to `not (clt v1 v2)`. Cross-type guards are
-    /// inherited from `clt`.
+    /// Ordered "greater than or equal". Float × Float uses IEEE `>=` (NaN ⇒ false).
     let cge (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
+        // Mirrors `cle`: other types defer to `not (clt v1 v2)`, with the Float × Float
+        // arm overriding explicitly. Cross-type guards are inherited from `clt`.
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 >= var2
         | _ -> not (clt var1 var2)
 
