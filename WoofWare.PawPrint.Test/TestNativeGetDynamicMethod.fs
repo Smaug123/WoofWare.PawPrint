@@ -1743,6 +1743,102 @@ public static class Entry
         message |> shouldContainText "entry 7"
         message |> shouldContainText "does not exist"
 
+    /// A `ldtoken` naming scope entry <paramref name="index"/>, then `ret`. The tag is the TypeDef
+    /// one `GetTokenFor(RuntimeTypeHandle)` applies, and as everywhere else it is not what decides
+    /// the resolution: the entry is.
+    let private ldtokenBody (index : int) (scope : ScopeEntry list) =
+        { doublingBody with
+            Code =
+                Array.concat
+                    [
+                        [| 0xD0uy |]
+                        System.BitConverter.GetBytes (index ||| 0x02000000)
+                        [| 0x2Auy |]
+                    ]
+            Scope = scope
+        }
+
+    /// The `DynamicScope` index every `ldtoken` in a body names. The sibling of
+    /// `scopeTypeOperands`, and separate for the same reason.
+    let private scopeLdtokenOperands (body : MintedDynamicMethodBody) : int list =
+        body.Instructions
+        |> List.map fst
+        |> List.choose (fun op ->
+            match op with
+            | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldtoken, operand) ->
+                match operand with
+                | MetadataOperand.FromDynamicScope index -> Some index
+                | MetadataOperand.FromMetadata token ->
+                    failwith $"expected a dynamic-scope operand, got the metadata token %O{token.Token}"
+            | _ -> None
+        )
+
+    [<Test>]
+    let ``a ldtoken naming a type entry resolves against the DynamicScope`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+        let target, state = closedInt32 loggerFactory prepared state
+
+        let body =
+            ldtokenBody
+                2
+                [
+                    ScopeEntry.Null
+                    ScopeEntry.Blob [| 0x00uy |]
+                    ScopeEntry.TypeHandle target
+                ]
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let _, definition = definitionBehindStub state stubAddress
+
+        scopeLdtokenOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
+
+    /// `ldtoken` of a field is legal IL that real .NET resolves — measured, against a type-shaped
+    /// control that runs — so the refusal must read as "not wired up", not as "wrong kind". Getting
+    /// that backwards would send whoever hits it looking for a bug in their own emitted IL. The
+    /// gap is real: a field walk that does not narrow to a closed declaring type, because `ldtoken`
+    /// of a field on an open generic definition runs where `ldfld` of it is InvalidProgramException.
+    [<Test>]
+    let ``a ldtoken naming a field entry is refused as unsupported rather than as wrong-kind`` () : unit =
+        let body =
+            ldtokenBody
+                2
+                [
+                    ScopeEntry.Null
+                    ScopeEntry.Blob [| 0x00uy |]
+                    ScopeEntry.GenericFieldInfoObject
+                ]
+
+        let message = mintExpectingFailure body
+
+        message |> shouldContainText "Ldtoken"
+        message |> shouldContainText "entry 2"
+        message |> shouldContainText "TODO"
+        message |> shouldContainText "does not narrow"
+        // The wrong-kind phrasing `refuse` would have produced.
+        message |> shouldNotContainText "rather than"
+
+    /// Likewise for a method entry, which additionally needs `RuntimeMethodHandle::GetMethodDef`.
+    [<Test>]
+    let ``a ldtoken naming a method entry is refused as unsupported rather than as wrong-kind`` () : unit =
+        let body =
+            ldtokenBody
+                2
+                [
+                    ScopeEntry.Null
+                    ScopeEntry.Blob [| 0x00uy |]
+                    ScopeEntry.DynamicMethodObject
+                ]
+
+        let message = mintExpectingFailure body
+
+        message |> shouldContainText "Ldtoken"
+        message |> shouldContainText "entry 2"
+        message |> shouldContainText "TODO"
+        message |> shouldContainText "resolves only type entries"
+        message |> shouldNotContainText "rather than"
+
     /// The mirror image of the check above: `ldstr` must not accept a type entry either.
     [<Test>]
     let ``an ldstr naming a type entry is refused`` () : unit =

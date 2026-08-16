@@ -798,6 +798,27 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // `ldtoken` with a type-shaped operand resolved against a `DynamicScope`. Unlike
+                // every other type-shaped opcode, `ldtoken` accepts a type of any shape, so the
+                // guest pins an open generic definition, a bare generic parameter and `System.Void`
+                // — all three of which `DynamicScopeOperand.closedType` refuses on behalf of the
+                // opcodes that do demand a closed type. Registered with the dynamic-code switch
+                // overridden, like its siblings. Every expectation was measured against the host's
+                // real .NET, which returns 0 for this program.
+                FileName = "DynamicMethodLdtoken.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // Field-shaped operands resolved against a `DynamicScope` rather than against
                 // metadata: all six of `ldfld`/`ldflda`/`stfld`/`ldsfld`/`ldsflda`/`stsfld`, over
                 // static and instance fields, a corelib field, a closed generic instantiation, and

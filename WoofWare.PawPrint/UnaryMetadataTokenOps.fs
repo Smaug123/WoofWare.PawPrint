@@ -378,38 +378,24 @@ module internal UnaryMetadataTokenOps =
     let executeLdtoken (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        let handleTypeToken
-            (declaringAssembly : DumpedAssembly)
-            (allowOpenGenericDefinition : bool)
-            (typeDefn : TypeDefn)
-            (state : IlMachineState)
-            : IlMachineState
-            =
+        // Pushing a `RuntimeTypeHandle` for a target that is already in hand. `handleTypeToken`
+        // below reaches this after resolving a metadata token; a `DynamicScope` operand arrives
+        // here directly, its entry being a `RuntimeTypeHandle` the guest already built.
+        let pushHandleForTarget (target : RuntimeTypeHandleTarget) (state : IlMachineState) : IlMachineState =
             let ty = baseClassTypes.RuntimeTypeHandle
             let field = ty.Fields |> List.exactlyOne
 
             if field.Name <> "m_type" then
                 failwith $"unexpected field name ${field.Name} for BCL type RuntimeTypeHandle"
 
-            let methodGenerics = currentMethod.Generics
-            let typeGenerics = currentMethod.DeclaringTypeGenerics
-
-            let state, target =
-                IlMachineState.runtimeTypeHandleTargetForTypeToken
-                    loggerFactory
-                    baseClassTypes
-                    declaringAssembly
-                    allowOpenGenericDefinition
-                    typeGenerics
-                    methodGenerics
-                    typeDefn
-                    state
-
+            // For a scope operand this is a lookup that cannot miss, rather than an allocation: the
+            // target was read back out of a `RuntimeType`'s `m_handle`, and only
+            // `TypeHandleRegistry.getOrAllocate` ever plants one there, recording `target -> that
+            // same address` as it does. So the guest gets the `RuntimeType` it already had, which is
+            // what makes `ReferenceEquals(Type.GetTypeFromHandle(h), typeof(X))` hold.
             let alloc, state =
                 IlMachineState.getOrAllocateType loggerFactory baseClassTypes target state
 
@@ -447,6 +433,41 @@ module internal UnaryMetadataTokenOps =
                         baseClassTypes.RuntimeTypeHandle)
 
             IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
+
+        let handleTypeToken
+            (declaringAssembly : DumpedAssembly)
+            (allowOpenGenericDefinition : bool)
+            (typeDefn : TypeDefn)
+            (state : IlMachineState)
+            : IlMachineState
+            =
+            let methodGenerics = currentMethod.Generics
+            let typeGenerics = currentMethod.DeclaringTypeGenerics
+
+            let state, target =
+                IlMachineState.runtimeTypeHandleTargetForTypeToken
+                    loggerFactory
+                    baseClassTypes
+                    declaringAssembly
+                    allowOpenGenericDefinition
+                    typeGenerics
+                    methodGenerics
+                    typeDefn
+                    state
+
+            pushHandleForTarget target state
+
+        match ctx.LdtokenOperand with
+        | ResolvedLdtokenOperand.FromScope target ->
+            // Nothing to resolve and nothing to narrow. The entry *is* a `RuntimeTypeHandle` the
+            // guest already holds, so unlike the metadata arms below there is no token to look up,
+            // no generic context to substitute, and no closedness question: `ldtoken` of an open
+            // definition, of a bare generic parameter and of `System.Void` are all measured to run
+            // on real .NET, where the eleven consuming opcodes refuse all three.
+            pushHandleForTarget target state
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
+        | ResolvedLdtokenOperand.FromMetadata (activeAssy, metadataToken) ->
 
         let state =
             match metadataToken with
