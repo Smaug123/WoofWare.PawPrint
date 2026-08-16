@@ -124,6 +124,8 @@
     <Compile Include="TestGcHandleRegistry.fs" />
     <Compile Include="TestUnixError.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />
+    <Compile Include="TestFlockBlocking.fs" />
+    <Compile Include="TestPReadNegativeSize.fs" />
     <Compile Include="TestNonCryptoRandom.fs" />
     <Compile Include="TestDeterministicMath.fs" />
     <Compile Include="TestPrimitiveLikeStructRegistry.fs" />

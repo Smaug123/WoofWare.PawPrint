@@ -22,13 +22,41 @@ type OpenFileDescriptionId =
         match this with
         | OpenFileDescriptionId value -> string<int64> value
 
+/// What an open file description refers to — the kernel object on the far side
+/// of the descriptor.
+///
+/// **`File` carries an inode and nothing else, deliberately.** An inode is
+/// load-bearing immediately: an fd must keep naming the file it was opened on,
+/// not the path it was opened by.
+[<RequireQualifiedAccess>]
+type OpenFileObject =
+    | StandardStream of FileDescriptorRole
+    /// A regular file, directory, or anything else `open(2)` returned a
+    /// descriptor for, identified by the inode it resolved to at open time.
+    /// Not by path: renaming or deleting the path leaves this description
+    /// naming the same file, which is what a real kernel does.
+    | File of inode : InodeNumber
+
+/// The mode of an advisory whole-file lock taken by `flock(2)`.
+///
+/// Two modes rather than three: "no lock" is the *absence* of one of these
+/// (`OpenFileDescription.Flock` is an option), because a description holding no
+/// lock and a description holding a hypothetical `Unlocked` mode would be the
+/// same state spelled two ways.
+[<RequireQualifiedAccess>]
+type FlockMode =
+    /// `LOCK_SH`. Any number of descriptions may hold this on one file at once.
+    | Shared
+    /// `LOCK_EX`. Excludes every other description's lock on the same file,
+    /// shared or exclusive.
+    | Exclusive
+
 /// The kernel object a file descriptor points at: POSIX's "open file
 /// description". Everything shared between file descriptors that `dup(2)`
 /// produced belongs here.
 ///
-/// **`File` carries an inode and nothing else, deliberately.** The two pieces
-/// of state a real open file description also holds are absent because no
-/// modelled syscall can yet make them differ:
+/// Two pieces of state a real open file description also holds are absent,
+/// because no modelled syscall can yet make them differ:
 ///
 ///  - The **file offset**. `pread(2)` — the only reader CoreLib's
 ///    `RandomAccess` uses on a seekable handle — takes its offset as an
@@ -40,20 +68,30 @@ type OpenFileDescriptionId =
 ///    inhabitant, and a field with one inhabitant records a decision nothing
 ///    made. It becomes real with the write path.
 ///
-/// Inodes, by contrast, are load-bearing immediately: an fd must keep naming
-/// the file it was opened on, not the path it was opened by.
-///
 /// The standard streams carry no offset either, and for a different reason:
 /// PawPrint models them as pipes (see `FileDescriptorRegistry.initial`), and a
 /// pipe is not seekable at all.
-[<RequireQualifiedAccess>]
 type OpenFileDescription =
-    | StandardStream of FileDescriptorRole
-    /// A regular file, directory, or anything else `open(2)` returned a
-    /// descriptor for, identified by the inode it resolved to at open time.
-    /// Not by path: renaming or deleting the path leaves this description
-    /// naming the same file, which is what a real kernel does.
-    | File of inode : InodeNumber
+    {
+        /// What this description refers to.
+        Object : OpenFileObject
+        /// The `flock(2)` lock this description holds, if any.
+        ///
+        /// **On the description, not on the inode**, which is where POSIX puts
+        /// it and is the whole reason two `open(2)` calls on one path contend
+        /// while a `dup(2)` pair does not. Storing it here also keeps it
+        /// normalised: the description already records which object it names,
+        /// so there is no second copy of that association to drift out of step,
+        /// and closing the description destroys the lock with it rather than
+        /// leaving a phantom entry in a side table that nothing can now release.
+        ///
+        /// Note this is `flock(2)` specifically. `fcntl(2)` record locks — which
+        /// CoreLib reaches through `SystemNative_LockFileRegion`, and hence
+        /// `FileStream.Lock` — belong to a *(process, file)* pair instead, and
+        /// so must not be stored here when they land; see the note on
+        /// `FileDescriptorRegistry`.
+        Flock : FlockMode option
+    }
 
 /// In-memory model of a Unix per-process file descriptor table, and of the
 /// open file descriptions those descriptors point at.
@@ -73,8 +111,9 @@ type OpenFileDescription =
 /// closing *any* descriptor for that file drops them, even one whose
 /// description another live descriptor still shares. (Measured on macOS: with
 /// `b = dup a`, a lock taken via `a` was released by `close b`.) `flock(2)`
-/// locks, by contrast, do belong to the description. When locking lands, it
-/// must not be hung on this table without deciding which of the two it is.
+/// locks, by contrast, do belong to the description, and so live in
+/// `OpenFileDescription.Flock`. A record lock must *not* join them there when
+/// `SystemNative_LockFileRegion` lands: it would inherit the wrong release rule.
 type FileDescriptorRegistry =
     private
         {
@@ -112,6 +151,31 @@ type FileDescriptorCloseError =
     /// this as `EBADF`.
     | BadFd
 
+/// What `flock(2)` was asked to do, once the operation bits have been decoded.
+///
+/// `LOCK_NB` is deliberately *not* part of this: whether the caller is willing
+/// to block is a property of the request that only matters once the answer is
+/// "this would block", so it is the handler's business rather than the
+/// registry's. The registry reports that the lock is unavailable and lets the
+/// caller decide between failing and waiting.
+[<RequireQualifiedAccess>]
+type FlockRequest =
+    /// `LOCK_SH` or `LOCK_EX`. Replaces whatever lock this description already
+    /// held, which is how `flock(2)` spells conversion — there is no separate
+    /// upgrade operation.
+    | Acquire of mode : FlockMode
+    /// `LOCK_UN`. Succeeds whether or not a lock was held, as `flock(2)` does.
+    | Release
+
+[<RequireQualifiedAccess>]
+type FlockError =
+    /// The supplied fd is not a live entry in the table; `EBADF`.
+    | BadFd
+    /// Another open file description holds a conflicting lock on the same file.
+    /// A caller that passed `LOCK_NB` reports this as `EWOULDBLOCK`; one that
+    /// did not would have to wait for the holder to release.
+    | WouldBlock
+
 /// A way in which a `FileDescriptorRegistry` fails to be a descriptor table any
 /// kernel could produce. `FileDescriptorRegistry.checkInvariants` returns these.
 [<RequireQualifiedAccess>]
@@ -129,6 +193,12 @@ type FileDescriptorRegistryDefect =
     /// few more opens to do the damage. `VirtualFileSystem`'s
     /// `NextInodeNotFresh` is the same check for the same reason.
     | NextIdNotFresh of nextId : OpenFileDescriptionId * existing : OpenFileDescriptionId
+    /// Two distinct descriptions name the same file and hold locks that
+    /// `flock(2)` would never have granted together — at least one of them
+    /// exclusive. This is the mutual-exclusion property itself rather than a
+    /// bookkeeping check, so it is what a property test over random
+    /// open/lock/close sequences is really asserting.
+    | ConflictingFlocks of first : OpenFileDescriptionId * second : OpenFileDescriptionId
 
 [<RequireQualifiedAccess>]
 module FileDescriptorRegistry =
@@ -156,10 +226,16 @@ module FileDescriptorRegistry =
         {
             Fds = Map.empty |> Map.add 0 stdinId |> Map.add 1 stdoutId |> Map.add 2 stderrId
             Descriptions =
+                let stream (role : FileDescriptorRole) : OpenFileDescription =
+                    {
+                        Object = OpenFileObject.StandardStream role
+                        Flock = None
+                    }
+
                 Map.empty
-                |> Map.add stdinId (OpenFileDescription.StandardStream FileDescriptorRole.StandardInput)
-                |> Map.add stdoutId (OpenFileDescription.StandardStream FileDescriptorRole.StandardOutput)
-                |> Map.add stderrId (OpenFileDescription.StandardStream FileDescriptorRole.StandardError)
+                |> Map.add stdinId (stream FileDescriptorRole.StandardInput)
+                |> Map.add stdoutId (stream FileDescriptorRole.StandardOutput)
+                |> Map.add stderrId (stream FileDescriptorRole.StandardError)
             NextId = OpenFileDescriptionId 3L
         }
 
@@ -182,6 +258,12 @@ module FileDescriptorRegistry =
                 failwith
                     $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is an interpreter bug)"
         )
+
+    /// What `fd` refers to, if `fd` is live. For the majority of callers, which
+    /// want the file behind the descriptor and have no interest in the state the
+    /// description carries alongside it.
+    let tryFindObject (fd : int) (registry : FileDescriptorRegistry) : OpenFileObject option =
+        tryFind fd registry |> Option.map (fun description -> description.Object)
 
     /// Every live file descriptor, and the description each names.
     let fds (registry : FileDescriptorRegistry) : Map<int, OpenFileDescriptionId> = registry.Fds
@@ -282,9 +364,129 @@ module FileDescriptorRegistry =
         fd,
         { registry with
             Fds = Map.add fd id registry.Fds
-            Descriptions = Map.add id (OpenFileDescription.File inode) registry.Descriptions
+            Descriptions =
+                Map.add
+                    id
+                    {
+                        Object = OpenFileObject.File inode
+                        // `open(2)` never takes a lock; `FileStream` issues a
+                        // separate `flock` immediately afterwards, which is
+                        // exactly why `FileShare` is not atomic with opening on
+                        // Unix and CoreLib's own comment says so.
+                        Flock = None
+                    }
+                    registry.Descriptions
             NextId = OpenFileDescriptionId (raw + 1L)
         }
+
+    /// May two *different* open file descriptions on one file hold these two
+    /// locks at the same time?
+    ///
+    /// Shared against shared is the only compatible pair; every other
+    /// combination involves an exclusive lock, which by definition excludes.
+    /// Symmetric, which is what lets `checkInvariants` apply it to an unordered
+    /// pair without asking which was taken first.
+    let private locksConflict (a : FlockMode) (b : FlockMode) : bool =
+        match a, b with
+        | FlockMode.Shared, FlockMode.Shared -> false
+        | _, _ -> true
+
+    /// Mirrors `flock(2)`.
+    ///
+    /// The lock belongs to the open file description `fd` names, so two
+    /// descriptors from one `dup(2)` share a single lock (releasing through
+    /// either releases it), while two separate `open(2)` calls on one path hold
+    /// two and therefore contend. That contention is the entire mechanism behind
+    /// `FileShare` on Unix, and it works *within* one process — which is why a
+    /// single-threaded guest can observe it at all.
+    ///
+    /// Contention is between descriptions naming the same `OpenFileObject`. For
+    /// a standard stream that set is empty by construction — `initial` gives
+    /// each role exactly one description and `dup` shares rather than copies —
+    /// so `flock` on fd 0/1/2 succeeds and conflicts with nothing. That is what
+    /// Linux does (measured: `flock` on a pipe returns 0), and it falls out of
+    /// the general rule rather than being a special case.
+    ///
+    /// **This is Linux's mechanism, and it is flavour-agnostic on purpose.**
+    /// Darwin diverges in three measured ways — it answers `ENOTSUP` for a pipe,
+    /// it validates the operation differently, and it *keeps* a lock that a
+    /// failed conversion would drop here. None of those live in this module:
+    /// deciding what a Darwin-flavoured kernel does is the handler's job, and it
+    /// currently refuses rather than modelling it (see `SystemNative_FLock` in
+    /// `NativeSystemNative.fs`). Keeping the divergence out of here means this
+    /// type stays a single coherent set of rules rather than two interleaved
+    /// ones.
+    ///
+    /// `Acquire` replaces any lock this description already held, so a
+    /// conversion cannot conflict with itself: `SH` to `EX` succeeds when this
+    /// description is the only holder, and reports `WouldBlock` when another
+    /// still holds `SH`.
+    ///
+    /// **A failed conversion still drops the old lock**, which is why this
+    /// returns a table even on failure rather than an untouched one. `flock(2)`
+    /// converts by removing the existing lock and then establishing the new one,
+    /// and those two steps are not atomic — so when the second fails, the first
+    /// has already happened and the caller is left holding nothing. That is the
+    /// documented BSD-derived behaviour, and it is measured: with `a` and `b`
+    /// both holding `SH`, a failed `a: SH -> EX` leaves `a` unlocked on Linux
+    /// (a third description can then take `EX` once `b` releases) but still
+    /// holding `SH` on Darwin. PawPrint simulates Linux. Note the *error* is the
+    /// same on both platforms, so only a third description can tell them apart,
+    /// which is what the test for this uses.
+    ///
+    /// `Release` succeeds whether or not a lock was held.
+    let flock
+        (fd : int)
+        (request : FlockRequest)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistry * FlockError option
+        =
+        match Map.tryFind fd registry.Fds with
+        | None -> registry, Some FlockError.BadFd
+        | Some id ->
+
+        let description =
+            match Map.tryFind id registry.Descriptions with
+            | Some description -> description
+            | None ->
+                failwith
+                    $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is an interpreter bug)"
+
+        let withFlock (flock : FlockMode option) : FileDescriptorRegistry =
+            { registry with
+                Descriptions =
+                    Map.add
+                        id
+                        { description with
+                            Flock = flock
+                        }
+                        registry.Descriptions
+            }
+
+        match request with
+        | FlockRequest.Release -> withFlock None, None
+        | FlockRequest.Acquire mode ->
+
+        let blocked =
+            registry.Descriptions
+            |> Map.exists (fun otherId (other : OpenFileDescription) ->
+                // `otherId <> id` is what makes conversion work: this
+                // description's own lock is not an obstacle to replacing it.
+                otherId <> id
+                && other.Object = description.Object
+                && (
+                    match other.Flock with
+                    | None -> false
+                    | Some held -> locksConflict mode held
+                )
+            )
+
+        if blocked then
+            // The old lock is gone either way — see the note above. A caller
+            // that held nothing is unaffected, so this is not a special case.
+            withFlock None, Some FlockError.WouldBlock
+        else
+            withFlock (Some mode), None
 
     /// Every way in which `registry` fails to be a descriptor table a kernel
     /// could produce. Empty for any registry built out of `initial`, `dup` and
@@ -312,7 +514,32 @@ module FileDescriptorRegistry =
             |> List.filter (fun id -> id >= registry.NextId)
             |> List.map (fun id -> FileDescriptorRegistryDefect.NextIdNotFresh (registry.NextId, id))
 
-        dangling @ unreferenced @ freshness
+        // Every unordered pair of distinct locked descriptions naming one file.
+        // Quadratic in the number of live descriptions, which is a handful; the
+        // clarity is worth more here than the asymptotics, since this is the one
+        // check that states the actual `flock` guarantee.
+        let locked =
+            registry.Descriptions
+            |> Map.toList
+            |> List.choose (fun (id, description) ->
+                description.Flock |> Option.map (fun mode -> id, description.Object, mode)
+            )
+
+        let conflicting =
+            locked
+            |> List.collect (fun (firstId, firstObject, firstMode) ->
+                locked
+                |> List.filter (fun (secondId, secondObject, secondMode) ->
+                    firstId < secondId
+                    && firstObject = secondObject
+                    && locksConflict firstMode secondMode
+                )
+                |> List.map (fun (secondId, _, _) ->
+                    FileDescriptorRegistryDefect.ConflictingFlocks (firstId, secondId)
+                )
+            )
+
+        dangling @ unreferenced @ freshness @ conflicting
 
     /// Fail loudly if `registry` is not sound, naming `context`.
     let assertInvariants (context : string) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =

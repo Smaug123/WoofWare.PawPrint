@@ -863,6 +863,39 @@ module VirtualFileSystem =
     let tryGetContent (inode : InodeNumber) (vfs : VirtualFileSystem) : InodeContent option =
         Map.tryFind inode vfs.Inodes |> Option.map (fun inode -> inode.Content)
 
+    /// How many bytes a read of `count` bytes starting at `offset` transfers,
+    /// from a file whose contents are `length` bytes long.
+    ///
+    /// Separated out because it is the whole of what `pread(2)` decides beyond
+    /// its error cases, and because getting it wrong is an off-by-one that
+    /// end-to-end tests report as "the file came back slightly wrong" from
+    /// somewhere deep in a `StreamReader`. As a function of three integers it is
+    /// property-testable against naive slicing instead.
+    ///
+    /// Note the result is what a *regular file* transfers, which is why this can
+    /// be total: a short read is only ever "the file ended". Real `read(2)` may
+    /// return fewer bytes than asked for on a pipe or socket with nothing to do
+    /// with EOF, and nothing here models that.
+    ///
+    /// Reading at or past the end is 0 rather than an error — measured, and the
+    /// same on Linux and Darwin. So is a zero-length request, which is why
+    /// callers must not treat 0 as EOF-specific.
+    let readTransferCount (offset : int64) (count : int) (length : int) : int =
+        // The handler is responsible for rejecting a negative offset (EINVAL)
+        // and refusing a negative size, so both are established before here.
+        System.Diagnostics.Debug.Assert (offset >= 0L, "readTransferCount: offset must not be negative")
+        System.Diagnostics.Debug.Assert (count >= 0, "readTransferCount: count must not be negative")
+        System.Diagnostics.Debug.Assert (length >= 0, "readTransferCount: length must not be negative")
+
+        if offset >= int64 length then
+            // Includes an offset beyond `int` range, which no seeded file can
+            // reach but a guest can certainly ask for.
+            0
+        else
+            // `length - offset` is in `(0, length]` here, so the `int` conversion
+            // cannot overflow however large `offset` was.
+            min (int64 count) (int64 length - offset) |> int
+
     /// The directory at `inode`, or `None` if it is absent or is not a
     /// directory. Honest about which: callers that must distinguish ENOENT from
     /// ENOTDIR use `tryGetContent` and match.

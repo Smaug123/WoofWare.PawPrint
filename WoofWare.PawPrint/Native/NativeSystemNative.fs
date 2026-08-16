@@ -1356,9 +1356,9 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+            match FileDescriptorRegistry.tryFindObject fd state.Kernel.FileDescriptors with
             | None -> fail UnixError.EBADF
-            | Some (OpenFileDescription.StandardStream role) ->
+            | Some (OpenFileObject.StandardStream role) ->
                 // PawPrint models the standard streams as pipes, and a pipe's
                 // `fstat` is a real answer a real kernel gives — `S_IFIFO`, a
                 // zero size, a device number. Every one of those would be
@@ -1370,7 +1370,7 @@ module NativeSystemNative =
                 // code path, and either wants a decision rather than a guess.
                 failwith
                     $"%s{operation}: fd %d{fd} is the standard stream %O{role}, and PawPrint holds no inode for one. Every field `fstat` owes a pipe would be invented here; decide what a stream's `struct stat` is (issue #956) rather than guessing."
-            | Some (OpenFileDescription.File inode) ->
+            | Some (OpenFileObject.File inode) ->
 
             let entry =
                 match VirtualFileSystem.tryGet inode state.Kernel.FileSystem with
@@ -1389,6 +1389,374 @@ module NativeSystemNative =
             | Some output ->
 
             writeFileStatus ctx operation fileStatusHandle inode entry output state
+        // `int32_t SystemNative_FLock(intptr_t fd, int32_t operation)`
+        // (pal_io.c:744). The operation parameter is matched loosely for the
+        // same reason `SystemNative_Open`'s flags are: CoreLib declares it as
+        // the `Interop.Sys.LockOperations` enum while a guest hand-rolling the
+        // P/Invoke writes `int`.
+        | Some "SystemNative_FLock",
+          [ ConcreteIntPtr state.ConcreteTypes ; _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_FLock"
+            let fd = fdArgument operation instruction.Arguments.[0]
+            let request = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            // Unlike `Interop.Error` and `Interop.Sys.OpenFlags`, these are
+            // *not* PAL values that the C translates: `SystemNative_FLock`
+            // passes `operation` straight to `flock(2)`. `Interop.FLock.cs`
+            // hardcodes 1/2/4/8 anyway, which is correct only because Linux and
+            // Darwin happen to agree on all four — measured on both rather than
+            // assumed, since nothing in the interop layer would catch it if they
+            // did not.
+            let lockShared = 1
+            let lockExclusive = 2
+            let lockNonBlocking = 4
+            let lockUnlock = 8
+
+            // Takes the state explicitly rather than closing over the outer one:
+            // a failing `flock` still advances the descriptor table, so the
+            // error paths below must report from the state that *includes* that
+            // advance, not from the one before it.
+            let failFrom (state : IlMachineState) (error : UnixError) : NativeHandlerResult option =
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        LastSystemError = UnixError.toRawErrnoUnder numbering error
+                    }
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            // `flock` is one of the places where the two Unixes PawPrint models
+            // genuinely disagree, and not only about errno numbering. PawPrint
+            // models Linux's rules and refuses under Darwin rather than
+            // guessing, because what has been *measured* about Darwin is its
+            // return codes and not the lock state they leave behind: Darwin
+            // accepts `LOCK_SH|LOCK_EX` and `LOCK_UN|LOCK_SH`, and nothing here
+            // knows which lock the description then holds, which is precisely
+            // what `FlockMode` would have to commit to. Each refusal below
+            // carries what was measured so that the run that hits it starts from
+            // data rather than from scratch.
+            //
+            // Deliberately *not* a `SimulatedUnixPlatform` accessor in the style
+            // of `pathLimits`: those exist because their facts are complete, and
+            // this one is not yet.
+            let refuseDarwin (divergence : string) : 'a =
+                failwith
+                    $"%s{operation}: %s{divergence} PawPrint models Linux's `flock` and has not modelled Darwin's, but this kernel's SimulatedUnixPlatform is Darwin — so answering would be inventing behaviour rather than reporting it. What is measured about Darwin here is the return code only, not the lock state it leaves; deciding that needs its own measurements (issue #956). Configure a Linux platform, or model Darwin's flock."
+
+            // Linux validates strictly: exactly one of SH/EX/UN, optionally
+            // with NB, and nothing else — `0`, `SH|EX`, `UN|SH`, a bare `NB` and
+            // any unknown bit are all EINVAL. Darwin is laxer *and* uses a
+            // different errno: it answers EBADF for `0`, a bare `NB` and `16`,
+            // and succeeds outright for `SH|EX`, `UN|SH` and `SH|16`. Both
+            // measured.
+            let nonBlocking = request &&& lockNonBlocking <> 0
+            let mode = request &&& ~~~lockNonBlocking
+
+            let flockRequest : FlockRequest option =
+                if mode = lockUnlock then
+                    Some FlockRequest.Release
+                elif mode = lockShared then
+                    Some (FlockRequest.Acquire FlockMode.Shared)
+                elif mode = lockExclusive then
+                    Some (FlockRequest.Acquire FlockMode.Exclusive)
+                else
+                    None
+
+            let flavour = SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform
+
+            match flockRequest with
+            | None ->
+                match flavour with
+                | SimulatedUnixFlavour.Linux -> failFrom state UnixError.EINVAL
+                | SimulatedUnixFlavour.Darwin ->
+                    refuseDarwin
+                        $"operation %d{request} is malformed (not exactly one of LOCK_SH/LOCK_EX/LOCK_UN, optionally with LOCK_NB), which Linux rejects with EINVAL and Darwin does not treat uniformly — measured, Darwin answers EBADF for 0, a bare LOCK_NB and unknown bits alone, but *succeeds* for LOCK_SH|LOCK_EX, LOCK_UN|LOCK_SH and LOCK_SH with an unknown bit."
+            | Some flockRequest ->
+
+            // The two remaining divergences, both about a descriptor PawPrint has
+            // already resolved, so they are checked here rather than in the
+            // registry: that module models one coherent set of rules. Throws or
+            // falls through; an unknown fd is EBADF on both platforms, so there
+            // is nothing to refuse for one.
+            match flavour, FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+            | SimulatedUnixFlavour.Linux, _
+            | _, None -> ()
+            | SimulatedUnixFlavour.Darwin, Some description ->
+                match description.Object with
+                | OpenFileObject.StandardStream role ->
+                    refuseDarwin
+                        $"fd %d{fd} is the standard stream %O{role}, which PawPrint models as a pipe. Linux permits `flock` on a pipe and returns 0; Darwin refuses it with ENOTSUP (raw 45, and note Darwin numbers ENOTSUP and EOPNOTSUPP differently, 45 against 102, while Linux gives both 95)."
+                | OpenFileObject.File _ ->
+
+                match flockRequest, description.Flock with
+                // Only a *conversion* — an acquire by a description that already
+                // holds something — can expose the keep-versus-drop divergence,
+                // and only when it fails. Refused on the request rather than on
+                // the outcome, so that the refusal is a property of what was
+                // asked rather than of who else happened to hold a lock.
+                | FlockRequest.Acquire _, Some _ ->
+                    refuseDarwin
+                        $"fd %d{fd} is converting a lock it already holds. Should that conversion fail, Linux leaves the description holding *nothing* (`flock` removes the old lock before establishing the new one, and the two steps are not atomic) while Darwin leaves the old lock in place — measured on both, and indistinguishable from the return code, which is EWOULDBLOCK either way."
+                | _, _ -> ()
+
+            // The table advances even when the call fails: a conversion that
+            // could not be granted has already dropped the caller's old lock.
+            // So the new table is committed *before* the outcome is inspected,
+            // and every branch below reports from `state'`.
+            let registry, error =
+                FileDescriptorRegistry.flock fd flockRequest state.Kernel.FileDescriptors
+
+            let state' =
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        FileDescriptors = registry
+                    }
+                )
+
+            match error with
+            | Some FlockError.BadFd -> failFrom state' UnixError.EBADF
+            | Some FlockError.WouldBlock ->
+                if nonBlocking then
+                    failFrom state' UnixError.EAGAIN
+                else
+                    // A blocking acquisition that *can* be satisfied is served
+                    // above, so only genuine contention reaches here. Waiting
+                    // for it is a scheduler feature rather than a filesystem
+                    // one: the caller must park and be woken when the holder
+                    // releases.
+                    //
+                    // The holder is some other open file description of this
+                    // same process, PawPrint simulating exactly one — but not
+                    // necessarily another *thread*. A single-threaded guest that
+                    // opens one file twice and blocks on its own lock is
+                    // deadlocked, and a real kernel duly hangs it forever. So
+                    // refusing here is not merely the conservative option: for
+                    // the single-threaded case it is strictly more useful than
+                    // what Linux does, and it never converts the request into a
+                    // non-blocking one, which would hand the guest an
+                    // `EWOULDBLOCK` no kernel would have produced.
+                    //
+                    // CoreLib never reaches this: `SafeFileHandle.Init` always
+                    // sets `LOCK_NB`.
+                    let requested = if mode = lockShared then "shared" else "exclusive"
+
+                    failwith
+                        $"%s{operation}: fd %d{fd} requested a blocking %s{requested} lock, and another open file description holds a conflicting one. PawPrint cannot block a thread on a lock: that needs the scheduler to park it and wake it when the holder releases (issue #956). If the holder is this same thread, a real kernel would deadlock here rather than return. Pass LOCK_NB to get EWOULDBLOCK instead."
+            | None ->
+                state'
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+        // `int32_t SystemNative_PRead(intptr_t fd, void* buffer, int32_t
+        // bufferSize, int64_t fileOffset)` (pal_io.c:1847): `pread(2)` verbatim,
+        // with an EINTR retry. Note it does *not* go through `Common_Read` in
+        // `pal_io_common.h`, so unlike `SystemNative_Read` it has no
+        // negative-size guard — its `assert(bufferSize >= 0)` is debug-only, and
+        // a release build casts a negative size to a ~4 GB unsigned count.
+        | Some "SystemNative_PRead",
+          [ ConcreteIntPtr state.ConcreteTypes
+            ConcretePointer _
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64 ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_PRead"
+            let fd = fdArgument operation instruction.Arguments.[0]
+            let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
+            let fileOffset = NativeCall.int64Argument operation instruction.Arguments.[3]
+
+            let fail (error : UnixError) : NativeHandlerResult option =
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        LastSystemError = UnixError.toRawErrnoUnder numbering error
+                    }
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            // A negative size is the one input whose real behaviour PawPrint
+            // cannot reproduce, so it is refused before anything else is
+            // considered. The C casts it to `uint32_t`, asking the kernel for
+            // ~4 GB: measured, macOS answers EINVAL (the count exceeds what it
+            // will accept) while Linux answers EFAULT (the buffer's mapping does
+            // not extend that far) — and Linux's answer therefore depends on the
+            // *guest's address space*, which PawPrint does not model to that
+            // fidelity. Either choice would be a documented divergence on one
+            // platform, and a silent one at that.
+            //
+            // Refusing first means a negative size beats an otherwise-diagnosable
+            // bad fd, which real kernels would report as EBADF. That is a
+            // deliberate over-refusal on a two-fault input, recorded here because
+            // a green suite cannot show it; the alternative is to answer a
+            // question whose premise PawPrint has already refused.
+            //
+            // CoreLib never sends one: every caller is `RandomAccess`, whose
+            // sizes come from span lengths.
+            if bufferSize < 0 then
+                failwith
+                    $"%s{operation}: fd %d{fd} was given bufferSize %d{bufferSize}, which is negative. The C shim casts that to an unsigned ~4 GB count rather than rejecting it (unlike SystemNative_Read, which goes through Common_Read and answers ERANGE), and what a kernel then does is not a fact PawPrint can state: measured, macOS answers EINVAL and Linux answers EFAULT, Linux's answer depending on how far the guest's buffer happens to be mapped. Pass a non-negative size."
+            else
+
+            let offsetInvalid = fileOffset < 0L
+
+            // The order of the checks below is measured, not assumed, and it
+            // differs between the two platforms. On a *single-fault* input they
+            // agree on every row; they part company only when two things are
+            // wrong at once, which is why an ordering has to be pinned at all:
+            //
+            //   input                     Linux    Darwin
+            //   negative offset + bad fd  EINVAL   EBADF
+            //   negative offset + pipe    EINVAL   ESPIPE
+            //   negative offset + dir     EINVAL   EINVAL
+            //
+            // Linux validates the offset before it even looks the descriptor up
+            // (`do_pread` checks `pos < 0` ahead of `fdget`); Darwin resolves
+            // the descriptor and its seekability first, and only then the
+            // offset. Both orders are followed here rather than one being
+            // imposed on the other, because both are fully measured — unlike
+            // `SystemNative_FLock`, whose Darwin *return codes* are known but
+            // whose resulting lock state is not, and which therefore refuses.
+            // Where the answer is known, PawPrint gives it rather than crashing.
+            //
+            // Note `EISDIR` follows the offset check on *both* platforms, so
+            // only the descriptor and seekability steps actually move; that is
+            // why one flag suffices rather than two separate orderings.
+            let offsetCheckedBeforeDescriptor =
+                match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+                | SimulatedUnixFlavour.Linux -> true
+                | SimulatedUnixFlavour.Darwin -> false
+
+            if offsetCheckedBeforeDescriptor && offsetInvalid then
+                fail UnixError.EINVAL
+            else
+
+            match FileDescriptorRegistry.tryFindObject fd state.Kernel.FileDescriptors with
+            | None -> fail UnixError.EBADF
+            | Some (OpenFileObject.StandardStream role) ->
+                // `pread` needs a seekable object, and PawPrint models the
+                // standard streams as pipes — stdin the read end, stdout and
+                // stderr write ends (which is why `SystemNative_Write` to fd 0
+                // is EBADF). Such a descriptor fails two different tests at
+                // once for stdout and stderr: it is neither seekable nor open
+                // for reading. Measured, the platforms break that tie
+                // differently:
+                //
+                //   descriptor                        Linux    Darwin
+                //   pipe read end (unseekable)        ESPIPE   ESPIPE
+                //   pipe write end (also unreadable)  ESPIPE   EBADF
+                //   regular file O_WRONLY (seekable)  EBADF    EBADF
+                //
+                // So Linux lets unseekability win for a pipe while Darwin lets
+                // unreadability win; the third row is the control showing this
+                // is about the tie rather than about readability generally.
+                //
+                // Reachable from the BCL, and handled by it:
+                // `RandomAccess.ReadAtOffset` catches ESPIPE (and ENXIO), clears
+                // `SupportsRandomAccess`, and retries through
+                // `SystemNative_Read`. So a `FileStream` over a pipe gets one
+                // step further than it used to and then stops at that
+                // unimplemented handler, which is the honest outcome — the
+                // sequential read path is not this slice. Note the Darwin answer
+                // for stdout/stderr does *not* get that retry, EBADF not being
+                // one of the errnos that clears the flag.
+                let unreadable =
+                    match role with
+                    | FileDescriptorRole.StandardInput -> false
+                    | FileDescriptorRole.StandardOutput
+                    | FileDescriptorRole.StandardError -> true
+
+                match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+                | SimulatedUnixFlavour.Darwin when unreadable -> fail UnixError.EBADF
+                | SimulatedUnixFlavour.Darwin
+                | SimulatedUnixFlavour.Linux -> fail UnixError.ESPIPE
+            | Some (OpenFileObject.File inode) ->
+
+            // Darwin's turn to validate the offset: it has now resolved the
+            // descriptor and rejected an unseekable one, which is exactly the
+            // window in which it differs from Linux. On Linux this cannot fire,
+            // because the check above already did.
+            if not offsetCheckedBeforeDescriptor && offsetInvalid then
+                fail UnixError.EINVAL
+            else
+
+            let entry =
+                match VirtualFileSystem.tryGet inode state.Kernel.FileSystem with
+                | Some entry -> entry
+                | None ->
+                    failwith
+                        $"%s{operation}: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink removed a still-open file; the open file description must keep it alive."
+
+            match entry.Content with
+            | InodeContent.Directory _ ->
+                // EISDIR on both. Reachable: `SystemNative_Open` opens a
+                // directory quite happily, as `open(2)` does.
+                fail UnixError.EISDIR
+            | InodeContent.Symlink _ ->
+                // Not reachable: `open` resolves a symlink, so no descriptor
+                // ever names one. Stated rather than merged into the file case
+                // so that a future `O_PATH`/`O_NOFOLLOW`-returning-a-link finds
+                // a decision here instead of silently reading a target as if it
+                // were file content.
+                failwith
+                    $"%s{operation}: fd %d{fd} names inode %O{inode}, which is a symbolic link. `open` resolves symlinks, so no descriptor should name one; if this is reachable, decide what reading a link through a descriptor means (issue #956)."
+            | InodeContent.RegularFile (contents, _) ->
+
+            let transfer =
+                VirtualFileSystem.readTransferCount fileOffset bufferSize contents.Length
+
+            // The buffer is decoded only on the path that actually writes
+            // through it. That is not an optimisation: a real kernel faults on
+            // `copy_to_user`, so a call that transfers nothing never touches the
+            // buffer at all, and `pread(fd, NULL, 5, offsetAtEof)` returns 0
+            // rather than EFAULT — measured on both platforms, and easy to get
+            // wrong by validating arguments up front.
+            if transfer = 0 then
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            else
+
+            // Only the *base* of the buffer is validated here, which is all
+            // `dereferenceablePointerArgument` can say. A guest that asks to
+            // read more bytes than its buffer holds — `pread(fd, stackalloc
+            // byte[1], 5, 0)` — therefore gets as far as the write and then
+            // fails inside `MemoryBlock.writeBytes`, naming the block rather
+            // than the syscall.
+            //
+            // Left as it is, deliberately. That is a property of the shared
+            // `writeBytesThrough` seam rather than of this handler: measured,
+            // `SystemNative_ReadLink` fails identically for a target longer than
+            // the buffer it was given, and `Stat`/`LStat`/`FStat` write through
+            // the same helper. Fixing it means giving that seam a "is this whole
+            // range writable" query, which has to understand every
+            // `ManagedPointerSource` shape — its own change, and one that should
+            // improve every caller at once rather than this one quietly.
+            //
+            // Nor is the behaviour wrong, exactly: the guest has overflowed its
+            // own buffer, which a real kernel services by corrupting whatever
+            // follows it. Detecting that is more useful than reproducing it.
+            // What is missing is a message that names the syscall.
+            match dereferenceablePointerArgument operation "buffer" instruction.Arguments.[1] with
+            | None -> fail UnixError.EFAULT
+            | Some buffer ->
+
+            // Indexed rather than `Seq.skip`, which would enumerate the whole
+            // prefix on every read and make reading a file quadratic in its
+            // length.
+            let bytes =
+                ImmutableArray.CreateRange (seq { for i in 0 .. transfer - 1 -> contents.[int fileOffset + i] })
+
+            writeBytesThrough ctx operation buffer bytes state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim transfer)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_ReadLink",
           [ ConcretePointer _ ; ConcretePointer _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
@@ -1794,12 +2162,12 @@ module NativeSystemNative =
                     // crashing so the guest's own error reporting runs.
                     -1, StepEffect.NoEffect, setErrno state UnixError.ERANGE
                 else
-                    match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+                    match FileDescriptorRegistry.tryFindObject fd state.Kernel.FileDescriptors with
                     | None ->
                         // Unknown fd: report EBADF the same way `write(2)`
                         // would.
                         -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
-                    | Some (OpenFileDescription.File inode) ->
+                    | Some (OpenFileObject.File inode) ->
                         // A descriptor on a real file. EBADF is what a real
                         // kernel answers for a write to an `O_RDONLY`
                         // descriptor, and every descriptor PawPrint hands out
@@ -1815,7 +2183,7 @@ module NativeSystemNative =
                         // instead of assuming.
                         ignore<InodeNumber> inode
                         -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
-                    | Some (OpenFileDescription.StandardStream role) ->
+                    | Some (OpenFileObject.StandardStream role) ->
                         match role with
                         | FileDescriptorRole.StandardInput ->
                             // `write(2)` on a read-only fd returns -1 + EBADF

@@ -1584,3 +1584,95 @@ module TestVirtualFileSystem =
 
         resolve SimulatedUnixPlatform.macOsArm64
         |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+/// `readTransferCount` decides the whole of what `pread(2)` returns once its
+/// error cases are out of the way, and getting it wrong is an off-by-one that
+/// end-to-end tests report as "the file came back slightly wrong" from inside a
+/// `StreamReader`. As a function of three integers it can be checked against
+/// naive slicing instead, which is what this does.
+[<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
+module TestReadTransferCount =
+
+    let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 2000
+
+    /// Offsets and lengths drawn from a small range, so that boundary cases —
+    /// offset exactly at the end, count exactly reaching it, a zero-length file
+    /// — come up constantly rather than once in a blue moon. `Gen.choose` and
+    /// not the default `int` generator, which is size-bounded in a way that
+    /// makes "offset just past the end" rare.
+    let private smallCase : Gen<int64 * int * int> =
+        gen {
+            let! length = Gen.choose (0, 12)
+            let! offset = Gen.choose (0, 14)
+            let! count = Gen.choose (0, 14)
+            return int64 offset, count, length
+        }
+
+    /// The oracle: how many bytes you get by actually taking the slice.
+    let private naive (offset : int64) (count : int) (length : int) : int =
+        if offset >= int64 length then
+            0
+        else
+            let available = length - int offset
+            min count available
+
+    [<Test>]
+    let ``agrees with naive slicing`` () : unit =
+        let property (offset : int64, count : int, length : int) : bool =
+            VirtualFileSystem.readTransferCount offset count length = naive offset count length
+
+        Check.One (config, Prop.forAll (Arb.fromGen smallCase) property)
+
+    /// The properties that make the result usable as a slice bound, stated
+    /// directly rather than inferred from the oracle: a caller indexes
+    /// `contents.[offset .. offset + result - 1]`, so all three of these must
+    /// hold or that indexing throws.
+    [<Test>]
+    let ``the result is a valid slice of the file`` () : unit =
+        let property (offset : int64, count : int, length : int) : bool =
+            let result = VirtualFileSystem.readTransferCount offset count length
+
+            result >= 0
+            && result <= count
+            && (result = 0 || offset + int64 result <= int64 length)
+
+        Check.One (config, Prop.forAll (Arb.fromGen smallCase) property)
+
+    /// A read is short only because the file ended, never for any other reason.
+    /// This is what lets `File.ReadAllBytes` issue a single `pread` and trust
+    /// the count, and it is the property a clamp that also bounded by, say, a
+    /// buffer size would break.
+    ///
+    /// "Reached *or passed* the end", not "reached" — an offset beyond the end
+    /// answers 0 without `offset + 0` landing on the length. Stating it as an
+    /// equality is the obvious mistake, and this property was written that way
+    /// first; FsCheck produced `offset = 14, count = 5, length = 10` within a
+    /// few dozen cases.
+    [<Test>]
+    let ``a short read means the file ended`` () : unit =
+        let property (offset : int64, count : int, length : int) : bool =
+            let result = VirtualFileSystem.readTransferCount offset count length
+            result = count || offset + int64 result >= int64 length
+
+        Check.One (config, Prop.forAll (Arb.fromGen smallCase) property)
+
+    /// Large offsets, which the small generator never reaches: an offset beyond
+    /// `int` range must answer 0 rather than overflowing into a negative count
+    /// or a wrapped index. `RandomAccess` will happily pass one.
+    [<Test>]
+    let ``an offset beyond int range reads nothing`` () : unit =
+        for offset in [ int64 Int32.MaxValue ; int64 Int32.MaxValue + 1L ; Int64.MaxValue ] do
+            VirtualFileSystem.readTransferCount offset 16 10 |> shouldEqual 0
+
+    [<Test>]
+    let ``worked examples`` () : unit =
+        // The measured `pread` rows, as unit assertions: a 5-byte file.
+        VirtualFileSystem.readTransferCount 0L 5 5 |> shouldEqual 5
+        VirtualFileSystem.readTransferCount 0L 64 5 |> shouldEqual 5
+        VirtualFileSystem.readTransferCount 3L 64 5 |> shouldEqual 2
+        VirtualFileSystem.readTransferCount 5L 64 5 |> shouldEqual 0
+        VirtualFileSystem.readTransferCount 99L 64 5 |> shouldEqual 0
+        VirtualFileSystem.readTransferCount 0L 0 5 |> shouldEqual 0
+        // ...and an empty file, where every offset is at the end.
+        VirtualFileSystem.readTransferCount 0L 16 0 |> shouldEqual 0

@@ -179,6 +179,33 @@ module TestPureCases =
                     // this is a link's *target*, not anything's name.
                     name "long", SeedEntry.Symlink (target (String.replicate 300 "a"))
                 ]
+            "ReadAllBytesSeeded.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    name "empty", file ""
+                    // U+00DF then 'x': three UTF-8 bytes for two characters, so
+                    // a handler measuring .NET chars rather than bytes differs.
+                    name "mb", file "\u00dfx"
+                    name "lines", file "one\ntwo\nthree\n"
+                    // 10000 bytes, longer than `StreamReader`'s 4096-byte
+                    // buffer, so reading it issues several `pread`s at
+                    // increasing offsets. The 251-byte cycle is coprime to 4096,
+                    // so no chunk boundary lands on a repeat of the previous
+                    // one's phase and an off-by-one shifts visible bytes.
+                    name "big", file (String.init 10000 (fun i -> string<char> (char (int 'a' + (i % 251) % 26))))
+                ]
+            "FlockContentionSeeded.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    // A second, unrelated file: a lock is per file, so holding
+                    // one on `f` must not stop `g` being opened exclusively.
+                    name "g", file "other"
+                    // Another path to `f`. Locks are keyed on the resolved
+                    // inode, not on the path used to reach it.
+                    name "lf", SeedEntry.Symlink (target "f")
+                ]
         ]
         |> Map.ofList
 

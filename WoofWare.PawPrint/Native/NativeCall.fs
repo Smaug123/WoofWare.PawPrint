@@ -173,6 +173,16 @@ module NativeCall =
         | CliType.Numeric (CliNumericType.Int32 i) -> i
         | other -> failwith $"%s{operation}: expected Int32 argument, got %O{other}"
 
+    /// An `int64_t` parameter, such as the `fileOffset` of `SystemNative_PRead`.
+    /// Accepts a 32-bit value too, since a guest hand-rolling the P/Invoke may
+    /// hand over a widened constant, and every `int64` parameter PawPrint
+    /// receives is one whose value a narrower cell represents exactly.
+    let int64Argument (operation : string) (arg : CliType) : int64 =
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim i)) -> i
+        | CliType.Numeric (CliNumericType.Int32 i) -> int64 i
+        | other -> failwith $"%s{operation}: expected Int64 argument, got %O{other}"
+
     /// Extract the registry id from the m_handle of a `RuntimeFieldHandleInternal`, or `None` for
     /// the null sentinel. The null sentinel has several spellings, because
     /// `default(RuntimeFieldHandleInternal)` reaches PawPrint as whichever zero shape the
