@@ -33,8 +33,13 @@ type MetadataMethodIdentity =
 /// that carried a field for it here would have to put something untrue in it.
 ///
 /// Everything else `GetCodeInfo` reports is frozen at resolver construction (bake time), so this
-/// is the whole of what is not yet decided. `MethodHandleRegistry.latchInitLocals` decides it, at
+/// is the whole of what is not yet decided. `MethodHandleRegistry.latchPreparation` decides it, at
 /// first execution, and `withLocalsInit` is the only way to get a `MethodInstructions` back out.
+///
+/// A `catch` clause's *type* is undecided at mint too, but it is not a gap in this type: the clause
+/// carries a `DynamicScope` index, which is frozen at bake like everything else here, and only the
+/// type that index names is settled later. That answer lives on `PreparedDynamicMethod` beside
+/// `initLocals`, because it is a property of the method's preparation rather than of its body.
 type MintedDynamicMethodBody =
     {
         Instructions : (IlOp * int) list
@@ -69,6 +74,27 @@ module MintedDynamicMethodBody =
             ExceptionRegions = body.ExceptionRegions
         }
 
+/// Everything about a dynamic method that is settled when it is first prepared for execution,
+/// rather than when it is minted: CoreCLR resolves all of this during the method's first JIT and
+/// caches it, so a guest's later edits change nothing.
+///
+/// One record rather than two fields, so that the two cannot latch apart. Measured on real .NET: a
+/// first invocation that *fails* to compile — an open-generic `catch` clause, say — latches
+/// nothing, and a second invocation after the guest repairs the scope compiles and runs. So a
+/// preparation that gets part-way must leave the method exactly as unprepared as it found it, and a
+/// type that could hold "initLocals latched, clause types not" would let a caller do otherwise.
+type PreparedDynamicMethod =
+    {
+        /// `DynamicMethod.InitLocals` as it read at first preparation. Its setter goes on working
+        /// afterwards and is then ignored, exactly as CoreCLR's `if (!m_Code)` guard arranges.
+        LocalsInit : bool
+        /// The type each `catch` clause of this body names, keyed by the `DynamicScope` index the
+        /// clause carries. Keyed on the scope index rather than on the clause's position so that
+        /// two clauses naming one entry share one resolution, as CoreCLR's single `ResolveToken`
+        /// per token does.
+        CatchTypes : Map<int, ConcreteTypeHandle>
+    }
+
 /// Everything `ModuleHandle_GetDynamicMethod` (runtimehandles.cpp:2388) was told about a dynamic
 /// method: the name and signature blob CoreCLR copies onto the loader heap beside the fresh
 /// `DynamicMethodDesc`, the module the method is scoped to, and the managed `DynamicResolver` it
@@ -81,7 +107,7 @@ module MintedDynamicMethodBody =
 /// would permit to be collected ever is, and the guest cannot ask after the handle's strength --
 /// `GetLCGMethodResolver` is reachable only from native code. Should a collector ever land, this
 /// is one of the places that has to grow a real weak reference -- and note that `Resolver` is now
-/// read *late* as well as at mint, by `latchInitLocals`, so it is live for longer than it looks.
+/// read *late* as well as at mint, by `latchPreparation`, so it is live for longer than it looks.
 type DynamicMethodDefinition =
     private
         {
@@ -90,10 +116,10 @@ type DynamicMethodDefinition =
             ScopeAssemblyFullName : string
             Resolver : ManagedHeapAddress option
             Body : MintedDynamicMethodBody
-            /// The `initLocals` this method was compiled with, once something has executed it;
-            /// `None` until then. See `MintedDynamicMethodBody` for why it cannot be known
-            /// earlier, and `latchInitLocals` for why it never changes once set.
-            LocalsInit : bool option
+            /// What this method was compiled with, once something has executed it; `None` until
+            /// then. See `MintedDynamicMethodBody` for why it cannot be known earlier, and
+            /// `latchPreparation` for why it never changes once set.
+            Prepared : PreparedDynamicMethod option
         }
 
     member this.GetName () : string = this.Name
@@ -117,10 +143,10 @@ type DynamicMethodDefinition =
     /// <see cref="MintedDynamicMethodBody"/>.
     member this.GetBody () : MintedDynamicMethodBody = this.Body
 
-    /// The `initLocals` latched at first execution, or `None` if nothing has executed this method
-    /// yet. Exposed so that a test can tell "not yet decided" from "decided as false"; the
-    /// interpreter goes through `latchInitLocals` instead.
-    member this.GetLatchedLocalsInit () : bool option = this.LocalsInit
+    /// What was latched at first execution, or `None` if nothing has executed this method yet.
+    /// Exposed so that a test can tell "not yet decided" from "decided as false"; the interpreter
+    /// goes through `latchPreparation` instead.
+    member this.GetPreparation () : PreparedDynamicMethod option = this.Prepared
 
 /// What a `RuntimeMethodHandleInternal` registry id can name.
 ///
@@ -495,7 +521,7 @@ module MethodHandleRegistry =
                 Resolver = resolver
                 Body = body
                 // Not read here, deliberately: see `MintedDynamicMethodBody`.
-                LocalsInit = None
+                Prepared = None
             }
             : DynamicMethodDefinition
 
@@ -519,38 +545,39 @@ module MethodHandleRegistry =
         address, reg, allocState
 
     /// <summary>
-    /// Fix this dynamic method's <c>initLocals</c> at <paramref name="observed" /> if nothing has
-    /// fixed it already, and return the value that is now in effect.
+    /// Fix what this dynamic method is compiled with at <paramref name="observed" /> if nothing has
+    /// fixed it already, and return whatever is now in effect.
     /// </summary>
     /// <remarks>
     /// <para>
     /// First write wins, and that is the semantics rather than mere tolerance of a double call.
     /// CoreCLR's <c>LCGMethodResolver::GetCodeInfo</c> computes <c>m_Options</c> only under
-    /// <c>if (!m_Code)</c>, so the value the first JIT saw is the value the method is compiled
-    /// with forever; a guest that assigns <c>InitLocals</c> afterwards -- which the property's
-    /// setter cheerfully permits, at any time -- changes nothing. Re-reading the field on each
-    /// invocation would be wrong in exactly the opposite direction from reading it at mint.
+    /// <c>if (!m_Code)</c>, so what the first JIT saw is what the method is compiled with forever;
+    /// a guest that assigns <c>InitLocals</c> afterwards -- which the property's setter cheerfully
+    /// permits, at any time -- changes nothing, and neither does one that rewrites a scope slot a
+    /// <c>catch</c> clause named. Re-reading on each invocation would be wrong in exactly the
+    /// opposite direction from reading at mint.
     /// </para>
     /// <para>
-    /// Returning the effective value, rather than leaving the caller to read it back, is what
-    /// stops a caller from compiling a frame with a value the registry did not latch.
+    /// Returning what is in effect, rather than leaving the caller to read it back, is what stops a
+    /// caller from compiling a frame with a value the registry did not latch.
     /// </para>
     /// </remarks>
-    let latchInitLocals
+    let latchPreparation
         (handle : DynamicMethodHandle)
-        (observed : bool)
+        (observed : PreparedDynamicMethod)
         (reg : MethodHandleRegistry)
-        : bool * MethodHandleRegistry
+        : PreparedDynamicMethod * MethodHandleRegistry
         =
         match Map.tryFind handle reg.DynamicMethods with
-        | None -> failwith $"cannot latch initLocals for %O{handle}: this registry never minted it"
+        | None -> failwith $"cannot latch the preparation of %O{handle}: this registry never minted it"
         | Some definition ->
-            match definition.LocalsInit with
+            match definition.Prepared with
             | Some alreadyLatched -> alreadyLatched, reg
             | None ->
                 let definition =
                     { definition with
-                        LocalsInit = Some observed
+                        Prepared = Some observed
                     }
 
                 observed,

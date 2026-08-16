@@ -185,6 +185,188 @@ module internal DynamicMethodBody =
 
         entries
 
+    /// An `int` field of a guest object.
+    let private readInt32Field
+        (operation : string)
+        (what : string)
+        (state : IlMachineState)
+        (owner : ManagedHeapAddress)
+        (field : string)
+        : int
+        =
+        match
+            AllocatedNonArrayObject.DereferenceField field (ManagedHeap.get owner state.ManagedHeap)
+            |> CliType.unwrapPrimitiveLikeDeep
+        with
+        | CliType.Numeric (CliNumericType.Int32 v) -> v
+        | other -> failwith $"%s{operation}: expected %s{what}.%s{field} to be an int32, got %O{other}"
+
+    /// The contents of an `int[]` field of a guest object, in order.
+    let private readInt32ArrayField
+        (operation : string)
+        (what : string)
+        (state : IlMachineState)
+        (owner : ManagedHeapAddress)
+        (field : string)
+        : int[]
+        =
+        let addr =
+            AllocatedNonArrayObject.DereferenceField field (ManagedHeap.get owner state.ManagedHeap)
+            |> requireObject operation $"%s{what}.%s{field}" state
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{operation}: %s{what}.%s{field} is null, but __ExceptionInfo's constructor allocates all five of its arrays"
+            )
+
+        let shape = ManagedHeap.getArrayShape addr state.ManagedHeap
+
+        if shape.Lengths.Length <> 1 then
+            failwith
+                $"%s{operation}: expected %s{what}.%s{field} to be a single-dimensional array, got rank %d{shape.Lengths.Length}"
+
+        Array.init
+            shape.Length
+            (fun i ->
+                match
+                    ManagedHeap.getArrayValue addr i state.ManagedHeap
+                    |> CliType.unwrapPrimitiveLikeDeep
+                with
+                | CliType.Numeric (CliNumericType.Int32 v) -> v
+                | other -> failwith $"%s{operation}: expected %s{what}.%s{field}[%d{i}] to be an int32, got %O{other}"
+            )
+
+    /// <summary>
+    /// The exception-handling clauses of a body built through <c>ILGenerator</c>, read out of the
+    /// resolver's <c>m_exceptions</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is <c>DynamicResolver.GetEHInfo</c> (<c>DynamicILGenerator.cs:743-767</c>) run over
+    /// every clause instead of one at a time: the JIT asks for clause <c>n</c> and that method walks
+    /// the <c>__ExceptionInfo</c> array subtracting <c>GetNumberOfCatches()</c> until it lands, so
+    /// the clause sequence is the concatenation, in array order, of each info's first
+    /// <c>m_currentCatch</c> clauses.
+    /// </para>
+    /// <para>
+    /// <c>m_currentCatch</c> and not the arrays' length: <c>__ExceptionInfo</c> allocates its five
+    /// parallel arrays four entries at a time and doubles them
+    /// (<c>RuntimeILGenerator.cs:1282-1307</c>), so the tail holds zeroes that would decode as
+    /// catch clauses covering <c>[0, 0)</c> and naming scope entry 0 — well-formed nonsense.
+    /// </para>
+    /// <para>
+    /// The array arrives already sorted innermost-first, by <c>GetExceptions</c>'s call to
+    /// <c>SortExceptions</c> (<c>RuntimeILGenerator.cs:336</c>), which is what ECMA-335 II.25.4.6
+    /// requires and what <c>ExceptionDispatching.findAcceptingClause</c>'s tie-break expects. That
+    /// sort's own comment notes its <c>IsInner</c> comparison gives an arbitrary answer for two
+    /// clauses that do not nest; harmless here, because dispatch re-sorts candidates by try length
+    /// and non-nested try ranges are disjoint, so no pair of them is ever both candidates.
+    /// </para>
+    /// <para>
+    /// The one arithmetic wrinkle is <c>TryLength</c>, which a <c>finally</c> clause takes from
+    /// <c>m_endFinally</c> where every other kind takes it from <c>m_endAddr</c>. Measured on a
+    /// <c>try/catch/finally</c>, where one <c>__ExceptionInfo</c> yields a catch covering
+    /// <c>[0,+11)</c> and a finally covering <c>[0,+25)</c>: the two clauses of one region genuinely
+    /// have different try ranges, so a projection hoisting the length out of the loop is wrong.
+    /// </para>
+    /// <para>
+    /// <c>Fault</c> and <c>PreserveStack</c> are both <c>0x0004</c>, so reading that value as
+    /// <c>Fault</c> is only safe because <c>MarkHelper</c> writes nothing but
+    /// <c>None</c>/<c>Filter</c>/<c>Finally</c>/<c>Fault</c> into <c>m_type</c>. A
+    /// <c>PreserveStack</c> flag could only arrive through <c>DynamicILInfo</c>'s raw EH blob, which
+    /// <see cref="read"/> refuses by name before reaching here.
+    /// </para>
+    /// </remarks>
+    let private readExceptionRegions
+        (operation : string)
+        (state : IlMachineState)
+        (exceptions : ManagedHeapAddress)
+        : ImmutableArray<WoofWare.PawPrint.ExceptionRegion>
+        =
+        // __ExceptionInfo's clause kinds (`RuntimeILGenerator.cs:1251-1255`).
+        let COR_ILEXCEPTION_CLAUSE_NONE = 0x0000
+        let COR_ILEXCEPTION_CLAUSE_FILTER = 0x0001
+        let COR_ILEXCEPTION_CLAUSE_FINALLY = 0x0002
+        let COR_ILEXCEPTION_CLAUSE_FAULT = 0x0004
+
+        let shape = ManagedHeap.getArrayShape exceptions state.ManagedHeap
+
+        if shape.Lengths.Length <> 1 then
+            failwith
+                $"%s{operation}: expected m_exceptions to be a single-dimensional array, got rank %d{shape.Lengths.Length}"
+
+        let builder = ImmutableArray.CreateBuilder<WoofWare.PawPrint.ExceptionRegion> ()
+
+        for i in 0 .. shape.Length - 1 do
+            let what = $"m_exceptions[%d{i}]"
+
+            let info =
+                ManagedHeap.getArrayValue exceptions i state.ManagedHeap
+                |> requireObject operation what state
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: %s{what} is null, but GetExceptions copies exactly m_exceptionCount non-null entries"
+                )
+
+            let int32Field = readInt32Field operation what state info
+            let int32ArrayField = readInt32ArrayField operation what state info
+
+            let startAddr = int32Field "m_startAddr"
+            let endAddr = int32Field "m_endAddr"
+            let endFinally = int32Field "m_endFinally"
+            let numberOfCatches = int32Field "m_currentCatch"
+            let filterAddr = int32ArrayField "m_filterAddr"
+            let catchAddr = int32ArrayField "m_catchAddr"
+            let catchEndAddr = int32ArrayField "m_catchEndAddr"
+            let clauseType = int32ArrayField "m_type"
+
+            let bound =
+                min (min filterAddr.Length catchAddr.Length) (min catchEndAddr.Length clauseType.Length)
+
+            if numberOfCatches < 0 || numberOfCatches > bound then
+                failwith
+                    $"%s{operation}: %s{what} claims %d{numberOfCatches} clause(s) but its parallel arrays hold %d{bound}"
+
+            for c in 0 .. numberOfCatches - 1 do
+                let flags = clauseType.[c]
+
+                let tryLength =
+                    if flags &&& COR_ILEXCEPTION_CLAUSE_FINALLY <> COR_ILEXCEPTION_CLAUSE_FINALLY then
+                        endAddr - startAddr
+                    else
+                        endFinally - startAddr
+
+                let offset =
+                    {
+                        TryOffset = startAddr
+                        TryLength = tryLength
+                        HandlerOffset = catchAddr.[c]
+                        HandlerLength = catchEndAddr.[c] - catchAddr.[c]
+                    }
+
+                let region =
+                    if flags = COR_ILEXCEPTION_CLAUSE_NONE then
+                        // `m_filterAddr` holds this clause's *type*, as a DynamicScope token:
+                        // `BeginCatchBlock` writes `GetTokenFor(rtType)` into it directly
+                        // (`DynamicILGenerator.cs:371`), over the top of the slot every other clause
+                        // kind uses for a filter's IL offset.
+                        ExceptionRegion.Catch (
+                            ExceptionCatchType.FromDynamicScope (IlDecoding.scopeIndexOf filterAddr.[c]),
+                            offset
+                        )
+                    elif flags = COR_ILEXCEPTION_CLAUSE_FILTER then
+                        ExceptionRegion.Filter (filterAddr.[c], offset)
+                    elif flags = COR_ILEXCEPTION_CLAUSE_FINALLY then
+                        ExceptionRegion.Finally offset
+                    elif flags = COR_ILEXCEPTION_CLAUSE_FAULT then
+                        ExceptionRegion.Fault offset
+                    else
+                        failwith
+                            $"%s{operation}: %s{what} clause %d{c} has flags 0x%08x{flags}, which is none of the four __ExceptionInfo writes"
+
+                builder.Add region
+
+        builder.ToImmutable ()
+
     /// <summary>
     /// The `initLocals` a dynamic method would be compiled with if it were compiled *now*, read
     /// off the `DynamicMethod` the resolver was built for.
@@ -199,7 +381,7 @@ module internal DynamicMethodBody =
     /// </para>
     /// <para>
     /// The caller is responsible for latching what this returns
-    /// (`MethodHandleRegistry.latchInitLocals`); on its own this is a plain read of current state,
+    /// (`MethodHandleRegistry.latchPreparation`); on its own this is a plain read of current state,
     /// and calling it twice around a guest assignment will give two different answers.
     /// </para>
     /// </remarks>
@@ -269,18 +451,12 @@ module internal DynamicMethodBody =
             failwith
                 $"TODO: %s{operation} was given a resolver built through DynamicILInfo, whose exception clauses arrive as a fat/thin EH blob in m_exceptionHeader rather than as __ExceptionInfo records; PawPrint reads only the ILGenerator path"
 
-        // Exception regions are refused wholesale for now rather than decoded: a `catch` clause's
-        // type arrives as a `DynamicScope` index in `ClassTokenOrFilterOffset`, so it has exactly
-        // the token problem `carriesToken` refuses bodies for, and `ExceptionRegion.Catch` has
-        // nowhere to put anything else. `m_exceptions` is null when `ILGenerator` saw no `try`.
-        match field "m_exceptions" |> requireObject operation "m_exceptions" state with
-        | None -> ()
-        | Some addr ->
-            let shape = ManagedHeap.getArrayShape addr state.ManagedHeap
-
-            if shape.Length <> 0 then
-                failwith
-                    $"TODO: %s{operation} was given a dynamic method with %d{shape.Length} exception region(s); a catch clause's type is a DynamicScope index, which PawPrint cannot yet resolve"
+        // `m_exceptions` is null when `ILGenerator` saw no `try` at all: `GetExceptions` returns
+        // null rather than an empty array for `m_exceptionCount = 0`.
+        let exceptionRegions =
+            match field "m_exceptions" |> requireObject operation "m_exceptions" state with
+            | None -> ImmutableArray.Empty
+            | Some addr -> readExceptionRegions operation state addr
 
         let code =
             match field "m_code" |> requireObject operation "m_code" state with
@@ -299,6 +475,30 @@ module internal DynamicMethodBody =
         let instructions =
             IlDecoding.decodeInstructions (IlTokenUniverse.DynamicScope scopeEntries) code
 
+        // A catch clause's type is checked against the scope for the same reason, and to exactly
+        // the same standard, as an instruction's operand: a body that could never resolve is
+        // refused when the method is minted rather than deep inside a run. Like that check, this
+        // establishes only that the body has *some* chance of executing. The entry is read again,
+        // from the live scope, when the method is first prepared, and that later read is the one
+        // whose answer is used — a guest may replace the slot in between.
+        for region in exceptionRegions do
+            match region with
+            | ExceptionRegion.Catch (ExceptionCatchType.FromDynamicScope index, _) ->
+                match Map.tryFind index scopeEntries with
+                | Some DynamicScopeEntry.TypeHandle -> ()
+                | Some held ->
+                    failwith
+                        $"a dynamic method's catch clause names DynamicScope entry %d{index}, which holds %s{DynamicScopeEntry.describe held} rather than a type handle"
+                | None ->
+                    failwith
+                        $"a dynamic method's catch clause names DynamicScope entry %d{index}, which does not exist; the scope holds %d{scopeEntries.Count} entr(y/ies)"
+            | ExceptionRegion.Catch (ExceptionCatchType.FromMetadata token, _) ->
+                failwith
+                    $"BUG: %s{operation} decoded a catch clause carrying the metadata token %O{token}; a dynamic method's clause types come from its DynamicScope"
+            | ExceptionRegion.Filter _
+            | ExceptionRegion.Finally _
+            | ExceptionRegion.Fault _ -> ()
+
         let localVars =
             match field "m_localSignature" |> requireObject operation "m_localSignature" state with
             | Some addr ->
@@ -311,5 +511,5 @@ module internal DynamicMethodBody =
                     $"%s{operation}: the resolver's m_localSignature is null, but DynamicResolver's constructor assigns it from SignatureHelper.InternalGetSignatureArray, which always returns at least the calling-convention byte"
 
         // No `initLocals` here: it is not knowable yet. `readInitLocals` above answers it, at
-        // first execution, and `MethodHandleRegistry.latchInitLocals` fixes it there.
-        MintedDynamicMethodBody.make instructions localVars ImmutableArray.Empty
+        // first execution, and `MethodHandleRegistry.latchPreparation` fixes it there.
+        MintedDynamicMethodBody.make instructions localVars exceptionRegions

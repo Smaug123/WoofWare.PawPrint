@@ -185,7 +185,10 @@ module TestPrologueExceptionScope =
         | other -> failwith $"Expected the exception to be delivered to a handler, got %O{other}"
 
     let private catchAll : ExceptionRegion =
-        ExceptionRegion.Catch (MetadataToken.TypeDefinition bct.Object.TypeDefHandle, catchAllOffset)
+        ExceptionRegion.Catch (
+            ExceptionCatchType.FromMetadata (MetadataToken.TypeDefinition bct.Object.TypeDefHandle),
+            catchAllOffset
+        )
 
     [<Test>]
     let ``a frame awaiting its prologue does not catch`` () : unit =

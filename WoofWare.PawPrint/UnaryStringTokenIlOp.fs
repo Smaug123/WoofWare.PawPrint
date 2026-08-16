@@ -83,7 +83,9 @@ module internal UnaryStringTokenIlOp =
                     // The literal has to be *used* to measure this at all: `ldstr; pop` is never
                     // materialised by real .NET (the divergence documented above), so a probe that
                     // discards the value reads every rewrite as a pass.
-                    match DynamicScopeOperand.entryObject "ldstr" scopeIndex state thread with
+                    let scope = DynamicScopeOperand.executingScope "ldstr" state thread
+
+                    match DynamicScopeOperand.entryObject "ldstr" scopeIndex state scope with
                     | ScopeEntryLookup.PastEnd ->
                         Error (
                             baseClassTypes.ArgumentOutOfRangeException,

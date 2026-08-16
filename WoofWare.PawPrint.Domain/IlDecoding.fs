@@ -25,7 +25,11 @@ module IlDecoding =
     /// and then ignores the tag entirely (`DynamicILGenerator.cs:976-987`), so the tag is *not*
     /// authoritative about what the entry is; the entry itself is. Mirror that here rather than
     /// cross-checking the tag, or a token the real runtime resolves happily would be refused.
-    let private scopeIndexOf (token : int) : int = token &&& 0x00FFFFFF
+    ///
+    /// Public because instruction operands are not the only scope tokens in a dynamic method: a
+    /// `catch` clause's type arrives as one too, in a field of `__ExceptionInfo` rather than in the
+    /// IL stream, and must be masked by the same rule.
+    let scopeIndexOf (token : int) : int = token &&& 0x00FFFFFF
 
     /// What kind of `DynamicScope` entry an instruction's operand may name.
     ///
@@ -164,14 +168,6 @@ module IlDecoding =
                 failwith
                     $"a dynamic method's %O{op} names DynamicScope entry %d{index} (token 0x%08x{value}), which holds %s{held} rather than %s{wanted}"
 
-            let describe (entry : DynamicScopeEntry) : string =
-                match entry with
-                | DynamicScopeEntry.TypeHandle -> "a type handle"
-                | DynamicScopeEntry.DynamicMethod -> "a dynamic method"
-                | DynamicScopeEntry.VarArgMethod -> "a call site naming a dynamic method"
-                | DynamicScopeEntry.String contents -> $"the string %s{contents}"
-                | DynamicScopeEntry.Unsupported description -> description
-
             match scopeOperandKind op, entry with
             | ScopeOperandKind.NotYetSupported missing, _ ->
                 failwith
@@ -181,8 +177,8 @@ module IlDecoding =
             // `Emit(OpCode, MethodInfo)` and `EmitCall` differ only in whether the entry is wrapped;
             // both are ordinary ways to spell the same call, so both are accepted here.
             | ScopeOperandKind.Method, DynamicScopeEntry.VarArgMethod -> MetadataOperand.FromDynamicScope index
-            | ScopeOperandKind.Type, held -> refuse "a type handle" (describe held)
-            | ScopeOperandKind.Method, held -> refuse "a method" (describe held)
+            | ScopeOperandKind.Type, held -> refuse "a type handle" (DynamicScopeEntry.describe held)
+            | ScopeOperandKind.Method, held -> refuse "a method" (DynamicScopeEntry.describe held)
 
     let private readStringToken (universe : IlTokenUniverse) (reader : byref<BlobReader>) : StringOperand =
         let value = reader.ReadUInt32 () |> int

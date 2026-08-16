@@ -78,9 +78,13 @@ module internal UnaryMetadataIlOp =
             | MetadataOperand.FromDynamicScope scopeIndex ->
                 let operation = string<UnaryMetadataTokenIlOp> op
 
+                // The operand belongs to the method whose instruction this is, which is the one
+                // executing: an operand is only ever read as its own instruction runs.
+                let scope = DynamicScopeOperand.executingScope operation state thread
+
                 match IlDecoding.scopeOperandKind op with
                 | IlDecoding.ScopeOperandKind.Type ->
-                    match DynamicScopeOperand.closedType baseClassTypes operation scopeIndex state thread with
+                    match DynamicScopeOperand.closedType baseClassTypes operation scopeIndex state scope with
                     | Ok handle -> ResolvedMetadataOperand.ScopeType handle |> OperandResolution.Ready
                     | Error (exceptionType, why) -> OperandResolution.Invalid (exceptionType, why)
                 | IlDecoding.ScopeOperandKind.Method ->
@@ -88,7 +92,7 @@ module internal UnaryMetadataIlOp =
                     // unreachable from a guest today, so `dynamicMethod` crashes rather than
                     // fabricating the exception real .NET would raise. See its docs for the
                     // measurements.
-                    match DynamicScopeOperand.dynamicMethod baseClassTypes operation scopeIndex state thread with
+                    match DynamicScopeOperand.dynamicMethod baseClassTypes operation scopeIndex state scope with
                     | DynamicMethodResolution.Resolved handle ->
                         ResolvedMetadataOperand.ScopeMethod handle |> OperandResolution.Ready
                     | DynamicMethodResolution.NeedsMinting callee -> OperandResolution.NeedsMinting callee
