@@ -161,7 +161,7 @@ namespace ActivatorCreateInstanceNonGenericTest
     // reached through `calli`, whose managed arm runs `loadClass` on the callee's declaring
     // type, so the type initialiser must have run by the time the ctor body executes.
     //
-    // The side channel is what makes this load-bearing. The obvious shape — cctor sets a static
+    // The side channel is what makes the assertion non-vacuous. The obvious shape — cctor sets a static
     // on the type itself, ctor reads it — passes even if the `calli` never initialises anything,
     // because the ctor body's own `ldsfld` triggers the initialiser on its way past. Verified by
     // mutation: that version survives removing `loadClass` from `executeCalli` entirely. Routing
@@ -370,7 +370,7 @@ namespace ActivatorCreateInstanceNonGenericTest
             // The unmanaged activation layer deliberately lets a ref struct through
             // (`allowByRefLike: true`); `CreateInstanceDefaultCtor` is what throws, and it does
             // so by reading `RuntimeType.IsByRefLike`, which is a MethodTable *flag*. Nothing
-            // else on this path consults it, so if the flag is not projected the guard simply
+            // else on this path consults it, so if the flag is not projected the guard
             // passes and the caller is handed a boxed ref struct — which is not a legal heap
             // representation at all. That makes this row the only thing standing between the
             // allocator and a silently illegal object.

@@ -6,14 +6,14 @@
 // slot under variance without consulting the signature at all. This file is the same shape
 // with an ordinary public method satisfying the interface instead, which has no such row: the
 // only thing tying `ObjectSink.Accept(object, ...)` to `ISink<string>::Accept(string, ...)` is
-// the signature, and those differ under `in`-variance. Dispatch used to miss entirely and the
-// interpreter reached the abstract interface method:
+// the signature, and those differ under `in`-variance. Without a retarget, dispatch misses
+// entirely and the interpreter reaches the abstract interface method:
 //
 //   BUG: reached executeOneStep for abstract method ISink`1::Accept;
 //   virtual dispatch should have resolved to a concrete override
 //
-// Fixed by `IlMachineStateExecution.tryRetargetToVariantInterfaceMapEntry`, which — when
-// ordinary resolution misses — retargets the call from the call site's instantiation to the
+// `IlMachineStateExecution.tryRetargetToVariantInterfaceMapEntry` serves this: when
+// ordinary resolution misses, it retargets the call from the call site's instantiation to the
 // receiver's own variance-compatible interface-map entry (`ISink<object>`) and resolves against
 // that, exactly as CoreCLR does. No signature comparison is loosened.
 

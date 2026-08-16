@@ -53,7 +53,7 @@ module TestCpuPlacement =
 
     [<Test>]
     let ``every placement names a processor the guest counts`` () =
-        // The load-bearing invariant. BCL callers index per-CPU shards sized off
+        // BCL callers index per-CPU shards sized off
         // `Environment.ProcessorCount` with this value
         // (`SharedArrayPool`, `TimerQueue.Instances`), so a placement outside
         // the range would be an out-of-bounds shard index in guest code.
@@ -208,7 +208,7 @@ module TestCpuPlacement =
 
     [<Test>]
     let ``allocateParkedThread leaves the rotation untouched`` () =
-        // The load-bearing half: a PawPrint-internal auxiliary thread must not
+        // A PawPrint-internal auxiliary thread must not
         // consume a rotation slot, or the interpreter's own bookkeeping would
         // shift which core guest threads observe. It still gets a placement,
         // because the field is total — a fixed core 0.

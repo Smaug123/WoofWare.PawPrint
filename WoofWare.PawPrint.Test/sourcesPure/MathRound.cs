@@ -114,7 +114,7 @@ public static class MathRound
     static int FractionalCases()
     {
         // Away from the midpoints there is nothing to break a tie over, and the answer is
-        // simply the nearer integer -- symmetrically in the sign, unlike Math.Ceiling.
+        // the nearer integer -- symmetrically in the sign, unlike Math.Ceiling.
         if (Math.Round(1.25) != 1.0) return 61;
         if (Math.Round(-1.25) != -1.0) return 62;
         if (Math.Round(1.75) != 2.0) return 63;

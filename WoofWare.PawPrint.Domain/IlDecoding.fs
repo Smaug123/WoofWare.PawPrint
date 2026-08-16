@@ -98,7 +98,7 @@ module IlDecoding =
         | UnaryMetadataTokenIlOp.Calli ->
             // Not a method entry at all: `EmitCalli` stores the call-site signature blob
             // (`GetTokenForSig`, `DynamicILGenerator.cs:553-556`), which `ResolveSignature` reads
-            // rather than `ResolveToken`. Grouping it with the method kinds was untrue.
+            // rather than `ResolveToken`.
             ScopeOperandKind.NotYetSupported
                 "calli's scope operand is a standalone signature blob rather than a method, and PawPrint refuses punned calli signatures in the metadata universe too"
         | UnaryMetadataTokenIlOp.Ldftn

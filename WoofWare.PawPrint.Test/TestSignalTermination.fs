@@ -62,12 +62,12 @@ module TestSignalTermination =
 
     [<Test>]
     let ``SignalTerminated maps to POSIX-conventional exit code 128 + signo`` () : unit =
-        // Codifies the App-layer exit-code mapping (`App/Program.fs`'s
-        // `SignalTerminated` arm). The mapping itself is one expression,
-        // but it's the contract between the simulator and the host shell:
-        // a process killed by SIGTERM exits 143, by SIGINT 130, etc. If
-        // someone re-tunes the formula (e.g. to hardcode 134 like
-        // FailFast does) this test catches it.
+        // Pins the exit codes `128 + Signal.toLinuxSigno` produces for the
+        // signals a shell user knows by heart: a process killed by SIGTERM
+        // exits 143, by SIGINT 130, etc. This is the formula `App/Program.fs`'s
+        // `SignalTerminated` arm applies, but the App layer is not exercised
+        // here — only the signo table underneath it. A re-tuned App formula
+        // (e.g. hardcoding 134 like FailFast does) would not be caught.
         128 + Signal.toLinuxSigno Signal.SIGTERM |> shouldEqual 143
         128 + Signal.toLinuxSigno Signal.SIGINT |> shouldEqual 130
         128 + Signal.toLinuxSigno Signal.SIGABRT |> shouldEqual 134

@@ -2,29 +2,27 @@ using System;
 using System.Runtime.InteropServices;
 
 // `value__` is the CLR-reserved name for an enum's integer slot, but it is also a legal C#
-// identifier, so an ordinary struct may use it. PawPrint used to decide enum-ness *structurally* —
-// one instance field, named `value__`, at offset 0, of integral type — and so classified the
-// structs below as enums and flattened them onto the eval stack as bare integers (issue #996).
+// identifier, so an ordinary struct may use it. Enum-ness must be decided nominally — the
+// immediate base type is `System.Enum` — so none of the structs below is an enum and none is
+// flattened onto the eval stack as a bare integer. A structural test (one instance field, named
+// `value__`, at offset 0, of integral type) misclassifies them all (issue #996).
 //
 // The sibling `AutoLayoutStructNamedLikeEnum.cs` pins the layout half of that misclassification.
-// This file pins the eval-stack half, which is the more dramatic one: `Padded` below has declared
-// `Size` padding that no field covers, so the rewrap on pop refused it outright
-// ("CliValueType.OfFieldsLike: refusing to drop preserved bytes for non-tightly-packed value
-// type") and an ordinary assignment killed the guest. Enum-ness is now decided nominally — the
-// immediate base type is `System.Enum` — so none of these is an enum and none is flattened.
+// This file pins the eval-stack half: `Padded` below has declared `Size` padding that no field
+// covers, so a misclassifying rewrap on pop refuses it outright ("CliValueType.OfFieldsLike:
+// refusing to drop preserved bytes for non-tightly-packed value type") and an ordinary
+// assignment kills the guest.
 public class TestStructNamedLikeEnumRoundTrip
 {
-    // The shape that used to abort: declared bigger than its fields cover, so the flattened value
-    // could not be rebuilt.
+    // Declared bigger than its fields cover, so a flattened value could not be rebuilt.
     [StructLayout(LayoutKind.Sequential, Size = 8)]
     private struct Padded { public int value__; }
 
-    // Tightly packed, so the old rewrap round-tripped it; kept as the control which shows the
-    // failure above is about the padding rather than about the name.
+    // Tightly packed, so even a misclassifying rewrap round-trips it: the control showing the
+    // failure above is about the padding rather than the name.
     private struct Tight { public int value__; }
 
-    // A real enum, to pin that the fix did not stop enums flattening. If this regressed, enum
-    // arithmetic would break far more visibly than this test — that is the point of the control.
+    // A real enum, as the control that enums still flatten.
     private enum Real { Zero = 0, Seven = 7 }
 
     private static int RoundTrip<T>(T value) => 0;

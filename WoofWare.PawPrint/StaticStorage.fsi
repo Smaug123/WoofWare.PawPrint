@@ -6,10 +6,8 @@ namespace WoofWare.PawPrint
 /// The representation is hidden, for the same reason `ManagedHeap`'s is. Statics are shared
 /// mutable guest state — a plain `static int` is the canonical data race — so every read and
 /// write of one must be attributable to a caller, and a caller that reached into the maps
-/// directly would be invisible to that machinery. Until this type existed the only thing
-/// asking callers not to was the leading underscore on `IlMachineState._Statics`, which is a
-/// convention rather than a check; see `WoofWare.PawPrint/ManagedHeap.fsi` for the same
-/// argument made about the heap.
+/// directly would be invisible to that machinery; see `WoofWare.PawPrint/ManagedHeap.fsi`
+/// for the same argument made about the heap.
 ///
 /// The `StaticOwner` key is what makes a thread-static's slots separate values rather than
 /// one contended location, so it is also the type-level record of which accesses *cannot*

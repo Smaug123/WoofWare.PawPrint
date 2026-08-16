@@ -66,7 +66,7 @@ type GuestConfig =
 /// Every field here is part of a run's replay contract. Two runs with equal
 /// `HostConfig` over the same image will produce the same trace.
 ///
-/// The seed is deliberately the *only* thing at this level: it is the one input that selects
+/// The seed is the *only* thing at this level: it is the one input that selects
 /// among the schedules of an otherwise fixed program, and separating it is what lets a
 /// schedule-sweeping harness say "this program, under all of these seeds" without being able to
 /// name a seed in the part that is shared. See `GuestConfig`.

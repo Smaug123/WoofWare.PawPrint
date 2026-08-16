@@ -29,9 +29,8 @@ module TestWaitHandle =
         IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
 
     /// Frame-less thread stub; wait-handle transitions only read/write
-    /// `Status`, so any code path that tried to dereference a frame would
-    /// crash on the sentinel `ActiveMethodState`, which is the correct
-    /// response if the wait-handle module ever started reaching for frames.
+    /// `Status`, so any code path that tried to dereference a frame
+    /// crashes on the sentinel `ActiveMethodState`.
     let private stubThreadState (status : ThreadStatus) : ThreadState =
         {
             MethodStates = Map.empty
@@ -63,14 +62,9 @@ module TestWaitHandle =
         Corelib.getBaseTypes corelib
 
     /// Threads with a *real* frame, so their evaluation stack exists.
-    ///
-    /// The frameless `stubThreadState` above is deliberate for the
-    /// single-handle tests: those transitions only touch `Status` and the
-    /// handle registry, so a frame dereference would be a bug and the sentinel
-    /// `FrameId -1` catches it. Multi-handle waits genuinely need the stack —
-    /// a wait-any's return value is not known until the wake, so the waker has
-    /// to rewrite the slot pushed at park time — and these tests assert on
-    /// exactly that value.
+    /// Multi-handle waits need the stack: a wait-any's return value is not
+    /// known until the wake, so the waker rewrites the slot pushed at park
+    /// time, and these tests assert on that value.
     let private withFramedThreads (threads : ThreadId list) (state : IlMachineState) : IlMachineState =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
@@ -344,11 +338,9 @@ module TestWaitHandle =
 
     [<Test>]
     let ``tryWaitOne on a zero-count semaphore reports TimedOut without parking`` () : unit =
-        // The deterministic non-blocking probe the BCL drives through a
-        // zero-timeout WaitOne(0). CoreCLR's semantics: the caller does
-        // not enter the wait queue and the handle is left untouched —
-        // we'd be observably violating the contract if we parked the
-        // thread for what should be an immediate-return path.
+        // The non-blocking probe the BCL drives through a zero-timeout
+        // WaitOne(0). CoreCLR's semantics: the caller does not enter the
+        // wait queue and the handle is left untouched.
         let state = baseState () |> withThreads [ t0 ]
         let id, state = WaitHandle.createSemaphore 0 5 state
 
@@ -381,8 +373,7 @@ module TestWaitHandle =
     let ``waitOnePrioritized parks each caller at the HEAD of the wait queue`` () : unit =
         // PAL_WaitForSingleObjectPrioritized contract: prioritized waiters
         // are registered at the BEGINNING of the wait queue (LIFO release
-        // policy). Verifies the queue shape after three back-to-back
-        // prioritized waits.
+        // policy).
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
         let id, state = WaitHandle.createSemaphore 0 5 state
 
@@ -428,9 +419,8 @@ module TestWaitHandle =
     [<Test>]
     let ``prioritized waiter wakes before any earlier-arrived non-prioritized waiter`` () : unit =
         // PAL contract: a prioritized waiter goes to the HEAD of the queue
-        // even when non-prioritized waiters are already enqueued behind it.
-        // Verifies the cross-class ordering (prioritized strictly precedes
-        // earlier-arrived non-prioritized in wake order).
+        // even when non-prioritized waiters arrived first, so it strictly
+        // precedes them in wake order.
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
         let id, state = WaitHandle.createSemaphore 0 5 state
 
@@ -676,8 +666,6 @@ module TestWaitHandle =
             let mutable observed = []
 
             for _ in 1..k do
-                // Look at which thread is currently at the head before
-                // release; we'll verify it transitioned to Runnable below.
                 let head = List.head (semaphoreOf id state).WaitQueue
                 let result, s = WaitHandle.releaseSemaphore id 1 state
                 state <- s
@@ -716,8 +704,8 @@ module TestWaitHandle =
     [<Test>]
     let ``close on a signalled (non-zero count) semaphore is permitted`` () : unit =
         // The Win32 contract only forbids closing with parked waiters;
-        // a semaphore that simply has spare capacity (no blocked threads)
-        // is fine to dispose. The BCL's `Dispose` does exactly this.
+        // a semaphore with spare capacity but no blocked threads is fine
+        // to dispose. The BCL's `Dispose` does exactly this.
         let state = baseState ()
         let id, state = WaitHandle.createSemaphore 3 5 state
 
@@ -1097,7 +1085,8 @@ module TestWaitHandle =
     // currently fails loud on owned mutexes. The state-machine behaviour
     // on a Free(wasAbandoned=true) mutex is still required to be correct
     // for when that gap closes; we test it here by synthesising the state
-    // directly. -------------------------------------------------------------------
+    // directly.
+    // -------------------------------------------------------------------
 
     let private installAbandonedMutex (id : WaitHandleId) (state : IlMachineState) : IlMachineState =
         state.MapKernel (fun kernel ->
@@ -1851,15 +1840,14 @@ module TestWaitHandle =
             | MutexOwnership.Held (owner, _) -> owner = thread
         | WaitHandleState.Event e -> e.Signaled
 
-    /// The weakened queue invariant that multi-handle wait introduces, stated
-    /// as an oracle rather than prose.
+    /// The weakened queue invariant that multi-handle wait introduces.
     ///
-    /// The strong invariant PawPrint used to hold — a signalled handle has an
-    /// empty queue — is false once a wait-all waiter can be parked on a handle
-    /// it cannot yet use. What survives is: every thread still queued on a
-    /// handle that it could otherwise take is a wait-all waiter that is
-    /// verifiably unacquirable on at least one of its other handles. Anything
-    /// else queued behind an available resource is a lost wakeup.
+    /// "A signalled handle has an empty queue" is false once a wait-all
+    /// waiter can be parked on a handle it cannot yet use. What survives is:
+    /// every thread still queued on a handle that it could otherwise take is
+    /// a wait-all waiter that is verifiably unacquirable on at least one of
+    /// its other handles. Anything else queued behind an available resource
+    /// is a lost wakeup.
     let private noLostWakeups (state : IlMachineState) : bool =
         queues state
         |> List.forall (fun (id, queue) ->
@@ -1976,11 +1964,10 @@ module TestWaitHandle =
     let ``waitMultiple wait-all rejects duplicate handles`` () : unit =
         // The native handler turns `Failed` into a guest
         // `DuplicateWaitObjectException`, matching what CoreCLR's
-        // `Thread::DoAppropriateWait` does with the PAL's rejection. What
-        // matters here is that the state machine refuses *and changes
-        // nothing*: an auto-event consumed on the way to the rejection, or a
-        // half-acquired semaphore, would be invisible to the guest until much
-        // later.
+        // `Thread::DoAppropriateWait` does with the PAL's rejection. The
+        // state machine must refuse *and change nothing*: an auto-event
+        // consumed on the way to the rejection, or a half-acquired
+        // semaphore, would be invisible to the guest until much later.
         let state = baseState () |> withFramedThreads [ t0 ]
         let a, state = WaitHandle.createEvent true EventResetMode.Auto state
         let b, state = WaitHandle.createSemaphore 1 1 state
@@ -2005,11 +1992,9 @@ module TestWaitHandle =
     [<Test>]
     let ``a stale handle is diagnosed as such even when it is also duplicated`` () : unit =
         // Handle resolution has to happen before the duplicate scan, as it
-        // does in the PAL. Otherwise a use-after-free that happens to name the
-        // same dead handle twice gets reported as
-        // DuplicateWaitObjectException — a confident, wrong diagnosis of a
-        // real bug, which is worse than the loud failure `lookup` exists to
-        // produce.
+        // does in the PAL: a use-after-free that names the same dead handle
+        // twice must fail loud, not be misreported as
+        // DuplicateWaitObjectException.
         let state = baseState () |> withFramedThreads [ t0 ]
         let a, state = WaitHandle.createEvent true EventResetMode.Manual state
         let state = WaitHandle.close a state

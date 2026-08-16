@@ -141,7 +141,7 @@ module NativeEventSource =
     /// ready to be written into a freshly-allocated native-memory block whose
     /// address is then handed back to the guest as a `char*`. The CoreLib
     /// consumer (`new string((char*)EventSource_GetClrConfig(name))`) scans
-    /// for the terminator, so the trailing two zero bytes are load-bearing.
+    /// for the terminator, so the trailing two zero bytes must be present.
     let private packUtf16WithNullTerminator (s : string) : byte[] =
         let buffer = Array.zeroCreate ((s.Length + 1) * 2)
         let written = System.Text.Encoding.Unicode.GetBytes (s, 0, s.Length, buffer, 0)

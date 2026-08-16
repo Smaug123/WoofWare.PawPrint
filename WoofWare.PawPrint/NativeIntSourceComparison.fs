@@ -5,8 +5,7 @@ namespace WoofWare.PawPrint
 /// `PointerHashState`, whose `canonicalKey` pattern-matches `NativeIntSource` and so cannot
 /// be defined before it. One canonical implementation lives here rather than each caller
 /// resolving the pairing before delegating: `ceq` and the `Interlocked.CompareExchange` CAS
-/// must agree, and a function that crashed on a pairing its callers had quietly resolved
-/// would be lying about its own contract.
+/// must agree.
 [<RequireQualifiedAccess>]
 module NativeIntSourceComparison =
 
@@ -18,9 +17,9 @@ module NativeIntSourceComparison =
     /// hand out, and under the counter scheme (`(n + 1) <<< 2`) the assigned addresses are
     /// dense with stride 4, so `((ulong)hA + 4) == (ulong)hB` is exactly such a case and
     /// answers `false` here while the same comparison after `hB` has been materialised
-    /// answers `true` by bit equality. The alternative — refusing — would abort on the
-    /// overwhelmingly common case of comparing genuinely unrelated values, and the
-    /// bit-equality arms above already have the same exposure. The honest summary is that
+    /// answers `true` by bit equality. Refusing instead would abort on the
+    /// overwhelmingly common case of comparing unrelated values, and the
+    /// bit-equality arms above already have the same exposure. The root cause is that
     /// PawPrint's synthesised addresses are small where real addresses are not, which is
     /// what makes a manufactured collision reachable at all.
     let private hashBitsEqualHandle (counters : PointerHashState) (bits : int64) (handle : NativeIntSource) : bool =
@@ -199,7 +198,7 @@ module NativeIntSourceComparison =
                 // construction, not a contract violation — `CastHelpers.IsInstanceOfAny`
                 // opens with `RuntimeHelpers.GetMethodTable(obj) != toTypeHnd` against a raw
                 // `void*` TypeHandle that the caller is free to have obtained from
-                // `typeof(List<>).GetGenericArguments()[0]`, and CoreCLR simply compares the
+                // `typeof(List<>).GetGenericArguments()[0]`, and CoreCLR compares the
                 // two pointers and finds them unequal.
                 false
         | NativeIntSource.ManagedPointer f1, NativeIntSource.ManagedPointer f2 ->
@@ -266,7 +265,7 @@ module NativeIntSourceComparison =
         // pairing is handled above (vs Verbatim/OpaqueHashBits, vs
         // SyntheticCrossArrayOffset, and vs the various handle kinds);
         // this is the remaining case. Hash bits equal a byref iff both
-        // are null; non-zero hash bits vs a non-null byref is genuinely
+        // are null; non-zero hash bits vs a non-null byref is
         // ambiguous (we don't know the byref's numeric address), so
         // fail loudly rather than silently returning a fixed answer.
         // Mirrors the Verbatim × ManagedPointer arm above.

@@ -21,13 +21,13 @@ open WoofWare.PawPrint
 /// <c>resolveTypeFromDefnUnprimed</c>. Substitution is therefore only well-founded when the
 /// "parameter i's argument mentions parameter j" relation is acyclic. It is acyclic for every
 /// live interpreter path, because those environments come from <c>concreteHandleToTypeDefn</c>,
-/// which emits closed types only — but the resolvers are public and nothing enforced it, so a
-/// cyclic environment used to recurse until the stack overflowed, taking the process with it.
+/// which emits closed types only — but the resolvers are public and nothing else enforces it, and
+/// an unguarded cyclic environment recurses until the stack overflows, taking the process with it.
 /// </para>
 /// <para>
 /// A stack overflow is uncatchable in .NET, so it can never be diagnosed, attributed, or
 /// contained; these tests pin the failure to a loud, specific error instead. The positive cases
-/// are as load-bearing as the negative ones: the guard must reject exactly the cyclic
+/// matter as much as the negative ones: the guard must reject exactly the cyclic
 /// environments and nothing else, in particular not an argument that legitimately names a
 /// parameter of the *other* environment.
 /// </para>
@@ -96,7 +96,7 @@ module TestGenericEnvironmentCycles =
     // ------------------------------------------------------------------
 
     /// The shape from issue #903: `T := List<T>`, reached through the GenericInstantiation
-    /// argument fold in substituteGenericsInTypeDefn. Before the fix this overflowed the stack
+    /// argument fold in substituteGenericsInTypeDefn. Unguarded, this overflows the stack
     /// after ~1084 rounds of the fold.
     [<Test>]
     let ``type parameter whose argument mentions itself is rejected`` () : unit =
@@ -311,8 +311,8 @@ module TestGenericEnvironmentCycles =
     /// from the same term generator as the subject, over the same parameters, so
     /// <c>!0 := List&lt;!0&gt;</c> and mutual chains through the method environment are ordinary
     /// draws. That is the point — the property is that the resolver either answers or refuses,
-    /// and never runs away. Termination is what the test run itself demonstrates: before the fix
-    /// this crashed the test host outright rather than failing.
+    /// and never runs away. Termination is what the test run itself demonstrates: a runaway
+    /// resolver crashes the test host outright rather than failing.
     /// </remarks>
     [<Test>]
     let ``resolution terminates on arbitrary generic environments`` () : unit =

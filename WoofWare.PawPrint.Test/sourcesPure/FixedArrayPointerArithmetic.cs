@@ -5,8 +5,8 @@ public unsafe class FixedArrayPointerArithmetic
     // After `fixed (T* p = arr)`, the pointer is in native-pointer-world: pointer
     // arithmetic over it must use byte stride (ECMA-335 §III.1.5), not element
     // stride. The C# compiler emits `sizeof(T) * k` explicitly for `p + k` and
-    // `p++`. The fix ensures Conv_U/Conv_I on a plain array byref anchors a
-    // `ReinterpretAs T` projection so subsequent `add` uses byte arithmetic.
+    // `p++`. Conv_U/Conv_I on a plain array byref anchors a `ReinterpretAs T`
+    // projection so subsequent `add` uses byte arithmetic.
 
     public static int TestIntArrayWalk()
     {

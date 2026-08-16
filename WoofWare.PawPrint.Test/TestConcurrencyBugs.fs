@@ -126,7 +126,7 @@ module TestConcurrencyBugs =
 
     /// Everything about the simulated process except which of its schedules
     /// we are exploring. `Program.runToFirstFork` takes this rather than a
-    /// `HostConfig` precisely so that no seed can reach the shared prefix.
+    /// `HostConfig` so that no seed can reach the shared prefix.
     let private guestConfig : GuestConfig = GuestConfig.Default dotnetRuntimes
 
     /// Compile the guest once per scenario. PCT sweeps reuse the resulting
@@ -190,7 +190,7 @@ module TestConcurrencyBugs =
     /// up to the guest's first *contended* scheduling decision.
     ///
     /// Every non-forking outcome is a test failure rather than a sweep of size
-    /// one, and deliberately so. A guest with no fork point has no schedule
+    /// one. A guest with no fork point has no schedule
     /// space at all, so "PCT exhibits the bad interleaving" would be vacuous
     /// even if that single forced run happened to match the scenario's
     /// `BadOutcome` — nothing chose anything, so PCT cannot have found

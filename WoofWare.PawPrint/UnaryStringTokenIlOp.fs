@@ -9,25 +9,22 @@ open Microsoft.Extensions.Logging
 /// <para>
 /// PawPrint materialises a string literal — and so interns it — when the instruction *executes*.
 /// Real .NET materialises every literal in a method when it *JITs* that method. The two agree on
-/// value, and until dynamic methods they agreed on identity too, because a metadata literal has no
-/// object until one is made for it and it made no difference when that happened. A dynamic method's
-/// literal arrives with an object already attached, so which literal wins an intern slot is now
-/// visible to <c>ReferenceEquals</c>, and the timing difference shows through in two places.
-/// Measured on real .NET, stable across tiered/untiered/minopts:
+/// value, but a dynamic method's literal arrives with an object already attached, so which literal
+/// wins an intern slot is visible to <c>ReferenceEquals</c>. Measured on real .NET, stable across
+/// tiered/untiered/minopts, the timing difference shows in two places:
 /// </para>
 /// <para>
-/// A caller whose own body contains an equal literal *later* than the call has already interned it,
-/// because the caller was JITted before it ran; PawPrint has not, because that instruction has not
-/// executed, so the dynamic method's object wins the slot instead. And an <c>ldstr</c> whose value
-/// is discarded (<c>ldstr; pop</c>) is never materialised by real .NET, where an interpreter has no
-/// choice but to execute it, so PawPrint interns a literal real .NET does not.
+/// A caller whose own body contains an equal literal *later* than the call has already interned it
+/// on real .NET (the caller was JITted before it ran) but not under PawPrint, so the dynamic
+/// method's object wins the slot instead. And an <c>ldstr</c> whose value is discarded
+/// (<c>ldstr; pop</c>) is never materialised by real .NET, but an interpreter must execute it, so
+/// PawPrint interns a literal real .NET does not.
 /// </para>
 /// <para>
-/// Both follow from the single modelling choice above, and closing either means materialising every
-/// literal of a method when the method is prepared — a change to how *all* <c>ldstr</c> works, not
-/// something local to dynamic methods, and one which would make the second case worse rather than
-/// better. Left as a known divergence rather than papered over; a guest can only detect it by
-/// comparing references against a string it emitted itself.
+/// Closing either would mean materialising every literal of a method when the method is prepared —
+/// a change to how all <c>ldstr</c> works, and one which would make the second case worse. Known
+/// divergence: a guest can only detect it by comparing references against a string it emitted
+/// itself.
 /// </para>
 /// </remarks>
 [<RequireQualifiedAccess>]
@@ -51,8 +48,7 @@ module internal UnaryStringTokenIlOp =
             // real .NET interns that very object. `GlobalStringLiteralMap::GetInternedString`
             // (`vm/stringliteralmap.cpp:403`) takes a `STRINGREF*` and stores it on a miss via
             // `AddInternedString` (line 431), where the metadata path beside it
-            // (`AddStringLiteral(EEStringData*)`, line 396) allocates. So `ReferenceEquals` in the
-            // guest can tell the two apart, and this is the difference between them.
+            // (`AddStringLiteral(EEStringData*)`, line 396) allocates.
             let resolved =
                 match operand with
                 | StringOperand.FromMetadata sh ->

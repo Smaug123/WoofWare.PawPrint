@@ -11,7 +11,7 @@ open System.Numerics
 /// exception: it has a body, but that body is a managed emulation of the instruction the JIT
 /// emits rather than a definition — see its own comment.
 ///
-/// The interpreter cannot simply forward these to the host's `System.Math`. `pow` and its
+/// The interpreter cannot forward these to the host's `System.Math`. `pow` and its
 /// transcendental relatives are not correctly rounded and are not required to agree
 /// bit-for-bit between libm implementations, so a run recorded on one machine could replay
 /// differently on another — silently, and only in the last bit, which is the worst failure
@@ -264,7 +264,7 @@ module DeterministicMath =
     /// recommendation, and the one Arm produces.
     let private quietNaN : float = BitConverter.UInt64BitsToDouble 0x7FF8000000000000UL
 
-    /// A NaN operand may not simply be handed back: IEEE 754 requires an operation given a
+    /// A NaN operand may not be handed back unchanged: IEEE 754 requires an operation given a
     /// *signaling* NaN to raise the invalid-operation exception and deliver a quiet one, so
     /// the result must have the quiet bit set with the sign and payload otherwise preserved.
     /// The platform libm CoreCLR calls does exactly this, and unlike the choice of payload
@@ -419,7 +419,7 @@ module DeterministicMath =
     /// which is what CoreCLR's `Math.Sqrt` inherits from the hardware instruction the JIT
     /// emits for it.
     ///
-    /// This function is the odd one out in this module, and deliberately so. `pow`, `sin` and
+    /// This function is the odd one out in this module. `pow`, `sin` and
     /// `cos` are clause 9.2 *recommended* operations that no mainstream libm rounds correctly,
     /// so computing them here changes the answer in the last bit; `squareRoot` is a clause
     /// 5.4.1 *required* operation, every platform implements it as a correctly rounded
@@ -714,13 +714,13 @@ module DeterministicMath =
         // The error here is under `k` 2^-piBits, again under 2^-476.
         let reduced = xFixed - (k * piOverTwo)
 
-        // |r| <= pi/4 is what makes the series in `cos` converge, and it is what the
-        // arithmetic above delivers rather than something a caller must arrange — but it is
-        // worth checking, because the way it fails is not a wrong answer. A reduction that
+        // |r| <= pi/4 is what makes the series in `cos` converge, and the arithmetic above
+        // delivers it without the caller arranging anything. Checked anyway, because the
+        // failure mode is not a wrong answer: a reduction that
         // returns a large `r` makes the alternating series grow for as many terms as it
         // takes the factorial to overtake `r^2`, which for a badly wrong `r` is longer than
         // anyone will wait. A loud failure beats a hang.
-        // The slack is 2^-64: far above the 2^-475 by which a `k` off by one can genuinely
+        // The slack is 2^-64: far above the 2^-475 by which a `k` off by one can
         // overshoot pi/4, and far below the pi/4 itself, so this catches only real breakage.
         let quarterTurnCeiling = (pi >>> 2) + (BigInteger.One <<< (piBits - 64))
 
@@ -732,24 +732,6 @@ module DeterministicMath =
         // at most one unit in the last place of the result.
         (int (k &&& BigInteger 3)), (reduced >>> (piBits - fractionBits))
 
-    /// The cosine of `x` in radians, with the semantics of IEEE 754 / C99 `cos` — which is
-    /// what CoreCLR's `Math.Cos` inherits from the platform C library.
-    ///
-    /// Accuracy: the argument is reduced modulo pi/2 against a `piBits`-place pi, leaving a
-    /// reduced argument whose absolute error is under 2^-475, and the series that follows
-    /// is evaluated to `fractionBits` places. For the two quadrants answering ±cos(r) the
-    /// result is at least cos(pi/4) in magnitude, so its relative error is under 2^-255. For
-    /// the two answering ±sin(r) the result is proportional to `r` itself, so the relative
-    /// error is set by how much cancellation the reduction suffered — 256 bits less the
-    /// number of leading zeros in `r`.
-    ///
-    /// The reduced argument therefore has to stay clear of zero, and it does: the doubles
-    /// nearest an odd multiple of pi/2 leave |r| near 2^-61 (Kahan's worst case for binary64
-    /// reduction, 6381956970095103 * 2^797, is the standard witness and `TestDeterministicMath`
-    /// measures it), which leaves about 195 significant bits. `reducedArgumentFloor` asserts
-    /// a bound two-and-a-half times weaker than that rather than trusting the claim: if it
-    /// ever fires, the fix is to carry the reduced argument at more than `fractionBits`
-    /// places, not to relax the bound.
     /// `sin r` or `cos r` for a reduced argument `r`, which both entry points below want
     /// depending on which residue their argument fell into. `x` is passed only so that a
     /// failure can name the argument that produced it.
@@ -778,6 +760,24 @@ module DeterministicMath =
 
         roundToDouble value -fractionBits
 
+    /// The cosine of `x` in radians, with the semantics of IEEE 754 / C99 `cos` — which is
+    /// what CoreCLR's `Math.Cos` inherits from the platform C library.
+    ///
+    /// Accuracy: the argument is reduced modulo pi/2 against a `piBits`-place pi, leaving a
+    /// reduced argument whose absolute error is under 2^-475, and the series that follows
+    /// is evaluated to `fractionBits` places. For the two quadrants answering ±cos(r) the
+    /// result is at least cos(pi/4) in magnitude, so its relative error is under 2^-255. For
+    /// the two answering ±sin(r) the result is proportional to `r` itself, so the relative
+    /// error is set by how much cancellation the reduction suffered — 256 bits less the
+    /// number of leading zeros in `r`.
+    ///
+    /// The reduced argument therefore has to stay clear of zero, and it does: the doubles
+    /// nearest an odd multiple of pi/2 leave |r| near 2^-61 (Kahan's worst case for binary64
+    /// reduction, 6381956970095103 * 2^797, is the standard witness and `TestDeterministicMath`
+    /// measures it), which leaves about 195 significant bits. `reducedArgumentFloor` asserts
+    /// a bound two-and-a-half times weaker than that rather than trusting the claim: if it
+    /// ever fires, the fix is to carry the reduced argument at more than `fractionBits`
+    /// places, not to relax the bound.
     let cos (x : float) : float =
         // No case overrides a NaN operand, so unlike `pow` this needs no separate
         // signalling test: `quieted` is the identity on a NaN that is already quiet.
@@ -807,9 +807,8 @@ module DeterministicMath =
     /// fractional bits, so an argument below 2^-`fractionBits` reduces to nothing at all and
     /// one below 2^-(`fractionBits` - `reducedArgumentFloor`) keeps too few bits for the
     /// accuracy argument — this is exactly the magnitude at which `evaluateReduced` would
-    /// start to complain, which is why it is written in terms of those two constants rather
-    /// than as a literal, and why it cannot drift out of step with them. `cos` needs no such
-    /// bound because its answer near zero is 1 regardless.
+    /// start to complain, hence the definition in terms of those two constants rather than
+    /// a literal. `cos` needs no such bound because its answer near zero is 1 regardless.
     ///
     /// Upwards: `x - sin x` is about x^3/6, which stays under half an ulp of `x` until |x|
     /// reaches roughly 2^-25.2, so returning the argument is the correctly rounded answer

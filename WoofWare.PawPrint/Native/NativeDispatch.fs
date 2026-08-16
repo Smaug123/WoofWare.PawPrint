@@ -6,7 +6,7 @@ module NativeDispatch =
     // BCL is loaded from the guest's own assemblies), so this handler list IS "the native code for a
     // runtime". It is the net10 set: PawPrint currently emulates only `EmulatedRuntime.net10`. When a
     // second runtime is added, give it its own list and have `tryExecute` select between them on the
-    // active `EmulatedRuntime` (threaded through the machine config); nothing here forecloses that.
+    // active `EmulatedRuntime` (threaded through the machine config).
     let private net10NativeHandlers : (NativeCallContext -> NativeHandlerResult option) list =
         [
             NativeGc.tryExecute

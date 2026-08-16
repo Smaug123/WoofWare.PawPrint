@@ -406,8 +406,8 @@ module EvalStackValue =
             convI4FromInt64 i |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
-            // Truncating synthesised hash bits to int32 is the load-bearing
-            // path: `CastCache.KeyToBucket` ends in `(int)((hash * c) >> shift)`
+            // Truncating synthesised hash bits to int32 is the path
+            // `CastCache.KeyToBucket` takes: it ends in `(int)((hash * c) >> shift)`
             // to produce an array index. The result has no provenance, but
             // an array index doesn't need one.
             convI4FromInt64 bits |> Int32Source.Verbatim |> EvalStackValue.Int32, counters

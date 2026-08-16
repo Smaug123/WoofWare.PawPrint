@@ -14,31 +14,23 @@ open WoofWare.PawPrint
 
 /// <summary>
 /// A <c>TypeDefn</c> is a DAG, not a tree: nothing stops the same subterm appearing in several
-/// argument positions, and the interpreter routinely builds types that way. Resolving one used to
-/// cost its size <i>as a tree</i>, which is exponentially larger.
+/// argument positions, and the interpreter routinely builds types that way. Resolving one must
+/// cost its size <i>as a DAG</i>, not as a tree, which is exponentially larger.
 /// </summary>
 /// <remarks>
 /// <para>
 /// The witness is the closed, perfectly-shared nest
 /// <c>nest(d) := Dictionary&lt;nest(d-1), nest(d-1)&gt;</c>: <c>d + 1</c> nodes as a DAG,
-/// 2^<c>d</c> as a tree. <c>substituteGenericsInTypeDefn</c> walked it as a tree, and worse,
-/// substituted every argument list twice — once on the way down, and once more when it re-entered
-/// <c>resolveTypeFromDefn</c> on the instantiation it had just rebuilt. That made the cost 4^<c>d</c>:
-/// measured, each extra level of nesting multiplied the time by very nearly four.
+/// 2^<c>d</c> as a tree. Two independent defects each make resolution exponential:
+/// <c>substituteGenericsInTypeDefn</c> walking the DAG as a tree, and a redundant second
+/// substitution pass over the instantiation it has just rebuilt — freshly allocated nodes, which
+/// a reference-keyed memo can never hit. Memoising the walk guards only the first; the regression
+/// test below is sensitive to both, and restoring either defect alone fails it.
 /// </para>
 /// <para>
-/// The fix has two halves, and they only work together: memoising the walk on its own, or deleting
-/// the redundant second pass on its own, each leaves 2^<c>d</c> standing. Memoisation cannot help
-/// the second pass, because that pass runs over freshly allocated nodes which a reference-keyed
-/// cache can never hit; and walking a DAG as a tree is exponential however few times you do it.
-/// The regression test below therefore has to be sensitive to both, and is: restoring either half
-/// alone fails it.
-/// </para>
-/// <para>
-/// The properties are the other side of the argument. One pins that the memo — which is keyed on
-/// reference identity, so it fires exactly when the input is shared — cannot change the answer.
-/// The other pins that substitution is idempotent, which is what licenses deleting the second pass
-/// at all.
+/// The properties pin the facts that make this sound. One: the memo — keyed on reference
+/// identity, so it fires exactly when the input is shared — cannot change the answer. The other:
+/// substitution is idempotent, which is what licenses not substituting a second time.
 /// </para>
 /// </remarks>
 [<TestFixture>]
@@ -431,12 +423,10 @@ module TestSharedTypeGraphResolution =
     /// mentioning any parameters it mentioned going in.
     /// </para>
     /// <para>
-    /// That is longstanding, predates this change, and is arguably the honest answer — the
-    /// resolver is handing back the environment it was given, and every live caller passes
-    /// canonical closed arguments. But it does mean such an answer is not a fixed point, so the
-    /// idempotence property below asks only about subjects that actually exercise substitution.
-    /// A bare definition <i>nested</i> inside an instantiation does go through it, and that is the
-    /// case the property must cover — it is the shape this branch got wrong.
+    /// Every live caller passes canonical closed arguments, so this is harmless — but it does
+    /// mean such an answer is not a fixed point, so the idempotence property below asks only
+    /// about subjects that actually exercise substitution. A bare definition <i>nested</i> inside
+    /// an instantiation does go through it, and that is the case the property must cover.
     /// </para>
     /// </remarks>
     let private substitutes (ty : TypeDefn) : bool =
@@ -515,15 +505,14 @@ module TestSharedTypeGraphResolution =
     /// </summary>
     /// <remarks>
     /// <para>
-    /// This is not incidental tidiness — it is the fact that licenses the shape of
-    /// <c>substituteGenericsInTypeDefn</c>'s instantiation case. That case used to substitute an
-    /// argument list and then re-enter <c>resolveTypeFromDefn</c> on the instantiation it had just
-    /// rebuilt, which substituted the very same list a second time. Dropping the second pass is
-    /// only sound because it cannot change anything, and this is that claim, tested.
+    /// This is the fact that licenses the shape of <c>substituteGenericsInTypeDefn</c>'s
+    /// instantiation case: it substitutes an argument list once and does not re-enter
+    /// <c>resolveTypeFromDefn</c> on the instantiation it has just rebuilt. Omitting that second
+    /// pass is only sound because it cannot change anything, and this is that claim, tested.
     /// </para>
     /// <para>
     /// The subject is an instantiation, because that is the shape which substitutes at all; see
-    /// <c>substitutes</c> for why the others are not fixed points and never were.
+    /// <c>substitutes</c> for why the others are not fixed points.
     /// </para>
     /// </remarks>
     [<Test>]

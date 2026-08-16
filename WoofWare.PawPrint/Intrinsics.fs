@@ -136,9 +136,7 @@ module Intrinsics =
         // to Int32 on the eval stack and `EvalStackValue.toCliTypeCoerced` already
         // rewraps from Int32 back to `CliType.Bool` / `CliType.Char`, so for atomic
         // Exchange / CompareExchange they behave identically to the scalar integers
-        // here. Naming the predicate after the eval-stack shape rather than the spec
-        // name "integer" keeps its contract truthful for the call sites that justify
-        // dispatching to `executeScalarIntegerExchange` / `executeScalarInteger`.
+        // here.
         let isScalarIntegralLikePrimitive (primitive : PrimitiveType) : bool =
             match primitive with
             | PrimitiveType.Boolean
@@ -1266,8 +1264,8 @@ module Intrinsics =
             | [ ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
                 let arg, state = IlMachineState.popEvalStack currentThread state
 
-                // The narrowing to the operand's own width is load-bearing: the bits arrive
-                // widened to int64, and the zeros above bit 31 are not the operand's.
+                // The bits arrive widened to int64; narrow to the operand's own width,
+                // because the zeros above bit 31 are not the operand's.
                 let value =
                     bitPatternValueArgument "BitOperations.TrailingZeroCount(uint)" arg
                     |> uint32<int64>
@@ -1296,14 +1294,14 @@ module Intrinsics =
             // because BSR and the software fallback would otherwise disagree with LZCNT/CLZ.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Numerics/BitOperations.cs#L167-L267
             //
-            // Only the two widths the BCL genuinely implements separately are modelled here.
+            // Only the two widths the BCL implements separately are modelled here.
             // The `(nuint)` overload's body is `ldarg.0; conv.u8; call LeadingZeroCount(uint64);
             // ret` — IL PawPrint can run — so it is allowlisted in `safeIntrinsics` and reaches
             // the uint64 arm below rather than duplicating a width decision on this side.
             //
             // Each arm narrows the bits back to its own operand width before calling the host
-            // method of that same width. That narrowing is load-bearing: the bits arrive
-            // widened to int64, and the zeros the widening introduced are not the operand's.
+            // method of that same width: the bits arrive widened to int64, and the zeros the
+            // widening introduced are not the operand's.
             let result, state =
                 match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
                 | [ ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
@@ -1454,7 +1452,7 @@ module Intrinsics =
             // platform C library's `sin`.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Math.CoreCLR.cs#L92-L93
             //
-            // Note that `Math.SinCos` is *not* this method: it has an IL body of its own and
+            // `Math.SinCos` is *not* this method: it has an IL body of its own and
             // bottoms out in a separate `SinCos(double, double*, double*)` InternalCall, which
             // is still unimplemented. The hill-climbing controller below does not use it.
             //
@@ -1559,7 +1557,7 @@ module Intrinsics =
             ->
             // The odd one out among the five `System.Math` arms above: this one is `[Intrinsic]`
             // but *not* `MethodImplOptions.InternalCall`, so it does have an IL body and could
-            // in principle be allowlisted in `safeIntrinsics` and simply run.
+            // in principle be allowlisted in `safeIntrinsics` and run.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Math.cs#L1306-L1348
             //
             // That body is not the definition, though. It is a managed emulation of the
@@ -1807,7 +1805,7 @@ module Intrinsics =
             // `NativeIntSource` provenance via `CliNumericType.ToBytes`. Routing the intrinsic
             // through `CellAwareMemOps.copy` with `Memmove` policy preserves whole-cell ranges
             // (provenance, ObjectRef cells) when both endpoints anchor on cell-aware roots, and
-            // falls back to the byte walk for genuinely byte-addressable storage.
+            // falls back to the byte walk for byte-addressable storage.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
                 ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
@@ -1828,7 +1826,7 @@ module Intrinsics =
             // so, exactly as for its `Memmove` sibling, the managed IL is not a route PawPrint
             // can take. Routing the intrinsic through `CellAwareMemOps.clear` writes each
             // destination cell's own zero, preserving cell shape for storage that is not
-            // byte-addressable, and falls back to the byte walk for genuinely flat storage.
+            // byte-addressable, and falls back to the byte walk for flat storage.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
                 ConcreteUIntPtr state.ConcreteTypes ],
@@ -1897,7 +1895,7 @@ module Intrinsics =
             //     if (array is null) ThrowHelper.ThrowArgumentNullException(ExceptionArgument.array);
             //     if (fldHandle.IsNullHandle()) throw new ArgumentException(SR.Argument_InvalidHandle);
             //
-            // Note the first is an `ArgumentNullException`, not the `NullReferenceException` the
+            // The first is an `ArgumentNullException`, not the `NullReferenceException` the
             // shape of the check suggests. The JIT only expands this intrinsic when it recognises
             // a `newarr` plus a constant `ldtoken`, which a null argument never matches, so the
             // managed body — and hence these checks — is what really runs.
@@ -2091,8 +2089,7 @@ module Intrinsics =
                         // — which CoreCLR copies nothing into and accepts — into a guest exception
                         // it would never have raised. PawPrint has no byte rendering for the runtime
                         // pointer these store, so a *non-empty* array instead fails in
-                        // `CliType.OfBytesLike` at the copy below, where bytes are genuinely
-                        // required.
+                        // `CliType.OfBytesLike` at the copy below, where bytes are required.
                         state, true
                     | Some PrimitiveLikeKind.FlattenToNativeInt
                     | Some PrimitiveLikeKind.FlattenToObjectRef
@@ -2689,8 +2686,8 @@ module Intrinsics =
                 match srcPtr with
                 | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, _), _) ->
                     // See `IntrinsicHelpers.offsetManagedPointerByElements`: a zero here means
-                    // "do not normalise", so an empty array used to keep a raw byte cursor
-                    // where a populated one folded it into the cell index.
+                    // "do not normalise"; `ElementStride` is strictly positive even for an
+                    // empty array.
                     let elementSize = (ManagedHeap.getArrayShape arr state.ManagedHeap).ElementStride
 
                     ByteOffsetNormalisationContext.withArrayElementSize arr elementSize
@@ -2822,11 +2819,8 @@ module Intrinsics =
             // storage key alongside the precise coordinate, so a caller cannot obtain a distance
             // without also holding the answer to "could these two share storage at all".
             //
-            // This used to carry a cut-down copy of that walk, which knew about every `ByrefRoot`
-            // except the two heap ones and rejected `Field` projections outright. The gap was
-            // not academic: a byref into a heap object's field is the *only* route by which a
-            // guest can observe a reference type's layout at all, so nothing in `sourcesPure`
-            // could see the base-chain fix of issue #994.
+            // A byref into a heap object's field is the *only* route by which a guest can
+            // observe a reference type's layout at all (issue #994).
             let locate (v : EvalStackValue) : StorageLocation.LocationResolution =
                 match v with
                 | EvalStackValue.ManagedPointer p -> StorageLocation.resolve baseClassTypes state p
@@ -2965,8 +2959,7 @@ module Intrinsics =
             // byref-write model does not yet support. So the reference half of this IL is
             // still not walkable, and we keep modelling the JIT semantics directly: write
             // default(T) to each of `_length` elements starting at `_reference`, using the
-            // same byref-projection helpers as get_Item. That is also the more direct
-            // model — it needs no byte-count derivation at all.
+            // same byref-projection helpers as get_Item.
             let elementType : ConcreteTypeHandle =
                 methodToCall.DeclaringTypeGenerics |> Seq.exactlyOne
 
@@ -3271,8 +3264,7 @@ module Intrinsics =
                     // `flag.GetType()` and `GetType()`, and rendering those two the way
                     // `Type.ToString()` would (nested types are `Outer+Inner`, generics are
                     // backtick-arity) is a fidelity question of its own. A half-right string would
-                    // be worse than the parameterless ctor's honest default, which is already an
-                    // improvement on the null `_message` this arm used to leave behind.
+                    // be worse than the parameterless ctor's honest default.
                     IntrinsicResult.RaiseException (state, baseClassTypes.ArgumentException, None)
                 else
                     let flag, state = IlMachineState.popEvalStack currentThread state

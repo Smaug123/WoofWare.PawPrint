@@ -76,7 +76,7 @@ public class CrossAssemblyTypeTest
     }
 }
 
-// Test Array.Empty<T> which was mentioned in the diff as a specific case
+// Test Array.Empty<T>
 public class ArrayEmptyTest
 {
     public static int TestArrayEmpty()

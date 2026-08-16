@@ -672,8 +672,7 @@ module TestBinaryArithmetic =
 
     [<Test>]
     let ``subtracting Int32 MinValue from the null byref is representable`` () : unit =
-        // The exact reason this was deferred from the Sub_ovf change: the
-        // symbolic offset model cannot negate Int32.MinValue, but the null
+        // The symbolic offset model cannot negate Int32.MinValue, but the null
         // byref is not symbolic — it is the bit pattern 0.
         let state = state ()
         let expected = placeholderPointer 2147483648L
@@ -705,9 +704,8 @@ module TestBinaryArithmetic =
 
     [<Test>]
     let ``opcode and Unsafe Add intrinsic agree on bit-pattern byrefs`` () : unit =
-        // The inconsistency this change exists to remove: the same arithmetic
-        // reached the byref path through `Unsafe.Add<T>` and the numeric path
-        // through the `add` opcode.
+        // The same arithmetic is reachable through the `Unsafe.Add<T>`
+        // intrinsic and through the `add` opcode; the two must agree.
         let mutable nullCases = 0
         let mutable placeholderCases = 0
 
@@ -837,9 +835,8 @@ module TestBinaryArithmetic =
 
     [<Test>]
     let ``symbolic byrefs still refuse offsets outside the int32 offset model`` () : unit =
-        // Guard against over-widening: an array byref's index genuinely is an
-        // int32, so an oversize offset must keep failing loudly rather than
-        // silently truncating.
+        // Guard against over-widening: an array byref's index is an int32, so
+        // an oversize offset must fail loudly rather than silently truncate.
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ]
 
         Assert.Throws<System.Exception> (fun () ->
@@ -1000,7 +997,7 @@ module TestBinaryArithmetic =
         trySubOvf state (placeholderPointer 1L) (EvalStackValue.Int32 (Int32Source.Verbatim System.Int32.MinValue))
         |> shouldEqual (Some expected)
 
-        // Still out of range when it genuinely overflows native int.
+        // Still out of range when it overflows native int.
         trySubOvf
             state
             (placeholderPointer System.Int64.MaxValue)
@@ -1041,7 +1038,7 @@ module TestBinaryArithmetic =
 
         // Shapes our pointer model declines to subtract at all (here: an array
         // byte view against a plain array byref). Both ops must refuse them;
-        // the messages are deliberately not compared, only the refusal.
+        // only the refusal is compared, not the messages.
         let refused : (EvalStackValue * EvalStackValue) list =
             [ byteViewPointer arr1 1 3, arrayPointer arr1 0 ]
 
@@ -1235,10 +1232,9 @@ module TestBinaryArithmetic =
         // Regression for Codex P2: native-memory byrefs must route through the byte-backed
         // read/write paths so that a stobj followed by an ldind via NativeMemoryByte
         // reconstitutes the value via the byte view, not via `readRootValue`'s typed-cell
-        // fast path. Pre-fix, `executeLdind` and `Stobj`'s `writeAt` only special-cased
-        // `StackMemoryByte`, leaving `NativeMemoryByte` to fall through to
-        // `readManagedByref`/`writeManagedByrefWithBase`, which can't service byte-backed
-        // reinterpretation when no typed cell exists at the requested offset.
+        // fast path. Special-casing only `StackMemoryByte` lets `NativeMemoryByte` fall
+        // through to `readManagedByref`/`writeManagedByrefWithBase`, which can't service
+        // byte-backed reinterpretation when no typed cell exists at the requested offset.
         let ptr, state =
             IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized 4 (state ())
 
@@ -1259,9 +1255,8 @@ module TestBinaryArithmetic =
     let ``readManagedByrefBytesAs reinterprets raw native-memory bytes as a typed cell`` () : unit =
         // Regression for Codex P2: the byte-backed read path must work for native-memory
         // byrefs even when the underlying block has no typed cell at the requested offset.
-        // The pre-fix dispatch would have routed bare `NativeMemoryByte` reads through
-        // `readManagedByref` → `readRootValue`, which fails with "no typed cell here"
-        // instead of reading raw bytes.
+        // Routing bare `NativeMemoryByte` reads through `readManagedByref` → `readRootValue`
+        // fails with "no typed cell here" instead of reading raw bytes.
         let ptr, state =
             IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized 4 (state ())
 
@@ -2004,17 +1999,8 @@ module TestBinaryArithmetic =
         | Choice2Of2 e -> failwith $"unexpected exception: %s{e.Message}"
 
     /// The zero offset is the identity, and a slot whose value has no byte image can be written
-    /// through either spelling.
-    ///
-    /// This test used to assert the opposite of its second half — that the byte cursor *could not*
-    /// carry such a value — and offered that as the reason the zero offset had to be the identity.
-    /// The reasoning was circular and the conclusion was wrong: a byte cursor could not carry the
-    /// value because the write path took its width from the storage rather than from the value, and
-    /// keeping `p + 0` bare merely routed `MethodBaseInvoker`'s store to the *other* broken answer,
-    /// where an eight-byte value replaced a thirty-two-byte slot outright. Both are fixed, so this
-    /// now asserts what it should have all along: the two spellings agree. Zero-offset identity
-    /// survives as canonicalisation — one byte location, one structural form — which is what the
-    /// first half checks.
+    /// through either spelling: the two must agree. Zero-offset identity is canonicalisation —
+    /// one byte location, one structural form — which is what the first half checks.
     [<Test>]
     let ``a whole-slot byref and a zero-length byte cursor write an imageless value alike`` () : unit =
         let state = state ()

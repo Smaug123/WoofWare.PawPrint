@@ -9,8 +9,8 @@
 // or giving the `[ThreadStatic]` cache one process-wide slot so the worker reads the main thread's
 // entry.
 //
-// The worker must take a lock of its *own* first, and that is load-bearing rather than incidental
-// setup. `IsHeldByCurrentThread` reads `ThreadId.Current_NoInitialize`, which returns the raw
+// The worker must take a lock of its *own* first.
+// `IsHeldByCurrentThread` reads `ThreadId.Current_NoInitialize`, which returns the raw
 // `[ThreadStatic]` without populating it; on a thread that has never entered a lock the cache is 0,
 // `IsInitialized` is false, and the id comparison is short-circuited away. Such a worker answers
 // False for free, whatever the PAL returns. Entering the uncontended `otherGate` forces

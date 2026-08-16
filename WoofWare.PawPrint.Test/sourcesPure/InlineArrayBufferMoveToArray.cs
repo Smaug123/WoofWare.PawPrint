@@ -6,9 +6,8 @@ using System.Runtime.CompilerServices;
 // `Span<object>.CopyTo` bottoms out in `Buffer.BulkMoveWithWriteBarrierInternal`, which PawPrint
 // serves by walking the byte range and moving whole typed cells. Here the source is one slot of an
 // `[InlineArray(8)] struct { object _item; }` local, which PawPrint models as a single indivisible
-// 64-byte cell: the 8 bytes being moved are a strict sub-range of it, so a step that could only
-// move a residual cell in its entirety had nothing to offer. Object references have no byte image,
-// so there is no bytewise fallback either — before, this failed outright.
+// 64-byte cell: the 8 bytes being moved are a strict sub-range of it, so a whole-cell move cannot
+// serve it. Object references have no byte image, so there is no bytewise fallback either.
 //
 // Deliberately kept to *one* element rather than the whole buffer, since a whole-buffer copy is a
 // whole-cell move on the source side and would pass without any of this. `TestBulkMoveCellAccess`

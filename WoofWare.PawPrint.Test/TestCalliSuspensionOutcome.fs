@@ -10,19 +10,14 @@ open WoofWare.PawPrint
 /// Pins that a `calli` commits exactly once, and that a class initialisation it triggers is
 /// reported against the *callee's* frame rather than against the `calli`.
 ///
-/// A call used to be able to decline to commit: a callee needing its class initialiser run
-/// pushed that cctor frame and left the calling instruction's PC unadvanced so the instruction
-/// re-executed. `calli` was the one op that had to prepare for that retry, because its callee
-/// comes off the evaluation stack and the function pointer sits above the arguments — so it had
-/// to pop the pointer before calling in, and push it back if the call did not happen. Getting
-/// that wrong stranded the pointer and the retry failed with "expected a function pointer on
-/// top".
-///
-/// Class initialisation is now the callee's own prologue, which runs after the frame is pushed,
-/// so no instruction ever re-executes and there is no pointer to restore. The tests below pin
-/// both halves of that: the `calli` steps report `Executed`, and the suspension appears on a
-/// step executing `C..ctor` — which is also where the CLR puts the check, and why a `.cctor`
-/// that throws names the constructor in its `TypeInitializationException`.
+/// `calli` is the one op whose callee comes off the evaluation stack, with the function
+/// pointer above the arguments — so a call that could decline to commit and re-execute would
+/// have to pop the pointer and push it back on retry. Class initialisation is the callee's own
+/// prologue, which runs after the frame is pushed, so no instruction ever re-executes and
+/// there is no pointer to restore. The tests below pin both halves of that: the `calli` steps
+/// report `Executed`, and the suspension appears on a step executing `C..ctor` — which is also
+/// where the CLR puts the check, and why a `.cctor` that throws names the constructor in its
+/// `TypeInitializationException`.
 ///
 /// Asserted by stepping the guest and attributing each outcome to the frame that produced it, so
 /// an unrelated class init elsewhere in start-up cannot satisfy any of it.
@@ -193,9 +188,9 @@ public static unsafe class Program
         ctorSuspensions |> List.length |> shouldEqual 1
 
     /// The companion to the test above: a `calli` whose callee raises rather than running still
-    /// reports `Executed`. The intrinsic leaves the PC unadvanced — on purpose, so exception
-    /// dispatch sees the faulting instruction's offset — while pushing the exception's
-    /// constructor, and that must not be mistaken for a call that did not happen.
+    /// reports `Executed`. The intrinsic leaves the PC unadvanced so exception dispatch sees
+    /// the faulting instruction's offset, while pushing the exception's constructor, and that
+    /// must not be mistaken for a call that did not happen.
     [<Test>]
     let ``calli reports Executed when the callee is an intrinsic that raises`` () =
         let source =

@@ -3,9 +3,8 @@ using System.Runtime.InteropServices;
 public class MarshalSizeOfScalarMarshalAsTest
 {
     // [MarshalAs] with a scalar UnmanagedType is a perfectly normal annotation on a
-    // matching-width primitive field. The previous Marshal.SizeOf path silently ignored these
-    // descriptors and relied on the managed CLI size; the descriptor-aware path must continue
-    // to admit them rather than rejecting every non-ByVal descriptor.
+    // matching-width primitive field. Marshal.SizeOf must admit these descriptors rather than
+    // rejecting every non-ByVal descriptor.
     [StructLayout(LayoutKind.Sequential)]
     struct ScalarMatching
     {

@@ -476,14 +476,9 @@ type DumpedAssembly =
     /// anything Roslyn emits.
     /// </summary>
     /// <remarks>
-    /// Unlike its three siblings above, this one is not a case where <c>AssemblyName</c>
-    /// would give a different answer: <c>AssemblyName.HashAlgorithm</c> carries the column
-    /// faithfully, including values outside the enum, so either source would do. It is the
-    /// column for two other reasons. First, that property is <c>[Obsolete]</c> as
-    /// SYSLIB0037 ("obsolete and not supported"), so reading it is a build error here and a
-    /// standing bet that the BCL keeps honouring a member it has announced it does not
-    /// support. Second, CoreCLR's <c>PEAssembly::GetHashAlgId</c> reads the column, so this
-    /// is what the primitive being reproduced actually consults.
+    /// <c>AssemblyName.HashAlgorithm</c> carries the column faithfully (including values
+    /// outside the enum), but that property is <c>[Obsolete]</c> as SYSLIB0037, and CoreCLR's
+    /// <c>PEAssembly::GetHashAlgId</c> reads the column, so we read the column.
     ///
     /// The column is a <c>ULONG</c> and the format constrains it no further than that, so
     /// this can hold a value no <c>AssemblyHashAlgorithm</c> case names. CoreCLR passes such
@@ -581,11 +576,10 @@ type DumpedAssembly =
     /// and parsed here by the same rule <c>PEDecoder::FindReadyToRunHeader</c> uses — the COR
     /// header's <c>ManagedNativeHeader</c> directory, if it declares at least a whole
     /// <c>READYTORUN_HEADER</c>, lies within the image, and starts with the
-    /// <c>RTR\0</c> signature. Note the deliberate absence of a version check: CoreCLR does
-    /// not gate this recognition on the R2R format version, and neither can anything
-    /// reproducing it.
+    /// <c>RTR\0</c> signature. There is no version check: CoreCLR does not gate this
+    /// recognition on the R2R format version, and neither can anything reproducing it.
     ///
-    /// This matters much more than it looks. Every assembly in a shipped shared framework is
+    /// Every assembly in a shipped shared framework is
     /// ReadyToRun, and such an image does <em>not</em> set <c>COMIMAGE_FLAGS_ILONLY</c> and
     /// carries a machine value that is the real one XORed with an OS discriminator — so an
     /// implementation that ignored the R2R header would report a machine that names no real
@@ -708,9 +702,8 @@ type DumpedAssembly =
     /// metadata can still execute differently.
     /// </para>
     ///
-    /// Hence the whole image. Comparing more than we strictly consume can only ever cost us a
-    /// spurious crash on two images we would have treated alike, which is the safe direction to
-    /// err: correctness over availability.
+    /// Hence the whole image. Comparing more than we strictly consume costs at most a
+    /// spurious crash on two images we would have treated alike.
     /// </remarks>
     member this.HasSameContentAs (other : DumpedAssembly) : bool =
         Object.ReferenceEquals (this, other)
@@ -773,10 +766,8 @@ type DumpedAssembly =
     /// <paramref name="method" />, which must be a method this assembly declares.
     /// </summary>
     /// <remarks>
-    /// <c>None</c> for a method the runtime synthesised, which is the honest answer rather than a
-    /// missing feature: a synthesised method has no declaration, so there is no source for a
-    /// compiler to have attributed anything to. <c>MethodInfo.TryMetadata</c> is shaped to force
-    /// that question to be answered rather than forgotten.
+    /// <c>None</c> for a method the runtime synthesised: it has no declaration, so there is no
+    /// source for a compiler to have attributed anything to.
     /// </remarks>
     member this.TryResolveMethodSource
         (method : MethodInfo<'typeGen, 'methodGen, 'methodVars>)
@@ -974,9 +965,8 @@ module LoadedAssemblies =
     /// <remarks>
     /// Every resolution loop responds to <c>FirstLoadAssy</c> by loading and then re-running the
     /// identical resolution. If the load leaves the reference still unbound, that re-run takes the
-    /// identical branch and the loop spins forever. A livelock is far worse to diagnose than a
-    /// crash — and, since the only way to leave a reference unbound after loading it is to have
-    /// mis-filed it, the crash names the real fault.
+    /// identical branch and the loop spins forever. The only way to leave a reference unbound
+    /// after loading it is to have mis-filed it, so the crash names the real fault.
     /// </remarks>
     let assertReferenceBound
         (context : string)

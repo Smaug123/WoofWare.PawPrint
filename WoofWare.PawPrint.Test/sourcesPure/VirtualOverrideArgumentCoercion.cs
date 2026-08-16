@@ -3,7 +3,7 @@
 // every popped argument, and it must be derived from the method that virtual/interface
 // resolution SELECTED, not from the declaration named at the call site.
 //
-// The sharpest case — where the declaration and the selected body genuinely disagree on a
+// The sharpest case — where the declaration and the selected body disagree on a
 // parameter type — is contravariant dispatch, and that is already pinned by
 // `ContravariantExplicitMethodImpl.cs` (call site `IContravariant<string>::Set(string)`,
 // body `Set(object)`). This file covers the complementary shape: generic virtual methods

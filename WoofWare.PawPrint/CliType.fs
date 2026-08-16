@@ -18,7 +18,7 @@ type SizeofResult =
 /// guest-visible error (`ArgumentException` for `Marshal.SizeOf`); `NotImplemented` is a
 /// missing PawPrint feature and should typically surface as a host `failwith` until covered.
 type MarshalSizeError =
-    /// CoreCLR genuinely rejects this shape from being marshalled as an unmanaged structure.
+    /// CoreCLR rejects this shape from being marshalled as an unmanaged structure.
     /// Examples: `LayoutKind.Auto`, `[MarshalAs(ByValTStr)]` on a non-`System.String` field,
     /// width-mismatched scalar `[MarshalAs]`, mixed explicit/automatic field offsets.
     | NotMarshalable of reason : string
@@ -163,7 +163,7 @@ type CliType =
     | ObjectRef of ManagedHeapAddress option
     /// III.1.1.5
     | RuntimePointer of CliRuntimePointer
-    /// This is *not* a CLI type as such. I don't actually know its status. A value type is represented simply
+    /// This is *not* a CLI type as such. I don't actually know its status. A value type is represented
     /// as a concatenated list of its fields.
     | ValueType of CliValueType
 
@@ -360,7 +360,7 @@ type CliType =
                 | CliNumericType.Float32 _ -> CliNumericType.Float32 0.0f
                 | CliNumericType.Float64 _ -> CliNumericType.Float64 0.0
                 | CliNumericType.NativeFloat _ -> CliNumericType.NativeFloat 0.0
-                // Provenance is deliberately dropped: the result is the numeric zero, and a
+                // Provenance is dropped: the result is the numeric zero, and a
                 // zeroed slot no longer points at whatever the old source described.
                 | CliNumericType.NativeInt _ -> CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)
 
@@ -493,7 +493,7 @@ type CliType =
     /// type-compatible one gets the shallowest cell that will do — the one that disturbs least on
     /// write.
     ///
-    /// This is deliberately *structural*: it does not look at what a cell contains, so callers must
+    /// This is *structural*: it does not look at what a cell contains, so callers must
     /// apply their own compatibility rule to the contents. It walks fields rather than bytes, so it
     /// stays defined precisely where the byte path is not. Raw-bytes storage has no fields, so it
     /// never answers.
@@ -799,12 +799,12 @@ and TypeLayoutLevel =
         ///
         /// CoreCLR's `hasNonTrivialParent` (`PlaceInstanceFields`, methodtablebuilder.cpp:8132)
         /// is `pParentMT && !IsObjectClass() && !IsValueTypeClass()`, so a type deriving directly
-        /// from either is treated as having no parent at all. That is load-bearing rather than an
+        /// from either is treated as having no parent at all. This is not an
         /// optimisation: the promotion rule below demotes a `Sequential` type whose parent is not
         /// managed-sequential, and neither `Object` nor `ValueType` is, so without this every
         /// plain `[StructLayout(Sequential)] struct` would be promoted to auto layout.
         ///
-        /// Note `System.Enum` is deliberately *not* in this set: it is a reference type deriving
+        /// `System.Enum` is *not* in this set: it is a reference type deriving
         /// from `ValueType`, it declares no instance fields, and CoreCLR treats it as an ordinary
         /// zero-sized parent — which is why an enum's `value__` still lands at offset 0.
         IsTrivialParent : bool
@@ -919,7 +919,7 @@ and CliValueType =
             /// fields imply; `None` for every type whose demand is derived, which is almost all of
             /// them. Arrives as `DeclaredTypeFacts.NominalAlignment`, and is cached here for the
             /// same reason `_PrimitiveLikeKind` is: answering it needs metadata, and `SizeOf` is
-            /// deliberately context-free.
+            /// context-free.
             ///
             /// It governs only what a *container* must do to place a field of this type. The
             /// type's own size is still derived (see `SizeOf`), which is faithful: CoreCLR stamps
@@ -962,7 +962,7 @@ and CliValueType =
     ///
     /// True only for enums over the fixed-width integers. ECMA-335 II.14.3 also permits an enum
     /// over `bool`, `char` or a native int — C# cannot declare one but Reflection.Emit can, and
-    /// the CLR loads them — and those deliberately answer false, so their storage stays a wrapped
+    /// the CLR loads them — and those answer false, so their storage stays a wrapped
     /// `CliValueType`. `IlMachineRuntimeMetadata.unboxMaterialisesFlattened` depends on that:
     /// it decides whether a boxed value materialises flattened, and if this widened to cover them,
     /// `unboxPermitted` would start refusing a legal unbox that works today.
@@ -1003,7 +1003,7 @@ and CliValueType =
     /// `Some EnumLike` if the declared type is a CLR enum whose underlying integer we flatten;
     /// otherwise `None`.
     ///
-    /// Both halves of the enum test are load-bearing and neither implies the other. `isEnum` is
+    /// Neither half of the enum test implies the other. `isEnum` is
     /// nominal and comes from the caller's metadata; `EnumUnderlyingIsFlattenable` is structural
     /// and reads the storage in hand. Dropping the first classifies `struct Fake { int value__; }`
     /// as an enum (issue #996); dropping the second flattens enums over `bool`/`char`/native int,
@@ -1218,7 +1218,6 @@ and CliValueType =
                     // reference and an `Int128` on an 8-byte rather than 16-byte boundary inside
                     // its enclosing type.
                     //
-                    // The two arms now genuinely disagree, and the cap is load-bearing:
                     // `Int128` demands 16 (`DeclaredTypeFacts.nominalAlignment`), so a struct
                     // holding both a reference and an `Int128` would land at 16 rather than 8 if
                     // this inherited the field's own alignment. `GcWideOuter` in
@@ -1259,7 +1258,7 @@ and CliValueType =
     /// plain field list: `InlineArrayStorage.expand` mints `FieldId.InlineArrayElement` for
     /// every slot from 1 upwards, so the marker is present exactly when `N >= 2`.
     ///
-    /// `N = 1` is deliberately *not* an expansion: the list is then the single declared field,
+    /// `N = 1` is *not* an expansion: the list is then the single declared field,
     /// unchanged, and the ordinary one-field layout is already what CoreCLR computes for it.
     static member private IsInlineArrayExpansion (fieldIds : FieldId seq) : bool =
         fieldIds
@@ -1291,7 +1290,7 @@ and CliValueType =
     /// (methodtable.cpp:8853) answers from its `EEClassLayoutInfo` — derived from the one field,
     /// and untouched by the multiplication. An auto type has no layout metadata, so the same
     /// function answers from the *class*: the custom alignment if one was recorded, and otherwise
-    /// `min(GetNumInstanceFieldBytes(), TARGET_POINTER_SIZE)`. Both halves of that are load-bearing
+    /// `min(GetNumInstanceFieldBytes(), TARGET_POINTER_SIZE)`. Both halves of that matter
     /// here, because the recording test is `minAlign != min(elementSize, TARGET_POINTER_SIZE)`
     /// (:8598) and runs *before* the multiplication while the fallback reads the size *after* it:
     ///
@@ -1340,8 +1339,8 @@ and CliValueType =
     /// class with no instance fields of its own presents only its sequential base's offset-free
     /// fields, and a sequential class deriving from an explicit-layout base presents only
     /// offset-carrying ones — both load on real .NET (`LayoutKindAcrossInheritance.cs`). So "the
-    /// declared kind and the field shape agree" is simply false as a property of this list, and
-    /// the kind is load-bearing only for the choice this function exists to make: among fields
+    /// declared kind and the field shape agree" is false as a property of this list, and
+    /// the kind matters only for the choice this function exists to make: among fields
     /// that carry no offsets, auto placement or sequential.
     ///
     /// An `[InlineArray(N)]` type is routed by this function like any other, because CoreCLR routes
@@ -1369,7 +1368,7 @@ and CliValueType =
         match layoutKind with
         | TypeLayoutKind.Auto -> true
         // A declared-`Explicit` type whose fields carry no offsets is the inheritance shape above;
-        // it keeps the promotion rule, which is what it got before the kind was modelled at all.
+        // it keeps the promotion rule.
         | TypeLayoutKind.Sequential -> containsReferences || parentIsNonSequential
         | TypeLayoutKind.Explicit -> containsReferences
 
@@ -1444,8 +1443,8 @@ and CliValueType =
 
         // A declared-`Auto` type may not carry `FieldOffset` rows: the router below reads the
         // offsets structurally, so such a type would silently get explicit layout instead of the
-        // auto layout its caller asked for. This list is one type's *own* fields, so unlike
-        // before there is no way for an inherited field to make the two disagree innocently: it
+        // auto layout its caller asked for. This list is one type's *own* fields, so there is no
+        // way for an inherited field to make the two disagree innocently: it
         // means malformed metadata (Roslyn rejects `FieldOffset` outside an explicit-layout type)
         // or a synthetic construction site contradicting itself.
         match nonSeqFields with
@@ -1463,9 +1462,8 @@ and CliValueType =
         // managed-sequential, so `parentIsNonSequential` below already fires. For a
         // declared-`Explicit` level it does decide the route (`ExpD` in `TestBaseChainLayout`
         // takes the auto path because of it) -- but the sequential fallback happens to compute the
-        // same size there, because such a parent contributes no alignment either. It is kept
-        // because it is what the rule says, and it becomes load-bearing the moment either of those
-        // coincidences stops holding.
+        // same size there, because such a parent contributes no alignment either. We follow the
+        // rule, not the coincidence.
         let containsReferences =
             parentReferences
             || (fields
@@ -1588,8 +1586,7 @@ and CliValueType =
                 //
                 // That is very likely an upstream bug, and reproducing a suspected upstream bug
                 // from four data points -- in a shape no guest has ever reached here -- would be
-                // guessing. Refuse instead: this is strictly better than what came before, which
-                // silently used the unbiased offsets and so was wrong for every such type.
+                // guessing. Refuse instead.
                 if startOffset <> 0 then
                     failwith
                         $"CliValueType.LayoutLevel: refusing to lay out explicit-layout type %O{level.Declared}, which declares %d{nonSeqFields.Length} field offset(s) of its own and inherits %d{startOffset} bytes from its base chain. Real .NET biases such a type's declared offsets by *twice* the parent's instance size (measured: parent 4 -> first field at 8, parent 8 -> 16, parent 16 -> 32), which looks like a double-application of `cbAdjustedParentLayoutSize` between `ReadOffsetsForExplicitLayout` and `ValidateExplicitLayout`'s fixup (methodtablebuilder.cpp:9053-9125). PawPrint does not model that; see issue #994"
@@ -2036,11 +2033,6 @@ and CliValueType =
 
             result
 
-    /// Return a value with the requested byte range replaced, or `None` if the requested write
-    /// would not change the materialised byte image. Returning `None` preserves field provenance
-    /// and the next timestamp explicitly; changed writes use the existing value as the
-    /// shape/provenance template and intentionally canonicalise overlapping-field replay order
-    /// the same way `OfBytesLike` does.
     /// Field-wise counterpart of `CliType.ZeroingChangedAnything`, for aggregates that have no
     /// byte rendering of their own. Any structural difference other than in the field values
     /// (different declared type, different storage form, different field set) counts as a
@@ -2075,7 +2067,7 @@ and CliValueType =
     /// `ToBytes` materialises *every* field, so it cannot render a struct that holds a live
     /// object reference, even when the requested range covers only plain fields.
     ///
-    /// Field write timestamps are deliberately preserved, not refreshed. `ToBytes` replays
+    /// Field write timestamps are preserved, not refreshed. `ToBytes` replays
     /// overlapping fields in timestamp order, and a field that only partially overlaps the
     /// requested range extends outside it, so promoting it to "newest" would let its untouched
     /// bytes win over a sibling and change memory outside the range. Keeping the original order
@@ -2143,7 +2135,7 @@ and CliValueType =
                     | Some contents ->
                         changed <- true
 
-                        // `EditedAtTime` is deliberately left alone. `ToBytes` replays
+                        // `EditedAtTime` is left alone. `ToBytes` replays
                         // overlapping fields in timestamp order, so promoting a field to
                         // "newest" changes who wins on *every* byte it covers — including the
                         // bytes outside the requested range, when the field only partially
@@ -2196,7 +2188,7 @@ and CliValueType =
     ///
     /// That last case is not hypothetical: `WithFieldSetById` replaces `Contents` without
     /// recomputing `Size`, so a field can be left claiming an extent its contents do not fill.
-    /// Such a value is already inconsistent — `ToBytes` (CliType.fs:1265) overlays the field's own
+    /// Such a value is already inconsistent — `CliValueType.ToBytes` overlays the field's own
     /// image across its full `Size` and runs off the end of it — so declining is the honest answer
     /// rather than describing bytes that are not there.
     static member private TryDescendableFieldAt
@@ -2344,7 +2336,7 @@ and CliValueType =
                             storage.Fields
                             |> List.map (fun g ->
                                 if FieldId.exactlyEqual g.Id f.Id then
-                                    // `EditedAtTime` is deliberately left alone, for the same
+                                    // `EditedAtTime` is left alone, for the same
                                     // reason `WithZeroedRangeIfChanged` leaves it alone: `ToBytes`
                                     // resolves overlapping fields in timestamp order, so promoting
                                     // this one to "newest" would change who wins on bytes outside
@@ -2384,6 +2376,11 @@ and CliValueType =
                                     }
                         }
 
+    /// Return a value with the requested byte range replaced, or `None` if the requested write
+    /// would not change the materialised byte image. Returning `None` preserves field provenance
+    /// and the next timestamp explicitly; changed writes use the existing value as the
+    /// shape/provenance template and canonicalise overlapping-field replay order
+    /// the same way `OfBytesLike` does.
     static member WithBytesAtIfChanged (offset : int) (bytes : byte[]) (cvt : CliValueType) : CliValueType option =
         let existing = CliValueType.ToBytes cvt
 
@@ -2757,7 +2754,7 @@ and CliValueType =
         match candidates |> List.tryFind (fun f -> f.Size = size) with
         | Some targetField ->
             // Explicit layout can alias the requested range with other fields, and
-            // `WithFieldSetById` deliberately leaves those siblings' `Contents` stale, recording
+            // `WithFieldSetById` leaves those siblings' `Contents` stale, recording
             // which write won in `EditedAtTime`. Picking a cell by (offset, size) alone would
             // therefore hand back a value the storage no longer holds.
             //
@@ -2766,7 +2763,7 @@ and CliValueType =
             // winner spans the requested range exactly, its cell is authoritative and can be
             // returned directly — which is what keeps provenance the byte image cannot express
             // (runtime pointers, handle-valued native ints, widened native ints) alive across the
-            // read. Only a winner that partially covers the range genuinely needs the byte image.
+            // read. Only a winner that partially covers the range needs the byte image.
             let targetEnd = targetField.Offset + targetField.Size
 
             let winner =
@@ -2850,10 +2847,10 @@ and CliValueType =
                     CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers vt._Declared
                 )
             | Some (field, rejection) ->
-                // Object/reference containment keeps the historical outer-type
-                // rejection above. Every other rejection means a field's own
-                // byte renderer would fail, so preserve that nested reason
-                // instead of collapsing it to a coarse containment predicate.
+                // Object-reference and pointer containment use the coarse
+                // outer-type rejections above. Every other rejection means a
+                // field's own byte renderer would fail, so preserve that nested
+                // reason instead of collapsing it to a containment predicate.
                 CliByteAddressability.Rejected (
                     CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (
                         vt._Declared,
@@ -2971,8 +2968,6 @@ and CliValueType =
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ -> false
 
-    /// True iff the given handle refers to `System.String`. CoreCLR only accepts
-    /// `[MarshalAs(ByValTStr)]` on string-typed fields, so we use this as the shape guard.
     /// True iff `handle` names the given non-generic corelib type.
     ///
     /// The corelib-assembly and no-generics test runs before the TypeDef lookup: it is cheaper,
@@ -3001,6 +2996,8 @@ and CliValueType =
         else
             false
 
+    /// True iff the given handle refers to `System.String`. CoreCLR only accepts
+    /// `[MarshalAs(ByValTStr)]` on string-typed fields, so we use this as the shape guard.
     static member private IsStringFieldType
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
@@ -3036,7 +3033,7 @@ and CliValueType =
     /// `Decimal` looks like a plain sequential struct of four `Int32` fields, so PawPrint can't
     /// distinguish it without a nominal name match. This predicate is intended for the
     /// **field-level** rejection inside `MarshalNative_TryGetStructMarshalStub`'s classifier;
-    /// it deliberately does not gate `Marshal.SizeOf<Decimal>()` or top-level
+    /// it does not gate `Marshal.SizeOf<Decimal>()` or top-level
     /// `Marshal.StructureToPtr<decimal>` (where managed and native byte images of standalone
     /// Decimal happen to coincide — `flags` decomposes byte-for-byte to
     /// `wReserved+scale+sign`).
@@ -3433,7 +3430,7 @@ and CliValueType =
                     )
 
                 CliValueTypeStorage.Fields
-                    // Preserved bytes intentionally remain the prior byte image. `ToBytes` overlays
+                    // Preserved bytes remain the prior byte image. `ToBytes` overlays
                     // current field values on top of it so padding and unrepresented ranges survive
                     // field updates without treating this image as authoritative for field ranges.
                     { storage with
@@ -3701,7 +3698,7 @@ module InlineArrayStorage =
     /// and honouring it would either give such a class synthetic storage or make us reject a type
     /// CoreCLR accepts.
     ///
-    /// `TypeInfo.InlineArrayLength` deliberately stays a faithful record of what the metadata says;
+    /// `TypeInfo.InlineArrayLength` stays a faithful record of what the metadata says;
     /// deciding when that record is inert is this function's job.
     let effectiveLength (isValueType : bool) (declared : int option) : int option =
         if isValueType then declared else None

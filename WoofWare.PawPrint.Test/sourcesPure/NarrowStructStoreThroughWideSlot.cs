@@ -1,10 +1,10 @@
 using System.Runtime.InteropServices;
 
 // A byref names a byte address; the width of an access comes from the access itself — the value
-// stored, or the type loaded — never from the storage the byref is rooted at. Before this was
-// modelled, `stobj Narrow` through a pointer to a `Wide` slot replaced the whole slot, which both
-// lost `wide.B` and restamped the slot's declared type from `Wide` to `Narrow`; the next `wide.B`
-// then failed in `CliValueType.FindFieldById` rather than returning a wrong number.
+// stored, or the type loaded — never from the storage the byref is rooted at. A whole-slot
+// `stobj Narrow` through a pointer to a `Wide` slot would both lose `wide.B` and restamp the
+// slot's declared type from `Wide` to `Narrow`, making the next `wide.B` fail in
+// `CliValueType.FindFieldById` rather than return a wrong number.
 //
 // Every store below is byte-addressable, which is the half of the rule a C# guest can reach: a
 // value with no byte image (a struct of managed pointers) cannot be named in C# source at all, and

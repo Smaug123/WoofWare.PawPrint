@@ -135,9 +135,9 @@ module TestFileDescriptorRegistry =
         FileDescriptorRegistry.tryFind 2 FileDescriptorRegistry.initial
         |> shouldEqual (Some (standardStream FileDescriptorRole.StandardError))
 
-    /// Load-bearing, not decorative: an implementation that pointed every file
-    /// descriptor at a single shared open file description would satisfy the
-    /// dup-sharing property below, and only this test would notice. PawPrint
+    /// An implementation that pointed every file descriptor at a single shared
+    /// open file description would satisfy the dup-sharing property below, and
+    /// only this test would notice. PawPrint
     /// models a process launched with each standard stream separately
     /// redirected, so the three inherited descriptors name three descriptions.
     /// (Under a tty they would genuinely share one — measured with `forkpty` —
@@ -363,8 +363,8 @@ module TestFileDescriptorRegistry =
                         newFd |> shouldEqual expected
 
                         // Track whether the allocation filled a gap below the
-                        // existing maximum (the load-bearing case for the
-                        // lowest-free contract) versus extending past the top.
+                        // existing maximum (the case that distinguishes
+                        // lowest-free from `max + 1`) versus extending past the top.
                         let liveMaxBefore = Set.maxElement live
 
                         if newFd < liveMaxBefore then
@@ -377,8 +377,7 @@ module TestFileDescriptorRegistry =
 
         Check.One (propertyConfig, property)
 
-        // Distribution check: the test is only load-bearing if it exercises
-        // the gap-filling case. If observedHoleFills were 0, the property
+        // Distribution check: if observedHoleFills were 0, the property
         // could be satisfied by a buggy `max + 1` implementation, so assert
         // we observe gap-fills frequently enough that a regression would be
         // caught. With 500 iterations of ~20 steps each, biased 70/30 toward
@@ -394,7 +393,7 @@ module TestFileDescriptorRegistry =
     /// the same open file description *exactly* when they are related by
     /// dup-ancestry. The "only if" half kills an implementation that points
     /// every descriptor at one shared description; the "if" half kills one that
-    /// mints a fresh description per `dup` (i.e. today's copying behaviour).
+    /// mints a fresh description per `dup`.
     ///
     /// `origin` tracks that equivalence independently of the registry: each
     /// descriptor is labelled with the inherited standard-stream fd its dup
@@ -970,14 +969,11 @@ module TestFileDescriptorRegistry =
         // exercised: every refusal would be of a description holding nothing, for
         // which keeping and dropping are the same thing.
         //
-        // A much lower floor than its neighbours, deliberately. This is the
-        // rarest event the run produces — it needs a description that already
-        // holds a lock to ask for one that another description blocks — and it
-        // was measured at 24 per run, against the ~24000 grants the first bound
-        // covers. A floor of 30 would have been a flaky test rather than a
-        // stronger one. It does not need to be high: a *single* failed
-        // conversion diverges from the model on the next request, so this bound
-        // is proving the event happens at all, not accumulating confidence.
+        // The floor is much lower than its neighbours': this is the rarest event
+        // the run produces, measured at ~24 per run against ~24000 grants, so a
+        // floor of 30 would flake. One occurrence suffices — a single failed
+        // conversion diverges from the model on the next request — so this bound
+        // proves the event happens at all, not accumulates confidence.
         observedFailedConversions |> shouldBeGreaterThan 5
 
     [<Test>]

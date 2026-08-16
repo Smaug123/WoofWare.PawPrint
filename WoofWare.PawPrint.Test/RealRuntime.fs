@@ -12,7 +12,7 @@ open WoofWare.PawPrint
 /// How a program terminated when run on the real .NET runtime.
 ///
 /// These cases mirror the terminal `WoofWare.PawPrint.RunOutcome` cases that a real process can
-/// actually reach, because the whole point of the oracle is to be comparable against PawPrint.
+/// actually reach, so that the oracle is comparable against PawPrint.
 type RealRuntimeResult =
     /// The program terminated with this exit code: by returning from `Main`, by falling off the end
     /// of a `void` entry point, or by calling `Environment.Exit`.
@@ -245,24 +245,17 @@ module RealRuntime =
     /// dependencies needs them laid out beside it, so use `executePublishedApp` instead.
     /// Reject a seed the real filesystem cannot faithfully stand in for.
     ///
-    /// Every rule here is a way the two sides would silently answer questions
-    /// about *different* filesystems, which is far worse than a test that
-    /// refuses to run: the comparison would still be made, and would still look
-    /// like evidence.
+    /// Every rule here blocks a case where the two sides would silently answer
+    /// questions about *different* filesystems while the comparison still
+    /// looked like evidence.
     ///
-    /// Deliberately narrow rather than clever. An earlier version tried to
-    /// decide, by walking the seed, whether a multi-component target could
-    /// escape the scratch directory; three rounds of review found three
-    /// different holes in that analysis (a `..` after a symlink, a `..` that
-    /// left the walk pointing at the wrong directory, a target naming a file
-    /// the host has and PawPrint does not). The analysis was the wrong altitude:
-    /// getting it right means reimplementing host path resolution, including
-    /// the *unclamped* `..` that PawPrint deliberately does not model. So the
-    /// oracle accepts only targets it can check by inspection — a single
-    /// component, naming something in the same directory or nothing at all —
-    /// and refuses the rest with an explanation. Every seed the differential
-    /// tests use is of that shape; when one genuinely needs more, this is the
-    /// place to do the analysis properly, once, with the case in hand.
+    /// Deliberately narrow: deciding whether a multi-component symlink target
+    /// escapes the scratch directory means reimplementing host path
+    /// resolution, including the *unclamped* `..` that PawPrint deliberately
+    /// does not model. So the oracle accepts only targets it can check by
+    /// inspection — a single component, naming something in the same directory
+    /// or nothing at all — and refuses the rest with an explanation. Every
+    /// seed the differential tests use is of that shape.
     ///
     /// `reserved` are the names the oracle must itself write at the top level
     /// (the guest image and its runtimeconfig).
@@ -304,9 +297,8 @@ module RealRuntime =
 
         // An unseeded run materialises nothing, so there is nothing for a
         // reserved name to collide with and nothing for the host to fold it
-        // against. Checking it anyway would refuse a perfectly good guest whose
-        // assembly happened to be named "Paw Print" — a regression against
-        // every oracle run that predates seeding.
+        // against; checking it anyway would refuse a perfectly good guest
+        // whose assembly happened to be named "Paw Print".
         if not (Map.isEmpty seed) then
             for name in reserved do
                 requireFoldable "The oracle's own reserved file" name
@@ -436,16 +428,15 @@ module RealRuntime =
     /// Give every directory under `root` (and `root` itself) owner rwx, so that
     /// the tree can be enumerated and deleted.
     ///
-    /// Top-down, and that order is the whole point: a directory must be made
-    /// searchable before its own children can be listed. Symlinks are not
-    /// followed — `Directory.GetDirectories` reports them, but chmod through
-    /// one would change the mode of whatever it points at, which may be outside
-    /// the scratch tree entirely.
+    /// Top-down: a directory must be made searchable before its own children
+    /// can be listed. Symlinks are not followed — `Directory.GetDirectories`
+    /// reports them, but chmod through one would change the mode of whatever
+    /// it points at, which may be outside the scratch tree entirely.
     ///
     /// A whole-body no-op on Windows, which has no Unix modes to restore and
-    /// where `File.SetUnixFileMode` throws `PlatformNotSupportedException`. That
-    /// matters more than it looks: `deleteScratchTree` runs in the `finally` of
-    /// *every* oracle run, seeded or not, and the caller catches only
+    /// where `File.SetUnixFileMode` throws `PlatformNotSupportedException`.
+    /// `deleteScratchTree` runs in the `finally` of *every* oracle run, seeded
+    /// or not, and the caller catches only
     /// `IOException`/`UnauthorizedAccessException` — so an unguarded call here
     /// would turn every successful differential test on Windows into a cleanup
     /// failure.
@@ -501,13 +492,6 @@ module RealRuntime =
                 permissions = PermissionBits.defaultForDirectory && canMaterialise children
         )
 
-    /// Write a filesystem seed into a real directory, so that the guest running
-    /// on the real runtime sees the same tree PawPrint realises into its
-    /// `VirtualFileSystem`.
-    ///
-    /// One description, two interpreters: the differential claim is only worth
-    /// anything if both sides are configured from the *same value*, rather than
-    /// from a host tree and a seed that someone kept in step by hand.
     /// The seed's permission bits, as the mode `chmod(2)` takes. `PermissionBits`
     /// is exactly `st_mode & 0o7777`, which is exactly `UnixFileMode`'s domain,
     /// so this is a re-encoding rather than a translation.
@@ -516,19 +500,15 @@ module RealRuntime =
 
     /// Apply a seeded mode to a real path, and check it took.
     ///
-    /// Note the failure path is one no test here can fire: every filesystem the
-    /// suite runs on stores Unix modes, and there is no way to fake one that
-    /// does not. It is kept for the reason this project keeps its other
-    /// environment assertions — a loud stop naming the cause beats a silent
-    /// wrong answer — rather than because a test proves it works.
+    /// No test here can fire the failure path: every filesystem the suite runs
+    /// on stores Unix modes, and there is no way to fake one that does not.
     ///
-    /// The read-back is not paranoia about `chmod(2)`, which is reliable; it is
-    /// about the *filesystem* underneath `TMPDIR`. A mount whose modes are
-    /// synthesised from mount options rather than stored — vfat, some CIFS
-    /// configurations — accepts the call and reports something else afterwards.
-    /// The oracle would then be comparing PawPrint's stored bits against the
-    /// mount's invented ones and calling the difference a runtime bug. Better to
-    /// refuse to run at all, naming the directory at fault.
+    /// The read-back guards against the *filesystem* underneath `TMPDIR`, not
+    /// `chmod(2)`: a mount whose modes are synthesised from mount options
+    /// rather than stored — vfat, some CIFS configurations — accepts the call
+    /// and reports something else afterwards. The oracle would then be
+    /// comparing PawPrint's stored bits against the mount's invented ones and
+    /// calling the difference a runtime bug.
     let private applyMode (path : string) (permissions : PermissionBits) : unit =
         let desired = toUnixFileMode permissions
         File.SetUnixFileMode (path, desired)
@@ -538,6 +518,13 @@ module RealRuntime =
             failwith
                 $"The oracle set the mode of \"%s{path}\" to %o{PermissionBits.toInt permissions}, and the filesystem reported %o{int actual} back. Some mounts synthesise modes from mount options rather than storing them (vfat, some CIFS); the differential comparison would be about that mount rather than about the two runtimes. Point TMPDIR at a filesystem that stores Unix modes."
 
+    /// Write a filesystem seed into a real directory, so that the guest running
+    /// on the real runtime sees the same tree PawPrint realises into its
+    /// `VirtualFileSystem`.
+    ///
+    /// One description, two interpreters: the differential claim is only worth
+    /// anything if both sides are configured from the *same value*, rather than
+    /// from a host tree and a seed that someone kept in step by hand.
     let rec private materialiseSeed (directory : string) (entries : Map<FileName, SeedEntry>) : unit =
         for KeyValue (name, entry) in entries do
             let path = Path.Combine (directory, FileName.toString name)
@@ -547,9 +534,7 @@ module RealRuntime =
                 File.WriteAllBytes (path, Seq.toArray contents)
                 // After writing, not before: `File.WriteAllBytes` creates the
                 // file under the host's umask, so the mode it lands with is a
-                // property of the machine rather than of the seed. Setting it
-                // explicitly is what makes the mode a cross-runtime fact —
-                // PawPrint reports what the seed says, and now so does the host.
+                // property of the machine rather than of the seed.
                 if not (RuntimeInformation.IsOSPlatform OSPlatform.Windows) then
                     applyMode path permissions
             | SeedEntry.Directory (children, permissions) ->
@@ -578,7 +563,7 @@ module RealRuntime =
     /// as the current directory, and the two agree on relative names but not on
     /// what the absolute ones are.
     ///
-    /// Note the scratch directory necessarily also holds the guest image and
+    /// The scratch directory necessarily also holds the guest image and
     /// its `runtimeconfig.json`, which PawPrint's filesystem does not contain.
     /// A guest that enumerated its working directory would therefore diverge
     /// for a reason that has nothing to do with the code under test; probe named

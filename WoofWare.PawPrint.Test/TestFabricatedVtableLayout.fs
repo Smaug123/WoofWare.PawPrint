@@ -79,9 +79,8 @@ module TestFabricatedVtableLayout =
     /// The fabricated image, as bytes, so that the host CLR and PawPrint read *the same* assembly
     /// rather than two separately-built ones that might differ.
     ///
-    /// Method declaration order is load-bearing throughout: it is the order CoreCLR places slots in,
-    /// so it is what the layout assertions are about. `DefineMethod` emits MethodDef rows in call
-    /// order.
+    /// Method declaration order is the order CoreCLR places slots in, so it is what the layout
+    /// assertions are about. `DefineMethod` emits MethodDef rows in call order.
     let private image : byte array =
         let assemblyBuilder =
             PersistedAssemblyBuilder (AssemblyName "PawPrintFabricatedVtable", typeof<obj>.Assembly)
@@ -140,11 +139,11 @@ module TestFabricatedVtableLayout =
         // indistinguishable once the type is closed at `T = string`. CoreCLR lays slots out on the
         // generic definition, where they are plainly two methods, so both get slots of their own.
         //
-        // This is what makes the search window load-bearing rather than defensive. Placing `M(T)`
+        // This type is why the override search window is capped. Placing `M(T)`
         // appends it; `M(string)` is then compared against the window, and `candidateFillsSlot`
         // works on *concretised* signatures, so it would match the slot just appended and replace it
         // -- one slot short, disagreeing with the host. Capping the search at the parent's slots is
-        // what stops that, and this type is the reason the cap cannot simply be dropped.
+        // what stops that, and this type is the reason the cap cannot be dropped.
         let conflation =
             moduleBuilder.DefineType (
                 "GenericConflation`1",
@@ -853,7 +852,7 @@ module TestFabricatedVtableLayout =
 
         let table = slotTableOf "HasVtableGap"
 
-        // The gap row is virtual, so the load-bearing half of this assertion is the *vtable*: it
+        // The gap row is virtual, so the half of this assertion that bites is the *vtable*: it
         // must hold Object's four and `VirtualAfterTheGap`, and not a fifth entry for the gap.
         // Compared against the host rather than only pinned literally, since that is what makes it
         // a claim about CoreCLR.
@@ -894,7 +893,6 @@ module TestFabricatedVtableLayout =
         |> shouldEqual [ "FallbackAlpha", false ; "FallbackBeta", false ; "FallbackGamma", false ]
 
     /// The rule itself: an unmatched non-NewSlot virtual gets a slot rather than being rejected.
-    /// Before this was implemented, reaching any of these types was a `failwith`.
     [<Test>]
     let ``an unmatched non-newslot virtual is given a fresh slot`` () : unit =
         for typeName in [ "Discriminator" ; "Reversed" ; "MultipleFallbacks" ] do
@@ -965,7 +963,7 @@ module TestFabricatedVtableLayout =
     /// CoreCLR lays slots out on the generic definition, where the two are plainly distinct, and
     /// gives each its own. Without the cap, `Conflated(string)` would find the slot `Conflated(!0)`
     /// had just been appended to and replace it, yielding a vtable one slot short. So the cap is
-    /// load-bearing on a legal image, not defensive insurance against a hypothetical matcher bug.
+    /// required on a legal image, not defensive insurance against a hypothetical matcher bug.
     [<Test>]
     let ``a later virtual cannot land on a slot this type just appended`` () : unit =
         let closed =

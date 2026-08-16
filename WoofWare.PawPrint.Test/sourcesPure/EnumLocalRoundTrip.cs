@@ -10,9 +10,9 @@ public class Program
     public static int Main(string[] args)
     {
         // Store to an enum local via ldc.i4 + stloc; subsequent loads must still
-        // compare and cast correctly. Before the EvalStack pop-side rewrap fix,
-        // stloc into an enum local silently degraded storage from ValueType to
-        // a bare Numeric, which other code paths tolerated only coincidentally.
+        // compare and cast correctly. Without the EvalStack pop-side rewrap,
+        // stloc into an enum local silently degrades storage from ValueType to
+        // a bare Numeric, which other code paths tolerate only coincidentally.
         E a = E.Two;
         E b = E.Two;
         E c = E.One;

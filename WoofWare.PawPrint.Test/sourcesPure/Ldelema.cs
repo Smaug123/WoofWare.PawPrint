@@ -1,8 +1,5 @@
 using System;
 
-/// <summary>
-/// A simple value type used for testing ldelema.
-/// </summary>
 public struct TestStruct
 {
     public int Value;
@@ -11,30 +8,19 @@ public struct TestStruct
 public class Program
 {
     /// <summary>
-    /// Modifies a TestStruct instance by reference. Calling this with an array element
-    /// (e.g., `ModifyStruct(ref array[i], ...)` ) will cause the C# compiler to
-    /// generate an `ldelema` instruction.
+    /// Calling this with an array element (e.g. `ModifyStruct(ref array[i], ...)`) causes
+    /// the C# compiler to generate an `ldelema` instruction.
     /// </summary>
-    /// <param name="s">A reference to the TestStruct to modify.</param>
-    /// <param name="newValue">The new value to assign.</param>
     public static void ModifyStruct(ref TestStruct s, int newValue)
     {
         s.Value = newValue;
     }
 
-    /// <summary>
-    /// Modifies a string reference.
-    /// </summary>
-    /// <param name="s">A reference to a string variable.</param>
-    /// <param name="newValue">The new string to assign.</param>
     public static void ModifyStringRef(ref string s, string newValue)
     {
         s = newValue;
     }
 
-    /// <summary>
-    /// Main entry point for the ldelema test.
-    /// </summary>
     /// <returns>0 if all tests pass, otherwise a non-zero error code.</returns>
     public static int Main(string[] args)
     {

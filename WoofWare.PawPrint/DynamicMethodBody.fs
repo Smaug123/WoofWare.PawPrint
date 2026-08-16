@@ -11,11 +11,11 @@ open System.Reflection.Metadata
 /// <para>
 /// CoreCLR reaches this data through <c>DynamicResolver</c>'s <c>GetCodeInfo</c>,
 /// <c>GetLocalsSignature</c> and <c>GetEHInfo</c>, which the JIT calls back into managed code to
-/// run. PawPrint reads the fields those methods return instead. That is not a shortcut around a
-/// managed call: <c>DynamicResolver</c>'s constructor stores every one of them
+/// run. PawPrint reads the fields those methods return instead: <c>DynamicResolver</c>'s
+/// constructor stores every one of them
 /// (<c>DynamicILGenerator.cs</c>, <c>m_code</c>/<c>m_localSignature</c>/<c>m_exceptions</c>/
-/// <c>m_stackSize</c>), and the accessors are projections of those fields and nothing else, so the
-/// fields *are* the data. Reading them keeps this a pure function of the heap, where calling the
+/// <c>m_stackSize</c>), and the accessors are projections of those fields and nothing
+/// else. Reading them keeps this a pure function of the heap, where calling the
 /// accessors would mean suspending the interpreter mid-QCall for a managed re-entry.
 /// </para>
 /// <para>
@@ -93,7 +93,7 @@ module internal DynamicMethodBody =
     /// </para>
     /// <para>
     /// Classification is *total*: an entry whose kind PawPrint cannot resolve becomes
-    /// <c>Unsupported</c> rather than an error. That is not leniency, it is required.
+    /// <c>Unsupported</c> rather than an error.
     /// <c>DynamicILGenerator</c>'s constructor calls <c>m_scope.GetTokenFor(methodSignature)</c>
     /// before any user code runs, so every dynamic method's scope has a signature blob at index 1
     /// which no instruction ever names — <c>GetCallableMethod</c> reads it out by field. Refusing
@@ -142,7 +142,7 @@ module internal DynamicMethodBody =
                     |> CliType.unwrapPrimitiveLikeDeep
                 with
                 | CliType.ObjectRef None ->
-                    // Index 0 always. Nothing else should be null, but a null anywhere is simply an
+                    // Index 0 always. Nothing else should be null, but a null anywhere is an
                     // entry no instruction may name.
                     DynamicScopeEntry.Unsupported "the null every DynamicScope is seeded with at index 0"
                 | CliType.ObjectRef (Some addr) ->
@@ -265,7 +265,7 @@ module internal DynamicMethodBody =
     /// The one arithmetic wrinkle is <c>TryLength</c>, which a <c>finally</c> clause takes from
     /// <c>m_endFinally</c> where every other kind takes it from <c>m_endAddr</c>. Measured on a
     /// <c>try/catch/finally</c>, where one <c>__ExceptionInfo</c> yields a catch covering
-    /// <c>[0,+11)</c> and a finally covering <c>[0,+25)</c>: the two clauses of one region genuinely
+    /// <c>[0,+11)</c> and a finally covering <c>[0,+25)</c>: the two clauses of one region
     /// have different try ranges, so a projection hoisting the length out of the loop is wrong.
     /// </para>
     /// <para>
@@ -442,9 +442,9 @@ module internal DynamicMethodBody =
         // `m_exceptionHeader` is non-null only on the `DynamicILInfo` path, where the caller
         // supplied a fat/thin EH *blob* rather than building clauses through `ILGenerator`.
         // `GetCodeInfo` reads the clause count out of that blob and `GetEHInfo` reads the clauses
-        // from `m_exceptions`, which that path leaves null — so the two are genuinely different
-        // sources and an implementation that read only one would silently lose every clause of
-        // the other. Only the `ILGenerator` path is supported here; refuse the other by name.
+        // from `m_exceptions`, which that path leaves null — two different sources; reading only
+        // one would silently lose the other's clauses. Only the `ILGenerator` path is supported
+        // here; refuse the other by name.
         match field "m_exceptionHeader" |> requireObject operation "m_exceptionHeader" state with
         | None -> ()
         | Some _ ->
@@ -465,7 +465,7 @@ module internal DynamicMethodBody =
                 failwith
                     $"%s{operation}: the resolver's m_code is null, but DynamicResolver's constructor assigns it from BakeByteArray and DynamicMethod.GetMethodDescriptor refuses an empty ILGenerator before reaching this QCall"
 
-        // Decoded against the scope, not against `scopeAssembly` — that is the whole point. A
+        // Decoded against the scope, not against `scopeAssembly`. A
         // token here names an entry in `m_tokens`; decoding it against the assembly's tables would
         // silently resolve it to an unrelated real row, because the bit patterns are the same.
         // `scopeAssembly` remains the right universe for the *local signature* below, which

@@ -12,7 +12,7 @@ open WoofWare.PawPrint
 /// `calli` — must produce, for a value type, exactly the boxed representation that the `box`
 /// opcode produces for `default(T)`.
 ///
-/// That claim is load-bearing and is not enforced by the type system: the two writes are made
+/// That claim is not enforced by the type system: the two writes are made
 /// by different code (`IlMachineState.allocateUninitialisedInstance` for the allocator,
 /// `UnaryMetadataObjectOps.executeBox` for `box`), and the unbox reader
 /// (`UnaryMetadataObjectOps`, "three shapes come back out") depends on the shape being one it
@@ -31,7 +31,7 @@ module TestBoxedAllocationParity =
     let private assy = typeof<RunResult>.Assembly
 
     /// The value types to check, as C# type expressions. Chosen to span the storage shapes
-    /// `box` distinguishes, since it is exactly a disagreement about shape that this pins.
+    /// `box` distinguishes.
     let private corpus : string list =
         [
             // Bare primitives: `box` stores these inside a synthetic single-field struct.
@@ -40,7 +40,7 @@ module TestBoxedAllocationParity =
             "bool"
             // An enum is primitive-like but nominally its own type.
             "Colour"
-            // Genuine multi-field structs, including nesting and a reference field (which
+            // Multi-field structs, including nesting and a reference field (which
             // makes the storage non-byte-renderable).
             "Plain"
             "Nested"
@@ -178,6 +178,6 @@ public static class Program
 
         activated.ConcreteType |> shouldEqual boxed.ConcreteType
 
-        // The whole point: the *storage*, not just the type, must agree. `CliValueType` has
+        // The *storage*, not just the type, must agree. `CliValueType` has
         // structural equality, so this compares the field cells and their provenance.
         activated.Contents |> shouldEqual boxed.Contents

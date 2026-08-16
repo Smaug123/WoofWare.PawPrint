@@ -1925,9 +1925,9 @@ public unsafe struct PointerWrapper
         // The iterative byte-view peel collapses `[ReinterpretAs FourBytes, Field _]` over an
         // `object[]` element to a byte write at offset 0 of the element. The array-element byte
         // writer then refuses the byte view because the element holds an object reference whose
-        // bytes are not part of the model. We still get a clear failure attributing to the storage
-        // shape; the message just no longer attributes through `ReinterpretAs` because the peel
-        // produced a residual offset-only chain, not a residual reinterpret.
+        // bytes are not part of the model. The failure attributes to the storage shape; the
+        // message does not mention `ReinterpretAs` because the peel produces a residual
+        // offset-only chain, not a residual reinterpret.
         ex.Message |> shouldContainText "refusing byte view over object reference"
 
         ex.Message
@@ -2319,10 +2319,9 @@ public unsafe struct PointerWrapper
 
     [<Test>]
     let ``Reinterpret read of same-width primitive cells reconstructs the requested shape`` () : unit =
-        // Regression: the typed-cell fast path used to return the underlying
-        // cell when the requested template had the same size, which bypassed
-        // the bit reinterpret. Reading via `readManagedByrefBytesAs` should
-        // reconstruct the requested primitive from the cell's bytes.
+        // Regression test: `readManagedByrefBytesAs` must reconstruct the requested primitive
+        // from the cell's bytes even when the requested template has the same size as the
+        // underlying cell — the typed-cell fast path must not skip the bit reinterpret.
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let state, thread =
@@ -2406,10 +2405,10 @@ public unsafe struct PointerWrapper
 
     [<Test>]
     let ``Writing a tagged native-int through a StackMemoryByte byref preserves provenance`` () : unit =
-        // Regression: the noop check used to call `CliType.ToBytes` on the
-        // value being written, which throws for tagged NativeInt sources such
-        // as `FieldHandlePtr`. Writing a `FieldHandlePtr` through a bare
-        // StackMemoryByte byref should succeed and round-trip the provenance.
+        // Regression test: the noop check must not call `CliType.ToBytes` on
+        // the value being written — that throws for tagged NativeInt sources
+        // such as `FieldHandlePtr`. Writing a `FieldHandlePtr` through a bare
+        // StackMemoryByte byref must succeed and round-trip the provenance.
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let state, thread =
@@ -2427,11 +2426,10 @@ public unsafe struct PointerWrapper
 
     [<Test>]
     let ``Typed write into the middle of an existing cell fails visibly`` () : unit =
-        // Regression: the writeRootValue StackMemoryByte arm used to call
-        // `writeCell` directly, which silently evicted any covering cell —
-        // including a tagged-pointer cell whose provenance would be lost. The
-        // read-side already failed in this case; the write side now mirrors
-        // that.
+        // A typed write into the middle of an existing cell must fail rather
+        // than silently evict the covering cell — including a tagged-pointer
+        // cell whose provenance would be lost. The read side fails in this
+        // case; the write side mirrors it.
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let state, thread =
@@ -2639,8 +2637,8 @@ public unsafe struct PointerWrapper
         // installed value's bytes happen to equal what a byte read would
         // return (e.g. Int32 0 over zero-initialised memory), the noop check
         // must NOT short-circuit — there is still no typed cell, and a later
-        // bare typed read would fail. The fix is to only treat the write as a
-        // noop when a cell already lives at the destination.
+        // bare typed read would fail. The write is a noop only when a cell
+        // already lives at the destination.
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let state, thread =
@@ -2684,14 +2682,13 @@ public unsafe struct PointerWrapper
 
     [<Test>]
     let ``Stind_I1 via EvalStackValue.ManagedPointer over local-memory Int32 cell scatters one byte`` () : unit =
-        // Regression: a `ManagedPointer`-shaped stind (e.g. when a localloc
-        // pointer has been stashed in a managed-pointer-typed slot and
-        // reloaded) currently routes through `writeManagedByrefWithBase`,
-        // which dispatches a bare `StackMemoryByte` byref straight to
-        // `writeRootValue` and installs the new value as a typed cell. That
-        // evicts the existing Int32 cell, so `stind.i1 0xAA` over Int32
-        // 0x11223344 leaves only a one-byte cell behind: a later byte-view
-        // ldind.i4 sees 0x000000AA instead of 0x112233AA.
+        // Regression test: a `ManagedPointer`-shaped stind (e.g. when a
+        // localloc pointer has been stashed in a managed-pointer-typed slot
+        // and reloaded) must scatter one byte rather than install a one-byte
+        // typed cell. A typed-cell install would evict the existing Int32
+        // cell, so `stind.i1 0xAA` over Int32 0x11223344 would leave only a
+        // one-byte cell behind: a later byte-view ldind.i4 would see
+        // 0x000000AA instead of 0x112233AA.
         //
         // CIL III.4.27 is unambiguous: `stind.i1` writes one byte at the
         // pointed-to location. Local-memory and other byref destinations
@@ -2865,9 +2862,9 @@ public unsafe struct PointerWrapper
         // `Stind_I`), `readManagedByref` must return the bare native-int cell
         // with its provenance intact. The byte-view fallback in
         // `readStackMemoryBytesAs` cannot serialise tagged sources, so the
-        // fast path that returns the existing typed cell is load-bearing for
-        // the `RuntimeTypeHandle.Instantiate` / `ModuleHandle.ResolveType`
-        // QCalls that walk such buffers.
+        // `RuntimeTypeHandle.Instantiate` / `ModuleHandle.ResolveType` QCalls
+        // that walk such buffers depend on the fast path that returns the
+        // existing typed cell.
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let state, thread =
@@ -3184,10 +3181,9 @@ public unsafe struct PointerWrapper
         // what a `Span<T>` element indexer or `GetPinnableReference` over a
         // stackalloc buffer produces) is a whole-cell store when the
         // destination range covers no other cell, exactly as the bare-root
-        // shape is. `writeManagedByrefBytesOrTypedCell` has always serviced
-        // this; `writeIndirectPrimitiveStore` used to reject it one layer
-        // above, which blocked `WaitHandle.ObtainSafeWaitHandles` (and hence
-        // every `WaitHandle.WaitAny` / `WaitAll`) from storing its handles.
+        // shape is. `WaitHandle.ObtainSafeWaitHandles` (and hence every
+        // `WaitHandle.WaitAny` / `WaitAll`) stores its handles through this
+        // shape.
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let state, thread =
@@ -3257,9 +3253,9 @@ public unsafe struct PointerWrapper
 
     [<Test>]
     let ``Stind_I through projected local-memory byte view tests safety at the flattened offset`` () : unit =
-        // The byte-view offset is load-bearing, not decoration: the
-        // safety test must be asked about the range the write will actually
-        // touch. Here the projection displaces the destination to bytes
+        // The safety test must be asked about the range the write will
+        // actually touch, at the flattened byte-view offset. Here the
+        // projection displaces the destination to bytes
         // 4..11, which straddles a cell at offset 8 — an implementation that
         // flattened to the *root* offset (0) would see bytes 0..7, find them
         // clear, and wrongly permit a store that evicts the cell at 8.
@@ -3625,8 +3621,7 @@ public unsafe struct PointerWrapper
         // byref shape that reaches it: a store that would restamp a structured
         // non-byte-addressable cell as a bare numeric one is unrepresentable
         // whichever spelling the guest used to address it. Both the bare root
-        // and the projected byte view must refuse — the bare root reached this
-        // via a range-only safety test until the shape condition was added.
+        // and the projected byte view must refuse.
         let assertRejected (projected : bool) : unit =
             let _, loggerFactory = LoggerFactory.makeTest ()
 
@@ -4024,8 +4019,8 @@ public unsafe struct PointerWrapper
         // (a class), expecting a byref into the instance data so subsequent `Unsafe.AddByteOffset`
         // and `Unsafe.As<byte, object>` arithmetic can reach a reference field. Reference-type
         // heap objects must therefore project the same byte-view shape as boxed value types;
-        // the value-type-only restriction was historical and is reinstated only as
-        // field-precise dispatch when the byte view is later resolved.
+        // restrictions apply only as field-precise dispatch when the byte view is later
+        // resolved.
         let state = state ()
         let _, containerAddr, state = allocateReferenceObjectWithRefField state
 
@@ -4186,7 +4181,7 @@ public unsafe struct PointerWrapper
 
     [<Test>]
     let ``HeapObjectField byref with nonzero-offset ReinterpretAs RefType still rejects`` () : unit =
-        // Guard for the zero-offset gate on the ObjectRef short-circuit added alongside the
+        // Guard for the zero-offset gate on the ObjectRef short-circuit exercised by the
         // test above. A mid-cell view of an object reference (offset 4 into an 8-byte
         // ObjectRef) has no defined meaning in our value model: the cell is not byte-
         // addressable, so the closest sensible answer is to refuse rather than to silently
@@ -4340,15 +4335,13 @@ public unsafe struct PointerWrapper
 
     [<Test>]
     let ``Metadata-light writeManagedByref accepts trailing ReinterpretAs byte view`` () : unit =
-        // Regression: `writeManagedByref` is the BCT-less entry point used by
-        // primitive/external boundaries that do not currently carry type
-        // metadata. Historically it accepted simple trailing byte-view shapes
-        // (`[ReinterpretAs T]` and `[..., ReinterpretAs T; ByteOffset n]`) over
-        // byte-addressable roots, routing through the byte-scatter path of
-        // `writeManagedByrefBytesOrTypedCell`. The forward-walk peel rewrite
-        // initially required BCT, which broke this metadata-light contract;
-        // this test pins the restored behaviour for both the bare reinterpret
-        // shape and the reinterpret-plus-byte-offset shape.
+        // `writeManagedByref` is the BCT-less entry point used by
+        // primitive/external boundaries that do not carry type metadata. It
+        // must accept simple trailing byte-view shapes (`[ReinterpretAs T]`
+        // and `[..., ReinterpretAs T; ByteOffset n]`) over byte-addressable
+        // roots, routing through the byte-scatter path of
+        // `writeManagedByrefBytesOrTypedCell`. This pins both the bare
+        // reinterpret shape and the reinterpret-plus-byte-offset shape.
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let state, thread =

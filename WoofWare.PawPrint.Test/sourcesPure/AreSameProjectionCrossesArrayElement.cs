@@ -14,19 +14,17 @@ namespace AreSameProjectionCrossesArrayElementTest
     // `a[0].Y` advanced by 4 bytes IS `a[1]`, and real .NET's `Unsafe.AreSame` says so. But
     // the two byrefs keep *different* `ByrefRoot.ArrayElement` roots: the intervening `Field`
     // stops the trailing cursor folding into the element index the way it would on a bare
-    // element byref. Distinct array elements are disjoint, so comparison used to conclude the
-    // addresses differ and answer `false` — measured, returning 1.
+    // element byref.
     //
-    // That conclusion does not follow. Elements being disjoint says nothing once a projection
-    // can walk out of the element it started from. This is what the sibling `AreSame*` guests
+    // Distinct array elements are disjoint, but that says nothing once a projection can walk
+    // out of the element it started from. This is what the sibling `AreSame*` guests
     // do not cover: those compare byrefs that stay within one root, whereas this one is about
     // displacement crossing between roots.
     //
-    // It took two independent changes, which is why it stayed parked after its siblings
-    // landed. Byref `ceq` had to stop refusing pairs it could not separate structurally and
-    // resolve both sides to one `ByteStorageIdentity.Array` instead (#1016); and the byte-view
-    // *read* that builds the second operand had to be able to leave the cell its root names
-    // (#729) — that one failed strictly later, in `ldind`, and is the reason the write below
+    // Two independent mechanisms are exercised: byref `ceq` resolving a pair it cannot
+    // separate structurally to one `ByteStorageIdentity.Array` rather than refusing (#1016),
+    // and the byte-view *read* that builds the second operand leaving the cell its root names
+    // (#729). The latter fails strictly later, in `ldind`, which is why the write below
     // is followed by a read through the crossing byref rather than through `a[1]`.
     class Program
     {

@@ -11,7 +11,7 @@ public class Program
     // with no managed references that calls `SpanHelpers.Memmove(ref byte,
     // ref byte, nuint)` (see Buffer.cs:152 and Span.cs:325 in dotnet/runtime).
     // PawPrint intercepts that intrinsic and dispatches it through
-    // `CellAwareCopy.copy` so whole-cell ranges anchored on cell-aware roots
+    // `CellAwareMemOps.copy` so whole-cell ranges anchored on cell-aware roots
     // (here, both array element byrefs) move through `readManagedByref` /
     // `writeManagedByrefWithBase`, preserving the `TypeHandlePtr` provenance.
     //

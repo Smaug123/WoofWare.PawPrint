@@ -170,7 +170,7 @@ module ArithmeticOperation =
         | OverflowBehaviour.Trap -> Checked.(-) a b
 
     /// Symbolic byrefs are a root plus an int32 offset (an array index, a
-    /// field byte offset), so an offset that does not fit genuinely cannot be
+    /// field byte offset), so an offset that does not fit cannot be
     /// applied to one. Bit-pattern byrefs must be peeled off before this is
     /// reached — their offsets are native-int wide.
     ///
@@ -348,21 +348,9 @@ module ArithmeticOperation =
             if v = 0 then
                 // `p + 0` is `p`, structurally and not merely by address: one byte location gets
                 // one structural form, which is the same canonicalisation the non-zero branch
-                // below performs when it folds whole cells into the root.
-                //
-                // Equality is *not* the reason: `ceqNormalised` strips a trailing `ReinterpretAs`,
-                // so a zero-length byte cursor would compare equal to the bare pointer and no guest
-                // could tell the two apart with `ceq` or `Unsafe.AreSame`.
-                //
-                // Nor is the write path the reason, though it was once given as one. The claim was
-                // that a slot with no byte image — a struct of byrefs, which is what
-                // `MethodBaseInvoker`'s `StackAllocatedByRefs` is — could be written whole but not
-                // through a byte cursor, so `stobj` through `&byrefs + 0` had to stay a whole-slot
-                // write. It did stay one, and that was the bug: the store is eight bytes wide and
-                // the slot is thirty-two, so "whole" silently discarded the other three inline-array
-                // elements. A byref's width now comes from the access rather than from the slot
-                // (see `writeManagedByrefCore`), so both spellings write the same eight bytes and
-                // nothing here depends on which one the guest produced.
+                // below performs when it folds whole cells into the root. A byref's access width
+                // comes from the access rather than from the slot (see `writeManagedByrefCore`),
+                // so nothing downstream depends on which spelling the guest produced.
                 Choice1Of2 ptr
             else
 
@@ -470,19 +458,12 @@ module ArithmeticOperation =
             member _.Name = "add.ovf"
         }
 
-    /// Pointer subtraction is shared between `sub` and `sub.ovf`: ECMA-335
-    /// gives both the same `& - int -> &` and `& - & -> native int`
-    /// signatures. `behaviour` is only consulted for the bit-pattern
-    /// placeholder arms; every other arm is symbolic, and the int32 offset
-    /// model's own limits are enforced by `checkedAddInt32`, which fails
-    /// loudly (an interpreter limitation) rather than throwing
-    /// OverflowException into the guest.
     /// Whether both pointers reach into the *same* argument slot.
     ///
     /// Argument-rooted pointers are otherwise refused outright by subtraction: two different
     /// argument slots are separate storage with no byte distance between them, and an argument
     /// paired with anything else has none either. Two pointers into one argument slot do have a
-    /// distance, which is what `&arg + n` now produces, so that pair is let through to the
+    /// distance, which is what `&arg + n` produces, so that pair is let through to the
     /// ordinary decomposition.
     let private sameArgumentRoot (ptr1 : ManagedPointerSource) (ptr2 : ManagedPointerSource) : bool =
         match ptr1, ptr2 with
@@ -491,6 +472,13 @@ module ArithmeticOperation =
             thread1 = thread2 && frame1 = frame2 && index1 = index2
         | _ -> false
 
+    /// Pointer subtraction is shared between `sub` and `sub.ovf`: ECMA-335
+    /// gives both the same `& - int -> &` and `& - & -> native int`
+    /// signatures. `behaviour` is only consulted for the bit-pattern
+    /// placeholder arms; every other arm is symbolic, and the int32 offset
+    /// model's own limits are enforced by `checkedAddInt32`, which fails
+    /// loudly (an interpreter limitation) rather than throwing
+    /// OverflowException into the guest.
     let private subManagedPtrManagedPtr
         (behaviour : OverflowBehaviour)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1223,7 +1211,6 @@ module BinaryArithmetic =
         | EvalStackValue.NativeInt val1, EvalStackValue.NativeInt val2 ->
             match val1, val2 with
             | NativeIntSource.SyntheticCrossArrayOffset val1, NativeIntSource.SyntheticCrossArrayOffset val2 ->
-                // Targeted special-case
                 op.CrossArrayOffsets val1 val2
                 |> NativeIntSource.Verbatim
                 |> EvalStackValue.NativeInt

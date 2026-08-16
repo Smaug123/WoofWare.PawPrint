@@ -314,9 +314,9 @@ class BlocksInDirectNativeCall
         message |> shouldContainText $"File0.cs:%d{wedge}"
         message |> shouldNotContainText $"File0.cs:%d{next}"
 
-    /// The rich summary must appear once, not twice. Before unification the harness printed the
-    /// library's thread description under `Stuck:` and its own under `Threads:`, which said the
-    /// same thing in two formats.
+    /// The rich summary must appear once, not twice: printing the library's thread description
+    /// under `Stuck:` and the harness's own under `Threads:` would say the same thing in two
+    /// formats.
     [<Test>]
     let ``the thread summary is not printed twice`` () : unit =
         let source =

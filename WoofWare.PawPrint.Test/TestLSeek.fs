@@ -11,8 +11,7 @@ open WoofWare.PawPrint
 /// `sourcesImpure/LSeekRawSeeded.cs` cannot reach, for three different reasons.
 ///
 ///  * **The refusals.** `SEEK_DATA`/`SEEK_HOLE` and `SEEK_END` on a directory abort the interpreter
-///    rather than returning to the guest, so no exit code can assert them. Without a test they
-///    would be claims with nothing behind them.
+///    rather than returning to the guest, so no exit code can assert them.
 ///  * **The Darwin arms.** PawPrint defaults to a Linux-flavoured kernel, so the guests above only
 ///    ever exercise Linux's answers. The overflow errno in particular is *indistinguishable* from
 ///    the negative-result errno under Linux — both EINVAL — so a model that failed to tell the two
@@ -148,8 +147,8 @@ class Program
 
             exn.Message |> shouldContainText "SystemNative_LSeek"
             exn.Message |> shouldContainText "sparseness"
-            // The message names the operation *the simulated platform* means by this number, which
-            // is the whole point of refusing: under Linux, 3 is SEEK_DATA.
+            // The message names the operation *the simulated platform* means by this number:
+            // under Linux, 3 is SEEK_DATA.
             exn.Message
             |> shouldContainText (if whence = 3 then "SEEK_DATA" else "SEEK_HOLE")
 

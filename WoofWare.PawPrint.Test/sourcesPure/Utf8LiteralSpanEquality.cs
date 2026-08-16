@@ -5,12 +5,11 @@ using System;
 // that root, so this is the shape where "did the cursor leave the root's extent" must be
 // answered from the range's own size rather than refused: a PE range knows how long it is.
 //
-// This exists because refusing it was a real regression, and no test saw it. When byref
-// comparison first learned to refuse undecidable pairs, PE-backed roots were grouped with
-// the roots that have no stride to fold a cursor into, and `"abc"u8.Slice(1) == "xy"u8` —
-// two spans of equal length, so `op_Equality` goes on to compare the references — started
-// failing outright where both runtimes had previously answered `false`. Every other span
-// test is array- or string-rooted, and both of those roots fold.
+// A byref-comparison rule that groups PE-backed roots with the roots that have no stride to
+// fold a cursor into refuses `"abc"u8.Slice(1) == "xy"u8` — two spans of equal length, so
+// `op_Equality` goes on to compare the references — instead of answering `false`. Every other
+// span test is array- or string-rooted, and both of those roots fold, so only this file covers
+// the PE-backed case.
 public static class Utf8LiteralSpanEquality
 {
     public static int Main(string[] args)

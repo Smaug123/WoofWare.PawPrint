@@ -4,9 +4,9 @@
 //
 // This is a distinct code path in the interpreter: `constrained.callvirt` on a value-type `T`
 // first probes whether `T` itself supplies the method (ECMA-335 III.2.1 case 2), and that probe
-// resolves with `walkBaseTypes = false`. Before the variant-interface-map retarget landed, the
-// probe missed for exactly the same reason the reference-type case did, and the interpreter
-// failed with
+// resolves with `walkBaseTypes = false`. Without the variant-interface-map retarget, the
+// probe misses for exactly the same reason the reference-type case does, and the interpreter
+// fails with
 //
 //   constrained.callvirt case 2: non-base method Accept had no direct value-type
 //   implementation for type .StructSink

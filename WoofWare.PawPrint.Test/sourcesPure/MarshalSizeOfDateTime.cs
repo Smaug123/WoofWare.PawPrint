@@ -15,8 +15,8 @@ public class Program
         // CoreCLR's `MarshalInfo::MarshalInfo` special-cases `System.DateTime` as
         // `MARSHAL_TYPE_DATE` (8 bytes) before the layout check, so a sequential
         // struct with an `int` followed by a `DateTime` sizes as
-        // 4 (int) + 4 (pad to align DateTime at 8) + 8 = 16 bytes. Note that
-        // calling `Marshal.SizeOf(typeof(DateTime))` directly throws on CoreCLR
+        // 4 (int) + 4 (pad to align DateTime at 8) + 8 = 16 bytes.
+        // Calling `Marshal.SizeOf(typeof(DateTime))` directly throws on CoreCLR
         // — the `MARSHAL_TYPE_DATE` shortcut only applies when DateTime appears
         // as a field of another marshalable struct.
         //

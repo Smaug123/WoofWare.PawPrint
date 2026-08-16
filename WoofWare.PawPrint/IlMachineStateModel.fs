@@ -272,8 +272,7 @@ type WhatWeDid =
     /// `Scheduler.onStepOutcome` is the *only* place that acts on this: it draws the policy's
     /// honour-the-yield coin and, if honoured, charges the yielder a `ThreadState.YieldDebt`
     /// so the scheduler holds it out of the candidate set until its contemporaries have run.
-    /// Concentrating that here rather than at the QCall handler is deliberate and load-bearing:
-    /// the driver routes every `ExecutionResult.Stepped` through `onStepOutcome`, so it is
+    /// The driver routes every `ExecutionResult.Stepped` through `onStepOutcome`, so it is
     /// impossible to emit a yield signal without the scheduler's bookkeeping happening. A
     /// handler that returns `NativeHandlerResult.yielded` cannot forget to consult the
     /// scheduler, because it never consults the scheduler itself.
@@ -297,10 +296,6 @@ type WhatWeDid =
 /// scheduler. `StepEffect` answers "did this step want to talk to the outside
 /// world?" — i.e. it's input to the driver. A single step can do both (e.g.
 /// emit a `WroteToFd` effect *and* report `WhatWeDid.Executed`).
-///
-/// Today the variants are `NoEffect` and `WroteToFd`; widening the contract
-/// up front lets us add `ReadFromFd` etc. in subsequent PRs without retouching
-/// the construction sites that don't emit effects.
 type StepEffect =
     /// The step had no externally-observable I/O effect. The overwhelming
     /// majority of IL steps land here; the variant exists so that effect-
@@ -388,9 +383,7 @@ type IntrinsicResult =
 
 /// Outcome of invoking a native handler (QCall, P/Invoke shim, or other host-provided
 /// primitive registered under `WoofWare.PawPrint.Native`). Each variant names a single
-/// dispatcher decision, so the dispatcher's pattern match is total and the convention
-/// "remember to set the right `WhatWeDid`" that the legacy `ExecutionResult` shape relied
-/// on is eliminated.
+/// dispatcher decision, so the dispatcher's pattern match is total.
 ///
 /// The native dispatcher (`AbstractMachine.executeOneStep.dispatchNative`) translates each
 /// variant into an `ExecutionResult`, performing frame-management on the handler's behalf
@@ -526,9 +519,8 @@ type StateLoadResult =
 module ExecutionResult =
     /// Construct a `Stepped` result that emits no externally-observable effect.
     /// Use this for the overwhelming majority of step outcomes; reserve
-    /// `steppedWith` for handlers that genuinely want the driver to do
-    /// something (e.g. `SystemNative_Write` emitting `StepEffect.WroteToFd`
-    /// once that variant exists).
+    /// `steppedWith` for handlers that want the driver to do
+    /// something (e.g. `SystemNative_Write` emitting `StepEffect.WroteToFd`).
     let stepped ((state, whatWeDid) : IlMachineState * WhatWeDid) : ExecutionResult =
         ExecutionResult.Stepped (state, whatWeDid, StepEffect.NoEffect)
 
@@ -547,11 +539,9 @@ module ExecutionResult =
     /// written once, at the driver's single call site of `AbstractMachine.executeOneStep`,
     /// rather than being repeated in each arm of the driver's match on the outcome.
     ///
-    /// The match is deliberately written out rather than expressed with a wildcard: adding a
-    /// variant must fail to compile here, so that whoever adds it has to decide whether their
-    /// new outcome represents a retired step. That compile error is the enforcement mechanism —
-    /// the reason to prefer this over a hand-written call in each arm, where a new arm silently
-    /// inherits nothing.
+    /// The match is written out rather than wildcarded so that adding a variant fails to
+    /// compile here, forcing a decision about whether the new outcome represents a retired
+    /// step.
     let mapState (f : IlMachineState -> IlMachineState) (result : ExecutionResult) : ExecutionResult =
         match result with
         | ExecutionResult.Terminated (state, terminatingThread) ->
@@ -693,8 +683,7 @@ module NativeHandlerResult =
     /// signal is produced at the native-handler return shape via `NativeHandlerResult.Yielded`,
     /// not threaded back through `ExecutionResult`. If an ExternImpl ever needs to yield, the
     /// right answer is a dedicated `NativeHandlerResult.yielded` at the native handler that
-    /// called it. Such cases should instead use the dedicated `NativeHandlerResult`
-    /// constructors from the native handler that called the ExternImpl.
+    /// called it.
     let ofExecutionResult (executionResult : ExecutionResult) : NativeHandlerResult =
         match executionResult with
         | ExecutionResult.Stepped (state, WhatWeDid.Executed, effect) -> NativeHandlerResult.Completed (state, effect)

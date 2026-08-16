@@ -65,7 +65,7 @@ module SignalHandler =
 /// follows that contract by allocating a single Parked dispatcher
 /// `ThreadId` at the same moment and stashing it here. Encoding the
 /// pair as a DU rather than `Initialized : bool + DispatcherThread :
-/// ThreadId option` makes the load-bearing invariant — "the dispatcher
+/// ThreadId option` makes the invariant — "the dispatcher
 /// thread exists iff signal handling is initialised" — unrepresentable
 /// to violate. Idempotent re-initialisation is a transition this DU
 /// observes (the existing dispatcher is preserved); the QCall site
@@ -81,10 +81,9 @@ type SignalInitState =
     /// once; `dispatcher` is the `ThreadId` of the PawPrint-internal
     /// signal-dispatch thread allocated at that moment. The thread
     /// lives in `IlMachineState.ThreadState` with status
-    /// `ThreadStatus.Parked`; a future slice will introduce a wakeup
-    /// edge that transitions it to `Runnable` to actually invoke a
-    /// handler. Until then the dispatcher thread is a placeholder
-    /// that pins down the structural shape ahead of dispatch wiring.
+    /// `ThreadStatus.Parked`; `SignalDispatch.trySpawnHandler` is the
+    /// wakeup edge that transitions it to `Runnable` to invoke a
+    /// handler.
     | Initialized of dispatcher : ThreadId
 
 /// Pure, deterministic model of the simulator's signal-handling state.
@@ -93,8 +92,8 @@ type SignalInitState =
 ///   * `Init` — has the BCL invoked
 ///     `SystemNative_InitializeTerminalAndSignalHandling` yet, and
 ///     which `ThreadId` is the dispatcher? Several console paths gate
-///     work behind initialisation; downstream signal-delivery slices
-///     read the dispatcher id off this field.
+///     work behind initialisation; `SignalDispatch` reads the
+///     dispatcher id off this field.
 ///   * `Enabled` — the set of signals the BCL has asked libSystem.Native to
 ///     deliver to managed code via `SystemNative_EnablePosixSignalHandling`.
 ///     This mirrors the enable bits that the real native side keeps; the
@@ -112,13 +111,12 @@ type SignalInitState =
 ///     the BCL installs one; on a real Unix box the native side leaves
 ///     `g_posixSignalHandler` NULL until the first
 ///     `SetPosixSignalHandler` call and ignores delivered signals while
-///     it remains so. PawPrint will mirror that semantics once signal
-///     delivery is wired.
+///     it remains so; `SignalDispatch.trySpawnHandler` mirrors that,
+///     leaving pending entries queued while no handler is installed.
 ///
 /// The `EmulatedKernel.Signals` field carries an instance of this type per
-/// simulated process, but no code dispatches signals out of it yet —
-/// downstream slices will plug in the harness-side injection point and the
-/// between-instruction delivery hook. The data shape itself is exercised
+/// simulated process; `SignalDispatch.trySpawnHandler`, polled between guest
+/// IL steps, dispatches out of it. The data shape is also exercised
 /// end-to-end by property tests against a reference oracle.
 type SignalState =
     private
@@ -183,10 +181,9 @@ module SignalState =
             }
 
     /// The currently-installed dispatch callback, or `None` if the BCL
-    /// has not yet called `SystemNative_SetPosixSignalHandler`. PawPrint
-    /// has no signal delivery wired yet, so this is purely a record of
-    /// what the BCL asked for; later slices will read it at the moment
-    /// of dispatch.
+    /// has not yet called `SystemNative_SetPosixSignalHandler`.
+    /// `SignalDispatch.trySpawnHandler` reads it at the moment of
+    /// dispatch.
     let handler (state : SignalState) : SignalHandler option = state.Handler
 
     /// Install (or replace) the BCL-supplied signal-dispatch callback.

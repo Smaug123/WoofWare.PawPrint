@@ -11,16 +11,15 @@ namespace HelloWorldApp
         // a tagged native int (`NativeIntSource.WaitHandlePtr` here) with no
         // bit pattern at all, so such a value cannot be flattened to bytes: the
         // only way to store it is as a whole typed cell. The interpreter
-        // already does that for a *bare* `StackMemoryByte` / `NativeMemoryByte`
-        // byref, but the shape the C# below produces carries a trailing
+        // does that for a *bare* `StackMemoryByte` / `NativeMemoryByte`
+        // byref; the shape the C# below produces carries a trailing
         // `ReinterpretAs System.IntPtr` byte-view projection (the span's
-        // `GetPinnableReference` / element indexer), and that shape used to
-        // fail loud even though the layer beneath it can service it.
+        // `GetPinnableReference` / element indexer), which must route to the
+        // same whole-cell store.
         //
         // `WaitHandle.ObtainSafeWaitHandles` — on the path to every
-        // `WaitHandle.WaitAny` / `WaitAll` — writes exactly this shape, which
-        // is how the gap was found; this file reproduces it without needing
-        // any of the multi-wait machinery.
+        // `WaitHandle.WaitAny` / `WaitAll` — writes exactly this shape; this
+        // file reproduces it without needing any of the multi-wait machinery.
         //
         // Everything asserted here is a round-trip identity, so it holds
         // identically on the real runtime (where these are ordinary addresses)

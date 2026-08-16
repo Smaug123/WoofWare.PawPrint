@@ -58,7 +58,7 @@ public static class TaskConfigureAwaitBool
         return await Task.Run(() => 41).ConfigureAwait(false);
     }
 
-    // A genuinely pool-scheduled task, so the awaited task must survive into the awaiter rather
+    // A pool-scheduled task, so the awaited task must survive into the awaiter rather
     // than the awaitable answering from thin air.
     static int TestAwaitPoolScheduled()
     {

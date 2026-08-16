@@ -3,7 +3,7 @@
 // (methodtablebuilder.cpp:8568, the auto-layout path). Sequential and explicit layout reach the
 // same rule through `EEClassLayoutInfo::SetInstanceBytesSize` (class.h:497), which is literally
 // `return size == 0 ? 1 : size;`. So the padding is universal across layout kinds, and it
-// applies to a declared `Size = 0` just as it does to a struct that simply has no fields.
+// applies to a declared `Size = 0` just as it does to a struct with no fields.
 //
 // The padding is observable: it is the managed size, so it drives `Unsafe.SizeOf<T>`, the array
 // element stride, and the size an enclosing struct reserves for a field of the type.

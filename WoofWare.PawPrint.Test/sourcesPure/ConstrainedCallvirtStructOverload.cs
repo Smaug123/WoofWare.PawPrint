@@ -1,8 +1,8 @@
 // Regression test for tOverridesMethod mis-classification in the constrained. handler.
-// Previously the predicate treated any same-name, same-arity method on the struct as an
-// override of the callvirt target. So a struct declaring `bool Equals(MyStruct)` was flagged
-// as overriding `object.Equals(object)`, pushing the code down the unimplemented case-2
-// branch instead of ECMA case 3 (box, then dispatch on the boxed receiver).
+// A predicate that treats any same-name, same-arity method on the struct as an override of
+// the callvirt target flags `bool Equals(MyStruct)` as overriding `object.Equals(object)`,
+// pushing the code down the unimplemented case-2 branch instead of ECMA case 3 (box, then
+// dispatch on the boxed receiver).
 
 public struct MyStruct
 {

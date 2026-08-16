@@ -54,15 +54,13 @@ type StructMarshalPlan =
 /// `NativeIntSource.FunctionPointer (FunctionPointerTarget.Managed …)` holds it, `calli` needs no
 /// special case, and `AbstractMachine` dispatches it beside the delegate constructor and `Invoke`.
 ///
-/// That the stub has a real frame is what makes the rest of this module straightforward.
 /// `MARSHAL_TYPE_DATE` needs `DateTime.ToOADate`, whose behaviour (a zero special case, a VB
 /// compatibility fixup, and a guest-visible `OverflowException` below `OADateMinAsTicks`) belongs
-/// to the guest's CoreLib and must not be re-derived in the host — so the stub calls the guest's
-/// own `StubHelpers.DateMarshaler.ConvertToNative`, once per conversion field, by pushing it as a
-/// callee and not returning its own frame. The result lands on the stub's *own* evaluation stack,
-/// which starts empty and which nothing else writes to, so counting the results is reading our own
-/// state rather than inferring anything about the caller's. Nothing is written to the destination
-/// until every conversion has completed, so a resumption never observes a half-written image.
+/// to the guest's CoreLib — so the stub calls the guest's own
+/// `StubHelpers.DateMarshaler.ConvertToNative`, once per conversion field, by pushing it as a
+/// callee and not returning its own frame; the result lands on the stub's own evaluation stack.
+/// Nothing is written to the destination until every conversion has completed, so a resumption
+/// never observes a half-written image.
 [<RequireQualifiedAccess>]
 module StructMarshalStub =
 
@@ -84,15 +82,13 @@ module StructMarshalStub =
         // `NativeInt` cells carry provenance under PawPrint (e.g. a pointer from
         // `Marshal.AllocHGlobal`, or `TypeHandlePtr` from `typeof(T).TypeHandle.Value`). CoreCLR
         // memmoves the integer-width bits regardless; PawPrint cannot, because
-        // `CliNumericType.ToBytes` refuses to serialise provenance. We accept `IntPtr`/`UIntPtr`
-        // anyway because neither caller flattens such a cell to bytes: the blittable arm returns a
-        // null stub, so CoreLib's `SpanHelpers.Memmove` is intercepted and routed through
-        // `CellAwareMemOps.copy`; and the stub path reads the source struct structurally
+        // `CliNumericType.ToBytes` refuses to serialise provenance. `IntPtr`/`UIntPtr` are
+        // accepted because neither caller flattens such a cell to bytes: the blittable arm
+        // returns a null stub, so CoreLib's `SpanHelpers.Memmove` is intercepted and routed
+        // through `CellAwareMemOps.copy`; and the stub path reads the source struct structurally
         // (`readSource`) and writes each field as a typed value, so a pointer cell survives into
-        // the destination intact. What a guest cannot then do is *read the destination back*
-        // through a byte view — `Marshal.ReadIntPtr` over such a cell is refused by
-        // `executeLdind` (#801) — but that is a gap in reading native memory, not in classifying
-        // fields.
+        // the destination intact. Reading the destination back through a byte view
+        // (`Marshal.ReadIntPtr`) is refused by `executeLdind` (#801).
         | CliType.Numeric (CliNumericType.NativeInt _) -> true
         | CliType.Numeric _ -> true
         | CliType.Bool _
@@ -133,11 +129,9 @@ module StructMarshalStub =
     /// Whether the whole struct is blittable, i.e. whether CoreCLR's `th.IsBlittable()` arm of
     /// `MarshalNative_TryGetStructMarshalStub` applies and the guest can memmove.
     ///
-    /// Top-level entry walks the outer struct's fields via `isBlittableField`. Host-known
-    /// field-only rejections (Decimal) do not apply to the outer type's *own* declared type,
-    /// which is what we're classifying here; a top-level DateTime is filtered earlier by the
-    /// AutoLayout gate, and if it ever reached us we'd want the same answer the field walker
-    /// gives, so we intentionally don't short-circuit it.
+    /// Walks the outer struct's fields via `isBlittableField`. The host-known field-only
+    /// rejections (Decimal) do not apply to the outer type's own declared type; a top-level
+    /// DateTime is filtered earlier by the AutoLayout gate.
     let isStructStrictlyNumericBlittable
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
@@ -185,16 +179,14 @@ module StructMarshalStub =
             | Result.Error err -> Result.Error err
             | Result.Ok (nativeSize, placements) ->
 
-            // A `CopyBytes` step writes the managed value itself at the native offset, so it is
-            // only sound when the managed image of that value *is* its native image. For a
-            // primitive that is definitional. For a composite it is a claim about the value's
-            // interior, and the managed layout walk (`CliValueType.SizeOf`) is not the marshal
-            // layout walk (`TryComputeMarshalLayout`) — the two agree for the shapes we have
-            // looked at, but nothing enforces it, and this whole arm exists because CoreCLR
-            // repositions some fields between the two forms. So accept composites only where the
-            // interior is trivial: a primitive-like wrapper (an enum, `IntPtr`, …) is a single
-            // field at offset 0, and its image is that field's image whichever walk you use.
-            // Anything else needs a recursive plan, and should get one when a test motivates it.
+            // A `CopyBytes` step writes the managed value itself at the native offset, which is
+            // sound only when the managed image of that value *is* its native image. Definitional
+            // for a primitive. For a composite it is a claim about the interior, and the managed
+            // layout walk (`CliValueType.SizeOf`) is not the marshal layout walk
+            // (`TryComputeMarshalLayout`) — CoreCLR repositions some fields between the two
+            // forms. So accept composites only where the interior is trivial: a primitive-like
+            // wrapper (an enum, `IntPtr`, …) is a single field at offset 0, whose image is that
+            // field's image under either walk. Anything else needs a recursive plan.
             let isCopyableVerbatim (contents : CliType) : bool =
                 isBlittableField concreteTypes assemblies corelib contents
                 && (
@@ -336,12 +328,11 @@ module StructMarshalStub =
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: %s{ty.Name} is not concretized")
 
         // CoreLib invokes the stub through
-        // `delegate*<ref byte, byte*, int, ref CleanupWorkListElement?, void>`. These types are
-        // load-bearing rather than decorative: `callMethod` coerces each popped argument to the
-        // zero of its declared parameter type, so declaring the byrefs as `IntPtr` would deliver
-        // them wrapped in the `System.IntPtr` struct and every consumer would have to unwrap.
-        // `Byref`/`Pointer` handles need no registration in `AllConcreteTypes` — they are
-        // structural — so there is no reason to approximate.
+        // `delegate*<ref byte, byte*, int, ref CleanupWorkListElement?, void>`. `callMethod`
+        // coerces each popped argument to the zero of its declared parameter type, so declaring
+        // the byrefs as `IntPtr` would deliver them wrapped in the `System.IntPtr` struct.
+        // `Byref`/`Pointer` handles are structural and need no registration in
+        // `AllConcreteTypes`.
         let byteHandle = handleOf baseClassTypes.Byte
         let refByte = ConcreteTypeHandle.Byref byteHandle
         let bytePtr = ConcreteTypeHandle.Pointer byteHandle
@@ -389,28 +380,20 @@ module StructMarshalStub =
     /// The conversion results a part-way-through stub invocation has accumulated.
     ///
     /// Each conversion the stub needs pushes a managed callee and leaves the program counter put,
-    /// so the stub is re-entered when that callee returns and its result is sitting on the stub's
-    /// *own* evaluation stack. Counting them is therefore reading our own frame, not inferring
-    /// anything about somebody else's: the stub frame starts empty and nothing but this code ever
-    /// pushes to it. That is the same marker idiom `NativeRuntimeTypeQCall` uses, and it is sound
-    /// here for the same reason — an owned, initially empty stack.
-    /// A conversion helper that returns *void* is not handled by this counting discipline: it
-    /// pushes nothing, the count never advances, and the stub would re-enter forever. CoreLib has
-    /// several such marshallers (`CSTRMarshaler.ConvertFixedToNative`, `FixedWSTRMarshaler`), so
-    /// this will need addressing before any of them is implemented. What the owned frame buys is
-    /// that the fix is *available* — push a sentinel of our own alongside or instead of a result,
-    /// since writing bookkeeping to our own stack corrupts nobody — where a design counting values
-    /// on the caller's stack could not have done so at all. Admitting the fix and implementing it
-    /// are different things, and only the first is done here.
+    /// so the stub is re-entered when that callee returns with its result on the stub's *own*
+    /// evaluation stack, which starts empty and which nothing but this code pushes to. Same
+    /// marker idiom as `NativeRuntimeTypeQCall`.
     ///
-    /// The theorem this rests on, stated once because it is the load-bearing half of the argument:
-    /// result *i* is attributed to conversion *i* of a plan that is **recomputed on every pass**,
-    /// so the attribution is only sound while the plan's step order is a deterministic function of
-    /// inputs that cannot change between passes. It is — the order comes from the type's field
-    /// layout, which further assembly loads and concretizations can only extend and never reorder,
-    /// and from the source box, which nothing but the guest's own code can reach and which no
-    /// conversion helper is given a reference to. A future step order derived from anything a
-    /// callee could perturb would break this without breaking any test that runs today.
+    /// A conversion helper that returns *void* pushes nothing, so the count never advances and
+    /// the stub would re-enter forever. CoreLib has several such marshallers
+    /// (`CSTRMarshaler.ConvertFixedToNative`, `FixedWSTRMarshaler`); implementing one requires
+    /// pushing a sentinel of our own first.
+    ///
+    /// Result *i* is attributed to conversion *i* of a plan that is recomputed on every pass, so
+    /// the attribution is sound only while the plan's step order is a deterministic function of
+    /// inputs that cannot change between passes. It is: the order comes from the type's field
+    /// layout (assembly loads and concretizations only extend, never reorder) and from the source
+    /// box, which no conversion helper is given a reference to.
     let private completedConversions (frame : MethodState) : float list =
         frame.EvaluationStack.Values
         |> List.map (fun v ->
@@ -498,12 +481,12 @@ module StructMarshalStub =
     /// argument and hands the stub a `ref byte` onto the box's payload (Marshal.CoreCLR.cs:264,
     /// :275) — so the value wanted is the boxed payload itself, read *structurally*.
     ///
-    /// The distinction is load-bearing rather than stylistic. Reading through the `ref byte` view
-    /// flattens every cell to bytes, and a struct may legally hold a value that has no byte
-    /// rendering: an `IntPtr` field assigned from `Marshal.AllocHGlobal` is a managed pointer with
-    /// provenance, which `CliNumericType.ToBytes` refuses. Such a struct marshals fine — the
-    /// destination write preserves the pointer cell — but only if the read does not destroy it
-    /// first. Only the *destination* is bytes; the source is a value.
+    /// Reading through the `ref byte` view flattens every cell to bytes, and a struct may legally
+    /// hold a value that has no byte rendering: an `IntPtr` field assigned from
+    /// `Marshal.AllocHGlobal` is a managed pointer with provenance, which `CliNumericType.ToBytes`
+    /// refuses. Such a struct marshals fine — the destination write preserves the pointer cell —
+    /// but only if the read does not destroy it first. Only the *destination* is bytes; the source
+    /// is a value.
     ///
     /// Any other byref shape falls back to the byte-image read. Nothing produces one today; the
     /// fallback exists so an unforeseen shape gets a typed read rather than a match failure.
@@ -532,12 +515,6 @@ module StructMarshalStub =
 
             IlMachineState.readManagedByrefBytesAs baseClassTypes state source template
 
-    /// Execute (or continue executing) a `calli` whose target is a struct-marshal stub. The
-    /// caller has already established, via `tryRecognise`, that the stub pointer is on the eval
-    /// stack under `call.Completed.Length` conversion results.
-    ///
-    /// Returns with the program counter *unadvanced* whenever a conversion callee was pushed, so
-    /// the same `calli` runs again once that callee returns.
     /// Run (or resume) a struct-marshal stub frame.
     ///
     /// This is dispatched from `AbstractMachine.executeOneStep` exactly as the delegate
@@ -589,10 +566,9 @@ module StructMarshalStub =
         /// The stub's work is done: drop the conversion results it accumulated, pop its frame, and
         /// hand control back to CoreLib.
         ///
-        /// The results have to go first. They are this frame's scratch state, and the stub returns
+        /// The results have to go first: they are this frame's scratch state, and the stub returns
         /// void, so leaving them would trip `returnStackFrame`'s check that a void method returns
-        /// an empty stack — which is the check doing its job, since anything left there would
-        /// otherwise land on CoreLib's stack.
+        /// an empty stack.
         let finish (state : IlMachineState) : ExecutionResult =
             let mutable state = state
 
@@ -765,13 +741,9 @@ module StructMarshalStub =
             let state, convertToNative, convertToNativeDeclaringType =
                 dateConvertToNative operation loggerFactory baseClassTypes state
 
-            // The helper's class initialiser is no longer run here. `callMethodWithCommitment` now
-            // arms it on the callee's frame and the dispatch loop runs it as that frame's
-            // prologue, which covers a plain static CoreLib method — the case this site existed
-            // for, since the old `SuspendedForClassInit` outcome came only from the
-            // `Activator.CreateInstance<T>()` intrinsic and left everything else to be entered
-            // with its statics uninitialised. `DateMarshaler` has no `.cctor` today, so this was
-            // latent either way; a future conversion helper's is now handled by construction.
+            // `callMethodWithCommitment` arms the helper's class initialiser on the callee's
+            // frame; the dispatch loop runs it as that frame's prologue. (`DateMarshaler` has no
+            // `.cctor` today.)
             let state = IlMachineState.pushToEvalStack next.Value thread state
             let threadState = state.ThreadState.[thread]
 

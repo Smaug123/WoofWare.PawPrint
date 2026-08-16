@@ -2,8 +2,8 @@
 // type-equivalence check, so this is a distinct arm from
 // `EnumHasFlagMismatchUnhandled.cs`. Nothing catches it, so the guest process dies.
 //
-// As with the mismatch case, the interesting part is the *unhandled* path: intrinsic
-// dispatch previously had no way to say the exception found no handler.
+// As with the mismatch case, the point is the *unhandled* path: intrinsic dispatch
+// must be able to say the exception found no handler.
 
 using System;
 

@@ -199,7 +199,7 @@ public static class Program
     [<Test>]
     let ``concurrent guests do not observe each other's exit code`` () : unit =
         // The pure-case fixtures are `[<Parallelizable(ParallelScope.All)>]`, so oracle calls
-        // genuinely overlap. Each guest holds its exit code across a sleep so that any shared
+        // overlap. Each guest holds its exit code across a sleep so that any shared
         // latch between them is near-certain to be observed by the wrong reader.
         let codes = [ 11 ; 22 ; 33 ; 44 ; 55 ; 66 ]
 

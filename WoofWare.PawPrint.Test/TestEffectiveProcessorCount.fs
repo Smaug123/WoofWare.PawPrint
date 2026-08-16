@@ -70,7 +70,7 @@ module TestEffectiveProcessorCount =
     [<Test>]
     let ``the result is always a legal ProcessorCount`` () =
         // The value reaches guest code that divides by it, so the postcondition
-        // that matters most is simply "positive", whatever the environment says.
+        // that matters most is "positive", whatever the environment says.
         let property (detectedSeed : int, raw : NonNull<string>) : bool =
             let detected = 1 + abs (detectedSeed % maxConfigured)
 

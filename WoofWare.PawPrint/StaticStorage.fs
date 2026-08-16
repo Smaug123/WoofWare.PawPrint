@@ -8,11 +8,6 @@ type StaticStorage =
         /// per-owner partition is a value in its own right: a thread-static's slots are
         /// separate sub-dictionaries, not entries that merely happen to differ in one
         /// component of a compound key.
-        ///
-        /// This is the shape the storage had while it was `IlMachineState._Statics`, kept
-        /// verbatim through the move. Now that nothing outside this file can see it, it is
-        /// free to change without touching a caller — which is the point of the signature
-        /// file.
         Slots :
             ImmutableDictionary<
                 StaticOwner,

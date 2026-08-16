@@ -3,12 +3,8 @@ using System.Reflection;
 
 // The stack trace of a `TypeInitializationException` raised under `Activator.CreateInstance<T>()`.
 //
-// This route used to produce a TIE with a null `StackTrace`, because both of PawPrint's exception
-// wraps fired on one frame: `Activator.CreateInstance<T>()` set `WrapExceptionInTargetInvocation`
-// on the very frame that carried `WasInitialisingType`, so the freshly synthesised TIE was
-// re-wrapped in a `TargetInvocationException` before a single frame could be appended to it.
-//
-// Initialising T in its constructor's own prologue separates them: `WasInitialisingType` belongs
+// Initialising T in its constructor's own prologue separates PawPrint's two exception
+// wraps: `WasInitialisingType` belongs
 // to the `.cctor` frame and `WrapExceptionInTargetInvocation` to the constructor frame beneath it,
 // so the TIE is raised at one boundary and wrapped at the next, gaining the constructor frame in
 // between. That frame is what this file asserts on.

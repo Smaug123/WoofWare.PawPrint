@@ -941,9 +941,9 @@ module TestSyncBlockMonitor =
 
     /// FIFO transfer oracle. Park `n` waiters via Wait, then PulseAll into a
     /// fresh-owner Held lock. The resulting AcquireQueue must equal the
-    /// original WaitQueue in order, depths and all. This is the load-bearing
-    /// property for guest fairness across `Monitor.PulseAll` — any reordering
-    /// changes the interleaving that wakes resume in.
+    /// original WaitQueue in order, depths and all. Guest fairness across
+    /// `Monitor.PulseAll` rests on this — any reordering changes the
+    /// interleaving that wakes resume in.
     [<Test>]
     let ``Property: PulseAll preserves FIFO order and snapshot depths of WaitQueue`` () : unit =
         let property (PositiveInt n) : bool =
@@ -1134,7 +1134,7 @@ module TestSyncBlockMonitor =
     // -------------------------------------------------------------------
     // wait deadline plumbing
     //
-    // `BlockedOnSyncBlockWait` now carries an optional deadline. The
+    // `BlockedOnSyncBlockWait` carries an optional deadline. The
     // scheduler in `Program.fireExpiredDeadlines` keys off this option to
     // decide whether the thread is a `Monitor.Wait(obj, timeout)` waiter
     // (finite Some) or an untimed `Monitor.Wait(obj)` waiter (None).

@@ -36,7 +36,7 @@ type Int64Source =
     /// a value has this tag, further bit ops compute on the bits directly
     /// and the result keeps the same tag.
     ///
-    /// The tag's load-bearing job: an `OpaqueHashBits` value MUST NOT be
+    /// An `OpaqueHashBits` value MUST NOT be
     /// converted back to a `NativeInt` (via `conv.u` / `conv.i`); doing so
     /// would let a synthesised non-pointer be used as a real pointer and
     /// silently dereferenced. `conv.i4` is allowed — that path is how the
@@ -259,8 +259,8 @@ module Int64Source =
 
     /// Signed comparison of two `Int64Source` values, treating each as the
     /// signed int64 it represents. Returns negative / zero / positive in the
-    /// `compare` convention. `Int64Source` no longer supports structural
-    /// comparison (it now contains a `NativeIntSource`, which is
+    /// `compare` convention. `Int64Source` does not support structural
+    /// comparison (it contains a `NativeIntSource`, which is
     /// `[<NoComparison>]`), so callers must funnel through this helper.
     /// Non-`Verbatim` numeric variants (`OpaqueHashBits`) compare on their
     /// synthesised bits; `WidenedNativeInt` and `SyntheticCrossArrayOffset`

@@ -149,7 +149,7 @@ public class TestNewarrLengthValidation
         {
             if (e.Message != "Array dimensions exceeded supported range.") return 21;
 
-            // And it is genuinely not the default message, which is what makes the check
+            // And it is not the default message, which is what makes the check
             // above more than a tautology on either runtime.
             if (e.Message == new OutOfMemoryException().Message) return 22;
         }

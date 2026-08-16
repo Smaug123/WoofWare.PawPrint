@@ -11,13 +11,12 @@ namespace ArrayPrimitiveLikeElementReadTest
 
     // `newarr` zero-fills cells with the element type's *declared* CliType: `CliType.Bool` for
     // bool[], and a primitive-like value type for nint[]/nuint[]/enum arrays. The concrete-width
-    // `ldelem.*` opcodes used to match strictly on `CliType.Numeric`, so reading any such array
-    // before writing to it failed outright. `stelem.*` masked the bug by stamping the opcode's
-    // raw primitive over the cell, which is why only a read of a still-declared-form cell (a
-    // fresh array, or one just cleared) tripped it.
+    // `ldelem.*` opcodes must accept these declared forms, not only `CliType.Numeric`; and
+    // since `stelem.*` stamps the opcode's raw primitive over the cell, only a read of a
+    // still-declared-form cell (a fresh array, or one just cleared) exercises this.
     //
     // Every read below is a plain `ldelem.*` on an array; no Span, no byref, no generics. The
-    // read-before-any-write cases are the ones that used to fail.
+    // read-before-any-write cases are the ones at stake.
     class Program
     {
         static int Main(string[] args)

@@ -119,8 +119,7 @@ module IlMachineStateExecution =
 
         // CoreCLR maps interface slot → shim method by slot arithmetic, but asserts the result
         // equals `MemberLoader::FindMethodByName(g_pSZArrayHelperClass, pItfcMeth->GetName())`.
-        // Name lookup is therefore the specified-equivalent, and `SZArrayHelper`'s method names
-        // are pairwise distinct, so `exactlyOne` is the honest reading rather than a heuristic.
+        // `SZArrayHelper`'s method names are pairwise distinct, so name lookup is equivalent.
         let implementation =
             baseClassTypes.SZArrayHelper.Methods
             |> List.filter (fun meth -> meth.Name = methodToCall.Name)
@@ -288,7 +287,7 @@ module IlMachineStateExecution =
         // lookup is exact-slot; ours matches on name and signature, which is fuzzier. Running
         // first is safe and total: when the receiver is an SZ array and the target is one of the
         // five interfaces, the answer is always SZArrayHelper. Nothing on the receiver's fixed
-        // class chain can shadow it either, structurally rather than by coincidence — an array's
+        // class chain can shadow it either — an array's
         // only ancestors are `System.Array` and `System.Object`, and every collection member of
         // `System.Array` is an *explicit* implementation of the corresponding **non-generic**
         // interface, so its metadata name is `System.Collections.IList.Contains` and can match
@@ -1025,8 +1024,8 @@ module IlMachineStateExecution =
         }
 
     /// One interface, followed by its transitive parents, depth-first. `visited` collapses
-    /// diamonds at the *first* occurrence, which is what makes the resulting order load-bearing
-    /// rather than incidental — see `variantInterfaceMapRetargets`.
+    /// diamonds at the *first* occurrence; `variantInterfaceMapRetargets` depends on the
+    /// resulting order.
     let rec private expandInterfaceEntry
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1077,7 +1076,7 @@ module IlMachineStateExecution =
     /// the interfaces the type itself declares, in metadata order and each expanded through its
     /// own parents, and only then the base class's map.
     ///
-    /// Note that this is not the order of CoreCLR's interface-map array, which is built the
+    /// This is not the order of CoreCLR's interface-map array, which is built the
     /// other way round — `MethodTableBuilder::ExpandApproxInheritedInterfaces` lays the parent's
     /// entries down first and `ExpandApproxDeclaredInterfaces` appends the freshly-declared ones
     /// (`methodtablebuilder.cpp`). The search order is what matters, and it inverts that:
@@ -1087,9 +1086,8 @@ module IlMachineStateExecution =
     /// inherited prefix. `sourcesPure/VariantInterfaceMapOrder.cs` pins the resulting order
     /// against the real runtime.
     ///
-    /// The order is load-bearing because variant interface dispatch resolves to the *first*
-    /// compatible entry (see `variantInterfaceMapRetargets`), so this must not be reordered or
-    /// set-ified.
+    /// Variant interface dispatch resolves to the *first* compatible entry (see
+    /// `variantInterfaceMapRetargets`), so this must not be reordered or set-ified.
     let rec private collectInterfaceMap
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1124,8 +1122,7 @@ module IlMachineStateExecution =
         // The `walkBaseTypes` gate is the same one the ordinary walks use: `false` means
         // "exact-type dispatch" (the `constrained.` value-type probe), where only the type's own
         // interface list is in scope. A value type's base chain is `ValueType`/`Enum`/`Object`,
-        // none of which contributes a generic interface, so the gate is about honesty rather than
-        // about any case we can currently reach.
+        // none of which contributes a generic interface.
         let state, visited, baseEntries =
             if not walkBaseTypes then
                 state, visited, []
@@ -1176,7 +1173,7 @@ module IlMachineStateExecution =
     /// through `ISink<string>`. The receiver's *own* entry is what supplies the body, so that is
     /// what dispatch must resolve against — not the call site's view.
     ///
-    /// So the fix is to retarget the dispatch, not to loosen any comparison: an implicit
+    /// Dispatch is therefore retargeted rather than any comparison loosened: an implicit
     /// implementation `ObjectSink.Accept(object, ...)` matches `ISink<object>::Accept` exactly,
     /// and only fails against `ISink<string>::Accept` because the call site substituted a
     /// different `T`. (The explicit-MethodImpl form of the same shape already works, because a
@@ -1377,8 +1374,7 @@ module IlMachineStateExecution =
         match primary with
         // A real implementation from the call site's own instantiation is final: it is the
         // highest-precedence answer there is, so nothing further need be looked at. Almost every
-        // call takes this branch, which is what keeps the variance machinery below off the path
-        // of anything that resolves today.
+        // call takes this branch.
         | Some resolved when not (isDefaultInterfaceBody state resolved) -> state, Some resolved
         | _ ->
             // Either nothing resolved, or the exact instantiation only offered a default body.
@@ -1387,10 +1383,6 @@ module IlMachineStateExecution =
             // *every* compatible entry before `FindDefaultInterfaceImplementation` runs at all —
             // so the scan below runs in both cases. See
             // `sourcesPure/VariantInterfaceDefaultBodyPrecedence.cs`.
-            //
-            // Reaching here with a default body in hand means the interface-closure walk has just
-            // succeeded on this receiver inside the DIM scan, so re-walking it costs a repeat of
-            // work known to be well-defined rather than opening a new failure surface.
             let state, retargets =
                 variantInterfaceMapRetargets
                     loggerFactory
@@ -1403,10 +1395,8 @@ module IlMachineStateExecution =
 
             // Resolve every compatible entry rather than only the first: interface-map order is
             // the tie-break between equally good entries, not the whole precedence rule.
-            //
-            // Note this resolves every entry even once a winner is known. Entries are few, and
-            // stopping early would make the answer depend on evaluation order — the bug being
-            // fixed here.
+            // Every entry is resolved even once a winner is known: entries are few, and
+            // stopping early would make the answer depend on evaluation order.
             let state, resolvedRetargets =
                 ((state, []), retargets)
                 ||> List.fold (fun (state, acc) (retargeted, owner) ->
@@ -1494,11 +1484,9 @@ module IlMachineStateExecution =
 
     /// What `callMethodWithCommitment` actually did, for callers that must distinguish the cases.
     ///
-    /// A call used to be able to *not happen*, when the callee's declaring type needed
-    /// initialising first: the initialiser became the active frame and the calling instruction
-    /// re-executed once it returned. That is gone — initialisation is now the callee's own
-    /// prologue, which runs after this function has pushed its frame — so every call commits, and
-    /// the only question left is whether it committed by running or by raising.
+    /// Initialising the callee's declaring type is the callee's own prologue, which runs after
+    /// this function has pushed its frame — so every call commits, and the only question is
+    /// whether it committed by running or by raising.
     [<RequireQualifiedAccess>]
     type CallCommitment =
         /// The call happened: a frame was pushed for the callee, or an intrinsic serviced it
@@ -1631,8 +1619,8 @@ module IlMachineStateExecution =
         // (Domain/MethodInfo.fs), so this keys on the same thing rather than on whether the owner
         // happens to be a type.
         //
-        // Keyed on the *kind* rather than on `TryDeclaringType` deliberately. It is the truthful
-        // classifier -- CoreCLR never intrinsic-classifies synthesised code -- and it also covers
+        // Keyed on the *kind* rather than on `TryDeclaringType`: CoreCLR never
+        // intrinsic-classifies synthesised code, and this also covers
         // the struct-marshal stub, whose owner is the type being *marshalled*: without this, a
         // `[Intrinsic]`-attributed struct being marshalled would divert its stub into
         // `Intrinsics.call` and fail with a TODO naming the subject type.
@@ -1840,15 +1828,6 @@ module IlMachineStateExecution =
                 // failure — running for the first time or cached from an earlier one — unwinds
                 // through the ctor frame and meets the wrap on its way out, and so does anything
                 // the ctor body itself throws.
-                //
-                // This used to be three sub-paths keyed on `TypeInitTable`, because the check ran
-                // before the ctor frame existed and each state had to arrange the wrap for itself:
-                // a cached failure was wrapped in place, a first run had the flag flipped onto the
-                // `.cctor` frame, and an already-initialised type went straight to the ctor. The
-                // prologue collapses all three, and takes two defects with them — a cached TIE
-                // wrapped in place kept a stale trace where the real runtime rebuilds it against
-                // the current call site, and cross-thread blocking here was an unimplemented
-                // `failwith` rather than the ordinary parking every other call site gets.
                 let state, concretizedCtor, declaringTypeHandle =
                     ExecutionConcretization.concretizeMethodWithAllGenerics
                         loggerFactory
@@ -2103,10 +2082,9 @@ module IlMachineStateExecution =
             else
 
             // The synthesised arm comes first, and asks its question *without* looking the
-            // declaring type up. That ordering is load-bearing rather than tidy: a method minted
-            // by `Reflection.Emit` is owned by a class with no TypeDef row, so the lookup below
-            // cannot succeed for one — and running it first would crash on every dynamic-method
-            // call before anything got to say that no initialisation is needed.
+            // declaring type up: a method minted by `Reflection.Emit` is owned by a class with
+            // no TypeDef row, so running the lookup below first would crash on every
+            // dynamic-method call.
             match methodToCall with
             | MethodInfo.Synthesised (_, kind) ->
                 if SynthesisedMethod.initialisesDeclaringType kind then
@@ -2532,15 +2510,11 @@ module IlMachineStateExecution =
         //    `callMethod` arms a type-initialisation check on every metadata callee it pushes,
         //    which for this one would run the exception type's own `.cctor` — guest code, in the
         //    middle of manufacturing a runtime exception, able to replace it with a
-        //    `TypeInitializationException`. Clearing it here rather than teaching `callMethod` to
-        //    be told keeps the policy beside the allocation it belongs to, and off the fourteen
-        //    call sites that would otherwise gain a positional boolean they all answer the same
-        //    way.
+        //    `TypeInitializationException`.
         //
         //    Latent as it stands: no exception type this path manufactures has a `.cctor` in the
-        //    CoreLib we resolve. Whether the bypass is *right* is a separate and older question —
-        //    CoreCLR reaches these through `EEException::CreateThrowable` rather than through a
-        //    JIT'd prologue — and this only keeps the existing answer from changing by accident.
+        //    CoreLib we resolve. CoreCLR reaches these through `EEException::CreateThrowable`
+        //    rather than through a JIT'd prologue.
         //
         //    Checked rather than assumed, because clearing the flag off the wrong frame would
         //    silently let a `.cctor` run somewhere else instead: the frame `callMethod` just

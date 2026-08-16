@@ -70,7 +70,7 @@ module TestSignal =
         // Signal type without losing the value. Negative raws come from
         // cross-platform PosixSignal enum values the simulator doesn't
         // model — those are also preserved verbatim, even though there's
-        // no useful signo to send back across the seam.
+        // no useful signo to send back to the P/Invoke caller.
         Signal.toLinuxSigno (Signal.Other 42) |> shouldEqual 42
         Signal.toLinuxSigno (Signal.Other 999) |> shouldEqual 999
         Signal.toLinuxSigno (Signal.Other -77) |> shouldEqual -77
@@ -137,7 +137,7 @@ module TestSignal =
         // `(PosixSignal)11` for SIGSEGV), `SystemNative_GetPlatformSignalNumber`
         // returns the raw value unchanged when it sits within `GetSignalMax()`.
         // PawPrint preserves identity via `Signal.Other`, so the value round-
-        // trips back across the seam and `PosixSignalRegistration.Register`
+        // trips back to the BCL and `PosixSignalRegistration.Register`
         // accepts the registration instead of throwing.
         Signal.ofPosixSignalEnum 4 |> shouldEqual (ValueSome (Signal.Other 4)) // SIGILL
         Signal.ofPosixSignalEnum 5 |> shouldEqual (ValueSome (Signal.Other 5)) // SIGTRAP
@@ -207,9 +207,8 @@ module TestSignal =
             armBehaviour signo |> shouldEqual signo
 
         // Unmodelled-but-valid positive signos round-trip via `Signal.Other`:
-        // `armBehaviour 4` is the SIGILL case from the Codex finding — the
-        // guest casts `(PosixSignal)4`, the arm must return 4, and the BCL
-        // forwards 4 unchanged to `EnablePosixSignalHandling`.
+        // the guest casts `(PosixSignal)4` (SIGILL), the arm must return 4,
+        // and the BCL forwards 4 unchanged to `EnablePosixSignalHandling`.
         armBehaviour 4 |> shouldEqual 4
         armBehaviour 11 |> shouldEqual 11
         armBehaviour Signal.linuxSignalMax |> shouldEqual Signal.linuxSignalMax
@@ -265,11 +264,9 @@ module TestSignal =
     [<Test>]
     let ``defaultDisposition routes Signal.Other 23 to Ignore for SIGURG`` () : unit =
         // SIGURG isn't in PawPrint's `Signal` DU and so always arrives via
-        // `Signal.Other 23` if it ever shows up at the seam. The kernel
-        // default is Ignore — the dispatcher must NOT fall through to the
-        // catch-all Terminate branch just because the case is unnamed.
-        // This is the test that the dispatch-off-Linux-signo design buys
-        // us over a per-case DU match.
+        // `Signal.Other 23`. The kernel default is Ignore — the dispatcher
+        // must NOT fall through to the catch-all Terminate branch just
+        // because the case is unnamed.
         Signal.defaultDisposition (Signal.Other 23)
         |> shouldEqual DefaultDisposition.Ignore
 
@@ -312,7 +309,6 @@ module TestSignal =
         // F# pattern-match exhaustiveness on `Signal` doesn't fire here
         // because the lookup is keyed off `toLinuxSigno`, so an
         // unrepresented signo would silently fall through to Terminate
-        // without compiler help. Iterating the modelled set is the
-        // cheapest way to keep us honest.
+        // without compiler help.
         for signal, _signo in modelledSignals do
             Signal.defaultDisposition signal |> ignore

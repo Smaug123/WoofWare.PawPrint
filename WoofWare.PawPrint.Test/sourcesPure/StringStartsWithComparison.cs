@@ -214,15 +214,14 @@ public class Program
     // The culture-sensitive arms route through `CompareInfo.IsPrefix`/`IsSuffix`, which is a
     // different (already working) boundary.
     //
-    // Only plain ASCII is asserted here, and that restriction is load-bearing rather than
-    // cautious: PawPrint's emulated environment sets DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1, so
-    // the guest collates with the invariant backend while the real runtime this is differenced
-    // against collates with ICU under the host's current culture. The two agree on ASCII
-    // prefix/suffix matching and on ASCII case folding (no letter below is one of the
-    // culture-sensitive ones, e.g. Turkish dotless i), but anything with real collation — an
-    // ignorable character, an expansion like 'æ', a locale-specific ordering — would be
-    // asserting the host's ICU data against PawPrint's invariant tables, which is a difference
-    // in globalization backend rather than anything about this change.
+    // Only plain ASCII is asserted here: PawPrint's emulated environment sets
+    // DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1, so the guest collates with the invariant backend
+    // while the real runtime this is differenced against collates with ICU under the host's
+    // current culture. The two agree on ASCII prefix/suffix matching and on ASCII case folding
+    // (no letter below is one of the culture-sensitive ones, e.g. Turkish dotless i), but
+    // anything with real collation — an ignorable character, an expansion like 'æ', a
+    // locale-specific ordering — would be asserting the host's ICU data against PawPrint's
+    // invariant tables.
     private static int TestCultureSensitive()
     {
         string s = Id("Hello, world");

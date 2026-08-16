@@ -10,9 +10,8 @@ namespace WoofWare.PawPrint
 /// The module is pure: every transition is `IlMachineState -> IlMachineState`
 /// and never reads from a real clock, the host's mutex implementation, or any
 /// nondeterministic source. All ordering decisions are FIFO over the
-/// `AcquireQueue` / `WaitQueue`, which is load-bearing for `LowLevelLock`
-/// fairness: deviating from FIFO changes the observable interleaving and is
-/// not a refactor.
+/// `AcquireQueue` / `WaitQueue`: deviating from FIFO changes the observable
+/// interleaving (and hence `LowLevelLock` fairness), so it is not a refactor.
 ///
 /// Ownership transfer model: when `release`, `wait`, or `signalRelease` give
 /// up the monitor and the AcquireQueue is non-empty, ownership is handed
@@ -197,7 +196,7 @@ module LowLevelMonitor =
     /// status flips to `Runnable` and the head is popped from the queue.
     /// The released thread does NOT briefly observe an unowned monitor
     /// with a non-empty queue: that intermediate state would violate the
-    /// Owner/AcquireQueue invariant, and (more importantly) would mean the
+    /// Owner/AcquireQueue invariant, and would mean the
     /// woken thread resumes past its `Acquire` site without owning the
     /// monitor, so its subsequent `Release` would fail as unowned.
     let release (thread : ThreadId) (id : LowLevelMonitorId) (state : IlMachineState) : IlMachineState =

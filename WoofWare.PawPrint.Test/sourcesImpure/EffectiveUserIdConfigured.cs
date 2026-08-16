@@ -23,8 +23,8 @@ using System.Text;
 //  1. Environment.IsPrivilegedProcess is literally GetEUid() == 0
 //     (Environment.Unix.cs:29). This is why EmulatedKernel's default uid is
 //     1000 rather than 0 — a guest booted as root silently takes the privileged
-//     branch of every check it makes about itself — so the root registration is
-//     what makes that comment load-bearing. Under PawPrint today both ends of
+//     branch of every check it makes about itself — and the root registration is
+//     what exercises that branch. Under PawPrint today both ends of
 //     the comparison reach this same handler, so it is close to a tautology;
 //     what it guards against is a future intrinsic arm answering
 //     IsPrivilegedProcess without consulting the kernel at all.

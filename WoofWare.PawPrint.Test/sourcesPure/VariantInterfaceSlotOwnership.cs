@@ -127,7 +127,7 @@ class Program
         OwnHideDerived hidden = new OwnHideDerived();
         if (CallOwn(hidden, e) != 1) return 2;
 
-        // The hidden method is of course still reachable by a direct call.
+        // The hidden method is still reachable by a direct call.
         if (hidden.Accept(e) != 2) return 3;
 
         // An override is followed, through as many levels as there are.

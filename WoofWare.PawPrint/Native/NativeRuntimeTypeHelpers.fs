@@ -694,8 +694,8 @@ module NativeRuntimeTypeHelpers =
     /// level?
     ///
     /// Answered conservatively, because the exact question is not decidable from what a closed
-    /// walk carries. It is tempting to say "the raw signatures are syntactically equal, so the tie
-    /// is genuine" -- but a raw `!0` is scoped to the type that wrote it, and two types' `!0` need
+    /// walk carries. Syntactic equality of the raw signatures does not prove the tie genuine: a
+    /// raw `!0` is scoped to the type that wrote it, and two types' `!0` need
     /// not denote the same thing at a shared instantiation. Measured: with `Ka<T>.M(T)`,
     /// `Kb&lt;T&gt; : Ka&lt;string&gt;` declaring `M(T)`, and `Kc&lt;T&gt; : Kb&lt;T&gt;` overriding `M(string)`, both
     /// inherited signatures are raw `[!0]` yet .NET replaces Ka's slot and reports `Kc`/`Kb`;
@@ -957,12 +957,10 @@ module NativeRuntimeTypeHelpers =
     ///
     /// A *synthesised* method has no MethodDef row, so it is not a declared method at all. The
     /// vtable walk excludes them only incidentally (a synthesised method is never `IsVirtual`);
-    /// beyond the vtable the exclusion is load-bearing, because such a method *is* non-virtual and
-    /// placing it would shift every later method's slot number by one. No test covers this and none
-    /// can: nothing today puts a synthesised method into a `TypeInfo` (the construction sites in
-    /// `Program.buildStartupFrame` and `StructMarshalStub` both build one for immediate execution),
-    /// so the filter is a no-op on every image that exists. It is kept because `TypeInfo.Methods` is
-    /// typed to hold either kind.
+    /// beyond the vtable, placing one would shift every later method's slot number by one. No test
+    /// can cover the filter: nothing today puts a synthesised method into a `TypeInfo` (the
+    /// construction sites in `Program.buildStartupFrame` and `StructMarshalStub` both build one for
+    /// immediate execution), but `TypeInfo.Methods` is typed to hold either kind.
     ///
     /// A COM *vtable-gap marker* names empty slots in the COM interface vtable rather than declaring
     /// a method. `EnumerateClassMethods` recognises it by `IsMdRTSpecialName` plus a `_VtblGap` name
@@ -1045,7 +1043,7 @@ module NativeRuntimeTypeHelpers =
                 // validating only the leaf would let `GetSlot` answer for a derived type that cannot
                 // exist.
                 //
-                // The type and its base chain is exactly the scope, and deliberately not more.
+                // The scope is exactly the type and its base chain.
                 // Those are the declarations that *contribute slots to the layout being computed*,
                 // so a rejection anywhere in them means the numbers this function returns describe a
                 // MethodTable that cannot exist. An implemented interface is a different matter:
@@ -1057,7 +1055,7 @@ module NativeRuntimeTypeHelpers =
                 // laying out a method table. A guest that asks about the malformed interface itself
                 // is still refused, because this same function is what answers for it.
                 //
-                // They are not optional colour either: the classification below keys *on* the
+                // The classification below keys *on* the
                 // RTSpecialName flag, and that is only unambiguous because CoreCLR refuses to load
                 // the shapes that would make it ambiguous. Same reason `vtableOfClosed` refuses a
                 // non-newslot virtual that matches a `final` parent slot.
@@ -1191,7 +1189,7 @@ module NativeRuntimeTypeHelpers =
             // accumulated vtable per method, which for an interface -- where every member appends --
             // is the difference between a linear layout and a quadratic one.
             //
-            // The restriction is load-bearing on legal metadata, not defensive insurance. ECMA-335
+            // The restriction bites on legal metadata, not only on corrupt images. ECMA-335
             // II.22.26 stops a type repeating a method blob-for-blob, but `candidateFillsSlot`
             // compares *concretised* signatures -- which is what lets an ordinary override of a
             // generic base match at all -- and that conflates blobs which genuinely differ. The
@@ -1244,8 +1242,7 @@ module NativeRuntimeTypeHelpers =
                     // `C.M` overrides the `M` that `B` introduced and leaves `A`'s alone. Slots are
                     // appended as the walk descends, so that is the matching slot with the largest
                     // index; the fold above prepends, so `matched` is already in descending index
-                    // order. This is therefore the same rule as upstream's, not merely one that
-                    // agrees with it on the cases we have tried.
+                    // order.
                     // A candidate legitimately matching several slots is the `new virtual` case
                     // above, where the tie is real and most-derived is the answer. But a tie can
                     // also be an *artifact* of matching closed signatures: CoreCLR lays slots out on
@@ -1258,8 +1255,8 @@ module NativeRuntimeTypeHelpers =
                     // substitution actually happened, so when several slots match and any type
                     // involved is generic, fail rather than guess. A single match is safe *whenever
                     // the method overrides at all*: the definition-level match is then still among
-                    // the candidates, so if only one slot matches, it is that one. That proviso is
-                    // load-bearing rather than pedantic -- substitution can manufacture a lone match
+                    // the candidates, so if only one slot matches, it is that one. That proviso
+                    // matters -- substitution can manufacture a lone match
                     // for a method that overrides nothing, which is the first limitation recorded
                     // above (non-newslot `C<T>.M(T)` over `A.M(string)`: one closed match, zero
                     // definition-level matches, and CoreCLR allocates a fresh slot). Detecting that
@@ -1323,18 +1320,14 @@ module NativeRuntimeTypeHelpers =
                         // comparison members of a union or record are `Public, Final, Virtual,
                         // HideBySig` with no NewSlot, so `Equals(T)` and `CompareTo(object,
                         // IComparer)` match nothing on `Object` and land here. Roslyn never emits
-                        // it -- 0 of corelib's 1470 non-generic classes trigger it, measured -- which
-                        // is why it looked like a contingency for corrupt or version-skewed images
-                        // for as long as PawPrint only ever read C#.
+                        // it -- 0 of corelib's 1470 non-generic classes trigger it, measured.
                         //
-                        // Appending is the whole of the rule, but it costs a diagnostic: this used
-                        // to be a `failwith` naming the method, which is what a gap in
-                        // `candidateFillsSlot` announced itself as. A gap now shows up as a
-                        // spurious extra slot instead, so what catches one is the slot-by-slot
-                        // comparison against the host CLR's own `GetSlot` in TestVirtualMethodSlots
-                        // -- a check on the layout rather than merely on its length, because a walk
-                        // that appends one slot too many while dropping a real one has the right
-                        // length.
+                        // Appending is the whole of the rule, but it costs a diagnostic: a gap in
+                        // `candidateFillsSlot` shows up as a spurious extra slot rather than a
+                        // failure here, so what catches one is the slot-by-slot comparison against
+                        // the host CLR's own `GetSlot` in TestVirtualMethodSlots -- a check on the
+                        // layout rather than merely on its length, because a walk that appends one
+                        // slot too many while dropping a real one has the right length.
                         state, slots, candidate :: fresh
                 )
 
@@ -1370,7 +1363,7 @@ module NativeRuntimeTypeHelpers =
     /// those consume slots alongside the declared ones; and EnC adds MethodDescs entirely outside
     /// this file, which PawPrint may ignore because it does not support dynamic code at all (#853).
     ///
-    /// The order is emphatically *not* MethodDef row order, and every step below is observable.
+    /// The order is *not* MethodDef row order, and every step below is observable.
     /// Verified against the host CLR's own `RuntimeMethodHandle.GetSlot` for every method reflection
     /// can reach: 31064 methods over 2336 corelib types, 5499 over 1153 FSharp.Core types, and 352
     /// over closed generic instantiations, with no disagreement.
@@ -1402,7 +1395,7 @@ module NativeRuntimeTypeHelpers =
         // `instance void .ctor()` signatures. `declaredMethodsOf` has already refused any
         // runtime-special-named method that is neither, since CoreCLR refuses to load such a type.
         //
-        // The flag is load-bearing and not implied by the name: a method merely *named* `.ctor`
+        // The flag is not implied by the name: a method merely *named* `.ctor`
         // without it skips that block entirely and is placed in the ordinary pass below.
         // `FakeCtorSecond` in TestFabricatedVtableLayout pins that against the host CLR. ECMA-335
         // II.10.5.1 requires constructors to carry `rtspecialname`, so such an image is invalid --
@@ -1416,7 +1409,6 @@ module NativeRuntimeTypeHelpers =
         // requires that arity to be at least 1 when the bit is set, so the two agree on every valid
         // image and no test here distinguishes them; on an invalid-but-loadable one with the bit set
         // and a count of zero, CoreCLR goes by the bit, and the method's pass below would differ.
-        // Spelled the faithful way because it costs nothing, not because anything has measured it.
         let isGenericSignature (method : MethodInfo<_, _, _>) : bool =
             method.Signature.Header.Get.Attributes.HasFlag System.Reflection.Metadata.SignatureAttributes.Generic
 
@@ -1529,7 +1521,7 @@ module NativeRuntimeTypeHelpers =
     /// indexes the concatenation while `GetNumVirtuals` is the prefix length, and
     /// `PopulateProperties` *compares* the two to decide whether an accessor is virtual. A single
     /// flat list would lose the boundary the comparison is about; making the caller add an offset
-    /// would put the one piece of arithmetic in this change at the call site.
+    /// would scatter that arithmetic across call sites.
     ///
     /// The second field is named for the boundary rather than for virtualness on purpose: it holds
     /// every `static virtual` the type declares, those being placed outside the vtable, so calling
@@ -1559,7 +1551,7 @@ module NativeRuntimeTypeHelpers =
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ ->
-            // TypeDescs with no MethodTable, so genuinely no slots of either kind -- the same
+            // TypeDescs with no MethodTable, so no slots of either kind -- the same
             // reason `vtableOfClosed` gives them an empty vtable.
             state,
             {
@@ -2410,7 +2402,7 @@ module NativeRuntimeTypeHelpers =
         =
         if generics.Length <> List.length genericArguments then
             // Arity mismatch: defer to downstream to surface a more specific error. (`Seq.zip`
-            // below would silently truncate, so this guard is load-bearing rather than defensive.)
+            // below would silently truncate without this guard.)
             state, None
         else
 
@@ -2488,12 +2480,9 @@ module NativeRuntimeTypeHelpers =
                         constraintTypeDefn
 
                 // "System.Object constraint will be always satisfied" (typedesc.cpp:1637).
-                // Deliberately untested: C# cannot spell `where T : object`, so no Roslyn-compiled
-                // corpus reaches this branch, and hand-written IL would be its own fixture. It is
-                // here for parity, and because it keeps the verdict independent of whether the cast
-                // relation grants object-assignability to every shape an argument can take. Today
-                // removing it would change no answer: every argument that reaches this point walks
-                // its base chain to Object anyway.
+                // Untested: C# cannot spell `where T : object`, so no Roslyn-compiled corpus
+                // reaches this branch. It keeps the verdict independent of whether the cast
+                // relation grants object-assignability to every shape an argument can take.
                 let isObjectConstraint =
                     match nominalTypeInfoOfArgument state constraintHandle with
                     | Some typeInfo -> TypeInfo.NominallyEqual typeInfo baseClassTypes.Object
@@ -3171,7 +3160,7 @@ type ActivationInfo =
 module ActivationInfo =
     /// Reproduce CoreCLR's `RuntimeTypeHandle_GetActivationInfo` classification
     /// (reflectioninvocation.cpp), including the order of `ValidateTypeAbleToBeInstantiated`'s
-    /// checks — the order is load-bearing where a type trips more than one, and CoreCLR throws
+    /// checks — the order matters where a type trips more than one, because CoreCLR throws
     /// different exception types for different checks.
     ///
     /// Two of `ValidateTypeAbleToBeInstantiated`'s checks are unreachable here, because the only

@@ -18,11 +18,11 @@ type internal CellAwareCopyPolicy =
 /// PawPrint stores values as typed `CliType` cells rather than as a flat byte
 /// array, so the BCL's byte-oriented bulk primitives (`Buffer.Memmove`,
 /// `SpanHelpers.Memmove`, `SpanHelpers.ClearWithoutReferences`, `cpblk`, ...)
-/// cannot simply be replayed byte by byte: cells that are not byte-addressable
+/// cannot be replayed byte by byte: cells that are not byte-addressable
 /// (object references, runtime pointers, non-`Verbatim` `NativeIntSource`
 /// provenance) have no byte rendering to walk. Every operation here therefore
 /// prefers structural steps when the endpoints anchor cell-aware roots, and
-/// falls back to the byte walk for genuinely flat storage.
+/// falls back to the byte walk for flat storage.
 ///
 /// A struct's bytes split in two: those some field covers, which
 /// `tryWholeCellMoveAt` moves as a typed cell, and those none does — alignment
@@ -163,9 +163,8 @@ module internal CellAwareMemOps =
     /// payload through either cell shape. The shapes it refuses are ones the
     /// real runtime accepts, so the difference cannot be asserted
     /// differentially at all — the same position `isCellIdentityCompatible`
-    /// records one layer up. It is a deliberate choice of the safe direction;
-    /// treat it as load-bearing regardless of what mutating it does to the
-    /// suite.
+    /// records one layer up. Do not remove it on the strength of a surviving
+    /// mutant: it chooses the safe direction.
     let private cellsHaveCompatibleShape (a : CliType) (b : CliType) : bool =
         match a, b with
         | CliType.Bool _, CliType.Bool _
@@ -199,13 +198,11 @@ module internal CellAwareMemOps =
     /// correct route. Where both routes are defined they agree, so the typed step is taken
     /// whenever it applies rather than only when bytes would have failed.
     ///
-    /// Stack and static slots belong on the typed side and used to be listed with the byte pools,
-    /// justified as "the byte-walk path is the modelled access shape for them". That is a policy
-    /// dressed as a structural fact, and it cost every bulk move through a local its only route
-    /// into reference-containing storage. Gating them on the *contents* being byte-unaddressable
-    /// would be worse than either honest answer: the same local would flip between routes
-    /// depending on what it happened to hold at the time, making a predicate named for the root's
-    /// kind quietly mean "and bytes would not have worked".
+    /// Stack and static slots belong on the typed side: listing them with the byte pools would
+    /// cost every bulk move through a local its only route into reference-containing storage.
+    /// Nor may they be gated on the *contents* being byte-unaddressable: the same local would
+    /// flip between routes depending on what it happened to hold at the time, making a predicate
+    /// named for the root's kind quietly mean "and bytes would not have worked".
     let private rootIsCellAware (root : ByrefRoot) : bool =
         match root with
         | ByrefRoot.ArrayElement _
@@ -251,7 +248,7 @@ module internal CellAwareMemOps =
     /// destination can name and the source cannot is not a width we could move anyway, and because
     /// the generator is complete for the source (argued at its definition).
     ///
-    /// Three properties this relies on, none of them accidental:
+    /// Three properties this relies on:
     ///
     /// - **Largest width first is a preference, not a correctness question.** Every validated
     ///   candidate at a given width covers the identical byte range on both sides, so the choices
@@ -267,10 +264,9 @@ module internal CellAwareMemOps =
     ///   argument never mentions the width, so letting it vary changes nothing.
     /// - **A step always advances.** Widths are positive and at most `cap`, so the caller cannot
     ///   spin. A zero-sized cell would return a zero-width "success" and loop forever, so it is
-    ///   rejected here rather than being left to the byte step. No value type should now be able
-    ///   to present that shape — `CliValueType.SizeOfFieldStorage` models CoreCLR's floor of one
-    ///   byte per value class — so this is a guard on the termination invariant rather than a
-    ///   live case, and it stays cheap enough to be worth keeping as one.
+    ///   rejected here rather than being left to the byte step. No value type can present that
+    ///   shape — `CliValueType.SizeOfFieldStorage` models CoreCLR's floor of one byte per value
+    ///   class — so this is a guard on the termination invariant rather than a live case.
     ///
     /// Cells must additionally have compatible CLI shape (`cellsHaveCompatibleShape`), so that the
     /// wholesale typed write does not silently rewrite what the destination cell claims to hold.
@@ -414,7 +410,7 @@ module internal CellAwareMemOps =
     /// a live field of the destination, say — the honest move is a byte write into that field, which
     /// is the byte path's job; taking a padding step there would silently write the destination's
     /// *filler* instead and lose the bytes. Declining leaves the byte path to serve it, or to fail
-    /// loudly if it cannot, which is the right outcome for a shape this odd.
+    /// loudly if it cannot.
     ///
     /// The overlap-safety argument documented on `tryWholeCellMoveAt` carries over verbatim: this
     /// step also reads its whole source range before writing its destination range, and advances
@@ -535,9 +531,9 @@ module internal CellAwareMemOps =
 
             // `cellSize <= 0` is rejected for the same reason as on the copy
             // path: a zero-sized cell would advance the caller's cursor by
-            // zero and spin forever. As there, no value type should be able to
-            // present that shape now that `SizeOfFieldStorage` models CoreCLR's
-            // one-byte floor; the guard remains for the termination invariant.
+            // zero and spin forever. As there, no value type can present that
+            // shape, since `SizeOfFieldStorage` models CoreCLR's one-byte
+            // floor; the guard defends the termination invariant.
             if cellSize <= 0 || cellSize > bytesRemaining then
                 None
             else

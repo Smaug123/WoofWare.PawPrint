@@ -67,7 +67,7 @@ module TestImpureCases =
         }
 
     /// Build one registration of `CurrentDirectoryConfigured.cs`. The guest
-    /// echoes the directory it observed to stdout, so the assertion is simply
+    /// echoes the directory it observed to stdout, so the assertion is
     /// that the bytes it printed are the UTF-8 of the path we configured —
     /// which pins the whole chain (`KernelConfig.CurrentDirectory` ->
     /// `withCurrentDirectory` -> `SystemNative_GetCwd` -> CoreLib's buffer
@@ -104,8 +104,9 @@ module TestImpureCases =
     /// measure the bytes the kernel actually writes. ERANGE is a *byte* rule,
     /// so this must still take the grow-and-retry branch; an implementation
     /// that compared `bufferSize` against the character count would silently
-    /// overrun here rather than retry. `TestCurrentDirectoryEncodingSizes`
-    /// asserts those two counts, so this comment cannot rot into a lie.
+    /// overrun here rather than retry. ``The long current-directory cases
+    /// really do overflow CoreLib's stackalloc`` below asserts those two
+    /// counts.
     let private multiByteCurrentDirectory : string =
         // Per segment (including its leading separator): é×5 at 2 UTF-8 bytes,
         // 中×3 at 3, 🐶×1 at 4 (and a surrogate pair, so 2 UTF-16 chars) = 24
@@ -224,12 +225,6 @@ module TestImpureCases =
             // retry or throw — so these are the cases that exercise that
             // handler against *real* CoreLib, including its `Interop.Error`
             // enum return type, rather than a hand-rolled P/Invoke declaration.
-            // They were parked until that entry point existed.
-            //
-            // Note the short non-ASCII sibling still in `unimplemented` below
-            // is parked for a genuinely different reason and was re-checked
-            // when these two were promoted: it still fails, on the
-            // TrailingZeroCount intrinsic.
             currentDirectoryCase longCurrentDirectory
             currentDirectoryCase multiByteCurrentDirectory
             {
@@ -325,8 +320,7 @@ module TestImpureCases =
                                     // U+00DF then 'x': three UTF-8 bytes,
                                     // C3 9F 78, so that a one- or two-byte
                                     // truncation lands *inside* the first
-                                    // character. That is the whole point of
-                                    // the seed — a handler measuring .NET
+                                    // character. A handler measuring .NET
                                     // characters rather than bytes agrees with
                                     // a correct one on every ASCII target, and
                                     // ASCII is all the oracle's seed validator
@@ -340,7 +334,7 @@ module TestImpureCases =
             }
             {
                 // `SystemNative_FLock`'s contract on the points where Linux and
-                // Darwin genuinely disagree — operation validation, `flock` on a
+                // Darwin disagree — operation validation, `flock` on a
                 // pipe, and the raw number of `EWOULDBLOCK`. PawPrint simulates
                 // Linux, so a *pure* case would assert whichever machine ran it;
                 // the guest's header carries the measured table for both.
@@ -438,9 +432,8 @@ module TestImpureCases =
             }
             {
                 // The twelve-bit modes the differential oracle refuses, because
-                // a host `chmod` may drop them. Refusing them at the oracle
-                // rather than in the model is only defensible if the model
-                // really does carry them, which is what this pins.
+                // a host `chmod` may drop them. Pins that the model itself
+                // carries them.
                 FileName = "SpecialModeBitsSeeded.cs"
                 ExpectedReturnCode = 0
                 KernelConfig =
@@ -625,10 +618,9 @@ module TestImpureCases =
                 // configuration. Impure because the differential oracle runs on the host
                 // runtime, which does support dynamic code.
                 //
-                // Note this case declares *no* AppContext properties: the baseline is
+                // This case declares *no* AppContext properties: the baseline is
                 // supplied by the library itself, so a host that expresses no preference
-                // still gets it. That is what makes it a default rather than a convention
-                // every host has to remember.
+                // still gets it.
                 FileName = "DynamicCodeUnsupportedByDefault.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
@@ -1090,15 +1082,14 @@ module TestImpureCases =
                 // pair end-to-end against the PawPrint FileDescriptorRegistry:
                 // close of an invalid fd, close of a freshly-duped fd, the
                 // double-close EBADF path, and the lowest-free gap-fill after
-                // a close. This used to live in sourcesPure for cross-runtime
-                // validation, but the real CLR's multi-threaded fd activity
-                // races our close + dup window in the NUnit test process, so
-                // it now runs as an impure (PawPrint-only) test where the
-                // interpreter's deterministic single-threaded fd table makes
-                // the assertions stable. The registry-level invariants are
-                // still independently covered by TestFileDescriptorRegistry's
-                // property tests; this test verifies the wiring from the
-                // P/Invoke handler through to the registry.
+                // a close. Impure because the real CLR's multi-threaded fd
+                // activity races the close + dup window in the NUnit test
+                // process; the interpreter's deterministic single-threaded fd
+                // table makes the assertions stable. The registry-level
+                // invariants are independently covered by
+                // TestFileDescriptorRegistry's property tests; this test
+                // verifies the wiring from the P/Invoke handler through to the
+                // registry.
                 FileName = "SystemNativeClose.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
@@ -1138,7 +1129,7 @@ module TestImpureCases =
                 // Exercises SystemNative_ConvertErrorPlatformToPal, the point
                 // at which PawPrint's raw errno vocabulary becomes the
                 // platform-independent `Interop.Error` CoreLib branches on.
-                // Impure by necessity rather than convenience: the PAL values
+                // Impure because the PAL values
                 // are platform-independent but the *mapping* is not, because
                 // the real shim is compiled against one platform's <errno.h>
                 // (raw 39 is ENOTEMPTY on Linux, EDESTADDRREQ on Darwin). A

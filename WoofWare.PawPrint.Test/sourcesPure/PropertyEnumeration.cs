@@ -7,21 +7,20 @@ using System.Reflection;
 // PawPrint cannot yet construct one of those (that needs the associates branch of `Enum` and
 // `RuntimeMethodHandle.GetSlot`), so what a guest can observe here is exactly the two shapes below:
 // an enumeration that comes back empty, and one that comes back non-empty but whose members are all
-// rejected by a name filter before any of them is constructed. Both threw before the enumeration
-// existed.
+// rejected by a name filter before any of them is constructed.
 //
-// Asking for a property that *does* exist is now observable too, which it was not until the
-// non-vtable slot region landed. `PopulateProperties` suppresses vtable-slot duplicates
-// (`RuntimeType.CoreCLR.cs:1358`) by calling `RuntimeMethodHandle.GetSlot` on each property's
-// accessor with *no* `Virtual` guard, then testing `slot < numVirtuals`. An ordinary non-virtual
-// getter occupies no vtable slot at all, so until `PlaceNonVirtualMethods` was modelled that call
-// had no answer and every case below past the first two died in it.
+// Asking for a property that *does* exist is observable too. `PopulateProperties` suppresses
+// vtable-slot duplicates (`RuntimeType.CoreCLR.cs:1358`) by calling `RuntimeMethodHandle.GetSlot`
+// on each property's accessor with *no* `Virtual` guard, then testing `slot < numVirtuals`. An
+// ordinary non-virtual getter occupies no vtable slot at all, so answering that call needs the
+// non-vtable slot region (`PlaceNonVirtualMethods`); every case below past the first two dies in
+// it otherwise.
 //
 // Be precise about what the case below can and cannot catch, because it is much less than it looks.
 // `PopulateProperties` never reads the returned number except to compare it with `numVirtuals`, so
 // *any* answer at or above `numVirtuals` gets a guest through here — measured, by stubbing the
 // lookup to return `numVirtuals + 999` and watching this file still pass. So case 3 pins
-// reachability and nothing more: that a non-virtual accessor now gets an answer at all. Both the
+// reachability and nothing more: that a non-virtual accessor gets an answer at all. Both the
 // numbering within the region and the offset that places it after the vtable are pinned by the
 // host-CLR oracle in TestVirtualMethodSlots, which compares PawPrint's slot number against the
 // host's for every method of every corpus type.
@@ -31,8 +30,8 @@ using System.Reflection;
 // reflected type (Associates.cs:95-99), which does read the number. That QCall is unimplemented, so
 // such a case cannot be written here yet; it is the next thing this file should grow when it lands.
 //
-// The field on `NoProperties` is load-bearing, not decoration: it is what makes case 1 below able to
-// catch an implementation that enumerated the FieldDef table instead of the PropertyMap run. Such an
+// The field on `NoProperties` is what makes case 1 below able to catch an implementation that
+// enumerated the FieldDef table instead of the PropertyMap run. Such an
 // implementation reports one "property" here, and the guest then dies trying to construct a
 // `RuntimePropertyInfo` for it.
 public class NoProperties

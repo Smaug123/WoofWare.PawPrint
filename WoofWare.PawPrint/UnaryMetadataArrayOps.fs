@@ -70,10 +70,9 @@ module internal UnaryMetadataArrayOps =
         // reaches the allocation. Measured on real .NET, against a control (`sizeof Span<int>` is
         // perfectly legal and answers 16, so this is a fact about `newarr`, not about the type).
         //
-        // Universe-independent on purpose: the same IL is illegal whether its token came from
-        // metadata or from a `DynamicScope`. It is only *reachable* from the latter, because no
-        // compiler emits it, which is why this was silently allocating a stack-only type on the
-        // heap until now.
+        // Universe-independent: the same IL is illegal whether its token came from metadata or
+        // from a `DynamicScope`. It is only *reachable* from the latter, because no compiler
+        // emits it.
         let state, elementIsByRefLike =
             match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes concreteTypeHandle with
             | None -> state, false
@@ -92,8 +91,7 @@ module internal UnaryMetadataArrayOps =
             // Setting the message alone would be worse than leaving both: `.Message` would name the
             // type while `.TypeName` stayed null, which is the disagreement `Intrinsics.fs` declines
             // to create for `ArgumentException._paramName` (lines 1908-1910, 3325-3326), and which
-            // `ScopeEntryLookup.PastEnd` records for the same reason. Whether that channel should
-            // grow structured-field support at all is a question for its own change.
+            // `ScopeEntryLookup.PastEnd` records for the same reason.
             //
             // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
             IlMachineStateExecution.raiseRuntimeException

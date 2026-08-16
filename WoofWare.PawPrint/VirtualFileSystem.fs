@@ -5,11 +5,9 @@ open System.Collections.Immutable
 /// Identity of a file within the emulated filesystem: the `st_ino` a guest
 /// reads back from `stat`.
 ///
-/// Guest-observable, and not merely as a diagnostic: the BCL compares
-/// `(Dev, Ino)` pairs directly to decide whether two paths name the same file
-/// (`File.Copy`, `File.Move` and `File.Replace` all do this before touching
-/// anything), so inode identity is part of the model rather than a refinement
-/// of it.
+/// Guest-observable: the BCL compares `(Dev, Ino)` pairs directly to decide
+/// whether two paths name the same file (`File.Copy`, `File.Move` and
+/// `File.Replace` all do this before touching anything).
 [<Struct>]
 type InodeNumber =
     | InodeNumber of value : int64
@@ -24,9 +22,8 @@ type SymlinkTargetError =
     /// The candidate was null or empty. `symlink(2)` on Linux rejects an empty
     /// target with ENOENT — but macOS *accepts* it, creating a link that then
     /// fails to resolve. PawPrint refuses to represent one at all rather than
-    /// picking a platform: with no such value in the model, the divergence can
-    /// only arise at the `symlink` boundary, where it is a guest call that can
-    /// be failed loudly, and never inside a seed manifest.
+    /// picking a platform, so the divergence can only arise at the `symlink`
+    /// boundary, never inside a seed manifest.
     | Empty
     /// The candidate could not survive the `char*` boundary; see
     /// `UnixPathTextDefect`.
@@ -34,7 +31,7 @@ type SymlinkTargetError =
 
 /// The target of a symbolic link, held exactly as it was created.
 ///
-/// Verbatim rather than parsed, which matters: `readlink(2)` returns the stored
+/// Verbatim rather than parsed: `readlink(2)` returns the stored
 /// bytes unchanged, and `lstat` reports their length as the link's `st_size`, so
 /// a link created with target "a//b/" must read back as "a//b/" — a difference a
 /// guest really can see, through `FileInfo.LinkTarget` and `ResolveLinkTarget`.
@@ -117,10 +114,9 @@ module SymlinkTarget =
 /// mode: `st_mode & 0o7777`, which is exactly `chmod(2)`'s domain.
 ///
 /// Deliberately *not* the `S_IFMT` file-type band, which is derived from
-/// `InodeContent` by `VirtualFileSystem.fileTypeBits` instead. That split is
-/// not tidiness: `chmod(2)` cannot set the type band either, so keeping it out
-/// of the stored value makes "the recorded type disagrees with the content"
-/// unrepresentable rather than merely checked.
+/// `InodeContent` by `VirtualFileSystem.fileTypeBits` instead. `chmod(2)`
+/// cannot set the type band either, so keeping it out of the stored value
+/// makes "the recorded type disagrees with the content" unrepresentable.
 [<Struct>]
 type PermissionBits =
     private
@@ -143,13 +139,8 @@ module PermissionBits =
     /// Parse a raw mode word's permission bits, or `None` if it does not fit in
     /// `0o7777`.
     ///
-    /// An `option` rather than this module's usual `Result` + `describe` pair,
-    /// because there is exactly one way to fail and the offending value is the
-    /// caller's own input, so a single-case error DU would carry no information
-    /// the caller does not already hold. Note what this rejects: a caller
-    /// passing a whole `st_mode` (type band included) is committing precisely
-    /// the conflation this type exists to prevent, and is refused rather than
-    /// silently masked down.
+    /// A caller passing a whole `st_mode` (type band included) is refused
+    /// rather than silently masked down.
     let parse (candidate : int) : PermissionBits option =
         if candidate < 0 || candidate > widest then
             None
@@ -166,12 +157,9 @@ module PermissionBits =
     /// What a `umask 022` process gets from `open(2)` with the 0o666 that
     /// CoreLib's `FileStream` passes: `0o666 &&& ~~~0o022`.
     ///
-    /// Derived rather than invented, which is the point of writing it this way.
-    /// PawPrint models no umask yet — nothing can read or set one (CoreLib's
+    /// PawPrint models no umask: nothing can read or set one (CoreLib's
     /// interop surface has no `SystemNative_UMask` at all) and no creating
-    /// native exists — so a `Umask` field today would have no consumer that
-    /// could make two inodes differ. It becomes correct at the first
-    /// `open(O_CREAT)`/`mkdir`, and this constant becomes its consequence.
+    /// native exists.
     let defaultForRegularFile : PermissionBits = PermissionBits (0o666 &&& ~~~0o022)
 
     /// What a `umask 022` process gets from `mkdir(2)`'s 0o777:
@@ -192,7 +180,7 @@ module PermissionBits =
 /// kernel's own normalisation, so the pair always compares in the obvious
 /// lexicographic order.
 ///
-/// Note there is no `assertValid` counterpart to `FileName`'s: this type's
+/// There is no `assertValid` counterpart to `FileName`'s: this type's
 /// `Unchecked.defaultof` is `(0L, 0)`, the Unix epoch, which is a perfectly
 /// legal timestamp. There is no forged value to catch.
 [<Struct>]
@@ -288,10 +276,9 @@ module UnixTimestamp =
 ///
 /// All four are stored on every platform, including `Birth` — which Linux's
 /// `stat` does not report, but which *exists*: `pal_io.c` hard-zeroes it under
-/// `#else` with the comment "Linux path: until we use statx()", so the fact is
-/// real and merely unfetched. Modelling it here and gating only its *reporting*
-/// on the simulated platform keeps the graph honest and confines the platform
-/// flavour to the `stat` boundary where it belongs.
+/// `#else` with the comment "Linux path: until we use statx()". Modelling it
+/// here and gating only its *reporting* on the simulated platform confines the
+/// platform flavour to the `stat` boundary.
 type InodeTimes =
     {
         /// `st_atim`: last read.
@@ -391,9 +378,7 @@ type Inode =
 /// and quietly get the wrong answer: the symlink case is not "no permissions",
 /// it is "the answer is a property of the platform, which this module cannot
 /// see". `SimulatedUnixPlatform` lives in `EmulatedKernel.fs`, which compiles
-/// after this file, and that layering is right rather than merely forced — the
-/// graph is the model, and platform-flavoured presentation is a `stat`
-/// concern.
+/// after this file; platform-flavoured presentation is a `stat` concern.
 [<RequireQualifiedAccess>]
 type InodePermissions =
     /// A regular file's or directory's stored, `chmod`-able bits.
@@ -511,8 +496,8 @@ type ResolvedTarget =
     ///
     /// `ReachedBy` says which, because the errno that follows depends on it and
     /// the caller cannot recover it from the path it passed in: see
-    /// `FinalNavigation`. (Note ENOTEMPTY is itself platform-dependent — Linux
-    /// 39, Darwin 66 — so it will join `UnixError` the way `ELOOP` did.)
+    /// `FinalNavigation`. (ENOTEMPTY is itself platform-dependent: Linux 39,
+    /// Darwin 66.)
     | Directory of inode : InodeNumber * reachedBy : FinalNavigation
 
 /// The outcome of a resolution, together with the facts about *how* it
@@ -532,9 +517,8 @@ type Resolution =
         TrailingSeparatorDemanded : bool
         /// A symlink in the *final* position was followed to get here.
         ///
-        /// Load-bearing in combination with `TrailingSeparatorDemanded`,
-        /// because that pair is where Linux and macOS genuinely disagree, and
-        /// disagree destructively. Probed on macOS: with `ld -> realdir`,
+        /// In combination with `TrailingSeparatorDemanded`, this pair is where
+        /// Linux and macOS disagree destructively. Probed on macOS: with `ld -> realdir`,
         /// `rmdir("ld/")` *removes realdir*; with `dang -> nx`, `mkdir("dang/")`
         /// *creates nx*. Linux refuses both (ENOTDIR, EEXIST). A mutating
         /// operation that sees both flags set must therefore fail loudly rather
@@ -544,24 +528,6 @@ type Resolution =
         FinalSymlinkFollowed : bool
     }
 
-/// The bounds a kernel puts on path resolution, which differ between the Unixes
-/// PawPrint models and so cannot be constants in the walk.
-///
-/// Deliberately not `SimulatedUnixPlatform` itself, which lives in
-/// `EmulatedKernel` and compiles later — the same split `RawErrnoNumbering`
-/// makes, and for the same reason: this file has no business knowing what a
-/// platform *is*, only that something has chosen limits.
-/// `SimulatedUnixPlatform.pathLimits` is the mapping, and is where the numbers
-/// are justified as measured facts about real kernels.
-///
-/// Deliberately *not* a field of `VirtualFileSystem` either, which would have
-/// saved threading it through every call. A `VirtualFileSystem` is a filesystem
-/// *image*: it comes from a seed, which has no platform and could not sensibly
-/// acquire one. `MAXSYMLINKS` is a property of the kernel doing the walking, not
-/// of the tree being walked, and storing it in the image would let two
-/// filesystems under one kernel disagree about it — a state no real system can
-/// be in.
-///
 /// The longest a single path component may be, *and the unit that length is
 /// measured in* — which is not the same on every Unix, so the two travel
 /// together as one value rather than as a number beside a unit that could
@@ -615,15 +581,14 @@ type NameLengthLimit =
 /// 806-byte remainder resolves at 4648 bytes spliced, well past its own
 /// `PATH_MAX`.
 ///
-/// So this is not a difference of degree that a number could express. One
-/// kernel performs a check the other does not perform at any threshold, which
-/// is why it is a DU and not, say, a nullable limit.
+/// One kernel performs a check the other does not perform at any threshold,
+/// which is why this is a DU rather than a nullable limit.
 ///
 /// A struct for the reason `NameLengthLimit` gives. Its forged default is
-/// `Recheck`, and that ordering is deliberate: `PathLimits.assertValid` is what
-/// actually rejects a forged value (via the integer fields, which are zero),
-/// but were that guard ever weakened, a spurious ENAMETOOLONG is a visible
-/// wrong answer where a silently skipped check is an invisible one.
+/// `Recheck`: `PathLimits.assertValid` is what actually rejects a forged value
+/// (via the integer fields, which are zero), but were that guard ever
+/// weakened, a spurious ENAMETOOLONG is a visible wrong answer where a
+/// silently skipped check is an invisible one.
 [<RequireQualifiedAccess>]
 [<Struct>]
 type SpliceLengthRecheck =
@@ -635,9 +600,27 @@ type SpliceLengthRecheck =
     /// within `PATH_MAX`.
     | NoRecheck
 
+/// The bounds a kernel puts on path resolution, which differ between the Unixes
+/// PawPrint models and so cannot be constants in the walk.
+///
 /// A record rather than a bare `int`: `MAXSYMLINKS`, `PATH_MAX` and `NAME_MAX`
 /// are the same kind of fact, and a caller that needs one generally needs the
 /// others.
+///
+/// Not `SimulatedUnixPlatform` itself, which lives in `EmulatedKernel` and
+/// compiles later — the same split `RawErrnoNumbering` makes, and for the same
+/// reason: this file has no business knowing what a platform *is*, only that
+/// something has chosen limits. `SimulatedUnixPlatform.pathLimits` is the
+/// mapping, and is where the numbers are justified as measured facts about
+/// real kernels.
+///
+/// Not a field of `VirtualFileSystem` either, which would have saved threading
+/// it through every call. A `VirtualFileSystem` is a filesystem *image*: it
+/// comes from a seed, which has no platform and could not sensibly acquire
+/// one. `MAXSYMLINKS` is a property of the kernel doing the walking, not of
+/// the tree being walked, and storing it in the image would let two
+/// filesystems under one kernel disagree about it — a state no real system can
+/// be in.
 [<Struct>]
 type PathLimits =
     private
@@ -729,7 +712,7 @@ module PathLimits =
     /// The only way to read `NameMax`, on purpose. Handing out the number and
     /// the unit separately would let a caller measure a name with the wrong one
     /// — and on a Mac the wrong one (`String.Length`) is right often enough to
-    /// look correct, which is precisely the bug this shape prevents.
+    /// look correct.
     let nameWithinLimit (limits : PathLimits) (name : FileName) : bool =
         match limits.NameMax with
         | NameLengthLimit.Utf8Bytes bytes -> UnixPathText.utf8.GetByteCount (FileName.toString name) <= bytes
@@ -841,8 +824,7 @@ module VirtualFileSystem =
     /// The values are `Interop.Sys.FileTypes`' (`Interop.Stat.cs`), which are in
     /// turn the POSIX ones. `TestVirtualFileSystemAgainstHost` pins them against
     /// that declaration *as read from the pinned runtime source*, rather than
-    /// against a second copy of the same literals, so a typo here cannot survive
-    /// as a plausible-looking lie.
+    /// against a second copy of the same literals.
     let fileTypeBits (content : InodeContent) : int =
         match content with
         | InodeContent.RegularFile _ -> 0o100000
@@ -861,8 +843,8 @@ module VirtualFileSystem =
     /// `now`.
     ///
     /// Takes the time rather than reading a clock: this file compiles before
-    /// `EmulatedKernel.fs`, and more to the point a filesystem that read the
-    /// host's clock would make a replay depend on when it was recorded.
+    /// `EmulatedKernel.fs`, and a filesystem that read the host's clock would
+    /// make a replay depend on when it was recorded.
     let empty (now : UnixTimestamp) : VirtualFileSystem =
         {
             Inodes =
@@ -907,7 +889,7 @@ module VirtualFileSystem =
     /// somewhere deep in a `StreamReader`. As a function of three integers it is
     /// property-testable against naive slicing instead.
     ///
-    /// Note the result is what a *regular file* transfers, which is why this can
+    /// The result is what a *regular file* transfers, which is why this can
     /// be total: a short read is only ever "the file ended". Real `read(2)` may
     /// return fewer bytes than asked for on a pipe or socket with nothing to do
     /// with EOF, and nothing here models that.
@@ -942,23 +924,19 @@ module VirtualFileSystem =
     /// — it is how sparse files are made — and a subsequent read there simply
     /// transfers nothing. The only rejections are the two `SeekFault` cases.
     ///
-    /// **No filesystem ceiling either**, which is a measured decision rather than
-    /// an omission. A real Linux rejects an offset above the filesystem's
-    /// `s_maxbytes` with `EINVAL`: measured, ext4 stops at `0xffffffff000` while
-    /// **tmpfs accepts the full `int64` range**, as does macOS's APFS. PawPrint's
-    /// filesystem is in memory, so tmpfs is the honest analogue and the ceiling
-    /// is `Int64.MaxValue`. Reading that divergence as a *platform* difference —
-    /// which is how it first presents, since a dev box's APFS accepts what a CI
-    /// container's ext4 refuses — would have written a false rule into the kernel
-    /// model.
-    /// **The size is deferred**, and that is load-bearing rather than an
-    /// optimisation: only `SEEK_END` consults it, and there are descriptors with
-    /// no size PawPrint is willing to state — a directory's, which is a
-    /// filesystem artefact rather than a fact (see the `SystemNative_LSeek`
-    /// handler). Seeking such a descriptor with `SEEK_SET` or `SEEK_CUR` is
-    /// perfectly portable and must keep working, so the caller passes a thunk
-    /// that refuses, and the machine rather than a comment enforces that only
-    /// the `End` case forces it.
+    /// **No filesystem ceiling either.** A real Linux rejects an offset above
+    /// the filesystem's `s_maxbytes` with `EINVAL`: measured, ext4 stops at
+    /// `0xffffffff000` while **tmpfs accepts the full `int64` range**, as does
+    /// macOS's APFS. PawPrint's filesystem is in memory, so tmpfs is the honest
+    /// analogue and the ceiling is `Int64.MaxValue`. The divergence is a
+    /// *filesystem* difference, not a platform one, even though a dev box's
+    /// APFS accepts what a CI container's ext4 refuses.
+    /// **The size is deferred**: only `SEEK_END` consults it, and there are
+    /// descriptors with no size PawPrint is willing to state — a directory's,
+    /// which is a filesystem artefact rather than a fact (see the
+    /// `SystemNative_LSeek` handler). Seeking such a descriptor with `SEEK_SET`
+    /// or `SEEK_CUR` is portable and must keep working, so the caller passes a
+    /// thunk that refuses, and only the `End` case forces it.
     let seekTarget
         (whence : SeekWhence)
         (current : int64)
@@ -1163,10 +1141,9 @@ module VirtualFileSystem =
     /// Create a symbolic link holding `target` verbatim. Mirrors `symlink(2)`,
     /// including that the target is not resolved, need not exist, and may be
     /// relative. An empty target is unrepresentable by construction; see
-    /// `SymlinkTargetError.Empty` for why that is a refusal rather than an
-    /// omission.
-    /// Note there is no `permissions` parameter, and that is deliberate rather
-    /// than an omission: see `InodePermissions.PlatformSymlinkDefault`.
+    /// `SymlinkTargetError.Empty`.
+    /// There is no `permissions` parameter: see
+    /// `InodePermissions.PlatformSymlinkDefault`.
     let createSymlink
         (directory : InodeNumber)
         (name : FileName)
@@ -1537,8 +1514,7 @@ module VirtualFileSystem =
     /// The absolute path of a directory, by walking `Parent` links to the root.
     ///
     /// Directories only: a regular file may be hard-linked under several names,
-    /// so it has no single path, and answering with one of them would be a
-    /// guess dressed up as a fact. `None` if `inode` is absent, is not a
+    /// so it has no single path. `None` if `inode` is absent, is not a
     /// directory, or sits in a graph whose parent links do not reach the root —
     /// including one whose parent links cycle, which the visited set bounds so
     /// that this stays total on a defective graph (it is used as a test oracle,

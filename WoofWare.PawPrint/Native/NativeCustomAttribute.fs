@@ -139,7 +139,7 @@ module NativeCustomAttribute =
         let state = ctx.State
         let instruction = ctx.Instruction
 
-        // Note: we deliberately omit `instruction.ExecutingMethod.Name` from the match.
+        // `instruction.ExecutingMethod.Name` is deliberately omitted from the match.
         // For `CustomAttribute_CreateCustomAttributeInstance` the actual PInvoke stub
         // carries a Roslyn-generated mangled name (`<CreateCustomAttributeInstance>g____PInvoke|30_0`),
         // whereas other QCalls (e.g. `RuntimeMethodHandle::IsCAVisibleFromDecoratedType`)

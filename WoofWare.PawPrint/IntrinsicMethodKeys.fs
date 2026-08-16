@@ -414,10 +414,10 @@ module IntrinsicMethodKeys =
             //    populates `RuntimeType.m_handle` with a `NativeIntSource.TypeHandlePtr`.
             //  * `TypeHandle.IsTypeDesc` is the `& 2` tag test, whose single home is
             //    `TypeHandleTag.forTarget` (NativeIntSource.fs). It reports true for generic
-            //    parameters, byrefs, pointers and function pointers, which is what keeps the
-            //    short-circuit load-bearing: `MethodTable::ParentMethodTable` deliberately
-            //    refuses a TypeDesc target, so a wrong tag would surface as a loud projection
-            //    failure rather than a wrong answer.
+            //    parameters, byrefs, pointers and function pointers, which the short-circuit
+            //    depends on: `MethodTable::ParentMethodTable` refuses a TypeDesc target, so a
+            //    wrong tag would surface as a loud projection failure rather than a wrong
+            //    answer.
             //  * `MethodTable::ParentMethodTable` is projected (MethodTableProjection.fs) through
             //    `resolveBaseRuntimeTypeHandleTarget`, the same base-type walk `isEnumValueType`
             //    uses; interpreting the body rather than hand-writing an arm is what keeps those
@@ -555,7 +555,7 @@ module IntrinsicMethodKeys =
             // type-level `[Intrinsic]` on ReadOnlySpan<T>, which every member of the type
             // inherits and which is why each one needs allowlisting individually.
             //
-            // Note this is deliberately *reference* equality, not content equality: equal-
+            // This is deliberately *reference* equality, not content equality: equal-
             // length spans over distinct backing storage are unequal, and a zero-length slice
             // of a live array is unequal to `default` because only the latter is null-backed.
             //

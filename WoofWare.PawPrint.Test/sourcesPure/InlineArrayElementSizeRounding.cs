@@ -85,7 +85,7 @@ public class TestInlineArrayElementSizeRounding
         if ((r = CheckStride(ref seqNarrow[0], ref seqNarrow[2], 6, 19)) != 0) return r;
 
         // The sequential route's element rounds 5 -> 8 for sizing, but the elements are still five
-        // bytes apart. PawPrint used to place them eight apart, at the element's own alignment.
+        // bytes apart.
         SeqFloor seqFloor = default;
         if ((r = CheckStride(ref seqFloor[0], ref seqFloor[1], 5, 20)) != 0) return r;
         if ((r = CheckStride(ref seqFloor[0], ref seqFloor[2], 10, 21)) != 0) return r;

@@ -463,9 +463,8 @@ module TestVirtualFileSystem =
 
     [<Test>]
     let ``the band the two platforms disagree about is answered, each its own way`` () : unit =
-        // The whole point of threading the limit: a chain of 33 to 40 links is
-        // exactly where Linux and macOS differ, and this used to abort the
-        // interpreter rather than choose. Now each platform gets its own answer.
+        // A chain of 33 to 40 links is exactly where Linux and macOS differ,
+        // so each platform must get its own answer.
         let darwin = SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.macOsArm64
         let linux = SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
 
@@ -488,12 +487,11 @@ module TestVirtualFileSystem =
         // limits the 33rd traversal fails before the missing name is ever looked
         // up (ELOOP), while under Linux limits the walk reaches it (ENOENT).
         //
-        // This is the case the deleted `failwith` was guarding, and it is worth
-        // its own test because the limit is easy to apply only on the path where
-        // the walk *succeeds*. It does not distinguish enforcement mid-walk from
-        // enforcement after the fact: the count is monotone, so both answer
-        // ELOOP here. What it does distinguish is a limit that only bounds
-        // successful resolutions.
+        // The limit is easy to apply only on the path where the walk
+        // *succeeds*, so this pins that a failing walk is bounded too. It does
+        // not distinguish enforcement mid-walk from enforcement after the
+        // fact: the count is monotone, so both answer ELOOP here. What it does
+        // distinguish is a limit that only bounds successful resolutions.
         let darwin = SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.macOsArm64
         let linux = SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
         let length = PathLimits.maxSymlinkTraversals darwin + 3
@@ -1000,12 +998,11 @@ module TestVirtualFileSystem =
             )
 
         // Deliberately able to name an inode that does not exist, and in
-        // particular the one about to be allocated. Restricting the generator
-        // to existing directories is why this property missed a builder that
-        // returned Ok for a self-parented, unreachable directory: the failure
-        // needed a parent equal to `nextInode`, which the generator could not
-        // produce. A rejected step leaves the filesystem alone, so widening the
-        // alphabet costs nothing.
+        // particular the one about to be allocated: restricting the generator
+        // to existing directories would hide a builder that returns Ok for a
+        // self-parented, unreachable directory, since that failure needs a
+        // parent equal to `nextInode`. A rejected step leaves the filesystem
+        // alone, so widening the alphabet costs nothing.
         let pick (xs : InodeNumber list) (i : int) =
             if i < List.length xs then xs.[i]
             elif i % 2 = 0 then VirtualFileSystem.nextInode vfs
@@ -1551,8 +1548,8 @@ module TestVirtualFileSystem =
     let ``Linux resolves a splice well past its own PATH_MAX`` () : unit =
         // The Linux column needs a probe at *Linux's* scale. Every other case
         // here uses a target near Darwin's 1024, which a wrongly-re-checking
-        // Linux would still resolve — mutation confirmed that gap: flipping
-        // Linux to `Recheck` survived the whole suite until this test existed.
+        // Linux would still resolve — mutation-tested: flipping Linux to
+        // `Recheck` survives every other test in the suite.
         //
         // These are the measured numbers: on Linux 6.18.5, a symlink whose
         // target is 3842 bytes, resolved with an 806-byte remainder, resolves
@@ -1645,10 +1642,8 @@ module TestReadTransferCount =
     /// buffer size would break.
     ///
     /// "Reached *or passed* the end", not "reached" — an offset beyond the end
-    /// answers 0 without `offset + 0` landing on the length. Stating it as an
-    /// equality is the obvious mistake, and this property was written that way
-    /// first; FsCheck produced `offset = 14, count = 5, length = 10` within a
-    /// few dozen cases.
+    /// answers 0 without `offset + 0` landing on the length, so stating this as
+    /// an equality fails on e.g. offset = 14, count = 5, length = 10.
     [<Test>]
     let ``a short read means the file ended`` () : unit =
         let property (offset : int64, count : int, length : int) : bool =
@@ -1818,7 +1813,7 @@ module TestSeekTarget =
         Check.One (config, Prop.forAll (Arb.fromGen smallCase) property)
         Check.One (config, Prop.forAll (Arb.fromGen hugeCase) property)
 
-    /// The size is consulted *only* by `SEEK_END`. Load-bearing rather than incidental: the
+    /// The size is consulted *only* by `SEEK_END`. The
     /// `SystemNative_LSeek` handler passes a thunk that refuses for a directory, whose size is a
     /// filesystem artefact PawPrint will not invent, so `SEEK_SET` and `SEEK_CUR` on a directory
     /// work precisely because this holds.

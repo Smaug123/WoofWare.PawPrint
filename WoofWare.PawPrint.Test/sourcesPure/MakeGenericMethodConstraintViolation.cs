@@ -121,8 +121,8 @@ class Program
             return 9;
 
         // The *satisfying* mirror of each case above lives in
-        // `sourcesPure/MakeGenericMethodConstraintSatisfied.cs`. Keeping the two polarities in
-        // separate files is deliberate: an always-rejecting check would pass this file alone, and
+        // `sourcesPure/MakeGenericMethodConstraintSatisfied.cs`. The two polarities are kept in
+        // separate files: an always-rejecting check would pass this file alone, and
         // an always-accepting one would pass that one alone.
 
         return 0;

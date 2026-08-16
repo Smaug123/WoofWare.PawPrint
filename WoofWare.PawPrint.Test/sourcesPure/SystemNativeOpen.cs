@@ -85,7 +85,7 @@ class Program
     const int S_IFREG = 0x8000;
     const int S_IFDIR = 0x4000;
 
-    // What CoreLib's own OpenReadOnly passes: DefaultCreateMode, 0666. Note it
+    // What CoreLib's own OpenReadOnly passes: DefaultCreateMode, 0666. It
     // passes this even for a read-only open of an existing file
     // (SafeFileHandle.Unix.cs:168), so a handler that refused a nonzero mode
     // without O_CREAT would break the BCL's own path. Passed here for exactly

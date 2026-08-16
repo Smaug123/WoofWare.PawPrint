@@ -82,8 +82,7 @@ module AccessCheck =
     /// <c>assemblyOrFriendAccessAllowed</c>. The family-style and private
     /// nested flags raise <c>failwith</c>: porting them requires
     /// <c>CanAccessFamily</c>'s subclass-walk and chain-equality checks,
-    /// which are out of scope for this slice and would silently grant
-    /// (or deny) access if guessed at.
+    /// and guessing would silently grant (or deny) access.
     let private levelIsVisible
         (sameAssembly : bool)
         (accessor : AccessParty)
@@ -112,13 +111,12 @@ module AccessCheck =
         | _ -> failwithf "AccessCheck: unrecognised TypeAttributes visibility 0x%x on type '%s'" (int vis) level.Name
 
     /// Mirrors <c>ClassLoader::CanAccessClass</c> for the visibility flags
-    /// supported by this slice: a target type is visible to the accessor
+    /// supported here: a target type is visible to the accessor
     /// iff every level in the target's nesting chain (from innermost up to
     /// the outermost top-level type) is visible. Generic-instantiation
     /// argument visibility (<c>CanAccessClass</c>'s recursive walk over
-    /// the target's generic arguments) is deliberately not modelled here:
-    /// the caller in slice 4 only ever asks about a non-generic custom
-    /// attribute type.
+    /// the target's generic arguments) is not modelled: the only caller
+    /// asks about a non-generic custom attribute type.
     let canAccessClass (sameAssembly : bool) (accessor : AccessParty) (target : AccessParty) : bool =
         target.TypeChain |> List.forall (levelIsVisible sameAssembly accessor target)
 
@@ -131,7 +129,7 @@ module AccessCheck =
     /// <c>assemblyOrFriendAccessAllowed</c>. The family-style flags and
     /// <c>Private</c> / <c>PrivateScope</c> raise <c>failwith</c>: they
     /// would require <c>CanAccessFamily</c> and chain-equality logic that
-    /// is not ported in this slice.
+    /// is not ported.
     let canAccessMethod
         (sameAssembly : bool)
         (accessor : AccessParty)

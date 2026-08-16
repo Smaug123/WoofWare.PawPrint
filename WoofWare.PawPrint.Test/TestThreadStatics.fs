@@ -366,7 +366,7 @@ public class Detection
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen gen) property)
 
     // ------------------------------------------------------------------
-    // Property 6: the byref-capture property - the one the whole design hangs on
+    // Property 6: byref capture
     // ------------------------------------------------------------------
 
     /// `readManagedByref` / `writeManagedByref` take no `ThreadId` at all: the slot a

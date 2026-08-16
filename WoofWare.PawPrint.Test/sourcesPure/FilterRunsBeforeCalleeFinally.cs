@@ -11,8 +11,8 @@ class FilterOrderBoom : Exception
 // frame is still live and its `finally` has not yet executed.
 //
 // Measured on .NET 10 before this was written: filter, then callee `finally`, then catch body.
-// PawPrint used to interleave the two passes — it popped the callee frame, ran its `finally`,
-// and only then reached the caller's filter — producing `finally`, filter, catch body.
+// A dispatcher that interleaves the two passes — popping the callee frame and running its
+// `finally` before reaching the caller's filter — produces `finally`, filter, catch body.
 //
 // The ordering is recorded as three ints rather than a string so that the assertion involves no
 // string comparison of its own, and so a wrong order is reported as a distinct exit code rather

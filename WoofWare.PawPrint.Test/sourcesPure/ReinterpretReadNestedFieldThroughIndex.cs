@@ -15,10 +15,9 @@ using System.Runtime.CompilerServices;
 // `readProjectedValue`, which cannot navigate across a `ReinterpretAs` and fails with
 // "read through `ReinterpretAs` from value ...; needs a bytewise implementation".
 //
-// The `ByteOffset`-then-`Field` fold that used to be a second, independent blocker here is no
-// longer one: `walkProjectionByteOffset` now folds that shape, so the peeled chain
+// `walkProjectionByteOffset` folds the `ByteOffset`-then-`Field` shape, so the peeled chain
 // `[ByteOffset k*sizeof(Elem); Field I; Field P]` resolves to a byte offset fine. Only the routing
-// remains, and it is a change to the read dispatcher rather than to the projection walk.
+// blocks this, and it is a change to the read dispatcher rather than to the projection walk.
 //
 // Un-park when `readManagedByrefField` learns to route a chain that *contains* a `ReinterpretAs`
 // but does not end at one to the byte-view reader.

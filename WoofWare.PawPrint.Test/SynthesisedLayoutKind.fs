@@ -45,8 +45,7 @@ module SynthesisedLayoutKind =
         }
 
     /// `CliValueType.OfFields` for a synthesised type, taking the layout kind from the field shape
-    /// as `ofFieldShape` describes. Same argument order as `OfFields` had before the declared-type
-    /// facts were bundled, so a test that does not care about them reads as it always did.
+    /// as `ofFieldShape` describes.
     let ofFields
         (bct : BaseClassTypes<DumpedAssembly>)
         (allCt : AllConcreteTypes)

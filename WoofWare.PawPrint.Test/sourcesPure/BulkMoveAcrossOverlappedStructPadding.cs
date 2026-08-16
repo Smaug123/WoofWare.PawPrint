@@ -20,7 +20,7 @@ using System.Runtime.InteropServices;
 // So this file is a marker for a consequence, not a reproduction of one: when the byte-backed
 // representation learns to hold references (the gap `ReinterpretCellUnderAliasedAncestor.cs` is
 // parked on), a bulk copy over such an array becomes reachable and `TryPaddingRunAt`'s
-// two-fields-cover-it branch becomes load-bearing for the first time. Un-park it then, and expect
+// two-fields-cover-it branch is exercised for the first time. Un-park it then, and expect
 // to have to teach that branch that padding shared by fields which are padding *there too* is
 // still padding.
 public class TestBulkMoveAcrossOverlappedStructPadding

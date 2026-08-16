@@ -1261,11 +1261,10 @@ public class Outer<T>
         Assert.That (ex.Message, Does.Contain "missing type definition handle")
 
     /// `loadAssembly` binds by simple name against the runtime dirs "in turn", taking the
-    /// first hit. Directories after that hit must therefore not be read at all. This is not
-    /// hypothetical: a runtime dir list routinely holds more than one framework, and only
-    /// the first is meant to be consulted — so a later directory containing an unreadable
-    /// `<name>.dll` (a native DLL, a truncated file, a foreign-RID pack) must not be able to
-    /// break a load the earlier directory already satisfied.
+    /// first hit. Directories after that hit must not be read at all: a runtime dir list
+    /// routinely holds more than one framework, and a later directory containing an
+    /// unreadable `<name>.dll` (a native DLL, a truncated file, a foreign-RID pack) must
+    /// not break a load the earlier directory already satisfied.
     [<Test>]
     let ``loadAssembly does not read runtime dirs past the first hit`` () : unit =
         let targetBytes =

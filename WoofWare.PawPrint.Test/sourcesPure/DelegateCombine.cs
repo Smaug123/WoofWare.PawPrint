@@ -55,7 +55,7 @@ public static class DelegateCombine
         // Combining a multicast with a single-cast appends, and combining in the other order
         // prepends.
         //
-        // Note the shape here, which is load-bearing: `CombineImpl` grows the backing array by
+        // The shape here matters: `CombineImpl` grows the backing array by
         // doubling, so `allThree` has an invocation *count* of 3 in an array of *length* 4,
         // whose fourth slot is null. An implementation that walked the raw `_invocationList`
         // array instead of honouring `_invocationCount` — the single most plausible way to get

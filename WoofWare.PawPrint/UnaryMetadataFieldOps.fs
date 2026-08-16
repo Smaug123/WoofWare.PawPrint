@@ -51,7 +51,7 @@ module internal UnaryMetadataFieldOps =
     /// Resolve a field-bearing metadata token to the field it names, together with the assembly
     /// whose metadata scopes that field.
     ///
-    /// Returning the two together is the point. A `FieldInfo` is decoded from its declaring
+    /// A `FieldInfo` is decoded from its declaring
     /// assembly's tables, so that assembly — not the executing one — is what interprets
     /// `field.Signature` (whose `FromReference` case carries a `TypeRef` whose `ResolutionScope`
     /// indexes the declaring assembly's `AssemblyRef` table), `field.Handle`, and
@@ -119,13 +119,13 @@ module internal UnaryMetadataFieldOps =
     ///
     /// The two directions are not symmetric, and the diagnostic says so:
     ///
-    /// * a *static* op on an *instance* field is genuinely invalid IL — CoreCLR's importer raises
+    /// * a *static* op on an *instance* field is invalid IL — CoreCLR's importer raises
     ///   `BADCODE("static access on an instance field")` (`jit/importer.cpp`, at the `isLoadStatic`
     ///   and `isStoreStatic` checks);
     /// * an *instance* op on a *static* field is legal, and CoreCLR accepts it a few lines later
     ///   ("We are using ldfld/a on a static field. We allow it, but need to get side-effect from
-    ///   obj."), evaluating the receiver for its side effects and discarding it. PawPrint simply has
-    ///   not implemented that form: none of these ops has a path to static storage. So we reject it
+    ///   obj."), evaluating the receiver for its side effects and discarding it. PawPrint has not
+    ///   implemented that form: none of these ops has a path to static storage. So we reject it
     ///   as unimplemented.
     let private checkFieldStaticness
         (opName : string)
@@ -301,7 +301,7 @@ module internal UnaryMetadataFieldOps =
         let state, field, _declaringAssy = resolveFieldToken "ldfld" "load from" ctx state
 
         // The declaring type's name is carried on `field.DeclaringType` directly; we
-        // deliberately do not dereference `Definition.Get` against `activeAssy.TypeDefs`
+        // do not dereference `Definition.Get` against `activeAssy.TypeDefs`
         // because a cross-assembly MemberReference (e.g. ValueTuple<,>.Item1 referenced
         // from a guest assembly) yields a TypeDef handle valid only in the declaring
         // assembly's metadata, not the active assembly's.
@@ -376,8 +376,7 @@ module internal UnaryMetadataFieldOps =
                 | Some value -> IlMachineState.pushToEvalStack value thread state
                 | None ->
                     // `get` discriminates "this is an array" from "this address is not
-                    // allocated at all", which the message this replaces asserted was always
-                    // the former.
+                    // allocated at all".
                     IlMachineState.pushToEvalStack
                         (AllocatedNonArrayObject.DereferenceFieldById
                             fieldId

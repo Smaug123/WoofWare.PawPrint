@@ -9,8 +9,8 @@ using System;
 // There are four declared locals rather than three on purpose. The failure this pins is a
 // reversal of the per-slot type array, and reversing an odd-length list leaves the middle
 // element at its own index; with three locals the middle slot would be typed correctly even
-// under the bug. Four locals means no slot maps to itself, so every one of them is load-bearing.
-// Don't reduce the count.
+// under the bug. Four locals means no slot maps to itself, so every one of them detects the
+// reversal. Don't reduce the count.
 public struct Accumulator<T>
 {
     public object Payload;

@@ -13,12 +13,12 @@ open WoofWare.PawPrint
 /// Tests for the non-default-`ArrayShape` refusal in <c>TypeDefn.typeProvider</c>.
 ///
 /// <c>TypeDefn.Array</c> records only the rank, so a shape carrying explicit sizes or a non-zero
-/// lower bound would decode to the same <c>TypeDefn</c> as the plain array of that rank. That
-/// equality is load-bearing for vtable slot matching, which compares concretised signatures, so
-/// the decoder refuses such a shape rather than conflating it.
+/// lower bound would decode to the same <c>TypeDefn</c> as the plain array of that rank. Vtable
+/// slot matching compares concretised signatures, so that conflation would match the wrong slot;
+/// the decoder refuses such a shape instead.
 ///
-/// The subtlety these tests pin down is that the predicate is about the *encoding*, not the
-/// meaning. ECMA-335 II.23.2.13 makes both counts optional, and <c>ArrayShape</c> faithfully
+/// The predicate is about the *encoding*, not the meaning.
+/// ECMA-335 II.23.2.13 makes both counts optional, and <c>ArrayShape</c> faithfully
 /// reports which was used: a blob with <c>numLoBounds = 0</c> decodes to <c>LowerBounds = []</c>,
 /// while the vector every real compiler emits for <c>int[,]</c> decodes to <c>[0; 0]</c>. Those
 /// denote the same type, but <c>MetaSig::CompareElementType</c> compares the counts and rejects the

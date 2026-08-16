@@ -3,9 +3,8 @@
 // check. Reinterpreting a null reference is address-preserving, so null goes in and null
 // comes out.
 //
-// The `Unsafe.As<T>(object)` overload already round-trips null correctly in PawPrint; this
-// pins the byref overload, where the reinterpret used to be pushed through a projection
-// that rejects the null managed pointer.
+// This pins the byref overload rather than `Unsafe.As<T>(object)`: pushing the reinterpret
+// through a projection rejects the null managed pointer.
 
 using System.Runtime.CompilerServices;
 
@@ -20,7 +19,7 @@ public class Program
             return 1;
         }
 
-        // Identical TFrom/TTo: the no-op path, which already worked.
+        // Identical TFrom/TTo: the no-op path.
         ref byte same = ref Unsafe.As<byte, byte>(ref Unsafe.NullRef<byte>());
         if (!Unsafe.IsNullRef(ref same))
         {

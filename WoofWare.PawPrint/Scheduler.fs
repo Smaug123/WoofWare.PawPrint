@@ -60,14 +60,13 @@ module Scheduler =
     /// Enumerate the Runnable threads in ascending id order. Used by every
     /// policy: the set of candidates is policy-independent, only the choice
     /// among them differs. Kept private so policies stay enumerable here.
-    /// Runnable threads in ascending `ThreadId` order.
     ///
     /// Written as a fold rather than a `Map.toSeq |> Seq.choose |> Seq.sortBy |> Seq.toList`
     /// pipeline because this runs on every scheduler tick, i.e. once per interpreted IL
     /// instruction, and that pipeline allocates several enumerators plus the sort's scratch
     /// array per call. `Map.foldBack` visits keys in descending order, so consing during the
     /// fold produces the ascending list directly; `ThreadId` is a single-field wrapper over the
-    /// `int`, so map-key order *is* the `ThreadId i` order the old `sortBy` asked for.
+    /// `int`, so map-key order *is* ascending `ThreadId` order.
     let private runnableThreads (state : IlMachineState) : ThreadId list =
         (state.ThreadState, [])
         ||> Map.foldBack (fun tid ts acc ->
@@ -257,8 +256,8 @@ module Scheduler =
     /// Pick the next thread to run, returning the (possibly-updated) machine
     /// state alongside the choice so that stochastic policies can thread
     /// their RNG state forward. The `RoundRobin` policy is pure in `state`
-    /// (the returned state is `=` to the input) and reproduces the legacy
-    /// deterministic ordering: among the Runnable threads, prefer the
+    /// (the returned state is `=` to the input) and uses a deterministic
+    /// ordering: among the Runnable threads, prefer the
     /// lowest id strictly greater than `lastRan`; if there isn't one, wrap
     /// to the lowest id overall. The policy is intentionally *not* sticky
     /// — staying on the most-recently-run thread minimises interleaving,
@@ -672,8 +671,8 @@ module Scheduler =
             | SchedulerState.RoundRobin -> SchedulerState.RoundRobin
             | SchedulerState.Pct pct -> SchedulerState.Pct (PctState.removeThread terminated pct)
 
-        // No yield-debt pruning here: the driver has already discharged `terminated` at the
-        // seam, because a thread's final `Ret` is a retired step like any other. See
+        // No yield-debt pruning here: the driver has already discharged `terminated`,
+        // because a thread's final `Ret` is a retired step like any other. See
         // `dischargeYieldDebts`.
         { state with
             ThreadState = threadState
@@ -706,9 +705,7 @@ module Scheduler =
             // (ThrowingTypeInit — the worker will run the exception handler /
             // terminate on its next step). In every case the worker stays Runnable.
             // SuspendedForManagedCall and VoluntaryYield aren't reachable from
-            // `ensureTypeInitialised` (which is what feeds this entry point) today,
-            // but listing them explicitly keeps the match exhaustive and documents
-            // the intended treatment.
+            // `ensureTypeInitialised` (which is what feeds this entry point) today.
             state
         | WhatWeDid.BlockedOnClassInit blocker ->
             // Another thread is mid-init of the worker's declaring type. StartInternal
@@ -728,16 +725,6 @@ module Scheduler =
                         ))
             }
 
-    /// Apply the scheduler consequences of a single successful step by `ran`, given
-    /// the `WhatWeDid` signal the abstract machine reported. Centralises every
-    /// Runnable ↔ BlockedOnClassInit transition so that adding a new signal only
-    /// touches this function.
-    ///
-    /// Note: on `Executed`, we speculatively wake every thread BlockedOnClassInit on
-    /// `ran`. They'll re-check their blocker on their next turn and re-block if the
-    /// cctor hasn't completed. This is correct but wasteful;
-    /// it's cheap to fix once the scheduler owns the
-    /// policy, which is only true after this refactor.
     /// Act on a guest yield by `ran`: draw the policy's honour coin and, if it comes up
     /// honoured, charge `ran` a yield debt naming every *other* currently-Runnable thread, so
     /// `candidates` holds it out until they have each taken a step. Returns the new state and
@@ -816,7 +803,11 @@ module Scheduler =
     /// Apply the consequences that depend on *which* outcome the step produced. The
     /// consequences that apply to every retired step regardless — currently just discharging
     /// yield debts — deliberately do not live here, because this function only sees the
-    /// `Stepped` family of outcomes; they live at the driver seam. See `dischargeYieldDebts`.
+    /// `Stepped` family of outcomes; they live in the driver. See `dischargeYieldDebts`.
+    ///
+    /// On `Executed`, every thread BlockedOnClassInit on `ran` is speculatively woken.
+    /// They re-check their blocker on their next turn and re-block if the cctor hasn't
+    /// completed. This is correct but wasteful.
     let onStepOutcome (ran : ThreadId) (outcome : WhatWeDid) (state : IlMachineState) : IlMachineState =
         // A yielder made forward progress just as an ordinary `Executed` step does, so both
         // wake any thread parked BlockedOnClassInit on `ran`. They diverge only afterwards:

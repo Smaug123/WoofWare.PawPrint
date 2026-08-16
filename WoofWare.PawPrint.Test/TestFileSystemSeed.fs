@@ -385,9 +385,9 @@ module TestFileSystemSeed =
 
     [<Test>]
     let ``the oracle refuses a seed a real directory cannot stand in for`` () : unit =
-        // These are not fussiness. Each is a way the differential comparison
-        // would still be *made*, and would still look like evidence, while the
-        // two runtimes answered questions about different filesystems.
+        // Each refused shape is a way the differential comparison would still be
+        // *made*, and would still look like evidence, while the two runtimes
+        // answered questions about different filesystems.
         let reserved = [ "Guest.dll" ; "Guest.runtimeconfig.json" ]
 
         let refused (seed : Map<FileName, SeedEntry>) : string =
@@ -537,10 +537,9 @@ module TestFileSystemSeed =
 
     [<Test>]
     let ``every platform can answer every question stat asks of it`` () : unit =
-        // The point of carrying a flavour: these three used to have a failure
-        // arm for a platform that named only a release string, and a guest on
-        // such a platform could abort the interpreter by stat-ing a symlink.
-        // There is no such platform to have an arm for now.
+        // The point of carrying a flavour: a platform that named only a release
+        // string could not answer these, and a guest on it could abort the
+        // interpreter by stat-ing a symlink.
         let linux = SimulatedUnixPlatform.linuxX64
         let darwin = SimulatedUnixPlatform.macOsArm64
 
@@ -579,8 +578,7 @@ module TestFileSystemSeed =
         |> shouldEqual 0o777
 
         // The presets are exactly their flavour plus their release, so a custom
-        // platform that restates one *is* it. Under the shape this replaced,
-        // the same platform had two spellings that compared unequal.
+        // platform that restates one *is* it.
         SimulatedUnixPlatform.createOrFail "test" SimulatedUnixFlavour.Linux "6.8.0-51-generic"
         |> shouldEqual linux
 

@@ -19,7 +19,7 @@ open WoofWare.PawPrint
 /// Note this is `PRead` specifically. `SystemNative_Read` goes through `Common_Read` in
 /// `pal_io_common.h`, which *does* have a negative-size guard — answering EINVAL, not the ERANGE
 /// its neighbour `Common_Write` answers for the same mistake — while `PRead` does not go through it
-/// at all. So the entry points genuinely differ and the refusal is not an oversight in one of them.
+/// at all. So the entry points differ, and the refusal is not an oversight in one of them.
 /// `sourcesPure/ReadSeekSeeded.cs` pins `Read`'s EINVAL, including that it precedes the descriptor
 /// lookup.
 [<TestFixture>]
@@ -143,7 +143,7 @@ class Program
         run "PReadZeroSize.cs" source |> exitCodeOf |> shouldEqual 0
 
     /// The refusal precedes every other check, so it fires even on a call that a real kernel would
-    /// have rejected for a different reason first. That is a deliberate over-refusal on a
+    /// have rejected for a different reason first. That is an over-refusal on a
     /// two-fault input — a real kernel answers EBADF here, since fd lookup precedes buffer use —
     /// and it is asserted rather than merely commented, because a green suite cannot show it.
     [<Test>]
@@ -274,7 +274,7 @@ class Program
 
         /// The same three calls under Linux, which answers EINVAL for all of them because it
         /// validates the offset before looking the descriptor up at all. Without this the Darwin
-        /// test above would pass for an implementation that had simply got Linux wrong.
+        /// test above would pass for an implementation that had got Linux wrong.
         [<Test>]
         let ``Linux validates the offset before resolving the descriptor`` () : unit =
             let source =

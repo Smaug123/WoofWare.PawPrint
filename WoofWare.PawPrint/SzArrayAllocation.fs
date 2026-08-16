@@ -16,11 +16,11 @@ type SzArrayLengthError =
 /// `newarr` opcode and the `GCInterface_AllocateNewArray` QCall both bottom out in CoreCLR's
 /// `AllocateSzArray`, so they must agree on the limit and on what violating it raises.
 ///
-/// This is deliberately a classifier applied *at the boundary* where an untrusted guest int
-/// becomes a length, rather than a check inside `IlMachineThreadState.allocateArray`: the
-/// caller is the only party that can turn the answer into a guest exception, and every other
-/// caller of `allocateArray` supplies a length it computed itself. `allocateArray` asserts the
-/// resulting precondition rather than re-deriving it.
+/// The classifier is applied *at the boundary* where an untrusted guest int becomes a length,
+/// rather than inside `IlMachineThreadState.allocateArray`: the caller is the only party that
+/// can turn the answer into a guest exception, and every other caller of `allocateArray`
+/// supplies a length it computed itself. `allocateArray` asserts the resulting precondition
+/// rather than re-deriving it.
 [<RequireQualifiedAccess>]
 module SzArrayAllocation =
     /// `MaxArrayLength()` (`gchelpers.cpp:604-609`), which upstream keeps in sync with the
@@ -33,7 +33,7 @@ module SzArrayAllocation =
     /// the literal is reproduced here byte-for-byte, exactly as `NativeException.messageForKind`
     /// does for the sibling `mscorrc` strings.
     ///
-    /// Note that this message is the `HOST_64BIT` answer: a 32-bit CoreCLR falls through to a
+    /// This message is the `HOST_64BIT` answer: a 32-bit CoreCLR falls through to a
     /// plain `ThrowOutOfMemory()` with the default message instead. PawPrint models a 64-bit
     /// target throughout (`SimulatedUnixPlatform` defaults to `LinuxX64`, and `NativeInt` is
     /// 64 bits wide), so the 64-bit arm is the faithful one here.

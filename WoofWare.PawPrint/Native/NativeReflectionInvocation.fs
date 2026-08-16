@@ -552,8 +552,8 @@ module internal NativeReflectionInvocation =
                 //
                 // Its *presence* distinguishes resumption from first entry, and its *shape* carries
                 // how the return value must be classified: a null reference for a void return, and
-                // otherwise a handle to the return type. That is a snapshot taken before the call,
-                // which is the point — CoreCLR reads `retTH` once, before `CallDescrWorkerWithHandler`
+                // otherwise a handle to the return type. That is a snapshot taken before the call —
+                // CoreCLR reads `retTH` once, before `CallDescrWorkerWithHandler`
                 // (reflectioninvocation.cpp:439), and re-deriving it on resumption would instead make
                 // the classification a function of the `Signature` object as the *callee left it*.
                 // Nothing else in this branch is recoverable-but-mutable, so this is the whole of

@@ -342,7 +342,7 @@ module internal UnaryMetadataTokenOps =
 
             let target = resolved |> Option.defaultValue callSiteMethod
 
-            // Known limit, inherited rather than introduced here. When the receiver is a boxed
+            // Known limit. When the receiver is a boxed
             // value type and the slot resolves to a struct instance method, CoreCLR hands back the
             // *unboxing* entry point — `GetMethodDescOfVirtualizedCode` (method.cpp) passes
             // `pTargetMT->IsValueType()` as `forceBoxedEntryPoint` to
@@ -383,7 +383,6 @@ module internal UnaryMetadataTokenOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        // Helper function to handle type tokens and create RuntimeTypeHandle
         let handleTypeToken
             (declaringAssembly : DumpedAssembly)
             (allowOpenGenericDefinition : bool)

@@ -10,10 +10,10 @@ open WoofWare.PawPrint
 
 /// Which value types PawPrint calls enums, and which of those it flattens onto the eval stack.
 ///
-/// Issue #996: enum-ness used to be decided structurally, from the CLR-reserved field name
-/// `value__`, which `struct Fake { public int value__; }` defeats. It is now nominal — the
+/// Issue #996: deciding enum-ness structurally, from the CLR-reserved field name
+/// `value__`, is defeated by `struct Fake { public int value__; }`. It is nominal — the
 /// immediate base type is `System.Enum` — and arrives at `CliValueType.OfFields` as
-/// `DeclaredTypeFacts.IsEnum`. The width restriction stayed structural, and stayed: an enum over
+/// `DeclaredTypeFacts.IsEnum`. The width restriction is structural: an enum over
 /// `bool`/`char`/native int is legal (ECMA-335 II.14.3) but is *not* flattened, because
 /// `IlMachineRuntimeMetadata.unboxMaterialisesFlattened` reports it unflattened and `unboxPermitted`
 /// would fail loudly on a legal unbox if the two disagreed.
@@ -222,7 +222,7 @@ module TestEnumClassification =
             classify true (CliType.zeroOfPrimitive allCt bct prim) |> shouldEqual None
 
     // ------------------------------------------------------------------
-    // `DeclaredTypeFacts`, the seam that carries the nominal answer.
+    // `DeclaredTypeFacts`, which carries the nominal answer.
     // ------------------------------------------------------------------
 
     /// The handle registries build these without a load context, via `ofCorelibType`. That

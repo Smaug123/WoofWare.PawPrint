@@ -1,8 +1,8 @@
 using System;
 using System.Runtime.InteropServices;
 
-// `(int)ptr & mask` is how CoreLib asks "is this pointer aligned?". The load-bearing
-// instance is `SpanHelpers.IndexOfNullCharacter`, which opens with
+// `(int)ptr & mask` is how CoreLib asks "is this pointer aligned?". The instance that
+// matters is `SpanHelpers.IndexOfNullCharacter`, which opens with
 // `((int)searchSpace & 1) != 0` and is what `String.wcslen` — and hence
 // `new string(char*)` — runs first.
 //

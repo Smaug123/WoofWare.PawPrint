@@ -14,11 +14,9 @@ namespace WoofWare.PawPrint
 /// methods would collide in the registry's maps. What the method is called, and what its signature
 /// says, live in `MethodHandleRegistry.DynamicMethods` keyed by this.
 ///
-/// Lives in its own file, in the Domain assembly, rather than beside the registry that mints it.
-/// Two things name one from below: `FunctionPointerTarget.Dynamic`, in the main library, and
-/// `SynthesisedMethod.DynamicMethod`, which is part of Domain's published surface. A bare `int64`
-/// would spare the move at the cost of letting a method's registry id be confused with any other
-/// kind of id — exactly the distinction this type exists to keep.
+/// Lives in the Domain assembly because both `FunctionPointerTarget.Dynamic` (in the main
+/// library) and `SynthesisedMethod.DynamicMethod` (part of Domain's published surface) name it.
+/// A bare `int64` would let a method's registry id be confused with any other kind of id.
 type DynamicMethodHandle =
     private
         {
