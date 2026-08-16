@@ -18,12 +18,16 @@ namespace AreSameProjectionCrossesArrayElementTest
     // addresses differ and answer `false` — measured, returning 1.
     //
     // That conclusion does not follow. Elements being disjoint says nothing once a projection
-    // can walk out of the element it started from, so PawPrint now refuses instead.
+    // can walk out of the element it started from. This is what the sibling `AreSame*` guests
+    // do not cover: those compare byrefs that stay within one root, whereas this one is about
+    // displacement crossing between roots.
     //
-    // This is what the sibling `AreSame*` guests do not cover: both of those compare byrefs
-    // that stay within one root, whereas this one is about displacement crossing between
-    // roots. Un-park all of them together — they want the same thing, which is field-offset
-    // layout available at the comparison.
+    // It took two independent changes, which is why it stayed parked after its siblings
+    // landed. Byref `ceq` had to stop refusing pairs it could not separate structurally and
+    // resolve both sides to one `ByteStorageIdentity.Array` instead (#1016); and the byte-view
+    // *read* that builds the second operand had to be able to leave the cell its root names
+    // (#729) — that one failed strictly later, in `ldind`, and is the reason the write below
+    // is followed by a read through the crossing byref rather than through `a[1]`.
     class Program
     {
         static int Main(string[] args)
