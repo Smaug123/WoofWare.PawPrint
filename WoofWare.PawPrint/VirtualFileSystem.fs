@@ -793,6 +793,41 @@ module PathLimits =
 
         limits
 
+/// Where `lseek(2)` measures its offset from.
+///
+/// Exactly the three `Interop.Sys.SeekWhence` values (`Interop.LSeek.cs`), which
+/// are also the three POSIX ones — and *not* the platforms' full `<unistd.h>`
+/// vocabulary, which continues with `SEEK_DATA` and `SEEK_HOLE`. Those two are
+/// deliberately absent: they are numbered 3 and 4 on Linux and **4 and 3** on
+/// Darwin, so a raw whence of 3 does not name the same operation on the two
+/// kernels, and there is no portable case to add. `SystemNative_LSeek` decodes
+/// the raw integer and refuses them; see the handler.
+[<RequireQualifiedAccess>]
+type SeekWhence =
+    /// `SEEK_SET` (0): from the start of the file.
+    | Set
+    /// `SEEK_CUR` (1): from the description's current offset.
+    | Current
+    /// `SEEK_END` (2): from the end of the file.
+    | End
+
+/// Why a seek computation has no answer.
+///
+/// Split into two cases rather than one because the platforms disagree about
+/// only one of them: a computation landing below zero is `EINVAL` on both,
+/// while one that leaves `int64` is `EINVAL` on Linux and `EOVERFLOW` on Darwin.
+/// Collapsing them here would push that distinction into the handler as a
+/// second computation of the same arithmetic.
+[<RequireQualifiedAccess>]
+type SeekFault =
+    /// The computed position is negative. Real kernels reject rather than
+    /// clamp, so a file offset is never pinned to 0 by a wild seek.
+    | Negative
+    /// The computed position does not fit in a signed 64-bit offset. Only
+    /// reachable through `SEEK_CUR` and `SEEK_END`, whose arithmetic adds two
+    /// values the caller does not jointly control.
+    | Overflow
+
 [<RequireQualifiedAccess>]
 module VirtualFileSystem =
     /// Inode 1, matching the convention that no real filesystem hands out inode
@@ -895,6 +930,68 @@ module VirtualFileSystem =
             // `length - offset` is in `(0, length]` here, so the `int` conversion
             // cannot overflow however large `offset` was.
             min (int64 count) (int64 length - offset) |> int
+
+    /// Where `lseek(2)` would land, given where it is measuring from.
+    ///
+    /// The whole of what `lseek` computes, separated out for the same reason as
+    /// `readTransferCount`: as a function of four integers it is
+    /// property-testable, where the same arithmetic inlined in a handler is
+    /// reachable only through a guest.
+    ///
+    /// **Not bounded above by `size`.** Seeking past the end of a file is legal
+    /// — it is how sparse files are made — and a subsequent read there simply
+    /// transfers nothing. The only rejections are the two `SeekFault` cases.
+    ///
+    /// **No filesystem ceiling either**, which is a measured decision rather than
+    /// an omission. A real Linux rejects an offset above the filesystem's
+    /// `s_maxbytes` with `EINVAL`: measured, ext4 stops at `0xffffffff000` while
+    /// **tmpfs accepts the full `int64` range**, as does macOS's APFS. PawPrint's
+    /// filesystem is in memory, so tmpfs is the honest analogue and the ceiling
+    /// is `Int64.MaxValue`. Reading that divergence as a *platform* difference —
+    /// which is how it first presents, since a dev box's APFS accepts what a CI
+    /// container's ext4 refuses — would have written a false rule into the kernel
+    /// model.
+    /// **The size is deferred**, and that is load-bearing rather than an
+    /// optimisation: only `SEEK_END` consults it, and there are descriptors with
+    /// no size PawPrint is willing to state — a directory's, which is a
+    /// filesystem artefact rather than a fact (see the `SystemNative_LSeek`
+    /// handler). Seeking such a descriptor with `SEEK_SET` or `SEEK_CUR` is
+    /// perfectly portable and must keep working, so the caller passes a thunk
+    /// that refuses, and the machine rather than a comment enforces that only
+    /// the `End` case forces it.
+    let seekTarget
+        (whence : SeekWhence)
+        (current : int64)
+        (size : Lazy<int64>)
+        (offset : int64)
+        : Result<int64, SeekFault>
+        =
+        // A property of the model rather than of the guest: a description's
+        // offset is established non-negative by this very function.
+        System.Diagnostics.Debug.Assert (current >= 0L, "seekTarget: the current offset must not be negative")
+
+        let basis =
+            match whence with
+            | SeekWhence.Set -> 0L
+            | SeekWhence.Current -> current
+            | SeekWhence.End ->
+                let size = size.Force ()
+
+                System.Diagnostics.Debug.Assert (size >= 0L, "seekTarget: the file size must not be negative")
+
+                size
+
+        // Checked addition by inspection rather than by `Checked.(+)`, so that
+        // overflow is a value this function returns rather than an exception
+        // its caller must catch. `basis` is non-negative, so only a positive
+        // `offset` can carry past `Int64.MaxValue`.
+        if offset > 0L && basis > System.Int64.MaxValue - offset then
+            Error SeekFault.Overflow
+        else
+
+        let target = basis + offset
+
+        if target < 0L then Error SeekFault.Negative else Ok target
 
     /// The directory at `inode`, or `None` if it is absent or is not a
     /// directory. Honest about which: callers that must distinguish ENOENT from

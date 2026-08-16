@@ -51,30 +51,53 @@ type FlockMode =
     /// shared or exclusive.
     | Exclusive
 
+/// What an open file description refers to, together with the state that only
+/// that kind of object carries.
+///
+/// **Distinct from `OpenFileObject`, which is the *identity*.** This type is
+/// the description's view of that object, and the two differ by exactly the
+/// file offset: two descriptions at different offsets are positioned
+/// differently on the *same* file, and `flock` must still see them as
+/// contending. Folding the offset into `OpenFileObject` would break that —
+/// the conflict test compares objects for equality, so two offsets on one
+/// inode would stop excluding each other. `OpenFileDescription.object` is the
+/// projection back to identity.
+///
+/// The offset lives in the `File` case rather than beside it because a standard
+/// stream has no offset to hold: PawPrint models the standard streams as pipes
+/// (see `FileDescriptorRegistry.initial`), and a pipe is not seekable at all —
+/// `lseek` on one is `ESPIPE` and `read` from one consumes a queue rather than a
+/// position. A flat `Offset` field would have to lie for a third of the
+/// inhabitants; this way "a standard stream at offset 7" cannot be written down.
+[<RequireQualifiedAccess>]
+type OpenFileTarget =
+    /// One of the inherited standard streams. No offset: not seekable.
+    | StandardStream of role : FileDescriptorRole
+    /// A regular file or directory, and where in it this description is
+    /// positioned. `read(2)` consumes from here and advances it; `lseek(2)`
+    /// sets it; `pread(2)` deliberately leaves it alone, which is the whole
+    /// reason it exists as a separate syscall.
+    ///
+    /// A real kernel permits an offset arbitrarily far past the end of the
+    /// file (`lseek` beyond EOF is how sparse files are made), so this is not
+    /// bounded by the file's length — only by being non-negative, which
+    /// `VirtualFileSystem.seekTarget` enforces.
+    | File of inode : InodeNumber * offset : int64
+
 /// The kernel object a file descriptor points at: POSIX's "open file
 /// description". Everything shared between file descriptors that `dup(2)`
 /// produced belongs here.
 ///
-/// Two pieces of state a real open file description also holds are absent,
-/// because no modelled syscall can yet make them differ:
-///
-///  - The **file offset**. `pread(2)` — the only reader CoreLib's
-///    `RandomAccess` uses on a seekable handle — takes its offset as an
-///    argument and leaves the description's alone, so an offset stored here
-///    would be written once at `open` and never read. It becomes real with
-///    `SystemNative_LSeek` and `SystemNative_Read`, which is where it belongs.
-///  - The **access mode and status flags** (`O_APPEND`, `O_NONBLOCK`). PawPrint
-///    refuses every write flag at `open` today, so the mode has exactly one
-///    inhabitant, and a field with one inhabitant records a decision nothing
-///    made. It becomes real with the write path.
-///
-/// The standard streams carry no offset either, and for a different reason:
-/// PawPrint models them as pipes (see `FileDescriptorRegistry.initial`), and a
-/// pipe is not seekable at all.
+/// One piece of state a real open file description also holds is absent,
+/// because no modelled syscall can yet make it differ: the **access mode and
+/// status flags** (`O_APPEND`, `O_NONBLOCK`). PawPrint refuses every write flag
+/// at `open` today, so the mode has exactly one inhabitant, and a field with one
+/// inhabitant records a decision nothing made. It becomes real with the write
+/// path.
 type OpenFileDescription =
     {
-        /// What this description refers to.
-        Object : OpenFileObject
+        /// What this description refers to, and where in it.
+        Target : OpenFileTarget
         /// The `flock(2)` lock this description holds, if any.
         ///
         /// **On the description, not on the inode**, which is where POSIX puts
@@ -92,6 +115,20 @@ type OpenFileDescription =
         /// `FileDescriptorRegistry`.
         Flock : FlockMode option
     }
+
+[<RequireQualifiedAccess>]
+module OpenFileDescription =
+    /// Which kernel object this description names — its *identity*, with the
+    /// per-description position discarded.
+    ///
+    /// This is what `flock(2)` contention is decided on: two descriptions
+    /// contend exactly when they name the same object, whatever offsets they
+    /// happen to be at. Callers asking "are these the same file?" must compare
+    /// these rather than the descriptions.
+    let object (description : OpenFileDescription) : OpenFileObject =
+        match description.Target with
+        | OpenFileTarget.StandardStream role -> OpenFileObject.StandardStream role
+        | OpenFileTarget.File (inode, _) -> OpenFileObject.File inode
 
 /// In-memory model of a Unix per-process file descriptor table, and of the
 /// open file descriptions those descriptors point at.
@@ -193,6 +230,14 @@ type FileDescriptorRegistryDefect =
     /// few more opens to do the damage. `VirtualFileSystem`'s
     /// `NextInodeNotFresh` is the same check for the same reason.
     | NextIdNotFresh of nextId : OpenFileDescriptionId * existing : OpenFileDescriptionId
+    /// A description is positioned at a negative file offset. No kernel permits
+    /// one: `lseek(2)` rejects a computation landing below zero with `EINVAL`
+    /// rather than clamping, and `read(2)` never moves the offset backwards.
+    ///
+    /// Unlike the offset's *upper* end, which is unbounded on purpose — seeking
+    /// arbitrarily far past EOF is legal, and is how sparse files are made — so
+    /// there is no matching "too large" defect to pair this with.
+    | NegativeOffset of description : OpenFileDescriptionId * offset : int64
     /// Two distinct descriptions name the same file and hold locks that
     /// `flock(2)` would never have granted together — at least one of them
     /// exclusive. This is the mutual-exclusion property itself rather than a
@@ -228,7 +273,7 @@ module FileDescriptorRegistry =
             Descriptions =
                 let stream (role : FileDescriptorRole) : OpenFileDescription =
                     {
-                        Object = OpenFileObject.StandardStream role
+                        Target = OpenFileTarget.StandardStream role
                         Flock = None
                     }
 
@@ -262,8 +307,16 @@ module FileDescriptorRegistry =
     /// What `fd` refers to, if `fd` is live. For the majority of callers, which
     /// want the file behind the descriptor and have no interest in the state the
     /// description carries alongside it.
+    ///
+    /// Note this discards the offset, so it is the wrong lookup for `read(2)`
+    /// and `lseek(2)`; they want `tryFindTarget`.
     let tryFindObject (fd : int) (registry : FileDescriptorRegistry) : OpenFileObject option =
-        tryFind fd registry |> Option.map (fun description -> description.Object)
+        tryFind fd registry |> Option.map OpenFileDescription.object
+
+    /// What `fd` refers to and where in it, if `fd` is live. For the callers
+    /// that move or consume the file offset.
+    let tryFindTarget (fd : int) (registry : FileDescriptorRegistry) : OpenFileTarget option =
+        tryFind fd registry |> Option.map (fun description -> description.Target)
 
     /// Every live file descriptor, and the description each names.
     let fds (registry : FileDescriptorRegistry) : Map<int, OpenFileDescriptionId> = registry.Fds
@@ -351,6 +404,21 @@ module FileDescriptorRegistry =
     /// which is why they can hold separate offsets and separate `flock` locks.
     /// Sharing here would make the second open silently alias the first.
     ///
+    /// The offset starts at 0, and that is `open(2)`'s answer for *every* flag,
+    /// not merely the ones PawPrint accepts. `O_APPEND` is the tempting
+    /// exception and is not one: measured on both platforms, a descriptor
+    /// opened `O_WRONLY | O_APPEND` on a five-byte file reports 0 from
+    /// `lseek(0, SEEK_CUR)` immediately afterwards, and only reaches 6 after a
+    /// one-byte write. The flag repositions to the end before each individual
+    /// *write*, not at open time, so when the write path lands it belongs
+    /// there — seeding the offset at the end here would make a guest's first
+    /// `SEEK_CUR` report a position no kernel would.
+    ///
+    /// The BCL would not exercise it in any case: `Interop.Sys.OpenFlags` has no
+    /// append bit at all, and `SafeFileHandle.Init` implements `FileMode.Append`
+    /// as `OpenOrCreate` plus an explicit seek to the end
+    /// (SafeFileHandle.Unix.cs:255).
+    ///
     /// Total — there is no failure mode at this level. Whether the path
     /// resolves, whether the flags are ones PawPrint honours, and whether the
     /// process may open the file at all are decided before this is reached; a
@@ -368,7 +436,7 @@ module FileDescriptorRegistry =
                 Map.add
                     id
                     {
-                        Object = OpenFileObject.File inode
+                        Target = OpenFileTarget.File (inode, 0L)
                         // `open(2)` never takes a lock; `FileStream` issues a
                         // separate `flock` immediately afterwards, which is
                         // exactly why `FileShare` is not atomic with opening on
@@ -473,7 +541,9 @@ module FileDescriptorRegistry =
                 // `otherId <> id` is what makes conversion work: this
                 // description's own lock is not an obstacle to replacing it.
                 otherId <> id
-                && other.Object = description.Object
+                // Identity, not the whole description: two descriptions on one
+                // file contend however far apart their offsets are.
+                && OpenFileDescription.object other = OpenFileDescription.object description
                 && (
                     match other.Flock with
                     | None -> false
@@ -487,6 +557,55 @@ module FileDescriptorRegistry =
             withFlock None, Some FlockError.WouldBlock
         else
             withFlock (Some mode), None
+
+    /// Move the file offset of the description `fd` names.
+    ///
+    /// Total in the offset — every non-negative `int64` is a position a real
+    /// kernel would accept, including far past the end of the file — and
+    /// deliberately *partial* in the descriptor: reaching this with an fd that
+    /// is not live, or one naming an unseekable object, is an interpreter bug
+    /// rather than a guest error. Both callers (`SystemNative_LSeek` and
+    /// `SystemNative_Read`) have already resolved the description and rejected
+    /// `EBADF`/`ESPIPE` before they get here, so a silent no-op would hide the
+    /// bug that a crash names.
+    ///
+    /// Deciding *which* offset is not this module's business: `lseek`'s
+    /// arithmetic needs the file's size, which lives in the filesystem, and its
+    /// error vocabulary differs by platform. `VirtualFileSystem.seekTarget`
+    /// computes the target and this stores it.
+    let setOffset (fd : int) (offset : int64) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
+        if offset < 0L then
+            failwith
+                $"setOffset: fd %d{fd} was asked to move to offset %d{offset}, which is negative. No kernel permits a negative file offset; the caller must reject this as EINVAL before storing it (this is an interpreter bug)."
+
+        match Map.tryFind fd registry.Fds with
+        | None ->
+            failwith
+                $"setOffset: fd %d{fd} is not a live file descriptor, so there is no offset to move (this is an interpreter bug: the caller should have answered EBADF)."
+        | Some id ->
+
+        let description =
+            match Map.tryFind id registry.Descriptions with
+            | Some description -> description
+            | None ->
+                failwith
+                    $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is an interpreter bug)"
+
+        match description.Target with
+        | OpenFileTarget.StandardStream role ->
+            failwith
+                $"setOffset: fd %d{fd} names standard stream %O{role}, which PawPrint models as a pipe and so has no file offset (this is an interpreter bug: the caller should have answered ESPIPE)."
+        | OpenFileTarget.File (inode, _) ->
+
+        { registry with
+            Descriptions =
+                Map.add
+                    id
+                    { description with
+                        Target = OpenFileTarget.File (inode, offset)
+                    }
+                    registry.Descriptions
+        }
 
     /// Every way in which `registry` fails to be a descriptor table a kernel
     /// could produce. Empty for any registry built out of `initial`, `dup` and
@@ -518,11 +637,25 @@ module FileDescriptorRegistry =
         // Quadratic in the number of live descriptions, which is a handful; the
         // clarity is worth more here than the asymptotics, since this is the one
         // check that states the actual `flock` guarantee.
+        let negativeOffsets =
+            registry.Descriptions
+            |> Map.toList
+            |> List.choose (fun (id, description) ->
+                match description.Target with
+                | OpenFileTarget.StandardStream _ -> None
+                | OpenFileTarget.File (_, offset) ->
+                    if offset < 0L then
+                        Some (FileDescriptorRegistryDefect.NegativeOffset (id, offset))
+                    else
+                        None
+            )
+
         let locked =
             registry.Descriptions
             |> Map.toList
             |> List.choose (fun (id, description) ->
-                description.Flock |> Option.map (fun mode -> id, description.Object, mode)
+                description.Flock
+                |> Option.map (fun mode -> id, OpenFileDescription.object description, mode)
             )
 
         let conflicting =
@@ -539,7 +672,7 @@ module FileDescriptorRegistry =
                 )
             )
 
-        dangling @ unreferenced @ freshness @ conflicting
+        dangling @ unreferenced @ freshness @ negativeOffsets @ conflicting
 
     /// Fail loudly if `registry` is not sound, naming `context`.
     let assertInvariants (context : string) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =

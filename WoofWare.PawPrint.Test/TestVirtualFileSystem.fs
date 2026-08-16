@@ -1676,3 +1676,212 @@ module TestReadTransferCount =
         VirtualFileSystem.readTransferCount 0L 0 5 |> shouldEqual 0
         // ...and an empty file, where every offset is at the end.
         VirtualFileSystem.readTransferCount 0L 16 0 |> shouldEqual 0
+
+/// `VirtualFileSystem.seekTarget`: the whole of what `lseek(2)` computes, once the descriptor and
+/// the whence have been resolved. Property-tested here because as a function of four integers it
+/// can be, where the same arithmetic inlined in a handler is reachable only through a guest — and
+/// the two faults it distinguishes are *indistinguishable* through a Linux-flavoured guest, both
+/// being EINVAL.
+[<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
+module TestSeekTarget =
+
+    let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 2000
+
+    let private whences : SeekWhence list =
+        [ SeekWhence.Set ; SeekWhence.Current ; SeekWhence.End ]
+
+    /// Drawn from a small range so that the boundaries — landing exactly on zero, exactly on the
+    /// end, one before and one after — come up constantly. `Gen.choose` rather than the default
+    /// `int` generator, which is size-bounded in a way that makes them rare.
+    let private smallCase : Gen<SeekWhence * int64 * int64 * int64> =
+        gen {
+            let! whence = Gen.elements whences
+            let! current = Gen.choose (0, 12)
+            let! size = Gen.choose (0, 12)
+            let! offset = Gen.choose (-14, 14)
+            return whence, int64 current, int64 size, int64 offset
+        }
+
+    /// The same, but with the magnitudes that make overflow reachable. Without this the `Overflow`
+    /// case never occurs and the whole distinction it exists for goes untested.
+    let private hugeCase : Gen<SeekWhence * int64 * int64 * int64> =
+        gen {
+            let! whence = Gen.elements whences
+            let! current = Gen.elements [ 0L ; 1L ; Int64.MaxValue - 1L ; Int64.MaxValue ]
+            let! size = Gen.elements [ 0L ; 1L ; 5L ; Int64.MaxValue - 1L ; Int64.MaxValue ]
+
+            let! offset =
+                Gen.elements
+                    [
+                        Int64.MinValue
+                        Int64.MinValue + 1L
+                        -1L
+                        0L
+                        1L
+                        Int64.MaxValue - 5L
+                        Int64.MaxValue - 1L
+                        Int64.MaxValue
+                    ]
+
+            return whence, current, size, offset
+        }
+
+    /// The oracle, in arbitrary precision, so it cannot share a bug with the implementation's
+    /// overflow check: `bigint` addition simply cannot wrap.
+    let private naive
+        (whence : SeekWhence)
+        (current : int64)
+        (size : int64)
+        (offset : int64)
+        : Result<int64, SeekFault>
+        =
+        let basis =
+            match whence with
+            | SeekWhence.Set -> 0I
+            | SeekWhence.Current -> bigint current
+            | SeekWhence.End -> bigint size
+
+        let target = basis + bigint offset
+
+        if target > bigint Int64.MaxValue then
+            Error SeekFault.Overflow
+        elif target < 0I then
+            Error SeekFault.Negative
+        else
+            Ok (int64 target)
+
+    let private check (gen : Gen<SeekWhence * int64 * int64 * int64>) : unit =
+        let property (whence : SeekWhence, current : int64, size : int64, offset : int64) : bool =
+            VirtualFileSystem.seekTarget whence current (lazy size) offset = naive whence current size offset
+
+        Check.One (config, Prop.forAll (Arb.fromGen gen) property)
+
+    [<Test>]
+    let ``agrees with arbitrary-precision arithmetic on small inputs`` () : unit = check smallCase
+
+    /// Overflow is what this generator is for, so assert it actually occurs: a generator that never
+    /// produced one would make the property above true of an implementation with no overflow check
+    /// at all.
+    [<Test>]
+    let ``agrees with arbitrary-precision arithmetic on huge inputs`` () : unit =
+        check hugeCase
+
+        let overflows =
+            [
+                for whence in whences do
+                    for current in [ 0L ; Int64.MaxValue ] do
+                        for size in [ 0L ; 5L ; Int64.MaxValue ] do
+                            for offset in [ 1L ; Int64.MaxValue ] do
+                                match VirtualFileSystem.seekTarget whence current (lazy size) offset with
+                                | Error SeekFault.Overflow -> yield (whence, current, size, offset)
+                                | _ -> ()
+            ]
+
+        overflows |> shouldNotEqual []
+
+    /// The result is always a position a kernel would accept: never negative, so a description's
+    /// offset stays sound however wild the seek. This is what `FileDescriptorRegistry.setOffset`
+    /// relies on rather than re-checking.
+    [<Test>]
+    let ``a successful seek lands on a non-negative position`` () : unit =
+        let property (whence : SeekWhence, current : int64, size : int64, offset : int64) : bool =
+            match VirtualFileSystem.seekTarget whence current (lazy size) offset with
+            | Ok target -> target >= 0L
+            | Error _ -> true
+
+        Check.One (config, Prop.forAll (Arb.fromGen smallCase) property)
+        Check.One (config, Prop.forAll (Arb.fromGen hugeCase) property)
+
+    /// `SEEK_CUR` with a zero offset reports where the description already is, without moving it.
+    /// Stated separately because it is not merely a special case: it is the call the BCL makes —
+    /// `SafeFileHandle.GetCanSeek` and `OSFileStreamStrategy`'s constructor both issue exactly this
+    /// — and it is the joint property that lets a guest read back what a `read` advanced.
+    [<Test>]
+    let ``SEEK_CUR by zero is the identity on the current position`` () : unit =
+        let property (_, current : int64, size : int64, _) : bool =
+            VirtualFileSystem.seekTarget SeekWhence.Current current (lazy size) 0L = Ok current
+
+        Check.One (config, Prop.forAll (Arb.fromGen smallCase) property)
+        Check.One (config, Prop.forAll (Arb.fromGen hugeCase) property)
+
+    /// `SEEK_SET` ignores where the description is, which is the whole of what distinguishes it
+    /// from `SEEK_CUR`. A model that measured everything from the current offset would satisfy the
+    /// non-negativity property above.
+    [<Test>]
+    let ``SEEK_SET ignores the current position and the size`` () : unit =
+        let property (_, current : int64, size : int64, offset : int64) : bool =
+            let expected = if offset < 0L then Error SeekFault.Negative else Ok offset
+
+            VirtualFileSystem.seekTarget SeekWhence.Set current (lazy size) offset = expected
+
+        Check.One (config, Prop.forAll (Arb.fromGen smallCase) property)
+        Check.One (config, Prop.forAll (Arb.fromGen hugeCase) property)
+
+    /// The size is consulted *only* by `SEEK_END`. Load-bearing rather than incidental: the
+    /// `SystemNative_LSeek` handler passes a thunk that refuses for a directory, whose size is a
+    /// filesystem artefact PawPrint will not invent, so `SEEK_SET` and `SEEK_CUR` on a directory
+    /// work precisely because this holds.
+    [<Test>]
+    let ``only SEEK_END forces the size`` () : unit =
+        let exploding : Lazy<int64> =
+            lazy failwith "seekTarget forced the size for a whence that should not need it"
+
+        VirtualFileSystem.seekTarget SeekWhence.Set 3L exploding 7L
+        |> shouldEqual (Ok 7L)
+
+        VirtualFileSystem.seekTarget SeekWhence.Current 3L exploding 7L
+        |> shouldEqual (Ok 10L)
+
+        VirtualFileSystem.seekTarget SeekWhence.Current 3L exploding -9L
+        |> shouldEqual (Error SeekFault.Negative)
+
+        // ...and `SEEK_END` does force it, so the test above is not passing because nothing ever
+        // reads the size.
+        Assert.Throws<exn> (fun () ->
+            VirtualFileSystem.seekTarget SeekWhence.End 3L exploding 0L
+            |> ignore<Result<int64, SeekFault>>
+        )
+        |> ignore<exn>
+
+    [<Test>]
+    let ``worked examples`` () : unit =
+        // The measured `lseek` rows, as unit assertions: a 5-byte file, currently at offset 3.
+        VirtualFileSystem.seekTarget SeekWhence.Set 3L (lazy 5L) 0L
+        |> shouldEqual (Ok 0L)
+
+        VirtualFileSystem.seekTarget SeekWhence.Current 3L (lazy 5L) 1L
+        |> shouldEqual (Ok 4L)
+
+        VirtualFileSystem.seekTarget SeekWhence.End 3L (lazy 5L) 0L
+        |> shouldEqual (Ok 5L)
+        // Past the end is legal — it is how sparse files are made.
+        VirtualFileSystem.seekTarget SeekWhence.End 3L (lazy 5L) 100L
+        |> shouldEqual (Ok 105L)
+
+        VirtualFileSystem.seekTarget SeekWhence.Set 3L (lazy 5L) 1000L
+        |> shouldEqual (Ok 1000L)
+        // Landing exactly on zero is fine; below it is not.
+        VirtualFileSystem.seekTarget SeekWhence.Current 3L (lazy 5L) -3L
+        |> shouldEqual (Ok 0L)
+
+        VirtualFileSystem.seekTarget SeekWhence.Current 3L (lazy 5L) -4L
+        |> shouldEqual (Error SeekFault.Negative)
+
+        VirtualFileSystem.seekTarget SeekWhence.Set 3L (lazy 5L) -1L
+        |> shouldEqual (Error SeekFault.Negative)
+
+        VirtualFileSystem.seekTarget SeekWhence.End 3L (lazy 5L) -6L
+        |> shouldEqual (Error SeekFault.Negative)
+        // The overflow boundary: INT64_MAX exactly is a position, one past it is not.
+        VirtualFileSystem.seekTarget SeekWhence.End 3L (lazy 5L) (Int64.MaxValue - 5L)
+        |> shouldEqual (Ok Int64.MaxValue)
+
+        VirtualFileSystem.seekTarget SeekWhence.End 3L (lazy 5L) (Int64.MaxValue - 4L)
+        |> shouldEqual (Error SeekFault.Overflow)
+
+        VirtualFileSystem.seekTarget SeekWhence.Set 3L (lazy 5L) Int64.MaxValue
+        |> shouldEqual (Ok Int64.MaxValue)
+
+        VirtualFileSystem.seekTarget SeekWhence.Current Int64.MaxValue (lazy 5L) 1L
+        |> shouldEqual (Error SeekFault.Overflow)

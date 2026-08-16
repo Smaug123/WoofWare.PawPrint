@@ -17,9 +17,11 @@ open WoofWare.PawPrint
 /// assert it and it would otherwise be a claim with nothing behind it. These tests drive it.
 ///
 /// Note this is `PRead` specifically. `SystemNative_Read` goes through `Common_Read` in
-/// `pal_io_common.h`, which *does* have a negative-size guard and answers ERANGE; `PRead` does not
-/// go through it, so the two entry points genuinely differ and the refusal is not an oversight in
-/// one of them.
+/// `pal_io_common.h`, which *does* have a negative-size guard — answering EINVAL, not the ERANGE
+/// its neighbour `Common_Write` answers for the same mistake — while `PRead` does not go through it
+/// at all. So the entry points genuinely differ and the refusal is not an oversight in one of them.
+/// `sourcesPure/ReadSeekSeeded.cs` pins `Read`'s EINVAL, including that it precedes the descriptor
+/// lookup.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestPReadNegativeSize =
