@@ -62,35 +62,22 @@ module internal StorageLocation =
         | ByrefRoot.PeByteRange _ -> failwith "rootTemplate: PeByteRange root has no Field-projectable template"
         | ByrefRoot.ExposedClassObject _ -> failwith "rootTemplate: ExposedClassObject is a single object reference"
 
-    /// Fold a projection chain to a byte offset relative to the root's
-    /// storage origin. Returns `None` for any chain whose offset can't be
-    /// computed (missing template, unsupported projection shape, missing
-    /// concrete type for a `ReinterpretAs` target, etc.); the caller
-    /// degrades to the coarse `SharedStorageKey` path.
+    /// Where a byref lands, as a container plus a flat byte coordinate within it: the root's
+    /// own offset inside its container, plus the offset its projection chain walks from
+    /// there.
     ///
-    /// The walk's coordinate is `int64` and is taken as-is. It is not an
-    /// access offset — nothing here dereferences either byref — so a
-    /// coordinate beyond `int32` is a perfectly good answer, and one that
-    /// `Unsafe.ByteOffset` reports to the guest. Narrowing it (as this used to)
-    /// wrapped `ref s.B` displaced by `Int32.MaxValue` onto `ref s.A`
-    /// displaced by `Int32.MinValue`: issue #993.
-    let private tryProjectionByteOffset
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (root : ByrefRoot)
-        (projs : ByrefProjection list)
-        : int64 option
-        =
-        let templateFor (ty : ConcreteType<ConcreteTypeHandle>) : CliType =
-            IlMachineManagedByref.zeroForConcreteType baseClassTypes state ty
-
-        let rootTemplateThunk () = rootTemplate state root
-
-        try
-            Some (IlMachineManagedByref.walkProjectionByteOffset templateFor rootTemplateThunk projs)
-        with _ ->
-            None
-
+    /// Returns `None` for any byref whose coordinate can't be computed — a root with no
+    /// byte-addressable container at all (`ExposedClassObject`), or a chain the walk cannot
+    /// fold (missing template, unsupported projection shape, missing concrete type for a
+    /// `ReinterpretAs` target). The caller degrades to the coarse `SharedStorageKey` path.
+    /// The `try` spans the container lookup as well as the walk, because a view root's
+    /// offset needs a heap lookup that can fail for the same kinds of reason.
+    ///
+    /// The coordinate is `int64` and is taken as-is. It is not an access offset — nothing
+    /// here dereferences either byref — so a coordinate beyond `int32` is a perfectly good
+    /// answer, and one that `Unsafe.ByteOffset` reports to the guest. Narrowing it (as this
+    /// used to) wrapped `ref s.B` displaced by `Int32.MaxValue` onto `ref s.A` displaced by
+    /// `Int32.MinValue`: issue #993.
     let private byteLocation
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -100,65 +87,22 @@ module internal StorageLocation =
         match ptr with
         | ManagedPointerSource.Null -> None
         | ManagedPointerSource.NativeIntPlaceholder _ -> None
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index) as root, projs) ->
-            tryProjectionByteOffset baseClassTypes state root projs
-            |> Option.map (fun byteOffset ->
-                ByteStorageIdentity.Array arr, ManagedPointerByteView.arrayBytePosition state arr index byteOffset
-            )
-        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex) as root, projs) ->
-            tryProjectionByteOffset baseClassTypes state root projs
-            |> Option.map (fun byteOffset -> ByteStorageIdentity.String str, int64 charIndex * 2L + byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange as root, projs) ->
-            tryProjectionByteOffset baseClassTypes state root projs
-            |> Option.map (fun byteOffset -> ByteStorageIdentity.PeByteRange peByteRange, byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset) as root, projs) ->
-            tryProjectionByteOffset baseClassTypes state root projs
-            |> Option.map (fun byteOffset ->
-                ByteStorageIdentity.StackMemory (thread, frame, block), int64 rootByteOffset + byteOffset
-            )
-        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, rootByteOffset) as root, projs) ->
-            tryProjectionByteOffset baseClassTypes state root projs
-            |> Option.map (fun byteOffset -> ByteStorageIdentity.NativeMemory block, int64 rootByteOffset + byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.LocalVariable (thread, frame, local) as root, projs) ->
-            tryProjectionByteOffset baseClassTypes state root projs
-            |> Option.map (fun byteOffset -> ByteStorageIdentity.StackLocal (thread, frame, local), byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.Argument (thread, frame, arg) as root, projs) ->
-            tryProjectionByteOffset baseClassTypes state root projs
-            |> Option.map (fun byteOffset -> ByteStorageIdentity.StackArgument (thread, frame, arg), byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringType, field, owner) as root, projs) ->
-            tryProjectionByteOffset baseClassTypes state root projs
-            |> Option.map (fun byteOffset -> ByteStorageIdentity.StaticField (declaringType, field, owner), byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr as root, projs) ->
-            tryProjectionByteOffset baseClassTypes state root projs
-            |> Option.map (fun byteOffset -> ByteStorageIdentity.HeapObject addr, byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, field), projs) ->
-            // One heap object is one storage container; a field root is a
-            // *view* into it at the field's layout offset, not its own
-            // container. Under `[StructLayout(LayoutKind.Explicit)]` on a
-            // class, two distinct fields can overlap, so a per-field identity
-            // would falsely assert disjointness — measured as a live
-            // wrong-direction `Memmove` (forward loop re-reading bytes it had
-            // overwritten) in
-            // `SpanMemmoveOverlappingExplicitLayoutClassFields.cs`.
-            //
-            // Resolving as if the byref were rooted at the whole object with
-            // a leading `Field` projection folds the field's offset within
-            // the object into the flat byte coordinate. The projection walk
-            // is unchanged in what it computes: `rootTemplate` for
-            // `HeapValue` yields the object's `Contents`, and the `Field`
-            // step's `getFieldById` is exactly the `DereferenceFieldById`
-            // the per-field root used to start from, so this resolves
-            // whenever the old shape did.
-            tryProjectionByteOffset
-                baseClassTypes
-                state
-                (ByrefRoot.HeapValue addr)
-                (ByrefProjection.Field field :: projs)
-            |> Option.map (fun byteOffset -> ByteStorageIdentity.HeapObject addr, byteOffset)
-        // The MethodTable auxiliary cell is a single object reference;
-        // `Field` projections are nonsensical on it, and overlap reasoning
-        // through it has no flat byte coordinate.
-        | ManagedPointerSource.Byref (ByrefRoot.ExposedClassObject _, _) -> None
+        | ManagedPointerSource.Byref (root, projs) ->
+            let templateFor (ty : ConcreteType<ConcreteTypeHandle>) : CliType =
+                IlMachineManagedByref.zeroForConcreteType baseClassTypes state ty
+
+            let rootTemplateThunk () = rootTemplate state root
+
+            try
+                match ByrefContainer.tryOfRoot state.ManagedHeap root with
+                | None -> None
+                | Some (container, rootOffset) ->
+                    let projectionOffset =
+                        IlMachineManagedByref.walkProjectionByteOffset templateFor rootTemplateThunk projs
+
+                    Some (container, rootOffset + projectionOffset)
+            with _ ->
+                None
 
     /// Coarse storage discriminator used purely to decide whether two byrefs
     /// *could* share underlying storage when `byteLocation` cannot derive a
