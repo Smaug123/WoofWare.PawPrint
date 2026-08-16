@@ -613,7 +613,7 @@ module internal NativeReflectionInvocation =
                         ctx.Thread
                         threadState
                         None
-                        ConstructedObjectDisposition.PushToCaller
+                        ReturnValueDisposition.PushToCaller
                         false
                         state
 

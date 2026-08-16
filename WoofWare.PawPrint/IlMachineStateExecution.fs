@@ -1526,7 +1526,7 @@ module IlMachineStateExecution =
         (thread : ThreadId)
         (threadState : ThreadState)
         (callSiteIlOpIndexOverride : int option)
-        (constructedObjectDisposition : ConstructedObjectDisposition)
+        (constructedObjectDisposition : ReturnValueDisposition)
         (wrapExceptionInTargetInvocation : bool)
         (state : IlMachineState)
         : IlMachineState * CallCommitment
@@ -1883,7 +1883,7 @@ module IlMachineStateExecution =
                     thread
                     threadState
                     None
-                    ConstructedObjectDisposition.PushToCaller
+                    ReturnValueDisposition.PushToCaller
                     true // wrapExceptionInTargetInvocation: mirror CreateInstanceOfT
                     state
                 // T's ctor frame is pushed; the activator call itself is done.
@@ -2045,7 +2045,7 @@ module IlMachineStateExecution =
                         WasInitialisingType = wasInitialising
                         Constructing = wasConstructing
                         CallSiteIlOpIndex = callSiteIlOpIndexOverride |> Option.defaultValue afterPop.IlOpIndex
-                        ConstructedObjectDisposition = constructedObjectDisposition
+                        ReturnValueDisposition = constructedObjectDisposition
                         WrapExceptionInTargetInvocation = wrapExceptionInTargetInvocation
                     }
 
@@ -2190,7 +2190,7 @@ module IlMachineStateExecution =
         (thread : ThreadId)
         (threadState : ThreadState)
         (callSiteIlOpIndexOverride : int option)
-        (constructedObjectDisposition : ConstructedObjectDisposition)
+        (constructedObjectDisposition : ReturnValueDisposition)
         (wrapExceptionInTargetInvocation : bool)
         (state : IlMachineState)
         : IlMachineState
@@ -2373,7 +2373,7 @@ module IlMachineStateExecution =
                     currentThread
                     currentThreadState
                     None
-                    ConstructedObjectDisposition.PushToCaller
+                    ReturnValueDisposition.PushToCaller
                     false // wrapExceptionInTargetInvocation
                     state
                 |> FirstLoadThis
@@ -2524,7 +2524,7 @@ module IlMachineStateExecution =
                 currentThread
                 threadState
                 None
-                (ConstructedObjectDisposition.DispatchAsException message)
+                (ReturnValueDisposition.DispatchAsException message)
                 false // wrapExceptionInTargetInvocation
                 state
 

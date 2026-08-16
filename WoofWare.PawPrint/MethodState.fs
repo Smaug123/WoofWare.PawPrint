@@ -50,12 +50,13 @@ type ConstructionState =
     /// that address (or, for value types, the object's now-complete contents).
     | Constructing of ManagedHeapAddress
 
-/// What `returnStackFrame` should do with the object a constructor frame was constructing,
-/// once that constructor returns.
+/// What `returnStackFrame` should do with a frame's product — the object it was constructing if
+/// `Constructing`, otherwise the value its signature says it returns — once it returns.
 [<RequireQualifiedAccess>]
-type ConstructedObjectDisposition =
-    /// The ordinary `newobj` convention: push the constructed object (or, for value types,
-    /// its now-complete contents) onto the caller's evaluation stack.
+type ReturnValueDisposition =
+    /// The ordinary convention: push the returned value, or under `newobj` the constructed
+    /// object (or, for value types, its now-complete contents), onto the caller's evaluation
+    /// stack.
     | PushToCaller
     /// The runtime synthesised this exception and pushed its ctor frame itself (see
     /// `IlMachineStateExecution.raiseRuntimeException`). Dispatch the constructed object as
@@ -69,6 +70,19 @@ type ConstructedObjectDisposition =
     /// accept the parameterless ctor's default, which is what the CLR produces when it
     /// throws the exception with no argument.
     | DispatchAsException of message : string option
+    /// Throw the returned value away rather than pushing it. The interpreter pushed this frame
+    /// itself, on top of a caller that is mid-instruction, to run something the CLR would have
+    /// run inside that instruction; the caller wants the frame's *effect*, not its value, and
+    /// its own evaluation stack already holds operands that a push would sit on top of.
+    ///
+    /// The canonical caller is `DynamicScopeOperand.mintDynamicMethod`, which runs the guest's
+    /// `DynamicMethod.GetMethodDescriptor` when a `call` names a callee that has not been minted:
+    /// the interpreter reads the resulting `_methodHandle` off the heap when the `call`
+    /// re-executes, so the `RuntimeMethodHandle` the method returns is redundant.
+    ///
+    /// Only meaningful for a `NotConstructing` frame: a constructor's product is the object, not
+    /// a return value, and no caller wants that discarded.
+    | Discard
 
 type MethodReturnState =
     {
@@ -83,10 +97,13 @@ type MethodReturnState =
         /// so that handler lookup sees the call site inside the protected region, even when
         /// the advanced resume PC falls outside it.
         CallSiteIlOpIndex : int
-        /// What to do with the constructed object (see `Constructing`) when this frame
-        /// returns. Anything other than `PushToCaller` is set by `raiseRuntimeException`,
-        /// which runs exception ctors via the dispatch loop.
-        ConstructedObjectDisposition : ConstructedObjectDisposition
+        /// What to do with this frame's product when it returns — the constructed object if
+        /// `Constructing`, otherwise the returned value. Anything other than `PushToCaller`
+        /// marks a frame the interpreter pushed itself rather than one a guest `call` or
+        /// `newobj` asked for: `DispatchAsException` by `raiseRuntimeException`, which runs
+        /// exception ctors via the dispatch loop, and `Discard` by
+        /// `DynamicScopeOperand.mintDynamicMethod`.
+        ReturnValueDisposition : ReturnValueDisposition
         /// When true, an exception escaping this frame is wrapped in a fresh
         /// `System.Reflection.TargetInvocationException` whose `_innerException` points at the
         /// original exception object. Used by the `Activator.CreateInstance<T>()` intrinsic to

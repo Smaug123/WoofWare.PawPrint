@@ -147,11 +147,18 @@ module IlMachineThreadState =
                 failwith
                     $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly represented object construction"
             | ConstructionState.NotConstructing ->
-                match returnState.ConstructedObjectDisposition with
-                | ConstructedObjectDisposition.PushToCaller -> ()
-                | ConstructedObjectDisposition.DispatchAsException _ ->
+                match returnState.ReturnValueDisposition with
+                | ReturnValueDisposition.PushToCaller -> ()
+                | ReturnValueDisposition.DispatchAsException _ ->
                     failwith
                         $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly requested exception dispatch on return"
+                | ReturnValueDisposition.Discard ->
+                    // A trampoline has no value of its own to discard: the concrete callee it
+                    // dispatches to produces the return value, and does so into the caller this
+                    // frame is about to hand back to. Discarding is a decision about a *real*
+                    // frame's product, so seeing it here means one was tagged as synthetic.
+                    failwith
+                        $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly requested that its return value be discarded"
 
                 match returnState.WasInitialisingType with
                 | None -> ()
@@ -214,14 +221,20 @@ module IlMachineThreadState =
 
         match returnState.Constructing with
         | ConstructionState.Constructing constructing ->
-            match returnState.ConstructedObjectDisposition with
-            | ConstructedObjectDisposition.DispatchAsException message ->
+            match returnState.ReturnValueDisposition with
+            | ReturnValueDisposition.DispatchAsException message ->
                 // This ctor was constructing a runtime-synthesised exception object.
                 // Don't push it onto the eval stack; signal to the caller that exception
                 // dispatch should occur.
                 let constructed = ManagedHeap.get constructing state.ManagedHeap
                 ReturnFrameResult.DispatchException (state, constructing, constructed.ConcreteType, message)
-            | ConstructedObjectDisposition.PushToCaller ->
+            | ReturnValueDisposition.Discard ->
+                // A constructor's product is the object, and it is already allocated and reachable
+                // from `Constructing` — there is nothing here to throw away, and the caller
+                // presumably wanted the object. Nobody constructs `Discard`ing frames today.
+                failwith
+                    $"logic error: %s{returningMethodState.ExecutingMethod.Name} was constructing an object, but its frame asked for its product to be discarded"
+            | ReturnValueDisposition.PushToCaller ->
 
             // Assumption: a constructor can't also return a value.
             // If we were constructing a reference type, we push a reference to it.
@@ -240,28 +253,50 @@ module IlMachineThreadState =
                 state |> pushToEvalStack (CliType.ofManagedObject constructing) currentThread
             |> ReturnFrameResult.NormalReturn
         | ConstructionState.NotConstructing ->
-            let retType = returningMethodState.ExecutingMethod.Signature.ReturnType
 
-            match retType, returningMethodState.EvaluationStack.Values with
-            | MethodReturnType.Void, [] -> state
+        // The frame's stack is checked against its signature whatever becomes of the value: a
+        // method that returned the wrong number of values is an invalid program whether or not
+        // anyone wanted the value. Only the *push* is the disposition's business.
+        let returned : (EvalStackValue * ConcreteTypeHandle) option =
+            match
+                returningMethodState.ExecutingMethod.Signature.ReturnType, returningMethodState.EvaluationStack.Values
+            with
+            | MethodReturnType.Void, [] -> None
             | MethodReturnType.Void, _ ->
                 failwith
                     $"Invalid CIL: void method %s{returningMethodState.ExecutingMethod.Name} returned with a non-empty evaluation stack"
             | MethodReturnType.Returns _, [] ->
                 failwith
                     $"Invalid CIL: non-void method %s{returningMethodState.ExecutingMethod.Name} returned with an empty evaluation stack"
-            | MethodReturnType.Returns retType, [ retVal ] ->
+            | MethodReturnType.Returns retType, [ retVal ] -> Some (retVal, retType)
+            | MethodReturnType.Returns _, _ ->
+                failwith
+                    $"Invalid CIL: method %s{returningMethodState.ExecutingMethod.Name} returned with more than one evaluation stack value"
+
+        match returnState.ReturnValueDisposition with
+        | ReturnValueDisposition.DispatchAsException _ ->
+            // `DispatchAsException` is set only by `raiseRuntimeException`, which always pushes a
+            // constructor frame, so it never reaches here. Refusing rather than falling through to
+            // a push matters: a swallowed exception dispatch would leave the guest running past a
+            // throw the runtime had decided on.
+            failwith
+                $"logic error: %s{returningMethodState.ExecutingMethod.Name} was not constructing an object, but its frame asked for its product to be dispatched as an exception"
+        | ReturnValueDisposition.Discard ->
+            // The caller is mid-instruction and will re-execute it; its evaluation stack still
+            // holds that instruction's operands, so there is nowhere to put this value that would
+            // not be mistaken for one of them.
+            state
+        | ReturnValueDisposition.PushToCaller ->
+            match returned with
+            | None -> state
+            | Some (retVal, retType) ->
                 let zero, state =
                     IlMachineTypeResolution.cliTypeZeroOfHandle state baseClassTypes retType
 
                 let toPush = EvalStackValue.toCliTypeCoerced zero retVal
 
                 state |> pushToEvalStack toPush currentThread
-            | MethodReturnType.Returns _, _ ->
-                failwith
-                    $"Invalid CIL: method %s{returningMethodState.ExecutingMethod.Name} returned with more than one evaluation stack value"
-
-            |> ReturnFrameResult.NormalReturn
+        |> ReturnFrameResult.NormalReturn
 
     let initial
         (lf : ILoggerFactory)

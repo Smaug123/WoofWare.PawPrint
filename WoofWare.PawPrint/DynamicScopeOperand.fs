@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+open Microsoft.Extensions.Logging
+
 /// <summary>
 /// What looking an index up in a live <c>DynamicScope</c> found, at the granularity the guest can
 /// tell apart. Every distinction here is measured on real .NET, by rewriting the scope through
@@ -29,6 +31,23 @@ type internal ScopeEntryLookup =
     /// writing the name into `_message` alone would leave `.Message` and `.ParamName` disagreeing
     /// about whether it is known — and the same reasoning applies here.
     | PastEnd
+
+/// <summary>
+/// What resolving a method-position <c>DynamicScope</c> entry found.
+/// </summary>
+/// <remarks>
+/// The two cases are the two halves of CoreCLR's <c>dm.GetMethodDescriptor()</c>: it hands back the
+/// existing <c>_methodHandle</c> if there is one, and otherwise *mints* the method first, which is
+/// managed guest code. Reading an operand cannot run guest code, so the second half comes back to
+/// the caller to arrange — see <c>DynamicScopeOperand.mintDynamicMethod</c>.
+/// </remarks>
+[<RequireQualifiedAccess>]
+type internal DynamicMethodResolution =
+    /// The entry names a <c>DynamicMethod</c> that has been minted; this is its identity.
+    | Resolved of DynamicMethodHandle
+    /// The entry names a <c>DynamicMethod</c> whose <c>_methodHandle</c> is still null, at this heap
+    /// address. It has to be minted before the instruction naming it can run.
+    | NeedsMinting of ManagedHeapAddress
 
 /// <summary>
 /// Resolving an operand that names an entry in the executing method's <c>DynamicScope</c>, at the
@@ -384,13 +403,15 @@ module internal DynamicScopeOperand =
             invalidProgram $"DynamicScope entry %d{scopeIndex} names %O{notClosed}, which is not a closed type"
 
     /// <summary>
-    /// The dynamic method named by entry <paramref name="scopeIndex"/>.
+    /// The dynamic method named by entry <paramref name="scopeIndex"/>, or the object to mint if it
+    /// has not been minted yet.
     /// </summary>
     /// <remarks>
     /// <para>
     /// This is CoreCLR's <c>ResolveToken</c> arm <c>methodHandle = dm.GetMethodDescriptor().Value</c>
-    /// (<c>DynamicILGenerator.cs:798-803</c>), minus the minting half of
-    /// <c>GetMethodDescriptor</c> — see the <c>_methodHandle</c> refusal below.
+    /// (<c>DynamicILGenerator.cs:798-803</c>). <c>GetMethodDescriptor</c> mints an unminted callee
+    /// rather than failing on one, so the unminted case is a <c>NeedsMinting</c> answer rather than a
+    /// refusal; <see cref="mintDynamicMethod"/> is the other half.
     /// </para>
     /// <para>
     /// Reading late is not a stylistic echo of <see cref="closedType"/> here; it is what makes the
@@ -426,7 +447,7 @@ module internal DynamicScopeOperand =
         (scopeIndex : int)
         (state : IlMachineState)
         (thread : ThreadId)
-        : DynamicMethodHandle
+        : DynamicMethodResolution
         =
         let entry =
             match entryObject operation scopeIndex state thread with
@@ -497,19 +518,24 @@ module internal DynamicScopeOperand =
                 AllocatedNonArrayObject.DereferenceField "_methodHandle" dm
                 |> CliType.unwrapPrimitiveLikeDeep
             with
-            | CliType.ObjectRef (Some stub) -> stub
-            | CliType.ObjectRef None ->
-                // Real .NET mints the target here: `ResolveToken` calls `GetMethodDescriptor`, which
-                // takes `lock (this)` and runs the guest's `GetCallableMethod`, reaching the very
-                // QCall PawPrint implements. Doing the same means an IL op suspending for a managed
-                // call and re-executing, which is a mechanism the interpreter does not have yet;
-                // until it does, a callee the guest never minted itself is refused here rather than
-                // silently called wrongly.
-                failwith
-                    $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, a DynamicMethod that has not been minted (_methodHandle is null). Real .NET mints it on demand from ResolveToken; PawPrint cannot yet run a managed call from an IL op, so the guest must invoke or bind a delegate to the callee first"
+            | CliType.ObjectRef stub -> stub
             | other ->
                 failwith
                     $"%s{operation}: expected DynamicScope entry %d{scopeIndex}'s DynamicMethod._methodHandle to be a reference, got %O{other}"
+
+        match stub with
+        | None ->
+            // Not a refusal: real .NET mints the target at exactly this point, because
+            // `ResolveToken` calls `GetMethodDescriptor`, which takes `lock (this)` and runs the
+            // guest's `GetCallableMethod` — reaching the very QCall PawPrint implements. Reading an
+            // operand cannot run guest code, so the object goes back to the instruction to mint and
+            // then re-execute.
+            //
+            // `entry`, not the scope slot: where the slot held a `VarArgMethod` this is the
+            // unwrapped `m_dynamicMethod`, which is exactly what `ResolveToken` mints in that case
+            // (`DynamicILGenerator.cs:827`).
+            DynamicMethodResolution.NeedsMinting entry
+        | Some stub ->
 
         let registryId =
             match
@@ -522,10 +548,133 @@ module internal DynamicScopeOperand =
                     $"%s{operation}: expected DynamicScope entry %d{scopeIndex}'s RuntimeMethodInfoStub.m_value to carry a method registry id, got %O{other}"
 
         match MethodHandleRegistry.resolveMethodFromId registryId state.MethodHandles with
-        | Some (MethodHandle.FromDynamic handle) -> handle
+        | Some (MethodHandle.FromDynamic handle) -> DynamicMethodResolution.Resolved handle
         | Some (MethodHandle.FromMetadata identity) ->
             failwith
                 $"%s{operation}: DynamicScope entry %d{scopeIndex} is a DynamicMethod whose _methodHandle names the metadata method %O{identity.GetMethodDefinitionHandle ()}; only mintDynamicMethod may populate that field"
         | None ->
             failwith
                 $"%s{operation}: DynamicScope entry %d{scopeIndex} is a DynamicMethod whose _methodHandle carries registry id %d{registryId}, which is not registered"
+
+    /// <summary>
+    /// Push a frame that mints <paramref name="callee"/>, an as-yet-unminted <c>DynamicMethod</c>
+    /// that some instruction on <paramref name="thread"/> names. The caller's program counter is
+    /// deliberately not advanced: when this frame returns, the naming instruction runs again and
+    /// this time finds a non-null <c>_methodHandle</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The minting is done by *calling the guest's own* <c>DynamicMethod.GetMethodDescriptor</c>,
+    /// which is what CoreCLR's <c>ResolveToken</c> calls (<c>DynamicILGenerator.cs:800</c>), rather
+    /// than by reading the builder's fields and minting natively. That matters for more than
+    /// tidiness: <c>GetMethodDescriptor</c> takes <c>lock (this)</c> and double-checks under it, so
+    /// two threads racing to call the same unminted callee agree on one identity without the
+    /// interpreter arranging anything; it refuses an empty body with
+    /// <c>InvalidOperationException</c>, which a native shortcut would have to fabricate; and it
+    /// bakes the body <em>now</em>, so a guest that emitted into the callee after binding the
+    /// caller to a delegate gets the later body, as measured on real .NET.
+    /// </para>
+    /// <para>
+    /// No re-entry marker is needed, and none is wanted. Whether the mint has happened is a fact
+    /// about the guest heap — <c>_methodHandle</c> is null or it is not — exactly as it is for
+    /// class initialisation, so the re-executed instruction can simply ask again. A marker would
+    /// be a second copy of that answer, free to disagree with it.
+    /// </para>
+    /// <para>
+    /// The caller's evaluation stack already holds the naming instruction's operands, and they must
+    /// still be there when it re-executes. <c>callMethod</c> pops exactly the one <c>this</c>
+    /// pushed here (<c>GetMethodDescriptor</c> takes no arguments and is not virtual, so nothing
+    /// peeks deeper), and <c>ReturnValueDisposition.Discard</c> stops the <c>RuntimeMethodHandle</c>
+    /// it returns from landing on top of them. The value is genuinely redundant rather than merely
+    /// inconvenient: it wraps the same <c>_methodHandle</c> the re-execution reads off the heap.
+    /// </para>
+    /// <para>
+    /// <b>Divergence.</b> Real .NET mints as part of *compiling* the caller, not of running it, so
+    /// it mints every callee the JIT's importer reaches before the body's first instruction — even
+    /// one behind an untaken conditional branch — and a callee that cannot be minted therefore
+    /// fails the whole invocation. All measured: an empty-bodied callee named from an untaken
+    /// branch still throws <c>InvalidOperationException</c>, and a <c>stsfld</c> preceding the call
+    /// site does not take effect. Minting here instead means PawPrint runs the prefix and skips the
+    /// unreached mint.
+    /// </para>
+    /// <para>
+    /// Not fixed, because the fix is worse. Preparing a whole body up front means deciding which
+    /// call sites the importer would have reached, and it is not "all of them": a call site after
+    /// an unconditional <c>ret</c> is measurably *not* resolved (the bytes and the scope entry are
+    /// both present — <c>1F 2A 2A 28 02 00 00 06 2A</c> — and the callee stays unminted, so the
+    /// program answers 42 rather than throwing). A whole-body walk would mint a callee real .NET
+    /// never touches and throw where real .NET answers, trading a mistimed exception for a wrong
+    /// one. Reproducing the importer's reachability, constant-branch folding included, is the only
+    /// honest version of that fix.
+    /// </para>
+    /// <para>
+    /// No test pins this, because no guest can currently observe it. Seeing the difference requires
+    /// a dynamic method body that either performs an externally-visible side effect before the call
+    /// site or catches the failure itself, and a body can do neither today: every field-shaped
+    /// opcode is <c>ScopeOperandKind.NotYetSupported</c>, a metadata callee needs the unimplemented
+    /// <c>RuntimeMethodHandle::GetMethodDef</c>, and <c>DynamicMethodBody.read</c> refuses a body
+    /// with any exception region. Whichever of those lands first makes this observable, and should
+    /// bring a test with it.
+    /// </para>
+    /// </remarks>
+    let mintDynamicMethod
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (callee : ManagedHeapAddress)
+        (thread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let dynamicMethodType = baseClassTypes.DynamicMethod
+        let assy = state._LoadedAssemblies.[dynamicMethodType.Assembly]
+        let typeDef = assy.TypeDefs.[dynamicMethodType.Identity.TypeDefinition.Get]
+
+        let getMethodDescriptor =
+            typeDef.Methods
+            |> List.tryFind (fun method ->
+                method.Name = "GetMethodDescriptor"
+                && not method.IsStatic
+                && MethodInfo.arity method = 0
+            )
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{operation}: System.Reflection.Emit.DynamicMethod has no parameterless instance GetMethodDescriptor; CoreCLR's ResolveToken calls it to mint an unminted callee, so PawPrint cannot mint one without it"
+            )
+            // `DynamicMethod` is not generic (it is a sealed class with no type parameters), so
+            // nothing in this method's type-generic positions can be a `GenericParamFromMetadata`.
+            |> MethodInfo.mapTypeGenerics (fun _ ->
+                failwith<TypeDefn> $"%s{operation}: System.Reflection.Emit.DynamicMethod was unexpectedly generic"
+            )
+
+        let state, concretized, _declaringType =
+            ExecutionConcretization.concretizeMethodForExecution
+                loggerFactory
+                baseClassTypes
+                thread
+                getMethodDescriptor
+                None
+                None
+                state
+
+        let state =
+            IlMachineState.pushToEvalStack (CliType.ObjectRef (Some callee)) thread state
+
+        let threadState = state.ThreadState.[thread]
+
+        IlMachineStateExecution.callMethod
+            loggerFactory
+            baseClassTypes
+            None // not initialising a type
+            ConstructionState.NotConstructing
+            false // no interface resolution: GetMethodDescriptor is a non-virtual instance method
+            false // not a class constructor
+            false // do NOT advance the caller's PC: the naming instruction has to run again
+            concretized.Generics
+            concretized
+            thread
+            threadState
+            None
+            ReturnValueDisposition.Discard
+            false // wrapExceptionInTargetInvocation
+            state

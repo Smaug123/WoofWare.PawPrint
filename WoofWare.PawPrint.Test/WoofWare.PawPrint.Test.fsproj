@@ -105,10 +105,10 @@
     <Compile Include="TestInternalAlloc.fs" />
     <Compile Include="TestNativeEnum.fs" />
     <Compile Include="TestMethodOwner.fs" />
+    <Compile Include="TestDynamicMethodMintOutcome.fs" />
     <Compile Include="TestDynamicMethodTracing.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
     <Compile Include="TestNativeGetDynamicMethod.fs" />
-    <Compile Include="TestDynamicMethodMethodToken.fs" />
     <Compile Include="TestMethodReturnType.fs" />
     <Compile Include="TestFunctionPointerConcretization.fs" />
     <Compile Include="Netstandard21FSharpCore.fs" />
