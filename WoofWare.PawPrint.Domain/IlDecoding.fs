@@ -43,8 +43,18 @@ module IlDecoding =
     /// derivation of the same fact would drift from this one.
     [<RequireQualifiedAccess>]
     type ScopeOperandKind =
-        /// A boxed `RuntimeTypeHandle`.
+        /// A boxed `RuntimeTypeHandle`, narrowed to the closed type it names. Every opcode that
+        /// consumes a type *as a type* — to allocate one, to test against one, to measure one —
+        /// wants this.
         | Type
+        /// A boxed `RuntimeTypeHandle`, read as whatever target it names and narrowed no further.
+        /// Only `ldtoken` wants this: it hands the handle straight to the guest instead of
+        /// consuming it, so every shape a `RuntimeType` can take is legal. Measured on real .NET
+        /// against a closed control: `ldtoken` of an open generic definition, of a bare generic
+        /// parameter, of `System.Void`, of a byref and of a pointer all run, and all round-trip
+        /// through `Type.GetTypeFromHandle` to the right `Type` — where <see cref="Type"/>'s
+        /// narrowing refuses the first three outright.
+        | AnyType
         /// A method: today a `DynamicMethod`, either bare (as `Emit(OpCode, MethodInfo)` stores it)
         /// or inside the `VarArgMethod` wrapper `EmitCall` always stores. The other kinds
         /// `ResolveToken` accepts in method position — a `RuntimeMethodHandle`, a
@@ -121,20 +131,10 @@ module IlDecoding =
         | UnaryMetadataTokenIlOp.Stelem ->
             ScopeOperandKind.NotYetSupported
                 "ldelem/stelem resolve their element type through a separate path that yields a TypeInfo rather than a ConcreteTypeHandle; note that the nullary forms (ldelem.i4 and friends) need no operand at all"
-        | UnaryMetadataTokenIlOp.Ldtoken ->
-            // `ldtoken` does not narrow to a closed type the way every other type-shaped opcode
-            // does: `ldtoken typeof(List<>)` is legal and pushes a handle to the open definition, so
-            // it wants the whole `RuntimeTypeHandleTarget` where `DynamicScopeOperand.closedType`
-            // deliberately answers only `Closed`. It also accepts method and field entries, which
-            // are a further two kinds again.
-            //
-            // A guest can tell a correct answer from a consistently-wrong one without any of that:
-            // the body can `box` the `RuntimeTypeHandle` it pushed and return it as `object`, and
-            // the caller unboxes and compares against `typeof(X).TypeHandle` in ordinary C#
-            // (measured — that guest exits 0 on real .NET). So this arm is testable once the
-            // unnarrowed target is available.
-            ScopeOperandKind.NotYetSupported
-                "ldtoken needs the unnarrowed RuntimeTypeHandleTarget (ldtoken of an open generic definition is legal, unlike every other type-shaped opcode), and also accepts method and field entries; DynamicScopeOperand.closedType answers only closed types"
+        // `ldtoken` also accepts field and method entries, which the table below refuses by name
+        // rather than treating as wrong-kind: real .NET resolves both, so they are gaps, not
+        // errors.
+        | UnaryMetadataTokenIlOp.Ldtoken -> ScopeOperandKind.AnyType
         | UnaryMetadataTokenIlOp.Constrained ->
             ScopeOperandKind.NotYetSupported
                 "constrained. is only meaningful as a prefix to a callvirt, which needs method entries"
@@ -184,6 +184,7 @@ module IlDecoding =
                 failwith
                     $"TODO: a dynamic method's %O{op} names DynamicScope entry %d{index} (token 0x%08x{value}), but %s{missing}"
             | ScopeOperandKind.Type, DynamicScopeEntry.TypeHandle
+            | ScopeOperandKind.AnyType, DynamicScopeEntry.TypeHandle
             | ScopeOperandKind.Method, DynamicScopeEntry.DynamicMethod
             // `Emit(OpCode, MethodInfo)` and `EmitCall` differ only in whether the entry is wrapped;
             // both are ordinary ways to spell the same call, so both are accepted here.
@@ -195,6 +196,18 @@ module IlDecoding =
             | ScopeOperandKind.Type, held -> refuse "a type handle" (DynamicScopeEntry.describe held)
             | ScopeOperandKind.Method, held -> refuse "a method" (DynamicScopeEntry.describe held)
             | ScopeOperandKind.Field, held -> refuse "a field" (DynamicScopeEntry.describe held)
+            // Not `refuse`: `ldtoken` of a field or of a method is legal IL that real .NET resolves
+            // (measured, against a type-shaped control that runs), so the entry is not the wrong
+            // kind — PawPrint has not wired these two up. A field entry needs a *non-narrowing*
+            // field walk, because `ldtoken` of a field on an open generic definition runs where
+            // `ldfld` of the same field is an InvalidProgramException; a method entry needs
+            // `RuntimeMethodHandle::GetMethodDef` like every other reflected member.
+            | ScopeOperandKind.AnyType, (DynamicScopeEntry.GenericFieldInfo | DynamicScopeEntry.FieldHandle) ->
+                failwith
+                    $"TODO: a dynamic method's %O{op} names DynamicScope entry %d{index} (token 0x%08x{value}), which holds a field; ldtoken of a field is legal and PawPrint does not resolve it yet, because it needs a field walk that does not narrow to a closed declaring type as DynamicScopeOperand.field does"
+            | ScopeOperandKind.AnyType, held ->
+                failwith
+                    $"TODO: a dynamic method's %O{op} names DynamicScope entry %d{index} (token 0x%08x{value}), which holds %s{DynamicScopeEntry.describe held}; ldtoken accepts type, field and method entries, and PawPrint resolves only type entries so far"
 
     let private readStringToken (universe : IlTokenUniverse) (reader : byref<BlobReader>) : StringOperand =
         let value = reader.ReadUInt32 () |> int
