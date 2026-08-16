@@ -177,6 +177,17 @@ module internal DynamicMethodBody =
                             // Whether the wrapper holds a dynamic method or a reflected one is read
                             // when the instruction runs, along with everything else about it.
                             DynamicScopeEntry.VarArgMethod
+                        elif DynamicScopeOperand.isCorelibType baseClassTypes.RuntimeFieldHandle state concreteType then
+                            // A bare boxed handle: the module-global shape of
+                            // `Emit(OpCode, FieldInfo)`, and what `DynamicILInfo.GetTokenFor`
+                            // produces for any field. Which field it names is read live, for the
+                            // reason `TypeHandle` gives.
+                            DynamicScopeEntry.FieldHandle
+                        elif DynamicScopeOperand.isCorelibType baseClassTypes.GenericFieldInfo state concreteType then
+                            // The ordinary shape, despite the name: `Emit(OpCode, FieldInfo)` wraps
+                            // whenever the field has a declaring type, which everything reachable
+                            // through `Type.GetField` does.
+                            DynamicScopeEntry.GenericFieldInfo
                         else
                             DynamicScopeEntry.Unsupported $"a %s{describeType concreteType}"
                 | other -> failwith $"%s{operation}: expected DynamicScope entry %d{i} to be a reference, got %O{other}"

@@ -798,6 +798,27 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // Field-shaped operands resolved against a `DynamicScope` rather than against
+                // metadata: all six of `ldfld`/`ldflda`/`stfld`/`ldsfld`/`ldsflda`/`stsfld`, over
+                // static and instance fields, a corelib field, a closed generic instantiation, and
+                // the two `InvalidProgramException`s an operand that names an open generic
+                // definition or the wrong staticness produces. Registered with the dynamic-code
+                // switch overridden, like its siblings. Every expectation was measured against the
+                // host's real .NET, which returns 0 for this program.
+                FileName = "DynamicMethodFieldToken.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // Method-shaped operands resolved against a `DynamicScope` rather than against
                 // metadata: `call` naming a scope entry that is itself a `DynamicMethod`, including
                 // a method naming *itself*. Registered with the dynamic-code switch overridden, like

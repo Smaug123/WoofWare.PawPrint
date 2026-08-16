@@ -48,8 +48,9 @@ module internal UnaryMetadataFieldOps =
         && field.DeclaringType.Name = "CastHelpers"
         && field.DeclaringType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
 
-    /// Resolve a field-bearing metadata token to the field it names, together with the assembly
-    /// whose metadata scopes that field.
+    /// Resolve a field-bearing operand — a metadata token, or a `DynamicScope` entry already
+    /// resolved to a `FieldHandle` — to the field it names, together with the assembly whose
+    /// metadata scopes that field.
     ///
     /// A `FieldInfo` is decoded from its declaring
     /// assembly's tables, so that assembly — not the executing one — is what interprets
@@ -67,10 +68,59 @@ module internal UnaryMetadataFieldOps =
         (state : IlMachineState)
         : IlMachineState * FieldInfo<TypeDefn, TypeDefn> * DumpedAssembly
         =
-        let activeAssy = ctx.ActiveAssembly
+        match ctx.FieldOperand with
+        | ResolvedFieldOperand.FromScope fieldHandle ->
+            // A `DynamicScope` operand arrives already resolved to the field's *identity*: the
+            // assembly, the declaring `RuntimeTypeHandleTarget`, and the `FieldDefinitionHandle`
+            // that the field-handle registry recorded when the guest asked for the handle. All that
+            // remains is the projection to a `FieldInfo`, which is the same table read the
+            // `FieldDefinition` arm below performs.
+            let declaringAssy, field = FieldRvaData.fieldForHandle opName fieldHandle state
+
+            // The declaring type's generic arguments, substituted in from the instantiation the
+            // registry recorded rather than left as metadata parameters. The field's *signature* is
+            // deliberately not touched: it may itself mention those parameters (`Box<T>.Item : T`),
+            // and the ops resolve it against `field.DeclaringType.Generics` through
+            // `concretizeFieldForExecution` — which is exactly what the metadata `MemberReference`
+            // arm relies on too.
+            let typeGenerics =
+                match fieldHandle.GetDeclaringTypeHandle () with
+                | RuntimeTypeHandleTarget.Closed declaringTypeHandle ->
+                    match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
+                    | Some declaringType ->
+                        declaringType.Generics
+                        |> Seq.map (fun handle ->
+                            Concretization.concreteHandleToTypeDefn
+                                ctx.BaseClassTypes
+                                handle
+                                state.ConcreteTypes
+                                state._LoadedAssemblies
+                        )
+                        |> ImmutableArray.CreateRange
+                    | None ->
+                        failwith
+                            $"BUG: %s{opName}: the declaring type %O{declaringTypeHandle} of a DynamicScope field operand is not concretized, but the field-handle registry only ever records concretized targets"
+                | notClosed ->
+                    // `DynamicScopeOperand.field` refuses these as an invalid program, so execution
+                    // never reaches an op with one.
+                    failwith
+                        $"BUG: %s{opName}: a DynamicScope field operand reached the ops with the non-closed declaring type %O{notClosed}, which DynamicScopeOperand.field is supposed to have refused"
+
+            let field =
+                field
+                |> FieldInfo.mapTypeGenerics (fun index _ ->
+                    if index < 0 || index >= typeGenerics.Length then
+                        failwith
+                            $"%s{opName}: field %s{field.Name} names type generic parameter %d{index}, but its declaring type has %d{typeGenerics.Length}"
+                    else
+                        typeGenerics.[index]
+                )
+
+            state, field, declaringAssy
+        | ResolvedFieldOperand.FromMetadata (activeAssy, metadataToken) ->
 
         let state, field =
-            match ctx.MetadataToken with
+            match metadataToken with
             | MetadataToken.FieldDefinition fieldHandle ->
                 match activeAssy.Fields.TryGetValue fieldHandle with
                 | false, _ ->
@@ -127,6 +177,12 @@ module internal UnaryMetadataFieldOps =
     ///   obj."), evaluating the receiver for its side effects and discarding it. PawPrint has not
     ///   implemented that form: none of these ops has a path to static storage. So we reject it
     ///   as unimplemented.
+    ///
+    /// No compiler emits either mismatch, but a *scope* operand reaches both in three lines of guest
+    /// code, since `ILGenerator.Emit` takes whatever `FieldInfo` it is handed and does not check the
+    /// opcode against it. Measured on real .NET: a static op on an instance field is a catchable
+    /// `InvalidProgramException`, and an instance op on a static field runs. Neither is implemented
+    /// here, in either token universe; see `docs/divergences.md`.
     let private checkFieldStaticness
         (opName : string)
         (verb : string)

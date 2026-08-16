@@ -451,6 +451,18 @@ public static class Entry
         /// *type* and reads nothing out of it. Which method it names is read when the instruction
         /// runs, by which time `GetMethodDescriptor` has assigned that field.
         | DynamicMethodObject
+        /// A boxed `System.RuntimeFieldHandle`, as `DynamicScope.GetTokenFor(RuntimeFieldHandle)`
+        /// adds — the shape a module-level global, or `DynamicILInfo.GetTokenFor`, produces.
+        ///
+        /// Zeroed, `m_ptr` included, which is all *decoding* needs: it classifies the entry by its
+        /// type and reads nothing out of it. Which field it names is read when the instruction runs.
+        | FieldHandleObject
+        /// A `System.Reflection.Emit.GenericFieldInfo`, as
+        /// `DynamicScope.GetTokenFor(RuntimeFieldHandle, RuntimeTypeHandle)` adds — the shape
+        /// *every* field a guest can reach through `Type.GetField` produces, generic or not.
+        ///
+        /// Zeroed, for the reason `FieldHandleObject` is.
+        | GenericFieldInfoObject
 
     /// One clause of an `__ExceptionInfo`, in the shape the parallel arrays hold it.
     type private ClauseSpec =
@@ -551,6 +563,21 @@ public static class Entry
                         [| 0x17uy |]
                         [| 0x8Duy |]
                         System.BitConverter.GetBytes (index ||| 0x02000000)
+                        [| 0x2Auy |]
+                    ]
+            Scope = scope
+        }
+
+    /// A `ldsfld` naming scope entry <paramref name="index"/>, then `ret`. The tag is the one
+    /// `GetTokenFor(RuntimeFieldHandle)` applies (FieldDef), and is likewise not what decides the
+    /// resolution: the entry is.
+    let private ldsfldBody (index : int) (scope : ScopeEntry list) =
+        { doublingBody with
+            Code =
+                Array.concat
+                    [
+                        [| 0x7Euy |]
+                        System.BitConverter.GetBytes (index ||| 0x04000000)
                         [| 0x2Auy |]
                     ]
             Scope = scope
@@ -659,6 +686,24 @@ public static class Entry
                     | ScopeEntry.VarArgMethodObject ->
                         let addr, state =
                             allocateZeroed loggerFactory baseClassTypes baseClassTypes.VarArgMethod state
+
+                        CliType.ObjectRef (Some addr), state
+                    | ScopeEntry.GenericFieldInfoObject ->
+                        let addr, state =
+                            allocateZeroed loggerFactory baseClassTypes baseClassTypes.GenericFieldInfo state
+
+                        CliType.ObjectRef (Some addr), state
+                    | ScopeEntry.FieldHandleObject ->
+                        let addr, state =
+                            allocateZeroedAs
+                                loggerFactory
+                                baseClassTypes
+                                (TypeDefn.FromDefinition (
+                                    baseClassTypes.RuntimeFieldHandle.Identity,
+                                    SignatureTypeKind.ValueType
+                                ))
+                                baseClassTypes.RuntimeFieldHandle
+                                state
 
                         CliType.ObjectRef (Some addr), state
                     | ScopeEntry.TypeHandle target ->
@@ -1589,6 +1634,95 @@ public static class Entry
         message |> shouldContainText "Newarr"
         message |> shouldContainText "entry 2"
         message |> shouldContainText "rather than a type handle"
+
+    /// The `DynamicScope` index every `ldsfld` in a body names. The sibling of
+    /// `scopeTypeOperands`, and separate for the same reason.
+    let private scopeFieldOperands (body : MintedDynamicMethodBody) : int list =
+        body.Instructions
+        |> List.map fst
+        |> List.choose (fun op ->
+            match op with
+            | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldsfld, operand) ->
+                match operand with
+                | MetadataOperand.FromDynamicScope index -> Some index
+                | MetadataOperand.FromMetadata token ->
+                    failwith $"expected a dynamic-scope operand, got the metadata token %O{token.Token}"
+            | _ -> None
+        )
+
+    /// The shape every field a guest can reach arrives in, despite the name:
+    /// `Emit(OpCode, FieldInfo)` takes the two-argument `GetTokenFor` whenever the field has a
+    /// declaring type, which everything `Type.GetField` returns has.
+    [<Test>]
+    let ``a ldsfld naming a GenericFieldInfo resolves against the DynamicScope`` () : unit =
+        let body =
+            ldsfldBody
+                2
+                [
+                    ScopeEntry.Null
+                    ScopeEntry.Blob [| 0x00uy |]
+                    ScopeEntry.GenericFieldInfoObject
+                ]
+
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let _, definition = definitionBehindStub state stubAddress
+
+        scopeFieldOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
+
+    /// The other field shape, which no guest can produce today — `Emit` uses it only for a field
+    /// with no declaring type, and `DynamicILInfo`'s resolvers are refused by name. Accepted at
+    /// decode all the same, because real .NET resolves it (measured) and refusing it would be a
+    /// divergence rather than a gap.
+    [<Test>]
+    let ``a ldsfld naming a bare RuntimeFieldHandle resolves against the DynamicScope`` () : unit =
+        let body =
+            ldsfldBody
+                2
+                [
+                    ScopeEntry.Null
+                    ScopeEntry.Blob [| 0x00uy |]
+                    ScopeEntry.FieldHandleObject
+                ]
+
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let _, definition = definitionBehindStub state stubAddress
+
+        scopeFieldOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
+
+    /// The kind check is real in field position too, and the message says "a field" rather than
+    /// borrowing the type-shaped one.
+    [<Test>]
+    let ``a ldsfld naming a type handle entry is refused`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+        let target, state = closedInt32 loggerFactory prepared state
+
+        let body =
+            ldsfldBody
+                2
+                [
+                    ScopeEntry.Null
+                    ScopeEntry.Blob [| 0x00uy |]
+                    ScopeEntry.TypeHandle target
+                ]
+
+        let message =
+            try
+                mintOne loggerFactory prepared "Probe" doublingSignature body state |> ignore
+                failwith "expected minting to fail"
+            with e ->
+                e.ToString ()
+
+        message |> shouldContainText "Ldsfld"
+        message |> shouldContainText "entry 2"
+        message |> shouldContainText "rather than a field"
 
     [<Test>]
     let ``a newarr naming the method's own signature blob is refused`` () : unit =

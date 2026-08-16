@@ -96,6 +96,10 @@ module internal UnaryMetadataIlOp =
                     | DynamicMethodResolution.Resolved handle ->
                         ResolvedMetadataOperand.ScopeMethod handle |> OperandResolution.Ready
                     | DynamicMethodResolution.NeedsMinting callee -> OperandResolution.NeedsMinting callee
+                | IlDecoding.ScopeOperandKind.Field ->
+                    match DynamicScopeOperand.field baseClassTypes operation scopeIndex state scope with
+                    | Ok handle -> ResolvedMetadataOperand.ScopeField handle |> OperandResolution.Ready
+                    | Error (exceptionType, why) -> OperandResolution.Invalid (exceptionType, why)
                 | IlDecoding.ScopeOperandKind.NotYetSupported missing ->
                     // Unreachable: the decoder refuses such a body when the method is minted, so no
                     // `IlOp` carrying a scope operand for this opcode exists to be executed.
