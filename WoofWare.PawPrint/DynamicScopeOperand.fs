@@ -297,10 +297,11 @@ module internal DynamicScopeOperand =
         | _ -> false
 
     /// <summary>
-    /// The closed type named by entry <paramref name="scopeIndex"/>, or a description of why the
-    /// entry does not name one — which the caller turns into a guest exception (the description
-    /// names the exception type to raise: <c>InvalidProgramException</c>,
-    /// <c>BadImageFormatException</c> or <c>ArgumentOutOfRangeException</c>, per arm).
+    /// The target entry <paramref name="scopeIndex"/> names, read as whatever it is and narrowed no
+    /// further, or a description of why the entry names no type at all — which the caller turns into
+    /// a guest exception (the description names the exception type to raise:
+    /// <c>InvalidProgramException</c>, <c>BadImageFormatException</c> or
+    /// <c>ArgumentOutOfRangeException</c>, per arm).
     /// </summary>
     /// <remarks>
     /// <para>
@@ -309,53 +310,34 @@ module internal DynamicScopeOperand =
     /// <c>RuntimeType</c> to the target it stands for.
     /// </para>
     /// <para>
+    /// The walk every type-shaped opcode shares, stopping at the target itself. What an opcode then
+    /// *demands* of that target is its own question: see <see cref="closedType"/>, which is this
+    /// plus the narrowing the eleven closed-type opcodes want, against <c>ldtoken</c>, which takes
+    /// the answer unnarrowed because it hands the handle to the guest rather than consuming it.
+    /// </para>
+    /// <para>
     /// Everything the decoder established about this entry is re-established here rather than
     /// assumed, because the decoder looked at the scope as it was when the method was minted and
     /// this reads it as it is now; a guest that replaced the slot in between gets what real .NET
     /// gives it, which is a refusal rather than a resolution against the stale entry.
     /// </para>
-    /// <para>
-    /// A closed target is not automatically a legal operand. Measured on real .NET, against a
-    /// closed control that runs: a byref (<c>typeof(int).MakeByRefType()</c>) and <c>System.Void</c>
-    /// are <c>InvalidProgramException</c> for <c>sizeof</c>, <c>newarr</c> and <c>box</c> alike,
-    /// whereas a *pointer* type is perfectly legal and answers 8 — so pointers, arrays and function
-    /// pointers are not refused here. The equivalent metadata operands are not
-    /// validated either; that is pre-existing and unreachable from any compiler, where this is newly
-    /// reachable because `ILGenerator.Emit` accepts any `RuntimeType`.
-    /// </para>
-    /// <para>
-    /// Of those, only the <c>System.Void</c> refusal has a test: a guest cannot yet build a byref or
-    /// pointer <c>Type</c> at all, because <c>Type.MakeByRefType</c> and <c>Type.MakePointerType</c>
-    /// bottom out in the unimplemented <c>RuntimeTypeHandle_MakeByRef</c> QCall. The byref arm is
-    /// kept rather than deferred because it is measured rather than guessed, and because it becomes
-    /// reachable the moment that unrelated QCall lands, at which point nothing would prompt anyone
-    /// to add it.
-    /// </para>
-    /// <para>
-    /// Where this stops: it answers the questions that are *about the scope* — is the
-    /// entry a type handle, and is the target a closed type — plus the two shapes above. It does
-    /// not answer "is this type a legal operand of this opcode", which is a per-opcode question
-    /// (<c>sizeof Span&lt;int&gt;</c> is legal and answers 16; <c>newarr Span&lt;int&gt;</c> is a
-    /// <c>TypeLoadException</c> — both measured) and one PawPrint does not answer for metadata
-    /// operands either. Answering it belongs with the ops, for both universes at once; adding
-    /// shapes here one at a time would make the same IL behave differently depending on which
-    /// universe its operand came from.
-    /// </para>
     /// </remarks>
-    let closedType
+    let typeHandleTarget
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (scopeIndex : int)
         (state : IlMachineState)
         (handle : DynamicMethodHandle)
-        : Result<ConcreteTypeHandle, TypeInfo<GenericParamFromMetadata, TypeDefn> * string>
+        : Result<RuntimeTypeHandleTarget, TypeInfo<GenericParamFromMetadata, TypeDefn> * string>
         =
         // Which exception each refusal carries is measured, not chosen: rewrite a type slot after
         // `CreateDelegate` and before the first invocation, and real .NET answers
         // InvalidProgramException for a null slot, BadImageFormatException ("Bad class token") for a
         // slot holding the wrong kind of thing -- including a `default(RuntimeTypeHandle)`, whose
         // `m_type` is null -- and ArgumentOutOfRangeException for an index exactly at the list's
-        // length. All three are catchable, so a guest can tell them apart.
+        // length. All three are catchable, so a guest can tell them apart. Those measurements were
+        // taken on the closed-type opcodes; `ResolveToken` dispatches the same way whatever the
+        // consumer, so ldtoken inherits them by that argument rather than by its own measurement.
         let badImage (why : string) =
             Error (baseClassTypes.BadImageFormatException, why)
 
@@ -389,24 +371,72 @@ module internal DynamicScopeOperand =
         let mTypeField =
             IlMachineState.requiredOwnInstanceFieldId state boxed.ConcreteType "m_type"
 
-        let target =
-            match
-                AllocatedNonArrayObject.DereferenceFieldById mTypeField boxed
-                |> CliType.unwrapPrimitiveLikeDeep
-            with
-            | CliType.ObjectRef (Some runtimeType) ->
-                Ok (runtimeTypeHandleTargetOfRuntimeType operation state runtimeType)
-            | CliType.ObjectRef None ->
-                // `default(RuntimeTypeHandle)`. `Emit(OpCode, Type)` rejects a null `Type` and
-                // demands a `RuntimeType`, so this is reachable only by writing the scope directly —
-                // and measured to be BadImageFormatException rather than InvalidProgramException,
-                // because the token resolves to a null type handle rather than to nothing at all.
-                badImage $"DynamicScope entry %d{scopeIndex} is a RuntimeTypeHandle whose m_type is null"
-            | other ->
-                failwith
-                    $"%s{operation}: expected DynamicScope entry %d{scopeIndex}'s RuntimeTypeHandle.m_type to be a reference to a RuntimeType, got %O{other}"
+        match
+            AllocatedNonArrayObject.DereferenceFieldById mTypeField boxed
+            |> CliType.unwrapPrimitiveLikeDeep
+        with
+        | CliType.ObjectRef (Some runtimeType) -> Ok (runtimeTypeHandleTargetOfRuntimeType operation state runtimeType)
+        | CliType.ObjectRef None ->
+            // `default(RuntimeTypeHandle)`. `Emit(OpCode, Type)` rejects a null `Type` and
+            // demands a `RuntimeType`, so this is reachable only by writing the scope directly —
+            // and measured to be BadImageFormatException rather than InvalidProgramException,
+            // because the token resolves to a null type handle rather than to nothing at all.
+            badImage $"DynamicScope entry %d{scopeIndex} is a RuntimeTypeHandle whose m_type is null"
+        | other ->
+            failwith
+                $"%s{operation}: expected DynamicScope entry %d{scopeIndex}'s RuntimeTypeHandle.m_type to be a reference to a RuntimeType, got %O{other}"
 
-        match target with
+    /// <summary>
+    /// The closed type named by entry <paramref name="scopeIndex"/>, or a description of why the
+    /// entry does not name one — which the caller turns into a guest exception.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="typeHandleTarget"/> plus the narrowing the eleven closed-type opcodes want. A
+    /// closed target is not automatically a legal operand: measured on real .NET, against a closed
+    /// control that runs, a byref (<c>typeof(int).MakeByRefType()</c>) and <c>System.Void</c> are
+    /// <c>InvalidProgramException</c> for <c>sizeof</c>, <c>newarr</c> and <c>box</c> alike, whereas
+    /// a *pointer* type is perfectly legal and answers 8 — so pointers, arrays and function pointers
+    /// are not refused here. The equivalent metadata operands are not validated either; that is
+    /// pre-existing and unreachable from any compiler, where this is newly reachable because
+    /// <c>ILGenerator.Emit</c> accepts any <c>RuntimeType</c>.
+    /// </para>
+    /// <para>
+    /// Of those, only the <c>System.Void</c> refusal has a test: a guest cannot yet build a byref or
+    /// pointer <c>Type</c> at all, because <c>Type.MakeByRefType</c> and <c>Type.MakePointerType</c>
+    /// bottom out in the unimplemented <c>RuntimeTypeHandle_MakeByRef</c> QCall. The byref arm is
+    /// kept rather than deferred because it is measured rather than guessed, and because it becomes
+    /// reachable the moment that unrelated QCall lands, at which point nothing would prompt anyone
+    /// to add it.
+    /// </para>
+    /// <para>
+    /// None of these three refusals applies to <c>ldtoken</c>, which is why it reads the target
+    /// through <see cref="typeHandleTarget"/> instead: an open definition, a bare generic parameter
+    /// and <c>System.Void</c> are all measured to run there.
+    /// </para>
+    /// <para>
+    /// Where this stops: it answers the questions that are *about the scope* — is the
+    /// entry a type handle, and is the target a closed type — plus the two shapes above. It does
+    /// not answer "is this type a legal operand of this opcode", which is a per-opcode question
+    /// (<c>sizeof Span&lt;int&gt;</c> is legal and answers 16; <c>newarr Span&lt;int&gt;</c> is a
+    /// <c>TypeLoadException</c> — both measured) and one PawPrint does not answer for metadata
+    /// operands either. Answering it belongs with the ops, for both universes at once; adding
+    /// shapes here one at a time would make the same IL behave differently depending on which
+    /// universe its operand came from.
+    /// </para>
+    /// </remarks>
+    let closedType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (scopeIndex : int)
+        (state : IlMachineState)
+        (handle : DynamicMethodHandle)
+        : Result<ConcreteTypeHandle, TypeInfo<GenericParamFromMetadata, TypeDefn> * string>
+        =
+        let invalidProgram (why : string) =
+            Error (baseClassTypes.InvalidProgramException, why)
+
+        match typeHandleTarget baseClassTypes operation scopeIndex state handle with
         | Error e -> Error e
         | Ok (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _ as handle)) ->
             invalidProgram $"DynamicScope entry %d{scopeIndex} names the byref type %O{handle}"

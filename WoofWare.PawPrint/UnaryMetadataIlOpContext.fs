@@ -48,6 +48,13 @@ type internal ResolvedMetadataOperand =
     /// <c>UnaryMetadataFieldOps.resolveFieldToken</c> builds by the same table read the metadata
     /// path performs.
     | ScopeField of FieldHandle
+    /// A type read from entry <c>scopeIndex</c> of the executing dynamic method's `DynamicScope`,
+    /// narrowed no further than the target it names. Distinct from <see cref="ScopeType"/> because
+    /// the question is different: that one has been checked to be a closed type, this one carries
+    /// whatever the handle stood for — an open generic definition, a bare generic parameter and
+    /// <c>System.Void</c> all reach here, and all are legal for the only opcode that asks,
+    /// <c>ldtoken</c>.
+    | ScopeTypeTarget of RuntimeTypeHandleTarget
 
 /// <summary>
 /// <see cref="ResolvedMetadataOperand"/> as an op whose operand names a *type* sees it.
@@ -84,6 +91,24 @@ type internal ResolvedFieldOperand =
     /// A field read from the executing dynamic method's `DynamicScope`.
     | FromScope of FieldHandle
 
+/// <summary>
+/// <see cref="ResolvedMetadataOperand"/> as <c>ldtoken</c> sees it.
+/// </summary>
+/// <remarks>
+/// <c>ldtoken</c> asks the scope "which target does this handle stand for", where
+/// <see cref="ResolvedTypeOperand"/>'s eleven opcodes ask "which closed type is this". The metadata
+/// case stays a raw token: <c>ldtoken</c> accepts field and method tokens there too, and decodes
+/// them itself.
+/// </remarks>
+[<RequireQualifiedAccess>]
+[<NoEquality ; NoComparison>]
+type internal ResolvedLdtokenOperand =
+    /// A token into the metadata tables of the assembly that owns it. May name a type, a field or a
+    /// method.
+    | FromMetadata of assembly : DumpedAssembly * token : MetadataToken
+    /// A type read from the executing dynamic method's `DynamicScope`, unnarrowed.
+    | FromScope of RuntimeTypeHandleTarget
+
 type internal UnaryMetadataIlOpContext =
     {
         LoggerFactory : ILoggerFactory
@@ -108,7 +133,8 @@ type internal UnaryMetadataIlOpContext =
         | ResolvedMetadataOperand.FromMetadata (assembly, _) -> assembly
         | ResolvedMetadataOperand.ScopeType _
         | ResolvedMetadataOperand.ScopeMethod _
-        | ResolvedMetadataOperand.ScopeField _ ->
+        | ResolvedMetadataOperand.ScopeField _
+        | ResolvedMetadataOperand.ScopeTypeTarget _ ->
             failwith
                 $"TODO: %O{this.Op} read its operand as a metadata token, but this operand names a DynamicScope entry. IlDecoding.scopeOperandKind lists this opcode as scope-resolvable, so the op needs a matching ResolvedMetadataOperand arm; the two have gone out of step."
 
@@ -130,6 +156,9 @@ type internal UnaryMetadataIlOpContext =
         | ResolvedMetadataOperand.ScopeField _ ->
             failwith
                 $"BUG: %O{this.Op} reads its operand as a type, but this one names a field in the DynamicScope. IlDecoding.scopeOperandKind decides which kind an opcode's scope operand is read as, and it does not say Type for this opcode."
+        | ResolvedMetadataOperand.ScopeTypeTarget _ ->
+            failwith
+                $"BUG: %O{this.Op} reads its operand as a closed type, but this one names an unnarrowed DynamicScope target. IlDecoding.scopeOperandKind says AnyType for this opcode, which only ldtoken should be; read it through LdtokenOperand instead."
 
     /// <summary>
     /// This operand, for an op whose operand names a field.
@@ -142,9 +171,29 @@ type internal UnaryMetadataIlOpContext =
         | ResolvedMetadataOperand.FromMetadata (assembly, token) -> ResolvedFieldOperand.FromMetadata (assembly, token)
         | ResolvedMetadataOperand.ScopeField handle -> ResolvedFieldOperand.FromScope handle
         | ResolvedMetadataOperand.ScopeType _
-        | ResolvedMetadataOperand.ScopeMethod _ ->
+        | ResolvedMetadataOperand.ScopeMethod _
+        | ResolvedMetadataOperand.ScopeTypeTarget _ ->
             failwith
                 $"BUG: %O{this.Op} reads its operand as a field, but this one names a type or a method in the DynamicScope. IlDecoding.scopeOperandKind decides which kind an opcode's scope operand is read as, and it does not say Field for this opcode."
+
+    /// <summary>
+    /// This operand, for <c>ldtoken</c>.
+    /// </summary>
+    /// <remarks>
+    /// Partial in the same way <see cref="TypeOperand"/> is, and for the same reason. The metadata
+    /// case is handed back as a raw token rather than narrowed, because <c>ldtoken</c> accepts type,
+    /// field and method tokens there and decodes them itself.
+    /// </remarks>
+    member this.LdtokenOperand : ResolvedLdtokenOperand =
+        match this.Operand with
+        | ResolvedMetadataOperand.FromMetadata (assembly, token) ->
+            ResolvedLdtokenOperand.FromMetadata (assembly, token)
+        | ResolvedMetadataOperand.ScopeTypeTarget target -> ResolvedLdtokenOperand.FromScope target
+        | ResolvedMetadataOperand.ScopeType _
+        | ResolvedMetadataOperand.ScopeMethod _
+        | ResolvedMetadataOperand.ScopeField _ ->
+            failwith
+                $"BUG: %O{this.Op} reads its operand as an ldtoken target, but this one is a narrowed type, a method or a field in the DynamicScope. IlDecoding.scopeOperandKind says AnyType for ldtoken, so only ScopeTypeTarget should reach here."
 
     /// The metadata token this operand is. Partial in exactly the way <see cref="ActiveAssembly"/>
     /// is, and for the same reason.
@@ -153,6 +202,7 @@ type internal UnaryMetadataIlOpContext =
         | ResolvedMetadataOperand.FromMetadata (_, token) -> token
         | ResolvedMetadataOperand.ScopeType _
         | ResolvedMetadataOperand.ScopeMethod _
-        | ResolvedMetadataOperand.ScopeField _ ->
+        | ResolvedMetadataOperand.ScopeField _
+        | ResolvedMetadataOperand.ScopeTypeTarget _ ->
             failwith
                 $"TODO: %O{this.Op} read its operand as a metadata token, but this operand names a DynamicScope entry. IlDecoding.scopeOperandKind lists this opcode as scope-resolvable, so the op needs a matching ResolvedMetadataOperand arm; the two have gone out of step."
