@@ -209,12 +209,12 @@ module AbstractMachine =
             // such invocation latches.
             let state, methodPtr =
                 match methodPtrTarget with
-                | FunctionPointerTarget.Managed methodPtr -> state, methodPtr
+                | FunctionPointerTarget.Managed methodPtr -> state, methodPtr |> Ok
                 | FunctionPointerTarget.Dynamic handle ->
                     DynamicMethodExecution.concretize loggerFactory baseClassTypes "delegate invocation" handle state
                 | FunctionPointerTarget.RuntimeAllocator ->
                     FunctionPointerTarget.requireManaged "delegate invocation" methodPtrTarget
-                    |> fun m -> state, m
+                    |> fun m -> state, Ok m
 
             let methodGenerics = instruction.ExecutingMethod.Generics
 
@@ -254,6 +254,50 @@ module AbstractMachine =
             | ReturnFrameResult.NoFrameToReturn -> failwith "unexpectedly nowhere to return from delegate"
             | ReturnFrameResult.DispatchException _ -> failwith "unexpected exception dispatch from delegate frame pop"
             | ReturnFrameResult.NormalReturn state ->
+
+            match methodPtr with
+            | Error (exceptionType, why) ->
+                // The target could not be compiled: measured on real .NET as an
+                // `InvalidProgramException` raised by the *first invocation*, not by
+                // `CreateDelegate`. Raised after the stub frame is popped, for the reason the
+                // paragraph above gives — a stub frame still on the stack lands in the guest's
+                // stack trace, which is what `DelegateCctorFailureTraceHasNoStubFrame.cs` pins for
+                // the sibling failure — and with the caller's PC put back to its call site, since
+                // the `callvirt Invoke` advanced past it and dispatch reads that offset both to
+                // decide which of the caller's `try` regions cover the throw and to name the frame.
+                //
+                // Residual divergence, measured: real .NET's trace has a frame for the dynamic
+                // method itself above the caller's, because the failure happens as the JIT compiles
+                // that method. PawPrint has no frame to name, having refused to build one. Closing
+                // that means pushing the frame anyway and failing in its prologue, as a failed
+                // `.cctor` does — `MethodState.PendingTypeInit` and `hasNotStarted` are the
+                // existing machinery for "a frame that is on the stack and has executed nothing,
+                // whose own clauses are therefore out of scope", which is exactly this situation.
+                logger.LogWarning ("delegate invocation refused a dynamic target: {Reason}", why)
+
+                let state =
+                    match originalCallSitePC with
+                    | None -> state
+                    | Some pc ->
+                        let threadState = state.ThreadState.[thread]
+
+                        state
+                        |> IlMachineState.mapFrame
+                            thread
+                            threadState.ActiveMethodState
+                            (MethodState.setProgramCounter pc)
+
+                let state, _whatWeDid =
+                    IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                        loggerFactory
+                        baseClassTypes
+                        exceptionType
+                        (DynamicScopeOperand.clrMessageFor baseClassTypes exceptionType)
+                        thread
+                        state
+
+                ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
+            | Ok methodPtr ->
 
             // Rebuild the stack in normal instance-call shape: the bound argument below the real
             // ones, so it ends up at the bottom.

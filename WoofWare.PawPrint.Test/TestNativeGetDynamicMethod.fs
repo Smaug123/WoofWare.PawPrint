@@ -455,6 +455,40 @@ public static class Entry
         /// runs, by which time `GetMethodDescriptor` has assigned that field.
         | DynamicMethodObject
 
+    /// One clause of an `__ExceptionInfo`, in the shape the parallel arrays hold it.
+    type private ClauseSpec =
+        {
+            /// `m_type[c]`: 0 catch, 1 filter, 2 finally, 4 fault.
+            Flags : int
+            /// `m_filterAddr[c]`: a `DynamicScope` token for a catch, an IL offset for a filter,
+            /// and 0 for the cleanup kinds.
+            FilterAddrOrToken : int
+            /// `m_catchAddr[c]`.
+            HandlerStart : int
+            /// `m_catchEndAddr[c]`.
+            HandlerEnd : int
+        }
+
+    /// What a `__ExceptionInfo` will be made to say. Deliberately expressed as the fields rather
+    /// than as clauses-plus-offsets, because the projection under test is exactly the arithmetic
+    /// that turns these into clauses, and a fixture that did any of it would be testing itself.
+    type private ExceptionInfoSpec =
+        {
+            /// `m_startAddr`.
+            StartAddr : int
+            /// `m_endAddr`, which every clause but `finally` takes its try length from.
+            EndAddr : int
+            /// `m_endFinally`, which a `finally` clause takes its try length from instead. `-1`
+            /// when the region has none, which is what the constructor sets.
+            EndFinally : int
+            /// The clauses, in order. `m_currentCatch` is set to this many.
+            Clauses : ClauseSpec list
+            /// How many slots each parallel array has beyond `Clauses`. `__ExceptionInfo`
+            /// allocates them four at a time and doubles, so a reader walking their length rather
+            /// than `m_currentCatch` would decode the zeroed tail as extra catch clauses.
+            SpareCapacity : int
+        }
+
     /// What a `DynamicResolver`'s fields will be made to say. Everything here is a field the
     /// resolver's constructor assigns and `DynamicMethodBody` reads back.
     type private ResolverBody =
@@ -473,7 +507,7 @@ public static class Entry
             InitLocals : bool
             /// `m_exceptions`, the `__ExceptionInfo[]` the `ILGenerator` path fills in. `None`
             /// leaves the field null, which is what an `ILGenerator` that saw no `try` produces.
-            ExceptionCount : int option
+            Exceptions : ExceptionInfoSpec list option
             /// `m_exceptionHeader`, non-null only on the `DynamicILInfo` path.
             ExceptionHeader : byte[] option
         }
@@ -492,7 +526,7 @@ public static class Entry
             // LocalVarSig with a count of zero: no locals.
             LocalSignature = [| 0x07uy ; 0x00uy |]
             InitLocals = true
-            ExceptionCount = None
+            Exceptions = None
             ExceptionHeader = None
             Scope = baselineScope
             ScopeSpareCapacity = 0
@@ -777,9 +811,9 @@ public static class Entry
                     state
 
         let state =
-            match body.ExceptionCount with
+            match body.Exceptions with
             | None -> state
-            | Some count ->
+            | Some infos ->
                 let exceptionInfo =
                     requiredTopLevelType baseClassTypes.Corelib "System.Reflection.Emit" "__ExceptionInfo"
 
@@ -793,11 +827,90 @@ public static class Entry
                         ImmutableArray.Empty
                         (TypeDefn.FromDefinition (exceptionInfo.Identity, SignatureTypeKind.Class))
 
+                let state, int32Handle =
+                    IlMachineState.concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        baseClassTypes.Corelib.Name
+                        ImmutableArray.Empty
+                        ImmutableArray.Empty
+                        (TypeDefn.PrimitiveType PrimitiveType.Int32)
+
+                let allocateIntArray (values : int list) (spare : int) (state : IlMachineState) =
+                    let padded = values @ List.replicate spare 0
+
+                    let addr, state =
+                        IlMachineState.allocateArray
+                            (ConcreteTypeHandle.OneDimArrayZero int32Handle)
+                            (fun () -> CliType.Numeric (CliNumericType.Int32 0))
+                            padded.Length
+                            state
+
+                    let state =
+                        padded
+                        |> List.indexed
+                        |> List.fold
+                            (fun state (i, v) ->
+                                IlMachineState.setArrayValue addr (CliType.Numeric (CliNumericType.Int32 v)) i state
+                            )
+                            state
+
+                    addr, state
+
                 let arrayAddr, state =
                     IlMachineState.allocateArray
                         (ConcreteTypeHandle.OneDimArrayZero elementHandle)
                         (fun () -> CliType.ObjectRef None)
-                        count
+                        infos.Length
+                        state
+
+                let state =
+                    infos
+                    |> List.indexed
+                    |> List.fold
+                        (fun state (i, info) ->
+                            let infoAddr, state =
+                                allocateZeroed loggerFactory baseClassTypes exceptionInfo state
+
+                            let state =
+                                [
+                                    "m_startAddr", info.StartAddr
+                                    "m_endAddr", info.EndAddr
+                                    "m_endFinally", info.EndFinally
+                                    "m_currentCatch", info.Clauses.Length
+                                ]
+                                |> List.fold
+                                    (fun state (name, value) ->
+                                        IlMachineState.setOwnInstanceField
+                                            infoAddr
+                                            name
+                                            (CliType.Numeric (CliNumericType.Int32 value))
+                                            state
+                                    )
+                                    state
+
+                            let state =
+                                [
+                                    "m_type", info.Clauses |> List.map _.Flags
+                                    "m_filterAddr", info.Clauses |> List.map _.FilterAddrOrToken
+                                    "m_catchAddr", info.Clauses |> List.map _.HandlerStart
+                                    "m_catchEndAddr", info.Clauses |> List.map _.HandlerEnd
+                                ]
+                                |> List.fold
+                                    (fun state (name, values) ->
+                                        let addr, state = allocateIntArray values info.SpareCapacity state
+
+                                        IlMachineState.setOwnInstanceField
+                                            infoAddr
+                                            name
+                                            (CliType.ObjectRef (Some addr))
+                                            state
+                                    )
+                                    state
+
+                            IlMachineState.setArrayValue arrayAddr (CliType.ObjectRef (Some infoAddr)) i state
+                        )
                         state
 
                 IlMachineState.setOwnInstanceField
@@ -1053,7 +1166,7 @@ public static class Entry
             mintOne loggerFactory prepared "Probe" [| 0x01uy |] body state
 
         let _, definition = definitionBehindStub state stubAddress
-        definition.GetLatchedLocalsInit () |> shouldEqual None
+        definition.GetPreparation () |> shouldEqual None
 
     /// A well-formed `MethodDefSig` for `(int32) -> int32`, which is what `doublingBody` computes:
     /// default calling convention, one parameter, `ELEMENT_TYPE_I4` for the return and again for
@@ -1079,6 +1192,21 @@ public static class Entry
             "_initLocals"
             (CliType.ofBool value)
             state
+
+    /// The method `concretize` produced, insisting it produced one. Its `Error` is a `catch` clause
+    /// whose scope entry does not name a type, which none of these fixtures has.
+    let private requireConcretized
+        (result :
+            Result<
+                MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>,
+                TypeInfo<GenericParamFromMetadata, TypeDefn> * string
+             >)
+        : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        match result with
+        | Ok method -> method
+        | Error (exceptionType, why) ->
+            failwith $"expected the method to concretize, but it was refused with %s{exceptionType.Name}: %s{why}"
 
     /// The `initLocals` a concretised dynamic method will run under.
     let private localsInitOf (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>) : bool =
@@ -1108,7 +1236,7 @@ public static class Entry
         let _, method =
             DynamicMethodExecution.concretize loggerFactory prepared.BaseClassTypes "test" handle state
 
-        localsInitOf method |> shouldEqual false
+        localsInitOf (requireConcretized method) |> shouldEqual false
 
     /// ...and never read again. `LCGMethodResolver::GetCodeInfo` computes `m_Options` only under
     /// `if (!m_Code)`, so the first compilation fixes the flag for the method's whole life; a guest
@@ -1130,14 +1258,14 @@ public static class Entry
         let state, first =
             DynamicMethodExecution.concretize loggerFactory prepared.BaseClassTypes "test" handle state
 
-        localsInitOf first |> shouldEqual true
+        localsInitOf (requireConcretized first) |> shouldEqual true
 
         let state = setInitLocals resolver false state
 
         let _, second =
             DynamicMethodExecution.concretize loggerFactory prepared.BaseClassTypes "test" handle state
 
-        localsInitOf second |> shouldEqual true
+        localsInitOf (requireConcretized second) |> shouldEqual true
 
     /// The latch has to survive in the *state*, not merely in the method that was handed back. A
     /// build that computed the right flag and dropped the updated registry would satisfy both tests
@@ -1160,7 +1288,73 @@ public static class Entry
             DynamicMethodExecution.concretize loggerFactory prepared.BaseClassTypes "test" handle state
 
         let _, definition = definitionBehindStub state stubAddress
-        definition.GetLatchedLocalsInit () |> shouldEqual (Some false)
+
+        definition.GetPreparation ()
+        |> Option.map _.LocalsInit
+        |> shouldEqual (Some false)
+
+    /// A preparation that fails leaves the method exactly as unprepared as it found it — including
+    /// its `initLocals`, which is read *after* the clause types precisely so that this holds.
+    ///
+    /// Measured on real .NET: a first invocation that fails to compile latches nothing, and a
+    /// second invocation after the guest repairs the scope compiles and runs. No guest can reach
+    /// that today (repairing `m_tokens` needs reflection PawPrint does not implement), so this is
+    /// the only thing standing between the rule and a build that latches `initLocals` on the way
+    /// past and then refuses.
+    ///
+    /// The clause names entry 2, which holds an *open generic definition* rather than a closed
+    /// type: `BeginCatchBlock` accepts one, because it is a perfectly good `RuntimeType`, and real
+    /// .NET raises `InvalidProgramException` for it when it compiles the method. Entry 2 is a
+    /// genuine `RuntimeTypeHandle`, so the mint-time check passes and the refusal lands here.
+    [<Test>]
+    let ``a failed preparation latches nothing`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let openGeneric =
+            RuntimeTypeHandleTarget.OpenGenericTypeDefinition
+                (requiredTopLevelType prepared.BaseClassTypes.Corelib "System.Collections.Generic" "List`1").Identity
+
+        let body =
+            { doublingBody with
+                InitLocals = false
+                Scope = baselineScope @ [ ScopeEntry.TypeHandle openGeneric ]
+                Exceptions =
+                    Some
+                        [
+                            {
+                                StartAddr = 0
+                                EndAddr = 11
+                                EndFinally = -1
+                                SpareCapacity = 3
+                                Clauses =
+                                    [
+                                        {
+                                            Flags = 0
+                                            FilterAddrOrToken = 0x02000002
+                                            HandlerStart = 11
+                                            HandlerEnd = 20
+                                        }
+                                    ]
+                            }
+                        ]
+            }
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let handle, _ = definitionBehindStub state stubAddress
+
+        let state, result =
+            DynamicMethodExecution.concretize loggerFactory prepared.BaseClassTypes "test" handle state
+
+        match result with
+        | Ok method -> failwith $"expected preparation to be refused, but it produced %s{method.Name}"
+        | Error (exceptionType, _) ->
+            exceptionType.Name
+            |> shouldEqual prepared.BaseClassTypes.InvalidProgramException.Name
+
+        let _, definition = definitionBehindStub state stubAddress
+        definition.GetPreparation () |> shouldEqual None
 
     /// The `DynamicScope` index every `ldstr` in a body names.
     ///
@@ -1597,20 +1791,336 @@ public static class Entry
         message |> shouldContainText "entry 2"
         message |> shouldContainText "a dynamic method rather than a string"
 
-    /// A `catch` clause's type arrives as a `DynamicScope` index in `ClassTokenOrFilterOffset`,
-    /// which `ExceptionRegion.Catch` has nowhere to put; so clauses are refused as a body, rather
-    /// than being dropped, which would silently turn a guarded method into an unguarded one.
-    [<Test>]
-    let ``an exception region is refused`` () : unit =
+    /// The regions a body was minted with.
+    let private regionsOf
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        (infos : ExceptionInfoSpec list)
+        : ExceptionRegion list
+        =
+        // Entry 2 is the catch clauses' type in every fixture below. Only its *kind* is read at
+        // mint, so any closed type serves.
+        let target, state = closedInt32 loggerFactory prepared state
+
         let body =
             { doublingBody with
-                ExceptionCount = Some 1
+                Exceptions = Some infos
+                Scope = baselineScope @ [ ScopeEntry.TypeHandle target ]
+            }
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" [| 0x01uy |] body state
+
+        let _, definition = definitionBehindStub state stubAddress
+        (definition.GetBody ()).ExceptionRegions |> Seq.toList
+
+    /// The catch-clause token every fixture below uses: `mdtTypeDef | 2`, the shape
+    /// `DynamicScope.GetTokenFor` hands back for the third entry. The tag is deliberately a real
+    /// metadata tag, because that is what makes the value indistinguishable from a token naming a
+    /// `TypeDef` row and is the whole reason `ExceptionCatchType` exists.
+    let private catchToken = 0x02000002
+
+    /// The measured shape of `try { … } catch (T) { … }`: `GetEHInfo` reads the type out of
+    /// `m_filterAddr`, where `BeginCatchBlock` put it, and the try range out of
+    /// `m_startAddr`/`m_endAddr`. Offsets are those of a real emitted body (`ldarg.0; throw` in a
+    /// try, storing 42 in the catch).
+    [<Test>]
+    let ``a catch clause is decoded from m_filterAddr`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        regionsOf
+            loggerFactory
+            prepared
+            state
+            [
+                {
+                    StartAddr = 0
+                    EndAddr = 11
+                    EndFinally = -1
+                    SpareCapacity = 3
+                    Clauses =
+                        [
+                            {
+                                Flags = 0
+                                FilterAddrOrToken = catchToken
+                                HandlerStart = 11
+                                HandlerEnd = 20
+                            }
+                        ]
+                }
+            ]
+        |> shouldEqual
+            [
+                ExceptionRegion.Catch (
+                    ExceptionCatchType.FromDynamicScope 2,
+                    {
+                        TryOffset = 0
+                        TryLength = 11
+                        HandlerOffset = 11
+                        HandlerLength = 9
+                    }
+                )
+            ]
+
+    /// Two clauses on one region, which is what a second `BeginCatchBlock` produces. The
+    /// `SpareCapacity` is what a real `__ExceptionInfo` looks like — its arrays are allocated four
+    /// at a time — so a reader walking their length rather than `m_currentCatch` decodes two extra
+    /// catch clauses covering `[0, 0)` and naming scope entry 0.
+    [<Test>]
+    let ``clauses past m_currentCatch are not clauses`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        regionsOf
+            loggerFactory
+            prepared
+            state
+            [
+                {
+                    StartAddr = 0
+                    EndAddr = 11
+                    EndFinally = -1
+                    SpareCapacity = 2
+                    Clauses =
+                        [
+                            {
+                                Flags = 0
+                                FilterAddrOrToken = catchToken
+                                HandlerStart = 11
+                                HandlerEnd = 19
+                            }
+                            {
+                                Flags = 0
+                                FilterAddrOrToken = catchToken
+                                HandlerStart = 19
+                                HandlerEnd = 27
+                            }
+                        ]
+                }
+            ]
+        |> List.length
+        |> shouldEqual 2
+
+    /// The one arithmetic special case: a `finally` clause's try length comes from `m_endFinally`
+    /// and every other kind's from `m_endAddr`. Measured on a real `try/catch/finally`, where a
+    /// single `__ExceptionInfo` yields a catch covering `[0,+11)` and a finally covering `[0,+25)`
+    /// — so the two clauses of one region genuinely have different try ranges, and a projection
+    /// that hoisted the length out of the clause loop gets one of them wrong.
+    [<Test>]
+    let ``a finally clause takes its try length from m_endFinally`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        regionsOf
+            loggerFactory
+            prepared
+            state
+            [
+                {
+                    StartAddr = 0
+                    EndAddr = 11
+                    EndFinally = 25
+                    SpareCapacity = 2
+                    Clauses =
+                        [
+                            {
+                                Flags = 0
+                                FilterAddrOrToken = catchToken
+                                HandlerStart = 11
+                                HandlerEnd = 20
+                            }
+                            {
+                                Flags = 2
+                                FilterAddrOrToken = 0
+                                HandlerStart = 25
+                                HandlerEnd = 30
+                            }
+                        ]
+                }
+            ]
+        |> shouldEqual
+            [
+                ExceptionRegion.Catch (
+                    ExceptionCatchType.FromDynamicScope 2,
+                    {
+                        TryOffset = 0
+                        TryLength = 11
+                        HandlerOffset = 11
+                        HandlerLength = 9
+                    }
+                )
+                ExceptionRegion.Finally
+                    {
+                        TryOffset = 0
+                        TryLength = 25
+                        HandlerOffset = 25
+                        HandlerLength = 5
+                    }
+            ]
+
+    /// A filter's `m_filterAddr` slot is an IL offset, not a token — the same field, read
+    /// differently according to `m_type`. A reader that took every clause's slot as a token would
+    /// resolve this one against whichever scope entry offset 11 happened to name.
+    [<Test>]
+    let ``a filter clause keeps its offset rather than a token`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        regionsOf
+            loggerFactory
+            prepared
+            state
+            [
+                {
+                    StartAddr = 0
+                    EndAddr = 11
+                    EndFinally = -1
+                    SpareCapacity = 3
+                    Clauses =
+                        [
+                            {
+                                Flags = 1
+                                FilterAddrOrToken = 11
+                                HandlerStart = 15
+                                HandlerEnd = 24
+                            }
+                        ]
+                }
+            ]
+        |> shouldEqual
+            [
+                ExceptionRegion.Filter (
+                    11,
+                    {
+                        TryOffset = 0
+                        TryLength = 11
+                        HandlerOffset = 15
+                        HandlerLength = 9
+                    }
+                )
+            ]
+
+    /// `fault` is `0x0004`, which `__ExceptionInfo` also spells `PreserveStack`. Reading it as
+    /// fault is safe only because `MarkHelper` writes nothing else into `m_type`; a
+    /// `PreserveStack` flag could arrive only through the `DynamicILInfo` blob, which is refused.
+    [<Test>]
+    let ``a fault clause is decoded`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        regionsOf
+            loggerFactory
+            prepared
+            state
+            [
+                {
+                    StartAddr = 0
+                    EndAddr = 7
+                    EndFinally = -1
+                    SpareCapacity = 3
+                    Clauses =
+                        [
+                            {
+                                Flags = 4
+                                FilterAddrOrToken = 0
+                                HandlerStart = 7
+                                HandlerEnd = 11
+                            }
+                        ]
+                }
+            ]
+        |> shouldEqual
+            [
+                ExceptionRegion.Fault
+                    {
+                        TryOffset = 0
+                        TryLength = 7
+                        HandlerOffset = 7
+                        HandlerLength = 4
+                    }
+            ]
+
+    /// Region order is preserved exactly as `m_exceptions` holds it, because `GetExceptions` has
+    /// already sorted innermost-first and `findAcceptingClause`'s tie-break relies on that being
+    /// the order it sees. Measured on a real nested `try`: the inner region (`[0,+11)`) comes back
+    /// first and the outer (`[0,+24)`) second, which is *not* emit order.
+    [<Test>]
+    let ``regions keep the order m_exceptions holds them in`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        regionsOf
+            loggerFactory
+            prepared
+            state
+            [
+                {
+                    StartAddr = 0
+                    EndAddr = 11
+                    EndFinally = -1
+                    SpareCapacity = 3
+                    Clauses =
+                        [
+                            {
+                                Flags = 0
+                                FilterAddrOrToken = catchToken
+                                HandlerStart = 11
+                                HandlerEnd = 19
+                            }
+                        ]
+                }
+                {
+                    StartAddr = 0
+                    EndAddr = 24
+                    EndFinally = -1
+                    SpareCapacity = 3
+                    Clauses =
+                        [
+                            {
+                                Flags = 0
+                                FilterAddrOrToken = catchToken
+                                HandlerStart = 24
+                                HandlerEnd = 32
+                            }
+                        ]
+                }
+            ]
+        |> List.map (fun region ->
+            match region with
+            | ExceptionRegion.Catch (_, offset) -> offset.TryLength
+            | other -> failwith $"expected a catch clause, got %O{other}"
+        )
+        |> shouldEqual [ 11 ; 24 ]
+
+    /// A clause whose scope entry is not a type handle is refused when the method is minted, for
+    /// the same reason and to the same standard as an instruction operand naming the wrong kind:
+    /// the body could never execute, and finding that out during exception dispatch is far too
+    /// late. Entry 1 is the signature blob every scope carries.
+    [<Test>]
+    let ``a catch clause naming a non-type entry is refused`` () : unit =
+        let body =
+            { doublingBody with
+                Exceptions =
+                    Some
+                        [
+                            {
+                                StartAddr = 0
+                                EndAddr = 11
+                                EndFinally = -1
+                                SpareCapacity = 3
+                                Clauses =
+                                    [
+                                        {
+                                            Flags = 0
+                                            FilterAddrOrToken = 0x02000001
+                                            HandlerStart = 11
+                                            HandlerEnd = 20
+                                        }
+                                    ]
+                            }
+                        ]
             }
 
         let message = mintExpectingFailure body
 
-        message |> shouldContainText "exception region"
-        message |> shouldContainText "DynamicScope"
+        message |> shouldContainText "catch clause"
+        message |> shouldContainText "entry 1"
 
     /// An empty `m_exceptions` array is not a clause and must not be refused: `ILGenerator`
     /// produces one for a method that opened no `try`, and refusing it would reject most bodies.
@@ -1620,7 +2130,7 @@ public static class Entry
 
         let body =
             { doublingBody with
-                ExceptionCount = Some 0
+                Exceptions = Some []
             }
 
         let stubAddress, _, state =
@@ -1786,7 +2296,7 @@ public static class Entry
                 NullaryIlOp.Ret, 4
             ]
 
-        definition.GetLatchedLocalsInit () |> shouldEqual None
+        definition.GetPreparation () |> shouldEqual None
 
     /// The `<Module>` type of the entry assembly, concretised the way the handler concretises it.
     let private moduleTypeHandle

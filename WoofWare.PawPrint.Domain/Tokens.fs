@@ -330,6 +330,20 @@ type DynamicScopeEntry =
     /// refusal message an instruction naming it would produce.
     | Unsupported of description : string
 
+[<RequireQualifiedAccess>]
+module DynamicScopeEntry =
+    /// How to name this entry in a refusal message: "…, which holds <this> rather than a type
+    /// handle". Lives here rather than beside either of its callers because two of them ask —
+    /// the instruction decoder and the catch-clause check — and a second phrasing of the same
+    /// answer would drift.
+    let describe (entry : DynamicScopeEntry) : string =
+        match entry with
+        | DynamicScopeEntry.TypeHandle -> "a type handle"
+        | DynamicScopeEntry.DynamicMethod -> "a dynamic method"
+        | DynamicScopeEntry.VarArgMethod -> "a call site naming a dynamic method"
+        | DynamicScopeEntry.String contents -> $"the string %s{contents}"
+        | DynamicScopeEntry.Unsupported description -> description
+
 /// Which token universe a method body's operands index into.
 [<RequireQualifiedAccess>]
 [<NoEquality ; NoComparison>]

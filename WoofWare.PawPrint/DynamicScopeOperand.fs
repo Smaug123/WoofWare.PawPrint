@@ -74,9 +74,17 @@ type internal DynamicMethodResolution =
 /// The known divergence that remains: CoreCLR resolves each token exactly once, at first JIT, and a
 /// mutation between two invocations is invisible to it (measured: 4 then 4, where PawPrint answers
 /// 4 then 8). Closing that means resolving a method's whole scope at first execution and latching
-/// it, as <c>MethodHandleRegistry.latchInitLocals</c> does for <c>initLocals</c> — the same
-/// "materialise when the method is prepared rather than when the instruction runs" change that
-/// <c>UnaryStringTokenIlOp</c> already documents for <c>ldstr</c>, and deferred with it.
+/// it, as <c>MethodHandleRegistry.latchPreparation</c> does — the same "materialise when the method
+/// is prepared rather than when the instruction runs" change that <c>UnaryStringTokenIlOp</c>
+/// already documents for <c>ldstr</c>, and deferred with it.
+/// </para>
+/// <para>
+/// Not every scope entry is read for an instruction, and the exception is already latched: a
+/// <c>catch</c> clause's type is a scope index too, and <c>DynamicMethodExecution.concretize</c>
+/// resolves it when the method is prepared, because a clause is not attached to an instruction and
+/// real .NET refuses an unresolvable one whether or not anything ever throws. Such a caller passes
+/// the handle of the method the clause belongs to, which is not in general the executing one —
+/// hence <see cref="entryObject"/> taking a handle rather than a thread.
 /// </para>
 /// </remarks>
 [<RequireQualifiedAccess>]
@@ -163,43 +171,51 @@ module internal DynamicScopeOperand =
         items, size
 
     /// <summary>
-    /// The guest object that entry <paramref name="scopeIndex"/> of the executing method's
-    /// <c>DynamicScope</c> holds *right now*. <c>None</c> if that slot is null or does not exist.
+    /// The <c>DynamicMethodHandle</c> of the method a thread is executing: the scope that method's
+    /// operands are drawn from.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// Read out of the live <c>m_tokens</c> rather than out of anything captured when the method was
-    /// minted, and that is the whole point: a guest can replace a slot through private reflection
-    /// after <c>CreateDelegate</c> and before the first invocation, and real .NET compiles against
-    /// the replacement (measured — swap `typeof(int).TypeHandle` for `typeof(long).TypeHandle` and
-    /// `sizeof` answers 8). Capturing the entry's address at mint would follow a *mutation of the
-    /// box* but miss a *replacement of the slot*, which is the case the measurement exercised.
-    /// </para>
-    /// <para>
     /// Reached through the executing method rather than through the operand, because the operand is
     /// an <see cref="IlOp"/> and must not carry a heap address. A dynamic method's
     /// <c>MethodInfo</c> is <c>Synthesised</c> with a <c>SynthesisedMethod.DynamicMethod</c> kind
     /// carrying its <c>DynamicMethodHandle</c> — that handle is the method's identity precisely
     /// because every dynamic method in a module shares one owner — so the resolver, and with it the
     /// scope, is one registry lookup away.
-    /// </para>
+    ///
+    /// Only correct for something the *executing* method names. A clause or operand belonging to a
+    /// method that is not the one running — a <c>catch</c> clause resolved while its method is being
+    /// prepared, with its caller still the executing frame — must pass that method's own handle to
+    /// <see cref="entryObject"/> instead. Reading the wrong scope is silent: both scopes are lists
+    /// of heap objects, so the wrong index usually yields *something*.
+    /// </remarks>
+    let executingScope (operation : string) (state : IlMachineState) (thread : ThreadId) : DynamicMethodHandle =
+        let executing = state.ThreadState.[thread].MethodState.ExecutingMethod
+
+        match executing.SynthesisedKind with
+        | Some (SynthesisedMethod.DynamicMethod handle) -> handle
+        | _ ->
+            failwith
+                $"%s{operation} names a DynamicScope entry, but the executing method %s{executing.Name} is not a dynamic method; only a body read off a DynamicResolver can carry a scope operand"
+
+    /// <summary>
+    /// The guest object that entry <paramref name="scopeIndex"/> of <paramref name="handle"/>'s
+    /// <c>DynamicScope</c> holds *right now*. <c>None</c> if that slot is null or does not exist.
+    /// </summary>
+    /// <remarks>
+    /// Read out of the live <c>m_tokens</c> rather than out of anything captured when the method was
+    /// minted, and that is the whole point: a guest can replace a slot through private reflection
+    /// after <c>CreateDelegate</c> and before the first invocation, and real .NET compiles against
+    /// the replacement (measured — swap `typeof(int).TypeHandle` for `typeof(long).TypeHandle` and
+    /// `sizeof` answers 8). Capturing the entry's address at mint would follow a *mutation of the
+    /// box* but miss a *replacement of the slot*, which is the case the measurement exercised.
     /// </remarks>
     let entryObject
         (operation : string)
         (scopeIndex : int)
         (state : IlMachineState)
-        (thread : ThreadId)
+        (handle : DynamicMethodHandle)
         : ScopeEntryLookup
         =
-        let executing = state.ThreadState.[thread].MethodState.ExecutingMethod
-
-        let handle =
-            match executing.SynthesisedKind with
-            | Some (SynthesisedMethod.DynamicMethod handle) -> handle
-            | _ ->
-                failwith
-                    $"%s{operation} names DynamicScope entry %d{scopeIndex}, but the executing method %s{executing.Name} is not a dynamic method; only a body read off a DynamicResolver can carry a scope operand"
-
         let definition =
             MethodHandleRegistry.resolveDynamicMethod handle state.MethodHandles
             |> Option.defaultWith (fun () ->
@@ -333,7 +349,7 @@ module internal DynamicScopeOperand =
         (operation : string)
         (scopeIndex : int)
         (state : IlMachineState)
-        (thread : ThreadId)
+        (handle : DynamicMethodHandle)
         : Result<ConcreteTypeHandle, TypeInfo<GenericParamFromMetadata, TypeDefn> * string>
         =
         // Which exception each refusal carries is measured, not chosen: rewrite a type slot after
@@ -348,7 +364,7 @@ module internal DynamicScopeOperand =
         let invalidProgram (why : string) =
             Error (baseClassTypes.InvalidProgramException, why)
 
-        match entryObject operation scopeIndex state thread with
+        match entryObject operation scopeIndex state handle with
         | ScopeEntryLookup.PastEnd ->
             Error (
                 baseClassTypes.ArgumentOutOfRangeException,
@@ -446,11 +462,11 @@ module internal DynamicScopeOperand =
         (operation : string)
         (scopeIndex : int)
         (state : IlMachineState)
-        (thread : ThreadId)
+        (handle : DynamicMethodHandle)
         : DynamicMethodResolution
         =
         let entry =
-            match entryObject operation scopeIndex state thread with
+            match entryObject operation scopeIndex state handle with
             | ScopeEntryLookup.Found entry -> entry
             | ScopeEntryLookup.Absent ->
                 failwith

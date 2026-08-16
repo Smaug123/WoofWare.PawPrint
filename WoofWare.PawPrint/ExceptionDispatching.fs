@@ -22,6 +22,81 @@ type ExceptionDispatchResult =
 [<RequireQualifiedAccess>]
 module ExceptionDispatching =
 
+    /// <summary>
+    /// The type a <c>catch</c> clause of <paramref name="method"/> names.
+    /// </summary>
+    /// <remarks>
+    /// The dynamic case is a lookup and not a resolution: a dynamic method's clause types were all
+    /// resolved when the method was first prepared for execution, which is where CoreCLR's JIT
+    /// resolves them (see <c>DynamicMethodExecution.concretize</c>). Resolving one here instead
+    /// would read the scope as it stands during the *throw*, and a guest that rewrote the slot in
+    /// between is measured not to be heard by real .NET.
+    /// </remarks>
+    let private catchClauseType
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        // Passed in rather than derived from `method` here, though it is exactly
+        // `assemblyOfMethod state method`: that lookup is by `AssemblyName`, which rebuilds a full
+        // name string, and this runs once per covering clause where the caller runs once per frame.
+        (activeAssy : DumpedAssembly)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, 'methodVar>)
+        (catchType : ExceptionCatchType)
+        : IlMachineState * ConcreteTypeHandle
+        =
+        match catchType with
+        | ExceptionCatchType.FromMetadata catchTypeToken ->
+            let state, catchTypeDefn, catchAssy =
+                IlMachineState.resolveTypeMetadataToken
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    activeAssy
+                    typeGenerics
+                    catchTypeToken
+
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                catchAssy.Name
+                typeGenerics
+                methodGenerics
+                catchTypeDefn
+        | ExceptionCatchType.FromDynamicScope index ->
+            let handle =
+                match method.SynthesisedKind with
+                | Some (SynthesisedMethod.DynamicMethod handle) -> handle
+                | _ ->
+                    failwith
+                        $"BUG: a catch clause of %s{method.Name} names DynamicScope entry %d{index}, but that method is not a dynamic method; only a body read off a DynamicResolver can carry such a clause"
+
+            let definition =
+                MethodHandleRegistry.resolveDynamicMethod handle state.MethodHandles
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"exception dispatch through %s{method.Name}: %O{handle} is not registered in the method-handle registry"
+                )
+
+            let prepared =
+                definition.GetPreparation ()
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"BUG: exception dispatch is examining a catch clause of %s{method.Name}, which has never been prepared for execution; a frame cannot exist for a method that was not prepared"
+                )
+
+            let handle =
+                prepared.CatchTypes
+                |> Map.tryFind index
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"BUG: a catch clause of %s{method.Name} names DynamicScope entry %d{index}, which was not resolved when the method was prepared; preparation resolves every clause of the body"
+                )
+
+            state, handle
+
     /// Check if an exception type matches a catch handler type.
     let private isExceptionAssignableTo
         (loggerFactory : ILoggerFactory)
@@ -31,27 +106,12 @@ module ExceptionDispatching =
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (exceptionType : ConcreteTypeHandle)
-        (catchTypeToken : MetadataToken)
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, 'methodVar>)
+        (catchType : ExceptionCatchType)
         : IlMachineState * bool
         =
-        let state, catchTypeDefn, catchAssy =
-            IlMachineState.resolveTypeMetadataToken
-                loggerFactory
-                baseClassTypes
-                state
-                activeAssy
-                typeGenerics
-                catchTypeToken
-
         let state, catchTypeHandle =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                catchAssy.Name
-                typeGenerics
-                methodGenerics
-                catchTypeDefn
+            catchClauseType loggerFactory baseClassTypes state activeAssy typeGenerics methodGenerics method catchType
 
         IlMachineState.isConcreteTypeAssignableTo loggerFactory baseClassTypes state exceptionType catchTypeHandle
 
@@ -172,7 +232,7 @@ module ExceptionDispatching =
             ((state, []), instructions.ExceptionRegions |> Seq.indexed)
             ||> Seq.fold (fun (state, acc) (regionIndex, region) ->
                 match region with
-                | ExceptionRegion.Catch (typeToken, offset) ->
+                | ExceptionRegion.Catch (catchType, offset) ->
                     if covers offset then
                         let state, matches =
                             isExceptionAssignableTo
@@ -183,7 +243,8 @@ module ExceptionDispatching =
                                 method.DeclaringTypeGenerics
                                 method.Generics
                                 exceptionType
-                                typeToken
+                                method
+                                catchType
 
                         if matches then
                             state, (regionIndex, region) :: acc

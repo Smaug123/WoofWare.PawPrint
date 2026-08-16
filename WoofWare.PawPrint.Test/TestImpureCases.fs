@@ -631,6 +631,45 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // Exception-handling regions in a dynamic method's body: the clauses come off the
+                // resolver's `m_exceptions`, and each `catch` clause's type is a `DynamicScope`
+                // index resolved when the method is first prepared. Every clause kind is here, and
+                // each cleanup kind is exercised on both the normal and the exceptional path --
+                // "decoded the regions and then unwound straight past the frame" passes the normal
+                // half of both.
+                FileName = "DynamicMethodExceptionRegions.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The other side of clause resolution: a clause naming a type that cannot be one.
+                // `BeginCatchBlock` accepts any `RuntimeType`, so this is emittable, and real .NET
+                // refuses it when it compiles the method -- at the first invocation, and whether or
+                // not anything ever throws. That last part is what rules out resolving clause types
+                // lazily during dispatch, which would let the quiet case run.
+                FileName = "DynamicMethodInvalidCatchClause.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `ModuleHandle_GetDynamicMethod`, the QCall behind
                 // `DynamicMethod.GetMethodDescriptor()`. Registered with the switch overridden to
                 // true, which is the only way to ask PawPrint to exercise a dynamic-code path --

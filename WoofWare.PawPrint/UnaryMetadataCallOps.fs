@@ -543,7 +543,7 @@ module internal UnaryMetadataCallOps =
             // never generic and never an instance method, and the operand is already the callee's
             // identity, so the only step left is turning that identity into a frame's worth of
             // method — which is the same step `CreateDelegate`'s invocation path takes, latching
-            // `initLocals` on first execution.
+            // `initLocals` and the callee's `catch` clause types on first execution.
             //
             // No `constrained.` handling either, and no arm to refuse one: a dynamic method's body
             // cannot contain `constrained.` at all, because that prefix's own operand is a scope
@@ -557,7 +557,22 @@ module internal UnaryMetadataCallOps =
                     handle
                     state
 
-            enterCallee ctx concretizedMethod state
+            match concretizedMethod with
+            | Ok concretizedMethod -> enterCallee ctx concretizedMethod state
+            | Error (exceptionType, why) ->
+                // The callee could not be compiled. Real .NET raises this from the *caller's* call
+                // site, because that is where the callee's first JIT happens, so the caller's own
+                // handlers see it — which is what raising here rather than pushing a frame gives.
+                // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
+                ctx.Logger.LogWarning ("call refused a DynamicMethod callee: {Reason}", why)
+
+                IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    exceptionType
+                    (DynamicScopeOperand.clrMessageFor ctx.BaseClassTypes exceptionType)
+                    ctx.Thread
+                    state
         | ResolvedMetadataOperand.FromMetadata _
         | ResolvedMetadataOperand.ScopeType _ ->
 

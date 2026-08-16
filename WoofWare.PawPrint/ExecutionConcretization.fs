@@ -25,7 +25,7 @@ module ExecutionConcretization =
     /// method's <c>initLocals</c> once, at first JIT, and latches it, so a method built at
     /// <c>CreateDelegate</c> would have been built too early to know it. <paramref
     /// name="localsInit" /> is that latched value, and callers must obtain it from
-    /// <c>MethodHandleRegistry.latchInitLocals</c> rather than by reading the guest's field
+    /// <c>MethodHandleRegistry.latchPreparation</c> rather than by reading the guest's field
     /// directly -- see <c>DynamicMethodExecution.concretize</c>, which is the entry point that
     /// does both and which exists so that this pairing cannot be forgotten.
     /// </para>

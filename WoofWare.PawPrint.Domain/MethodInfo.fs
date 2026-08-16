@@ -66,10 +66,32 @@ type ExceptionOffset =
         HandlerOffset : int
     }
 
+/// <summary>
+/// Which universe a <c>catch</c> clause's type is drawn from — the same distinction
+/// <see cref="MetadataOperand"/> draws for an instruction's operand, and drawn for the same reason.
+/// </summary>
+/// <remarks>
+/// A body decoded from a PE image names its clause type by a metadata token. A body minted by
+/// <c>Reflection.Emit</c> names it by an index into its method's <c>DynamicScope</c>:
+/// <c>BeginCatchBlock</c> writes <c>GetTokenFor(rtType)</c> into the clause's slot itself
+/// (<c>DynamicILGenerator.cs:371</c>), reusing the field that holds a filter's IL offset for every
+/// other clause kind. Nothing about the resulting bits distinguishes it from a token naming a real
+/// <c>TypeDef</c> row, so a clause decoded as-is would select an unrelated real type — silently,
+/// and only when an exception happened to be dispatched through the frame.
+/// </remarks>
+[<RequireQualifiedAccess>]
+type ExceptionCatchType =
+    /// A TypeRef, TypeDef or TypeSpec token, resolved against the declaring assembly of the method
+    /// whose body the clause belongs to.
+    | FromMetadata of MetadataToken
+    /// An index into the <c>DynamicScope</c> of the dynamic method whose body the clause belongs
+    /// to. Resolved when that method is first prepared for execution, which is where CoreCLR
+    /// resolves it too — see <c>DynamicMethodExecution.concretize</c>.
+    | FromDynamicScope of index : int
+
 type ExceptionRegion =
     | Filter of filterOffset : int * ExceptionOffset
-    /// Token is a TypeRef, TypeDef, or TypeSpec
-    | Catch of MetadataToken * ExceptionOffset
+    | Catch of ExceptionCatchType * ExceptionOffset
     | Finally of ExceptionOffset
     | Fault of ExceptionOffset
 
@@ -83,7 +105,8 @@ type ExceptionRegion =
             }
 
         match r.Kind with
-        | ExceptionRegionKind.Catch -> ExceptionRegion.Catch (MetadataToken.ofEntityHandle r.CatchType, offset)
+        | ExceptionRegionKind.Catch ->
+            ExceptionRegion.Catch (ExceptionCatchType.FromMetadata (MetadataToken.ofEntityHandle r.CatchType), offset)
         | ExceptionRegionKind.Filter -> ExceptionRegion.Filter (r.FilterOffset, offset)
         | ExceptionRegionKind.Finally -> ExceptionRegion.Finally offset
         | ExceptionRegionKind.Fault -> ExceptionRegion.Fault offset
