@@ -138,7 +138,7 @@ module TestFaultHandlers =
                 WasInitialisingType = None
                 Constructing = ConstructionState.NotConstructing
                 CallSiteIlOpIndex = threadState.MethodState.IlOpIndex
-                ConstructedObjectDisposition = ConstructedObjectDisposition.PushToCaller
+                ReturnValueDisposition = ReturnValueDisposition.PushToCaller
                 WrapExceptionInTargetInvocation = false
             }
 

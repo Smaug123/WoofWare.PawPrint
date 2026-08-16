@@ -310,7 +310,7 @@ module AbstractMachine =
                     thread
                     currentThreadState
                     originalCallSitePC
-                    ConstructedObjectDisposition.PushToCaller
+                    ReturnValueDisposition.PushToCaller
                     false // wrapExceptionInTargetInvocation
                     state
 

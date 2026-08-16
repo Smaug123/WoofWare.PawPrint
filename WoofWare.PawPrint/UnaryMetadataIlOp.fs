@@ -4,6 +4,27 @@ open System.Collections.Concurrent
 open System.Runtime.CompilerServices
 open Microsoft.Extensions.Logging
 
+/// <summary>
+/// How far <c>UnaryMetadataIlOp.execute</c> got in turning an operand into something it can
+/// dispatch on.
+/// </summary>
+/// <remarks>
+/// Three outcomes rather than a <c>Result</c>, because resolving a <c>DynamicScope</c> operand can
+/// come back needing *guest code to run first* — which is neither a resolved operand nor an invalid
+/// one, and which the instruction answers by suspending rather than by dispatching or throwing.
+/// </remarks>
+[<RequireQualifiedAccess>]
+[<NoEquality ; NoComparison>]
+type private OperandResolution =
+    /// The operand resolved; dispatch on it.
+    | Ready of ResolvedMetadataOperand
+    /// The operand names a <c>DynamicMethod</c> at this address that has not been minted. Mint it
+    /// and re-execute this instruction.
+    | NeedsMinting of ManagedHeapAddress
+    /// The operand is one real .NET refuses when it compiles the body; raise this exception type
+    /// into the guest. <c>why</c> is a PawPrint diagnostic for the log, not the guest's message.
+    | Invalid of exceptionType : TypeInfo<GenericParamFromMetadata, TypeDefn> * why : string
+
 [<RequireQualifiedAccess>]
 module internal UnaryMetadataIlOp =
     /// One logger per (factory, opcode), rather than one per executed instruction: an
@@ -52,21 +73,25 @@ module internal UnaryMetadataIlOp =
                             $"Metadata token source assembly %O{sourced.SourceAssembly} is not loaded; available assemblies: {available}"
                     )
 
-                Ok (ResolvedMetadataOperand.FromMetadata (activeAssy, sourced.Token))
+                ResolvedMetadataOperand.FromMetadata (activeAssy, sourced.Token)
+                |> OperandResolution.Ready
             | MetadataOperand.FromDynamicScope scopeIndex ->
                 let operation = string<UnaryMetadataTokenIlOp> op
 
                 match IlDecoding.scopeOperandKind op with
                 | IlDecoding.ScopeOperandKind.Type ->
-                    DynamicScopeOperand.closedType baseClassTypes operation scopeIndex state thread
-                    |> Result.map ResolvedMetadataOperand.ScopeType
+                    match DynamicScopeOperand.closedType baseClassTypes operation scopeIndex state thread with
+                    | Ok handle -> ResolvedMetadataOperand.ScopeType handle |> OperandResolution.Ready
+                    | Error (exceptionType, why) -> OperandResolution.Invalid (exceptionType, why)
                 | IlDecoding.ScopeOperandKind.Method ->
-                    // No `Error` arm: every way a method-position entry can be wrong is unreachable
-                    // from a guest today, so `dynamicMethod` crashes rather than fabricating the
-                    // exception real .NET would raise. See its docs for the measurements.
-                    DynamicScopeOperand.dynamicMethod baseClassTypes operation scopeIndex state thread
-                    |> ResolvedMetadataOperand.ScopeMethod
-                    |> Ok
+                    // No `Invalid` arm: every way a method-position entry can be wrong is
+                    // unreachable from a guest today, so `dynamicMethod` crashes rather than
+                    // fabricating the exception real .NET would raise. See its docs for the
+                    // measurements.
+                    match DynamicScopeOperand.dynamicMethod baseClassTypes operation scopeIndex state thread with
+                    | DynamicMethodResolution.Resolved handle ->
+                        ResolvedMetadataOperand.ScopeMethod handle |> OperandResolution.Ready
+                    | DynamicMethodResolution.NeedsMinting callee -> OperandResolution.NeedsMinting callee
                 | IlDecoding.ScopeOperandKind.NotYetSupported missing ->
                     // Unreachable: the decoder refuses such a body when the method is minted, so no
                     // `IlOp` carrying a scope operand for this opcode exists to be executed.
@@ -74,7 +99,26 @@ module internal UnaryMetadataIlOp =
                         $"BUG: %O{op} is executing a DynamicScope operand naming entry %d{scopeIndex}, but IlDecoding.scopeOperandKind says %s{missing}, so the decoder should have refused this body at mint"
 
         match resolved with
-        | Error (exceptionType, why) ->
+        | OperandResolution.NeedsMinting callee ->
+            // CoreCLR mints the callee here too, from inside `ResolveToken`, by calling the guest's
+            // `GetMethodDescriptor` (`DynamicILGenerator.cs:800`). Push that call and stop: the
+            // caller's PC has not moved, so this instruction runs again when the mint returns, and
+            // resolves against the `_methodHandle` the mint wrote.
+            //
+            // Nothing has been popped or otherwise disturbed yet — this is before `ctx` is even
+            // built, let alone before the op pops its arguments — so re-execution starts from
+            // exactly the state that reached here.
+            let state =
+                DynamicScopeOperand.mintDynamicMethod
+                    loggerFactory
+                    baseClassTypes
+                    (string<UnaryMetadataTokenIlOp> op)
+                    callee
+                    thread
+                    state
+
+            state, WhatWeDid.SuspendedForManagedCall
+        | OperandResolution.Invalid (exceptionType, why) ->
             // Measured on real .NET: an open generic definition, a bare generic parameter and an
             // open constructed type all make the method throw InvalidProgramException when it is
             // compiled, against a closed control that runs. `Emit` accepts all of them, because
@@ -98,7 +142,7 @@ module internal UnaryMetadataIlOp =
                 (DynamicScopeOperand.clrMessageFor baseClassTypes exceptionType)
                 thread
                 state
-        | Ok operand ->
+        | OperandResolution.Ready operand ->
 
         let ctx : UnaryMetadataIlOpContext =
             {
