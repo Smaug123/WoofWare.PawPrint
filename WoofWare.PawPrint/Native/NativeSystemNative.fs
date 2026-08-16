@@ -1733,6 +1733,15 @@ module NativeSystemNative =
             // buffer at all, and `pread(fd, NULL, 5, offsetAtEof)` returns 0
             // rather than EFAULT — measured on both platforms, and easy to get
             // wrong by validating arguments up front.
+            //
+            // True of `NULL`, and of every address below `TASK_SIZE`. *Above*
+            // it, Linux's `access_ok` runs before the file operation and faults
+            // regardless: measured, `pread(f, (void*)-1, 5, offsetAtEof)` is
+            // EFAULT on Linux and 0 on macOS, as is `pread(f, (void*)-1, 0, 0)`.
+            // PawPrint models "mapped or not" rather than where an unmapped
+            // address lies, so it gives macOS's answer under both flavours. See
+            // the fuller note on `SystemNative_Read`, which shares the gap — as
+            // does `SystemNative_Write`.
             if transfer = 0 then
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
@@ -1784,6 +1793,38 @@ module NativeSystemNative =
         // EFAULT, the untouched buffer when nothing transfers, and the check
         // order. Unlike `SystemNative_LSeek` below, there is no flavour
         // question to answer here.
+        //
+        // **With one measured exception, which PawPrint does not model.** Linux
+        // runs `access_ok` — a check that the whole buffer range lies below
+        // `TASK_SIZE`, 0x7ffffffff000 on x86-64 — inside `vfs_read`, *before*
+        // the file operation. So an address above that boundary faults even
+        // when nothing would have been transferred, and even when the
+        // descriptor is one the call would otherwise have rejected. Measured
+        // (Linux / macOS):
+        //
+        //   read(f, (void*)-1, 5) at EOF          EFAULT / 0
+        //   read(f, 0xffffffffffff, 5) at EOF     EFAULT / 0
+        //   read(f, 0x7ffffffff000, 5) at EOF     0      / 0   <- in range
+        //   read(f, NULL, 5) at EOF               0      / 0   <- in range
+        //   read(f, (void*)-1, 0)                 EFAULT / 0
+        //   read(dir, (void*)-1, 5)               EFAULT / EISDIR
+        //   read(badfd, (void*)-1, 5)             EBADF  / EBADF
+        //
+        // So Linux's real order is fd -> address range -> kind -> window ->
+        // copy, and PawPrint implements the macOS rule under both flavours: it
+        // models "mapped" versus "not mapped", not *where* in a 64-bit address
+        // space an unmapped pointer lies, so it cannot tell 0x7ffffffff000 from
+        // 0xffffffffffff — and the two differ on Linux.
+        //
+        // Left alone here deliberately, for the same reason as the
+        // whole-range writability gap `SystemNative_PRead` records: this is a
+        // property of PawPrint's address-space fidelity shared by every
+        // buffer-taking handler rather than of this one. Measured, `PRead` and
+        // `Write` — both already merged — behave identically, so fixing it
+        // means giving the simulated platform a user-address ceiling and
+        // consulting it in all of them at once. Unreachable from CoreLib, whose
+        // buffers are always real spans; a hand-rolled P/Invoke is the only way
+        // to produce such a pointer.
         | Some "SystemNative_Read",
           [ ConcreteIntPtr state.ConcreteTypes
             ConcretePointer _
@@ -1883,9 +1924,14 @@ module NativeSystemNative =
 
             if transfer = 0 then
                 // Nothing moves, so neither the buffer nor the offset is
-                // touched: measured, `read(f, NULL, 5)` at EOF is 0, and the
-                // offset stays where it was rather than being clamped to the
-                // file's length.
+                // touched: measured, `read(f, NULL, 5)` at EOF is 0 on both
+                // platforms, and the offset stays where it was rather than
+                // being clamped to the file's length.
+                //
+                // `NULL` specifically, and every other address *below*
+                // `TASK_SIZE`. An address above it faults here on Linux even
+                // though nothing would move — see the `access_ok` note on this
+                // handler for what PawPrint does not model.
                 succeed 0 state
             else
 
