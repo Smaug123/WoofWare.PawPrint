@@ -1025,10 +1025,9 @@ public sealed class CctorAttribute : System.Attribute
         readObjectSlot prep.NameArr state |> shouldEqual None
         readCursorIndex prep.IntPtrArr state |> shouldEqual (prep.BlobArr, blob.Length)
 
-    /// Feeding the first call's written cursor into a second call is the property a cursor
-    /// arithmetic bug breaks and a single-arg test cannot see. A real guest gets this check for
-    /// free from the managed caller's `blobStart != blobEnd`; until the guest test un-parks, this
-    /// is what stands in for it.
+    /// Feeds the first call's written cursor into a second call, so that the cursor arithmetic is
+    /// checked against a following argument rather than only against blob end. A real guest gets
+    /// the equivalent check from the managed caller's `blobStart != blobEnd`.
     [<Test>]
     let ``two named args back to back`` () : unit =
         let fixture = makeFixture ()
@@ -1059,9 +1058,8 @@ public sealed class CctorAttribute : System.Attribute
         readCursorIndex prep2.IntPtrArr state2
         |> shouldEqual (prep2.BlobArr, blob.Length)
 
-    /// Each out-of-scope serialization type must fail with its *own* message, naming the construct.
-    /// A single shared "unsupported" failure would not tell a future implementer which feature the
-    /// blob actually needed, and would let two of these arms be deleted without any test noticing.
+    /// Each out-of-scope serialization type fails with its own message, naming the construct and
+    /// the capability it needs, so a diagnostic identifies which feature the blob required.
     [<Test>]
     let ``out-of-scope serialization types each fail with their own message`` () : unit =
         let cases =

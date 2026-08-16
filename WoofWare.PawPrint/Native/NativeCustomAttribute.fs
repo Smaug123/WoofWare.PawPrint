@@ -137,18 +137,14 @@ module NativeCustomAttribute =
 
     /// <summary>
     /// Resolve a named argument's blob-declared <c>FieldOrPropType</c> to the shape the value
-    /// decoder needs.
+    /// decoder needs. Throws for every serialization type outside the supported set (<c>SzArray</c>,
+    /// <c>Enum</c>, <c>Type</c>, <c>TaggedObject</c>), with a message naming the construct and the
+    /// capability it needs.
     /// </summary>
     /// <remarks>
-    /// This is the sole refusal point for every named-arg serialization type PawPrint does not yet
-    /// support, so that each one produces its own diagnostic naming the construct. In particular
-    /// <c>SzArray</c> is refused *here* rather than being decoded and left to fail inside
-    /// <c>CustomAttribValueLowering</c>: that failure would name neither named args nor this
-    /// entry point, and the null-array sentinel would trip it too.
-    ///
-    /// The counterpart for fixed args is <c>resolveArgShape</c> above, which resolves a ctor
-    /// parameter's <c>TypeDefn</c> instead. Both exist because an enum's value width lives in the
-    /// enum's metadata rather than in the blob.
+    /// <c>resolveArgShape</c> above is the fixed-arg counterpart, resolving a ctor parameter's
+    /// <c>TypeDefn</c>. Both exist because an enum's value width lives in the enum's metadata
+    /// rather than in the blob.
     /// </remarks>
     let private resolveNamedArgShape
         (operation : string)
@@ -608,12 +604,11 @@ module NativeCustomAttribute =
             if instruction.Arguments.Length <> 7 then
                 failwith $"%s{operation}: expected seven native arguments, got %d{instruction.Arguments.Length}"
 
-            // Single-phase, unlike the sibling handler above: nothing in the supported set runs
-            // guest code or triggers class initialisation. `boxValueType` allocates without running
-            // a cctor (matching CoreCLR's `MethodTable::Box`), `concretizeType` on a primitive is a
-            // pure lookup, and `getOrAllocateType` has no suspension path. So there is no re-entry
-            // marker, and `*ppBlobStart` is written last, as CoreCLR does. Adding ENUM support
-            // reintroduces a type load and may reintroduce the two-phase structure.
+            // Single-phase: nothing in the supported set runs guest code or triggers class
+            // initialisation. `boxValueType` allocates without running a cctor (matching CoreCLR's
+            // `MethodTable::Box`), `concretizeType` on a primitive is a pure lookup, and
+            // `getOrAllocateType` has no suspension path. So there is no re-entry marker, and
+            // `*ppBlobStart` is written last, as CoreCLR does.
 
             // QCallModule is not consulted while only primitive named args are supported; CoreCLR
             // threads it into `GetDataFromBlob` for the ENUM / TYPE / TAGGED_OBJECT cases, all of
@@ -625,10 +620,10 @@ module NativeCustomAttribute =
                     state
                     (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
 
-            // `BYTE** ppBlobStart` is a managed byref to an IntPtr cell: the byref lets us write
-            // the advanced cursor back, and the cell's *current* value is the cursor itself, so we
-            // read through it once more before decoding. Same shape as `ppBlob` in the sibling
-            // handler; don't collapse the two reads into one.
+            // `BYTE** ppBlobStart` is a managed byref to an IntPtr cell. The byref is what lets us
+            // write the advanced cursor back; the cursor itself is the IntPtr stored in that cell,
+            // so reading it takes a second dereference. Same shape as `ppBlob` in the sibling
+            // handler.
             let blobCursorSlot =
                 NativeCall.managedPointerOfPointerArgument operation "ppBlobStart" instruction.Arguments.[1]
 
@@ -713,11 +708,12 @@ module NativeCustomAttribute =
             let state =
                 IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state nameHandle nameValue
 
-            // `pType` is written only where CoreCLR writes it. For a non-null string or a boxed
-            // primitive it stays null, and the managed caller infers the member's type from
-            // `value.GetType()`; the distinction picks `GetProperty(name)` over the type-filtered
-            // `GetProperty(name, type, Type.EmptyTypes)` overload, so it is observable. We write
-            // the null explicitly rather than relying on the caller having pre-nulled its local.
+            // `pType` carries a real type only where CoreCLR writes one. For a non-null string or
+            // a boxed primitive it is null, and the managed caller then infers the member's type
+            // from `value.GetType()`; null picks `GetProperty(name)` over the type-filtered
+            // `GetProperty(name, type, Type.EmptyTypes)` overload, so the difference is observable.
+            // This handler always writes the slot, so its result does not depend on how the caller
+            // initialised it.
             let state, valueCli, typeCli =
                 match decoded with
                 | CustomAttribFixedArg.String None ->

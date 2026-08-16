@@ -65,7 +65,7 @@ the single largest implementation risk and it is now retired.
 
 ### Downstream is blocked — this QCall cannot be tested end-to-end yet
 
-This is the load-bearing scope fact, and it is **measured, not assumed** (rows 2 and 3 above).
+This is the fact that decides the PR's scope, and it is **measured, not assumed** (rows 2 and 3 above).
 Both directions of the named-arg loop body hit a *different* unimplemented primitive immediately
 after this QCall returns:
 
@@ -178,7 +178,7 @@ Main has already solved this shape once: `CustomAttribArgShape` is "a ctor param
 to the point where the bytes can be read", and `NativeCustomAttribute.resolveArgShape` does the
 resolving beside the machine state.
 
-* **(a) Reuse that seam.** *(chosen)* Three pieces:
+* **(a) Reuse that same two-step split.** *(chosen)* Three pieces:
 
   ```fsharp
   /// ECMA-335 II.23.3 `FieldOrPropType`: the serialization type a named argument carries in
@@ -242,7 +242,7 @@ above) the day resolution lands, rather than that ordering being re-derived late
 
 This is not speculative generality: each of the three "unsupported" cases feeds a *tested* `failwith`
 diagnostic plus decoder tests, so none is dead code. (The "precise diagnostics" half of the argument
-is the weaker half — a partial parser also knows its offset. The load-bearing half is that the
+is the weaker half — a partial parser also knows its offset. The stronger half is that the
 `Enum` arm's SerString consumption pins the cursor ordering under test *now*, rather than that
 ordering being re-derived when resolution lands.)
 
@@ -281,7 +281,7 @@ Out of scope, each failing loudly with a message naming the exact construct and 
   with its own named-arg-specific message.** `SzArray` must *not* be allowed to decode and then
   trip the lowering `failwith`, for three reasons: that message says nothing about named args, so
   the diagnostic would misattribute; it would be the only one of the four failing at a different
-  seam, so the "each construct fails with its own message" test would be asserting two different
+  place, so the "each construct fails with its own message" test would be asserting two different
   things; and the null-array sentinel (`NumElem = 0xFFFFFFFF` → `CustomAttribFixedArg.Array None`)
   reaches that same lowering arm, so even the *degenerate* array would fail there rather than here.
   One refusal point, four messages.

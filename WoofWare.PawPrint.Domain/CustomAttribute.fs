@@ -140,9 +140,8 @@ type CustomAttribArgShape =
 /// already uses.
 ///
 /// <c>Primitive</c> over-admits: <c>IntPtr</c>, <c>Object</c> and <c>TypedReference</c> have no
-/// <c>CorSerializationType</c> byte, so <c>readFieldOrPropType</c> never produces them. That
-/// matches the precedent set by <c>CustomAttribArgShape</c>, and <c>readElem</c>'s error arm is
-/// the guard.
+/// <c>CorSerializationType</c> byte, so <c>readFieldOrPropType</c> never produces them, and
+/// <c>readElem</c> errors if one is supplied by hand.
 /// </remarks>
 [<RequireQualifiedAccess>]
 type CustomAttribFieldOrPropType =
@@ -150,13 +149,11 @@ type CustomAttribFieldOrPropType =
     | Primitive of PrimitiveType
     /// <c>SZARRAY</c> (0x1D), followed by the element type.
     ///
-    /// ECMA-335's grammar reads as recursive, and this mirrors that. CoreCLR's named-arg path
-    /// instead reads exactly one element byte (<c>customattribute.cpp:1066</c>) and rejects a
-    /// nested array later, inside <c>ReadArray</c>'s <c>th.IsNull()</c> branch — so it refuses
-    /// <c>SzArray (SzArray _)</c>, and refuses it at a different cursor position than we would.
-    /// The two agree on every element type CoreCLR accepts. Whatever eventually *supports* array
-    /// named args must therefore reject a nested array at the resolution step; do not assume this
-    /// reader did it.
+    /// This follows ECMA-335's grammar, which is recursive. CoreCLR's named-arg path admits only
+    /// one level: it reads a single element byte (<c>customattribute.cpp:1066</c>) and rejects a
+    /// nested array inside <c>ReadArray</c>'s <c>th.IsNull()</c> branch. The two therefore agree on
+    /// every element type CoreCLR accepts, and this case is the wider of the two: a caller that
+    /// lowers array named args to runtime values must reject <c>SzArray (SzArray _)</c> itself.
     | SzArray of elements : CustomAttribFieldOrPropType
     /// <c>ENUM</c> (0x55), followed by a <c>SerString</c> naming the enum type.
     /// <c>None</c> is the SerString null sentinel, which is malformed here but is what the bytes said.
@@ -504,10 +501,9 @@ module CustomAttribute =
 
         let readPrimitiveValue (pt : PrimitiveType) (offset : int) : Result<CustomAttribFixedArg * int, string> =
             match pt with
-            // CoreCLR boxes the raw blob byte here, so a hand-crafted blob can produce a
-            // `System.Boolean` holding 2; we normalise to an F# `bool` and hence to 0/1. Only
-            // hand-written IL can tell the difference, and the fixed-arg path has always behaved
-            // this way, so this is a known divergence rather than a new one.
+            // Divergence: CoreCLR boxes the raw blob byte, so a hand-crafted blob can produce a
+            // `System.Boolean` holding 2, whereas this normalises to an F# `bool` and hence to 0/1.
+            // Only hand-written IL can produce such a blob.
             | PrimitiveType.Boolean -> readPrimitive 1 offset (fun b o -> CustomAttribFixedArg.Bool (b.[o] <> 0uy))
             | PrimitiveType.Char ->
                 readPrimitive
@@ -796,9 +792,7 @@ module CustomAttribute =
     /// <remarks>
     /// Field order mirrors CoreCLR's <c>CustomAttribute_CreatePropertyOrFieldData</c>
     /// (<c>customattribute.cpp:1050-1096</c>): the type — <em>including an enum's type name</em> —
-    /// comes before the member name. Getting that order wrong desynchronises the cursor for every
-    /// subsequent named argument, and because both are <c>SerString</c>s a swap decodes cleanly
-    /// with the two exchanged.
+    /// comes before the member name.
     /// </remarks>
     let readNamedArgHeader
         (blob : ImmutableArray<byte>)

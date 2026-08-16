@@ -799,9 +799,8 @@ module TestCustomAttributeBlob =
             next |> shouldEqual 2
         | Error e -> failwithf "expected Ok, got Error %s" e
 
-        // ECMA-335's grammar is recursive here even though CoreCLR's named-arg path reads only one
-        // element byte and refuses the nesting later, inside ReadArray. This reader follows the
-        // grammar; the resolution step is what refuses arrays today.
+        // ECMA-335's grammar is recursive here; CoreCLR's named-arg path admits only one level.
+        // This reader follows the grammar, and the resolution step is where arrays are refused.
         let nested = CustomAttribFieldOrPropType.SzArray single
 
         match CustomAttribute.readFieldOrPropType (immutable (encodeFieldOrPropType nested)) 0 with
@@ -854,9 +853,9 @@ module TestCustomAttributeBlob =
                 next |> shouldEqual bytes.Length
             | Error e -> failwithf "tag 0x%02X: expected Ok, got Error %s" tag e
 
-    /// The type name and the member name are *both* SerStrings, so an implementation that swapped
-    /// them decodes cleanly with the two exchanged. Only a case carrying two distinct strings, with
-    /// assertions on both fields, can tell the difference — the truncation cases cannot.
+    /// Both the enum type name and the member name are SerStrings, so telling the two fields apart
+    /// requires a header carrying two *distinct* strings with assertions on each. The truncation
+    /// cases below cannot distinguish them, since either order consumes the same byte count.
     [<Test>]
     let ``readNamedArgHeader reads the enum type name before the member name`` () : unit =
         let header =
