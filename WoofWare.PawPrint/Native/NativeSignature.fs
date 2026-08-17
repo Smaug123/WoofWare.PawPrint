@@ -820,7 +820,13 @@ module NativeSignature =
             None
 
     /// Resolve a nominal `TypeDefn` leaf to the TypeDef that defines it, which is the identity
-    /// `CompareTypeTokens` ultimately compares. Resolution can load assemblies, hence the state.
+    /// `CompareTypeTokens` ultimately compares. Following a reference can load the assembly it
+    /// names, hence the state.
+    ///
+    /// Deliberately the identity-only resolver: this comparison never looks at the resolved type
+    /// beyond its identity, and priming a base chain would let an assembly reachable only from
+    /// some base type decide whether two signatures can be compared at all. CoreCLR's
+    /// `ClassLoader::ResolveTokenToTypeDefThrowing` likewise reads metadata and loads no types.
     let private resolveNominalIdentity
         (loggerFactory : ILoggerFactory)
         (operation : string)
@@ -832,14 +838,7 @@ module NativeSignature =
         match defn with
         | TypeDefn.FromDefinition (identity, _) -> state, identity
         | TypeDefn.FromReference (typeRef, _) ->
-            let state, resolvedAssembly, typeInfo =
-                IlMachineTypeResolution.resolveTypeFromRef loggerFactory assembly typeRef ImmutableArray.Empty state
-
-            // The generic arguments a reference carries are irrelevant to *identity*: a
-            // `GenericInstantiation` is compared head-then-arguments, and this is the head.
-            ignore<DumpedAssembly> resolvedAssembly
-
-            state, ResolvedTypeIdentity.ofTypeDefinition typeInfo.Assembly typeInfo.TypeDefHandle
+            IlMachineTypeResolution.resolveTypeRefIdentity loggerFactory assembly typeRef state
         | other -> failwith $"%s{operation}: %O{other} is not a nominal type reference"
 
     /// Compare two decoded signature types the way `MetaSig::CompareMethodSigs` compares two blobs

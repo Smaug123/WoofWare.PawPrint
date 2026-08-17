@@ -14,9 +14,10 @@ open WoofWare.PawPrint
 /// </summary>
 /// <remarks>
 /// The end-to-end guests (<c>ReflectionPropertyHiding.cs</c> and its cross-module sibling) pin what
-/// a guest can observe. These tests reach the arms no C# guest can: a signature mentioning a
-/// generic parameter (properties on generic types are blocked well before this comparison, on
-/// <c>ModuleHandle.ResolveMethod</c>), and the mismatched-kind and calling-convention arms.
+/// a guest can observe. These tests reach what no C# guest can: a signature mentioning a generic
+/// parameter (properties on generic types are blocked well before this comparison, on
+/// <c>ModuleHandle.ResolveMethod</c>), a modopt (which C# cannot emit), and two assemblies whose
+/// property blobs collide byte for byte.
 ///
 /// The corpus is a Roslyn-compiled assembly rather than corelib, because corelib contains no
 /// TypeRef rows at all — every one of its property blobs spells its types as TypeDefs, so a
@@ -452,3 +453,81 @@ public class Holder
     [<Test>]
     let ``a modopt equals the same modopt`` () : unit =
         compare (refWithModifier false) (refWithModifier false) |> shouldEqual true
+
+    [<Test>]
+    let ``comparing a reference does not load its target's base chain`` () : unit =
+        // Deciding *which* type a reference names is metadata only, so it must not depend on
+        // whether some assembly reachable from that type's base chain can be loaded. CoreCLR draws
+        // the same line: its token comparison uses `ClassLoader::ResolveTokenToTypeDefThrowing`,
+        // which loads no types.
+        //
+        // Three assemblies: `Holder.P` is typed `Mid`, and `Mid`'s base `TheBase` lives in a third
+        // assembly which this state deliberately never loads and cannot find — the runtime-dir list
+        // is empty, so any attempt to load it fails outright. Resolving the property's type to an
+        // identity must therefore succeed while resolving it to a *usable* type could not.
+        let baseImage =
+            Roslyn.compileAssembly
+                "SignatureBaseChainBase"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ "public class TheBase { }" ]
+
+        let midImage =
+            Roslyn.compileAssembly
+                "SignatureBaseChainMid"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                [ Microsoft.CodeAnalysis.MetadataReference.CreateFromImage baseImage ]
+                [ "public class Mid : TheBase { }" ]
+
+        let userImage =
+            Roslyn.compileAssembly
+                "SignatureBaseChainUser"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                [ Microsoft.CodeAnalysis.MetadataReference.CreateFromImage midImage ]
+                [
+                    "public class Holder { public Mid P { get; set; } public Mid Q { get; set; } }"
+                ]
+
+        let read (image : byte[]) : DumpedAssembly =
+            use stream = new MemoryStream (image)
+            global.WoofWare.PawPrint.AssemblyApi.read fixture.LoggerFactory None stream
+
+        let mid = read midImage
+        let user = read userImage
+        let metadataReader = user.PeReader.GetMetadataReader ()
+
+        let holder = user.TypeDefs.Values |> Seq.find (fun td -> td.Name = "Holder")
+
+        let signatureNamed (name : string) : MethodSignature<TypeDefn> =
+            let handle =
+                (metadataReader.GetTypeDefinition holder.TypeDefHandle).GetProperties ()
+                |> Seq.find (fun handle ->
+                    metadataReader.GetString (metadataReader.GetPropertyDefinition handle).Name = name
+                )
+
+            PropertySignatureDecoding.decode
+                user.Name
+                metadataReader
+                (metadataReader.GetPropertyDefinition handle).Signature
+
+        // `Mid` is spelled as a TypeRef here, so answering this needs the reference resolved.
+        match (signatureNamed "P").ReturnType with
+        | TypeDefn.FromReference _ -> ()
+        | other -> failwith $"expected `Mid` to be spelled as a TypeRef in the user assembly, got %O{other}"
+
+        // No runtime dirs, and `SignatureBaseChainBase` never loaded: `TheBase` is unreachable.
+        let state =
+            (IlMachineState.initial fixture.LoggerFactory ImmutableArray.Empty user).WithLoadedAssembly mid
+
+        // Distinct Property rows of the same type, so this is a real comparison rather than an
+        // identity check, and both sides resolve the same reference.
+        NativeSignature.compareDecodedSignatures
+            fixture.LoggerFactory
+            "test"
+            state
+            user
+            (signatureNamed "P")
+            user
+            (signatureNamed "Q")
+        |> snd
+        |> shouldEqual true
