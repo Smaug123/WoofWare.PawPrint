@@ -796,15 +796,42 @@ module NativeSignature =
     /// The name a nominal `TypeDefn` leaf carries in its *own* metadata, without resolving it.
     /// `CompareTypeTokens` (siginfo.cpp:3545) compares these strings before it resolves anything,
     /// so a comparison that resolves eagerly would fail on images CoreCLR answers cleanly.
+    /// A metadata nesting depth no real image reaches. The enclosing walks below follow links that
+    /// malformed metadata could make cyclic, and a cycle would otherwise hang the interpreter.
+    let private maxNestingDepth : int = 256
+
     let private nominalName
         (operation : string)
         (state : IlMachineState)
         (assembly : DumpedAssembly)
         (defn : TypeDefn)
-        : (string * string) option
+        : (string * string) list option
         =
         match defn with
-        | TypeDefn.FromReference (typeRef, _) -> Some (typeRef.Namespace, typeRef.Name)
+        | TypeDefn.FromReference (typeRef, _) ->
+            // A nested type's row carries an empty namespace and only its own leaf name, with its
+            // enclosing type in the resolution scope, so the leaf alone does not tell `A+X` from
+            // `B+X`. Walk out to the enclosing type that names an assembly or module, innermost
+            // first, then reverse.
+            let rec walk (depth : int) (acc : (string * string) list) (current : TypeRef) =
+                if depth > maxNestingDepth then
+                    failwith
+                        $"%s{operation}: type reference %s{current.Name} in %s{assembly.Name.FullName} is nested more than %d{maxNestingDepth} deep; its enclosing chain is cyclic"
+
+                let acc = (current.Namespace, current.Name) :: acc
+
+                match current.ResolutionScope with
+                | TypeRefResolutionScope.TypeRef enclosing ->
+                    match assembly.TypeRefs.TryGetValue enclosing with
+                    | true, enclosing -> walk (depth + 1) acc enclosing
+                    | false, _ ->
+                        failwith
+                            $"%s{operation}: type reference %s{current.Name} in %s{assembly.Name.FullName} is scoped to a TypeRef row that assembly does not contain"
+                | TypeRefResolutionScope.Assembly _
+                | TypeRefResolutionScope.ModuleDef _
+                | TypeRefResolutionScope.ModuleRef _ -> acc
+
+            Some (walk 0 [] typeRef)
         | TypeDefn.FromDefinition (identity, _) ->
             let definingAssembly =
                 state.LoadedAssembly' identity.AssemblyFullName
@@ -813,8 +840,27 @@ module NativeSignature =
                         $"%s{operation}: type definition %O{identity.TypeDefinition.Get} names unloaded assembly %s{identity.AssemblyFullName}"
                 )
 
-            let typeInfo = definingAssembly.TypeDefs.[identity.TypeDefinition.Get]
-            Some (typeInfo.Namespace, typeInfo.Name)
+            let rec walk
+                (depth : int)
+                (acc : (string * string) list)
+                (current : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+                =
+                if depth > maxNestingDepth then
+                    failwith
+                        $"%s{operation}: type definition %s{current.Name} in %s{identity.AssemblyFullName} is nested more than %d{maxNestingDepth} deep; its enclosing chain is cyclic"
+
+                let acc = (current.Namespace, current.Name) :: acc
+
+                if current.IsNested then
+                    match definingAssembly.TypeDefs.TryGetValue current.DeclaringType with
+                    | true, enclosing -> walk (depth + 1) acc enclosing
+                    | false, _ ->
+                        failwith
+                            $"%s{operation}: type definition %s{current.Name} in %s{identity.AssemblyFullName} names an enclosing type that assembly does not contain"
+                else
+                    acc
+
+            Some (walk 0 [] definingAssembly.TypeDefs.[identity.TypeDefinition.Get])
         | _ ->
             ignore<DumpedAssembly> assembly
             None
@@ -942,10 +988,13 @@ module NativeSignature =
             // well-formed metadata spells a given type with the same kind everywhere, and the
             // identity comparison below already separates every pair the kind could have.
             //
-            // Names before resolution, as `CompareTypeTokens` does. This is not an optimisation:
-            // resolution is partial (an unresolvable reference makes PawPrint fail loudly, where
-            // CoreCLR answers FALSE), so checking names first keeps the refusal confined to
-            // same-named types whose assembly genuinely cannot be loaded.
+            // Names before resolution, as `CompareTypeTokens` does — and enclosing names too,
+            // which it compares by recursing on the scope. This is not an optimisation: resolution
+            // is partial (an unresolvable reference makes PawPrint fail loudly, where CoreCLR
+            // answers FALSE), so every pair separated here is a pair whose comparison cannot be
+            // decided by whether some assembly happens to be loadable. Comparing only the leaf
+            // would leave every nested type to resolution, since a nested row carries an empty
+            // namespace and its own name alone.
             let lName = nominalName operation state leftAssembly left
             let rName = nominalName operation state rightAssembly right
 
