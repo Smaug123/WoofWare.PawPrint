@@ -357,6 +357,17 @@ module IlMachineStateExecution =
                     candidateTypeGenerics
                     methodToCall.Generics
 
+            // Custom modifiers play no part in this comparison, in any position: concretisation
+            // looks through `TypeDefn.Modified`, so `int32 modreq(X)` and `int32` are one handle
+            // here, and a `void` return under a modifier is `Void`. CoreCLR's
+            // `MetaSig::CompareMethodSigs` does compare them (siginfo.cpp:4078-4100), so a
+            // hand-authored derived `virtual void M()` over a base `virtual void modreq(X) M()`
+            // occupies its own slot there and is matched as an override here. That is a divergence
+            // this comparison shares with every other modifier position rather than one about
+            // returns, and it is bounded by what the check is *for*: finding the implementation to
+            // run, which is why the return types need only be assignable rather than equal — already
+            // looser than any blob comparison. `NativeRuntimeTypeHelpers.concretiseSignatureForSlotMatch`
+            // is the modifier-aware comparison, and it answers reflection's questions about slots.
             let state, retAssignable =
                 match candidateSignature.ReturnType, methodToCall.Signature.ReturnType with
                 | MethodReturnType.Void, MethodReturnType.Void -> state, true

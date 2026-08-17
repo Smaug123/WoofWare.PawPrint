@@ -130,6 +130,14 @@ module IlMachineMemberResolution =
             let availableMethods =
                 targetType.Methods |> List.filter (fun mi -> mi.Name = memberName)
 
+            // Both sides of the comparison below are brought into concrete form, which is what makes
+            // a MemberRef written in one assembly comparable to a MethodDef declared in another --
+            // the same type is a TypeRef in the referrer and a TypeDef in the declarer. It also
+            // normalises away custom modifiers in every position, so a reference whose signature
+            // carries a `modreq` the target does not (a stale reference against a rebuilt library,
+            // say) binds here where CoreCLR's `MetaSig::CompareMethodSigs` would compare the modifier
+            // tokens (siginfo.cpp:4078-4100) and report a missing member. No compiler emits such a
+            // pair: a MemberRef's blob is written from the target's own signature.
             let state, memberSig =
                 memberSig
                 |> IlMachineTypeResolution.concretizeMethodSignature
