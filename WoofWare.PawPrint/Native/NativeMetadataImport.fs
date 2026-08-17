@@ -23,6 +23,10 @@ module NativeMetadataImport =
     /// associates (see <c>methodSemanticsForAssociation</c>).
     let private metadataTokenTypeMethodDef : int32 = 0x06000000
 
+    /// <c>mdtParamDef</c>. Passed by <c>MetadataImport.EnumParams</c>, whose only caller is
+    /// <c>RuntimeParameterInfo.GetParameters</c>.
+    let private metadataTokenTypeParamDef : int32 = 0x08000000
+
     let private metadataEnumSmallResultLimit : int = 16
 
     /// <c>mdTypeDefNil</c>: TypeDef table code (0x02) | row 0. Returned by
@@ -58,6 +62,12 @@ module NativeMetadataImport =
             System.Reflection.Metadata.PropertyDefinitionHandle.op_Implicit propertyHandle
 
         System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken propertyHandle
+
+    let private metadataTokenOfParameterHandle (parameterHandle : System.Reflection.Metadata.ParameterHandle) : int32 =
+        let parameterHandle : System.Reflection.Metadata.EntityHandle =
+            System.Reflection.Metadata.ParameterHandle.op_Implicit parameterHandle
+
+        System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken parameterHandle
 
     let private metadataImportHandleOfArg (operation : string) (arg : CliType) : string =
         match CliType.unwrapPrimitiveLikeDeep arg with
@@ -288,6 +298,71 @@ module NativeMetadataImport =
         : string
         =
         (metadataReaderOf assembly).GetString ((propertyDefinition operation assembly propertyHandle).Name)
+
+    /// The Param rows (ECMA-335 II.22.33) owned by the MethodDef named by <paramref name="parent"/>,
+    /// as raw metadata tokens, in the order the real runtime returns them.
+    ///
+    /// Table order, which is not parameter order and not one row per parameter: a Param row's
+    /// <c>Sequence</c> column says which parameter it describes (0 being the return value), and a
+    /// parameter with no name and no attributes gets no row at all. <c>RuntimeParameterInfo</c>
+    /// reconciles both, reading <c>Sequence</c> through <c>GetParamDefProps</c> and filling the gaps
+    /// from the method signature.
+    let private parameterDefinitionsForMethodDefinition
+        (operation : string)
+        (assembly : DumpedAssembly)
+        (parent : int32)
+        : int32 list
+        =
+        match MetadataToken.ofInt parent with
+        | MetadataToken.MethodDef methodDefHandle ->
+            // The parent must be validated here, because an out-of-range handle reaches the reader
+            // as `BadImageFormatException: Read out of bounds`, which reads as a corrupt image when
+            // the real problem is a token PawPrint should never have minted.
+            if not (assembly.Methods.ContainsKey methodDefHandle) then
+                failwith $"%s{operation}: MethodDef token 0x%08x{parent} was not present in %s{assembly.Name.FullName}"
+
+            let metadataReader = metadataReaderOf assembly
+
+            // Reads the Param run straight from the metadata; PawPrint's `MethodInfo` decodes the
+            // signature rather than keeping the Param rows, and the rows are what carries names and
+            // `ParameterAttributes`.
+            (metadataReader.GetMethodDefinition methodDefHandle).GetParameters ()
+            |> Seq.map metadataTokenOfParameterHandle
+            |> List.ofSeq
+        | token ->
+            failwith
+                $"%s{operation}: expected MethodDef parent token for parameter enumeration, got %O{token} from 0x%08x{parent}"
+
+    /// One Param row, bounds-checked: an out-of-range handle fails loudly here.
+    let private parameterDefinition
+        (operation : string)
+        (assembly : DumpedAssembly)
+        (parameterHandle : System.Reflection.Metadata.ParameterHandle)
+        : System.Reflection.Metadata.Parameter
+        =
+        let metadataReader = metadataReaderOf assembly
+
+        // `MetadataReader` has no total lookup, so the row number is compared against the table's
+        // length directly; an out-of-range handle would otherwise reach the reader as
+        // `BadImageFormatException: Read out of bounds`. CoreCLR's own `GetParamDefProps` FCall
+        // makes exactly this check (`pScope->IsValidToken`, managedmdimport.cpp:305) and reports
+        // COR_E_BADIMAGEFORMAT.
+        let rowNumber =
+            System.Reflection.Metadata.Ecma335.MetadataTokens.GetRowNumber (
+                System.Reflection.Metadata.ParameterHandle.op_Implicit parameterHandle
+            )
+
+        let parameterRowCount =
+            System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetTableRowCount (
+                metadataReader,
+                System.Reflection.Metadata.Ecma335.TableIndex.Param
+            )
+
+        if rowNumber < 1 || rowNumber > parameterRowCount then
+            failwith
+                $"%s{operation}: ParamDef token 0x%08x{metadataTokenOfParameterHandle parameterHandle} was not present in %s{assembly.Name.FullName}"
+
+        metadataReader.GetParameter parameterHandle
 
     /// The types immediately nested inside the TypeDef named by <paramref name="parent"/>, as raw
     /// metadata tokens, in the order the real runtime returns them.
@@ -886,6 +961,8 @@ module NativeMetadataImport =
                     nestedTypeDefinitionsForTypeDefinition operation assembly parent
                 elif tokenType = metadataTokenTypeProperty then
                     propertyDefinitionsForTypeDefinition operation assembly parent
+                elif tokenType = metadataTokenTypeParamDef then
+                    parameterDefinitionsForMethodDefinition operation assembly parent
                 elif tokenType = metadataTokenTypeMethodDef then
                     // The one branch whose result is not a token list: these are ASSOCIATE_RECORD
                     // pairs, `[method; semantics; …]`, and `*length` counts INT32s rather than
@@ -998,17 +1075,16 @@ module NativeMetadataImport =
             ConcreteByref (ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             // CoreCLR's FCall (`managedmdimport.cpp:204`) answers seven token kinds, forwarding each
-            // to a different `IMDInternalImport` accessor. This answers two.
+            // to a different `IMDInternalImport` accessor. This answers three.
             //
             // MethodDef, `mdtModule` and TypeDef have no managed caller at all: `RuntimeType.Name`
             // goes through `Cache.GetName()`/`ConstructName`, and methods and non-literal fields
             // have their own `RuntimeMethodHandle.GetName` / `RuntimeFieldHandle.GetName` QCalls.
             //
-            // Event and ParamDef *do* have callers — the name filter in
-            // `RuntimeType.PopulateEvents`, and `RuntimeParameterInfo.Name` — but their tokens are
-            // minted only by `MetadataImport.Enum`, which PawPrint refuses for `mdtEvent` and
-            // `mdtParamDef`. Adding either enumeration means adding the matching arm here in the
-            // same change.
+            // Event *does* have a caller — the name filter in `RuntimeType.PopulateEvents` — but its
+            // tokens are minted only by `MetadataImport.Enum`, which PawPrint refuses for
+            // `mdtEvent`. Adding that enumeration means adding the matching arm here in the same
+            // change.
             //
             // Any other kind reaching here is therefore a PawPrint gap rather than a bad image.
             // CoreCLR would instead return `E_FAIL` and the guest would see a
@@ -1025,18 +1101,24 @@ module NativeMetadataImport =
             let nameOut =
                 NativeCall.managedPointerOfPointerArgument operation "name out pointer" instruction.Arguments.[2]
 
-            // Both are `mr.GetString def.Name`, i.e. the `#Strings` entry itself, so these are the
-            // same strings CoreCLR's `GetNameOfFieldDef`/`GetNameOfProperty` return rather than
-            // reconstructions. That matters for an indexer, whose metadata name (`Item`, or whatever
-            // `[IndexerName]` says) is not its C# spelling.
+            // All three are `mr.GetString def.Name`, i.e. the `#Strings` entry itself, so these are
+            // the same strings CoreCLR's `GetNameOfFieldDef`/`GetNameOfProperty`/`GetParamDefProps`
+            // return rather than reconstructions. That matters for an indexer, whose metadata name
+            // (`Item`, or whatever `[IndexerName]` says) is not its C# spelling.
             let name =
                 match MetadataToken.ofInt mdToken with
                 | MetadataToken.PropertyDefinition propertyHandle ->
                     propertyDefinitionName operation assembly propertyHandle
                 | MetadataToken.FieldDefinition _ -> (fieldDefinition operation assembly mdToken).Name
+                | MetadataToken.Parameter parameterHandle ->
+                    // A Param row may carry a nil Name (ECMA-335 II.22.33 makes the column
+                    // optional), and both runtimes report that as the empty string rather than as
+                    // absent: CoreCLR hands back a pointer to offset 0 of `#Strings`, and
+                    // `MetadataReader.GetString` of a nil handle is `""`.
+                    (metadataReaderOf assembly).GetString (parameterDefinition operation assembly parameterHandle).Name
                 | token ->
                     failwith
-                        $"%s{operation}: expected FieldDef or PropertyDef token, got %O{token} from 0x%08x{mdToken}"
+                        $"%s{operation}: expected FieldDef, PropertyDef or ParamDef token, got %O{token} from 0x%08x{mdToken}"
 
             completeWithUtf8String ctx nameOut name state
         | "System.Private.CoreLib",
@@ -1088,8 +1170,14 @@ module NativeMetadataImport =
             // row reports ELEMENT_TYPE_VOID, which `MdConstant` turns into DBNull.Value.
             //
             // Only FieldDef parents are covered. The Constant table's Parent is a HasConstant coded
-            // index spanning ParamDef and PropertyDef too, but neither is reachable, for different
-            // reasons. A ParamDef token would have to come from the `Enum` QCall, which mints none.
+            // index spanning ParamDef and PropertyDef too.
+            //
+            // A ParamDef token reaches here whenever a guest asks a `ParameterInfo` for
+            // `HasDefaultValue`, `DefaultValue` or `RawDefaultValue`, all of which funnel into
+            // `RuntimeParameterInfo.TryGetDefaultValueInternal`. That is unimplemented: the token
+            // is rejected below with a host-level crash rather than silently reported as having no
+            // Constant row, which would make an optional parameter look mandatory.
+            //
             // A PropertyDef Constant row is read by `RuntimePropertyInfo.GetRawConstantValue`, which
             // needs a fully constructed `RuntimePropertyInfo` — so what blocks it is
             // `RuntimeMethodHandle.GetSlot`, which `RuntimeType.PopulateProperties` needs for its
@@ -1664,6 +1752,54 @@ module NativeMetadataImport =
 
             let state = writeInt32AtPointer ctx.BaseClassTypes state parentOut parentToken
 
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System.Reflection",
+          "MetadataImport",
+          "GetParamDefProps",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
+            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // CoreCLR's FCall (managedmdimport.cpp:298) reports the Param row's `Sequence` and
+            // `Flags` columns raw. `Sequence` is 1-based over the method's parameters, with 0
+            // meaning the return value; `RuntimeParameterInfo.GetParameters` is what subtracts one
+            // and turns -1 into the return parameter.
+            let operation = "MetadataImport.GetParamDefProps"
+            let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
+            let assembly = metadataImportAssembly operation state assemblyFullName
+
+            let mdToken =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.Numeric (CliNumericType.Int32 mdToken) -> mdToken
+                | other -> failwith $"%s{operation}: expected Int32 parameterToken argument, got %O{other}"
+
+            let sequenceOut =
+                NativeCall.managedPointerOfPointerArgument operation "sequence out pointer" instruction.Arguments.[2]
+
+            let attributesOut =
+                NativeCall.managedPointerOfPointerArgument operation "attributes out pointer" instruction.Arguments.[3]
+
+            let parameterHandle =
+                match MetadataToken.ofInt mdToken with
+                | MetadataToken.Parameter parameterHandle -> parameterHandle
+                | token -> failwith $"%s{operation}: expected ParamDef token, got %O{token} from 0x%08x{mdToken}"
+
+            let parameter = parameterDefinition operation assembly parameterHandle
+
+            let state =
+                writeInt32AtPointer ctx.BaseClassTypes state sequenceOut parameter.SequenceNumber
+
+            let state =
+                writeInt32AtPointer ctx.BaseClassTypes state attributesOut (int32 parameter.Attributes)
+
+            // The managed wrapper turns a negative HRESULT into BadImageFormatException, but as in
+            // every sibling handler the failures above are host-level crashes: the only guest caller
+            // passes tokens `MetadataImport.Enum` minted from this same assembly.
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
 

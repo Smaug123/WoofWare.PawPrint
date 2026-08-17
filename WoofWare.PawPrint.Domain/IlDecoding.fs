@@ -58,10 +58,11 @@ module IlDecoding =
         /// A method: today a `DynamicMethod`, either bare (as `Emit(OpCode, MethodInfo)` stores it)
         /// or inside the `VarArgMethod` wrapper `EmitCall` always stores. The other kinds
         /// `ResolveToken` accepts in method position — a `RuntimeMethodHandle`, a
-        /// `GenericMethodInfo`, or a `VarArgMethod` wrapping a *reflected* method — all require the
-        /// guest to `Emit` a reflected `MethodInfo` first, which stops at `MetadataImport.Enum` for
-        /// `mdtParamDef` (0x08000000): `Emit` builds the call-site signature from
-        /// `GetParameters()`, and that token type is unimplemented (measured).
+        /// `GenericMethodInfo`, or a `VarArgMethod` wrapping a *reflected* method — are emittable
+        /// and mintable (measured: `Emit(Call, reflectedMethodInfo)` on a module-hosted
+        /// `DynamicMethod` builds its call-site signature, and `CreateDelegate` succeeds), and are
+        /// refused later, when the body's `call` asks the scope for a method and finds a
+        /// `System.RuntimeMethodHandle` instead.
         | Method
         /// A field: a `GenericFieldInfo`, which is what everything reachable through
         /// `Type.GetField` arrives as, or a bare `RuntimeFieldHandle`, which is what a
@@ -92,14 +93,19 @@ module IlDecoding =
         // branch rules out only `ldtoken`, `ldftn` and `ldvirtftn` (`DynamicILGenerator.cs:73-82`),
         // so the others accept one and it is the *runtime* that decides what to do with it.
         | UnaryMetadataTokenIlOp.Callvirt ->
-            // Emittable. Measured on real .NET: MissingMethodException ("Method not found: '?'.") at
-            // first JIT, since a DynamicMethod is always static and so has no virtual slot.
+            // Emittable with either operand kind, and real .NET treats the two quite differently
+            // (both measured): a DynamicMethod gives MissingMethodException ("Method not found:
+            // '?'.") at first JIT, since a DynamicMethod is always static and so has no virtual
+            // slot, whereas a reflected MethodInfo dispatches and runs. So this refusal covers one
+            // shape PawPrint would have to *raise* and one it would have to *resolve*.
             ScopeOperandKind.NotYetSupported
-                "callvirt naming a DynamicMethod is a MissingMethodException on real .NET (measured), which PawPrint would have to raise rather than resolve"
+                "callvirt naming a DynamicMethod is a MissingMethodException on real .NET, while callvirt naming a reflected method dispatches and runs (both measured); PawPrint does neither yet"
         | UnaryMetadataTokenIlOp.Newobj ->
-            // Emittable. Measured on real .NET: a catchable InvalidProgramException.
+            // Emittable with either operand kind, and again they diverge on real .NET (both
+            // measured): a DynamicMethod gives a catchable InvalidProgramException, whereas a
+            // reflected ConstructorInfo constructs the object.
             ScopeOperandKind.NotYetSupported
-                "newobj naming a DynamicMethod is an InvalidProgramException on real .NET (measured), which PawPrint would have to raise rather than resolve"
+                "newobj naming a DynamicMethod is an InvalidProgramException on real .NET, while newobj naming a reflected constructor constructs the object (both measured); PawPrint does neither yet"
         | UnaryMetadataTokenIlOp.Jmp ->
             // Emittable, and it *runs* on real .NET (measured: `jmp` to a dynamic method answers the
             // callee's result). PawPrint does not implement `jmp` for metadata tokens either, so
@@ -115,8 +121,8 @@ module IlDecoding =
         | UnaryMetadataTokenIlOp.Ldftn
         | UnaryMetadataTokenIlOp.Ldvirtftn ->
             // `Emit` refuses a DynamicMethod operand for these outright (measured: ArgumentException
-            // at emit), so an entry here is necessarily one of the reflected kinds, and emitting a
-            // reflected MethodInfo stops at MetadataImport.Enum for mdtParamDef (measured).
+            // at emit), so an entry here is necessarily one of the reflected kinds — which emit,
+            // mint and run on real .NET (measured), and which PawPrint cannot yet resolve.
             ScopeOperandKind.NotYetSupported
                 "ldftn/ldvirtftn refuse a DynamicMethod operand at emit, so their scope entries are the reflected method kinds (RuntimeMethodHandle, GenericMethodInfo, VarArgMethod), which PawPrint cannot yet resolve"
 
