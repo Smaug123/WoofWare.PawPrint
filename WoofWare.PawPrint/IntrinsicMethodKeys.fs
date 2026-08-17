@@ -717,6 +717,37 @@ module IntrinsicMethodKeys =
             pattern "System.Private.CoreLib" "System.Span`1" "GetPinnableReference" []
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             anyParams "System.Private.CoreLib" "System.Runtime.CompilerServices.RuntimeHelpers" "CreateSpan"
+            // Unusual among these entries: CoreCLR does not merely *recognise* this method, it
+            // swaps a different IL body in at JIT time (`getILIntrinsicImplementationForRuntimeHelpers`,
+            // jitinterface.cpp:7383). Two consequences. First, the swap is conditional on the
+            // underlying type being one of I1/U1/I2/U2/I4/U4/I8/U8, so for any other underlying type
+            // the shipped body below is what real .NET runs too — this is live code, not a placeholder
+            // like `CopyConstruct`'s `throw`. Second, where the swap does fire it emits
+            // `ldarga.s 0; ldarg.1; call <underlying>::CompareTo(<underlying>)`, and the shipped body
+            // reaches that same primitive `CompareTo` the long way round, so the returned int is equal
+            // by construction rather than merely equal in sign.
+            //
+            // The shipped body is `ldarga.s 0; ldarg.1; box T; constrained. T;
+            // callvirt Enum::CompareTo(object); ret`. All three of `Enum.CompareTo(object)`'s
+            // preambles are unreachable for this call shape, which is what makes running it safe:
+            // `ReferenceEquals(this, target)` is false for two fresh boxes (and where it could fire,
+            // the operands are equal and 0 is the answer anyway); `target is null` cannot hold, since
+            // boxing a struct never yields null; and the `ArgumentException` arm needs two *different*
+            // runtime types, which the `(T, T)` signature forecloses.
+            //
+            // Divergence, in the conservative direction: the shipped body allocates two boxes per
+            // comparison that the swapped-in body does not. No guest PawPrint supports today can see
+            // that; a guest reading `GC.GetTotalAllocatedBytes` could in principle.
+            //
+            // The sibling `RuntimeHelpers.EnumEquals` is deliberately *not* listed here: its swapped-in
+            // body is a different one (`ceq`), so it needs its own review against `Enum.Equals(object)`,
+            // and no guest covers it. A guest reaching it still fails loudly at the intrinsic TODO.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L371-L377
+            pattern
+                "System.Private.CoreLib"
+                "System.Runtime.CompilerServices.RuntimeHelpers"
+                "EnumCompareTo"
+                [ IntrinsicParameterPattern.Any ; IntrinsicParameterPattern.Any ]
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L127
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L137
             anyParams "System.Private.CoreLib" "System.Math" "Abs"
