@@ -386,12 +386,13 @@ module TestImpureCases =
             {
                 // The write path's three unarbitrable parts: the descriptor whose
                 // errno the platforms disagree about (fd 0, a pipe's read end,
-                // where Linux lets unseekability win and Darwin unwritability),
-                // the EACCES a permission-bearing seed provokes — which the
-                // oracle cannot materialise, so a pure case carrying one would be
-                // skipped — and the timestamps a write does and does not move,
-                // which need PawPrint's deterministic clock to state without
-                // racing a real filesystem's granularity.
+                // where Linux lets unseekability win and Darwin unwritability);
+                // everything that turns on a file's mode, since a privileged
+                // process bypasses those rules and the oracle's uid is not this
+                // suite's to choose, where PawPrint's is configuration; and the
+                // timestamps a write does and does not move, which need
+                // PawPrint's deterministic clock to state without racing a real
+                // filesystem's granularity.
                 // `WriteSeeded.cs` is the differential half.
                 FileName = "PWriteRawSeeded.cs"
                 ExpectedReturnCode = 0

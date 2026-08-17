@@ -13,10 +13,11 @@ using System.Runtime.InteropServices;
 // EINVAL for a negative offset, EISDIR for a directory opened for writing, and
 // ESPIPE for a pipe. What is *not* portable stays out of this file and lives in
 // `sourcesImpure/PWriteRawSeeded.cs`: fd 0, where Linux lets unseekability win
-// (ESPIPE) and Darwin lets unwritability win (EBADF); the EACCES a mode-0444
-// file owes, whose seed the oracle cannot materialise; and the fact that a write
-// moves mtime and ctime, which needs a deterministic clock to state without
-// racing a real filesystem's granularity.
+// (ESPIPE) and Darwin lets unwritability win (EBADF); everything that turns on
+// the *mode* of a file, because a privileged process bypasses those rules and
+// this suite does not control whether its oracle runs as root; and the fact that
+// a write moves mtime and ctime, which needs a deterministic clock to state
+// without racing a real filesystem's granularity.
 //
 // Every buffer address used below is real, or `NULL`, or 8 — never `(byte*)-1`.
 // Linux screens a buffer range that leaves the user address space *before* the
@@ -371,9 +372,10 @@ class Program
             if (stream.CanWrite) return check;
         }
 
-        // A mode-0444 seed cannot be materialised by the oracle, so the EACCES a
-        // write-mode open owes one is asserted in the impure half. This is the
-        // control: a default-mode file does open for writing.
+        // The EACCES a write-mode open owes a read-only file is asserted in the
+        // impure half, because root bypasses it and this suite does not choose the
+        // uid its oracle runs as. This is the control: a default-mode file does
+        // open for writing, whoever is asking.
         check = 53;
         if (OpenPath("f", O_WRONLY) == new IntPtr(-1)) return check;
 

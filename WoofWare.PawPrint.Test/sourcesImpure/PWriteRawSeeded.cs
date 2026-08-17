@@ -23,10 +23,14 @@ using System.Runtime.InteropServices;
 //      about the tie rather than about writability generally, and it is portable,
 //      so it lives in the pure half.
 //
-//   2. **The EACCES rows need a seed the oracle cannot materialise.** A seed
-//      naming Unix permission bits has no Windows equivalent, so a pure case
-//      carrying one is skipped rather than compared. The facts themselves were
-//      measured identically on macOS 26.6 and Linux 6.18.5, at uid 1000:
+//   2. **Everything that turns on a file's mode depends on who is asking.** A
+//      privileged process bypasses these rules entirely — measured, root opens a
+//      mode-0000 file for writing — and this suite does not choose the uid its
+//      oracle runs as, so a differential case would assert whatever privilege the
+//      machine happened to give it. PawPrint's uid is configuration
+//      (`KernelConfig.UserId`, 1000 by default), which is what makes these rows
+//      statable at all. The facts were measured identically on macOS 26.6 and
+//      Linux 6.18.5 at uid 1000, and every row inverts at uid 0:
 //
 //        mode   O_RDONLY  O_WRONLY  O_RDWR
 //        0644   ok        ok        ok
@@ -191,8 +195,8 @@ class Program
         // Measured non-root on macOS 26.6 and Linux 6.18.5, and as root on Linux:
         // an unprivileged write clears set-user-ID, and set-group-ID when the file
         // is group-executable, while root keeps both and the sticky bit survives
-        // either way. Impure because the seed names Unix modes the oracle cannot
-        // materialise, and because it depends on the configured uid.
+        // either way. Impure for the same reason as the rows above — root keeps
+        // the bits, and the oracle's privilege is not this suite's to choose.
         check = 21;
         if (File.GetUnixFileMode("suid") != (UnixFileMode.SetUser
                                              | UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
