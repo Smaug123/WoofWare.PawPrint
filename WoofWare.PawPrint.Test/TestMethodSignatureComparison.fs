@@ -522,6 +522,53 @@ public class OpenGeneric<T>
         equivalent fixture (caller [ string ] [ string ]) (callee [ int32 ])
         |> shouldEqual false
 
+    /// Substituting a generic type parameter must not lose the *other* side's modifiers. The
+    /// substituted side is a closed handle, and concretising the spelled side to compare handles
+    /// would strip its modifier — making a derived `M(int32 modreq(X))` look like an override of
+    /// `Base&lt;int32&gt;.M(!0)`, which CoreCLR gives a fresh vtable slot.
+    [<Test>]
+    let ``a substituted type parameter is not equivalent to a modified spelling of the same type`` () =
+        let fixture = fixture ()
+
+        let takesTypeParameter =
+            (findMethod "OpenGeneric`1" "TakesTypeParameter" fixture.Assembly).Signature
+
+        let takesInt =
+            (findMethod "OpenGeneric`1" "TakesIntNotTypeParameter" fixture.Assembly).Signature
+
+        let modifier =
+            TypeDefn.FromDefinition (
+                ResolvedTypeIdentity.ofTypeDefinition
+                    fixture.BaseClassTypes.Object.Assembly
+                    fixture.BaseClassTypes.Object.TypeDefHandle,
+                SignatureTypeKind.Class
+            )
+
+        let takesModifiedInt =
+            { takesInt with
+                ParameterTypes =
+                    [
+                        TypeDefn.Modified
+                            {
+                                Unmodified = TypeDefn.PrimitiveType PrimitiveType.Int32
+                                Modifier = modifier
+                                IsRequired = true
+                            }
+                    ]
+            }
+
+        let atInt = ImmutableArray.Create (int32Handle fixture)
+
+        // The control: with the modifier gone, the substitution does make the two agree, so the
+        // rejection below is about the modifier and not about the substitution failing.
+        equivalentUnder fixture atInt takesTypeParameter takesInt |> shouldEqual true
+
+        equivalentUnder fixture atInt takesTypeParameter takesModifiedInt
+        |> shouldEqual false
+
+        equivalentUnder fixture atInt takesModifiedInt takesTypeParameter
+        |> shouldEqual false
+
     /// Generic arity is not recoverable from anything else the comparison reads: `void M&lt;T&gt;()` and
     /// `void M&lt;U, V&gt;()` have the same header byte (both carry the GENERIC bit) and the same, empty,
     /// parameter list. Both are legal in one C# type, so a MemberRef naming one of them would

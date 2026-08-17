@@ -95,9 +95,18 @@ Two ways to bridge that, and they are not equivalent:
    a bounded loss.
 
 Taking (1). The divergence it leaves is statable and one-directional: two signatures that differ only
-by a modifier or an encoding *inside a substituted generic argument* compare equal. Nothing narrows
-it further without carrying instantiations as blobs, which is a change to how PawPrint represents
-generic types rather than to signature comparison.
+by an *encoding* inside a substituted generic argument compare equal. Nothing narrows it further
+without carrying instantiations as blobs, which is a change to how PawPrint represents generic types
+rather than to signature comparison.
+
+Custom modifiers are **not** part of that loss, but only because the comparison answers them
+explicitly. Concretising the spelled side to compare handles would strip them, so a derived
+`M(int32 modreq(X))` would look like an override of `Base<int32>.M(!0)` — which CoreCLR gives a fresh
+slot, and which the deleted `collectModifiers` matcher also distinguished. A spelled side carrying a
+modifier anywhere is therefore answered unequal outright, which is exact rather than conservative:
+the handle it is being compared against came from a type argument, and
+`concretizeGenericInstantiation` refuses a type argument carrying a modifier anywhere inside it, so
+no substituted element can have one to match.
 
 Nominal leaves are resolved by concretising them, which is `CompareTypeTokens`' resolve-and-compare
 with the identity supplied by the existing registry. Note this primes base chains

@@ -1289,8 +1289,10 @@ module TypeConcretization =
         // holds instantiations as closed handles, so from here down the comparison is by runtime
         // type identity. What that gives up is the encoding distinction above, inside a substituted
         // argument only — a distinction PawPrint cannot represent anywhere, since a
-        // `ConcreteTypeHandle` records no spelling. It gives up nothing about custom modifiers: a
-        // modified type *argument* is refused outright by `concretizeGenericInstantiation`.
+        // `ConcreteTypeHandle` records no spelling. Custom modifiers it does not give up, but that
+        // takes an explicit answer rather than following from the substitution: see the
+        // `carriesCustomModifier` arm below, which is what stops concretising the *other* side from
+        // stripping its modifiers.
         | Element.Spelled (leftCtx, TypeDefn.GenericTypeParameter index), _ ->
             if index >= leftCtx.TypeGenerics.Length then
                 failwithf
@@ -1316,6 +1318,17 @@ module TypeConcretization =
         | Element.Spelled (spelledCtx, ty), Element.Substituted handle ->
             // One side is a closed runtime type, so the other can only match if it denotes one too.
             if mentionsMethodGenericParameter ty then
+                false, ctx
+            elif carriesCustomModifier ty then
+                // Answered here rather than by concretising, because `concretizeType` strips
+                // `TypeDefn.Modified` and the two would then compare equal. CoreCLR substitutes the
+                // instantiation's blob and goes on comparing modifiers, so a derived
+                // `M(int32 modreq(X))` does not override `Base<int32>.M(!0)` and takes a fresh slot.
+                //
+                // "Unequal" is the whole answer, not an approximation: the handle on the other side
+                // came from a type argument, and `concretizeGenericInstantiation` refuses a type
+                // argument carrying a custom modifier anywhere inside it, so no substituted element
+                // can have had one to match this against.
                 false, ctx
             else
 
