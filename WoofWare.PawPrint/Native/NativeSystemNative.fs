@@ -868,6 +868,22 @@ module NativeSystemNative =
             // PawPrint does not model Unix file flags. Report that hidden flags
             // are unsupported so CoreLib follows the portable attribute path.
             pushInt32 0 ctx |> Some
+        | Some "SystemNative_GetMaximumAddressSize",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_GetMaximumAddressSize(void)` (pal_networking.c)
+            // is `return sizeof(struct sockaddr_storage);` — a compile-time
+            // constant of the shim, with no socket, no errno and no state
+            // involved. `SimulatedUnixPlatform.maximumSocketAddressSize` records
+            // the number and why it takes no flavour.
+            //
+            // The sole managed caller is `System.Net.Sockets.SocketPal`'s class
+            // initialiser, which latches it into `SocketPal.MaximumAddressSize`
+            // and sizes every address buffer by it. Note the address *sizes* the
+            // managed `SocketAddress` type uses come from a different entry point,
+            // `SystemNative_GetSocketAddressSizes`, so serving this one says
+            // nothing about those.
+            pushInt32 SimulatedUnixPlatform.maximumSocketAddressSize ctx |> Some
         | Some "SystemNative_GetErrNo",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
