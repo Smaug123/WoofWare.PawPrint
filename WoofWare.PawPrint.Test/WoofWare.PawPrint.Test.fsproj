@@ -94,6 +94,7 @@
     <Compile Include="TestCrossAssemblyFieldScope.fs" />
     <Compile Include="TestCrossAssemblyEnumAttribute.fs" />
     <Compile Include="TestCrossAssemblyStructZero.fs" />
+    <Compile Include="TestCrossAssemblyInitSetter.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestUnsafeAccessorRead.fs" />
     <Compile Include="TestNativeKernel32.fs" />
@@ -161,6 +162,7 @@
     <Compile Include="TestSignalHandler.fs" />
     <Compile Include="TestSignalDispatcherThread.fs" />
     <Compile Include="TestSignalDispatch.fs" />
+    <Compile Include="TestSocketEventsWaitReason.fs" />
     <Compile Include="TestEffectiveProcessorCount.fs" />
     <Compile Include="TestSystemTimeAsTicks.fs" />
     <Compile Include="TestMonotonicTimestamp.fs" />

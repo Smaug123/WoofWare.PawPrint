@@ -206,6 +206,11 @@ module Program =
         | ThreadStatus.BlockedOnSyncBlockAcquire (_, None)
         | ThreadStatus.BlockedOnJoin (_, None)
         | ThreadStatus.BlockedOnSleep None
+        // `BlockedOnSocketEvents` has no deadline to project: `WaitForSocketEvents` takes no
+        // timeout, so the clock can never wake such a thread. There is deliberately no
+        // `FiredDeadline` case for it, which is what makes that unrepresentable rather than
+        // merely unwritten.
+        | ThreadStatus.BlockedOnSocketEvents _
         | ThreadStatus.Runnable
         | ThreadStatus.NotStarted
         | ThreadStatus.BlockedOnClassInit _

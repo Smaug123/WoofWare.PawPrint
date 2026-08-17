@@ -261,7 +261,21 @@ module IlMachineThreadState =
             | MethodReturnType.Void, _ ->
                 failwith
                     $"Invalid CIL: void method %s{returningMethodState.ExecutingMethod.Name} returned with a non-empty evaluation stack"
-            | MethodReturnType.Returns _, [] ->
+            | MethodReturnType.Returns retType, [] ->
+                // A concretised signature never says `Returns System.Void`: no method returns
+                // `System.Void` by value, and `void*` is a pointer. The one thing that produces it is
+                // a signature whose return column was `void` under custom modifiers -- every C#
+                // `init` accessor -- reaching here without going through
+                // `IlMachineState.concretizeMethodSignature`, which is what looks through them.
+                // Distinguishing that from a genuinely malformed method costs a lookup only on the
+                // path that is about to fail anyway.
+                if
+                    AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Void.Identity = Some
+                        retType
+                then
+                    failwith
+                        $"logic error: %s{returningMethodState.ExecutingMethod.Name} has a concretised signature claiming to return System.Void by value; its signature bypassed the custom-modifier fold in IlMachineState.concretizeMethodSignature"
+
                 failwith
                     $"Invalid CIL: non-void method %s{returningMethodState.ExecutingMethod.Name} returned with an empty evaluation stack"
             | MethodReturnType.Returns retType, [ retVal ] -> Some (retVal, retType)

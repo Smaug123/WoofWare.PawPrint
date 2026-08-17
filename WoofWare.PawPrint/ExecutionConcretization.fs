@@ -74,12 +74,14 @@ module ExecutionConcretization =
                 scopeAssembly.Name
                 (scopeAssembly.PeReader.GetMetadataReader ())
                 (definition.GetSignature () |> Seq.toArray)
-            |> TypeMethodSignature.make (fun ty ->
-                match ty with
-                | TypeDefn.Void -> MethodReturnType.Void
-                | ret -> MethodReturnType.Returns ret
-            )
-            |> TypeMethodSignature.map state concretise
+            |> TypeMethodSignature.make
+            |> IlMachineState.concretizeMethodSignature
+                loggerFactory
+                baseClassTypes
+                state
+                scopeAssembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
 
         let body =
             definition.GetBody () |> MintedDynamicMethodBody.withLocalsInit localsInit

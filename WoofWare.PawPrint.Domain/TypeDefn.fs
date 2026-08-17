@@ -17,6 +17,14 @@ type ResolvedBaseType =
 /// A method signature return shape. `void` is not a runtime type; it means the
 /// callee returns no value to the caller. `System.Void` remains an ordinary
 /// metadata type for reflection.
+///
+/// Which question the two cases answer follows the types they are over, because that is the
+/// difference between a signature as metadata spells it and a signature as the machine runs it. Over
+/// <c>ConcreteTypeHandle</c>, <c>Void</c> means exactly "no value reaches the caller's evaluation
+/// stack": `IlMachineState.concretizeMethodSignature` looks through the return column's custom
+/// modifiers, so an `init` accessor's `void modreq(IsExternalInit)` is <c>Void</c> here. Over
+/// <c>TypeDefn</c>, it instead mirrors the blob, so that same accessor is <c>Returns</c> — see
+/// <c>TypeMethodSignature.make</c> for why the blob's spelling has to survive.
 [<RequireQualifiedAccess>]
 type MethodReturnType<'Types> =
     | Void
@@ -26,20 +34,6 @@ type MethodReturnType<'Types> =
         match this with
         | MethodReturnType.Void -> "void"
         | MethodReturnType.Returns ty -> string<'Types> ty
-
-[<RequireQualifiedAccess>]
-module MethodReturnType =
-    let map<'a, 'b, 'state>
-        (state : 'state)
-        (f : 'state -> 'a -> 'state * 'b)
-        (ret : MethodReturnType<'a>)
-        : 'state * MethodReturnType<'b>
-        =
-        match ret with
-        | MethodReturnType.Void -> state, MethodReturnType.Void
-        | MethodReturnType.Returns ty ->
-            let state, ty = f state ty
-            state, MethodReturnType.Returns ty
 
 /// <summary>
 /// Represents a method signature with type parameters.
@@ -72,45 +66,6 @@ type TypeMethodSignature<'Types> =
         /// </summary>
         ReturnType : MethodReturnType<'Types>
     }
-
-[<RequireQualifiedAccess>]
-module TypeMethodSignature =
-    let make<'T> (returnType : 'T -> MethodReturnType<'T>) (p : MethodSignature<'T>) : TypeMethodSignature<'T> =
-        {
-            Header = ComparableSignatureHeader.Make p.Header
-            ReturnType = returnType p.ReturnType
-            ParameterTypes = List.ofSeq p.ParameterTypes
-            GenericParameterCount = p.GenericParameterCount
-            RequiredParameterCount = p.RequiredParameterCount
-        }
-
-    let map<'a, 'b, 'state>
-        (state : 'state)
-        (f : 'state -> 'a -> 'state * 'b)
-        (signature : TypeMethodSignature<'a>)
-        : 'state * TypeMethodSignature<'b>
-        =
-        let state, ret = MethodReturnType.map state f signature.ReturnType
-
-        let state, pars =
-            ((state, []), signature.ParameterTypes)
-            ||> List.fold (fun (state, acc) par ->
-                let state, result = f state par
-                state, result :: acc
-            )
-
-        let pars = List.rev pars
-
-        let answer =
-            {
-                Header = signature.Header
-                ReturnType = ret
-                ParameterTypes = pars
-                GenericParameterCount = signature.GenericParameterCount
-                RequiredParameterCount = signature.RequiredParameterCount
-            }
-
-        state, answer
 
 /// See I.8.2.2
 type PrimitiveType =
@@ -291,7 +246,94 @@ and ModifiedTypeDefn =
     }
 
 [<RequireQualifiedAccess>]
+module MethodReturnType =
+    let map<'a, 'b, 'state>
+        (state : 'state)
+        (f : 'state -> 'a -> 'state * 'b)
+        (ret : MethodReturnType<'a>)
+        : 'state * MethodReturnType<'b>
+        =
+        match ret with
+        | MethodReturnType.Void -> state, MethodReturnType.Void
+        | MethodReturnType.Returns ty ->
+            let state, ty = f state ty
+            state, MethodReturnType.Returns ty
+
+[<RequireQualifiedAccess>]
+module TypeMethodSignature =
+    /// A decoded signature, mirroring the blob it came from.
+    ///
+    /// In particular the return column is classified by what the blob says and nothing else, so a
+    /// `void` under custom modifiers — `void modreq(IsExternalInit)`, which is how C# spells every
+    /// `init` accessor — arrives as <c>MethodReturnType.Returns</c> rather than
+    /// <c>MethodReturnType.Void</c>. That is deliberate: the metadata questions that read a decoded
+    /// signature are blob comparisons (CoreCLR's `ExactlyEqual`, `MetaSig::CompareMethodSigs`), and a
+    /// modifier makes two signatures different to them. Callers asking instead whether the callee
+    /// leaves a value on the caller's evaluation stack must read a *concretised* signature, which is
+    /// where that modifier is looked through.
+    let make (p : MethodSignature<TypeDefn>) : TypeMethodSignature<TypeDefn> =
+        {
+            Header = ComparableSignatureHeader.Make p.Header
+            ReturnType =
+                match p.ReturnType with
+                | TypeDefn.Void -> MethodReturnType.Void
+                | ret -> MethodReturnType.Returns ret
+            ParameterTypes = List.ofSeq p.ParameterTypes
+            GenericParameterCount = p.GenericParameterCount
+            RequiredParameterCount = p.RequiredParameterCount
+        }
+
+    /// Rewrite every type a signature mentions, preserving its return *shape* exactly.
+    ///
+    /// Not the way to concretise a decoded signature: that has to look through the return column's
+    /// custom modifiers, which changes the shape. Use `IlMachineState.concretizeMethodSignature`,
+    /// which is the one definition of that translation.
+    let map<'a, 'b, 'state>
+        (state : 'state)
+        (f : 'state -> 'a -> 'state * 'b)
+        (signature : TypeMethodSignature<'a>)
+        : 'state * TypeMethodSignature<'b>
+        =
+        let state, ret = MethodReturnType.map state f signature.ReturnType
+
+        let state, pars =
+            ((state, []), signature.ParameterTypes)
+            ||> List.fold (fun (state, acc) par ->
+                let state, result = f state par
+                state, result :: acc
+            )
+
+        let pars = List.rev pars
+
+        let answer =
+            {
+                Header = signature.Header
+                ReturnType = ret
+                ParameterTypes = pars
+                GenericParameterCount = signature.GenericParameterCount
+                RequiredParameterCount = signature.RequiredParameterCount
+            }
+
+        state, answer
+
+[<RequireQualifiedAccess>]
 module TypeDefn =
+    /// The type this signature element describes with its `modreq`/`modopt` wrappers deleted.
+    ///
+    /// A custom modifier is an annotation on the signature carrying calling-convention or
+    /// language-level information (`CallConvCdecl`, `InAttribute`, `IsExternalInit`, `IsVolatile`);
+    /// none of it changes the described type's runtime identity or its evaluation-stack shape. So
+    /// anything asking what a signature element *is at runtime* must look through them, and anything
+    /// comparing signature blobs (CoreCLR's `ExactlyEqual` and `MetaSig::CompareMethodSigs`) must
+    /// not.
+    ///
+    /// Only the outermost run is removed: a modifier nested inside the type, as in
+    /// `int32 modopt(X)[]`, still sits in the result.
+    let rec stripCustomModifiers (t : TypeDefn) : TypeDefn =
+        match t with
+        | TypeDefn.Modified m -> stripCustomModifiers m.Unmodified
+        | t -> t
+
     /// The width a field of this type occupies, when that follows from the signature's head alone.
     ///
     /// This is CoreCLR's `FieldDesc::LoadSize` (field.cpp:655): it reads the field's normalised
@@ -482,13 +524,7 @@ module TypeDefn =
             member this.GetPointerType (typeCode : TypeDefn) : TypeDefn = TypeDefn.Pointer typeCode
 
             member this.GetFunctionPointerType signature =
-                TypeDefn.FunctionPointer (
-                    TypeMethodSignature.make
-                        (function
-                        | TypeDefn.Void -> MethodReturnType.Void
-                        | retType -> MethodReturnType.Returns retType)
-                        signature
-                )
+                TypeDefn.FunctionPointer (TypeMethodSignature.make signature)
 
             member this.GetGenericMethodParameter (genericContext, index) = TypeDefn.GenericMethodParameter index
             member this.GetGenericTypeParameter (genericContext, index) = TypeDefn.GenericTypeParameter index
