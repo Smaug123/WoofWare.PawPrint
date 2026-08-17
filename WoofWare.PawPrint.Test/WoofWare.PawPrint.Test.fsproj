@@ -36,6 +36,7 @@
     <Compile Include="AssemblyShape.fs" />
     <Compile Include="AssemblyGraphShape.fs" />
     <Compile Include="TestTypeResolution.fs" />
+    <Compile Include="TestTypeRefHandle.fs" />
     <Compile Include="TestTypeIdentityProperties.fs" />
     <Compile Include="TestEnumClassification.fs" />
     <Compile Include="TestEvalStack.fs" />
