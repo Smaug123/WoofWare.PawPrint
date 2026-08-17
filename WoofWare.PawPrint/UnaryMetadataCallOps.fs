@@ -1389,18 +1389,21 @@ module internal UnaryMetadataCallOps =
         | NativeInt
         | ObjectRef
 
-    /// Strip `modopt`/`modreq` wrappers. Custom modifiers carry calling-convention and
-    /// language-level information (`CallConvCdecl`, `InAttribute`, `IsVolatile`); none of it
-    /// changes the type's evaluation-stack shape, so anything classifying that shape must look
-    /// through them or it will misread `modopt(...) void` as value-returning and decline to
-    /// classify a modified primitive.
-    let rec private stripCustomModifiers (t : TypeDefn) : TypeDefn =
-        match t with
-        | TypeDefn.Modified m -> stripCustomModifiers m.Unmodified
-        | t -> t
+    /// The type a `calli` call site says comes back, or `None` if it says nothing does.
+    ///
+    /// A call-site signature is decoded, not concretised, so its return column still mirrors the
+    /// blob: a `modopt(CallConvCdecl) void` return sits in `MethodReturnType.Returns`, and reading
+    /// that case as "returns a value" would reject a legitimately void target.
+    let private callSiteReturnType (signature : TypeMethodSignature<TypeDefn>) : TypeDefn option =
+        match signature.ReturnType with
+        | MethodReturnType.Void -> None
+        | MethodReturnType.Returns retTy ->
+            match TypeDefn.stripCustomModifiers retTy with
+            | TypeDefn.Void -> None
+            | stripped -> Some stripped
 
     let private calliStackKind (t : TypeDefn) : CalliStackKind option =
-        match stripCustomModifiers t with
+        match TypeDefn.stripCustomModifiers t with
         | TypeDefn.PrimitiveType p ->
             match p with
             | PrimitiveType.Boolean
@@ -1464,7 +1467,7 @@ module internal UnaryMetadataCallOps =
 
         match callSiteSignature.ParameterTypes with
         | [ paramTy ] ->
-            match stripCustomModifiers paramTy with
+            match TypeDefn.stripCustomModifiers paramTy with
             | TypeDefn.Pointer _
             | TypeDefn.PrimitiveType PrimitiveType.IntPtr
             | TypeDefn.PrimitiveType PrimitiveType.UIntPtr -> ()
@@ -1475,15 +1478,15 @@ module internal UnaryMetadataCallOps =
             failwith
                 $"%s{operation}: call site declares %d{other.Length} parameters, but the allocation helper takes exactly one (the MethodTable*)"
 
-        match callSiteSignature.ReturnType with
-        | MethodReturnType.Returns retTy ->
-            match calliStackKind (stripCustomModifiers retTy) with
+        match callSiteReturnType callSiteSignature with
+        | None ->
+            failwith $"%s{operation}: call site returns void, but the allocation helper returns an object reference"
+        | Some retTy ->
+            match calliStackKind retTy with
             | Some CalliStackKind.ObjectRef -> ()
             | _ ->
                 failwith
                     $"%s{operation}: call site declares a return type of %O{retTy}, but the allocation helper returns an object reference"
-        | MethodReturnType.Void ->
-            failwith $"%s{operation}: call site returns void, but the allocation helper returns an object reference"
 
         // The pointer sits above its argument, so it comes off first.
         let _fnPtr, state = IlMachineState.popEvalStack thread state
@@ -1551,14 +1554,7 @@ module internal UnaryMetadataCallOps =
 
                 (metadataReader.GetStandaloneSignature handle)
                     .DecodeMethodSignature (TypeDefn.typeProvider activeAssy.Name, ())
-                |> TypeMethodSignature.make (fun retType ->
-                    // Match on the unmodified type: `modopt(CallConvCdecl) void` decodes to a
-                    // `Modified` wrapper, and treating that as value-returning would reject a
-                    // genuinely void target in the return-shape check below.
-                    match stripCustomModifiers retType with
-                    | TypeDefn.Void -> MethodReturnType.Void
-                    | _ -> MethodReturnType.Returns retType
-                )
+                |> TypeMethodSignature.make
             | k -> failwith $"calli: expected a StandaloneSignature metadata token describing the call site, got %O{k}"
 
         // Peek rather than pop: this read only inspects the pointer for validation. It stays
@@ -1646,13 +1642,15 @@ module internal UnaryMetadataCallOps =
         // (calling a void target through a value-returning signature, so the following
         // load underflows) or one slot long (the reverse, leaving junk behind). Neither is
         // recoverable, and both would surface far from here.
-        let returnsValue (ret : MethodReturnType<'a>) : bool =
-            match ret with
+        let callSiteReturnsValue = (callSiteReturnType callSiteSignature).IsSome
+
+        // The callee's signature has been concretised, which is where a `void` under custom
+        // modifiers has already become `Void`; the call site's has not, which is why it needs
+        // `callSiteReturnType` rather than a match on the DU.
+        let calleeReturnsValue =
+            match methodToCall.Signature.ReturnType with
             | MethodReturnType.Void -> false
             | MethodReturnType.Returns _ -> true
-
-        let callSiteReturnsValue = returnsValue callSiteSignature.ReturnType
-        let calleeReturnsValue = returnsValue methodToCall.Signature.ReturnType
 
         if callSiteReturnsValue <> calleeReturnsValue then
             let describe (b : bool) = if b then "a value" else "void"

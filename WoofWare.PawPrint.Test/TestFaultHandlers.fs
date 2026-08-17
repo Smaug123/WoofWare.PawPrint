@@ -39,18 +39,13 @@ module TestFaultHandlers =
             |> List.find (fun method -> method.Name = ".ctor" && (MethodInfo.arity method = 0))
 
         let state, signature =
-            TypeMethodSignature.map
+            IlMachineState.concretizeMethodSignature
+                loggerFactory
+                bct
                 state
-                (fun state ty ->
-                    IlMachineState.concretizeType
-                        loggerFactory
-                        bct
-                        state
-                        corelib.Name
-                        ImmutableArray.Empty
-                        ImmutableArray.Empty
-                        ty
-                )
+                corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
                 objectConstructor.Signature
 
         let ops : (IlOp * int) list =

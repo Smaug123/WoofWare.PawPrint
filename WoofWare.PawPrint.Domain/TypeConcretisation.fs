@@ -1066,16 +1066,31 @@ module TypeConcretization =
         : TypeMethodSignature<ConcreteTypeHandle> * ConcretizationContext<DumpedAssembly>
         =
         // Concretize return type only when the method actually returns a value.
+        //
+        // This is where a `void` under custom modifiers becomes `MethodReturnType.Void`. A decoded
+        // signature mirrors its blob, so `void modreq(IsExternalInit)` -- how C# spells every `init`
+        // accessor -- arrives as `Returns (Modified ...)`; but the modifier annotates a return that
+        // does not exist at runtime, so no value reaches the caller's evaluation stack and every
+        // consumer of a concretised signature must see `Void`. Concretisation is already the place
+        // custom modifiers are looked through (see the `TypeDefn.Modified` case of `concretizeType`),
+        // and this is the one position where doing so changes the return *shape* rather than just the
+        // type named.
+        //
+        // The two translations that must NOT do this both read the decoded signature instead, and so
+        // are unaffected: `NativeRuntimeTypeHelpers.concretiseSignatureForSlotMatch`, which reports a
+        // return's modifiers alongside its handle precisely because concretisation drops them, and
+        // `concreteHandleToTypeDefn` below, which runs the other way.
         let ctx, returnType =
-            MethodReturnType.map
-                ctx
-                (fun ctx ty ->
+            match signature.ReturnType with
+            | MethodReturnType.Void -> ctx, MethodReturnType.Void
+            | MethodReturnType.Returns ty ->
+                match TypeDefn.stripCustomModifiers ty with
+                | TypeDefn.Void -> ctx, MethodReturnType.Void
+                | _ ->
                     let handle, ctx =
                         concretizeType ctx loadAssembly assembly typeGenerics methodGenerics ty
 
-                    ctx, handle
-                )
-                signature.ReturnType
+                    ctx, MethodReturnType.Returns handle
 
         let paramHandles = ResizeArray<ConcreteTypeHandle> signature.ParameterTypes.Length
         let mutable ctx = ctx

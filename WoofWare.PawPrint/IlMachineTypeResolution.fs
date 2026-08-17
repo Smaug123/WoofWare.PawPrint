@@ -77,6 +77,48 @@ module IlMachineTypeResolution =
 
         state, handle
 
+    /// Concretise a decoded method signature: its parameter types, and its return column.
+    ///
+    /// This is the only way to turn a `TypeMethodSignature&lt;TypeDefn&gt;` into a
+    /// `TypeMethodSignature&lt;ConcreteTypeHandle&gt;`, and going through it is what makes two such
+    /// signatures comparable — several callers concretise one signature here and compare it against
+    /// another that arrived via `Concretization.concretizeMethod`, so a caller that mapped the types
+    /// itself could disagree with them about the return shape of a method whose return carries a
+    /// custom modifier.
+    let concretizeMethodSignature
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (declaringAssembly : AssemblyName)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (signature : TypeMethodSignature<TypeDefn>)
+        : IlMachineState * TypeMethodSignature<ConcreteTypeHandle>
+        =
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
+            }
+
+        let signature, ctx =
+            TypeConcretization.concretizeMethodSignature
+                ctx
+                (loader loggerFactory state)
+                declaringAssembly
+                typeGenerics
+                methodGenerics
+                signature
+
+        let state =
+            { state with
+                _LoadedAssemblies = ctx.LoadedAssemblies
+                ConcreteTypes = ctx.ConcreteTypes
+            }
+
+        state, signature
+
     let internal resolveTopLevelTypeFromName
         (loggerFactory : ILoggerFactory)
         (ns : string option)
