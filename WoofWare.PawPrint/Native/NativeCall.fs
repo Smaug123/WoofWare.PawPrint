@@ -567,6 +567,39 @@ module NativeCall =
 
         ptr, state
 
+    /// Resolve the pointer a <c>free</c>-shaped entry point was handed to the native-heap
+    /// block it may release: <c>Ok None</c> for the <c>free(NULL)</c> no-op, <c>Ok (Some
+    /// block)</c> for an allocation's base address, and <c>Error</c> — carrying a description
+    /// of what was wrong, for the caller to prefix with its own name — for anything else.
+    ///
+    /// C <c>free</c> is undefined unless its argument is exactly an address a
+    /// <c>malloc</c>-shaped entry point returned, so an interior pointer like <c>base + 4</c>
+    /// is refused rather than taken to mean the whole block: accepting it would mask the guest
+    /// memory-corruption bug that produced it.
+    let tryResolveNativeHeapFreeTarget (ptr : ManagedPointerSource) : Result<NativeMemoryBlockId option, string> =
+        // Accumulated in `int64` because this file is not `Checked`: an `int` fold could wrap
+        // an interior pointer back onto zero and so report the block base, which is precisely
+        // the corruption this refusal exists to expose (issue #993).
+        let rec projectionByteOffset (acc : int64) (ps : ByrefProjection list) : Result<int64, ByrefProjection> =
+            match ps with
+            | [] -> Ok acc
+            | ByrefProjection.ReinterpretAs _ :: rest -> projectionByteOffset acc rest
+            | ByrefProjection.ByteOffset n :: rest -> projectionByteOffset (acc + int64<int> n) rest
+            | (ByrefProjection.Field _ as field) :: _ -> Error field
+
+        match ptr with
+        | ManagedPointerSource.Null -> Ok None
+        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, rootByteOffset), projs) ->
+            match projectionByteOffset (int64<int> rootByteOffset) projs with
+            | Ok 0L -> Ok (Some block)
+            | Ok offset ->
+                Error
+                    $"refusing to free interior native-heap pointer at byte offset %d{offset} into %O{block} (only an allocation's base address may be freed)"
+            | Error field ->
+                Error
+                    $"refusing to free native-heap pointer with non-byte projection %O{field} into %O{block} (only an allocation's base address may be freed)"
+        | other -> Error $"expected null or a native-heap pointer, got %O{other}"
+
     /// Allocate a native-heap block holding the UTF-8 encoding of <paramref name="value"/>
     /// followed by a single trailing null byte, and return a pointer to its base address.
     /// This is PawPrint's <c>strdup</c>: the resulting pointer is a C string the guest may

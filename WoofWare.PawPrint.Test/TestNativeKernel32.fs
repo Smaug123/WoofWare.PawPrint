@@ -106,3 +106,269 @@ module TestNativeKernel32 =
         missing > 20 |> shouldEqual true
         tooSmall > 50 |> shouldEqual true
         fits > 50 |> shouldEqual true
+
+    /// The UTF-16 code units of an environment block, paired out of its bytes
+    /// little-endian.
+    ///
+    /// Deliberately not `Encoding.Unicode.GetString`: that is not faithful at
+    /// the code-unit level (it replaces an unpaired surrogate with U+FFFD), and
+    /// what a guest does to this block is reinterpret its bytes as `char`s, not
+    /// decode text. Pairing the bytes by hand is what a guest's `char*`
+    /// dereference sees.
+    let private codeUnitsOfBlock (bytes : byte array) : char array =
+        if bytes.Length % 2 <> 0 then
+            failwith $"environment block had an odd byte length %d{bytes.Length}"
+
+        Array.init (bytes.Length / 2) (fun i -> char (uint16 bytes.[i * 2] ||| (uint16 bytes.[i * 2 + 1] <<< 8)))
+
+    /// The environment a guest reads back out of `bytes`, by the algorithm
+    /// CoreLib's own `Environment.GetEnvironmentVariables` uses
+    /// (`Environment.Variables.Windows.cs`): walk NUL-terminated entries,
+    /// stop at the first empty one, skip any entry whose first `=` is not
+    /// after the first code unit, and split each survivor at that `=`.
+    ///
+    /// This is a transcription rather than an independent oracle, so encoder and
+    /// parser could in principle share a misconception. What anchors it is that
+    /// the *real* parse loop — CoreLib's IL, interpreted — runs over
+    /// `environmentBlockBytes` output in the end-to-end tests
+    /// (`TestPureCases`'s `Environment.GetEnvironmentVariables` cases). Those
+    /// pin the transcription at a handful of points; this extends the coverage
+    /// to inputs an end-to-end test is too slow to reach.
+    let private parseEnvironmentBlock (bytes : byte array) : Map<string, string> =
+        let units = codeUnitsOfBlock bytes
+
+        let rec go (acc : Map<string, string>) (start : int) : Map<string, string> =
+            match System.Array.IndexOf (units, char 0, start) with
+            | -1 -> failwith $"environment block has no terminator for the entry starting at code unit %d{start}"
+            // The empty entry closes the block.
+            | terminator when terminator = start -> acc
+            | terminator ->
+                let entry = System.String (units, start, terminator - start)
+
+                let acc =
+                    match entry.IndexOf '=' with
+                    | i when i > 0 -> Map.add (entry.Substring (0, i)) (entry.Substring (i + 1)) acc
+                    // CoreLib skips an entry with no `=`, and one beginning with
+                    // `=`; `environmentBlockBytes` must never emit either.
+                    | _ -> acc
+
+                go acc (terminator + 1)
+
+        go Map.empty 0
+
+    /// Code units a generated name or value is built from. `=` is added for
+    /// values only; NUL appears in neither, because `environmentBlockBytes`
+    /// refuses it by contract — generating it here would be asking the
+    /// round-trip property to hold of an input the encoder is specified to
+    /// reject, and the refusals have their own test below.
+    ///
+    /// Deliberately not ASCII-only. An ASCII alphabet cannot distinguish a byte
+    /// budget from a code-unit budget, and cannot see an encoder mangle an
+    /// unpaired surrogate to U+FFFD — which this encoder did, when it went
+    /// through `Encoding.Unicode`.
+    let private interestingCodeUnits : char list =
+        [
+            'A'
+            'a'
+            '_'
+            '0'
+            // Two and three UTF-8 bytes respectively, one UTF-16 code unit each.
+            'é'
+            '中'
+            // A surrogate *pair*: one character, two code units, four UTF-8 bytes.
+            char 0xD83D
+            char 0xDC36
+            // *Unpaired* surrogates, high and low. Legal in a .NET string, and
+            // silently destroyed by `Encoding.Unicode`.
+            char 0xD800
+            char 0xDFFF
+        ]
+
+    let private genFromAlphabet (alphabet : char list) (minLength : int) : Gen<string> =
+        gen {
+            // Mostly short, occasionally long enough that no fixed-size buffer
+            // assumption could hide in the encoder.
+            let! extra = Gen.frequency [ 3, Gen.choose (0, 6) ; 1, Gen.choose (120, 140) ]
+
+            let! chars = Gen.listOfLength (minLength + extra) (Gen.elements alphabet)
+            return System.String (List.toArray chars)
+        }
+
+    /// Names are non-empty and `=`-free, which is what an environment block can
+    /// express. Drawn from a tiny pool as well as freely, so that names which are
+    /// prefixes of one another (`A`, `AA`) turn up in the same block often.
+    let private genName : Gen<string> =
+        Gen.frequency
+            [
+                1, Gen.elements [ "A" ; "AA" ; "AAA" ; "a" ; "_" ]
+                3, genFromAlphabet interestingCodeUnits 1
+            ]
+
+    /// Values may be empty, and may contain `=`: `FOO=a=b` is an ordinary
+    /// variable whose value is `a=b`, so an encoder or parser splitting at the
+    /// *last* `=` would get it wrong.
+    let private genValue : Gen<string> =
+        Gen.frequency
+            [
+                1, Gen.constant ""
+                1, Gen.elements [ "=" ; "a=b" ; "==" ; "a=" ]
+                3, genFromAlphabet ('=' :: interestingCodeUnits) 0
+            ]
+
+    let private genEnvironment : Gen<Map<string, string>> =
+        gen {
+            let! count = Gen.frequency [ 1, Gen.constant 0 ; 1, Gen.constant 1 ; 4, Gen.choose (2, 12) ]
+            let! entries = Gen.listOfLength count (Gen.zip genName genValue)
+            return Map.ofList entries
+        }
+
+    [<Test>]
+    let ``environment block round-trips through CoreLib's parse algorithm`` () : unit =
+        let mutable empties = 0
+        let mutable withEqualsInValue = 0
+        let mutable withEmptyValue = 0
+        let mutable withAstral = 0
+        let mutable withUnpairedSurrogate = 0
+
+        let property (environment : Map<string, string>) : unit =
+            let bytes = NativeKernel32.environmentBlockBytes environment
+            parseEnvironmentBlock bytes |> shouldEqual environment
+
+            if Map.isEmpty environment then
+                empties <- empties + 1
+
+            for KeyValue (_, value) in environment do
+                if value.Contains '=' then
+                    withEqualsInValue <- withEqualsInValue + 1
+
+                if value = "" then
+                    withEmptyValue <- withEmptyValue + 1
+
+            for KeyValue (name, value) in environment do
+                for s in [ name ; value ] do
+                    for i in 0 .. s.Length - 1 do
+                        if System.Char.IsHighSurrogate s.[i] then
+                            if i + 1 < s.Length && System.Char.IsLowSurrogate s.[i + 1] then
+                                withAstral <- withAstral + 1
+                            else
+                                withUnpairedSurrogate <- withUnpairedSurrogate + 1
+                        elif System.Char.IsLowSurrogate s.[i] then
+                            withUnpairedSurrogate <- withUnpairedSurrogate + 1
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genEnvironment) property)
+
+        // Every shape the round-trip is meant to be interesting for really did
+        // turn up. Without these, narrowing the generator later would silently
+        // reduce the property to a claim about short ASCII pairs.
+        empties > 20 |> shouldEqual true
+        withEqualsInValue > 20 |> shouldEqual true
+        withEmptyValue > 20 |> shouldEqual true
+        withAstral > 20 |> shouldEqual true
+        withUnpairedSurrogate > 20 |> shouldEqual true
+
+    /// A NUL code unit as a string, for spelling block layouts out readably.
+    let private nul : string = string (char 0)
+
+    /// Little-endian UTF-16 bytes of `s`, spelled out here rather than taken from
+    /// `Encoding.Unicode` so that these expectations and the encoder under test
+    /// cannot agree merely by sharing a helper. (`Encoding.Unicode` would also
+    /// mangle the unpaired surrogate the last layout test relies on.)
+    let private expectedBytes (s : string) : byte array =
+        s.ToCharArray ()
+        |> Array.collect (fun c -> [| byte (uint16 c % 256us) ; byte (uint16 c / 256us) |])
+
+    [<Test>]
+    let ``empty environment is a lone NUL code unit`` () : unit =
+        // Not a null pointer, and not a zero-length block: the PAL mallocs one
+        // WCHAR and writes a NUL into it, returning null only when that malloc
+        // fails. CoreLib turns a null return into an OutOfMemoryException, so
+        // the difference is guest-visible.
+        NativeKernel32.environmentBlockBytes Map.empty |> shouldEqual [| 0uy ; 0uy |]
+
+    [<Test>]
+    let ``environment block is name=value per entry, NUL-terminated, NUL-closed`` () : unit =
+        NativeKernel32.environmentBlockBytes (Map.ofList [ "FOO", "bar" ])
+        |> shouldEqual (expectedBytes ("FOO=bar" + nul + nul))
+
+        // Entries come out in ordinal name order, which is what makes the block a
+        // function of the environment alone. This pins the documented behaviour
+        // rather than a requirement: the real block carries the host's `environ`
+        // order, and nothing a guest may rely on depends on either.
+        NativeKernel32.environmentBlockBytes (Map.ofList [ "b", "1" ; "a", "2" ])
+        |> shouldEqual (expectedBytes ("a=2" + nul + "b=1" + nul + nul))
+
+        // An empty value keeps its `=`, so the variable is present-and-empty
+        // rather than absent: an entry with no `=` is one CoreLib discards.
+        NativeKernel32.environmentBlockBytes (Map.ofList [ "FOO", "" ])
+        |> shouldEqual (expectedBytes ("FOO=" + nul + nul))
+
+    [<Test>]
+    let ``environment block writes code units verbatim`` () : unit =
+        // An unpaired surrogate is a legal `char` in a .NET string, and
+        // `GetEnvironmentVariableW` hands one to a guest verbatim. Encoding this
+        // block as *text* would substitute U+FFFD, making the two environment
+        // APIs disagree about the same table.
+        let lone = System.String [| char 0xD800 |]
+
+        NativeKernel32.environmentBlockBytes (Map.ofList [ "K", lone ])
+        |> shouldEqual
+            [|
+                0x4Buy
+                0x00uy
+                0x3Duy
+                0x00uy
+                0x00uy
+                0xD8uy
+                0x00uy
+                0x00uy
+                0x00uy
+                0x00uy
+            |]
+
+    [<Test>]
+    let ``environment block refuses an entry it cannot express`` () : unit =
+        // Each of these is a table no real environment block can express, so
+        // flattening it would hand a guest variables differing from the ones
+        // `Environment.GetEnvironmentVariable` reports for the same table. Only
+        // `KernelConfig.Environment` can build one.
+        //
+        // One input per rejected shape, each provoking that shape alone, so
+        // dropping any single check leaves this test failing on exactly one row.
+        let refused =
+            [
+                "empty name", "", "value"
+                "'=' in name", "A=B", "value"
+                "NUL in name", "A" + nul + "B", "value"
+                "NUL in value", "A", "va" + nul + "ue"
+            ]
+
+        for description, name, value in refused do
+            let exn =
+                Assert.Throws<System.Exception> (fun () ->
+                    NativeKernel32.environmentBlockBytes (Map.ofList [ name, value ])
+                    |> ignore<byte array>
+                )
+
+            // Names both the entry point and the knob, so a failing run points at
+            // the offending configuration rather than at the block writer.
+            exn.Message |> shouldContainText "GetEnvironmentStringsW"
+            exn.Message |> shouldContainText "KernelConfig.Environment"
+            description |> shouldNotEqual ""
+
+    [<Test>]
+    let ``environment block accepts the shapes a real environ can hold`` () : unit =
+        // Controls for the refusals above, so the rule cannot be satisfied by
+        // refusing everything: a value may contain `=`, a value may be empty, and
+        // either half may hold non-ASCII.
+        let environment =
+            Map.ofList
+                [
+                    "A", ""
+                    "B", "x=y=z"
+                    "\u00e9\u4e2d", "\U0001F436"
+                    "lower_case.name-1", "v"
+                ]
+
+        NativeKernel32.environmentBlockBytes environment
+        |> parseEnvironmentBlock
+        |> shouldEqual environment

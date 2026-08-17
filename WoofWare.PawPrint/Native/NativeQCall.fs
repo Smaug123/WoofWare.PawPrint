@@ -134,6 +134,11 @@ module NativeQCall =
             // assembly we execute presents this PAL entry point through QCall
             // import metadata.
             "GetEnvironmentVariableW", NativeKernel32.tryExecuteQCall "GetEnvironmentVariableW"
+            // `Environment.GetEnvironmentVariables` is the only caller, and it
+            // takes the block and releases it in a `finally`, so the pair is
+            // always reached together.
+            "GetEnvironmentStringsW", NativeKernel32.tryExecuteQCall "GetEnvironmentStringsW"
+            "FreeEnvironmentStringsW", NativeKernel32.tryExecuteQCall "FreeEnvironmentStringsW"
             // `CLRConfig.GetConfigBoolValue` is a QCall on CoreCLR for internal
             // knob lookups (e.g. `AutoreleasePool.EnableAutoreleasePool`). PawPrint
             // answers "knob not set" deterministically; see #609 for deferred work.
