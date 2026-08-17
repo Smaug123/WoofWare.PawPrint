@@ -659,12 +659,20 @@ module NativeRuntimeTypeHelpers =
             DeclaredBy : ConcreteType<ConcreteTypeHandle>
         }
 
-    /// Does this signature type mention a generic parameter anywhere? Used only to decide whether
-    /// substituting the declaring type's generic arguments could have changed a comparison.
+    /// Does this signature type mention a generic parameter of its *declaring type* anywhere? Used
+    /// only to decide whether substituting that type's generic arguments could have changed a
+    /// comparison.
+    ///
+    /// A generic *method* parameter deliberately does not count. `signaturesEquivalent` compares
+    /// those positionally and never substitutes them, exactly as `MetaSig::CompareElementType` does,
+    /// so no instantiation can make two of them coincide — and counting them would call every tie
+    /// between two generic methods an artifact, which rejects ordinary C#: `A` declaring
+    /// `virtual M&lt;T&gt;()`, `B` hiding it with a `new virtual M&lt;T&gt;()`, and `C` overriding `B`'s
+    /// leaves two identically-signed slots on the chain for `C`'s to match.
     let rec private mentionsGenericParameter (ty : TypeDefn) : bool =
         match ty with
-        | TypeDefn.GenericTypeParameter _
-        | TypeDefn.GenericMethodParameter _ -> true
+        | TypeDefn.GenericTypeParameter _ -> true
+        | TypeDefn.GenericMethodParameter _ -> false
         | TypeDefn.Array (element, _)
         | TypeDefn.Pinned element
         | TypeDefn.Pointer element
@@ -774,50 +782,22 @@ module NativeRuntimeTypeHelpers =
                 DeclaringTypeGenerics = slot.DeclaredBy.Generics
             }
 
-        let state, signaturesMatch =
-            IlMachineState.signaturesEquivalent
-                loggerFactory
-                baseClassTypes
-                state
-                false
-                (comparand candidate)
-                (comparand slot)
+        IlMachineState.signaturesEquivalent
+            loggerFactory
+            baseClassTypes
+            state
+            false
+            (comparand candidate)
+            (comparand slot)
 
-        if not signaturesMatch then
-            state, false
-        elif candidate.Method.Generics.IsEmpty then
-            state, true
-        else
-
-        // Matching signatures are not the whole of the layout rule for a *generic* method: CoreCLR
-        // compares the constraints too, and rejects the type outright if the override demands more
-        // of a type argument than the method it overrides did
-        // (`MethodTableBuilder::bmtMethodImplInfo`, methodtablebuilder.cpp:5449-5459). Roslyn copies
-        // a base method's constraints verbatim onto an override, so ordinary C# always matches here;
-        // assembly version skew and hand-authored IL are what can disagree.
-        let constraintComparand (slot : VtableSlot) : TypeConcretization.ConstraintComparand =
-            {
-                Parameters = slot.Method.Generics |> Seq.map snd |> List.ofSeq
-                Assembly = slot.DeclaredBy.Assembly
-                DeclaringTypeGenerics = slot.DeclaredBy.Generics
-            }
-
-        let state, constraintsMatch =
-            IlMachineState.methodConstraintsMatch
-                loggerFactory
-                baseClassTypes
-                state
-                (constraintComparand candidate)
-                (constraintComparand slot)
-
-        if not constraintsMatch then
-            // Filling the slot anyway would hand out a vtable layout for a type the real runtime
-            // refuses to load, and every slot number derived from it would then describe a type that
-            // cannot exist.
-            failwith
-                $"generic method %s{candidate.Method.Name} on %O{candidate.DeclaredBy} matches the signature of the vtable slot held by %s{slot.Method.Name} on %O{slot.DeclaredBy}, but its type parameters' constraints do not permit it to override that slot; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
-
-        state, true
+    /// One side of the constraint comparison CoreCLR runs once it has chosen which parent slot a
+    /// generic override fills.
+    let private constraintComparand (slot : VtableSlot) : TypeConcretization.ConstraintComparand =
+        {
+            Parameters = slot.Method.Generics |> Seq.map snd |> List.ofSeq
+            Assembly = slot.DeclaredBy.Assembly
+            DeclaringTypeGenerics = slot.DeclaredBy.Generics
+        }
 
     /// The methods of a type that CoreCLR's `DeclaredMethodIterator` ranges over, paired with their
     /// metadata facts. Both halves of the method table are laid out from this one list, so that
@@ -1171,6 +1151,37 @@ module NativeRuntimeTypeHelpers =
                         if occupant.Method.IsFinal then
                             failwith
                                 $"%s{operation}: virtual method %s{method.Name} on %O{concreteTypeInfo} is not marked newslot and matches vtable slot %i{mostDerived}, which is occupied by the final method %s{occupant.Method.Name} declared by %O{occupant.DeclaredBy}; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
+
+                        // Matching signatures are not the whole of the layout rule for a *generic*
+                        // method: CoreCLR compares the type parameters' constraints too, and refuses
+                        // to load the type if the override demands more of a type argument than the
+                        // method it overrides did (`MetaSig::CompareMethodConstraints`,
+                        // methodtablebuilder.cpp:5449-5459).
+                        //
+                        // Like the `final` check above, this belongs *after* the most-derived match
+                        // is chosen rather than inside the predicate that finds matches. A base
+                        // chain may hold several slots this candidate matches by signature -- `A`
+                        // declaring `virtual M<T>()`, `B` hiding it with a `new virtual M<T>()` that
+                        // adds a constraint, `C` overriding `B`'s -- and only the one it actually
+                        // fills has any say. Comparing against the others would reject ordinary C#.
+                        //
+                        // Roslyn copies a base method's constraints verbatim onto an override, so a
+                        // genuine override always agrees here; assembly version skew and
+                        // hand-authored IL are what can disagree.
+                        let state, constraintsMatch =
+                            if candidate.Method.Generics.IsEmpty then
+                                state, true
+                            else
+                                IlMachineState.methodConstraintsMatch
+                                    loggerFactory
+                                    baseClassTypes
+                                    state
+                                    (constraintComparand candidate)
+                                    (constraintComparand occupant)
+
+                        if not constraintsMatch then
+                            failwith
+                                $"%s{operation}: generic method %s{method.Name} on %O{concreteTypeInfo} fills vtable slot %i{mostDerived}, held by %s{occupant.Method.Name} declared by %O{occupant.DeclaredBy}, but its type parameters' constraints do not permit it to override that slot; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
 
                         state, (slots |> List.mapi (fun j slot -> if j = mostDerived then candidate else slot)), fresh
                     | [] ->

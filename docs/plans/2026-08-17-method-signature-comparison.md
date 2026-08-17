@@ -176,6 +176,20 @@ A mismatch `failwith`s, on the precedent of the sealed-override case in the same
 (`NativeRuntimeTypeHelpers.fs`): returning "no match" would hand the method a fresh slot, which is a
 *different* wrong vtable rather than a refusal.
 
+**Where the check runs matters as much as what it says.** It belongs after the most-derived match is
+chosen, beside that sealed-override check, and not inside the predicate that finds matches. A base
+chain can hold several slots one candidate matches by signature, and only the slot it actually fills
+has any say. `sourcesPure/ReflectionGenericOverrideHidesBaseSlot.cs` is the ordinary C# that shows it:
+`A` declares `virtual M<T>()`, `B` hides it with a `new virtual M<T>() where T : class` — free to add
+a constraint, because `new virtual` gives it its own slot — and `C` overrides `B`'s. Comparing `C.M`
+against *A*'s slot sees a constraint being added and refuses a type real .NET loads happily.
+
+That guest also pins a second rule this comparison changed. `tieCouldBeSubstitutionArtifact` screens a
+multi-slot tie by asking whether any signature mentions a generic parameter; generic *method*
+parameters must no longer count, because `signaturesEquivalent` compares them positionally and never
+substitutes them, so no instantiation can make two of them coincide. Counting them would call the tie
+above an artifact and refuse the type for the other reason.
+
 ## Mutation results
 
 16 mutations, one per rule. 14 killed. Notable:
