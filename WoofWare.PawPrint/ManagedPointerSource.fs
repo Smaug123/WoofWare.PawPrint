@@ -27,13 +27,18 @@ type PeByteRangePointerSource =
     /// type, then one type per index parameter. Same storage story as
     /// `FieldSignatureBlob`.
     | PropertySignatureBlob of property : ComparablePropertyDefinitionHandle
-    /// The Constant table's value blob for a field definition (ECMA II.22.9): the
-    /// field's compile-time constant, in the encoding its `ConstantTypeCode`
-    /// names. For a string constant those bytes are UTF-16LE characters, which is
-    /// what `MetadataImport.GetDefaultValue` hands back as a `char*`. Same storage
-    /// story as `FieldSignatureBlob` — it lives in the `#Blob` heap, so the RVA has
-    /// no PE-section meaning and is fixed at 0.
-    | ConstantBlob of field : ComparableFieldDefinitionHandle
+    /// A Constant table row's value blob (ECMA II.22.9): a compile-time constant, in
+    /// the encoding its `ConstantTypeCode` names. For a string constant those bytes
+    /// are UTF-16LE characters, which is what `MetadataImport.GetDefaultValue` hands
+    /// back as a `char*`. Same storage story as `FieldSignatureBlob` — it lives in
+    /// the `#Blob` heap, so the RVA has no PE-section meaning and is fixed at 0.
+    ///
+    /// Keyed on the Constant row rather than on whichever field, parameter or
+    /// property owns it: the row is what holds the bytes, and its HasConstant parent
+    /// is a property of the row (`Constant.Parent`) rather than something a reader of
+    /// the blob needs. One row per parent, so this is no coarser than keying on the
+    /// parent would be.
+    | ConstantBlob of constant : ComparableConstantHandle
 
 type PeByteRangePointer =
     {
@@ -51,7 +56,7 @@ type PeByteRangePointer =
             | PeByteRangePointerSource.FieldSignatureBlob field -> $"field signature blob for %O{field.Get}"
             | PeByteRangePointerSource.MethodSignatureBlob method -> $"method signature blob for %O{method.Get}"
             | PeByteRangePointerSource.PropertySignatureBlob property -> $"property signature blob for %O{property.Get}"
-            | PeByteRangePointerSource.ConstantBlob field -> $"constant blob for %O{field.Get}"
+            | PeByteRangePointerSource.ConstantBlob constant -> $"constant blob for %O{constant}"
 
         $"<PE data %s{this.AssemblyFullName} %s{source} at %d{this.RelativeVirtualAddress} size %d{this.Size}>"
 

@@ -559,12 +559,9 @@ module NativeMetadataImport =
     /// The Constant table row (ECMA-335 II.22.9) attached to a field definition: its declared type
     /// code and a reader over its value blob. <c>None</c> when the field has no Constant row.
     ///
-    /// Raw, because the two callers disagree about what the answer means.
-    /// <c>NativeEnum</c> requires the type code to match the enum's declared underlying type and
-    /// fails otherwise, and treats a missing row as a corrupt image;
-    /// <c>MetadataImport.GetDefaultValue</c> must do neither, because <c>MdConstant</c> is the thing
-    /// that decides what the bytes mean, and a missing row is its ordinary "no default value"
-    /// answer.
+    /// Raw, in the sense that the type code is reported rather than acted on: <c>NativeEnum</c>,
+    /// which is the caller, requires it to match the enum's declared underlying type and fails
+    /// otherwise, and treats a missing row as a corrupt image. Neither judgement belongs here.
     let constantRowOfField
         (metadataReader : System.Reflection.Metadata.MetadataReader)
         (fieldHandle : System.Reflection.Metadata.FieldDefinitionHandle)
@@ -579,6 +576,42 @@ module NativeMetadataImport =
 
         let constant = metadataReader.GetConstant constantHandle
         Some (constant.TypeCode, metadataReader.GetBlobReader constant.Value)
+
+    /// The Constant table row (ECMA-335 II.22.9) whose Parent is <paramref name="mdToken"/>, or
+    /// <c>None</c> when that token has no Constant row — which is the ordinary "no default value"
+    /// answer, not a failure.
+    ///
+    /// The token must name a HasConstant parent (ECMA-335 II.24.2.6): FieldDef or ParamDef.
+    let private constantRowOfHasConstantToken
+        (operation : string)
+        (assembly : DumpedAssembly)
+        (mdToken : int32)
+        : System.Reflection.Metadata.ConstantHandle option
+        =
+        let metadataReader = metadataReaderOf assembly
+
+        let constantHandle =
+            match MetadataToken.ofInt mdToken with
+            // Both of these reject a token absent from this assembly before the reader sees it: an
+            // out-of-range handle would otherwise surface as `BadImageFormatException: Read out of
+            // bounds`, which reads as a corrupt image rather than as a bad token.
+            | MetadataToken.FieldDefinition _ ->
+                let field = fieldDefinition operation assembly mdToken
+                (metadataReader.GetFieldDefinition field.Handle).GetDefaultValue ()
+            | MetadataToken.Parameter parameterHandle ->
+                (parameterDefinition operation assembly parameterHandle).GetDefaultValue ()
+            | MetadataToken.PropertyDefinition _ ->
+                // The third HasConstant parent. Reachable only through
+                // `RuntimePropertyInfo.GetRawConstantValue`, which needs a constructed
+                // `RuntimePropertyInfo` — and that dies first in `Signature_Init` on a raw
+                // PropertySignatureBlob, because ECMA II.23.2.5 PropertySigs are not yet parsed.
+                // Implementing that is what makes this arm worth writing.
+                failwith
+                    $"%s{operation}: PropertyDef Constant rows are not implemented (token 0x%08x{mdToken}); PROPERTY signatures are not yet parsed, so no guest can construct the RuntimePropertyInfo that would ask for one"
+            | token ->
+                failwith $"%s{operation}: expected FieldDef or ParamDef token, got %O{token} from 0x%08x{mdToken}"
+
+        if constantHandle.IsNil then None else Some constantHandle
 
     /// ECMA-335 II.23.1.16 <c>ELEMENT_TYPE_*</c> code for a Constant row's type, paired with the
     /// number of bytes its value blob must contain — CoreCLR's <c>_FillMDDefaultValue</c> checks
@@ -1169,19 +1202,16 @@ module NativeMetadataImport =
             // packs into the 64-bit buffer with a length in *bytes*, and a token with no Constant
             // row reports ELEMENT_TYPE_VOID, which `MdConstant` turns into DBNull.Value.
             //
-            // Only FieldDef parents are covered. The Constant table's Parent is a HasConstant coded
-            // index spanning ParamDef and PropertyDef too.
+            // FieldDef and ParamDef parents are covered; see `constantRowOfHasConstantToken` for
+            // the third HasConstant parent. A ParamDef token arrives whenever a guest asks a
+            // `ParameterInfo` for `HasDefaultValue`, `DefaultValue` or `RawDefaultValue`, all of
+            // which funnel into `RuntimeParameterInfo.TryGetDefaultValueInternal`.
             //
-            // A ParamDef token reaches here whenever a guest asks a `ParameterInfo` for
-            // `HasDefaultValue`, `DefaultValue` or `RawDefaultValue`, all of which funnel into
-            // `RuntimeParameterInfo.TryGetDefaultValueInternal`. That is unimplemented: the token
-            // is rejected below with a host-level crash rather than silently reported as having no
-            // Constant row, which would make an optional parameter look mandatory.
-            //
-            // A PropertyDef Constant row is read by `RuntimePropertyInfo.GetRawConstantValue`, which
-            // needs a fully constructed `RuntimePropertyInfo` — so what blocks it is
-            // `RuntimeMethodHandle.GetSlot`, which `RuntimeType.PopulateProperties` needs for its
-            // vtable-slot duplicate check, and not anything this file is missing.
+            // That caller does not stop at a missing Constant row: on `DBNull` it goes on to scan
+            // the parameter's custom attributes for `CustomConstantAttribute` / `DecimalConstant`,
+            // and `Type.Missing` for an `[Optional]` parameter comes from further up still. So
+            // reporting VOID here is a claim only about the Constant table, not about whether the
+            // parameter has a default.
             let operation = "MetadataImport.GetDefaultValue"
             let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
             let assembly = metadataImportAssembly operation state assemblyFullName
@@ -1209,8 +1239,9 @@ module NativeMetadataImport =
                     "corElementType out pointer"
                     instruction.Arguments.[5]
 
-            // Rejects a non-FieldDef token, and a FieldDef absent from this assembly.
-            let field = fieldDefinition operation assembly mdToken
+            // Rejects a token that is not a supported HasConstant parent, and one absent from
+            // this assembly.
+            let constantHandle = constantRowOfHasConstantToken operation assembly mdToken
             let mr = metadataReaderOf assembly
 
             let writeInt64 (state : IlMachineState) (value : int64) : IlMachineState =
@@ -1228,17 +1259,21 @@ module NativeMetadataImport =
                     (CliType.RuntimePointer (CliRuntimePointer.Managed pointer))
 
             let state, value, stringPointer, length, corElementType =
-                match constantRowOfField mr field.Handle with
+                match constantHandle with
                 | None ->
                     // CoreCLR returns here having set only `m_bType`, so its buffer and length are
                     // whatever was on the stack. `MdConstant` looks at nothing but the element type
                     // in this case, but a replay must not depend on the host's stack, so pick zeros.
                     // (Its `*pStringValue = NULL` *is* written, unconditionally, by the FCall.)
                     state, 0L, ManagedPointerSource.Null, 0, elementTypeVoid
-                | Some (typeCode, blobReader) ->
+                | Some constantHandle ->
 
-                let elementType, requiredWidth = elementTypeOfConstantTypeCode operation typeCode
-                let mutable reader = blobReader
+                let constant = mr.GetConstant constantHandle
+
+                let elementType, requiredWidth =
+                    elementTypeOfConstantTypeCode operation constant.TypeCode
+
+                let mutable reader = mr.GetBlobReader constant.Value
                 let bytes = reader.ReadBytes reader.Length
 
                 // `_FillMDDefaultValue` bounds-checks every fixed-width code and reports
@@ -1247,7 +1282,7 @@ module NativeMetadataImport =
                 // string is.
                 if bytes.Length < requiredWidth then
                     failwith
-                        $"%s{operation}: Constant blob for %O{field.Handle} has %d{bytes.Length} bytes but element type 0x%02x{elementType} requires %d{requiredWidth}; CoreCLR reports CLDB_E_FILE_CORRUPT for this"
+                        $"%s{operation}: Constant blob for token 0x%08x{mdToken} has %d{bytes.Length} bytes but element type 0x%02x{elementType} requires %d{requiredWidth}; CoreCLR reports CLDB_E_FILE_CORRUPT for this"
 
                 if elementType = elementTypeString then
                     // An odd-length blob is *not* rejected. `_FillMDDefaultValue` applies no length
@@ -1262,11 +1297,7 @@ module NativeMetadataImport =
                         state, 0L, ManagedPointerSource.Null, 0, elementType
                     else
 
-                    let peByteRange =
-                        IlMachineState.peByteRangeForConstantBlob assembly field.Handle
-                        |> Option.defaultWith (fun () ->
-                            failwith $"%s{operation}: Constant row for %O{field.Handle} vanished between reads"
-                        )
+                    let peByteRange = IlMachineState.peByteRangeForConstantBlob assembly constantHandle
 
                     let state, pointer =
                         IlMachineState.peByteRangeCharPointer ctx.LoggerFactory ctx.BaseClassTypes peByteRange state
@@ -1283,7 +1314,7 @@ module NativeMetadataImport =
                     // non-null one. The width check above has already rejected a short blob.
                     if packConstantBuffer 4 bytes <> 0L then
                         failwith
-                            $"%s{operation}: ELEMENT_TYPE_CLASS Constant blob for %O{field.Handle} must be a null reference, got %A{bytes}"
+                            $"%s{operation}: ELEMENT_TYPE_CLASS Constant blob for token 0x%08x{mdToken} must be a null reference, got %A{bytes}"
 
                     state, 0L, ManagedPointerSource.Null, bytes.Length, elementType
                 else
