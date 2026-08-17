@@ -74,7 +74,15 @@ module TestEffectiveProcessorCount =
         let property (detectedSeed : int, raw : NonNull<string>) : bool =
             let detected = 1 + abs (detectedSeed % maxConfigured)
 
-            let kernel = kernelWith detected [ "DOTNET_PROCESSOR_COUNT", raw.Get ]
+            // NULs removed rather than shrunk away, because a NUL is not a value
+            // an environment variable can hold: entries in a real `environ` are
+            // NUL-terminated C strings, and `EmulatedKernel.withEnvironment`
+            // refuses such a table for that reason. Narrowing the alphabet here
+            // is aligning it with what the table can contain, not dodging a rule
+            // — every other byte sequence FsCheck produces still arrives intact.
+            let value = raw.Get.Replace (string (char 0), "")
+
+            let kernel = kernelWith detected [ "DOTNET_PROCESSOR_COUNT", value ]
 
             EmulatedKernel.effectiveProcessorCount kernel >= 1
 

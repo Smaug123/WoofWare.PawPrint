@@ -327,10 +327,15 @@ module TestNativeKernel32 =
 
     [<Test>]
     let ``environment block refuses an entry it cannot express`` () : unit =
-        // Each of these is a table no real environment block can express, so
+        // Each of these is a table no real environment list can express, so
         // flattening it would hand a guest variables differing from the ones
-        // `Environment.GetEnvironmentVariable` reports for the same table. Only
-        // `KernelConfig.Environment` can build one.
+        // `Environment.GetEnvironmentVariable` reports for the same table.
+        //
+        // `EmulatedKernel.withEnvironment` already rejects these when the table is
+        // built, so a host cannot reach this through `KernelConfig`; what this
+        // covers is the record-copied kernel that never passed through that
+        // writer, which is exactly how the map arrives here. (The boundary itself
+        // is covered by `TestEnvironmentEntryInvariant`.)
         //
         // One input per rejected shape, each provoking that shape alone, so
         // dropping any single check leaves this test failing on exactly one row.
@@ -349,10 +354,11 @@ module TestNativeKernel32 =
                     |> ignore<byte array>
                 )
 
-            // Names both the entry point and the knob, so a failing run points at
-            // the offending configuration rather than at the block writer.
+            // Names the entry point, and says how such a table can have got here
+            // at all, so a failing run is not read as a host-configuration bug
+            // that `withEnvironment` would already have caught.
             exn.Message |> shouldContainText "GetEnvironmentStringsW"
-            exn.Message |> shouldContainText "KernelConfig.Environment"
+            exn.Message |> shouldContainText "record-copy"
             description |> shouldNotEqual ""
 
     [<Test>]

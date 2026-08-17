@@ -165,6 +165,7 @@
     <Compile Include="TestSignalDispatch.fs" />
     <Compile Include="TestSocketEventsWaitReason.fs" />
     <Compile Include="TestEffectiveProcessorCount.fs" />
+    <Compile Include="TestEnvironmentEntryInvariant.fs" />
     <Compile Include="TestSystemTimeAsTicks.fs" />
     <Compile Include="TestMonotonicTimestamp.fs" />
     <Compile Include="TestCpuPlacement.fs" />
