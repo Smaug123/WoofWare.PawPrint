@@ -195,6 +195,18 @@ module TestPureCases =
                     name "big", file (String.init 10000 (fun i -> string<char> (char (int 'a' + (i % 251) % 26))))
                 ]
             "FileStreamHandleSeeded.cs", Map.ofList [ name "f", file "hello" ]
+            "WriteSeeded.cs",
+            Map.ofList
+                [
+                    // Three separate files of the same contents, so that the
+                    // syscall-level rows, the O_RDWR rows and the `FileStream`
+                    // rows each start from a known five bytes rather than from
+                    // whatever an earlier row left behind.
+                    name "f", file "hello"
+                    name "g", file "hello"
+                    name "h", file "hello"
+                    name "d", SeedEntry.directory Map.empty
+                ]
             "ReadSeekSeeded.cs",
             Map.ofList
                 [

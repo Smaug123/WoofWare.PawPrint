@@ -179,6 +179,44 @@ module TestSystemTimeAsTicks =
 
         Check.One (propertyConfig, Prop.forAll int64Pairs property)
 
+    [<Test>]
+    let ``the inode stamp is the same instant, in a timespec`` () =
+        // `fileTimestamp` is what a write stamps on an inode's mtime and ctime.
+        // It must be a *re-denomination* of the wall clock rather than a second
+        // clock: a guest that writes a file and then reads `DateTime.UtcNow` sees
+        // two readings of one instant. Stated as an exact identity, because a
+        // scaling mistake — nanoseconds where 100 ns ticks were meant, or the
+        // seconds and the fraction crossed — still moves forward when a file is
+        // written, so no "the timestamp advanced" test can see it.
+        let property (seeds : int64 * int64) : bool =
+            let epochMs, clockTicks = reachable seeds
+            let kernel = kernelWith epochMs clockTicks
+
+            let ticks = EmulatedKernel.systemTimeAsTicks kernel
+            let stamp = EmulatedKernel.fileTimestamp kernel
+
+            // Reassembled with the BCL's own arithmetic rather than by inverting
+            // the implementation's division.
+            let reassembled =
+                DateTime.UnixEpoch
+                    .AddSeconds(float (UnixTimestamp.seconds stamp))
+                    .AddTicks (int64 (UnixTimestamp.nanoseconds stamp) / EmulatedKernel.nanosecondsPerTick)
+
+            UnixTimestamp.seconds stamp >= 0L
+            && UnixTimestamp.nanoseconds stamp >= 0
+            && UnixTimestamp.nanoseconds stamp < 1_000_000_000
+            // 100 ns is the clock's own quantum, so the nanosecond part can never
+            // carry a finer digit.
+            && int64 (UnixTimestamp.nanoseconds stamp) % EmulatedKernel.nanosecondsPerTick = 0L
+            && reassembled = DateTime.UnixEpoch.AddTicks ticks
+
+        Check.One (propertyConfig, Prop.forAll int64Pairs property)
+
+    [<Test>]
+    let ``a default kernel stamps inodes at the Unix epoch`` () =
+        EmulatedKernel.fileTimestamp EmulatedKernel.initial
+        |> shouldEqual UnixTimestamp.epoch
+
     /// Did the thunk complete, rather than failing the way PawPrint reports a
     /// violated kernel invariant?
     let private succeeds (f : unit -> 'a) : bool =
