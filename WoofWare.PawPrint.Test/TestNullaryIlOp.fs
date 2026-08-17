@@ -1176,6 +1176,297 @@ module TestNullaryIlOp =
             faultingFrame.EvaluationStack.Values |> shouldEqual []
         | other -> failwith $"Expected Conv_ovf_i_un overflow to step, got %O{other}"
 
+    /// A `conv.ovf.u2` source operand. Only the shapes the opcode serves appear:
+    /// every tagged byref, hash-bits or cross-array-offset source is a deliberate
+    /// `failwith`, for the reason
+    /// docs/plans/2026-08-08-narrowing-conv-pointer-hash.md gives for the whole
+    /// narrowing `conv.ovf.*` family.
+    [<RequireQualifiedAccess>]
+    type private ConvOvfU2Case =
+        | Int32Value of int32
+        | Int64Value of int64
+        | NativeIntVerbatim of int64
+        | FloatValue of float
+        | NativeIntManagedPointerNull
+
+    /// The host runs `conv.ovf.u2` for us, emitted into a `DynamicMethod` whose
+    /// parameter has the source's own stack type. The declared return type is
+    /// `int32` — the stack type the opcode actually pushes — so the host also
+    /// says what the *top* 16 bits of the result must be; declaring `uint16`
+    /// would discard them and hide a sign-extending implementation. This, not
+    /// this file, is what says the source is read as signed at its full width.
+    let private hostConvOvfU2<'source> () : 'source -> Result<int32, unit> =
+        let dm =
+            DynamicMethod ($"convOvfU2_%s{typeof<'source>.Name}", typeof<int32>, [| typeof<'source> |])
+
+        let il = dm.GetILGenerator ()
+        il.Emit OpCodes.Ldarg_0
+        il.Emit OpCodes.Conv_Ovf_U2
+        il.Emit OpCodes.Ret
+
+        let compiled =
+            dm.CreateDelegate typeof<Func<'source, int32>> :?> Func<'source, int32>
+
+        fun value ->
+            try
+                compiled.Invoke value |> Ok
+            with :? OverflowException ->
+                Error ()
+
+    let private hostConvOvfU2FromInt32 : int32 -> Result<int32, unit> =
+        hostConvOvfU2<int32> ()
+
+    let private hostConvOvfU2FromInt64 : int64 -> Result<int32, unit> =
+        hostConvOvfU2<int64> ()
+
+    let private hostConvOvfU2FromNativeInt : nativeint -> Result<int32, unit> =
+        hostConvOvfU2<nativeint> ()
+
+    let private hostConvOvfU2FromFloat : float -> Result<int32, unit> =
+        hostConvOvfU2<float> ()
+
+    let private convOvfU2CaseInput (case : ConvOvfU2Case) : EvalStackValue =
+        match case with
+        | ConvOvfU2Case.Int32Value value -> EvalStackValue.Int32 (Int32Source.Verbatim value)
+        | ConvOvfU2Case.Int64Value value -> EvalStackValue.Int64 (Int64Source.Verbatim value)
+        | ConvOvfU2Case.NativeIntVerbatim value -> EvalStackValue.NativeInt (NativeIntSource.Verbatim value)
+        | ConvOvfU2Case.FloatValue value -> EvalStackValue.Float value
+        | ConvOvfU2Case.NativeIntManagedPointerNull ->
+            EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
+
+    /// The int32 the host pushes for each case. The comparison is against the
+    /// pushed int32 rather than a uint16 so that the range check and the
+    /// zero-extension are one assertion.
+    let private convOvfU2Expected (case : ConvOvfU2Case) : Result<int32, unit> =
+        match case with
+        | ConvOvfU2Case.Int32Value value -> hostConvOvfU2FromInt32 value
+        | ConvOvfU2Case.Int64Value value -> hostConvOvfU2FromInt64 value
+        | ConvOvfU2Case.NativeIntVerbatim value -> hostConvOvfU2FromNativeInt (nativeint value)
+        | ConvOvfU2Case.FloatValue value -> hostConvOvfU2FromFloat value
+        // A null byref the guest already converted to a native int is the number
+        // zero, so it narrows. That is PawPrint's modelling choice rather than a
+        // fact about the host, which has no such source shape.
+        | ConvOvfU2Case.NativeIntManagedPointerNull -> Ok 0
+
+    /// Doubles on and around every boundary `conv.ovf.u2` cares about: `65536.0`
+    /// (exactly representable, the smallest double above UInt16.MaxValue), its
+    /// representable neighbour below, and the truncate-toward-zero cases straddling
+    /// `-1.0` and `0.0`.
+    let private convOvfU2FloatEdges : float list =
+        [
+            0.0
+            -0.0
+            0.5
+            -0.5
+            // The largest double below zero, and the largest below -1.0: the first
+            // truncates to 0 and is in range, the second to -1 and overflows.
+            Math.BitDecrement 0.0
+            Math.BitDecrement -1.0
+            // The largest double above -1.0 truncates to 0, so it is in range,
+            // whereas -1.0 itself overflows.
+            Math.BitIncrement -1.0
+            -1.0
+            -1.5
+            1.0
+            100.5
+            65534.5
+            65535.0
+            65535.5
+            Math.BitDecrement 65536.0
+            65536.0
+            65536.5
+            -65536.0
+            Double.MaxValue
+            -Double.MaxValue
+            Double.PositiveInfinity
+            Double.NegativeInfinity
+            Double.NaN
+        ]
+
+    /// Integer values on and around the `[0, 65535]` boundary, plus the shapes
+    /// that separate a range check from a truncation.
+    let private convOvfU2IntegerEdges : int64 list =
+        [
+            Int64.MinValue
+            int64 Int32.MinValue
+            -65536L
+            -1L
+            0L
+            1L
+            65534L
+            65535L
+            65536L
+            // Low 16 bits are 0xFFFF, but the value is far outside `[0, 65535]`.
+            // An implementation that truncated to 16 bits instead of range-checking
+            // the full signed width would wrongly accept this and answer 65535.
+            0x1_0000_FFFFL
+            4294967295L
+            int64 Int32.MaxValue
+            Int64.MaxValue
+        ]
+
+    let private convOvfU2EdgeCases : ConvOvfU2Case list =
+        [
+            // Each integer edge is applied to every integer source shape: the
+            // implementation range-checks int32 and 64-bit sources through separate
+            // paths, so an edge exercised only as an `Int32Value` leaves the 64-bit
+            // bounds unpinned.
+            for value in convOvfU2IntegerEdges do
+                ConvOvfU2Case.Int64Value value
+                ConvOvfU2Case.NativeIntVerbatim value
+
+                if value >= int64 Int32.MinValue && value <= int64 Int32.MaxValue then
+                    ConvOvfU2Case.Int32Value (int32 value)
+
+            for value in convOvfU2FloatEdges do
+                ConvOvfU2Case.FloatValue value
+
+            ConvOvfU2Case.NativeIntManagedPointerNull
+        ]
+
+    /// Straddles `[0, 65535]`: the default FsCheck integer generators are
+    /// size-bounded to roughly +-100, so on their own they would never produce a
+    /// source above the boundary, while full-range draws essentially never produce
+    /// one below it.
+    let private genConvOvfU2Band : Gen<int32> = Gen.choose (-4, 65540)
+
+    let private genConvOvfU2Float : Gen<float> =
+        let band =
+            gen {
+                let! whole = genConvOvfU2Band
+                let! thousandths = Gen.choose (0, 999)
+                return float whole + float thousandths / 1000.0
+            }
+
+        Gen.frequency
+            [
+                5, band
+                // Reuses the `conv.ovf.i` float generator for the pathological draws
+                // (infinities, NaN, huge magnitudes), all of which overflow here.
+                3, genConvOvfIFloat
+                2, Gen.elements convOvfU2FloatEdges
+            ]
+
+    let private genConvOvfU2Case : Gen<ConvOvfU2Case> =
+        let genInt32 =
+            Gen.frequency
+                [
+                    4, genConvOvfU2Band
+                    3, Gen.choose (Int32.MinValue, Int32.MaxValue)
+                    3,
+                    convOvfU2IntegerEdges
+                    |> List.filter (fun v -> v >= int64 Int32.MinValue && v <= int64 Int32.MaxValue)
+                    |> List.map int32
+                    |> Gen.elements
+                ]
+
+        let genInt64 =
+            Gen.frequency
+                [
+                    4, genConvOvfU2Band |> Gen.map int64
+                    3, genWideInt64
+                    3, Gen.elements convOvfU2IntegerEdges
+                ]
+
+        Gen.frequency
+            [
+                4, genInt32 |> Gen.map ConvOvfU2Case.Int32Value
+                4, genInt64 |> Gen.map ConvOvfU2Case.Int64Value
+                4, genInt64 |> Gen.map ConvOvfU2Case.NativeIntVerbatim
+                4, genConvOvfU2Float |> Gen.map ConvOvfU2Case.FloatValue
+                1, Gen.constant ConvOvfU2Case.NativeIntManagedPointerNull
+            ]
+
+    [<Test>]
+    let ``Conv_ovf_u2 agrees with the host's checked conversion`` () : unit =
+        let mutable overflows = 0
+        let mutable successes = 0
+
+        let property (case : ConvOvfU2Case) : unit =
+            match convOvfU2Expected case with
+            | Ok _ -> successes <- successes + 1
+            | Error () -> overflows <- overflows + 1
+
+            // `int32` of a `uint16` zero-extends, which is what the `Conv_ovf_u2`
+            // arm of `execute` does to reach the int32 stack type.
+            NullaryIlOp.convOvfU2 (convOvfU2CaseInput case)
+            |> Result.map int32
+            |> shouldEqual (convOvfU2Expected case)
+
+        for case in convOvfU2EdgeCases do
+            property case
+
+        Check.One (config, Prop.forAll (Arb.fromGen genConvOvfU2Case) property)
+
+        // Guard against a generator that silently stops exercising one side.
+        // `[0, 65535]` is a vanishing fraction of every source range here, so it is
+        // the *success* count that starves if the band generators are ever weakened
+        // or dropped; the overflow count is in no real danger. Both floors are wide
+        // margins rather than thresholds a run can drift across.
+        if overflows < 30 || successes < 30 then
+            failwith $"Conv_ovf_u2 generator was unbalanced: %d{overflows} overflows, %d{successes} successes"
+
+    [<Test>]
+    let ``Conv_ovf_u2 pushes a zero-extended int32 and advances past its own encoding`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        // 65535 is the only input width that can tell the required zero-extension
+        // apart from a sign-extension: with the destination's top bit set, an
+        // implementation that pushed `int32 (int16 conv)` would answer -1 here.
+        // A smaller input would agree either way.
+        let input = EvalStackValue.Int32 (Int32Source.Verbatim 65535)
+        let state, thread = stateWithNullary loggerFactory NullaryIlOp.Conv_ovf_u2 input
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Conv_ovf_u2 with
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            let methodState = state.ThreadState.[thread].MethodState
+
+            methodState.EvaluationStack.Values
+            |> shouldEqual [ EvalStackValue.Int32 (Int32Source.Verbatim 65535) ]
+
+            methodState.IlOpIndex
+            |> shouldEqual (IlOp.NumberOfBytes (IlOp.Nullary NullaryIlOp.Conv_ovf_u2))
+        | other -> failwith $"Expected Conv_ovf_u2 to step, got %O{other}"
+
+    [<Test>]
+    let ``Conv_ovf_u2 raises OverflowException without advancing the faulting PC`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let input = EvalStackValue.Int32 (Int32Source.Verbatim -1)
+        let state, thread = stateWithNullary loggerFactory NullaryIlOp.Conv_ovf_u2 input
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Conv_ovf_u2 with
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            let threadState = state.ThreadState.[thread]
+
+            // The runtime has pushed a frame running `OverflowException..ctor`.
+            let ctor = threadState.MethodState.ExecutingMethod
+            ctor.Name |> shouldEqual ".ctor"
+
+            let declaring = ctor.RequiredDeclaringType
+            declaring.Namespace |> shouldEqual "System"
+            declaring.Name |> shouldEqual "OverflowException"
+
+            // Exception dispatch needs the faulting instruction's offset, so the frame
+            // that executed `conv.ovf.u2` must still be sitting on it. It is no longer
+            // the active frame, so find it by frame id.
+            let faultingFrame =
+                threadState.MethodStates
+                |> Map.toSeq
+                |> Seq.filter (fun (frameId, _) -> frameId <> threadState.ActiveMethodState)
+                |> Seq.exactlyOne
+                |> snd
+
+            faultingFrame.IlOpIndex |> shouldEqual 0
+            faultingFrame.EvaluationStack.Values |> shouldEqual []
+        | other -> failwith $"Expected Conv_ovf_u2 overflow to step, got %O{other}"
+
     // --- Bitwise operations on tagged GC handles ---
     //
     // PawPrint models a GC handle as an opaque registry index with no numeric
