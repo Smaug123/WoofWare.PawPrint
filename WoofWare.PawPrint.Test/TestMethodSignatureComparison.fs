@@ -636,6 +636,48 @@ public class OpenGeneric<T>
         // carries the sentinel rather than about the signature itself.
         equivalent fixture callee (withSentinel [ int32 ] []) |> shouldEqual true
 
+    /// A function pointer is a *type*, so its signature is compared at exact arity: the vararg
+    /// sentinel rule matches a call site against a callee, which is not a question one can ask of a
+    /// type. Applying it inside a function pointer would make `void(int32, ..., string)` and
+    /// `void(int32)` name the same type.
+    [<Test>]
+    let ``function pointer signatures are compared at exact arity`` () =
+        let fixture = fixture ()
+        let int32 = TypeDefn.PrimitiveType PrimitiveType.Int32
+        let string = TypeDefn.PrimitiveType PrimitiveType.String
+
+        let functionPointer (fixedParams : TypeDefn list) (variadic : TypeDefn list) =
+            TypeDefn.FunctionPointer
+                { staticSignature (fixedParams @ variadic) with
+                    Header =
+                        ComparableSignatureHeader.Make (
+                            SignatureHeader (
+                                SignatureKind.Method,
+                                SignatureCallingConvention.VarArgs,
+                                SignatureAttributes.None
+                            )
+                        )
+                    RequiredParameterCount = fixedParams.Length
+                }
+
+        let takes (ty : TypeDefn) = staticSignature [ ty ]
+
+        // Same fixed prefix, different variadic tails: as call signatures these would match, but as
+        // types they are distinct.
+        equivalent fixture (takes (functionPointer [ int32 ] [ string ])) (takes (functionPointer [ int32 ] []))
+        |> shouldEqual false
+
+        equivalent fixture (takes (functionPointer [ int32 ] [ string ])) (takes (functionPointer [ int32 ] [ string ]))
+        |> shouldEqual true
+
+        // And the sentinel's position is part of the type: the same parameter list with the
+        // sentinel elsewhere is a different function pointer.
+        equivalent
+            fixture
+            (takes (functionPointer [ int32 ] [ string ]))
+            (takes (functionPointer [ int32 ; string ] []))
+        |> shouldEqual false
+
     [<Test>]
     let ``differing parameter counts are not equivalent without a vararg sentinel`` () =
         let fixture = fixture ()
@@ -817,6 +859,33 @@ public class OpenGeneric<T>
         |> shouldEqual false
 
         constraintsMatch fixture [ unconstrained ; unconstrained ] [ unconstrained ]
+        |> shouldEqual false
+
+    /// `System.Object` has a primitive spelling as well as a nominal one, and a constraint may use
+    /// either — the GenericParamConstraint column is a TypeDefOrRefOrSpec, and a TypeSpec may hold a
+    /// bare `ELEMENT_TYPE_OBJECT`. Both are equally vacuous.
+    [<Test>]
+    let ``an object constraint is vacuous in either spelling`` () =
+        let fixture = fixture ()
+
+        let spelledPrimitively =
+            parameter None false false [ TypeDefn.PrimitiveType PrimitiveType.Object ]
+
+        let spelledNominally =
+            parameter None false false [ nominalOf fixture.BaseClassTypes.Object ]
+
+        constraintsMatch fixture [ spelledPrimitively ] [ unconstrained ]
+        |> shouldEqual true
+
+        constraintsMatch fixture [ spelledNominally ] [ unconstrained ]
+        |> shouldEqual true
+
+        // The control: a primitive spelling of some *other* type is an ordinary constraint, so the
+        // arm above is about `object` rather than about primitives.
+        let spelledOtherPrimitive =
+            parameter None false false [ TypeDefn.PrimitiveType PrimitiveType.Int32 ]
+
+        constraintsMatch fixture [ spelledOtherPrimitive ] [ unconstrained ]
         |> shouldEqual false
 
     [<Test>]

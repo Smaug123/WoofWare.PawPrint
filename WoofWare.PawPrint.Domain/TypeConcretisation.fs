@@ -1414,7 +1414,13 @@ module TypeConcretization =
             // (:4137-4200) — including its CallKind byte, which is where a *single* nameable
             // unmanaged convention lives. A combination of conventions is spelled as modifiers on
             // the inner return type instead, so both halves of the encoding are compared here.
-            compareSignatureTypes ctx loadAssembly leftCtx rightCtx false leftSignature rightSignature
+            //
+            // At exact arity: a function pointer is a *type*, and CoreCLR's FNPTR arm requires
+            // `argCnt1 == argCnt2` before comparing anything. The vararg sentinel rule is about
+            // matching a call site against a callee, which is not a question one can ask of a type,
+            // so applying it here would let `void(int32, ..., string)` and `void(int32)` name the
+            // same type.
+            compareSignatureTypes ctx loadAssembly leftCtx rightCtx false false leftSignature rightSignature
 
         | (TypeDefn.FromDefinition _ | TypeDefn.FromReference _), (TypeDefn.FromDefinition _ | TypeDefn.FromReference _) ->
             // Identity, not spelling: a TypeDef in the assembly that declares the type and a
@@ -1458,6 +1464,7 @@ module TypeConcretization =
         (loadAssembly : IAssemblyLoad)
         (leftCtx : ElementContext)
         (rightCtx : ElementContext)
+        (varargSentinelApplies : bool)
         (skipReturnType : bool)
         (left : TypeMethodSignature<TypeDefn>)
         (right : TypeMethodSignature<TypeDefn>)
@@ -1485,11 +1492,23 @@ module TypeConcretization =
         // `m(int, string)` both have two parameters, and CoreCLR rejects that pair because it meets
         // the sentinel where the callee has a real type; the decoded form has no sentinel element to
         // meet, so the sentinel's *position* is what has to be read.
-        let callerSentinel = left.RequiredParameterCount <> left.ParameterTypes.Length
-        let calleeSentinel = right.RequiredParameterCount <> right.ParameterTypes.Length
+        let callerSentinel =
+            varargSentinelApplies
+            && left.RequiredParameterCount <> left.ParameterTypes.Length
+
+        let calleeSentinel =
+            varargSentinelApplies
+            && right.RequiredParameterCount <> right.ParameterTypes.Length
 
         let comparableCount =
-            if calleeSentinel then
+            if
+                not varargSentinelApplies
+                && left.RequiredParameterCount <> right.RequiredParameterCount
+            then
+                // Comparing two function pointer *types*, where a sentinel is part of the type
+                // rather than a call site's `...`, so it has to sit in the same place on both.
+                None
+            elif calleeSentinel then
                 // Illegal in a callee's signature; CoreCLR asserts rather than checks.
                 None
             elif callerSentinel then
@@ -1591,6 +1610,15 @@ module TypeConcretization =
             (constraintType : TypeDefn)
             : bool * ConcretizationContext<DumpedAssembly>
             =
+            // `System.Object` has a primitive spelling as well as a nominal one, and a constraint
+            // may use either: the GenericParamConstraint column is a TypeDefOrRefOrSpec, and a
+            // TypeSpec may hold a bare `ELEMENT_TYPE_OBJECT`. CoreCLR resolves that spelling to
+            // System.Object's TypeDef before comparing (`CompareElementTypeToToken`,
+            // siginfo.cpp:4915), so it is just as vacuous as the nominal form.
+            match constraintType with
+            | TypeDefn.PrimitiveType PrimitiveType.Object -> true, ctx
+            | _ ->
+
             let identity, ctx = nominalIdentity ctx loadAssembly impl.Assembly constraintType
 
             match identity with
@@ -1690,6 +1718,7 @@ module TypeConcretization =
             loadAssembly
             (toElementContext caller)
             (toElementContext callee)
+            true
             skipReturnType
             caller.Signature
             callee.Signature
