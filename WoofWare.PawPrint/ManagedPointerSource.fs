@@ -315,6 +315,22 @@ type ByteStorageIdentity =
     | NativeMemory of NativeMemoryBlockId
     | HeapObject of ManagedHeapAddress
 
+    override this.ToString () : string =
+        match this with
+        | ByteStorageIdentity.Array arr -> $"<storage of array %O{arr}>"
+        | ByteStorageIdentity.String str -> $"<character storage of string %O{str}>"
+        | ByteStorageIdentity.PeByteRange peByteRange -> $"%O{peByteRange}"
+        | ByteStorageIdentity.StaticField (declaringType, field, owner) ->
+            $"<static field %O{field.Get} of type %O{declaringType} in %O{owner}>"
+        | ByteStorageIdentity.StackMemory (thread, frame, block) ->
+            $"<%O{block} in method frame %O{frame} of thread %O{thread}>"
+        | ByteStorageIdentity.StackLocal (thread, frame, local) ->
+            $"<variable %i{local} in method frame %O{frame} of thread %O{thread}>"
+        | ByteStorageIdentity.StackArgument (thread, frame, arg) ->
+            $"<argument %i{arg} in method frame %O{frame} of thread %O{thread}>"
+        | ByteStorageIdentity.NativeMemory block -> $"%O{block}"
+        | ByteStorageIdentity.HeapObject addr -> $"<storage of heap object %O{addr}>"
+
 [<RequireQualifiedAccess>]
 module ByteStorageIdentity =
     let private rank (identity : ByteStorageIdentity) : int =
