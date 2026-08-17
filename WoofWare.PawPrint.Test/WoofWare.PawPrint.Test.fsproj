@@ -159,6 +159,7 @@
     <Compile Include="TestSignalHandler.fs" />
     <Compile Include="TestSignalDispatcherThread.fs" />
     <Compile Include="TestSignalDispatch.fs" />
+    <Compile Include="TestSocketEventsWaitReason.fs" />
     <Compile Include="TestEffectiveProcessorCount.fs" />
     <Compile Include="TestSystemTimeAsTicks.fs" />
     <Compile Include="TestMonotonicTimestamp.fs" />
