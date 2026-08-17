@@ -299,11 +299,18 @@ class Program
         Marshal.SetLastSystemError(0);
         if (PWrite(new IntPtr(1), buf, 1, 0) != -1 || Marshal.GetLastSystemError() != ESPIPE) return check;
 
-        // An unknown descriptor, and the control showing the offset check above
-        // really does come first: the same call with a valid offset is EBADF.
+        // An unknown descriptor.
         check = 45;
         Marshal.SetLastSystemError(0);
         if (PWrite(new IntPtr(4242), buf, 4, 0) != -1 || Marshal.GetLastSystemError() != EBADF) return check;
+
+        // ...and the pair that shows the offset really is validated *before* the
+        // descriptor is even looked up: the same bad fd with a negative offset is
+        // EINVAL, not EBADF. Unlike `pread`, where Darwin answers EBADF here, both
+        // kernels agree — which is why this row can live in the pure half.
+        check = 46;
+        Marshal.SetLastSystemError(0);
+        if (PWrite(new IntPtr(4242), buf, 4, -1) != -1 || Marshal.GetLastSystemError() != EINVAL) return check;
 
         Close(w);
         Close(r);
@@ -329,10 +336,10 @@ class Program
             stream.Write(new byte[] { (byte)'X', (byte)'Y' }, 0, 2);
         }
 
-        check = 46;
+        check = 47;
         byte[] read = File.ReadAllBytes("h");
         if (read.Length != 5) return check;
-        check = 47;
+        check = 48;
         if (read[0] != (byte)'X' || read[1] != (byte)'Y' || read[2] != (byte)'l') return check;
 
         // The stream's own position advanced with the write, as a sequential
@@ -341,14 +348,14 @@ class Program
         using (FileStream stream = new FileStream("h", FileMode.Open, FileAccess.Write, FileShare.None))
         {
             stream.Write(new byte[] { (byte)'Z' }, 0, 1);
-            check = 48;
+            check = 49;
             if (stream.Position != 1) return check;
             stream.Write(new byte[] { (byte)'W' }, 0, 1);
-            check = 49;
+            check = 50;
             if (stream.Position != 2) return check;
         }
 
-        check = 50;
+        check = 51;
         read = File.ReadAllBytes("h");
         if (read.Length != 5 || read[0] != (byte)'Z' || read[1] != (byte)'W' || read[2] != (byte)'l')
         {
@@ -358,7 +365,7 @@ class Program
         // A read-only stream cannot write, and the exception arrives before any
         // syscall — the control showing that check 23's EBADF is the kernel's
         // answer rather than the BCL's.
-        check = 51;
+        check = 52;
         using (FileStream stream = new FileStream("h", FileMode.Open, FileAccess.Read))
         {
             if (stream.CanWrite) return check;
@@ -367,7 +374,7 @@ class Program
         // A mode-0444 seed cannot be materialised by the oracle, so the EACCES a
         // write-mode open owes one is asserted in the impure half. This is the
         // control: a default-mode file does open for writing.
-        check = 52;
+        check = 53;
         if (OpenPath("f", O_WRONLY) == new IntPtr(-1)) return check;
 
         return 0;

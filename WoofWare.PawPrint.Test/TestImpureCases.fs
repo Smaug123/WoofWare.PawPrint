@@ -418,6 +418,33 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The write path's Darwin arms, which the case above cannot reach
+                // because it runs on the default Linux flavour: which of
+                // unwritability and unseekability wins for a pipe, and whether the
+                // access mode is settled before a negative offset (it is for
+                // `pread` on Darwin and not for `pwrite`, where Linux checks the
+                // offset first for both).
+                //
+                // Configured as macOS for the same reason `SpliceLengthSeeded.cs`
+                // is: on the default kernel these rows have different answers, so
+                // there is no flavour that exercises both files.
+                FileName = "WriteDarwinSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        FileSystem =
+                            Map.ofList
+                                [
+                                    FileName.parseOrFail "test seed" "f",
+                                    SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                                ]
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The `SystemNative_LSeek` rows on which Linux and Darwin
                 // disagree: the order `whence` validity and seekability are
                 // checked in, and the errno for an offset that leaves `int64`.
