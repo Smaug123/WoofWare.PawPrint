@@ -1666,42 +1666,73 @@ module NativeRuntimeTypeHelpers =
         | RuntimeTypeHandleTarget.Closed handle ->
             numVirtualsOfClosed loggerFactory baseClassTypes operation state handle
 
-    /// Resolve the closed declaring type's `(ConcreteType, Methods)` pair. Returns `None` for
-    /// handles whose CoreCLR equivalent has no MethodTable and therefore introduces no methods
-    /// (byref/pointer/function-pointer TypeDescs); callers should emit the null sentinel so the
-    /// managed `IntroducedMethodEnumerator` terminates immediately. Fails for synthesised array
-    /// handles, because PawPrint does not yet model the array intrinsic methods and silent
-    /// under-reporting would hide that gap.
-    let introducedMethodsOfClosed
+    /// The methods a declaring type introduces, as CoreCLR's `IntroducedMethodIterator` walks
+    /// them: the type's own MethodDef rows in metadata order, never an inherited one.
+    ///
+    /// Returns the defining assembly and the declaring target alongside them, because those are
+    /// what `MethodHandleRegistry.getOrAllocateInternalHandle` needs to mint a handle and they
+    /// differ between the closed and open-definition cases.
+    ///
+    /// `None` means "this type has no MethodTable, so it introduces nothing" — byref, pointer and
+    /// function-pointer TypeDescs. Callers should emit the null sentinel so the managed
+    /// `IntroducedMethodEnumerator` terminates immediately.
+    let introducedMethodsOf
         (operation : string)
         (state : IlMachineState)
-        (handle : ConcreteTypeHandle)
-        : (ConcreteType<ConcreteTypeHandle> *
+        (target : RuntimeTypeHandleTarget)
+        : (string *
+          RuntimeTypeHandleTarget *
           MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list) option
         =
-        match handle with
-        | ConcreteTypeHandle.Concrete _ ->
+        match target with
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
             let concreteType, typeInfo =
                 IlMachineState.tryGetConcreteTypeInfo state handle
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: concrete type handle was not registered: %O{handle}"
                 )
 
-            Some (concreteType, typeInfo.Methods)
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ ->
+            Some (concreteType.Assembly.FullName, target, typeInfo.Methods)
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            // CoreCLR's typical instantiation of `G<>` is a MethodTable carrying the definition's
+            // own TypeDef token, and its MethodDescChunks hold the definition's MethodDefs. So the
+            // answer is the metadata method list read straight off the typedef: no instantiation is
+            // needed, which is what makes this answerable where `numVirtuals` is not — that needs
+            // to *match* signatures across the base chain, and this only needs to list them.
+            let assembly =
+                state.LoadedAssembly identity.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: assembly %s{identity.AssemblyFullName} is not loaded"
+                )
+
+            let typeInfo = Assembly.resolveTypeIdentityDefinition assembly identity
+
+            Some (identity.AssemblyFullName, target, typeInfo.Methods)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _) ->
             // CoreCLR's IntroducedMethodIterator runs on a MethodTable; byrefs/pointers/function-
             // pointers are TypeDescs with no MethodTable, so GetFirstIntroducedMethod returns null
             // and the managed enumerator terminates without iterating.
             None
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _ ->
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+            // Also TypeVarTypeDescs, and CoreCLR agrees they introduce nothing:
+            // `PopulateConstructors` returns an empty array for `IsGenericParameter`
+            // (RuntimeType.CoreCLR.cs:755) rather than iterating.
+            None
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _ as handle)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _ as handle) ->
             // Synthesised array MethodTables have a small fixed set of introduced methods (Get/Set/
             // Address/the parameterless ctor). PawPrint does not yet model these; no test exercises
             // this path, so fail loudly to flag the gap rather than silently reporting zero.
             failwith
                 $"TODO: %s{operation} for synthesised array handle %O{handle}; need to surface the array's intrinsic Get/Set/Address methods"
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
+        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+            failwith
+                $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
 
     let getOrAllocateNonGenericRuntimeType
         (loggerFactory : ILoggerFactory)

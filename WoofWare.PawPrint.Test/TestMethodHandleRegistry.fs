@@ -44,6 +44,35 @@ module TestMethodHandleRegistry =
 
         loggerFactory, baseClassTypes, assembly, state
 
+    /// Mint a bare `RuntimeMethodHandleInternal` for a method on a *closed* declaring type, the way
+    /// the runtime's closed introduced-method path does. Tests that need the open-definition target
+    /// call `MethodHandleRegistry.getOrAllocateInternalHandle` directly.
+    let private internalHandleForClosed
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (concreteTypes : AllConcreteTypes)
+        (declaringConcrete : ConcreteType<ConcreteTypeHandle>)
+        (method : WoofWare.PawPrint.MethodInfo<'tyGen, GenericParamFromMetadata, TypeDefn>)
+        (reg : MethodHandleRegistry)
+        : CliValueType * MethodHandleRegistry
+        =
+        let target =
+            AllConcreteTypes.findExistingConcreteType
+                concreteTypes
+                declaringConcrete.Identity
+                declaringConcrete.Generics
+            |> Option.defaultWith (fun () ->
+                failwith $"declaring type %O{declaringConcrete} was not registered in ConcreteTypes"
+            )
+            |> RuntimeTypeHandleTarget.Closed
+
+        MethodHandleRegistry.getOrAllocateInternalHandle
+            baseClassTypes
+            concreteTypes
+            declaringConcrete.Assembly.FullName
+            target
+            method
+            reg
+
     let private findMethod
         (declaringTypeName : string)
         (methodName : string)
@@ -368,12 +397,7 @@ public static class GenericMethodHolder
         let declaringType = findDeclaringConcreteType state targetMethod
 
         let internalHandle, registry =
-            MethodHandleRegistry.getOrAllocateInternalHandle
-                baseClassTypes
-                state.ConcreteTypes
-                declaringType
-                targetMethod
-                state.MethodHandles
+            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
 
         let registryId =
             match
@@ -410,20 +434,10 @@ public static class GenericMethodHolder
         let declaringType = findDeclaringConcreteType state targetMethod
 
         let firstHandle, registry1 =
-            MethodHandleRegistry.getOrAllocateInternalHandle
-                baseClassTypes
-                state.ConcreteTypes
-                declaringType
-                targetMethod
-                state.MethodHandles
+            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
 
         let secondHandle, _ =
-            MethodHandleRegistry.getOrAllocateInternalHandle
-                baseClassTypes
-                state.ConcreteTypes
-                declaringType
-                targetMethod
-                registry1
+            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod registry1
 
         let extractId (vt : CliValueType) : int64 =
             match CliValueType.DereferenceField "m_handle" vt |> CliType.unwrapPrimitiveLikeDeep with
@@ -477,7 +491,7 @@ public static class GenericMethodHolder
 
         // The bug reproducer: this should not throw IndexOutOfRangeException.
         let internalHandle, _ =
-            MethodHandleRegistry.getOrAllocateInternalHandle
+            internalHandleForClosed
                 baseClassTypes
                 state.ConcreteTypes
                 declaringConcrete
@@ -651,12 +665,7 @@ public static class GenericMethodHolder
             concretizeDeclaringType loggerFactory baseClassTypes assembly targetMethod state
 
         let internalHandle, registry =
-            MethodHandleRegistry.getOrAllocateInternalHandle
-                baseClassTypes
-                state.ConcreteTypes
-                declaringType
-                targetMethod
-                state.MethodHandles
+            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
 
         let state =
             { state with
@@ -714,12 +723,7 @@ public class HasConstructors
         let declaringType = findDeclaringConcreteType state targetMethod
 
         let internalHandle, registry =
-            MethodHandleRegistry.getOrAllocateInternalHandle
-                baseClassTypes
-                state.ConcreteTypes
-                declaringType
-                targetMethod
-                state.MethodHandles
+            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
 
         let state =
             { state with
@@ -763,12 +767,7 @@ public class HasConstructors
             |> Option.defaultWith (fun () -> failwith "declaring type was not registered in ConcreteTypes")
 
         let internalHandle, registry =
-            MethodHandleRegistry.getOrAllocateInternalHandle
-                baseClassTypes
-                state.ConcreteTypes
-                declaringType
-                targetMethod
-                state.MethodHandles
+            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
 
         let state =
             { state with
@@ -835,12 +834,7 @@ public class GenericHolder<T>
         closedConcrete.Generics.IsEmpty |> shouldEqual false
 
         let internalHandle, registry =
-            MethodHandleRegistry.getOrAllocateInternalHandle
-                baseClassTypes
-                state.ConcreteTypes
-                closedConcrete
-                targetMethod
-                state.MethodHandles
+            internalHandleForClosed baseClassTypes state.ConcreteTypes closedConcrete targetMethod state.MethodHandles
 
         let state =
             { state with
@@ -980,12 +974,7 @@ public static class InstantiationHolder
             concretizeDeclaringType loggerFactory baseClassTypes assembly targetMethod state
 
         let internalHandle, registry =
-            MethodHandleRegistry.getOrAllocateInternalHandle
-                baseClassTypes
-                state.ConcreteTypes
-                declaringType
-                targetMethod
-                state.MethodHandles
+            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
 
         let state =
             { state with
@@ -1011,12 +1000,7 @@ public static class InstantiationHolder
             concretizeDeclaringType loggerFactory baseClassTypes assembly targetMethod state
 
         let internalHandle, registry =
-            MethodHandleRegistry.getOrAllocateInternalHandle
-                baseClassTypes
-                state.ConcreteTypes
-                declaringType
-                targetMethod
-                state.MethodHandles
+            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
 
         // `getOrAllocateInternalHandle` mints the definition: empty MethodGenerics.
         match MethodHandleRegistry.resolveMethodFromId 1L registry with
@@ -1133,12 +1117,7 @@ public static class InstantiationHolder
         typeInfo.Methods
         |> List.map (fun method ->
             let internalHandle, reg =
-                MethodHandleRegistry.getOrAllocateInternalHandle
-                    baseClassTypes
-                    state.ConcreteTypes
-                    declaringType
-                    method
-                    registry
+                internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType method registry
 
             registry <- reg
 
@@ -1235,12 +1214,7 @@ public static class InstantiationHolder
         let declaringType = findDeclaringConcreteType state targetMethod
 
         let internalHandle, registry =
-            MethodHandleRegistry.getOrAllocateInternalHandle
-                baseClassTypes
-                state.ConcreteTypes
-                declaringType
-                targetMethod
-                state.MethodHandles
+            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
 
         let state =
             { state with
@@ -1305,3 +1279,309 @@ public static class InstantiationHolder
 
         closedAdd.MetadataToken |> shouldEqual openAdd.MetadataToken
         otherClosedAdd.MetadataToken |> shouldEqual openAdd.MetadataToken
+
+    /// A generic type with two constructors and a plain method, for the open-definition tests.
+    let private genericBoxSource =
+        """
+public sealed class Box<T>
+{
+    public T Item;
+    public Box() { }
+    public Box(T t) { Item = t; }
+    public int Plain() { return 1; }
+}
+"""
+
+    /// The declaring type of `Box<T>`'s methods, as both an open generic definition and the closed
+    /// `Box<int>` instantiation, so a test can mint against either.
+    let private boxTargets () =
+        let loggerFactory, baseClassTypes, assembly, state =
+            loadAssemblyFromSource "OpenGenericBoxAssembly" genericBoxSource
+
+        let ctors =
+            assembly.Methods.Values
+            |> Seq.filter (fun method -> method.RequiredDeclaringType.Name = "Box`1" && method.Name = ".ctor")
+            |> Seq.sortBy (fun method -> method.Signature.ParameterTypes.Length)
+            |> List.ofSeq
+
+        ctors.Length |> shouldEqual 2
+
+        let declaringIdentity = ctors.Head.RequiredDeclaringType.Identity
+
+        let openTarget = RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringIdentity
+
+        // `Box<int>`: the same TypeDef, instantiated. Concretized through the ordinary path so the
+        // handle is the one the runtime would hold.
+        let state, intHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Int32.Assembly
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.PrimitiveType PrimitiveType.Int32)
+
+        // `Box<int>`, spelled as an instantiation whose single argument is the type-generic
+        // parameter, substituted from the supplied vector -- the way a signature mentioning
+        // `Box<T>` inside a `T = int` frame concretizes.
+        let state, closedHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                assembly.Name
+                (ImmutableArray.Create intHandle)
+                ImmutableArray.Empty
+                (TypeDefn.GenericInstantiation (
+                    TypeDefn.FromDefinition (declaringIdentity, System.Reflection.Metadata.SignatureTypeKind.Class),
+                    ImmutableArray.Create (TypeDefn.GenericTypeParameter 0)
+                ))
+
+        baseClassTypes, assembly, ctors, openTarget, RuntimeTypeHandleTarget.Closed closedHandle, state
+
+    /// The registry id carried by a bare `RuntimeMethodHandleInternal`, as the runtime reads it.
+    let private registryIdOf (internalHandle : CliValueType) : int64 =
+        match
+            CliValueType.DereferenceField "m_handle" internalHandle
+            |> CliType.unwrapPrimitiveLikeDeep
+        with
+        | CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle id) -> id
+        | other -> failwith $"Expected MethodRegistryHandle id in m_handle, got %O{other}"
+
+    [<Test>]
+    let ``an open generic definition and its instantiation mint distinct handles`` () : unit =
+        // The MethodDef row is shared between `Box<>`'s ctor and `Box<int>`'s -- CoreCLR copies the
+        // definition's token onto every instantiation -- so the declaring type is the only thing
+        // that separates these two identities. Standing a closed instantiation in for the open
+        // definition would collapse them onto one registry id, and the guest can see that
+        // (sourcesPure/ReflectionOpenGenericConstructors.cs check 7); this pins it at the registry,
+        // where the dedup map actually lives.
+        let baseClassTypes, assembly, ctors, openTarget, closedTarget, state = boxTargets ()
+
+        let ctor = ctors.Head
+
+        let openHandle, reg =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                assembly.Name.FullName
+                openTarget
+                ctor
+                state.MethodHandles
+
+        let closedHandle, reg =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                assembly.Name.FullName
+                closedTarget
+                ctor
+                reg
+
+        let openId = registryIdOf openHandle
+        let closedId = registryIdOf closedHandle
+
+        closedId |> shouldNotEqual openId
+
+        // Each id resolves back to the declaring target it was minted with, rather than to
+        // whichever was minted last.
+        match MethodHandleRegistry.resolveMethodFromId openId reg with
+        | Some (MethodHandle.FromMetadata identity) ->
+            match identity.GetDeclaringType () with
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> ()
+            | other -> failwithf "expected OpenGenericTypeDefinition, got %A" other
+        | other -> failwithf "expected a metadata handle, got %A" other
+
+        match MethodHandleRegistry.resolveMethodFromId closedId reg with
+        | Some (MethodHandle.FromMetadata identity) ->
+            match identity.GetDeclaringType () with
+            | RuntimeTypeHandleTarget.Closed _ -> ()
+            | other -> failwithf "expected Closed, got %A" other
+        | other -> failwithf "expected a metadata handle, got %A" other
+
+    [<Test>]
+    let ``minting twice against an open generic definition dedups to one id`` () : unit =
+        let baseClassTypes, assembly, ctors, openTarget, _closedTarget, state =
+            boxTargets ()
+
+        let ctor = ctors.Head
+
+        let first, reg =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                assembly.Name.FullName
+                openTarget
+                ctor
+                state.MethodHandles
+
+        let second, _ =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                assembly.Name.FullName
+                openTarget
+                ctor
+                reg
+
+        registryIdOf second |> shouldEqual (registryIdOf first)
+
+    [<Test>]
+    let ``distinct methods on one open generic definition never share an id`` () : unit =
+        // Injectivity over (declaringTarget, methodDef): the definition's two constructors and its
+        // ordinary method are three identities, so three ids.
+        let baseClassTypes, assembly, ctors, openTarget, _closedTarget, state =
+            boxTargets ()
+
+        let plain =
+            assembly.Methods.Values
+            |> Seq.find (fun method -> method.RequiredDeclaringType.Name = "Box`1" && method.Name = "Plain")
+
+        let methods = ctors @ [ plain ]
+
+        let ids, _ =
+            (([], state.MethodHandles), methods)
+            ||> List.fold (fun (ids, reg) method ->
+                let handle, reg =
+                    MethodHandleRegistry.getOrAllocateInternalHandle
+                        baseClassTypes
+                        state.ConcreteTypes
+                        assembly.Name.FullName
+                        openTarget
+                        method
+                        reg
+
+                registryIdOf handle :: ids, reg
+            )
+
+        ids |> List.distinct |> List.length |> shouldEqual methods.Length
+
+    [<Test>]
+    [<TestCase "Box`1">]
+    [<TestCase "HasNestedGeneric`2">]
+    let ``the open-definition method list matches the MethodDef rows System.Reflection.Metadata reports``
+        (typeName : string)
+        : unit
+        =
+        // Outside oracle: the expectation comes from `System.Reflection.Metadata` reading the same
+        // image, not from PawPrint's own graph, so a walk that is wrong-but-self-consistent (say,
+        // one that dropped constructors, or included inherited methods) fails here.
+        let source =
+            """
+public sealed class Box<T>
+{
+    public T Item;
+    public Box() { }
+    public Box(T t) { Item = t; }
+    public int Plain() { return 1; }
+}
+
+public class HasNestedGeneric<TKey, TValue>
+{
+    public TKey K;
+    public TValue V;
+    public HasNestedGeneric() { }
+    public virtual TValue Get(TKey k) { return V; }
+    public static int Count() { return 0; }
+}
+"""
+
+        let image =
+            Roslyn.compileAssembly
+                "OpenGenericOracleAssembly"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ source ]
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        use assemblyStream = new MemoryStream (image)
+
+        let assembly =
+            global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None assemblyStream
+
+        let typeInfo = assembly.TypeDefs.Values |> Seq.find (fun t -> t.Name = typeName)
+
+        // Read the list through the dispatcher the enumerator actually calls, not off `TypeInfo`
+        // directly: a dispatcher that re-ordered or filtered what it was given would otherwise pass.
+        let corelib =
+            global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory typeof<obj>.Assembly.Location
+
+        let baseClassTypes = Corelib.getBaseTypes corelib
+
+        let state =
+            let initial = IlMachineState.initial loggerFactory ImmutableArray.Empty assembly
+
+            let state = initial.WithLoadedAssembly corelib
+
+            { state with
+                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies baseClassTypes state.ConcreteTypes
+            }
+
+        let _, _, walked =
+            NativeRuntimeTypeHelpers.introducedMethodsOf
+                "test"
+                state
+                (RuntimeTypeHandleTarget.OpenGenericTypeDefinition typeInfo.Identity)
+            |> Option.defaultWith (fun () ->
+                failwith $"open generic definition %s{typeName} reported no introduced methods"
+            )
+
+        let pawPrintTokens =
+            walked
+            |> List.map (fun method ->
+                match method.TryMetadata with
+                | Some facts ->
+                    System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken (
+                        MethodDefinitionHandle.op_Implicit facts.Handle : EntityHandle
+                    )
+                | None -> failwith $"method %s{method.Name} has no MethodDef row"
+            )
+
+        use oracleStream = new MemoryStream (image)
+        use peReader = new System.Reflection.PortableExecutable.PEReader (oracleStream)
+        let reader = peReader.GetMetadataReader ()
+
+        let oracleTokens =
+            reader.TypeDefinitions
+            |> Seq.map reader.GetTypeDefinition
+            |> Seq.filter (fun t -> reader.GetString t.Name = typeName)
+            |> Seq.exactlyOne
+            |> fun t -> t.GetMethods ()
+            |> Seq.map (fun (h : MethodDefinitionHandle) ->
+                System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken (
+                    MethodDefinitionHandle.op_Implicit h : EntityHandle
+                )
+            )
+            |> List.ofSeq
+
+        // Order matters: the enumerator surfaces method-table slots in metadata order, and
+        // sourcesPure/ReflectionOpenGenericConstructors.cs asserts ascending tokens for that reason.
+        pawPrintTokens |> shouldEqual oracleTokens
+        oracleTokens |> shouldNotEqual []
+
+    [<Test>]
+    let ``minting refuses a declaring type that cannot own a metadata method`` () : unit =
+        // The mint-time chokepoint is what lets consumers of `GetDeclaringType ()` treat the other
+        // `RuntimeTypeHandleTarget` arms as contract violations rather than as cases to serve. A
+        // generic parameter is a TypeVarTypeDesc: methods live on the type that mentions it.
+        let baseClassTypes, assembly, ctors, _openTarget, _closedTarget, state =
+            boxTargets ()
+
+        let declaringIdentity = ctors.Head.RequiredDeclaringType.Identity
+
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                MethodHandleRegistry.getOrAllocateInternalHandle
+                    baseClassTypes
+                    state.ConcreteTypes
+                    assembly.Name.FullName
+                    (RuntimeTypeHandleTarget.GenericParameter (declaringIdentity, 0))
+                    ctors.Head
+                    state.MethodHandles
+                |> ignore
+            )
+
+        exn.Message
+        |> shouldContainText "declaring type must be Closed or OpenGenericTypeDefinition"
