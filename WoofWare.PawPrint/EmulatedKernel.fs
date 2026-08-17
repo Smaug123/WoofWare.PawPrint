@@ -835,14 +835,28 @@ type EmulatedKernel =
         /// matching real-CLR behaviour. Per-stream views are derived in
         /// `OutputLogEntry.bytesFor`.
         OutputLog : ImmutableArray<OutputLogEntry>
-        /// Simulated process environment variable table. Consulted by
-        /// `Environment.GetEnvironmentVariable` and the Win32
-        /// `GetEnvironmentVariableW` shim. Seeded with
+        /// Simulated process environment variable table, and the analogue of the
+        /// Unix PAL's `palEnvironment` — which is likewise a snapshot taken once
+        /// at startup rather than a view of the host, because libc's `setenv` is
+        /// not usable concurrently. Consulted by
+        /// `Environment.GetEnvironmentVariable` through the Win32
+        /// `GetEnvironmentVariableW` shim, and flattened into an environment
+        /// block by the `GetEnvironmentStringsW` shim that backs
+        /// `Environment.GetEnvironmentVariables`. Seeded with
         /// `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` so guest BCL code that
         /// reads it during startup gets the invariant-globalization mode
         /// PawPrint requires; the CLI overlays the host process's env on top
         /// of this default at startup, and tests can pass their own overlay
         /// via `Program.run`.
+        ///
+        /// No guest can write to this: PawPrint services no
+        /// `SetEnvironmentVariableW`, so `Environment.SetEnvironmentVariable`
+        /// aborts loudly rather than mutating the table.
+        ///
+        /// A name that is empty or contains `=`, and a name or value containing
+        /// a NUL, cannot be expressed as an environment block entry; the block
+        /// shim refuses such a table rather than handing a guest one that would
+        /// parse back to different variables than this map holds.
         Environment : Map<string, string>
         /// Number of logical processors the simulated process observes, as
         /// reported by `Environment.ProcessorCount`. Deliberately a value in

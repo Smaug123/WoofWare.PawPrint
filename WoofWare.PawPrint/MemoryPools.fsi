@@ -115,6 +115,12 @@ module NativeMemoryPool =
     /// without provoking the use-after-free failure every other accessor raises.
     val isLive : blockId : NativeMemoryBlockId -> pool : NativeMemoryPool -> bool
 
+    /// How many blocks the pool still owns. Ids are never reused, so this is a leak count
+    /// rather than a high-water mark: a guest that released everything it allocated leaves
+    /// zero, whatever it did in between. That is the only way to observe a native-heap leak,
+    /// since a leaked block is invisible to the guest itself.
+    val liveBlockCount : pool : NativeMemoryPool -> int
+
     /// The byte length of `blockId`, fixed when it was allocated. As for the stack pool, a
     /// property of the allocation rather than of its contents. Reports the same
     /// use-after-free failure as any other access to a freed block.

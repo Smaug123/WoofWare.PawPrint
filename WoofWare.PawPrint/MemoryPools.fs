@@ -494,6 +494,8 @@ module NativeMemoryPool =
 
     let isLive (blockId : NativeMemoryBlockId) (pool : NativeMemoryPool) : bool = Map.containsKey blockId pool.Blocks
 
+    let liveBlockCount (pool : NativeMemoryPool) : int = Map.count pool.Blocks
+
     let private getBlock (blockId : NativeMemoryBlockId) (pool : NativeMemoryPool) : MemoryBlock =
         match pool.Blocks |> Map.tryFind blockId with
         | Some block -> block
