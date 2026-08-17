@@ -768,18 +768,13 @@ public unsafe struct PointerWrapper
             |> List.find (fun method -> method.Name = "ToString" && (MethodInfo.arity method = 0))
 
         let state, signature =
-            TypeMethodSignature.map
+            IlMachineState.concretizeMethodSignature
+                loggerFactory
+                bct
                 state
-                (fun state ty ->
-                    IlMachineState.concretizeType
-                        loggerFactory
-                        bct
-                        state
-                        corelib.Name
-                        ImmutableArray.Empty
-                        ImmutableArray.Empty
-                        ty
-                )
+                corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
                 objectToString.Signature
 
         let instructions : MethodInstructions<ConcreteTypeHandle> =

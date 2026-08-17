@@ -997,13 +997,7 @@ module NativeRuntimeTypeHelpers =
         let returnsVoidThroughModifiers (method : MethodInfo<_, _, _>) : bool =
             match method.Signature.ReturnType with
             | MethodReturnType.Void -> true
-            | MethodReturnType.Returns ty ->
-                let rec unwrap (ty : TypeDefn) : TypeDefn =
-                    match ty with
-                    | TypeDefn.Modified modified -> unwrap modified.Unmodified
-                    | ty -> ty
-
-                unwrap ty = TypeDefn.Void
+            | MethodReturnType.Returns ty -> TypeDefn.stripCustomModifiers ty = TypeDefn.Void
 
         // `_VtblGap`, then the optional-number/count grammar upstream parses.
         let isWellFormedGapName (name : string) : bool =

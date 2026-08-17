@@ -623,17 +623,17 @@ module NativeDelegate =
                     scopeAssembly.Name
                     (scopeAssembly.PeReader.GetMetadataReader ())
                     (definition.GetSignature () |> Seq.toArray)
-                |> TypeMethodSignature.make (fun ty ->
-                    match ty with
-                    | TypeDefn.Void -> MethodReturnType.Void
-                    | ret -> MethodReturnType.Returns ret
-                )
+                |> TypeMethodSignature.make
 
             let state, targetSignature =
-                TypeMethodSignature.map
+                targetSignature
+                |> IlMachineState.concretizeMethodSignature
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
                     state
-                    (concretiseSignatureType ctx.LoggerFactory ctx.BaseClassTypes scopeAssembly.Name)
-                    targetSignature
+                    scopeAssembly.Name
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
 
             let delegateType = ManagedHeap.getObjectConcreteType delegateAddr state.ManagedHeap
 
