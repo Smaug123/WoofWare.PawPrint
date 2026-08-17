@@ -349,6 +349,12 @@ type BaseClassTypes<'corelib> =
         BadImageFormatException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         ArgumentOutOfRangeException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingFieldException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// Raised by the runtime — not the BCL — when reflection is asked to set a static
+        /// `initonly` field whose declaring type has finished initialising
+        /// (`InvokeUtil::SetValidField`, invokeutil.cpp:809). Managed `FieldAccessor` delegates
+        /// that check rather than performing it, whenever its accessor is still in
+        /// `SlowPathUntilClassInitialized`.
+        FieldAccessException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingMethodException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         NotSupportedException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         /// Thrown by the runtime — not the BCL — when a wait-all names the same

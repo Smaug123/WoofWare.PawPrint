@@ -720,3 +720,59 @@ sequential type has layout metadata, so `GetFieldAlignmentRequirement` never rea
 halves of the rule. `TestInlineArrayLayout.unrunnableCases` holds the two shapes the differential
 sweep therefore cannot check, and asserts that the host runtime still refuses them — so a runtime
 that fixed the upstream bug would fail that test rather than leave a stale carve-out in place.
+
+## A failing class initialiser escapes `FieldInfo.SetValue` unwrapped
+
+**CoreCLR**: `InvokeUtil::SetValidField` runs the declaring type's initialiser inside an `EX_TRY`
+(`vm/invokeutil.cpp:786-794`) and, if it threw, discards the propagating exception in favour of a
+freshly constructed `TargetInvocationException` wrapping it (`CreateTargetExcept`, `:803`). So a
+guest reflectively setting a field of a type whose `.cctor` throws catches a
+`TargetInvocationException` whose `InnerException` is the `TypeInitializationException`.
+
+Note this is *not* what the neighbouring `ReflectionInvocation_RunClassConstructor` QCall does:
+that one lets `CheckRunClassInitThrowing` throw straight through unwrapped
+(`vm/reflectioninvocation.cpp:1226-1231`). The two QCalls share the shape "trigger a class
+initialiser from native code" and differ on what escapes, so the resemblance is a trap rather than
+a template.
+
+**PawPrint**: The bare `TypeInitializationException` propagates, so a `catch
+(TargetInvocationException)` does not fire.
+
+**Spec status**: Unspecified. ECMA-335 I.8.9.5 governs when an initialiser runs and that its
+failure is reported as a type-initialisation failure, but says nothing about how a reflection API
+re-presents that failure to its caller. This is CoreCLR's reflection contract, not the CLI's.
+
+**Why we chose this**: it is not a choice so much as the current shape of the native-frame
+boundary. `RuntimeFieldHandle_SetValue` asks for the initialiser by returning
+`suspendedForClassInit`; the initialiser frame then runs, throws, and the exception unwinds
+*through* the native frame without the handler being re-entered, so there is no point at which the
+handler could observe the failure and substitute a different exception. Wrapping it needs a native
+frame that can intercept an exception propagating through it, which is a change to exception
+dispatch rather than to this handler.
+
+The half that *is* interceptable is handled: a declaring type already in `TypeInitState.Failed`
+when the QCall is entered is caught before `ensureTypeInitialised` is called at all — that helper
+dispatches the cached exception itself — and the handler refuses loudly there rather than
+diverging silently in a second place.
+
+**Observable example**:
+
+```csharp
+static class Boom
+{
+    public static int Value;
+    static Boom() { throw new InvalidOperationException("boom"); }
+}
+
+try { typeof(Boom).GetField("Value").SetValue(null, 1); }
+catch (TargetInvocationException) { /* CoreCLR arrives here */ }
+
+// CoreCLR:  TargetInvocationException, InnerException = TypeInitializationException
+// PawPrint: TypeInitializationException, uncaught by the handler above
+```
+
+**Where this lives in code**: the class-initialisation block of the `RuntimeFieldHandle_SetValue`
+arm in `Native/NativeRuntimeFieldHandle.fs`.
+`WoofWare.PawPrint.Test/sourcesPure/ReflectionFieldSetValueFailingCctor.cs` is the measured
+example, parked in `TestPureCases.unimplemented` so the real-runtime side keeps asserting what the
+answer should be.

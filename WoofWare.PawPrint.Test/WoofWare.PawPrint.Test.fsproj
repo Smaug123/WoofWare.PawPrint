@@ -104,6 +104,7 @@
     <Compile Include="TestPropertySignatureDecoding.fs" />
     <Compile Include="TestNativeSignature.fs" />
     <Compile Include="TestNativeCustomAttribute.fs" />
+    <Compile Include="TestNativeRuntimeFieldHandleSetValue.fs" />
     <Compile Include="TestManifestResources.fs" />
     <Compile Include="TestAssemblyNativeQCalls.fs" />
     <Compile Include="TestInternalAllocNoChecks.fs" />
