@@ -115,7 +115,23 @@ module AllConcreteTypes =
         tryTypeInfo assemblies concreteTypes handle
         |> Option.map (fun (_, typeInfo) -> DumpedAssembly.isValueType baseClassTypes assemblies typeInfo)
 
-    /// Render a handle as `Namespace.Name [AssemblyShortName] (concrete H)` for diagnostics.
+    /// How deep `describe` recurses through *generic* nesting before truncating, and how far it
+    /// walks a declaring-type chain. A stack overflow cannot be caught, so these bounds are what
+    /// make `describe`'s never-throws contract hold on a graph that no well-formed program
+    /// produces -- including a `NestedClass` table whose declaring-type chain is cyclic.
+    [<Literal>]
+    let private describeDepthBudget = 16
+
+    /// Render a handle for diagnostics, as `Namespace.Name<args>#handle [AssemblyShortName]`.
+    ///
+    /// Every nominal type carries `#handle`, and that -- not the name -- is what makes two
+    /// renderings comparable: a full name is shared by nested types under different parents, by
+    /// types in different assemblies, and by types in different versions of one assembly, so a name
+    /// alone cannot say whether two types are the same.
+    ///
+    /// The one exception is generic nesting deeper than `describeDepthBudget`, which is truncated.
+    /// A truncated nominal type still shows its handle; two function pointers differing only below
+    /// the cut do render alike.
     ///
     /// Unlike `tryTypeInfo` this never throws and never returns an option: it is called from
     /// failure paths that must not fail a second time and so hide the original error, so every
@@ -126,17 +142,171 @@ module AllConcreteTypes =
         (handle : ConcreteTypeHandle)
         : string
         =
-        match lookup handle concreteTypes with
-        | None -> $"<unregistered concrete type %O{handle}>"
-        | Some concrete ->
+        // Byref, pointer and array wrappers form a chain rather than a tree, so they are peeled with
+        // a loop. Recursing would spend the depth budget on them, and truncating a chain would
+        // render `int[]..[]` and `string[]..[]` alike. `ConcreteTypeHandle` is an immutable tree, so
+        // this terminates.
+        let peelStructure (handle : ConcreteTypeHandle) : ConcreteTypeHandle * string =
+            let decorations = ResizeArray<string> ()
+            let mutable current = handle
+            let mutable peeling = true
 
-        match assemblies.TryByDefinitionName concrete.Identity.AssemblyFullName with
-        | None -> $"<unloaded assembly %O{concrete.Assembly} for concrete type %O{handle}>"
-        | Some assembly ->
+            while peeling do
+                match current with
+                | ConcreteTypeHandle.Byref inner ->
+                    decorations.Add "&"
+                    current <- inner
+                | ConcreteTypeHandle.Pointer inner ->
+                    decorations.Add "*"
+                    current <- inner
+                | ConcreteTypeHandle.OneDimArrayZero inner ->
+                    decorations.Add "[]"
+                    current <- inner
+                | ConcreteTypeHandle.Array (inner, rank) ->
+                    decorations.Add (
+                        if rank <= 1 then
+                            "[*]"
+                        else
+                            "[" + String (',', rank - 1) + "]"
+                    )
 
-        match assembly.TypeDefs.TryGetValue concrete.Definition.Get with
-        | true, typeDef -> $"%s{typeDef.Namespace}.%s{typeDef.Name} [%s{assembly.Name.Name}] (concrete %O{handle})"
-        | false, _ -> $"<missing TypeDef %O{concrete.Definition.Get} in %s{assembly.Name.Name}> (concrete %O{handle})"
+                    current <- inner
+                | ConcreteTypeHandle.Concrete _
+                | ConcreteTypeHandle.FunctionPointer _ -> peeling <- false
+
+            // The innermost wrapper binds tightest, so decorations apply in reverse of peel order.
+            decorations.Reverse ()
+            current, String.Concat decorations
+
+        // `TypeInfo.fullName` is the CLR's own nesting rule, but it recurses over `DeclaringType`
+        // and is shared with guest-visible reflection output, so it cannot be bounded in place.
+        // This walks the same chain iteratively, refusing to revisit a row, so corrupt metadata
+        // costs a marker rather than the process.
+        let nestedName (assembly : DumpedAssembly) (typeDef : TypeInfo<GenericParamFromMetadata, TypeDefn>) : string =
+            let mutable current = typeDef
+            let mutable parts = [ typeDef.Name ]
+            let mutable seen = Set.singleton typeDef.Identity.TypeDefinition
+            let mutable truncated = false
+            let mutable walking = true
+
+            while walking do
+                if not current.IsNested then
+                    walking <- false
+                elif List.length parts > describeDepthBudget then
+                    truncated <- true
+                    walking <- false
+                else
+
+                match assembly.TypeDefs.TryGetValue current.DeclaringType with
+                | false, _ ->
+                    truncated <- true
+                    walking <- false
+                | true, parent ->
+                    if seen.Contains parent.Identity.TypeDefinition then
+                        truncated <- true
+                        walking <- false
+                    else
+                        seen <- seen.Add parent.Identity.TypeDefinition
+                        parts <- parent.Name :: parts
+                        current <- parent
+
+            let joined = String.Join ("+", parts)
+
+            // The namespace belongs to the outermost type of the chain.
+            let qualified =
+                if String.IsNullOrEmpty current.Namespace then
+                    joined
+                else
+                    $"%s{current.Namespace}.%s{joined}"
+
+            if truncated then "..+" + qualified else qualified
+
+        let rec go (qualified : bool) (depth : int) (handle : ConcreteTypeHandle) : string =
+            let leaf, decorations = peelStructure handle
+
+            let rendered =
+                if depth > describeDepthBudget then
+                    match leaf with
+                    | ConcreteTypeHandle.Concrete id -> $"<#%d{id} nested deeper than %d{describeDepthBudget}>"
+                    | _ -> $"<function pointer nested deeper than %d{describeDepthBudget}>"
+                else
+
+                match leaf with
+                | ConcreteTypeHandle.FunctionPointer signature ->
+                    let parameters = signature.ParameterTypes |> List.map (go false (depth + 1))
+
+                    // The calling convention, the generic arity and the vararg boundary are all
+                    // fields of `TypeMethodSignature`, so two function pointers differing only in
+                    // one of them are different types. ECMA-335 II.23.2.1 spells the vararg
+                    // boundary `...`.
+                    let args =
+                        if
+                            signature.RequiredParameterCount >= 0
+                            && signature.RequiredParameterCount < List.length parameters
+                        then
+                            let required, optional = List.splitAt signature.RequiredParameterCount parameters
+
+                            required @ [ "..." ] @ optional |> String.concat ", "
+                        else
+                            parameters |> String.concat ", "
+
+                    let ret =
+                        match signature.ReturnType with
+                        | MethodReturnType.Void -> "void"
+                        | MethodReturnType.Returns ret -> go false (depth + 1) ret
+
+                    let header = signature.Header.Get
+
+                    let attributes =
+                        if header.Attributes = SignatureAttributes.None then
+                            ""
+                        else
+                            $" %O{header.Attributes}"
+
+                    let arity =
+                        if signature.GenericParameterCount = 0 then
+                            ""
+                        else
+                            $"<%d{signature.GenericParameterCount}>"
+
+                    $"%O{header.CallingConvention}%s{attributes} %s{ret}%s{arity}(%s{args})*"
+                | ConcreteTypeHandle.Concrete id ->
+                    match lookup leaf concreteTypes with
+                    | None -> $"<unregistered concrete type #%d{id}>"
+                    | Some concrete ->
+
+                    let generics =
+                        if concrete.Generics.IsEmpty then
+                            ""
+                        else
+                            concrete.Generics
+                            |> Seq.map (go false (depth + 1))
+                            |> String.concat ", "
+                            |> sprintf "<%s>"
+
+                    match assemblies.TryByDefinitionName concrete.Identity.AssemblyFullName with
+                    | None -> $"<unloaded assembly %O{concrete.Assembly} for concrete type #%d{id}>"
+                    | Some assembly ->
+
+                    match assembly.TypeDefs.TryGetValue concrete.Definition.Get with
+                    | true, typeDef ->
+                        let name = nestedName assembly typeDef
+
+                        if qualified then
+                            $"%s{name}%s{generics}#%d{id} [%s{assembly.Name.Name}]"
+                        else
+                            $"%s{name}%s{generics}#%d{id}"
+                    | false, _ -> $"<missing TypeDef %O{concrete.Definition.Get} in %s{assembly.Name.Name}> (#%d{id})"
+                | other ->
+                    // `peelStructure` returns only `Concrete` or `FunctionPointer`. Rendering rather
+                    // than failing keeps the never-throws contract if that ever stops being true.
+                    ignore other
+                    "<unexpected structural handle>"
+
+            rendered + decorations
+
+        go true 0 handle
+
 
     let findExistingConcreteType
         (concreteTypes : AllConcreteTypes)
