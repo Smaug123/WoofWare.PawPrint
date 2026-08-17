@@ -1305,6 +1305,180 @@ module TestVirtualFileSystem =
         (timesOf (rootOf linked) linked).Modification |> shouldEqual later
 
     [<Test>]
+    let ``writing moves a file's mtime and ctime, and nothing else's anything`` () : unit =
+        let later = UnixTimestamp.createOrFail "test" 1_700_000_700L 42
+        let vfs = build [ mkfile (rootOf emptyFs) "f" ]
+
+        let file =
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+            |> ok
+
+        let written =
+            match
+                VirtualFileSystem.writeFile
+                    file
+                    0L
+                    (ImmutableArray.CreateRange [| 1uy ; 2uy |])
+                    WritePrivilege.Unprivileged
+                    later
+                    vfs
+            with
+            | Ok vfs -> vfs
+            | Error refusal -> failwith $"expected success, got %O{refusal}"
+
+        let after = timesOf file written
+
+        // The contents changed, so mtime; and any change to the inode moves ctime
+        // with it. Measured on both platforms.
+        after.Modification |> shouldEqual later
+        after.StatusChange |> shouldEqual later
+
+        // Nothing *read* the file, and it was not reborn. atime staying put is
+        // the measured behaviour rather than a simplification: a write does not
+        // move it on either platform.
+        after.Access |> shouldEqual buildTime
+        after.Birth |> shouldEqual buildTime
+
+        // The directory holding it is untouched: its own contents — the set of
+        // names it binds — did not change.
+        timesOf (rootOf written) written |> shouldEqual (timesOf (rootOf vfs) vfs)
+
+        // ...and the bytes really did land, so this is not passing against a
+        // no-op that happened to restamp the inode.
+        match VirtualFileSystem.tryGetContent file written with
+        | Some (InodeContent.RegularFile (contents, permissions)) ->
+            Seq.toList contents |> shouldEqual [ 1uy ; 2uy ]
+            // The mode is not collateral damage of rewriting the content.
+            permissions |> shouldEqual filePerms
+        | other -> failwith $"expected a regular file, got %O{other}"
+
+    /// `writeFile` applies the rule rather than merely having access to it: a
+    /// version that threaded the privilege in and then ignored it would pass every
+    /// assertion in the fixture above.
+    [<Test>]
+    let ``writeFile strips a written file's set-ID bits, and only for an unprivileged writer`` () : unit =
+        let setuid = PermissionBits.parseOrFail "test" 0o4755
+
+        let vfs =
+            VirtualFileSystem.createFile (rootOf emptyFs) (name "s") setuid buildTime noBytes emptyFs
+            |> ok
+            |> snd
+
+        let file =
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/s") vfs
+            |> ok
+
+        let modeAfter (privilege : WritePrivilege) : int =
+            let written =
+                match
+                    VirtualFileSystem.writeFile file 0L (ImmutableArray.CreateRange [| 7uy |]) privilege buildTime vfs
+                with
+                | Ok vfs -> vfs
+                | Error refusal -> failwith $"expected success, got %O{refusal}"
+
+            match VirtualFileSystem.tryGetContent file written with
+            | Some (InodeContent.RegularFile (_, permissions)) -> PermissionBits.toInt permissions
+            | other -> failwith $"expected a regular file, got %O{other}"
+
+        modeAfter WritePrivilege.Unprivileged |> shouldEqual 0o755
+        modeAfter WritePrivilege.Privileged |> shouldEqual 0o4755
+
+    /// The measured table, as unit assertions. Non-root on macOS 26.6 and Linux
+    /// 6.18.5, and root on Linux.
+    [<Test>]
+    let ``a content-changing write strips the set-ID bits unless the writer is root`` () : unit =
+        let after (privilege : WritePrivilege) (mode : int) : int =
+            PermissionBits.parseOrFail "test" mode
+            |> PermissionBits.afterContentChangingWrite privilege
+            |> PermissionBits.toInt
+
+        // Unprivileged: setuid goes, setgid-with-group-execute goes, the sticky
+        // bit stays, and an ordinary mode is untouched.
+        after WritePrivilege.Unprivileged 0o4755 |> shouldEqual 0o755
+        after WritePrivilege.Unprivileged 0o2755 |> shouldEqual 0o755
+        after WritePrivilege.Unprivileged 0o6755 |> shouldEqual 0o755
+        after WritePrivilege.Unprivileged 0o1755 |> shouldEqual 0o1755
+        after WritePrivilege.Unprivileged 0o5755 |> shouldEqual 0o1755
+        after WritePrivilege.Unprivileged 0o644 |> shouldEqual 0o644
+        after WritePrivilege.Unprivileged 0o0 |> shouldEqual 0o0
+
+        // Root keeps everything, which is the row that makes this about privilege
+        // rather than about a mask applied unconditionally.
+        for mode in [ 0o4755 ; 0o2755 ; 0o6755 ; 0o2745 ; 0o1755 ; 0o644 ] do
+            after WritePrivilege.Privileged mode |> shouldEqual mode
+
+    /// Set-group-ID *without* group-execute means mandatory locking on Linux
+    /// rather than privilege, and Linux keeps the bit; macOS could not be
+    /// measured, since a non-root user there cannot set `S_ISGID` on a regular
+    /// file at all. So PawPrint refuses rather than picking a platform — and
+    /// refuses only for the unprivileged writer, root having been measured.
+    [<Test>]
+    let ``the one set-ID shape neither platform pins is refused rather than guessed`` () : unit =
+        let write (privilege : WritePrivilege) (mode : int) : unit =
+            PermissionBits.parseOrFail "test" mode
+            |> PermissionBits.afterContentChangingWrite privilege
+            |> ignore<PermissionBits>
+
+        let exn = Assert.Throws<exn> (fun () -> write WritePrivilege.Unprivileged 0o2745)
+
+        exn.Message
+        |> shouldContainText "set-group-ID bit without the group-execute bit"
+
+        // ...and the neighbouring shapes are answered, so the refusal is this one
+        // combination rather than a blanket refusal of the setgid bit.
+        write WritePrivilege.Unprivileged 0o2755
+        write WritePrivilege.Privileged 0o2745
+        write WritePrivilege.Unprivileged 0o0745
+
+    [<Test>]
+    let ``writing to something that cannot hold bytes is an interpreter bug, not an errno`` () : unit =
+        let vfs = build [ mkdir (rootOf emptyFs) "d" ; mklink (rootOf emptyFs) "l" "d" ]
+        let some = ImmutableArray.CreateRange [| 1uy |]
+
+        let directory =
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/d") vfs
+            |> ok
+
+        let link =
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.NoFollowFinal (path "/l") vfs
+            |> ok
+
+        // A caller reaches `writeFile` only through a descriptor open for
+        // writing, and `open` refuses to give one for anything but a regular
+        // file — so these are crashes rather than errnos, and the messages say
+        // which invariant was broken.
+        let shouldFailWith (substring : string) (f : unit -> VirtualFileSystem) : unit =
+            let exn = Assert.Throws<exn> (fun () -> f () |> ignore<VirtualFileSystem>)
+            exn.Message |> shouldContainText substring
+
+        shouldFailWith
+            "is a directory"
+            (fun () ->
+                VirtualFileSystem.writeFile directory 0L some WritePrivilege.Unprivileged buildTime vfs
+                |> function
+                    | Ok vfs -> vfs
+                    | Error refusal -> failwith $"%O{refusal}"
+            )
+
+        shouldFailWith
+            "is a symbolic link"
+            (fun () ->
+                VirtualFileSystem.writeFile link 0L some WritePrivilege.Unprivileged buildTime vfs
+                |> function
+                    | Ok vfs -> vfs
+                    | Error refusal -> failwith $"%O{refusal}"
+            )
+
+        shouldFailWith
+            "is not in this filesystem"
+            (fun () ->
+                VirtualFileSystem.writeFile (InodeNumber 9999L) 0L some WritePrivilege.Unprivileged buildTime vfs
+                |> function
+                    | Ok vfs -> vfs
+                    | Error refusal -> failwith $"%O{refusal}"
+            )
+
+    [<Test>]
     let ``every inode's times respect the order a kernel would have moved them`` () : unit =
         // Each generated step happens at its own moment (see `tickOf`), so a
         // timestamp copied from the wrong inode, or never moved at all, shows up
@@ -1671,6 +1845,201 @@ module TestReadTransferCount =
         VirtualFileSystem.readTransferCount 0L 0 5 |> shouldEqual 0
         // ...and an empty file, where every offset is at the end.
         VirtualFileSystem.readTransferCount 0L 16 0 |> shouldEqual 0
+
+/// `writtenLength` and `writtenContents` decide the whole of what a write does to
+/// a regular file's bytes, once its error cases are out of the way — the read
+/// path's `readTransferCount` in the other direction, and the same class of
+/// off-by-one hides in it. As functions of two byte arrays and an offset they can
+/// be checked against naive splicing, which is what this does.
+[<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
+module TestWrittenContents =
+
+    let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 2000
+
+    /// Contents, offset and bytes drawn from a small range, so that the boundary
+    /// cases — a write starting exactly at the end, one landing entirely inside,
+    /// an empty file, a hole of exactly one byte — come up constantly. The full
+    /// byte alphabet, deliberately: the hole is asserted by *index* below rather
+    /// than by looking for a zero, so there is no need to exclude zero from the
+    /// data and no risk of a property that only holds because it was excluded.
+    let private smallCase : Gen<byte[] * int64 * byte[]> =
+        gen {
+            let! contents = Gen.arrayOf (Gen.choose (0, 255) |> Gen.map byte) |> Gen.resize 10
+            let! offset = Gen.choose (0, 14)
+            let! bytes = Gen.arrayOf (Gen.choose (0, 255) |> Gen.map byte) |> Gen.resize 6
+            return contents, int64 offset, bytes
+        }
+
+    let private written (contents : byte[]) (offset : int64) (bytes : byte[]) : byte[] =
+        match
+            VirtualFileSystem.writtenContents
+                (ImmutableArray.CreateRange contents)
+                offset
+                (ImmutableArray.CreateRange bytes)
+        with
+        | Ok result -> Seq.toArray result
+        | Error refusal -> failwith $"expected success, got %O{refusal}"
+
+    /// The oracle: the file you get by actually laying the bytes out.
+    ///
+    /// The empty-write case is stated separately because it is *not* the general
+    /// rule specialised — a zero-length write does not extend the file to
+    /// `offset`, which is what both platforms were measured doing.
+    let private naive (contents : byte[]) (offset : int64) (bytes : byte[]) : byte[] =
+        if bytes.Length = 0 then
+            contents
+        else
+
+        let offset = int offset
+        let length = max contents.Length (offset + bytes.Length)
+
+        Array.init
+            length
+            (fun i ->
+                if i >= offset && i < offset + bytes.Length then
+                    bytes.[i - offset]
+                elif i < contents.Length then
+                    contents.[i]
+                else
+                    0uy
+            )
+
+    [<Test>]
+    let ``agrees with naive splicing`` () : unit =
+        let property (contents : byte[], offset : int64, bytes : byte[]) : bool =
+            written contents offset bytes = naive contents offset bytes
+
+        Check.One (config, Prop.forAll (Arb.fromGen smallCase) property)
+
+    /// Stated directly rather than inferred from the oracle, because a caller
+    /// reads the new length back through `stat` and the four claims are what it
+    /// depends on: the prefix survives, the hole reads as zero, the written window
+    /// is exactly what was passed, and a write inside the file does not truncate
+    /// the tail.
+    [<Test>]
+    let ``a write overwrites its window, fills the hole with zeroes, and keeps the rest`` () : unit =
+        let property (contents : byte[], offset : int64, bytes : byte[]) : bool =
+            let result = written contents offset bytes
+            let offset = int offset
+
+            // An empty write has no window and opens no hole, so the four clauses
+            // below do not apply to it — its rule is the whole of this. Stated
+            // rather than folded in: writing it as one set of ranges is what makes
+            // "the hole between the old end and `offset`" describe bytes that a
+            // zero-length write never brought into existence.
+            if bytes.Length = 0 then
+                result = contents
+            else
+
+            let prefixKept =
+                Seq.forall (fun i -> result.[i] = contents.[i]) (seq { 0 .. min offset contents.Length - 1 })
+
+            let holeIsZero =
+                Seq.forall (fun i -> result.[i] = 0uy) (seq { contents.Length .. offset - 1 })
+
+            let windowWritten =
+                Seq.forall (fun i -> result.[offset + i] = bytes.[i]) (seq { 0 .. bytes.Length - 1 })
+
+            let tailKept =
+                Seq.forall (fun i -> result.[i] = contents.[i]) (seq { offset + bytes.Length .. contents.Length - 1 })
+
+            prefixKept && holeIsZero && windowWritten && tailKept
+
+        Check.One (config, Prop.forAll (Arb.fromGen smallCase) property)
+
+    /// The length is what `writtenLength` said it would be. These are the two
+    /// halves a handler uses — `stat` reports the length while the bytes come back
+    /// through `pread` — so a disagreement between them is a file whose reported
+    /// size does not match its contents.
+    [<Test>]
+    let ``the resulting length is the one writtenLength predicts`` () : unit =
+        let property (contents : byte[], offset : int64, bytes : byte[]) : bool =
+            let result = written contents offset bytes
+
+            VirtualFileSystem.writtenLength offset bytes.Length contents.Length = Ok result.Length
+
+        Check.One (config, Prop.forAll (Arb.fromGen smallCase) property)
+
+    /// The round trip a guest actually performs: write, then read the same window
+    /// back. Composes the two halves of the model, so an offset convention that
+    /// disagreed between them would show up here even though each is internally
+    /// consistent.
+    [<Test>]
+    let ``bytes written at an offset read back from that offset`` () : unit =
+        let property (contents : byte[], offset : int64, bytes : byte[]) : bool =
+            let result = written contents offset bytes
+
+            let transfer = VirtualFileSystem.readTransferCount offset bytes.Length result.Length
+
+            transfer = bytes.Length
+            && Seq.forall (fun i -> result.[int offset + i] = bytes.[i]) (seq { 0 .. bytes.Length - 1 })
+
+        Check.One (config, Prop.forAll (Arb.fromGen smallCase) property)
+
+    /// A zero-length write is the identity, at *any* offset — including one far
+    /// past the end, where extending would have been the plausible thing to do.
+    [<Test>]
+    let ``an empty write changes nothing, however far past the end it is aimed`` () : unit =
+        for offset in [ 0L ; 4L ; 10_000L ; Int64.MaxValue ] do
+            written [| 1uy ; 2uy ; 3uy ; 4uy |] offset [||]
+            |> shouldEqual [| 1uy ; 2uy ; 3uy ; 4uy |]
+
+            VirtualFileSystem.writtenLength offset 0 4 |> shouldEqual (Ok 4)
+
+    /// Both sides of the ceiling, which is why `writtenLength` exists separately:
+    /// the accepting side would allocate two gigabytes if it had to go through
+    /// `writtenContents`.
+    [<Test>]
+    let ``the length ceiling is refused from one byte past it, and not before`` () : unit =
+        let ceiling = VirtualFileSystem.maxFileLength
+
+        VirtualFileSystem.writtenLength (ceiling - 4L) 4 0
+        |> shouldEqual (Ok (int ceiling))
+
+        VirtualFileSystem.writtenLength (ceiling - 3L) 4 0
+        |> shouldEqual (Error (FileWriteRefusal.WouldExceedMaxLength (ceiling - 3L, 4)))
+
+        // A huge offset must be refused rather than wrapping onto a low sum that
+        // the comparison would accept — which is what writing the check as
+        // `offset + count > ceiling` would do.
+        for offset in [ ceiling ; ceiling + 1L ; Int64.MaxValue ; Int64.MaxValue - 3L ] do
+            VirtualFileSystem.writtenLength offset 4 0
+            |> shouldEqual (Error (FileWriteRefusal.WouldExceedMaxLength (offset, 4)))
+
+    [<Test>]
+    let ``worked examples`` () : unit =
+        let contents = [| byte 'a' ; byte 'b' ; byte 'c' ; byte 'd' |]
+
+        // The measured `pwrite` row: "WXYZ" at offset 8 of a four-byte file gives
+        // a twelve-byte file with a four-byte hole of zeroes.
+        written contents 8L [| byte 'W' ; byte 'X' ; byte 'Y' ; byte 'Z' |]
+        |> shouldEqual
+            [|
+                byte 'a'
+                byte 'b'
+                byte 'c'
+                byte 'd'
+                0uy
+                0uy
+                0uy
+                0uy
+                byte 'W'
+                byte 'X'
+                byte 'Y'
+                byte 'Z'
+            |]
+
+        // Overwriting in place, which must not truncate the tail.
+        written contents 1L [| byte 'Z' |]
+        |> shouldEqual [| byte 'a' ; byte 'Z' ; byte 'c' ; byte 'd' |]
+
+        // Straddling the end: part overwrite, part extension, no hole.
+        written contents 3L [| byte 'Y' ; byte 'Z' |]
+        |> shouldEqual [| byte 'a' ; byte 'b' ; byte 'c' ; byte 'Y' ; byte 'Z' |]
+
+        // Writing into an empty file at a non-zero offset is all hole.
+        written [||] 2L [| byte 'x' |] |> shouldEqual [| 0uy ; 0uy ; byte 'x' |]
 
 /// `VirtualFileSystem.seekTarget`: the whole of what `lseek(2)` computes, once the descriptor and
 /// the whence have been resolved. Property-tested here because as a function of four integers it

@@ -69,17 +69,62 @@ type OpenFileTarget =
     /// `VirtualFileSystem.seekTarget` enforces.
     | File of inode : InodeNumber * offset : int64
 
+/// Which transfers `open(2)`'s access mode permits: `O_RDONLY`, `O_WRONLY` or
+/// `O_RDWR`.
+///
+/// A three-case DU rather than a readable/writable pair of booleans, because
+/// `open(2)` has no fourth answer: an access mode of neither is what the shim
+/// rejects with EINVAL before a descriptor exists at all.
+///
+/// Fixed when the description is created and never changed afterwards — POSIX
+/// offers no way to alter one, and Linux's nearest equivalent (reopening through
+/// `/proc/self/fd`) is a fresh `open`. So it belongs to the open file
+/// description rather than to the descriptor, and `dup(2)` shares it.
+[<RequireQualifiedAccess>]
+type FileAccessMode =
+    /// `O_RDONLY`.
+    | ReadOnly
+    /// `O_WRONLY`.
+    | WriteOnly
+    /// `O_RDWR`.
+    | ReadWrite
+
+[<RequireQualifiedAccess>]
+module FileAccessMode =
+    /// Whether `read(2)` and `pread(2)` may transfer through a description
+    /// opened this way. A descriptor that fails this is EBADF, which is
+    /// `vfs_read`'s answer for a file whose `FMODE_READ` is clear — measured
+    /// identically on Linux and Darwin, for a regular file and for a pipe's
+    /// write end alike.
+    let permitsRead (mode : FileAccessMode) : bool =
+        match mode with
+        | FileAccessMode.ReadOnly
+        | FileAccessMode.ReadWrite -> true
+        | FileAccessMode.WriteOnly -> false
+
+    /// Whether `write(2)` and `pwrite(2)` may transfer through a description
+    /// opened this way; EBADF otherwise, and again measured the same on both
+    /// platforms.
+    let permitsWrite (mode : FileAccessMode) : bool =
+        match mode with
+        | FileAccessMode.WriteOnly
+        | FileAccessMode.ReadWrite -> true
+        | FileAccessMode.ReadOnly -> false
+
 /// The kernel object a file descriptor points at: POSIX's "open file
 /// description". Everything shared between file descriptors that `dup(2)`
 /// produced belongs here.
 ///
-/// The access mode and status flags (`O_APPEND`, `O_NONBLOCK`) are absent:
-/// PawPrint refuses every write flag at `open`, so no modelled syscall can
-/// make them differ. They become real with the write path.
+/// The status flags (`O_APPEND`, `O_NONBLOCK`) are absent: no modelled syscall
+/// can make them differ, `SystemNative_Open` accepting neither bit and
+/// `SystemNative_FCntl` not existing.
 type OpenFileDescription =
     {
         /// What this description refers to, and where in it.
         Target : OpenFileTarget
+        /// Which transfers this description permits, from the access mode
+        /// `open(2)` was given.
+        AccessMode : FileAccessMode
         /// The `flock(2)` lock this description holds, if any.
         ///
         /// On the description, not on the inode: that is where POSIX puts it,
@@ -241,16 +286,22 @@ module FileDescriptorRegistry =
         {
             Fds = Map.empty |> Map.add 0 stdinId |> Map.add 1 stdoutId |> Map.add 2 stderrId
             Descriptions =
-                let stream (role : FileDescriptorRole) : OpenFileDescription =
+                let stream (role : FileDescriptorRole) (accessMode : FileAccessMode) : OpenFileDescription =
                     {
                         Target = OpenFileTarget.StandardStream role
+                        AccessMode = accessMode
                         Flock = None
                     }
 
+                // The access modes a *redirected* launch produces, which is the
+                // shape described above: the shell opens stdin `O_RDONLY` and
+                // each output stream `O_WRONLY`. Under a tty all three would be
+                // `O_RDWR`, which is the same fact as their sharing one
+                // description and is rejected here for the same reasons.
                 Map.empty
-                |> Map.add stdinId (stream FileDescriptorRole.StandardInput)
-                |> Map.add stdoutId (stream FileDescriptorRole.StandardOutput)
-                |> Map.add stderrId (stream FileDescriptorRole.StandardError)
+                |> Map.add stdinId (stream FileDescriptorRole.StandardInput FileAccessMode.ReadOnly)
+                |> Map.add stdoutId (stream FileDescriptorRole.StandardOutput FileAccessMode.WriteOnly)
+                |> Map.add stderrId (stream FileDescriptorRole.StandardError FileAccessMode.WriteOnly)
             NextId = OpenFileDescriptionId 3L
         }
 
@@ -384,7 +435,12 @@ module FileDescriptorRegistry =
     /// process may open the file at all are decided before this is reached; a
     /// real kernel's `EMFILE`/`ENFILE` would belong here, but PawPrint models
     /// no descriptor limit (`RLIMIT_NOFILE` is not in the interop surface).
-    let openFile (inode : InodeNumber) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
+    let openFile
+        (inode : InodeNumber)
+        (accessMode : FileAccessMode)
+        (registry : FileDescriptorRegistry)
+        : int * FileDescriptorRegistry
+        =
         let id = registry.NextId
         let (OpenFileDescriptionId raw) = id
         let fd = lowestFree registry.Fds
@@ -397,6 +453,7 @@ module FileDescriptorRegistry =
                     id
                     {
                         Target = OpenFileTarget.File (inode, 0L)
+                        AccessMode = accessMode
                         // `open(2)` never takes a lock; `FileStream` issues a
                         // separate `flock` immediately afterwards, which is
                         // why `FileShare` is not atomic with opening on Unix
