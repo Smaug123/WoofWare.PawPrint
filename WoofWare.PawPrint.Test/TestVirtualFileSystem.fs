@@ -1314,7 +1314,15 @@ module TestVirtualFileSystem =
             |> ok
 
         let written =
-            match VirtualFileSystem.writeFile file 0L (ImmutableArray.CreateRange [| 1uy ; 2uy |]) later vfs with
+            match
+                VirtualFileSystem.writeFile
+                    file
+                    0L
+                    (ImmutableArray.CreateRange [| 1uy ; 2uy |])
+                    WritePrivilege.Unprivileged
+                    later
+                    vfs
+            with
             | Ok vfs -> vfs
             | Error refusal -> failwith $"expected success, got %O{refusal}"
 
@@ -1344,6 +1352,84 @@ module TestVirtualFileSystem =
             permissions |> shouldEqual filePerms
         | other -> failwith $"expected a regular file, got %O{other}"
 
+    /// `writeFile` applies the rule rather than merely having access to it: a
+    /// version that threaded the privilege in and then ignored it would pass every
+    /// assertion in the fixture above.
+    [<Test>]
+    let ``writeFile strips a written file's set-ID bits, and only for an unprivileged writer`` () : unit =
+        let setuid = PermissionBits.parseOrFail "test" 0o4755
+
+        let vfs =
+            VirtualFileSystem.createFile (rootOf emptyFs) (name "s") setuid buildTime noBytes emptyFs
+            |> ok
+            |> snd
+
+        let file =
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/s") vfs
+            |> ok
+
+        let modeAfter (privilege : WritePrivilege) : int =
+            let written =
+                match
+                    VirtualFileSystem.writeFile file 0L (ImmutableArray.CreateRange [| 7uy |]) privilege buildTime vfs
+                with
+                | Ok vfs -> vfs
+                | Error refusal -> failwith $"expected success, got %O{refusal}"
+
+            match VirtualFileSystem.tryGetContent file written with
+            | Some (InodeContent.RegularFile (_, permissions)) -> PermissionBits.toInt permissions
+            | other -> failwith $"expected a regular file, got %O{other}"
+
+        modeAfter WritePrivilege.Unprivileged |> shouldEqual 0o755
+        modeAfter WritePrivilege.Privileged |> shouldEqual 0o4755
+
+    /// The measured table, as unit assertions. Non-root on macOS 26.6 and Linux
+    /// 6.18.5, and root on Linux.
+    [<Test>]
+    let ``a content-changing write strips the set-ID bits unless the writer is root`` () : unit =
+        let after (privilege : WritePrivilege) (mode : int) : int =
+            PermissionBits.parseOrFail "test" mode
+            |> PermissionBits.afterContentChangingWrite privilege
+            |> PermissionBits.toInt
+
+        // Unprivileged: setuid goes, setgid-with-group-execute goes, the sticky
+        // bit stays, and an ordinary mode is untouched.
+        after WritePrivilege.Unprivileged 0o4755 |> shouldEqual 0o755
+        after WritePrivilege.Unprivileged 0o2755 |> shouldEqual 0o755
+        after WritePrivilege.Unprivileged 0o6755 |> shouldEqual 0o755
+        after WritePrivilege.Unprivileged 0o1755 |> shouldEqual 0o1755
+        after WritePrivilege.Unprivileged 0o5755 |> shouldEqual 0o1755
+        after WritePrivilege.Unprivileged 0o644 |> shouldEqual 0o644
+        after WritePrivilege.Unprivileged 0o0 |> shouldEqual 0o0
+
+        // Root keeps everything, which is the row that makes this about privilege
+        // rather than about a mask applied unconditionally.
+        for mode in [ 0o4755 ; 0o2755 ; 0o6755 ; 0o2745 ; 0o1755 ; 0o644 ] do
+            after WritePrivilege.Privileged mode |> shouldEqual mode
+
+    /// Set-group-ID *without* group-execute means mandatory locking on Linux
+    /// rather than privilege, and Linux keeps the bit; macOS could not be
+    /// measured, since a non-root user there cannot set `S_ISGID` on a regular
+    /// file at all. So PawPrint refuses rather than picking a platform — and
+    /// refuses only for the unprivileged writer, root having been measured.
+    [<Test>]
+    let ``the one set-ID shape neither platform pins is refused rather than guessed`` () : unit =
+        let write (privilege : WritePrivilege) (mode : int) : unit =
+            PermissionBits.parseOrFail "test" mode
+            |> PermissionBits.afterContentChangingWrite privilege
+            |> ignore<PermissionBits>
+
+        let exn = Assert.Throws<exn> (fun () -> write WritePrivilege.Unprivileged 0o2745)
+
+        exn.Message
+        |> shouldContainText "set-group-ID bit without the group-execute bit"
+
+        // ...and the neighbouring shapes are answered, so the refusal is this one
+        // combination rather than a blanket refusal of the setgid bit.
+        write WritePrivilege.Unprivileged 0o2755
+        write WritePrivilege.Privileged 0o2745
+        write WritePrivilege.Unprivileged 0o0745
+
     [<Test>]
     let ``writing to something that cannot hold bytes is an interpreter bug, not an errno`` () : unit =
         let vfs = build [ mkdir (rootOf emptyFs) "d" ; mklink (rootOf emptyFs) "l" "d" ]
@@ -1368,7 +1454,7 @@ module TestVirtualFileSystem =
         shouldFailWith
             "is a directory"
             (fun () ->
-                VirtualFileSystem.writeFile directory 0L some buildTime vfs
+                VirtualFileSystem.writeFile directory 0L some WritePrivilege.Unprivileged buildTime vfs
                 |> function
                     | Ok vfs -> vfs
                     | Error refusal -> failwith $"%O{refusal}"
@@ -1377,7 +1463,7 @@ module TestVirtualFileSystem =
         shouldFailWith
             "is a symbolic link"
             (fun () ->
-                VirtualFileSystem.writeFile link 0L some buildTime vfs
+                VirtualFileSystem.writeFile link 0L some WritePrivilege.Unprivileged buildTime vfs
                 |> function
                     | Ok vfs -> vfs
                     | Error refusal -> failwith $"%O{refusal}"
@@ -1386,7 +1472,7 @@ module TestVirtualFileSystem =
         shouldFailWith
             "is not in this filesystem"
             (fun () ->
-                VirtualFileSystem.writeFile (InodeNumber 9999L) 0L some buildTime vfs
+                VirtualFileSystem.writeFile (InodeNumber 9999L) 0L some WritePrivilege.Unprivileged buildTime vfs
                 |> function
                     | Ok vfs -> vfs
                     | Error refusal -> failwith $"%O{refusal}"

@@ -411,6 +411,13 @@ module TestImpureCases =
                                     name "f", SeedEntry.file (bytes "hello")
                                     name "ro", SeedEntry.File (bytes "hello", mode 0o444)
                                     name "wo", SeedEntry.File (bytes "hello", mode 0o200)
+                                    // Set-user-ID; set-group-ID on a
+                                    // group-executable file, which is the shape
+                                    // whose bit a write strips; and sticky, which
+                                    // it must not.
+                                    name "suid", SeedEntry.File (bytes "hello", mode 0o4755)
+                                    name "sgid", SeedEntry.File (bytes "hello", mode 0o2755)
+                                    name "sticky", SeedEntry.File (bytes "hello", mode 0o1755)
                                 ]
                     }
                 AppContext = AppContextProperties.empty

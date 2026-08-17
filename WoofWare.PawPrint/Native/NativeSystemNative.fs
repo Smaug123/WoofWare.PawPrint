@@ -464,7 +464,15 @@ module NativeSystemNative =
         =
         let now = EmulatedKernel.fileTimestamp state.Kernel
 
-        match VirtualFileSystem.writeFile inode offset bytes now state.Kernel.FileSystem with
+        // A content-changing write strips a file's set-user-ID and set-group-ID
+        // bits unless the writer is root; measured on both platforms.
+        let privilege =
+            if EmulatedKernel.isPrivileged state.Kernel then
+                WritePrivilege.Privileged
+            else
+                WritePrivilege.Unprivileged
+
+        match VirtualFileSystem.writeFile inode offset bytes privilege now state.Kernel.FileSystem with
         | Ok filesystem ->
             state.MapKernel (fun kernel ->
                 { kernel with
@@ -1598,10 +1606,8 @@ module NativeSystemNative =
 
             // Root gets read and write whatever the mode says — measured on Linux
             // as uid 0, where a mode-0000 file opens for writing. (Only *execute*
-            // still needs a bit set for root, and `open` never asks for it.) The
-            // default `UserId` is 1000 precisely so that a guest does not skip its
-            // own privilege guards, but a host may configure 0.
-            let privileged = state.Kernel.UserId = 0u
+            // still needs a bit set for root, and `open` never asks for it.)
+            let privileged = EmulatedKernel.isPrivileged state.Kernel
 
             if not privileged && permissionBits &&& neededBits <> neededBits then
                 fail UnixError.EACCES

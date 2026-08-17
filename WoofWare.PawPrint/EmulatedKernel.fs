@@ -1348,6 +1348,20 @@ module EmulatedKernel =
     [<Literal>]
     let nanosecondsPerTick : int64 = 100L
 
+    /// Whether the simulated process is exempt from the permission rules a kernel
+    /// applies to everyone else: uid 0, and nothing else.
+    ///
+    /// One definition rather than a comparison at each site, because the sites
+    /// answer *different* questions from the same fact — whether `open` may ignore
+    /// a mode that forbids the access it was asked for, and whether a write keeps
+    /// a file's set-user-ID bits — and they must not be able to drift apart about
+    /// who root is.
+    ///
+    /// `EmulatedKernel.defaultUserId` is deliberately not 0: `Environment.IsPrivilegedProcess`
+    /// is literally `GetEUid() == 0`, so a guest run as root skips its own
+    /// privilege guards.
+    let isPrivileged (kernel : EmulatedKernel) : bool = kernel.UserId = 0u
+
     /// The moment the emulated kernel stamps on an inode it changes now, in the
     /// `struct timespec` an inode's timestamps are kept in.
     ///

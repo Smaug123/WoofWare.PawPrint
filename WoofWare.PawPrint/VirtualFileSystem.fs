@@ -126,6 +126,20 @@ type PermissionBits =
         match this with
         | PermissionBits bits -> "0o" + System.Convert.ToString(bits, 8).PadLeft (4, '0')
 
+/// Whether the process performing a write is exempt from the rule that strips a
+/// file's set-user-ID and set-group-ID bits when its contents change.
+///
+/// A DU rather than a `bool`, because it sits next to a `PermissionBits` in every
+/// signature that takes it and the two orders would otherwise be
+/// indistinguishable to the compiler.
+[<RequireQualifiedAccess>]
+type WritePrivilege =
+    /// uid 0. Measured on Linux as root: a write to an `04755` file leaves it
+    /// `04755`.
+    | Privileged
+    /// Any other identity.
+    | Unprivileged
+
 [<RequireQualifiedAccess>]
 module PermissionBits =
     /// The widest `st_mode & 0o7777` can be: three rwx triples, plus setuid,
@@ -165,6 +179,48 @@ module PermissionBits =
     /// What a `umask 022` process gets from `mkdir(2)`'s 0o777:
     /// `0o777 &&& ~~~0o022`. See `defaultForRegularFile`.
     let defaultForDirectory : PermissionBits = PermissionBits (0o777 &&& ~~~0o022)
+
+    /// The bits a regular file is left with after a *content-changing* write by a
+    /// process with `privilege`. A write that transfers nothing changes nothing,
+    /// so a caller must not consult this for one.
+    ///
+    /// Measured, non-root, on macOS 26.6 and Linux 6.18.5:
+    ///
+    /// | before | after |
+    /// |---|---|
+    /// | `04755` (setuid) | `00755` |
+    /// | `02755` (setgid, group-executable) | `00755` |
+    /// | `01755` (sticky) | `01755` — untouched |
+    /// | `00644` | `00644` |
+    ///
+    /// ...and as root every one of them is left exactly as it was, which is what
+    /// `WritePrivilege.Privileged` selects.
+    ///
+    /// **Partial, deliberately.** `S_ISGID` set on a file that is *not*
+    /// group-executable is a shape this cannot answer: Linux keeps the bit
+    /// (measured — `02745` survives a non-root write, because `S_ISGID` without
+    /// `S_IXGRP` means mandatory locking there rather than privilege), while macOS
+    /// could not be measured at all, a non-root user on that host being unable to
+    /// set `S_ISGID` on a regular file even inside a directory of their own group.
+    /// Guessing would silently give one platform's answer for both.
+    let afterContentChangingWrite (privilege : WritePrivilege) (bits : PermissionBits) : PermissionBits =
+        match privilege with
+        | WritePrivilege.Privileged -> bits
+        | WritePrivilege.Unprivileged ->
+
+        let raw = toInt bits
+        let setUserId = 0o4000
+        let setGroupId = 0o2000
+        let groupExecute = 0o0010
+
+        if raw &&& setGroupId <> 0 && raw &&& groupExecute = 0 then
+            failwith
+                $"PermissionBits.afterContentChangingWrite: %O{bits} carries the set-group-ID bit without the group-execute bit, and an unprivileged process is writing to it. Linux keeps the bit for that shape (measured: 0o2745 survives such a write), because there it means mandatory locking rather than privilege; macOS was not measurable, a non-root user being unable to set S_ISGID on a regular file at all. Measure macOS as root before deciding what PawPrint answers."
+        else
+
+        // The sticky bit is deliberately *not* in this mask: measured, a write
+        // leaves 0o1755 alone on both platforms.
+        parseOrFail "PermissionBits.afterContentChangingWrite" (raw &&& ~~~(setUserId ||| setGroupId))
 
 /// A filesystem timestamp: `struct timespec`, whole seconds since the Unix
 /// epoch plus a nanosecond part in `[0, 1e9)`.
@@ -1310,9 +1366,10 @@ module VirtualFileSystem =
                     }
 
     /// Write `bytes` at `offset` into the regular file at `inode`, moving its
-    /// `mtime` and `ctime`.
+    /// `mtime` and `ctime` and — unless `privilege` says otherwise — stripping its
+    /// set-user-ID and set-group-ID bits.
     ///
-    /// Those two and no others: measured on both platforms, a write leaves
+    /// Those timestamps and no others: measured on both platforms, a write leaves
     /// `atime` where it was, and `birth` never moves at all.
     ///
     /// Partial in the inode, which must name a regular file this filesystem
@@ -1321,14 +1378,18 @@ module VirtualFileSystem =
     /// answers EISDIR for a directory and resolves a symlink to whatever it names
     /// — so anything else is an interpreter bug rather than a guest error.
     ///
+    /// Also partial in one combination of stored mode and `privilege`; see
+    /// `PermissionBits.afterContentChangingWrite`.
+    ///
     /// Must not be called with an empty `bytes`: a zero-length write moves no
-    /// timestamp, so treating it as an ordinary write of nothing would restamp
-    /// the inode for a call a real kernel makes no record of. The caller
-    /// short-circuits it.
+    /// timestamp and strips no bit, so treating it as an ordinary write of nothing
+    /// would restamp the inode for a call a real kernel makes no record of. The
+    /// caller short-circuits it.
     let writeFile
         (inode : InodeNumber)
         (offset : int64)
         (bytes : ImmutableArray<byte>)
+        (privilege : WritePrivilege)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
         : Result<VirtualFileSystem, FileWriteRefusal>
@@ -1363,6 +1424,11 @@ module VirtualFileSystem =
         match writtenContents contents offset bytes with
         | Error refusal -> Error refusal
         | Ok updated ->
+
+        // Changing a file's contents strips its set-user-ID and set-group-ID bits
+        // unless the writer is privileged — so this is a mode change as well as a
+        // content change, and the `ctime` above covers both.
+        let permissions = PermissionBits.afterContentChangingWrite privilege permissions
 
         Ok
             { vfs with

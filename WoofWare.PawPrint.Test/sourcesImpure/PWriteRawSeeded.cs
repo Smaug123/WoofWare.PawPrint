@@ -186,6 +186,62 @@ class Program
         check = 20;
         if (Directory.GetLastWriteTimeUtc(".") != directoryBefore) return check;
 
+        // --- 4: the set-ID bits a content-changing write strips ---
+        //
+        // Measured non-root on macOS 26.6 and Linux 6.18.5, and as root on Linux:
+        // an unprivileged write clears set-user-ID, and set-group-ID when the file
+        // is group-executable, while root keeps both and the sticky bit survives
+        // either way. Impure because the seed names Unix modes the oracle cannot
+        // materialise, and because it depends on the configured uid.
+        check = 21;
+        if (File.GetUnixFileMode("suid") != (UnixFileMode.SetUser
+                                             | UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                                             | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
+                                             | UnixFileMode.OtherRead | UnixFileMode.OtherExecute)) return check;
+
+        IntPtr s = OpenPath("suid", O_WRONLY);
+        check = 22;
+        if (s == new IntPtr(-1)) return check;
+
+        // A zero-length write is not a content change, so it strips nothing.
+        check = 23;
+        if (PWrite(s, buf, 0, 0) != 0) return check;
+        check = 24;
+        if ((File.GetUnixFileMode("suid") & UnixFileMode.SetUser) == 0) return check;
+
+        check = 25;
+        if (PWrite(s, buf, 1, 0) != 1) return check;
+        check = 26;
+        if ((File.GetUnixFileMode("suid") & UnixFileMode.SetUser) != 0) return check;
+
+        // Only those bits: the ordinary permission triples come through unharmed.
+        check = 27;
+        if (File.GetUnixFileMode("suid") != (UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                                             | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
+                                             | UnixFileMode.OtherRead | UnixFileMode.OtherExecute)) return check;
+
+        // The sticky bit is not a privilege bit and is left alone, which is what
+        // shows the mask is the measured one rather than "clear the top three".
+        IntPtr t = OpenPath("sticky", O_WRONLY);
+        check = 28;
+        if (t == new IntPtr(-1)) return check;
+        check = 29;
+        if (PWrite(t, buf, 1, 0) != 1) return check;
+        check = 30;
+        if ((File.GetUnixFileMode("sticky") & UnixFileMode.StickyBit) == 0) return check;
+
+        // A `write` strips them exactly as a `pwrite` does — the rule is about the
+        // content changing, not about which syscall changed it.
+        IntPtr g = OpenPath("sgid", O_WRONLY);
+        check = 31;
+        if (g == new IntPtr(-1)) return check;
+        check = 32;
+        if ((File.GetUnixFileMode("sgid") & UnixFileMode.SetGroup) == 0) return check;
+        check = 33;
+        if (Write(g, buf, 1) != 1) return check;
+        check = 34;
+        if ((File.GetUnixFileMode("sgid") & UnixFileMode.SetGroup) != 0) return check;
+
         return 0;
     }
 }
