@@ -1215,7 +1215,6 @@ module NativeRuntimeTypeQCall =
                             assembly
                             typeGenericsAsTypeDefn
                             methodGenericsAsTypeDefn
-                            methodInstantiation
                             h
                             state
 

@@ -1065,32 +1065,8 @@ module TypeConcretization =
         (signature : TypeMethodSignature<TypeDefn>)
         : TypeMethodSignature<ConcreteTypeHandle> * ConcretizationContext<DumpedAssembly>
         =
-        // Concretize return type only when the method actually returns a value.
-        //
-        // This is where a `void` under custom modifiers becomes `MethodReturnType.Void`. A decoded
-        // signature mirrors its blob, so `void modreq(IsExternalInit)` -- how C# spells every `init`
-        // accessor -- arrives as `Returns (Modified ...)`; but the modifier annotates a return that
-        // does not exist at runtime, so no value reaches the caller's evaluation stack and every
-        // consumer of a concretised signature must see `Void`. Concretisation is already the place
-        // custom modifiers are looked through (see the `TypeDefn.Modified` case of `concretizeType`),
-        // and this is the one position where doing so changes the return *shape* rather than just the
-        // type named.
-        //
-        // The two translations that must NOT do this both read the decoded signature instead, and so
-        // are unaffected: `NativeRuntimeTypeHelpers.concretiseSignatureForSlotMatch`, which reports a
-        // return's modifiers alongside its handle precisely because concretisation drops them, and
-        // `concreteHandleToTypeDefn` below, which runs the other way.
         let ctx, returnType =
-            match signature.ReturnType with
-            | MethodReturnType.Void -> ctx, MethodReturnType.Void
-            | MethodReturnType.Returns ty ->
-                match TypeDefn.stripCustomModifiers ty with
-                | TypeDefn.Void -> ctx, MethodReturnType.Void
-                | _ ->
-                    let handle, ctx =
-                        concretizeType ctx loadAssembly assembly typeGenerics methodGenerics ty
-
-                    ctx, MethodReturnType.Returns handle
+            concretizeReturnColumn ctx loadAssembly assembly typeGenerics methodGenerics signature.ReturnType
 
         let paramHandles = ResizeArray<ConcreteTypeHandle> signature.ParameterTypes.Length
         let mutable ctx = ctx
@@ -1113,6 +1089,39 @@ module TypeConcretization =
 
         concretized, ctx
 
+    /// Concretise a method's return column, which is where a `void` under custom modifiers becomes
+    /// <c>MethodReturnType.Void</c>. Every consumer of a concretised return shape must go through
+    /// this, or two of them can disagree about whether such a method returns a value.
+    and concretizeReturnColumn
+        (ctx : ConcretizationContext<DumpedAssembly>)
+        (loadAssembly : IAssemblyLoad)
+        (assembly : AssemblyName)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (returnType : MethodReturnType<TypeDefn>)
+        : ConcretizationContext<DumpedAssembly> * MethodReturnType<ConcreteTypeHandle>
+        =
+        // A decoded signature mirrors its blob, so `void modreq(IsExternalInit)` -- how C# spells
+        // every `init` accessor -- arrives as `Returns (Modified ...)`; but the modifier annotates a
+        // return that does not exist at runtime, so no value reaches the caller's evaluation stack.
+        // Concretisation is already the place custom modifiers are looked through (see the
+        // `TypeDefn.Modified` case of `concretizeType`), and this is the one position where doing so
+        // changes the return *shape* rather than just the type named.
+        //
+        // The translations that must NOT do this read the decoded signature instead, and so are
+        // unaffected: `signaturesEquivalent` below, which compares what the blobs say, and
+        // `concreteHandleToTypeDefn`, which runs the other way.
+        match returnType with
+        | MethodReturnType.Void -> ctx, MethodReturnType.Void
+        | MethodReturnType.Returns ty ->
+            match TypeDefn.stripCustomModifiers ty with
+            | TypeDefn.Void -> ctx, MethodReturnType.Void
+            | _ ->
+                let handle, ctx =
+                    concretizeType ctx loadAssembly assembly typeGenerics methodGenerics ty
+
+                ctx, MethodReturnType.Returns handle
+
     and private concretizeGenericInstantiation
         (ctx : ConcretizationContext<DumpedAssembly>)
         (loadAssembly : IAssemblyLoad)
@@ -1125,12 +1134,11 @@ module TypeConcretization =
         =
         // A custom modifier on a type *argument* is unrecoverable once substitution has happened.
         // Elsewhere, dropping `TypeDefn.Modified` is correct and deliberate: runtime type identity
-        // follows the unmodified type, and the places that must compare modifiers -- vtable slot
-        // matching in `NativeRuntimeTypeHelpers` -- walk the unsubstituted signature alongside the
-        // handle to recover them. That parallel channel cannot reach a modifier that arrived *via*
-        // a generic argument: for `Base<int modopt(X)>.M(!0)`, the signature the walk sees is the
-        // bare `!0` and the `modopt` lives only in the instantiation, so it silently vanishes.
-        // CoreCLR compares the substituted blob and does see it (`MetaSig::CompareElementType`), so
+        // follows the unmodified type, and the questions that must compare modifiers read the
+        // decoded signature instead, through `signaturesEquivalent`. That does not help here: for
+        // `Base<int modopt(X)>.M(!0)`, the decoded signature is the bare `!0` and the `modopt` lives
+        // only in the instantiation, which reaches the comparison as a closed handle. CoreCLR
+        // compares the substituted blob and does see it (`MetaSig::CompareElementType`), so
         // conflating the two would let a derived `M(int)` take over a slot it does not override.
         //
         // Refuse instead. This is unreachable from any real compiler: measured over the linux-x64
@@ -1192,6 +1200,366 @@ module TypeConcretization =
             { ctxAfterArgs with
                 ConcreteTypes = newConcreteTypes
             }
+
+    /// One side of a method-signature comparison: a signature as its own blob spells it, the
+    /// assembly whose token space those spellings live in, and the closed instantiation of the type
+    /// that declared it — which is what ECMA-335 `!0` denotes in this signature.
+    type SignatureComparand =
+        {
+            Signature : TypeMethodSignature<TypeDefn>
+            Assembly : AssemblyName
+            DeclaringTypeGenerics : ImmutableArray<ConcreteTypeHandle>
+        }
+
+    /// The token space and generic context one signature element is spelled in.
+    type private ElementContext =
+        {
+            Assembly : AssemblyName
+            TypeGenerics : ImmutableArray<ConcreteTypeHandle>
+        }
+
+    /// A signature element under comparison: either still spelled in a blob, or a closed runtime
+    /// type that a substitution supplied in place of a generic type parameter.
+    type private Element =
+        | Spelled of ElementContext * TypeDefn
+        | Substituted of ConcreteTypeHandle
+
+    /// Does this element mention a method generic parameter, so that it does not denote a single
+    /// closed runtime type? Substitution never reaches an `ELEMENT_TYPE_MVAR`, so such an element
+    /// cannot be compared against one that a substitution supplied.
+    let rec private mentionsMethodGenericParameter (ty : TypeDefn) : bool =
+        match ty with
+        | TypeDefn.GenericMethodParameter _ -> true
+        | TypeDefn.Array (element, _)
+        | TypeDefn.Pinned element
+        | TypeDefn.Pointer element
+        | TypeDefn.Byref element
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element -> mentionsMethodGenericParameter element
+        | TypeDefn.Modified m ->
+            mentionsMethodGenericParameter m.Modifier
+            || mentionsMethodGenericParameter m.Unmodified
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            mentionsMethodGenericParameter generic
+            || (args |> Seq.exists mentionsMethodGenericParameter)
+        | TypeDefn.FunctionPointer signature ->
+            (match signature.ReturnType with
+             | MethodReturnType.Void -> false
+             | MethodReturnType.Returns ty -> mentionsMethodGenericParameter ty)
+            || (signature.ParameterTypes |> List.exists mentionsMethodGenericParameter)
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.FromReference _
+        | TypeDefn.Void -> false
+
+    /// The TypeDef a nominal signature element names, or `None` if the element is not nominal. This
+    /// is `CompareTypeTokens` (siginfo.cpp:3545) reduced to what a resolved identity already
+    /// answers: the AssemblyRef/forwarder walk it performs is what resolution does here.
+    let private nominalIdentity
+        (ctx : ConcretizationContext<DumpedAssembly>)
+        (loadAssembly : IAssemblyLoad)
+        (assembly : AssemblyName)
+        (ty : TypeDefn)
+        : ResolvedTypeIdentity option * ConcretizationContext<DumpedAssembly>
+        =
+        match ty with
+        | TypeDefn.FromDefinition (identity, _) -> Some identity, ctx
+        | TypeDefn.FromReference (typeRef, _) ->
+            let (_, identity, _), ctx =
+                loadAssemblyAndResolveTypeRef loadAssembly ctx assembly typeRef
+
+            Some identity, ctx
+        | _ -> None, ctx
+
+    /// `MetaSig::CompareElementType` (siginfo.cpp:3781), which is a comparison of *blobs*: two
+    /// signature elements are the same only if they are spelled with the same element types, so
+    /// `M(object)` and `M(class System.Object)` are different signatures, and a custom modifier is
+    /// part of the element rather than an annotation on it.
+    let rec private compareElements
+        (ctx : ConcretizationContext<DumpedAssembly>)
+        (loadAssembly : IAssemblyLoad)
+        (left : Element)
+        (right : Element)
+        : bool * ConcretizationContext<DumpedAssembly>
+        =
+        match left, right with
+        // A generic type parameter is resolved through the declaring type's instantiation before
+        // anything else, exactly as `CompareElementType` consumes ELEMENT_TYPE_VAR ahead of the
+        // modifiers (:3820-3866). CoreCLR then keeps comparing the instantiation's *blob*; PawPrint
+        // holds instantiations as closed handles, so from here down the comparison is by runtime
+        // type identity. What that gives up is the encoding distinction above, inside a substituted
+        // argument only — a distinction PawPrint cannot represent anywhere, since a
+        // `ConcreteTypeHandle` records no spelling. It gives up nothing about custom modifiers: a
+        // modified type *argument* is refused outright by `concretizeGenericInstantiation`.
+        | Element.Spelled (leftCtx, TypeDefn.GenericTypeParameter index), _ ->
+            if index >= leftCtx.TypeGenerics.Length then
+                failwithf
+                    "Signature comparison in %s reached generic type parameter !%d, but the declaring type's instantiation supplies only %d argument(s); the comparand was built with the wrong instantiation"
+                    leftCtx.Assembly.FullName
+                    index
+                    leftCtx.TypeGenerics.Length
+
+            compareElements ctx loadAssembly (Element.Substituted leftCtx.TypeGenerics.[index]) right
+        | _, Element.Spelled (rightCtx, TypeDefn.GenericTypeParameter index) ->
+            if index >= rightCtx.TypeGenerics.Length then
+                failwithf
+                    "Signature comparison in %s reached generic type parameter !%d, but the declaring type's instantiation supplies only %d argument(s); the comparand was built with the wrong instantiation"
+                    rightCtx.Assembly.FullName
+                    index
+                    rightCtx.TypeGenerics.Length
+
+            compareElements ctx loadAssembly left (Element.Substituted rightCtx.TypeGenerics.[index])
+
+        | Element.Substituted leftHandle, Element.Substituted rightHandle -> leftHandle = rightHandle, ctx
+
+        | Element.Substituted handle, Element.Spelled (spelledCtx, ty)
+        | Element.Spelled (spelledCtx, ty), Element.Substituted handle ->
+            // One side is a closed runtime type, so the other can only match if it denotes one too.
+            if mentionsMethodGenericParameter ty then
+                false, ctx
+            else
+
+            let spelledHandle, ctx =
+                concretizeType ctx loadAssembly spelledCtx.Assembly spelledCtx.TypeGenerics ImmutableArray.Empty ty
+
+            spelledHandle = handle, ctx
+
+        | Element.Spelled (leftCtx, leftTy), Element.Spelled (rightCtx, rightTy) ->
+
+        let recurse (ctx : ConcretizationContext<DumpedAssembly>) (l : TypeDefn) (r : TypeDefn) =
+            compareElements ctx loadAssembly (Element.Spelled (leftCtx, l)) (Element.Spelled (rightCtx, r))
+
+        match leftTy, rightTy with
+        // A modifier is compared before what it modifies, in blob order, with `modreq` and `modopt`
+        // distinguished (:4082-4100). So `modopt(A) modopt(B) int32` and `modopt(B) modopt(A) int32`
+        // are different signatures, and an unmodified type never matches a modified one.
+        | TypeDefn.Modified leftMod, TypeDefn.Modified rightMod ->
+            if leftMod.IsRequired <> rightMod.IsRequired then
+                false, ctx
+            else
+                let modifiersMatch, ctx = recurse ctx leftMod.Modifier rightMod.Modifier
+
+                if not modifiersMatch then
+                    false, ctx
+                else
+                    recurse ctx leftMod.Unmodified rightMod.Unmodified
+        | TypeDefn.Modified _, _
+        | _, TypeDefn.Modified _ -> false, ctx
+
+        | TypeDefn.PrimitiveType leftPrim, TypeDefn.PrimitiveType rightPrim -> leftPrim = rightPrim, ctx
+
+        | TypeDefn.Void, TypeDefn.Void -> true, ctx
+
+        // Compared positionally and symbolically: `varNum1 == varNum2` (:4068-4077). No
+        // substitution is ever applied to a method generic parameter, which is what lets two
+        // generic methods' signatures be compared without an instantiation for either.
+        | TypeDefn.GenericMethodParameter leftIndex, TypeDefn.GenericMethodParameter rightIndex ->
+            leftIndex = rightIndex, ctx
+
+        | TypeDefn.Byref leftInner, TypeDefn.Byref rightInner
+        | TypeDefn.Pointer leftInner, TypeDefn.Pointer rightInner
+        | TypeDefn.OneDimensionalArrayLowerBoundZero leftInner, TypeDefn.OneDimensionalArrayLowerBoundZero rightInner ->
+            recurse ctx leftInner rightInner
+
+        // `pinned` cannot appear in a method signature at all — it annotates a local variable — so
+        // this arm exists to keep the match total rather than to answer a question anyone asks.
+        | TypeDefn.Pinned leftInner, TypeDefn.Pinned rightInner -> recurse ctx leftInner rightInner
+
+        | TypeDefn.Array (leftElement, leftRank), TypeDefn.Array (rightElement, rightRank) ->
+            if leftRank <> rightRank then
+                // CoreCLR compares the sizes and lower bounds too; the decoder accepts exactly one
+                // canonical array shape (see `TypeDefn.Array`), so rank is the whole of it here.
+                false, ctx
+            else
+                recurse ctx leftElement rightElement
+
+        | TypeDefn.GenericInstantiation (leftGeneric, leftArgs), TypeDefn.GenericInstantiation (rightGeneric, rightArgs) ->
+            if leftArgs.Length <> rightArgs.Length then
+                false, ctx
+            else
+
+            let genericMatches, ctx = recurse ctx leftGeneric rightGeneric
+
+            if not genericMatches then
+                false, ctx
+            else
+
+            let mutable ctx = ctx
+            let mutable matches = true
+            let mutable i = 0
+
+            while matches && i < leftArgs.Length do
+                let argMatches, newCtx = recurse ctx leftArgs.[i] rightArgs.[i]
+                matches <- argMatches
+                ctx <- newCtx
+                i <- i + 1
+
+            matches, ctx
+
+        | TypeDefn.FunctionPointer leftSignature, TypeDefn.FunctionPointer rightSignature ->
+            // The whole of the function pointer's signature is compared, return type included
+            // (:4137-4200) — including its CallKind byte, which is where a *single* nameable
+            // unmanaged convention lives. A combination of conventions is spelled as modifiers on
+            // the inner return type instead, so both halves of the encoding are compared here.
+            compareSignatureTypes ctx loadAssembly leftCtx rightCtx false leftSignature rightSignature
+
+        | (TypeDefn.FromDefinition _ | TypeDefn.FromReference _), (TypeDefn.FromDefinition _ | TypeDefn.FromReference _) ->
+            // Identity, not spelling: a TypeDef in the assembly that declares the type and a
+            // TypeRef everywhere else name the same type. Unlike CoreCLR, which reaches
+            // `CompareTypeTokens` only once the ELEMENT_TYPE_CLASS/VALUETYPE bytes already agree,
+            // this does not also compare `SignatureTypeKind`. For well-formed metadata the kind is
+            // a fact about the resolved type rather than about the spelling, so it cannot
+            // distinguish two references that resolve to one TypeDef; and PawPrint synthesises
+            // nominal `TypeDefn`s in places (`SignatureTypeKind.Unknown` among them) where the
+            // kind is not recovered from a blob at all.
+            let leftIdentity, ctx = nominalIdentity ctx loadAssembly leftCtx.Assembly leftTy
+            let rightIdentity, ctx = nominalIdentity ctx loadAssembly rightCtx.Assembly rightTy
+            leftIdentity = rightIdentity, ctx
+
+        // Unreachable rather than merely unequal: the enclosing match on `Element` resolves a
+        // generic type parameter on either side through its instantiation before this one is
+        // reached, so arriving here means that resolution was bypassed.
+        | TypeDefn.GenericTypeParameter _, _
+        | _, TypeDefn.GenericTypeParameter _ ->
+            failwith
+                "logic error: a generic type parameter reached the structural signature comparison; it should have been resolved through the declaring type's instantiation by compareElements"
+
+        | TypeDefn.PrimitiveType _, _
+        | TypeDefn.Void, _
+        | TypeDefn.GenericMethodParameter _, _
+        | TypeDefn.Byref _, _
+        | TypeDefn.Pointer _, _
+        | TypeDefn.Pinned _, _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _, _
+        | TypeDefn.Array _, _
+        | TypeDefn.GenericInstantiation _, _
+        | TypeDefn.FunctionPointer _, _
+        | TypeDefn.FromDefinition _, _
+        | TypeDefn.FromReference _, _ -> false, ctx
+
+    /// `MetaSig::CompareMethodSigs` (siginfo.cpp:4549) over decoded signatures. `left` is the
+    /// *caller's* side: where the two differ in parameter count, it is `left`'s vararg sentinel that
+    /// bounds the comparison.
+    and private compareSignatureTypes
+        (ctx : ConcretizationContext<DumpedAssembly>)
+        (loadAssembly : IAssemblyLoad)
+        (leftCtx : ElementContext)
+        (rightCtx : ElementContext)
+        (skipReturnType : bool)
+        (left : TypeMethodSignature<TypeDefn>)
+        (right : TypeMethodSignature<TypeDefn>)
+        : bool * ConcretizationContext<DumpedAssembly>
+        =
+        // Calling convention and `hasThis` (:4589). CoreCLR masks out CORINFO_CALLCONV_PARAMTYPE,
+        // which it sets on signatures it builds itself; no metadata blob carries that bit, so
+        // comparing the header byte as decoded is the same comparison here.
+        if left.Header <> right.Header then
+            false, ctx
+        elif left.GenericParameterCount <> right.GenericParameterCount then
+            false, ctx
+        else
+
+        let recurse (ctx : ConcretizationContext<DumpedAssembly>) (l : TypeDefn) (r : TypeDefn) =
+            compareElements ctx loadAssembly (Element.Spelled (leftCtx, l)) (Element.Spelled (rightCtx, r))
+
+        // A vararg call site's blob carries an ELEMENT_TYPE_SENTINEL before the `...` part, and
+        // `RequiredParameterCount` is where it sits (for a signature without one it is the whole
+        // parameter list). The parameters past it take no part in matching, and the callee has to end
+        // exactly where the sentinel is, so that overloads like `m(int, ...)` and `m(int, int, ...)`
+        // stay distinguishable (:4613-4685).
+        //
+        // The counts alone cannot decide this. A caller `m(int, __arglist(string))` and a callee
+        // `m(int, string)` both have two parameters, and CoreCLR rejects that pair because it meets
+        // the sentinel where the callee has a real type; the decoded form has no sentinel element to
+        // meet, so the sentinel's *position* is what has to be read.
+        let callerSentinel = left.RequiredParameterCount <> left.ParameterTypes.Length
+        let calleeSentinel = right.RequiredParameterCount <> right.ParameterTypes.Length
+
+        let comparableCount =
+            if calleeSentinel then
+                // Illegal in a callee's signature; CoreCLR asserts rather than checks.
+                None
+            elif callerSentinel then
+                if left.RequiredParameterCount = right.ParameterTypes.Length then
+                    Some left.RequiredParameterCount
+                else
+                    None
+            elif left.ParameterTypes.Length = right.ParameterTypes.Length then
+                Some left.ParameterTypes.Length
+            else
+                None
+
+        match comparableCount with
+        | None -> false, ctx
+        | Some comparableCount ->
+
+        let returnMatches, ctx =
+            if skipReturnType then
+                // CoreCLR spells "allow a covariant return" as skipping the return type entirely
+                // (`SignaturesEquivalent` passes `allowCovariantReturn` straight into
+                // `skipReturnTypeSig`), leaving the caller to decide what return types it accepts.
+                true, ctx
+            else
+                match left.ReturnType, right.ReturnType with
+                | MethodReturnType.Void, MethodReturnType.Void -> true, ctx
+                | MethodReturnType.Returns leftTy, MethodReturnType.Returns rightTy -> recurse ctx leftTy rightTy
+                | MethodReturnType.Void, MethodReturnType.Returns _
+                | MethodReturnType.Returns _, MethodReturnType.Void -> false, ctx
+
+        if not returnMatches then
+            false, ctx
+        else
+
+        let leftParams = List.toArray left.ParameterTypes
+        let rightParams = List.toArray right.ParameterTypes
+        let mutable ctx = ctx
+        let mutable matches = true
+        let mutable i = 0
+
+        while matches && i < comparableCount do
+            let paramMatches, newCtx = recurse ctx leftParams.[i] rightParams.[i]
+            matches <- paramMatches
+            ctx <- newCtx
+            i <- i + 1
+
+        matches, ctx
+
+    /// Do these two method signatures name the same signature, in the sense of
+    /// `MetaSig::CompareMethodSigs`? This is a comparison of what the blobs *say*, so it separates
+    /// signatures that concretisation deliberately conflates: custom modifiers are compared in every
+    /// position, and so is the choice of encoding.
+    ///
+    /// Generic type parameters are resolved through each side's declaring-type instantiation;
+    /// generic *method* parameters are compared positionally, so two generic methods can be compared
+    /// without an instantiation for either.
+    ///
+    /// `skipReturnType` omits the return column, which is how CoreCLR expresses "a covariant return
+    /// is acceptable" — the caller then applies whatever rule it has for return types.
+    ///
+    /// `caller` is the side whose vararg sentinel bounds the comparison, where the two differ in
+    /// parameter count.
+    let signaturesEquivalent
+        (ctx : ConcretizationContext<DumpedAssembly>)
+        (loadAssembly : IAssemblyLoad)
+        (skipReturnType : bool)
+        (caller : SignatureComparand)
+        (callee : SignatureComparand)
+        : bool * ConcretizationContext<DumpedAssembly>
+        =
+        let toElementContext (comparand : SignatureComparand) : ElementContext =
+            {
+                Assembly = comparand.Assembly
+                TypeGenerics = comparand.DeclaringTypeGenerics
+            }
+
+        compareSignatureTypes
+            ctx
+            loadAssembly
+            (toElementContext caller)
+            (toElementContext callee)
+            skipReturnType
+            caller.Signature
+            callee.Signature
 
 /// High-level API for concretizing types
 [<RequireQualifiedAccess>]

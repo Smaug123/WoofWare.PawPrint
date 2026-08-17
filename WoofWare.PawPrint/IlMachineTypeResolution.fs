@@ -119,6 +119,82 @@ module IlMachineTypeResolution =
 
         state, signature
 
+    /// Concretise a method's return column alone. Use this rather than folding a
+    /// `MethodReturnType&lt;TypeDefn&gt;` by hand: a `void` under custom modifiers returns no value, and
+    /// two consumers that decide that separately can disagree.
+    let concretizeReturnColumn
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (declaringAssembly : AssemblyName)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (returnType : MethodReturnType<TypeDefn>)
+        : IlMachineState * MethodReturnType<ConcreteTypeHandle>
+        =
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
+            }
+
+        let ctx, returnType =
+            TypeConcretization.concretizeReturnColumn
+                ctx
+                (loader loggerFactory state)
+                declaringAssembly
+                typeGenerics
+                methodGenerics
+                returnType
+
+        let state =
+            { state with
+                _LoadedAssemblies = ctx.LoadedAssemblies
+                ConcreteTypes = ctx.ConcreteTypes
+            }
+
+        state, returnType
+
+    /// Do these two method signatures name the same signature, in the sense of CoreCLR's
+    /// `MetaSig::CompareMethodSigs`? Use this, and not equality of two concretised signatures, for
+    /// any question CoreCLR answers off the signature blob — which virtual slot a method fills, and
+    /// which MethodDef a MemberRef names. Concretisation deliberately looks through custom modifiers
+    /// and normalises away the choice of encoding, both of which are part of the signature to those
+    /// questions.
+    ///
+    /// `skipReturnType` omits the return column, which is how CoreCLR expresses "a covariant return
+    /// is acceptable"; the caller then applies its own rule to the return types.
+    ///
+    /// `caller` is the side whose vararg sentinel bounds the comparison, where the two differ in
+    /// parameter count.
+    let signaturesEquivalent
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (skipReturnType : bool)
+        (caller : TypeConcretization.SignatureComparand)
+        (callee : TypeConcretization.SignatureComparand)
+        : IlMachineState * bool
+        =
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
+            }
+
+        let equivalent, ctx =
+            TypeConcretization.signaturesEquivalent ctx (loader loggerFactory state) skipReturnType caller callee
+
+        let state =
+            { state with
+                _LoadedAssemblies = ctx.LoadedAssemblies
+                ConcreteTypes = ctx.ConcreteTypes
+            }
+
+        state, equivalent
+
     let internal resolveTopLevelTypeFromName
         (loggerFactory : ILoggerFactory)
         (ns : string option)
