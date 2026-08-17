@@ -2,12 +2,13 @@ namespace WoofWare.PawPrint
 
 /// Resolution of a byref to the storage it names.
 ///
-/// Two questions live here, and they are deliberately different in strength.
-/// `byteLocation` is the precise one: it folds a projection chain into a
-/// container identity plus a flat byte offset, so two byrefs resolved this way
+/// Two questions of position live here, and they are deliberately different in
+/// strength. `byteLocation` is the precise one: it folds a projection chain into
+/// a container identity plus a flat byte offset, so two byrefs resolved this way
 /// can be compared by arithmetic. `sharedStorageKey` is the coarse fallback,
 /// answering only "could these two possibly share storage at all" for the
-/// chains `byteLocation` cannot resolve.
+/// chains `byteLocation` cannot resolve. `byteExtent` then answers how far the
+/// container reaches, which is what turns a position into a bound.
 ///
 /// The coarse answer exists because the precise one cannot be made total.
 /// Reference- and pointer-containing values have no byte image, and explicit
@@ -191,6 +192,101 @@ module internal StorageLocation =
         match sharedStorageKey ptr with
         | None -> LocationResolution.Unrelatable
         | Some coarse -> LocationResolution.Located (coarse, byteLocation baseClassTypes state ptr)
+
+    /// How many bytes `identity` spans, in the same flat coordinate space `resolve` reports
+    /// offsets in.
+    ///
+    /// `None` when the storage is gone — a freed native block, a frame that has returned —
+    /// or when its size was never recorded. An access to such a container fails at the
+    /// access with a diagnostic about *that*, which is the more accurate report, so there is
+    /// nothing to be gained by guessing a size here.
+    let private byteExtent (state : IlMachineState) (identity : ByteStorageIdentity) : int64 option =
+        try
+            match identity with
+            | ByteStorageIdentity.Array arr ->
+                // Shape facts rather than cells, so this is not a read of guest memory:
+                // both are recorded at allocation and neither can change afterwards.
+                ManagedHeap.tryGetArrayShape arr state.ManagedHeap
+                |> Option.map (fun shape -> int64 shape.Length * int64 shape.ElementStride)
+            | ByteStorageIdentity.String str ->
+                // One past the last character is the null terminator CoreCLR's string layout
+                // reserves and `ManagedHeap.getStringChar` addresses, so it belongs to the
+                // container. `None` for a string allocated off the standard path, which has
+                // no recorded content to measure.
+                ManagedHeap.getStringContents str state.ManagedHeap
+                |> Option.map (fun contents -> (int64 contents.Length + 1L) * 2L)
+            | ByteStorageIdentity.PeByteRange range -> Some (int64 range.Size)
+            | ByteStorageIdentity.StaticField (declaringType, field, owner) ->
+                IlMachineManagedByref.getStatic owner declaringType field state
+                |> Option.map (fun value -> int64 (CliType.sizeOf value))
+            | ByteStorageIdentity.StackMemory (thread, frame, block) ->
+                IlMachineThreadState.getStackMemoryPool thread frame state
+                |> StackMemoryPool.blockSize block
+                |> int64
+                |> Some
+            | ByteStorageIdentity.StackLocal (thread, frame, local) ->
+                (IlMachineThreadState.getFrame thread frame state).LocalVariables.[int<uint16> local]
+                |> CliType.sizeOf
+                |> int64
+                |> Some
+            | ByteStorageIdentity.StackArgument (thread, frame, arg) ->
+                (IlMachineThreadState.getFrame thread frame state).Arguments.[int<uint16> arg]
+                |> CliType.sizeOf
+                |> int64
+                |> Some
+            | ByteStorageIdentity.NativeMemory block ->
+                NativeMemoryPool.blockSize block state.Kernel.NativeMemoryPool |> int64 |> Some
+            | ByteStorageIdentity.HeapObject addr ->
+                // Covers a boxed value and a class instance alike: the instance size is the
+                // whole flattened field storage, which is the space the field offsets
+                // `byteLocation` folds are measured in.
+                ManagedHeap.tryGet addr state.ManagedHeap
+                |> Option.map (fun allocated -> int64 (CliValueType.SizeOf allocated.Contents).Size)
+        with _ ->
+            None
+
+    /// Whether a byte range lies within the storage its start pointer names.
+    [<RequireQualifiedAccess>]
+    type ByteRangeFit =
+        /// Every byte of the range is inside the storage.
+        | Fits
+        /// The range begins before the storage does or ends after it does. Carries the
+        /// storage, the range's start coordinate within it, and the storage's extent.
+        | Escapes of storage : ByteStorageIdentity * offset : int64 * extent : int64
+        /// The start coordinate, the extent, or both could not be derived, so containment is
+        /// not decided either way. Distinct from `Fits`: a caller that refuses `Escapes`
+        /// lets this past, and so keeps refusing only what it has actually established.
+        | Undecided
+
+    /// How the `byteCount` bytes starting where `ptr` points sit inside the storage `ptr`
+    /// names.
+    let byteRangeFit
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        (byteCount : int)
+        : ByteRangeFit
+        =
+        System.Diagnostics.Debug.Assert (
+            byteCount >= 0,
+            "StorageLocation.byteRangeFit: a negative byte count is not a range"
+        )
+
+        match resolve baseClassTypes state ptr with
+        | LocationResolution.Unrelatable
+        | LocationResolution.Located (_, None) -> ByteRangeFit.Undecided
+        | LocationResolution.Located (_, Some (storage, offset)) ->
+            match byteExtent state storage with
+            | None -> ByteRangeFit.Undecided
+            | Some extent ->
+                // Rearranged to subtract rather than add, so that a coordinate near the top
+                // of the `int64` range is a refusal instead of wrapping onto a low one the
+                // comparison would accept. Both operands of the subtraction are
+                // non-negative, so it cannot underflow.
+                if offset < 0L || offset > extent - int64 byteCount then
+                    ByteRangeFit.Escapes (storage, offset, extent)
+                else
+                    ByteRangeFit.Fits
 
     /// Which direction a byte-range copy between two resolved pointers must run.
     [<RequireQualifiedAccess>]

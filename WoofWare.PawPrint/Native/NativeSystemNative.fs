@@ -324,13 +324,58 @@ module NativeSystemNative =
         | BufferPointer.RawAddress address ->
             UserBufferCheck.faultsBeforeOperation (EmulatedKernel.userBufferCheck kernel) address (uint64 bufferSize)
 
+    /// Which way bytes move through a caller-supplied buffer.
+    [<RequireQualifiedAccess>]
+    type private BufferTransfer =
+        | Into
+        | OutOf
+
+    /// Refuse a transfer whose bytes would not all land inside the storage the
+    /// buffer names.
+    ///
+    /// Nothing a kernel does: `access_ok` bounds a range against the address
+    /// space, never against the guest's own allocation, so a real kernel serves
+    /// an over-long transfer by touching whatever follows the buffer. PawPrint's
+    /// address space is a graph of typed cells with nothing following anything,
+    /// so it has no bytes to touch — and reporting the guest's mistake is worth
+    /// more here than reproducing the corruption would be.
+    ///
+    /// Only what has been established is refused: a buffer whose coordinate or
+    /// whose storage's size cannot be derived is let past, to fail (or not) at
+    /// the access itself.
+    let private requireBufferRoom
+        (ctx : NativeCallContext)
+        (operation : string)
+        (direction : BufferTransfer)
+        (buffer : ManagedPointerSource)
+        (byteCount : int)
+        (state : IlMachineState)
+        : unit
+        =
+        match StorageLocation.byteRangeFit ctx.BaseClassTypes state buffer byteCount with
+        | StorageLocation.ByteRangeFit.Fits
+        | StorageLocation.ByteRangeFit.Undecided -> ()
+        | StorageLocation.ByteRangeFit.Escapes (storage, offset, extent) ->
+            let verb, wouldTouch =
+                match direction with
+                | BufferTransfer.Into -> "write", "overwrite whatever follows that buffer"
+                | BufferTransfer.OutOf -> "read", "send whatever follows that buffer"
+
+            let byteCountOf (count : int64) : string =
+                if count = 1L then "1 byte" else $"%d{count} bytes"
+
+            failwith
+                $"%s{operation}: the call would %s{verb} %s{byteCountOf (int64 byteCount)} starting at byte %d{offset} of %O{storage}, which spans %s{byteCountOf extent}, so the range leaves the storage the buffer names. A real kernel would %s{wouldTouch}; PawPrint's address space is a graph of typed cells, so there is nothing following it and no answer to give. Pass a buffer with room for the bytes requested."
+
     /// Write `bytes` through a caller-supplied `byte*`, whatever storage the
     /// pointer actually names (a `localloc` block, a pinned `byte[]`, native
     /// heap).
     ///
-    /// `buffer` must not be null and must have room for every byte: both are
-    /// the caller's business, because what a too-small or null buffer *means*
-    /// differs per entry point (ERANGE here, EFAULT elsewhere).
+    /// `buffer` must not be null; that is the caller's business, because what a
+    /// null buffer *means* differs per entry point (ERANGE here, EFAULT
+    /// elsewhere). Room for the bytes is checked here rather than by the caller,
+    /// because what must fit is what actually moves — a short read at
+    /// end-of-file transfers nothing and so needs no room at all.
     let private writeBytesThrough
         (ctx : NativeCallContext)
         (operation : string)
@@ -339,6 +384,8 @@ module NativeSystemNative =
         (state : IlMachineState)
         : IlMachineState
         =
+        requireBufferRoom ctx operation BufferTransfer.Into buffer bytes.Length state
+
         // One cell at a time: the simulated address space is a graph of typed
         // cells rather than a flat byte array, so "memcpy into the caller's
         // buffer" is necessarily this per-byte walk;
@@ -360,6 +407,42 @@ module NativeSystemNative =
                     (CliType.Numeric (CliNumericType.UInt8 bytes.[i]))
 
         state
+
+    /// Drain `byteCount` bytes from a caller-supplied `byte*`: the mirror of
+    /// `writeBytesThrough`, with the same room requirement and the same per-byte
+    /// walk.
+    let private readBytesThrough
+        (ctx : NativeCallContext)
+        (operation : string)
+        (buffer : ManagedPointerSource)
+        (byteCount : int)
+        (state : IlMachineState)
+        : ImmutableArray<byte>
+        =
+        requireBufferRoom ctx operation BufferTransfer.OutOf buffer byteCount state
+
+        let byteConcreteType =
+            NativeCall.requiredByteConcreteType operation ctx.BaseClassTypes state
+
+        let builder = ImmutableArray.CreateBuilder<byte> byteCount
+
+        for i = 0 to byteCount - 1 do
+            let src = ManagedPointerByteView.addByteOffset state byteConcreteType i buffer
+
+            let cell =
+                IlMachineState.readManagedByrefBytesAs
+                    ctx.BaseClassTypes
+                    state
+                    src
+                    (CliType.Numeric (CliNumericType.UInt8 0uy))
+
+            match cell with
+            | CliType.Numeric (CliNumericType.UInt8 b) -> builder.Add b
+            | other ->
+                failwith
+                    $"%s{operation}: byte read at offset %d{i} returned non-UInt8 cell %O{other} (this is an interpreter bug)"
+
+        builder.MoveToImmutable ()
 
     /// Turn the NUL-terminated bytes a guest passed as a pathname into a
     /// `UnixPath`, applying the length rule a kernel applies at *its* boundary.
@@ -875,11 +958,6 @@ module NativeSystemNative =
                     "SystemNative_GetCpuUtilization: refused to write through null `previous` pointer (CoreLib should not invoke this entry point with a null destination -- ProcessCpuInformation is a fixed `ref` local, never null in valid IL)"
             | _ -> ()
 
-            let byteConcreteType =
-                NativeCall.requiredByteConcreteType "SystemNative_GetCpuUtilization" ctx.BaseClassTypes state
-
-            let mutable state = state
-
             // sizeof(ProcessCpuInformation) = 3 fields * sizeof(ulong) = 24 bytes, verified
             // against both the managed declaration (via IlDump) and the native struct in
             // `pal_time.h` (no padding, three `uint64_t`).
@@ -889,21 +967,15 @@ module NativeSystemNative =
             // does not cover native `pal_*` headers. It is a literal because the boundary here
             // is untyped (`void*`), so deriving it would mean resolving
             // `ProcessCpuInformation`'s own ConcreteTypeHandle purely to describe three
-            // all-zero `ulong`s. Note the bounds check in `MemoryBlock.writeBytes` is only a
-            // partial safety net: it bounds against the whole backing memory block, not
-            // against this struct's own extent, so a too-large width could in principle write
-            // into adjacent memory within the same block rather than failing loudly.
-            for i = 0 to 23 do
-                let dest = ManagedPointerByteView.addByteOffset state byteConcreteType i ptr
-
-                state <-
-                    IlMachineState.writeManagedByrefBytesOrTypedCell
-                        ctx.BaseClassTypes
-                        state
-                        dest
-                        (CliType.Numeric (CliNumericType.UInt8 0uy))
-
-            state
+            // all-zero `ulong`s. `writeBytesThrough` bounds the write against the storage the
+            // pointer names, which catches a width larger than a caller's whole buffer but
+            // not one that merely overruns this struct inside a larger block.
+            writeBytesThrough
+                ctx
+                "SystemNative_GetCpuUtilization"
+                ptr
+                (ImmutableArray.CreateRange (Array.zeroCreate<byte> 24))
+                state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Float 0.0) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -1877,29 +1949,13 @@ module NativeSystemNative =
                 |> Some
             else
 
-            // Only the *base* of the buffer is validated, which is all
-            // `BufferPointer` describes. A guest that asks to read more bytes
-            // than its buffer holds — `pread(fd, stackalloc byte[1], 5, 0)` —
-            // therefore gets as far as the write and then fails inside
-            // `MemoryBlock.writeBytes`, naming the block rather than the
-            // syscall.
-            //
-            // This is a property of the shared `writeBytesThrough` helper rather
-            // than of this handler: measured, `SystemNative_ReadLink` fails
-            // identically for a target longer than the buffer it was given, and
-            // `Stat`/`LStat`/`FStat` write through the same helper. Fixing it
-            // means a "is this whole range writable" query, which needs a byte
-            // extent for every `ByteStorageIdentity` —
-            // `StorageLocation.resolve` yields a container and a coordinate
-            // within it, but no size. That is its own change, and one that
-            // improves every caller at once.
-            //
-            // Distinct from the address screen above, which is what a kernel
-            // checks: `access_ok` bounds the range against the address space,
-            // never against the guest's own allocation. A guest that overflows
-            // its buffer is served by a real kernel corrupting whatever follows
-            // it, and detecting that is more useful than reproducing it. What is
-            // missing is a message that names the syscall.
+            // The screen above bounds the buffer's *address*, which is all a
+            // kernel checks: `access_ok` compares a range against the address
+            // space, never against the guest's own allocation. Whether the bytes
+            // fit in the storage the buffer names is a separate question, asked
+            // by `writeBytesThrough` of what actually moves rather than here of
+            // what was requested — a read at end-of-file transfers nothing and
+            // so needs no room at all.
             match BufferPointer.dereferenceable buffer with
             | None -> fail UnixError.EFAULT
             | Some buffer ->
@@ -2690,31 +2746,10 @@ module NativeSystemNative =
             // on PawPrint as it does on the real CLR — eagerly decoding
             // `buffer` would crash here in `managedPointerOfPointerArgument`
             // for any non-managed pointer literal.
+            // Drain `bufferSize` bytes from `buffer`. Called only after the
+            // bufferSize->0 and buffer->non-null checks succeed.
             let readBuffer (buffer : ManagedPointerSource) (state : IlMachineState) : ImmutableArray<byte> =
-                // Drain `bufferSize` bytes from `buffer`. Called only after
-                // the bufferSize-> 0 and buffer-> non-null checks succeed.
-                let byteConcreteType =
-                    NativeCall.requiredByteConcreteType operation ctx.BaseClassTypes state
-
-                let builder = ImmutableArray.CreateBuilder<byte> bufferSize
-
-                for i = 0 to bufferSize - 1 do
-                    let src = ManagedPointerByteView.addByteOffset state byteConcreteType i buffer
-
-                    let cell =
-                        IlMachineState.readManagedByrefBytesAs
-                            ctx.BaseClassTypes
-                            state
-                            src
-                            (CliType.Numeric (CliNumericType.UInt8 0uy))
-
-                    match cell with
-                    | CliType.Numeric (CliNumericType.UInt8 b) -> builder.Add b
-                    | other ->
-                        failwith
-                            $"%s{operation}: byte read at offset %d{i} returned non-UInt8 cell %O{other} (this is an interpreter bug)"
-
-                builder.MoveToImmutable ()
+                readBytesThrough ctx operation buffer bufferSize state
 
             let result, effect, state =
                 if bufferSize < 0 then
