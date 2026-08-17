@@ -922,6 +922,19 @@ module NativeSignature =
                 else
                     ((state, true), List.zip l.ParameterTypes r.ParameterTypes)
                     ||> List.fold (fun (state, soFar) (l, r) -> if not soFar then (state, false) else recurse state l r)
+        | TypeDefn.FromReference (lRef, _), TypeDefn.FromReference (rRef, _) when
+            leftAssembly.Name.FullName = rightAssembly.Name.FullName && lRef = rRef
+            ->
+            // `CompareTypeTokens`'s first step: within one module, the same token is the same type,
+            // answered before anything is resolved. PawPrint compares the parsed reference rather
+            // than the row index, which decides the same question — within one module, equal name,
+            // namespace and resolution scope name one type — and additionally answers for two rows
+            // that spell the same reference twice.
+            //
+            // This is reachable rather than merely faithful: `Signature_Init` strips custom
+            // modifiers without loading their types, so two signatures can carry the same modifier
+            // naming an assembly nothing has loaded. Resolving it would fail where CoreCLR answers.
+            state, true
         | (TypeDefn.FromDefinition _ | TypeDefn.FromReference _), (TypeDefn.FromDefinition _ | TypeDefn.FromReference _) ->
             // The `SignatureTypeKind` these carry — CoreCLR's E_T_CLASS versus E_T_VALUETYPE — is
             // deliberately not compared. It is decoded from the blob's own element-type byte, so
