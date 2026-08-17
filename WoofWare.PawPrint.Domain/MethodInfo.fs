@@ -1227,12 +1227,7 @@ module MethodInfo =
 
             result.ToImmutable ()
 
-        let typeSig =
-            TypeMethodSignature.make
-                (function
-                | TypeDefn.Void -> MethodReturnType.Void
-                | retType -> MethodReturnType.Returns retType)
-                methodSig
+        let typeSig = TypeMethodSignature.make methodSig
 
         let methodParams = Parameter.readAll metadataReader (methodDef.GetParameters ())
 
