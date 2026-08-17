@@ -607,6 +607,27 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Darwin ->
             PathLimits.create 32 1024 (NameLengthLimit.Utf16CodeUnits 255) SpliceLengthRecheck.Recheck
 
+    /// `sizeof(struct sockaddr_storage)`: the size of the largest socket address
+    /// any Unix we model can hand back, and so the buffer size CoreLib sizes
+    /// every socket-address buffer by. Reported to the guest by
+    /// `SystemNative_GetMaximumAddressSize`.
+    ///
+    /// A compile-time property of the native shim rather than of any socket, like
+    /// `reportsBirthTime`. Unlike that one it takes no flavour: both families
+    /// *define* the constant in their headers rather than computing it
+    /// (`_SS_MAXSIZE` on Darwin, `_SS_SIZE` in glibc's generic `bits/sockaddr.h`)
+    /// and derive the padding members from it, so the value is invariant of
+    /// pointer width as well as agreed between the two — both descend from
+    /// RFC 2553's sample definition. Measured 128 on macOS arm64 and on Linux
+    /// alike, and re-pinned against a real platform on every test run by
+    /// `sourcesPure/SystemNativeGetMaximumAddressSize.cs`. Make it a function of
+    /// the flavour on the day one of them disagrees.
+    ///
+    /// Contrast `sockaddr_un`, which genuinely does differ (106 on Darwin, 110 on
+    /// Linux): that belongs to `SystemNative_GetDomainSocketSizes`, and when it
+    /// arrives these numbers want collecting into one flavour-derived record.
+    let maximumSocketAddressSize : int = 128
+
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
 /// syscall-emulation state: process-wide last-error registers, the native
 /// heap pool backing `Marshal.AllocHGlobal`, the Unix file-descriptor table,
@@ -1347,6 +1368,43 @@ module EmulatedKernel =
     /// `clock_gettime(CLOCK_MONOTONIC)` is finer still.
     [<Literal>]
     let nanosecondsPerTick : int64 = 100L
+
+    /// Whether the simulated process is exempt from the permission rules a kernel
+    /// applies to everyone else: uid 0, and nothing else.
+    ///
+    /// One definition rather than a comparison at each site, because the sites
+    /// answer *different* questions from the same fact — whether `open` may ignore
+    /// a mode that forbids the access it was asked for, and whether a write keeps
+    /// a file's set-user-ID bits — and they must not be able to drift apart about
+    /// who root is.
+    ///
+    /// `EmulatedKernel.defaultUserId` is deliberately not 0: `Environment.IsPrivilegedProcess`
+    /// is literally `GetEUid() == 0`, so a guest run as root skips its own
+    /// privilege guards.
+    let isPrivileged (kernel : EmulatedKernel) : bool = kernel.UserId = 0u
+
+    /// The moment the emulated kernel stamps on an inode it changes now, in the
+    /// `struct timespec` an inode's timestamps are kept in.
+    ///
+    /// The same wall clock `SystemNative_GetSystemTimeAsTicks` reports, so a
+    /// guest that writes a file and then reads `DateTime.UtcNow` sees two
+    /// readings of one clock rather than two clocks that happen to agree. Its
+    /// granularity is therefore the virtual clock's own 100 ns quantum: the
+    /// nanosecond part is always a multiple of 100, where a real filesystem
+    /// records whatever its kernel's clock offers.
+    let fileTimestamp (kernel : EmulatedKernel) : UnixTimestamp =
+        let ticks = systemTimeAsTicks kernel
+
+        // `systemTimeAsTicks` has established the count is non-negative, so
+        // neither the quotient nor the remainder can be, and the nanosecond part
+        // lands in `[0, 1e9)` without the floor correction
+        // `UnixTimestamp.ofMillisecondsSinceEpoch` needs for a pre-epoch instant.
+        let ticksPerSecond = ticksPerMillisecond * 1000L
+
+        UnixTimestamp.createOrFail
+            "EmulatedKernel.fileTimestamp"
+            (ticks / ticksPerSecond)
+            (int (ticks % ticksPerSecond) * int nanosecondsPerTick)
 
     /// Largest `VirtualClockTicks` from which a nanosecond timestamp can be
     /// derived without overflowing the `int64` the PAL entry point returns:

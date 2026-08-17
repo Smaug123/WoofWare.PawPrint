@@ -384,6 +384,75 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The write path's three unarbitrable parts: the descriptor whose
+                // errno the platforms disagree about (fd 0, a pipe's read end,
+                // where Linux lets unseekability win and Darwin unwritability);
+                // everything that turns on a file's mode, since a privileged
+                // process bypasses those rules and the oracle's uid is not this
+                // suite's to choose, where PawPrint's is configuration; and the
+                // timestamps a write does and does not move, which need
+                // PawPrint's deterministic clock to state without racing a real
+                // filesystem's granularity.
+                // `WriteSeeded.cs` is the differential half.
+                FileName = "PWriteRawSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        FileSystem =
+                            let name (s : string) = FileName.parseOrFail "test seed" s
+
+                            let bytes (s : string) =
+                                Text.Encoding.UTF8.GetBytes s |> ImmutableArray.CreateRange
+
+                            let mode (m : int) =
+                                PermissionBits.parseOrFail "test seed" m
+
+                            Map.ofList
+                                [
+                                    name "f", SeedEntry.file (bytes "hello")
+                                    name "ro", SeedEntry.File (bytes "hello", mode 0o444)
+                                    name "wo", SeedEntry.File (bytes "hello", mode 0o200)
+                                    // Set-user-ID; set-group-ID on a
+                                    // group-executable file, which is the shape
+                                    // whose bit a write strips; and sticky, which
+                                    // it must not.
+                                    name "suid", SeedEntry.File (bytes "hello", mode 0o4755)
+                                    name "sgid", SeedEntry.File (bytes "hello", mode 0o2755)
+                                    name "sticky", SeedEntry.File (bytes "hello", mode 0o1755)
+                                ]
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The write path's Darwin arms, which the case above cannot reach
+                // because it runs on the default Linux flavour: which of
+                // unwritability and unseekability wins for a pipe, and whether the
+                // access mode is settled before a negative offset (it is for
+                // `pread` on Darwin and not for `pwrite`, where Linux checks the
+                // offset first for both).
+                //
+                // Configured as macOS for the same reason `SpliceLengthSeeded.cs`
+                // is: on the default kernel these rows have different answers, so
+                // there is no flavour that exercises both files.
+                FileName = "WriteDarwinSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        FileSystem =
+                            Map.ofList
+                                [
+                                    FileName.parseOrFail "test seed" "f",
+                                    SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                                ]
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The `SystemNative_LSeek` rows on which Linux and Darwin
                 // disagree: the order `whence` validity and seekability are
                 // checked in, and the errno for an offset that leaves `int64`.
