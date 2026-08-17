@@ -132,18 +132,13 @@ module IlMachineMemberResolution =
 
             let state, memberSig =
                 memberSig
-                |> TypeMethodSignature.map
+                |> IlMachineTypeResolution.concretizeMethodSignature
+                    loggerFactory
+                    baseClassTypes
                     state
-                    (fun state ty ->
-                        IlMachineTypeResolution.concretizeType
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            sourceAssembly.Name
-                            concreteExtractedTypeArgs
-                            genericMethodTypeArgs
-                            ty
-                    )
+                    sourceAssembly.Name
+                    concreteExtractedTypeArgs
+                    genericMethodTypeArgs
 
             let state, availableMethods =
                 ((state, []), availableMethods)
@@ -159,18 +154,13 @@ module IlMachineMemberResolution =
                     else
                         let state, methSig =
                             meth.Signature
-                            |> TypeMethodSignature.map
+                            |> IlMachineTypeResolution.concretizeMethodSignature
+                                loggerFactory
+                                baseClassTypes
                                 state
-                                (fun state ty ->
-                                    IlMachineTypeResolution.concretizeType
-                                        loggerFactory
-                                        baseClassTypes
-                                        state
-                                        assy.Name
-                                        concreteExtractedTypeArgs
-                                        genericMethodTypeArgs
-                                        ty
-                                )
+                                assy.Name
+                                concreteExtractedTypeArgs
+                                genericMethodTypeArgs
 
                         if methSig = memberSig then
                             state, meth :: acc

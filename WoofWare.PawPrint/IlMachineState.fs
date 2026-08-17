@@ -16,6 +16,8 @@ module IlMachineState =
 
     let concretizeType = IlMachineTypeResolution.concretizeType
 
+    let concretizeMethodSignature = IlMachineTypeResolution.concretizeMethodSignature
+
     let internal resolveTopLevelTypeFromName =
         IlMachineTypeResolution.resolveTopLevelTypeFromName
 

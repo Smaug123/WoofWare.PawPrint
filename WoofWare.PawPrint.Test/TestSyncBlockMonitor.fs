@@ -213,18 +213,13 @@ module TestSyncBlockMonitor =
             |> List.find (fun method -> method.Name = "ToString" && (MethodInfo.arity method = 0))
 
         let state, signature =
-            TypeMethodSignature.map
+            IlMachineState.concretizeMethodSignature
+                loggerFactory
+                baseClassTypes
                 state
-                (fun state ty ->
-                    IlMachineState.concretizeType
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        corelib.Name
-                        ImmutableArray.Empty
-                        ImmutableArray.Empty
-                        ty
-                )
+                corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
                 objectToString.Signature
 
         let method =

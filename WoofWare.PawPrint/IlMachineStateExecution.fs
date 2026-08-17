@@ -349,18 +349,13 @@ module IlMachineStateExecution =
 
             let state, candidateSignature =
                 candidateSignature
-                |> TypeMethodSignature.map
+                |> IlMachineState.concretizeMethodSignature
+                    loggerFactory
+                    baseClassTypes
                     state
-                    (fun state ty ->
-                        IlMachineState.concretizeType
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            candidateAssembly
-                            candidateTypeGenerics
-                            methodToCall.Generics
-                            ty
-                    )
+                    candidateAssembly
+                    candidateTypeGenerics
+                    methodToCall.Generics
 
             let state, retAssignable =
                 match candidateSignature.ReturnType, methodToCall.Signature.ReturnType with
@@ -2283,19 +2278,14 @@ module IlMachineStateExecution =
                 // Convert method signature from TypeDefn to ConcreteTypeHandle using concretization
                 let state, convertedSignature =
                     cctorMethodWithMethodGenerics.Signature
-                    |> TypeMethodSignature.map
+                    |> IlMachineState.concretizeMethodSignature
+                        loggerFactory
+                        baseClassTypes
                         state
-                        (fun state typeDefn ->
-                            IlMachineState.concretizeType
-                                loggerFactory
-                                baseClassTypes
-                                state
-                                concreteType.Assembly
-                                concreteType.Generics
-                                // no method generics for cctor
-                                ImmutableArray.Empty
-                                typeDefn
-                        )
+                        concreteType.Assembly
+                        concreteType.Generics
+                        // no method generics for cctor
+                        ImmutableArray.Empty
 
                 // Convert method instructions (local variables)
                 let state, convertedBody =
