@@ -1682,6 +1682,22 @@ module NativeSystemNative =
                 // code path, and either wants a decision rather than a guess.
                 failwith
                     $"%s{operation}: fd %d{fd} is the standard stream %O{role}, and PawPrint holds no inode for one. Every field `fstat` owes a pipe would be invented here; decide what a stream's `struct stat` is (issue #956) rather than guessing."
+            | Some OpenFileObject.AnonymousInode ->
+                // Refused for the same reason as the standard streams above: an
+                // epoll instance is an anonymous kernel object, so PawPrint
+                // holds no inode to report and every field would be invented.
+                //
+                // Measured, the two platforms share not one field, and Linux's
+                // identity fields are facts about the machine that produced
+                // them rather than portable ones — which is precisely what a
+                // deterministic replay must not depend on. Linux gives
+                // `st_mode` 0600 (permission bits, *no* file-type bits),
+                // `st_nlink` 1, `st_blksize` 4096, and a real anon-inode
+                // `st_dev`/`st_ino`; Darwin gives `st_mode` S_IFIFO (no
+                // permission bits), `st_nlink` 0, `st_blksize` 32, and zero for
+                // both identity fields.
+                failwith
+                    $"%s{operation}: fd %d{fd} is a socket event port, an anonymous kernel object for which PawPrint holds no inode. Every field `fstat` owes one would be invented here, and the platforms agree on none of them; decide what an inode-free descriptor's `struct stat` is — for streams, ports and sockets together (issue #956) — rather than guessing."
             | Some (OpenFileObject.File inode) ->
 
             let entry =
@@ -1805,6 +1821,15 @@ module NativeSystemNative =
                 | OpenFileObject.StandardStream role ->
                     refuseDarwin
                         $"fd %d{fd} is the standard stream %O{role}, which PawPrint models as a pipe. Linux permits `flock` on a pipe and returns 0; Darwin refuses it with ENOTSUP (raw 45, and note Darwin numbers ENOTSUP and EOPNOTSUPP differently, 45 against 102, while Linux gives both 95)."
+                | OpenFileObject.AnonymousInode ->
+                    // Same divergence as the pipe above, and refused for the
+                    // same reason rather than reported: measured, `flock` on a
+                    // kqueue is ENOTSUP for LOCK_SH, LOCK_EX and LOCK_UN alike,
+                    // where Linux's epoll descriptor takes the lock and returns
+                    // 0. Reporting the errno would model one row of Darwin's
+                    // `flock` while the rest of it stays unmodelled.
+                    refuseDarwin
+                        $"fd %d{fd} is a socket event port. Linux permits `flock` on an epoll descriptor and returns 0; Darwin refuses it on a kqueue with ENOTSUP (raw 45), for every operation including LOCK_UN."
                 | OpenFileObject.File _ ->
 
                 match flockRequest, description.Flock with
@@ -1987,6 +2012,14 @@ module NativeSystemNative =
                 | SimulatedUnixFlavour.Darwin when not readable -> fail UnixError.EBADF
                 | SimulatedUnixFlavour.Darwin
                 | SimulatedUnixFlavour.Linux -> fail UnixError.ESPIPE
+            | OpenFileTarget.SocketEventPort ->
+                // Unseekable on both platforms, with no tie to break: a port is
+                // open for reading (`ReadWrite`), so Darwin's unreadability arm
+                // above cannot apply. Measured, `pread(port, buf, 8, 0)` and
+                // `pread(port, buf, 0, 0)` are both ESPIPE on both platforms,
+                // and so is `pread(port, (void*)-1, 8, 0)` — unseekability
+                // precedes the buffer screen.
+                fail UnixError.ESPIPE
             | OpenFileTarget.File (inode, _) ->
 
             // A descriptor not open for reading: EBADF on both platforms, which
@@ -2180,6 +2213,15 @@ module NativeSystemNative =
                 | SimulatedUnixFlavour.Darwin when not writable -> fail UnixError.EBADF
                 | SimulatedUnixFlavour.Darwin
                 | SimulatedUnixFlavour.Linux -> fail UnixError.ESPIPE
+            | OpenFileTarget.SocketEventPort ->
+                // A port is unseekable on both platforms, and — unlike a
+                // standard stream — there is no tie to break, because it is open
+                // for writing (`ReadWrite`, see
+                // `FileDescriptorRegistry.createSocketEventPort`). Measured,
+                // `pwrite(port, buf, 8, 0)` is ESPIPE on both, as is
+                // `pwrite(port, buf, 0, 0)` — so the zero-length shortcut does
+                // not apply either.
+                fail UnixError.ESPIPE
             | OpenFileTarget.File (inode, _) ->
 
             // `vfs_write`'s EBADF for a descriptor not open for writing, which
@@ -2315,6 +2357,24 @@ module NativeSystemNative =
                 | OpenFileTarget.StandardStream role ->
                     failwith
                         $"%s{operation}: fd %d{fd} names standard stream %O{role}, whose access mode permits reading. PawPrint models the output streams as the write ends of pipes, so only stdin is readable (this is an interpreter bug)."
+                | OpenFileTarget.SocketEventPort ->
+                    // An epoll instance has no read operation, so the read is
+                    // refused for the *kind* of object rather than for the
+                    // access mode — which is why the port is `ReadWrite` and
+                    // still gets here rather than being EBADF above. The two
+                    // platforms name that refusal differently: measured, Linux
+                    // answers EINVAL (`vfs_read`'s `FMODE_CAN_READ` test) and
+                    // Darwin answers ENXIO.
+                    //
+                    // Placed in this classification rather than after the buffer
+                    // screen because it precedes it on both: measured,
+                    // `read(port, (void*)-1, 8)` is EINVAL on Linux and ENXIO on
+                    // Darwin, not EFAULT. Length is irrelevant too —
+                    // `read(port, buf, 0)` gives the same answer as a non-zero
+                    // length, unlike stdin's zero-return shortcut below.
+                    match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+                    | SimulatedUnixFlavour.Linux -> Error UnixError.EINVAL
+                    | SimulatedUnixFlavour.Darwin -> Error UnixError.ENXIO
                 | OpenFileTarget.File (inode, offset) -> Ok (ReadTarget.File (inode, offset))
 
             match target with
@@ -2486,6 +2546,18 @@ module NativeSystemNative =
                     // reads back to decide `CanSeek`, so it is on the BCL's own
                     // path rather than a corner.
                     Some DescriptorFault.NotSeekable
+                | Some OpenFileTarget.SocketEventPort ->
+                    // The one target whose *seekability* depends on the
+                    // platform, rather than merely the errno or the ordering.
+                    // Measured: Darwin refuses `lseek` on a kqueue with ESPIPE,
+                    // while Linux gives an epoll descriptor `noop_llseek`, which
+                    // succeeds and reports 0 without consulting the offset or
+                    // moving anything. So Darwin has a descriptor fault here and
+                    // Linux has none; the Linux success is served below, after
+                    // the whence check the syscall still applies.
+                    match flavour with
+                    | SimulatedUnixFlavour.Darwin -> Some DescriptorFault.NotSeekable
+                    | SimulatedUnixFlavour.Linux -> None
                 | Some (OpenFileTarget.File _) -> None
 
             // The two descriptor faults are ordered *differently* against the
@@ -2519,6 +2591,25 @@ module NativeSystemNative =
             match ordered with
             | Some error -> fail error
             | None ->
+
+            // Linux's `noop_llseek`, reached only under the Linux flavour (Darwin
+            // answered ESPIPE above). It returns the file position unchanged, and
+            // an epoll descriptor's is always 0, so the answer is 0 for every
+            // input that gets here — measured for `SEEK_SET` with offset -1 and
+            // with INT64_MAX alike, and for whence 3 and 4.
+            //
+            // Ahead of the SEEK_DATA/SEEK_HOLE refusal below, which is why that
+            // refusal is not simply hoisted to the whence check: it is a
+            // statement about a *file's* sparseness, and a port has none. The
+            // syscall's own `whence <= SEEK_MAX` guard still applies and has
+            // already run, so whence 5 and above were rejected as EINVAL.
+            match target with
+            | Some OpenFileTarget.SocketEventPort ->
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 (Int64Source.Verbatim 0L)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | _ ->
 
             // Whence *validity* is settled; whence *semantics* is not, and the
             // two sit at different points in Linux's order — which is why
@@ -2938,6 +3029,118 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim resultCode)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_CreateSocketEventPort",
+          [ ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            // `int32_t SystemNative_CreateSocketEventPort(intptr_t* port)`
+            // (pal_networking.c:3429). `epoll_create1(EPOLL_CLOEXEC)` on Linux
+            // and `kqueue()` on Darwin, both of which hand back an ordinary
+            // descriptor onto an anonymous kernel object.
+            //
+            // Returns a PAL `Interop.Error` rather than -1-and-errno, so
+            // `LastSystemError` is not touched: the sole managed caller,
+            // `SocketAsyncEngine`, switches on the returned value.
+            //
+            // PawPrint's allocation cannot fail — no descriptor limit is
+            // modelled, `RLIMIT_NOFILE` not being in the interop surface — so
+            // the only failure here is the wrapper's own null screen.
+            let operation = "SystemNative_CreateSocketEventPort"
+
+            let portArgument = bufferPointerArgument operation "port" instruction.Arguments.[0]
+
+            match portArgument with
+            | BufferPointer.RawAddress 0UL ->
+                // The wrapper's *only* screen is `port == NULL`, and it answers
+                // before creating anything, so no descriptor leaks here.
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal UnixError.EFAULT)))
+                    ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | _ ->
+
+            match BufferPointer.dereferenceable portArgument with
+            | None ->
+                // Deliberately *not* EFAULT. A non-null address naming no
+                // storage passes the wrapper's null check, so the real code
+                // creates the descriptor and then faults on its unconditional
+                // `*port = fd` store — a SIGSEGV that kills the process, not an
+                // error code the guest can catch. Answering EFAULT here would
+                // turn that crash into a plausible wrong answer and let the
+                // guest continue with a descriptor table the real run would
+                // never have reached.
+                failwith
+                    $"%s{operation}: `port` is %O{portArgument}, which is not null but names no storage. The C wrapper screens only `port == NULL`, so a real run would create the descriptor and then fault storing through this address; PawPrint does not model that fault. Pass a real out-parameter."
+            | Some port ->
+
+            let fd, registry =
+                FileDescriptorRegistry.createSocketEventPort state.Kernel.FileDescriptors
+
+            let state =
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        FileDescriptors = registry
+                    }
+                )
+
+            // `*port = fd`, as an `intptr_t`: eight bytes on every platform
+            // PawPrint models, little-endian on both x64 and arm64. The C
+            // performs this store unconditionally, on the error path too, where
+            // it writes the inner function's -1; PawPrint's creation is
+            // infallible, so only the success value is ever stored.
+            let bytes = Array.zeroCreate<byte> 8
+            BinaryPrimitives.WriteInt64LittleEndian (Span<byte> bytes, int64 fd)
+
+            writeBytesThrough ctx operation port (ImmutableArray.CreateRange bytes) state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int32 (Int32Source.Verbatim UnixError.palSuccess))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        | Some "SystemNative_CloseSocketEventPort",
+          [ ConcreteIntPtr state.ConcreteTypes ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            // `int32_t SystemNative_CloseSocketEventPort(intptr_t port)`
+            // (pal_networking.c:3442), which is `close(2)` on the descriptor and
+            // nothing else. It does *not* check that the descriptor names a
+            // port, so closing an ordinary file through it succeeds — modelled
+            // here by deferring to the same registry operation
+            // `SystemNative_Close` uses.
+            //
+            // The C maps both success and EINTR to `Error_SUCCESS`; PawPrint
+            // delivers no signals during a close, so EINTR is unreachable and
+            // EBADF is the only failure.
+            //
+            // The PAL code is the return value, but `close(2)` itself still sets
+            // `errno` on the way past — so a guest that declared this entry point
+            // `SetLastError = true`, or that reads `Marshal.GetLastSystemError`
+            // after a raw P/Invoke, must see EBADF rather than whatever was there
+            // before. Same failure path as `SystemNative_Close`, and errno is
+            // left untouched on success by the same Unix convention.
+            let fd = fdArgument "SystemNative_CloseSocketEventPort" instruction.Arguments.[0]
+
+            let error, state =
+                match FileDescriptorRegistry.close fd state.Kernel.FileDescriptors with
+                | Ok registry ->
+                    UnixError.palSuccess,
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            FileDescriptors = registry
+                        }
+                    )
+                | Error FileDescriptorCloseError.BadFd ->
+                    UnixError.toPal UnixError.EBADF,
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            LastSystemError = UnixError.toRawErrno UnixError.EBADF
+                        }
+                    )
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim error)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_IsATty",
           [ ConcreteIntPtr state.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
@@ -3044,6 +3247,23 @@ module NativeSystemNative =
                         -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
                     | Some description ->
                         match description.Target with
+                        | OpenFileTarget.SocketEventPort ->
+                            // An epoll instance has no write operation, so the
+                            // refusal is for the *kind* of object rather than
+                            // for the access mode — the port permits writing
+                            // and so passes the EBADF arm above. Measured, Linux
+                            // answers EINVAL and Darwin ENXIO.
+                            //
+                            // Ahead of the buffer screen and of the zero-size
+                            // no-op, on both platforms: measured,
+                            // `write(port, (void*)-1, 8)` is EINVAL/ENXIO rather
+                            // than EFAULT, and no length is a no-op.
+                            let error =
+                                match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+                                | SimulatedUnixFlavour.Linux -> UnixError.EINVAL
+                                | SimulatedUnixFlavour.Darwin -> UnixError.ENXIO
+
+                            -1, StepEffect.NoEffect, setErrno state error
                         | OpenFileTarget.File (inode, offset) ->
                             let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 

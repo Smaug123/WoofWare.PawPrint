@@ -453,6 +453,39 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // A socket event port as a descriptor: that
+                // `SystemNative_CreateSocketEventPort` allocates one like any
+                // other fd, that `dup`/`close` treat it like any other, and what
+                // the ordinary file operations answer for one under the Linux
+                // flavour.
+                //
+                // Not differential: the descriptor numbers are unpredictable
+                // under the oracle (OpenFdNumbering.cs gives the reason), and
+                // every errno row but pread/pwrite is flavour-dependent.
+                FileName = "SocketEventPortLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The port rows Darwin answers differently: ENXIO rather than
+                // EINVAL for read/write, and ESPIPE rather than a successful 0
+                // for `lseek` — a kqueue is not seekable at all, where an epoll
+                // descriptor is seekable-but-inert. Configured as macOS for the
+                // same reason `WriteDarwinSeeded.cs` is.
+                FileName = "SocketEventPortDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The `SystemNative_LSeek` rows on which Linux and Darwin
                 // disagree: the order `whence` validity and seekability are
                 // checked in, and the errno for an offset that leaves `int64`.

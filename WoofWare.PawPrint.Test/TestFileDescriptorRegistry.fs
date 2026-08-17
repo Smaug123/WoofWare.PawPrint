@@ -83,6 +83,88 @@ module TestFileDescriptorRegistry =
             FileDescriptorRegistry.tryFindId duplicate registry
             |> shouldEqual (FileDescriptorRegistry.tryFindId a registry)
 
+    /// Two socket event ports are two *descriptions* but one `flock` object.
+    /// That split is why `OpenFileObject` must stay the contention key rather
+    /// than becoming a general-purpose identity: on Linux every anon-inode file
+    /// shares a single inode, so an exclusive lock on one port excludes the
+    /// other, while the descriptions themselves stay distinct.
+    ///
+    /// The object half has a guest observer — `SocketEventPortLinux.cs` locks
+    /// one port and finds the other excluded — so this test exists for the
+    /// description half, which has none: nothing a guest can call tells two
+    /// ports apart. That half matters for the wait rather than for `flock`.
+    /// `ThreadStatus.BlockedOnSocketEvents` keys a parked thread on the port's
+    /// `OpenFileDescriptionId`, so two ports sharing one description identity
+    /// would wake the wrong waiter once `SystemNative_WaitForSocketEvents`
+    /// lands.
+    [<Test>]
+    let ``two socket event ports are two descriptions but one flock object`` () : unit =
+        let a, registry =
+            FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
+
+        let b, registry = FileDescriptorRegistry.createSocketEventPort registry
+
+        a |> shouldEqual 3
+        b |> shouldEqual 4
+
+        // Distinct descriptions: each carries its own `Flock` slot, and each is
+        // a separate wait target.
+        FileDescriptorRegistry.tryFindId a registry
+        |> shouldNotEqual (FileDescriptorRegistry.tryFindId b registry)
+
+        // One object, so they contend.
+        FileDescriptorRegistry.tryFindObject a registry
+        |> shouldEqual (FileDescriptorRegistry.tryFindObject b registry)
+
+        match FileDescriptorRegistry.dup a registry with
+        | Error e -> failwith $"expected dup to succeed, got %O{e}"
+        | Ok (duplicate, registry) ->
+            // `dup` shares the description, so it is the *same* port rather than
+            // an equal one — the distinction two `createSocketEventPort` calls
+            // draw in the other direction above.
+            FileDescriptorRegistry.tryFindId duplicate registry
+            |> shouldEqual (FileDescriptorRegistry.tryFindId a registry)
+
+            duplicate |> shouldEqual 5
+
+            FileDescriptorRegistry.assertInvariants "two ports and a dup" registry
+            |> ignore<FileDescriptorRegistry>
+
+    /// Closing one descriptor of a `dup` pair leaves the port alive, and closing
+    /// the last destroys it — the same rule as for a file, asserted here because
+    /// a port is the first target kind whose *identity* is the description, so
+    /// "the description outlived its descriptors" would be a different bug.
+    [<Test>]
+    let ``a socket event port outlives a closed descriptor but not its last`` () : unit =
+        let a, registry =
+            FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
+
+        let b, registry =
+            match FileDescriptorRegistry.dup a registry with
+            | Ok (duplicate, registry) -> duplicate, registry
+            | Error e -> failwith $"expected dup to succeed, got %O{e}"
+
+        let id = FileDescriptorRegistry.tryFindId a registry
+
+        let registry =
+            match FileDescriptorRegistry.close a registry with
+            | Ok registry -> registry
+            | Error e -> failwith $"expected close to succeed, got %O{e}"
+
+        FileDescriptorRegistry.tryFindId b registry |> shouldEqual id
+        FileDescriptorRegistry.descriptions registry |> Map.count |> shouldEqual 4
+
+        let registry =
+            match FileDescriptorRegistry.close b registry with
+            | Ok registry -> registry
+            | Error e -> failwith $"expected close to succeed, got %O{e}"
+
+        // Only the three standard streams are left.
+        FileDescriptorRegistry.descriptions registry |> Map.count |> shouldEqual 3
+
+        FileDescriptorRegistry.assertInvariants "port closed" registry
+        |> ignore<FileDescriptorRegistry>
+
     /// Descriptor numbers are reused; description identities are not. The
     /// former is POSIX ("lowest free"), the latter is what keeps a replay trace
     /// unambiguous about which open a given description was.
@@ -1077,7 +1159,8 @@ module TestFileDescriptorRegistry =
     let private offsetOf (fd : int) (registry : FileDescriptorRegistry) : int64 option =
         match FileDescriptorRegistry.tryFindTarget fd registry with
         | None -> failwith $"fd %d{fd} is not live"
-        | Some (OpenFileTarget.StandardStream _) -> None
+        | Some (OpenFileTarget.StandardStream _)
+        | Some OpenFileTarget.SocketEventPort -> None
         | Some (OpenFileTarget.File (_, offset)) -> Some offset
 
     [<Test>]

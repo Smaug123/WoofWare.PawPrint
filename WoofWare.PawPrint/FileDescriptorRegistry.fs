@@ -32,6 +32,27 @@ type OpenFileObject =
     /// Not by path: renaming or deleting the path leaves this description
     /// naming the same file, which is what a real kernel does.
     | File of inode : InodeNumber
+    /// A file on Linux's `anon_inodefs` — today only a socket event port, but
+    /// `eventfd`, `timerfd` and `signalfd` all live here too.
+    ///
+    /// **Payload-free on purpose, and it is a `flock` fact rather than an
+    /// aesthetic one.** Every anon-inode file in a process shares a *single*
+    /// inode, so they all contend with one another. Measured on Linux 6.18.5:
+    /// two `epoll_create1` descriptors and an `eventfd` all report
+    /// `st_dev=13, st_ino=15`; `flock(LOCK_EX|LOCK_NB)` succeeds on the first
+    /// and returns `EWOULDBLOCK` on either of the others; and releasing the
+    /// first lets the second take it.
+    ///
+    /// So giving each port its own identity here would be wrong in a way a
+    /// guest can see: PawPrint would grant two exclusive locks where Linux
+    /// grants one. `OpenFileObject` is the contention key (see this type's
+    /// summary), not a general-purpose identity — code that wants to tell two
+    /// ports apart wants `OpenFileDescriptionId`, which is what
+    /// `ThreadStatus.BlockedOnSocketEvents` keys on.
+    ///
+    /// Not the answer for a socket, when one lands: Linux puts those on
+    /// `sockfs` with an inode each, not on `anon_inodefs`.
+    | AnonymousInode
 
 /// The mode of an advisory whole-file lock taken by `flock(2)`. "No lock" is
 /// the absence of one of these (`OpenFileDescription.Flock` is an option).
@@ -68,6 +89,22 @@ type OpenFileTarget =
     /// bounded by the file's length — only by being non-negative, which
     /// `VirtualFileSystem.seekTarget` enforces.
     | File of inode : InodeNumber * offset : int64
+    /// An epoll instance (Linux) or kqueue (Darwin), handed out by
+    /// `SystemNative_CreateSocketEventPort` and destroyed by
+    /// `SystemNative_CloseSocketEventPort` — which is `close(2)`, which is why
+    /// the port is a descriptor at all rather than a separate kernel table.
+    ///
+    /// No offset, because neither kernel maintains one for it: measured,
+    /// Linux's `lseek` on an epoll descriptor is `noop_llseek`, returning 0 for
+    /// any whence in 0..4 and any offset (`-1` and `INT64_MAX` alike), while
+    /// Darwin refuses with `ESPIPE`. So there is no position for a caller to
+    /// move or read.
+    ///
+    /// No interest list either: registering a descriptor with a port is
+    /// `SystemNative_TryChangeSocketEventRegistration`, and observing the
+    /// resulting readiness is `SystemNative_WaitForSocketEvents`. Neither
+    /// exists yet, so a registration stored here would be state nothing reads.
+    | SocketEventPort
 
 /// Which transfers `open(2)`'s access mode permits: `O_RDONLY`, `O_WRONLY` or
 /// `O_RDWR`.
@@ -148,10 +185,15 @@ module OpenFileDescription =
     /// exactly when they name the same object, whatever their offsets. Callers
     /// asking "are these the same file?" must compare these rather than the
     /// descriptions.
+    ///
     let object (description : OpenFileDescription) : OpenFileObject =
         match description.Target with
         | OpenFileTarget.StandardStream role -> OpenFileObject.StandardStream role
         | OpenFileTarget.File (inode, _) -> OpenFileObject.File inode
+        // Every socket event port collapses to one object, because on Linux
+        // every anon-inode file shares one inode and so they all contend under
+        // `flock`. See `OpenFileObject.AnonymousInode`.
+        | OpenFileTarget.SocketEventPort -> OpenFileObject.AnonymousInode
 
 /// In-memory model of a Unix per-process file descriptor table, and of the
 /// open file descriptions those descriptors point at.
@@ -464,6 +506,42 @@ module FileDescriptorRegistry =
             NextId = OpenFileDescriptionId (raw + 1L)
         }
 
+    /// Mirrors `epoll_create1(EPOLL_CLOEXEC)` (Linux) / `kqueue()` (Darwin):
+    /// allocate a fresh open file description naming a new, empty socket event
+    /// port, and the lowest non-negative descriptor not in use to point at it.
+    ///
+    /// Fresh, like `openFile` and unlike `dup`: two `epoll_create1` calls give
+    /// two instances, which is what makes them separately identifiable (see
+    /// `OpenFileObject.SocketEventPort`).
+    ///
+    /// The access mode is `ReadWrite`, and that is load-bearing rather than
+    /// cosmetic: `SystemNative_Read` checks `FileAccessMode.permitsRead` before
+    /// it looks at the target kind and answers `EBADF` if it fails, whereas a
+    /// real port answers `EINVAL` (Linux) or `ENXIO` (Darwin) — measured. Both
+    /// kernels open the underlying anonymous file `O_RDWR`.
+    ///
+    /// Total, like `openFile` and for the same reason: PawPrint models no
+    /// descriptor limit, so there is no `EMFILE`/`ENFILE` to report.
+    let createSocketEventPort (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
+        let id = registry.NextId
+        let (OpenFileDescriptionId raw) = id
+        let fd = lowestFree registry.Fds
+
+        fd,
+        { registry with
+            Fds = Map.add fd id registry.Fds
+            Descriptions =
+                Map.add
+                    id
+                    {
+                        Target = OpenFileTarget.SocketEventPort
+                        AccessMode = FileAccessMode.ReadWrite
+                        Flock = None
+                    }
+                    registry.Descriptions
+            NextId = OpenFileDescriptionId (raw + 1L)
+        }
+
     /// May two *different* open file descriptions on one file hold these two
     /// locks at the same time? Symmetric, so `checkInvariants` can apply it to
     /// an unordered pair.
@@ -601,6 +679,9 @@ module FileDescriptorRegistry =
         | OpenFileTarget.StandardStream role ->
             failwith
                 $"setOffset: fd %d{fd} names standard stream %O{role}, which PawPrint models as a pipe and so has no file offset (this is an interpreter bug: the caller should have answered ESPIPE)."
+        | OpenFileTarget.SocketEventPort ->
+            failwith
+                $"setOffset: fd %d{fd} names a socket event port, which holds no file offset on either platform — Linux's lseek on one is noop_llseek and Darwin's is ESPIPE (this is an interpreter bug: the caller should have answered without moving a position)."
         | OpenFileTarget.File (inode, _) ->
 
         { registry with
@@ -644,7 +725,8 @@ module FileDescriptorRegistry =
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with
-                | OpenFileTarget.StandardStream _ -> None
+                | OpenFileTarget.StandardStream _
+                | OpenFileTarget.SocketEventPort -> None
                 | OpenFileTarget.File (_, offset) ->
                     if offset < 0L then
                         Some (FileDescriptorRegistryDefect.NegativeOffset (id, offset))
