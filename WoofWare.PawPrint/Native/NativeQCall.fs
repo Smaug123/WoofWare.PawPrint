@@ -102,6 +102,7 @@ module NativeQCall =
             "IsEventSourceLoggingEnabled", NativeEventSource.tryExecuteQCall "IsEventSourceLoggingEnabled"
             "LogEventSource", NativeEventSource.tryExecuteQCall "LogEventSource"
             "Signature_Init", NativeSignature.tryExecuteQCall "Signature_Init"
+            "Signature_AreEqual", NativeSignature.tryExecuteQCall "Signature_AreEqual"
             "Signature_GetCustomModifiersAtOffset",
             NativeSignature.tryExecuteQCall "Signature_GetCustomModifiersAtOffset"
             "Array_CreateInstance", NativeArray.tryExecuteQCall "Array_CreateInstance"

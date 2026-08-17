@@ -1,22 +1,20 @@
 using System;
 using System.Reflection;
 
-// Parked. Two properties on one type sharing a name — which for C# means overloaded indexers, both
-// called `Item` — make `RuntimeType.PopulateProperties` compare their signatures to decide whether
-// the second is a duplicate, via `RuntimePropertyInfo.EqualsSig` and so `Signature.AreEqual`.
+// Two properties on one type sharing a name — which for C# means overloaded indexers, both called
+// `Item` — make `RuntimeType.PopulateProperties` compare their signatures to decide whether the
+// second is a duplicate, via `RuntimePropertyInfo.EqualsSig` and so `Signature.AreEqual`.
 //
-// Measured: this dies in
-//   Unimplemented native method (PInvokeImpl QCall!Signature_AreEqual)
-// which is a *different* QCall from `Signature_Init`, with its own semantics
-// (`MetaSig::CompareMethodSigs`, comparing two blobs under two type contexts).
+// This file reaches only the *unequal* answer, and cannot tell a real comparison from one that
+// never returns true: for two genuinely distinct indexers, "not equal" is the correct answer, so an
+// implementation stuck there produces exactly the property list asserted below, accessor identities
+// included. `ReflectionPropertyHiding.cs` is what pins the other direction — `new` hiding is the
+// shape that makes the comparison answer "equal" — and `ReflectionPropertyHidingCrossModule.cs`
+// pins it across assemblies, where the byte-equality fast path cannot fire.
 //
-// This became reachable only once PropertySig decoding landed; before that, any property reflection
-// died earlier in `Signature_Init`. A hidden inherited property of the same name reaches the same
-// comparison, so this file stands in for that shape too.
-//
-// Not vacuous: an implementation that always answered "not equal" would report two properties here
-// and still pass a test that only counted them, so the accessor identities are checked as well —
-// naming which overload each `GetValue` reached.
+// What this file does add over those: two properties on *one* type, so the comparison runs with
+// both blobs in the same module and at the same declaring type, and index parameters rather than a
+// property type carry the difference.
 
 public class Sample
 {
