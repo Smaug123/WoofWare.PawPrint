@@ -98,6 +98,7 @@
     <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestUnsafeAccessorRead.fs" />
     <Compile Include="TestNativeKernel32.fs" />
+    <Compile Include="TestNativeHeapFree.fs" />
     <Compile Include="TestFieldHandleRegistry.fs" />
     <Compile Include="TestNativeMetadataImport.fs" />
     <Compile Include="TestLocalSignatureDecoding.fs" />

@@ -893,3 +893,203 @@ class Program
             AssertTerminalState = None
         }
         |> runTest
+
+    /// The one thing every `runPawPrintSource` case below wants from its outcome:
+    /// that the guest ran to completion and returned the exit code it promised.
+    /// Its own assertions are the interesting part, so a wrong code is reported
+    /// with the code the guest actually chose.
+    let private expectExitCode (expected : int) (outcome : RunOutcome) : IlMachineState =
+        match outcome with
+        | RunOutcome.NormalExit (terminalState, terminatingThread) ->
+            match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+            | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ ->
+                exitCode |> shouldEqual expected
+                terminalState
+            | [] -> failwith "expected program to return an int, but it returned void"
+            | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+        | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
+        | RunOutcome.FailFast (_, _, message) ->
+            let m = message |> Option.defaultValue "<no message>"
+            failwith $"expected normal exit, got Environment.FailFast: %s{m}"
+        | RunOutcome.SignalTerminated (_, signal) ->
+            failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
+        | RunOutcome.GuestUnhandledException (_, _, exn) ->
+            failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+
+    /// The variables `Environment.GetEnvironmentVariables` is asserted against
+    /// below, chosen so that no single mistake in the environment block satisfies
+    /// them all: an empty value (which must stay present-and-empty rather than
+    /// vanishing, since an entry with no `=` is one CoreLib discards), a value
+    /// containing `=` (which must not be split), non-ASCII including an astral
+    /// character (two UTF-16 code units, so a byte/code-unit confusion shows), and
+    /// two names where one is a prefix of the other.
+    let private environmentVariablesSeed : Map<string, string> =
+        Map.ofList
+            [
+                "PAWPRINT_EMPTY", ""
+                "PAWPRINT_EQUALS", "a=b=c"
+                "PAWPRINT_UNICODE", "\u00e9\u4e2d\U0001F436"
+                "PAWPRINT_P", "1"
+                "PAWPRINT_PP", "2"
+            ]
+
+    /// `environmentVariablesSeed` plus the count the guest should see, derived
+    /// from the overlay rule rather than written down: the kernel's table is
+    /// `EmulatedKernel.defaultEnvironment` with the seed laid over it, and this
+    /// entry is itself one more variable.
+    ///
+    /// Derived rather than hardcoded because the count is the assertion that
+    /// catches a dropped or duplicated entry, and a hand-maintained number would
+    /// silently stop matching if the seed or the defaults changed.
+    let private environmentVariablesConfig : Map<string, string> =
+        let overlaid =
+            (EmulatedKernel.defaultEnvironment, environmentVariablesSeed)
+            ||> Map.fold (fun acc key value -> Map.add key value acc)
+
+        environmentVariablesSeed
+        |> Map.add "PAWPRINT_EXPECTED_COUNT" (string (Map.count overlaid + 1))
+
+    [<Test>]
+    let ``GetEnvironmentVariables reports exactly the emulated environment`` () =
+        // Impure in spirit — the value asserted is PawPrint's own seeded table,
+        // which the real runtime cannot be an oracle for, since it would report
+        // whatever environment the test host was started with. The cross-runtime
+        // half of the contract lives in sourcesPure/EnvironmentGetVariables.cs.
+        //
+        // The strongest check here is the round-trip: every variable the
+        // environment *block* reported must agree with what
+        // `Environment.GetEnvironmentVariable` answers, and that reads
+        // `Kernel.Environment` directly through a different QCall. So a block
+        // whose entries split at the wrong `=` produces a name the table does not
+        // hold, and fails — without this test having to know the table itself.
+        let source =
+            """
+using System;
+using System.Collections;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        IDictionary vars = Environment.GetEnvironmentVariables();
+
+        string expectedCount = Environment.GetEnvironmentVariable("PAWPRINT_EXPECTED_COUNT");
+        if (expectedCount == null) return 1;
+
+        // Pins that no entry was dropped or duplicated, which a missing or
+        // doubled block terminator would cause.
+        if (vars.Count != int.Parse(expectedCount)) return 2;
+
+        foreach (DictionaryEntry entry in vars)
+        {
+            string key = (string)entry.Key;
+            string value = (string)entry.Value;
+
+            // CoreLib discards an entry whose first '=' is not after the first
+            // character, so a key that is empty or contains '=' cannot come out
+            // of a well-formed block at all.
+            if (key.Length == 0) return 3;
+            if (key.IndexOf('=') >= 0) return 4;
+
+            if (Environment.GetEnvironmentVariable(key) != value) return 5;
+        }
+
+        // Present-and-empty, not absent.
+        if (!vars.Contains("PAWPRINT_EMPTY")) return 6;
+        if ((string)vars["PAWPRINT_EMPTY"] != "") return 7;
+
+        // Only the first '=' separates; the rest belongs to the value.
+        if ((string)vars["PAWPRINT_EQUALS"] != "a=b=c") return 8;
+
+        // Three characters, four UTF-16 code units.
+        if ((string)vars["PAWPRINT_UNICODE"] != "\u00e9\u4e2d\U0001F436") return 9;
+
+        // A name that is a prefix of another stays distinct from it.
+        if ((string)vars["PAWPRINT_P"] != "1") return 10;
+        if ((string)vars["PAWPRINT_PP"] != "2") return 11;
+
+        // A name never configured is absent rather than empty.
+        if (vars.Contains("PAWPRINT_NEVER_SET")) return 12;
+
+        // A second call must build a fresh dictionary from a fresh block, so the
+        // first call cannot have cached or consumed anything.
+        IDictionary again = Environment.GetEnvironmentVariables();
+        if (ReferenceEquals(again, vars)) return 13;
+        if (again.Count != vars.Count) return 14;
+        if ((string)again["PAWPRINT_EQUALS"] != "a=b=c") return 15;
+
+        return 0;
+    }
+}
+"""
+
+        runPawPrintSource
+            "EmulatedEnvironmentGetVariables.cs"
+            source
+            { KernelConfig.Default with
+                Environment = environmentVariablesConfig
+            }
+            (fun _image pawPrintResult -> expectExitCode 0 pawPrintResult |> ignore<IlMachineState>)
+
+    [<Test>]
+    let ``GetEnvironmentVariables releases every block it allocates`` () =
+        // A leaked environment block is invisible to the guest — no double free,
+        // no use-after-free, and the next call simply allocates another — so the
+        // only way to see whether `FreeEnvironmentStringsW` really frees is to
+        // count what the native heap still owns when the process ends.
+        //
+        // Asserted as "independent of how many blocks were taken" rather than
+        // against a fixed number, because the interpreter's own startup may leave
+        // native blocks of its own and this test should not have to know how
+        // many. If the free were a no-op, the four-call run would end with three
+        // more live blocks than the one-call run.
+        let source =
+            """
+using System;
+using System.Collections;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        string raw = Environment.GetEnvironmentVariable("PAWPRINT_CALL_COUNT");
+        if (raw == null) return 1;
+
+        int calls = int.Parse(raw);
+        int total = 0;
+
+        for (int i = 0; i < calls; i++)
+        {
+            IDictionary vars = Environment.GetEnvironmentVariables();
+            total += vars.Count;
+        }
+
+        // Every call saw the same table, so a torn or partly-freed block shows up
+        // here rather than being averaged away.
+        if (total % calls != 0) return 2;
+
+        return 0;
+    }
+}
+"""
+
+        let liveBlocksAfter (calls : int) : int =
+            let mutable live = -1
+
+            runPawPrintSource
+                "EmulatedEnvironmentBlockLifetime.cs"
+                source
+                { KernelConfig.Default with
+                    Environment = Map.ofList [ "PAWPRINT_CALL_COUNT", string calls ]
+                }
+                (fun _image pawPrintResult ->
+                    let terminalState = expectExitCode 0 pawPrintResult
+                    live <- NativeMemoryPool.liveBlockCount terminalState.Kernel.NativeMemoryPool
+                )
+
+            live
+
+        let afterOne = liveBlocksAfter 1
+        let afterFour = liveBlocksAfter 4
+
+        afterFour |> shouldEqual afterOne

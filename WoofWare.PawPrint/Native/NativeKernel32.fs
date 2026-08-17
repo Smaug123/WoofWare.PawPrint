@@ -36,6 +36,104 @@ module NativeKernel32 =
                     ValueToWrite = Some value
                 }
 
+    /// Refuse an environment entry that no real environment block can express,
+    /// rather than flattening it into a block whose parse disagrees with the
+    /// table it came from.
+    ///
+    /// A name containing `=` splits in the wrong place: name `A=B` with value
+    /// `C` becomes the entry `A=B=C`, which CoreLib reads back as `A` ->
+    /// `B=C` while PawPrint's own `GetEnvironmentVariableW` still answers `C`
+    /// for `A=B`. An empty name produces `=value`, which CoreLib skips
+    /// outright, so the variable would be invisible to
+    /// `Environment.GetEnvironmentVariables` and visible to
+    /// `Environment.GetEnvironmentVariable`. A NUL in either half truncates the
+    /// entry at that point, splitting one variable into a variable and a
+    /// fragment.
+    ///
+    /// Only `KernelConfig.Environment` can produce such an entry:
+    /// `EmulatedKernel.defaultEnvironment` satisfies the rule, the CLI's host
+    /// snapshot comes from real .NET's own `GetEnvironmentVariables` (whose
+    /// parse already drops names that are empty or contain `=`), and PawPrint
+    /// services no `SetEnvironmentVariableW`, so no guest can add one.
+    let private requireBlockRepresentable (name : string) (value : string) : unit =
+        if name = "" then
+            failwith
+                "GetEnvironmentStringsW: the emulated environment holds a variable with an empty name, which an environment block cannot express (the entry would read `=value`, which every reader skips). Fix the KernelConfig.Environment this run was given."
+
+        if name.Contains '=' then
+            failwith
+                $"GetEnvironmentStringsW: the emulated environment holds a variable whose name contains '=' (%s{name}), which an environment block cannot express unambiguously (a reader would split it at the first '=' and see a different name and value). Fix the KernelConfig.Environment this run was given."
+
+        if name.Contains (char 0) then
+            failwith
+                $"GetEnvironmentStringsW: the emulated environment holds a variable whose name contains a NUL code unit (%s{name}), which would terminate its entry early. Fix the KernelConfig.Environment this run was given."
+
+        if value.Contains (char 0) then
+            failwith
+                $"GetEnvironmentStringsW: the emulated environment holds a variable (%s{name}) whose value contains a NUL code unit, which would terminate its entry early. Fix the KernelConfig.Environment this run was given."
+
+    /// The bytes `GetEnvironmentStringsW` hands back: every variable as
+    /// `name=value` followed by a NUL code unit, then one further NUL code unit
+    /// closing the block, as UTF-16 little-endian code units because the entry
+    /// point returns a `char*`. An empty environment is therefore a lone NUL
+    /// rather than a null pointer, matching the PAL, whose only null return is
+    /// on `malloc` failure.
+    ///
+    /// Entries appear in ordinal order of their names, which is what iterating
+    /// a `Map` gives. The real block's order is that of the process's `environ`
+    /// at PAL init, further permuted by `EnvironUnsetenv` filling a hole with
+    /// the last entry, so PawPrint's order differs — a guest enumerating the
+    /// resulting `Hashtable` could in principle tell, since bucket occupancy
+    /// depends on insertion order. Ordering by name is what makes the block a
+    /// function of the environment alone, which is what a replay needs; no
+    /// fixed order can also match the host's.
+    ///
+    /// Fails rather than emitting a block that would parse back to a different
+    /// table; see `requireBlockRepresentable`.
+    let internal environmentBlockBytes (environment : Map<string, string>) : byte array =
+        for KeyValue (name, value) in environment do
+            requireBlockRepresentable name value
+
+        // Per entry: the name, the `=`, the value, and the entry's terminator;
+        // then one more code unit closing the block. Two bytes each.
+        let codeUnits =
+            1
+            + (environment
+               |> Seq.sumBy (fun (KeyValue (name, value)) -> name.Length + value.Length + 2))
+
+        let size = codeUnits * 2
+        let bytes = Array.zeroCreate<byte> size
+        let mutable at = 0
+
+        // Written code unit by code unit rather than through an `Encoding`: the
+        // guest never *decodes* this block, it reinterprets the bytes as
+        // `char`s, and `Encoding.Unicode` is not faithful at that level — it
+        // replaces an unpaired surrogate with U+FFFD, which would make
+        // `GetEnvironmentVariables` disagree with `GetEnvironmentVariableW`
+        // (which writes value code units verbatim) for the same table.
+        let appendCodeUnit (c : char) : unit =
+            bytes.[at] <- byte (uint16 c &&& 0xFFus)
+            bytes.[at + 1] <- byte (uint16 c >>> 8)
+            at <- at + 2
+
+        let appendCodeUnits (s : string) : unit =
+            for c in s do
+                appendCodeUnit c
+
+        for KeyValue (name, value) in environment do
+            appendCodeUnits name
+            appendCodeUnit '='
+            appendCodeUnits value
+            appendCodeUnit (char 0)
+
+        appendCodeUnit (char 0)
+
+        if at <> size then
+            failwith
+                $"GetEnvironmentStringsW: wrote %d{at} bytes into a %d{size}-byte environment block; this is an interpreter bug"
+
+        bytes
+
     let private withKernel32LastSystemError (error : int) (state : IlMachineState) : IlMachineState =
         // CoreLib's generated P/Invoke wrapper clears and reads this
         // GetLastError slot, then writes LastPInvokeError itself.
@@ -163,5 +261,63 @@ module NativeKernel32 =
             state
             |> withKernel32LastSystemError plan.LastError
             |> pushUInt32 plan.ReturnLength ctx.Thread
+            |> Some
+        | "GetEnvironmentStringsW",
+          "System.Private.CoreLib",
+          "Kernel32",
+          [],
+          MethodReturnType.Returns (ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Char)) ->
+            let ptr, state =
+                NativeCall.allocateNativeHeapBlob
+                    "GetEnvironmentStringsW"
+                    (environmentBlockBytes state.Kernel.Environment)
+                    state
+
+            // The last-error slot is deliberately untouched, unlike in
+            // `GetEnvironmentVariableW` above. Both are `LibraryImport("QCall")`,
+            // but only that one declares `SetLastError = true`, so only that one
+            // gets a generated wrapper that clears the slot, calls, and reads it
+            // back — these two are the P/Invoke declaration itself, with no
+            // wrapper and no reader. The PAL agrees: it sets a last error only on
+            // the `malloc` failure that returns null, which PawPrint cannot
+            // reach.
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        | "FreeEnvironmentStringsW",
+          "System.Private.CoreLib",
+          "Kernel32",
+          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Char) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "", "BOOL", boolGenerics)) when
+            boolGenerics.IsEmpty
+            ->
+            let operation = "FreeEnvironmentStringsW"
+
+            let ptr =
+                NativeCall.managedPointerOfPointerArgument operation "lpszEnvironmentBlock" instruction.Arguments.[0]
+
+            // The PAL is a bare `free(lpValue)`, so the same rule as
+            // `SystemNative_Free` applies: only the block base a
+            // `GetEnvironmentStringsW` returned may be released. Freeing here
+            // rather than leaking the block is what makes a guest that keeps
+            // reading the block after freeing it report a use-after-free, which
+            // is what the real process would do.
+            //
+            // The null arm is unreachable from the only caller, which passes
+            // back the non-null pointer it was handed; it is here because the
+            // classifier is shared with `SystemNative_Free`, where
+            // `Marshal.FreeHGlobal(IntPtr.Zero)` does reach it, and because the
+            // PAL likewise no-ops on null.
+            let state =
+                match NativeCall.tryResolveNativeHeapFreeTarget ptr with
+                | Ok None -> state
+                | Ok (Some block) -> IlMachineState.freeNativeMemory block state
+                | Error reason -> failwith $"%s{operation}: %s{reason}"
+
+            // The PAL returns TRUE unconditionally, and sets no last-error.
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
+            |> NativeHandlerResult.completed
             |> Some
         | _ -> None

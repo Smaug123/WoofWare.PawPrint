@@ -3208,41 +3208,14 @@ module NativeSystemNative =
             let ptr =
                 NativeCall.managedPointerOfPointerArgument "SystemNative_Free" "ptr" instruction.Arguments.[0]
 
-            // C `free(x)` is undefined unless `x` is exactly a pointer returned
-            // by `malloc`/`calloc`/`realloc` (or null). Interior pointers like
-            // `base + 4` must be rejected — silently freeing the whole block
-            // would mask guest memory-corruption bugs.
-            //
-            // Accumulated in `int64`: this file is not `Checked`, so an `int` fold could wrap a
-            // interior pointer back onto zero and free a block from the middle of it,
-            // which is precisely the guest memory-corruption bug the check exists to expose
-            // (issue #993).
-            let rec projectionByteOffset (acc : int64) (ps : ByrefProjection list) : Result<int64, ByrefProjection> =
-                match ps with
-                | [] -> Ok acc
-                | ByrefProjection.ReinterpretAs _ :: rest -> projectionByteOffset acc rest
-                | ByrefProjection.ByteOffset n :: rest -> projectionByteOffset (acc + int64<int> n) rest
-                | (ByrefProjection.Field _ as field) :: _ -> Error field
-
+            // `free(NULL)` is a documented no-op. CoreLib's NativeMemory.Free
+            // already filters null before reaching the P/Invoke, but
+            // Marshal.FreeHGlobal does not, so honour the C semantics here too.
             let state =
-                match ptr with
-                // C `free(NULL)` is documented as a no-op. CoreLib's
-                // NativeMemory.Free already filters null before reaching the
-                // P/Invoke, but Marshal.FreeHGlobal does not, so honour the
-                // C semantics here too.
-                | ManagedPointerSource.Null -> state
-                | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, rootByteOffset), projs) ->
-                    match projectionByteOffset (int64<int> rootByteOffset) projs with
-                    | Ok 0L -> IlMachineState.freeNativeMemory block state
-                    | Ok offset ->
-                        failwith
-                            $"SystemNative_Free: refusing to free interior native-heap pointer at byte offset %d{offset} into %O{block} (only the allocation base address returned by SystemNative_Malloc/Calloc may be freed)"
-                    | Error field ->
-                        failwith
-                            $"SystemNative_Free: refusing to free native-heap pointer with non-byte projection %O{field} into %O{block} (only the allocation base address may be freed)"
-                | other ->
-                    failwith
-                        $"SystemNative_Free: expected null or native-heap pointer, got %O{other} (only pointers from SystemNative_Malloc/Calloc may be freed here)"
+                match NativeCall.tryResolveNativeHeapFreeTarget ptr with
+                | Ok None -> state
+                | Ok (Some block) -> IlMachineState.freeNativeMemory block state
+                | Error reason -> failwith $"SystemNative_Free: %s{reason}"
 
             NativeHandlerResult.completed state |> Some
         | Some "SystemNative_InitializeTerminalAndSignalHandling",
