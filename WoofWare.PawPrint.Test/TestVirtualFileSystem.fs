@@ -14,6 +14,10 @@ module TestVirtualFileSystem =
 
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 300
 
+    /// For the timestamp-ordering property alone, whose coverage guards count occurrences across
+    /// the whole check; see the comment at its `Check.One`.
+    let private timesConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 2000
+
     let private name (s : string) : FileName = FileName.parseOrFail "test" s
 
     let private path (s : string) : UnixPath = UnixPath.parseOrFail "test" s
@@ -1507,13 +1511,30 @@ module TestVirtualFileSystem =
                 if times.StatusChange > times.Modification then
                     observedCtimeAheadOfMtime <- observedCtimeAheadOfMtime + 1
 
-        Check.One (config, Prop.forAll (Arb.fromGen filesystemGen) property)
+        // More cases than the fixture's shared `config` runs, because the two coverage guards
+        // below count occurrences across the whole check rather than asserting something about
+        // each case, and at 300 cases the rarer of the two counts is not concentrated enough for
+        // any useful threshold to be safe: sampled over 500 checks at 300 cases, the
+        // ctime-ahead-of-mtime count ran min=9 median=26, so a threshold of 10 failed a few
+        // percent of runs. Over 200 checks at 2000 cases it ran min=119 median=169 — the count
+        // scales with the case count while its spread does not, which is what buys a threshold
+        // both meaningful and reliable. The extra cases cost no measurable time, because most
+        // generated filesystems are tiny.
+        Check.One (timesConfig, Prop.forAll (Arb.fromGen filesystemGen) property)
 
-        // Without these the property is satisfied by a model that never moves a
-        // timestamp at all: every inode would trivially have all four equal, and
-        // every comparison above would hold vacuously.
-        observedLateModification |> shouldBeGreaterThan 100
-        observedCtimeAheadOfMtime |> shouldBeGreaterThan 10
+        // Without these the property is satisfied by a model that never moves a timestamp at all:
+        // every inode would trivially have all four equal, and every comparison above would hold
+        // vacuously. They also fail if the *generator* stops reaching the states — the
+        // ctime-ahead-of-mtime count is carried entirely by `Step.MakeHardLink`, which bumps a
+        // target inode's ctime while leaving its mtime alone, and which is a no-op until some
+        // earlier step has created a file to link to.
+        //
+        // Thresholds are set at roughly half the minimum sampled at this case count (2261 and 119
+        // respectively), so each has a margin of more than 2x against a tail the measurement
+        // actually saw, rather than against a guess. Both counts fall to exactly 0 under the
+        // regressions they guard against, so anything below those minima discriminates.
+        observedLateModification |> shouldBeGreaterThan 1000
+        observedCtimeAheadOfMtime |> shouldBeGreaterThan 50
 
     // ------------------------------------------- symlink splice length limits
 
