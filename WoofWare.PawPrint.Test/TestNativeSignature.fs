@@ -11,6 +11,36 @@ open WoofWare.PawPrint
 [<TestFixture>]
 module TestNativeSignature =
 
+    /// Mint a bare `RuntimeMethodHandleInternal` for a method on a *closed* declaring type, the way
+    /// the runtime's closed introduced-method path does. Tests that need the open-definition target
+    /// call `MethodHandleRegistry.getOrAllocateInternalHandle` directly.
+    let private internalHandleForClosed
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (concreteTypes : AllConcreteTypes)
+        (declaringConcrete : ConcreteType<ConcreteTypeHandle>)
+        (method : WoofWare.PawPrint.MethodInfo<'tyGen, GenericParamFromMetadata, TypeDefn>)
+        (reg : MethodHandleRegistry)
+        : CliValueType * MethodHandleRegistry
+        =
+        let target =
+            AllConcreteTypes.findExistingConcreteType
+                concreteTypes
+                declaringConcrete.Identity
+                declaringConcrete.Generics
+            |> Option.defaultWith (fun () ->
+                failwith $"declaring type %O{declaringConcrete} was not registered in ConcreteTypes"
+            )
+            |> RuntimeTypeHandleTarget.Closed
+
+        MethodHandleRegistry.getOrAllocateInternalHandle
+            baseClassTypes
+            concreteTypes
+            declaringConcrete.Assembly.FullName
+            target
+            method
+            reg
+
+
     let private signatureSource =
         """
 public sealed class DistinctiveFieldType
@@ -504,7 +534,7 @@ public sealed class MethodSignatureHost
             |> Option.defaultWith (fun () -> failwith "MethodSignatureHost was not concretized")
 
         let handle, methodHandles =
-            MethodHandleRegistry.getOrAllocateInternalHandle
+            internalHandleForClosed
                 fixture.BaseClassTypes
                 state.ConcreteTypes
                 declaringType

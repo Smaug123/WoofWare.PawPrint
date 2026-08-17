@@ -452,6 +452,25 @@ module NativeRuntimeMethodHandle =
         )
 
     /// The metadata `MethodInfo` the given identity's MethodDef token names.
+    /// The declaring type of a metadata method handle, narrowed to a closed instantiation.
+    ///
+    /// For consumers that can only work under a concrete instantiation. An open generic type
+    /// definition is refused rather than approximated: resolving a signature or binding an
+    /// invocation under `G&lt;&gt;` needs a formal type context — the definition's own type
+    /// variables — and `ConcreteTypeHandle` cannot express one, which is the same missing
+    /// capability as `RuntimeTypeHandle.GetNumVirtuals` for an open definition.
+    let requireClosedDeclaringType (operation : string) (identity : MetadataMethodIdentity) : ConcreteTypeHandle =
+        match identity.GetDeclaringType () with
+        | RuntimeTypeHandleTarget.Closed handle -> handle
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringIdentity ->
+            failwith
+                $"TODO: %s{operation} on a method declared by open generic type definition %O{declaringIdentity}; this needs the definition's own type variables as a substitution context, which ConcreteTypeHandle cannot express -- the same capability RuntimeTypeHandle.GetNumVirtuals lacks for an open definition"
+        | other ->
+            // `MethodHandleRegistry` admits only `Closed` and `OpenGenericTypeDefinition` when
+            // minting, so any other shape here means a handle was built outside that chokepoint.
+            failwith
+                $"%s{operation}: declaring type %O{other} cannot declare a metadata-backed method; MethodHandleRegistry refuses to mint such a handle, so this identity did not come from it"
+
     let methodInfoOfMetadataIdentity
         (operation : string)
         (state : IlMachineState)
@@ -989,16 +1008,21 @@ module NativeRuntimeMethodHandle =
                     |> fun concreteType -> concreteType.Generics
                 | other ->
                     // `stubOutcome` only says `Rebind` for a MethodTable-backed declaring type, so
-                    // the reachable shapes here are arrays and open generic type definitions, both
-                    // via a non-empty instantiation. CoreCLR handles those perfectly normally --
+                    // the reachable shapes here are arrays and open generic type definitions.
+                    // CoreCLR handles both perfectly normally --
                     // `typeof(G<>).GetMethod("M").MakeGenericMethod(typeof(int))` is an ordinary
-                    // reflection idiom (genmeth.cpp:1256-1270) -- and PawPrint does not reach here
-                    // today only because such a lookup dies earlier, at the unrelated
-                    // `RuntimeTypeHandle.GetNumVirtuals` TODO for open generic type definitions
-                    // (NativeRuntimeTypeHelpers.fs). When that gap closes this becomes live and
-                    // needs real support, not just a comment: an open declaring type's "generic
-                    // arguments" are its own type variables, which `ConcreteTypeHandle` cannot
-                    // express (the same limitation as the open-argument case above).
+                    // reflection idiom (genmeth.cpp:1256-1270).
+                    //
+                    // An open definition reaches here with an *empty* instantiation as soon as it is
+                    // a value type: `needsStub` is true for `IsValueType` because CoreCLR wants the
+                    // unboxing stub, so `typeof(SBox<>).GetConstructors()` lands here while the
+                    // class case takes the fast path and keeps its original handle.
+                    // `sourcesPure/ReflectionOpenGenericStructConstructors.cs` is the parked case.
+                    //
+                    // Serving it needs real support rather than a wider match: an open declaring
+                    // type's "generic arguments" are its own type variables, which
+                    // `ConcreteTypeHandle` cannot express (the same limitation as the open-argument
+                    // case above).
                     failwith
                         $"TODO: %s{operation}: rebinding onto %O{other} is not supported; only a closed nominal declaring type carries the generic arguments needed as a substitution context"
 
@@ -1183,7 +1207,7 @@ module NativeRuntimeMethodHandle =
 
             let methodInfo = methodInfoOfMetadataIdentity operation state identity
 
-            let declaringType = identity.GetDeclaringType ()
+            let declaringType = requireClosedDeclaringType operation identity
 
             let state, slotTable =
                 NativeRuntimeTypeHelpers.slotTableOfClosed
@@ -1325,9 +1349,17 @@ module NativeRuntimeMethodHandle =
             let target =
                 match resolveMethodHandleFromArg operation state instruction.Arguments.[0] with
                 | MethodHandle.FromMetadata identity ->
-                    match methodTableOfDeclaringType (identity.GetDeclaringType ()) with
-                    | Ok target -> target
-                    | Error reason -> failwith $"%s{operation}: %s{reason}"
+                    match identity.GetDeclaringType () with
+                    | RuntimeTypeHandleTarget.Closed handle ->
+                        match methodTableOfDeclaringType handle with
+                        | Ok target -> target
+                        | Error reason -> failwith $"%s{operation}: %s{reason}"
+                    // Already the answer: CoreCLR's typical instantiation of `G<>` is a
+                    // MethodTable, and it is the one a method of the definition belongs to.
+                    | (RuntimeTypeHandleTarget.OpenGenericTypeDefinition _) as target -> target
+                    | other ->
+                        failwith
+                            $"%s{operation}: declaring type %O{other} cannot declare a metadata-backed method; MethodHandleRegistry refuses to mint such a handle, so this identity did not come from it"
                 | MethodHandle.FromDynamic dynamicHandle ->
                     let definition =
                         MethodHandleRegistry.resolveDynamicMethod dynamicHandle state.MethodHandles

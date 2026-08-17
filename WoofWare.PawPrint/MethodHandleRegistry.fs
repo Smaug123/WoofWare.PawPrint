@@ -11,13 +11,19 @@ type MetadataMethodIdentity =
     private
         {
             AssemblyFullName : string
-            DeclaringType : ConcreteTypeHandle
+            /// The declaring type as the handle was minted, which is the identity the guest
+            /// sees: a closed instantiation gets `Closed`, and a generic type definition gets
+            /// `OpenGenericTypeDefinition`, so `typeof(G&lt;int&gt;)`'s method and
+            /// `typeof(G&lt;&gt;)`'s share a MethodDef row but never a registry id. CoreCLR keeps
+            /// their `MethodDesc*` distinct for the same reason. Only those two arms can occur;
+            /// `getOrAllocate*` refuses the rest.
+            DeclaringType : RuntimeTypeHandleTarget
             MethodDefinition : ComparableMethodDefinitionHandle
             MethodGenerics : ConcreteTypeHandle list
         }
 
     member this.GetAssemblyFullName () : string = this.AssemblyFullName
-    member this.GetDeclaringType () : ConcreteTypeHandle = this.DeclaringType
+    member this.GetDeclaringType () : RuntimeTypeHandleTarget = this.DeclaringType
     member this.GetMethodDefinitionHandle () : ComparableMethodDefinitionHandle = this.MethodDefinition
     member this.GetMethodGenerics () : ConcreteTypeHandle list = this.MethodGenerics
 
@@ -232,6 +238,7 @@ module MethodHandleRegistry =
                 |> Option.defaultWith (fun () ->
                     failwith $"declaring type for method %O{method} was not found in ConcreteTypes"
                 )
+                |> RuntimeTypeHandleTarget.Closed
             MethodGenerics = method.Generics |> Seq.toList
         }
         |> MethodHandle.FromMetadata
@@ -268,26 +275,51 @@ module MethodHandleRegistry =
             (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeMethodHandleInternal)
             (DeclaredTypeFacts.ofCorelibType baseClassTypes baseClassTypes.RuntimeMethodHandleInternal)
 
-    /// Construct the `MethodHandle` that identifies an open method declared on `declaringType`.
-    /// Callers in the introduced-method iterator path use this rather than going through
-    /// `concretizeMethod`, since the BCL's enumerator surfaces method-table slots (i.e., method
-    /// definitions) and a generic-method definition cannot be expressed with empty
-    /// `MethodGenerics` via the normal concretization path.
+    /// Refuse the declaring-type shapes that cannot own a metadata-backed method, so that
+    /// consumers matching on `MetadataMethodIdentity.GetDeclaringType ()` may treat those arms as
+    /// contract violations rather than as cases to serve. Mirrors
+    /// `FieldHandleRegistry.getOrAllocate`.
+    let private requireMethodBearingDeclaringType
+        (operation : string)
+        (declaringType : RuntimeTypeHandleTarget)
+        : unit
+        =
+        match declaringType with
+        | RuntimeTypeHandleTarget.Closed _
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> ()
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            // A method on this class is a Reflection.Emit method, whose identity is
+            // `MethodHandle.FromDynamic`; minting it as metadata-backed would give it a MethodDef
+            // row it does not have.
+            RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
+        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+            failwith
+                $"TODO: open constructed types are not handled at MethodHandleRegistry.fs:%s{__LINE__}; got %O{openConstructed}"
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+            // A generic parameter is a TypeVarTypeDesc: methods live on the type that mentions
+            // the parameter, never on the parameter itself.
+            failwith $"%s{operation}: declaring type must be Closed or OpenGenericTypeDefinition, got %O{declaringType}"
+
+    /// Construct the `MethodHandle` identifying `method` as declared by `declaringType`, with no
+    /// method-generic arguments bound.
+    ///
+    /// "Open" here is about the *method's* generics, not the declaring type's: the BCL's
+    /// enumerator surfaces method-table slots, i.e. method definitions, and a generic-method
+    /// definition cannot be expressed with empty `MethodGenerics` through `concretizeMethod`.
+    /// The declaring type may independently be closed or a generic type definition.
     let private makeOpenMethodHandle
-        (allConcreteTypes : AllConcreteTypes)
-        (declaringType : ConcreteType<ConcreteTypeHandle>)
+        (operation : string)
+        (assemblyFullName : string)
+        (declaringType : RuntimeTypeHandleTarget)
         (method : MethodInfo<'tyGen, GenericParamFromMetadata, TypeDefn>)
         : MethodHandle
         =
-        let declaringHandle =
-            AllConcreteTypes.findExistingConcreteType allConcreteTypes declaringType.Identity declaringType.Generics
-            |> Option.defaultWith (fun () ->
-                failwith $"declaring type %O{declaringType} was not registered in ConcreteTypes"
-            )
+        requireMethodBearingDeclaringType operation declaringType
 
         {
-            AssemblyFullName = declaringType.Assembly.FullName
-            DeclaringType = declaringHandle
+            AssemblyFullName = assemblyFullName
+            DeclaringType = declaringType
             MethodDefinition = ComparableMethodDefinitionHandle.Make (requireDeclaredMethod method)
             MethodGenerics = []
         }
@@ -304,12 +336,18 @@ module MethodHandleRegistry =
     let getOrAllocateInternalHandle
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (allConcreteTypes : AllConcreteTypes)
-        (declaringType : ConcreteType<ConcreteTypeHandle>)
+        (assemblyFullName : string)
+        (declaringType : RuntimeTypeHandleTarget)
         (method : MethodInfo<'tyGen, GenericParamFromMetadata, TypeDefn>)
         (reg : MethodHandleRegistry)
         : CliValueType * MethodHandleRegistry
         =
-        let handle = makeOpenMethodHandle allConcreteTypes declaringType method
+        let handle =
+            makeOpenMethodHandle
+                "MethodHandleRegistry.getOrAllocateInternalHandle"
+                assemblyFullName
+                declaringType
+                method
 
         let registryId, reg =
             match Map.tryFind handle reg.MethodHandleToId with

@@ -177,10 +177,14 @@ justifying comment (`:991-1001`) claims it is unreachable both because such look
 at the `GetNumVirtuals` TODO and because it needs a non-empty instantiation. This change
 falsifies both halves. Real .NET handles it — it is an unboxing stub.
 
-So "the downstream chain already works" holds for *reference-type* definitions only. Plan:
-after implementing, run a `struct Box<T>` guest. If it hits `:1003`, park a struct guest in
-`unimplemented` with a note, and rewrite that comment to say what actually reaches it. Do not
-leave the comment asserting unreachability.
+So "the downstream chain already works" holds for *reference-type* definitions only.
+
+**Measured after implementing, and it is real.** `typeof(SBox<>).GetConstructors()` gives
+"RuntimeMethodHandle.GetStubIfNeededSlow: rebinding onto open generic definition ... is not
+supported", while real .NET exits 0. So:
+`sourcesPure/ReflectionOpenGenericStructConstructors.cs` is parked with a note, and the comment
+at `:991-1001` is rewritten to say what actually reaches it — an *empty* instantiation on a
+value-type definition, not the non-empty one it claimed.
 
 ## Tests
 
@@ -202,8 +206,8 @@ leave the comment asserting unreachability.
    shares `__Canon` (`NativeRuntimeMethodHandle.fs:170-174`), and handle distinctness would no
    longer be a cross-runtime fact.
 
-   Risk to verify by running: PawPrint's `ceq` over two `MethodRegistryHandle`-backed
-   `IntPtr`s. If it refuses, fall back to the unit test and record why here.
+   The flagged risk — PawPrint's `ceq` over two `MethodRegistryHandle`-backed `IntPtr`s — was
+   verified by running, and it works. All ten checks pass under both runtimes.
 
 2. **Unit test in `TestMethodHandleRegistry.fs`**, mirroring
    `TestFieldHandleRegistry.fs:440-478`: minting for `OpenGenericTypeDefinition` and for
@@ -211,22 +215,31 @@ leave the comment asserting unreachability.
    minted with; minting twice with the same target dedups to one id. The guest cannot see
    registry-level dedup, so this is not redundant with (1).
 
-3. **Property test with an outside oracle.** For every generic type definition in a corpus
-   assembly, the open-definition dispatcher's method list equals the MethodDef rows
-   `System.Reflection.Metadata` reports for that TypeDef, in the same order. The expectation
-   comes from outside the graph under test, so a wrong-but-self-consistent walk fails. Plus
-   injectivity: distinct `(declaringTarget, methodDef)` pairs never share a minted id.
+3. **Property test with an outside oracle.** For each generic type definition in a compiled
+   corpus, the dispatcher's method list equals the MethodDef rows `System.Reflection.Metadata`
+   reports for that TypeDef, in the same order. The expectation comes from outside the graph
+   under test, so a wrong-but-self-consistent walk fails.
+
+   Note the correction found by mutation testing: the first draft of this test read
+   `TypeInfo.Methods` directly and so survived a reversed dispatcher. It now calls
+   `introducedMethodsOf` itself. Plus injectivity: distinct `(declaringTarget, methodDef)` pairs
+   never share a minted id.
 
 4. **Regression guard**: the closed control `typeof(Box<int>).GetConstructors()` must stay
    green; it passes today and covers step 1 of the implementation.
 
-5. **Mutation checks**, one per claimed behaviour, each required to kill a named test:
-   - return the base type's methods instead of the type's own → killed by the count in (1),
-     because `object` declares one ctor and `Box` two;
-   - collapse `OpenGenericTypeDefinition` to a closed handle → killed by the cross-pair handle
-     inequality in (1) and by (2);
-   - reverse metadata order → killed by the token-ordering assertion in (1) and by (3);
-   - drop the mint-time guard → killed by (2) if it asserts the refusal.
+5. **Mutation checks**, run and recorded:
+
+   | Mutation | Killed by |
+   | --- | --- |
+   | reverse the open arm's method list | guest check 6, plus both cases of (3) |
+   | drop the first introduced method | guest check 1, plus both cases of (3) |
+   | guard always sees a `Closed` target | the mint-refusal unit test |
+   | identity ignores the declaring type | guest check 7, plus the distinctness test in (2) |
+
+   The last of these is the closed-stand-in collapse the whole design exists to prevent, and it
+   is killed at both levels. The guard needed its own unit test added: nothing in the first
+   draft could kill that mutation.
 
 ## Explicitly out of scope
 

@@ -881,39 +881,20 @@ module NativeRuntimeTypeFCall =
             let target =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            let handle =
-                match target with
-                | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
-                    RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
-                | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
-                    failwith
-                        $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeFCall.fs:%s{__LINE__}; got %O{openConstructed}"
-                | RuntimeTypeHandleTarget.Closed handle -> handle
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
-                    failwith
-                        $"TODO: %s{operation} for open generic type definition %O{identity}; need to walk metadata-level methods on the open type"
-                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
-                    // CoreCLR's GetMethodCandidates strips generic variables via GetBaseType
-                    // before iterating; reaching here means a managed-side invariant was violated.
-                    failwith
-                        $"%s{operation}: invoked on type-generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}; the BCL is expected to strip generic variables via GetBaseType before iterating"
-                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
-                    failwith
-                        $"%s{operation}: invoked on method-generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
-
             let returnValue, state =
-                match introducedMethodsOfClosed operation state handle with
+                match introducedMethodsOf operation state target with
                 | None
-                | Some (_, []) ->
+                | Some (_, _, []) ->
                     let zero =
                         MethodHandleRegistry.zeroInternalHandle ctx.BaseClassTypes state.ConcreteTypes
 
                     zero, state
-                | Some (declaringType, first :: _) ->
+                | Some (assemblyFullName, declaringType, first :: _) ->
                     let value, reg =
                         MethodHandleRegistry.getOrAllocateInternalHandle
                             ctx.BaseClassTypes
                             state.ConcreteTypes
+                            assemblyFullName
                             declaringType
                             first
                             state.MethodHandles
@@ -975,11 +956,11 @@ module NativeRuntimeTypeFCall =
                         $"%s{operation}: registry id %d{currentId} names %O{dynamicHandle}, a Reflection.Emit method; the enumerator can only have been resumed from a method-table slot, so this is a bug in whatever produced the handle it was given"
                 | None -> failwith $"%s{operation}: registry id %d{currentId} did not resolve to a known MethodHandle"
 
-            // The registry only stores handles whose declaring type was Concrete (GetFirst emits
-            // the null sentinel for TypeDesc handles), so `None` here would mean the iterator was
-            // resumed against a handle whose declaring type can no longer produce methods.
-            let declaringType, methods =
-                introducedMethodsOfClosed operation state (identity.GetDeclaringType ())
+            // `GetFirst` emits the null sentinel rather than a handle for any declaring type that
+            // introduces nothing, so `None` here would mean the iterator was resumed against a
+            // handle whose declaring type can no longer produce methods.
+            let assemblyFullName, declaringType, methods =
+                introducedMethodsOf operation state (identity.GetDeclaringType ())
                 |> Option.defaultWith (fun () ->
                     failwith
                         $"%s{operation}: registry handle %d{currentId} resolves to declaring type %O{identity.GetDeclaringType ()}, which does not enumerate introduced methods"
@@ -1014,6 +995,7 @@ module NativeRuntimeTypeFCall =
                         MethodHandleRegistry.getOrAllocateInternalHandle
                             ctx.BaseClassTypes
                             state.ConcreteTypes
+                            assemblyFullName
                             declaringType
                             nextMethod
                             state.MethodHandles

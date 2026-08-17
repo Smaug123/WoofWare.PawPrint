@@ -483,7 +483,8 @@ module NativeSignature =
             state.LoadedAssembly' assemblyFullName
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
-        let declaringTypeHandle = identity.GetDeclaringType ()
+        let declaringTypeHandle =
+            NativeRuntimeMethodHandle.requireClosedDeclaringType operation identity
 
         let typeGenerics =
             match declaringTypeHandle with
