@@ -926,14 +926,18 @@ module NativeSignature =
             leftAssembly.Name.FullName = rightAssembly.Name.FullName && lRef = rRef
             ->
             // `CompareTypeTokens`'s first step: within one module, the same token is the same type,
-            // answered before anything is resolved. PawPrint compares the parsed reference rather
-            // than the row index, which decides the same question — within one module, equal name,
-            // namespace and resolution scope name one type — and additionally answers for two rows
-            // that spell the same reference twice.
+            // answered before anything is resolved. That step earns its place rather than merely
+            // saving work — `Signature_Init` strips custom modifiers without loading their types,
+            // so two signatures can carry the same modifier naming an assembly nothing has loaded,
+            // and resolving it would fail where CoreCLR answers.
             //
-            // This is reachable rather than merely faithful: `Signature_Init` strips custom
-            // modifiers without loading their types, so two signatures can carry the same modifier
-            // naming an assembly nothing has loaded. Resolving it would fail where CoreCLR answers.
+            // This approximates CoreCLR's `tk1 == tk2` by the *parsed* reference, because
+            // `TypeDefn.FromReference` carries a reference's description and not its row. The two
+            // agree except for distinct rows of one module that spell the same namespace, name and
+            // resolution scope: CoreCLR misses its token shortcut there, falls through, and answers
+            // FALSE if the target cannot be resolved, where this answers TRUE. Reaching that needs
+            // hand-written IL — Roslyn emits one row per referenced type — *and* a target that does
+            // not resolve, since two rows that do resolve agree either way.
             state, true
         | (TypeDefn.FromDefinition _ | TypeDefn.FromReference _), (TypeDefn.FromDefinition _ | TypeDefn.FromReference _) ->
             // The `SignatureTypeKind` these carry — CoreCLR's E_T_CLASS versus E_T_VALUETYPE — is
