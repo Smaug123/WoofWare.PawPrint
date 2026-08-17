@@ -14,14 +14,16 @@ using System.Runtime.InteropServices;
 // of them appear here: they live in `sourcesImpure/LSeekRawSeeded.cs`.
 //
 // `read(2)` has exactly one divergence of its own, and this file stays clear of
-// it rather than being lucky. Linux's `access_ok` rejects a buffer range above
-// `TASK_SIZE` (0x7ffffffff000 on x86-64) before the file operation runs, so an
-// address above the boundary faults even at EOF, even with size 0, and even on
-// a directory — where macOS answers 0, 0 and EISDIR. Every address used below
-// is `NULL` or 8, comfortably *below* the boundary, where the two agree; and
-// PawPrint does not model the boundary at all (see `SystemNative_Read`). Using
+// it rather than being lucky. Linux's `access_ok` rejects a buffer range that
+// leaves the user address space before the file operation runs, so
+// such an address faults even at EOF, even with size 0, and even on a directory
+// — where macOS answers 0, 0 and EISDIR. Every address used below is `NULL` or
+// 8, which every platform accepts, so every row here holds on both. Using
 // `(byte*)-1` as the unmapped pointer, which is the natural thing to reach for,
-// would have made half these rows platform-dependent.
+// would have made half these rows platform-dependent: this suite's oracle is
+// the host kernel, so such a row would answer 0 on a macOS dev box and EFAULT
+// on a Linux CI runner. Those rows are pinned against the model instead, in
+// `TestUserBufferFault.fs`.
 //
 // It is also filesystem-independent, which is a *separate* portability question
 // this syscall pair makes real. A real `lseek` rejects an offset above the

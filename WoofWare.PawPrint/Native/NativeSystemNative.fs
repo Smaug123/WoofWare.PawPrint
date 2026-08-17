@@ -20,6 +20,83 @@ type internal DescriptorFault =
     /// what PawPrint models the standard streams as; `ESPIPE`.
     | NotSeekable
 
+/// A buffer-pointer argument to a `SystemNative_*` entry point, classified as
+/// far as a kernel's own address check can see it.
+///
+/// This is the same split `ManagedPointerSource.tryBitPatternBits` makes: a
+/// byref names storage, while `Null` and `NativeIntPlaceholder` are bit
+/// patterns naming none. A guest produces the latter only by hand-rolling a
+/// P/Invoke, since the BCL's own wrappers pass real spans.
+[<RequireQualifiedAccess>]
+type internal BufferPointer =
+    /// Real allocated guest storage, and so an address inside the user address
+    /// space of any platform we model. Carried decomposed rather than as a whole
+    /// `ManagedPointerSource` so that a bit pattern cannot be spelled here: the
+    /// address check below treats every `Storage` as in range without asking.
+    | Storage of root : ByrefRoot * projections : ByrefProjection list
+    /// A raw address naming no storage. `RawAddress 0UL` is the null pointer,
+    /// which some entry points must tell apart from an unmapped one because
+    /// their C counterpart does.
+    | RawAddress of address : uint64
+    /// The address of a runtime data structure — a method table, a type handle,
+    /// a GC handle — which PawPrint models symbolically and so has no number
+    /// for.
+    ///
+    /// A user address, because on a real runtime it is ordinary allocated
+    /// memory: `write(fd, (byte*)typeof(int).TypeHandle.Value, 0)` succeeds on
+    /// the host. Not addressable byte by byte, though, so a caller that reaches
+    /// the transfer itself must refuse rather than invent the bytes.
+    | Symbolic of operation : string * argName : string * argument : CliType
+    /// A value with no address behind it at all: the difference of two pointers
+    /// into separate storages, which PawPrint keeps synthetic precisely because
+    /// it has no number for it.
+    ///
+    /// Distinct from `Symbolic`, which names real memory whose address merely
+    /// goes unmodelled. Nothing can be transferred through this, and a kernel
+    /// that screens addresses up front cannot be asked about it either — but
+    /// neither refusal belongs at classification time, because an entry point
+    /// that never inspects its buffer still has to answer.
+    | Unstatable of operation : string * argName : string * argument : CliType
+
+/// What a `read` will operate on, once the descriptor's access mode has been
+/// checked and before its buffer is screened.
+///
+/// Narrower than `OpenFileTarget`: it excludes the descriptors a read refuses
+/// outright, so a handler that screens the buffer between those two steps — as
+/// `vfs_read` does — has no unreachable arm left to write.
+[<RequireQualifiedAccess>]
+type internal ReadTarget =
+    /// The read end of the pipe PawPrint models stdin as.
+    | Stdin
+    /// A file, at the offset its open file description currently holds.
+    | File of inode : InodeNumber * offset : int64
+
+[<RequireQualifiedAccess>]
+module internal BufferPointer =
+    /// The pointer this classification names, for a caller about to transfer
+    /// bytes through it.
+    ///
+    /// `None` for every raw address, null included: real `write(2)` and
+    /// `getcwd(3)` alike answer EFAULT for both, having performed no I/O, so an
+    /// entry point that is about to dereference its buffer collapses them
+    /// rather than aborting the interpreter. Callers whose C counterpart
+    /// distinguishes them match on `RawAddress 0UL` instead.
+    ///
+    /// A symbolic address refuses instead of answering. EFAULT would be a wrong
+    /// answer rather than an approximate one: a real runtime's method table is
+    /// mapped and readable, so the host transfers those bytes, and PawPrint has
+    /// no bytes to transfer.
+    let dereferenceable (pointer : BufferPointer) : ManagedPointerSource option =
+        match pointer with
+        | BufferPointer.Storage (root, projections) -> Some (ManagedPointerSource.Byref (root, projections))
+        | BufferPointer.RawAddress _ -> None
+        | BufferPointer.Symbolic (operation, argName, argument) ->
+            failwith
+                $"%s{operation}: %s{argName} is %O{argument}, the address of a runtime data structure PawPrint models symbolically rather than as bytes. A real kernel would transfer the bytes at that address; PawPrint has none to transfer, so it cannot answer. Pass a buffer that names guest storage."
+        | BufferPointer.Unstatable (operation, argName, argument) ->
+            failwith
+                $"%s{operation}: %s{argName} is %O{argument}, the difference of two pointers into separate storages, which names no address. Subtracting pointers that do not point into one object does not produce a buffer."
+
 [<RequireQualifiedAccess>]
 module NativeSystemNative =
     let private trySystemNativeEntryPoint (ctx : NativeCallContext) : string option =
@@ -139,61 +216,113 @@ module NativeSystemNative =
         | CliType.Numeric (CliNumericType.Int32 count) -> checkedCount (int64 count)
         | other -> failwith $"%s{operation}: expected UIntPtr allocation size, got %O{other}"
 
-    /// Whether a pointer argument is the null pointer — a total test, unlike
-    /// `NativeCall.managedPointerOfPointerArgument`, which insists the non-null
-    /// case resolve to storage PawPrint can address.
+    /// Classify a buffer-pointer argument, keeping the numeric address of the
+    /// ones that have one.
     ///
-    /// Entry points whose C counterpart returns an error *without dereferencing
-    /// the buffer* need exactly this: a guest may legally hand such a call an
-    /// unresolvable bit pattern (`(byte*)123`), the real shim never touches it,
-    /// and so PawPrint must decide the error before it tries to resolve the
-    /// pointer to a cell.
-    let private isNullPointerArgument (arg : CliType) : bool =
-        match CliType.unwrapPrimitiveLikeDeep arg with
-        | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
-        | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> true
-        | _ -> false
-
-    /// Classify a buffer-pointer argument as storage PawPrint can address, or
-    /// as an address no kernel could have transferred bytes through.
+    /// Pure inspection of the argument's shape: it resolves nothing to a cell,
+    /// so an entry point whose C counterpart returns an error *without
+    /// dereferencing the buffer* may classify first and still answer that error
+    /// — a guest may legally hand such a call an unresolvable bit pattern like
+    /// `(byte*)123`, and the real shim never touches it.
     ///
-    /// `None` covers both the null pointer and a raw unmapped bit pattern such
-    /// as `(byte*)123`. Real `write(2)` and `getcwd(3)` alike return `EFAULT`
-    /// for either, having performed no I/O, so an entry point that is about to
-    /// dereference its buffer collapses both to that errno rather than aborting
-    /// the interpreter — see `UnixError.EFAULT`. A guest reaches this only by
-    /// hand-rolling a P/Invoke; the BCL's own wrappers null-check upstream.
-    ///
-    /// This is a question about *dereferenceability*, so callers that need
-    /// to tell null from unmapped (because their C counterpart treats the two
-    /// differently) must ask `isNullPointerArgument` first.
-    let private dereferenceablePointerArgument
-        (operation : string)
-        (argName : string)
-        (arg : CliType)
-        : ManagedPointerSource option
-        =
-        // `ManagedPointerSource.Null` is non-dereferenceable too: it can arrive
-        // wrapped in `CliRuntimePointer.Managed` when the guest passes e.g.
-        // `IntPtr.Zero` after a managed conversion, as well as via the
-        // verbatim-0 path.
-        let classifyManaged (ptr : ManagedPointerSource) : ManagedPointerSource option =
+    /// The two encodings of one guest-level value agree here. A raw address can
+    /// arrive as a `Verbatim` bit pattern or, after a managed conversion, as a
+    /// `NativeIntPlaceholder`; both are `RawAddress`, so neither reaches storage
+    /// resolution.
+    let internal bufferPointerArgument (operation : string) (argName : string) (arg : CliType) : BufferPointer =
+        let classify (ptr : ManagedPointerSource) : BufferPointer =
             match ptr with
-            | ManagedPointerSource.Null -> None
-            | _ -> Some ptr
+            | ManagedPointerSource.Byref (root, projections) -> BufferPointer.Storage (root, projections)
+            | ManagedPointerSource.Null -> BufferPointer.RawAddress 0UL
+            // The placeholder's own contract is that it must never be
+            // dereferenced; it exists to carry a bit pattern through a managed
+            // reference.
+            | ManagedPointerSource.NativeIntPlaceholder bits -> BufferPointer.RawAddress (uint64 bits)
 
+        // The conversions below are reinterpretations, not range checks: a
+        // guest's `(byte*)-1` is the top of the address space, which is exactly
+        // the value an address check must see.
         match CliType.unwrapPrimitiveLikeDeep arg with
-        | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> classifyManaged ptr
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) -> classifyManaged ptr
-        // 0L is null; non-zero is a raw unmapped address. Either way the kernel
-        // cannot transfer bytes through it.
-        | CliType.RuntimePointer (CliRuntimePointer.Verbatim _) -> None
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim _)) -> None
+        | CliType.RuntimePointer pointer ->
+            // Matched without a catch-all so that a new `CliRuntimePointer` case
+            // has to be classified here rather than falling into the
+            // interpreter-bug arm below, where it would abort a call the host
+            // answers.
+            match pointer with
+            | CliRuntimePointer.Managed ptr -> classify ptr
+            | CliRuntimePointer.Verbatim bits -> BufferPointer.RawAddress (uint64 bits)
+            | CliRuntimePointer.TypeHandlePtr _
+            | CliRuntimePointer.TypeDescPtr _
+            | CliRuntimePointer.FieldRegistryHandle _
+            | CliRuntimePointer.MethodRegistryHandle _
+            | CliRuntimePointer.MethodTablePtr _
+            | CliRuntimePointer.MethodTableAuxiliaryDataPtr _
+            | CliRuntimePointer.PerInstInfoPtr _
+            | CliRuntimePointer.PerInstDictPtr _
+            | CliRuntimePointer.GcHandlePtr _ -> BufferPointer.Symbolic (operation, argName, arg)
+        | CliType.Numeric (CliNumericType.NativeInt source) ->
+            // Exhaustive for the same reason as the pointer match above, and it
+            // is reached: `(byte*)(delegate*<void>)&M` stays a
+            // `NativeIntSource.FunctionPointer` rather than becoming a
+            // `RuntimePointer`, so a buffer parameter does see these.
+            match source with
+            | NativeIntSource.ManagedPointer ptr -> classify ptr
+            | NativeIntSource.Verbatim bits -> BufferPointer.RawAddress (uint64 bits)
+            // An opaque hash is an exact bit pattern by its own contract, so it
+            // is as good an address as any other number a guest invents.
+            | NativeIntSource.OpaqueHashBits bits -> BufferPointer.RawAddress (uint64 bits)
+            | NativeIntSource.FunctionPointer _
+            | NativeIntSource.TypeHandlePtr _
+            | NativeIntSource.TypeDescPtr _
+            | NativeIntSource.MethodTablePtr _
+            | NativeIntSource.MethodTableAuxiliaryDataPtr _
+            | NativeIntSource.PerInstInfoPtr _
+            | NativeIntSource.PerInstDictPtr _
+            | NativeIntSource.MethodHandlePtr _
+            | NativeIntSource.FieldHandlePtr _
+            | NativeIntSource.AssemblyHandle _
+            | NativeIntSource.ModuleHandle _
+            | NativeIntSource.MetadataImportHandle _
+            | NativeIntSource.GcHandlePtr _
+            | NativeIntSource.EventPipeProviderPtr _
+            | NativeIntSource.EventPipeEventPtr _
+            | NativeIntSource.LowLevelMonitorPtr _
+            | NativeIntSource.WaitHandlePtr _ -> BufferPointer.Symbolic (operation, argName, arg)
+            // Not an address at all, but classification must stay total: an
+            // entry point that never inspects its buffer has to keep answering,
+            // so the refusal waits until something actually needs the address.
+            | NativeIntSource.SyntheticCrossArrayOffset _ -> BufferPointer.Unstatable (operation, argName, arg)
         | other ->
             failwith
                 $"%s{operation}: expected %s{argName} to be a managed pointer, raw verbatim address, or null literal, got %O{other} (this is an interpreter bug)"
+
+    /// Whether this platform's kernel refuses `bufferSize` bytes at this pointer
+    /// before performing the operation at all.
+    ///
+    /// Only a raw address is ever refused: `BufferPointer.Storage` names real
+    /// allocated guest memory, which is a user address by construction.
+    let internal faultsBeforeOperation (kernel : EmulatedKernel) (buffer : BufferPointer) (bufferSize : int) : bool =
+        System.Diagnostics.Debug.Assert (
+            bufferSize >= 0,
+            "faultsBeforeOperation: a negative size is the shim's own error and is refused before the kernel sees it"
+        )
+
+        match buffer with
+        | BufferPointer.Storage _
+        | BufferPointer.Symbolic _ -> false
+        | BufferPointer.Unstatable (operation, argName, argument) ->
+            // A kernel that screens up front compares this address against its
+            // limit, and there is no address to compare — so the answer is not
+            // "in range", it is unknown. A kernel that screens nothing asks
+            // nothing, and the call proceeds to whatever short-circuit or
+            // dereference comes next.
+            if SimulatedUnixPlatform.screensUserBufferUpFront kernel.UnixPlatform then
+                failwith
+                    $"%s{operation}: %s{argName} is %O{argument}, the difference of two pointers into separate storages, and this platform screens a buffer's address before performing the operation. There is no address to screen, so PawPrint cannot say whether the kernel would accept it."
+            else
+                false
+        | BufferPointer.RawAddress address ->
+            UserBufferCheck.faultsBeforeOperation (EmulatedKernel.userBufferCheck kernel) address (uint64 bufferSize)
 
     /// Write `bytes` through a caller-supplied `byte*`, whatever storage the
     /// pointer actually names (a `localloc` block, a pinned `byte[]`, native
@@ -527,7 +656,10 @@ module NativeSystemNative =
         // Both pointers are dereferenced by the C on the success path, and
         // neither is inspected before the lookup — but the path is read first,
         // so an unmapped `path` is EFAULT whatever the output pointer is.
-        match dereferenceablePointerArgument operation "path" instruction.Arguments.[0] with
+        match
+            bufferPointerArgument operation "path" instruction.Arguments.[0]
+            |> BufferPointer.dereferenceable
+        with
         | None -> fail UnixError.EFAULT
         | Some pathPtr ->
 
@@ -566,7 +698,10 @@ module NativeSystemNative =
 
         // The output pointer is only decoded here, on the path that actually
         // writes through it.
-        match dereferenceablePointerArgument operation "output" instruction.Arguments.[1] with
+        match
+            bufferPointerArgument operation "output" instruction.Arguments.[1]
+            |> BufferPointer.dereferenceable
+        with
         | None -> fail UnixError.EFAULT
         | Some output ->
 
@@ -1042,22 +1177,31 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            // Every failure below is decided *without* resolving `buffer` to
-            // storage, because the C decides them without dereferencing it: the
-            // negative-size guard runs before `getcwd` is even called, and
-            // `getcwd` itself validates the size and compares it against the
-            // path length before it writes a byte. A guest that hand-rolls this
-            // P/Invoke may therefore legally pass a bit pattern PawPrint cannot
-            // resolve — `GetCwd((byte*)123, 0)` returns EINVAL on the real
-            // runtime — so the pointer is only decoded on the success path,
-            // which is the one place it is actually dereferenced.
+            // Classifying the pointer inspects the argument's shape and
+            // resolves nothing to storage, so it is safe this early. Every
+            // failure below is decided *without* that resolution, because the C
+            // decides them without dereferencing the buffer: the negative-size
+            // guard runs before `getcwd` is even called, and `getcwd` itself
+            // validates the size and compares it against the path length before
+            // it writes a byte. A guest that hand-rolls this P/Invoke may
+            // therefore legally pass a bit pattern PawPrint cannot resolve —
+            // `GetCwd((byte*)123, 0)` returns EINVAL on the real runtime.
+            let bufferPointer = bufferPointerArgument operation "buffer" bufferArgument
+
+            let bufferIsNull =
+                match bufferPointer with
+                | BufferPointer.RawAddress address -> address = 0UL
+                | BufferPointer.Storage _
+                | BufferPointer.Symbolic _
+                | BufferPointer.Unstatable _ -> false
+
             if bufferSize < 0 then
                 // The shim's own guard. It *also* `assert`s this, so a
                 // checked native build would abort instead; EINVAL is what a
                 // guest running against a retail runtime can observe, and it
                 // is the only one of the two behaviours we can reproduce.
                 fail UnixError.EINVAL
-            elif isNullPointerArgument bufferArgument then
+            elif bufferIsNull then
                 // `getcwd(NULL, size)` is a glibc/BSD extension that mallocs
                 // the result, and PawPrint does not model it: CoreLib's
                 // `Interop.Sys.GetCwd` always supplies a `localloc` block or a
@@ -1081,7 +1225,7 @@ module NativeSystemNative =
             // `getcwd` reports as EFAULT after writing nothing — the
             // size checks above come first, so `getcwd((byte*)123, 1)` is
             // ERANGE rather than EFAULT, as on the real kernel.
-            match dereferenceablePointerArgument operation "buffer" bufferArgument with
+            match BufferPointer.dereferenceable bufferPointer with
             | None -> fail UnixError.EFAULT
             | Some buffer ->
 
@@ -1253,7 +1397,10 @@ module NativeSystemNative =
                 else
                     SymlinkPolicy.Follow
 
-            match dereferenceablePointerArgument operation "path" instruction.Arguments.[0] with
+            match
+                bufferPointerArgument operation "path" instruction.Arguments.[0]
+                |> BufferPointer.dereferenceable
+            with
             | None -> fail UnixError.EFAULT
             | Some pathPtr ->
 
@@ -1375,7 +1522,10 @@ module NativeSystemNative =
                     failwith
                         $"%s{operation}: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink removed a still-open file; the open file description must keep it alive."
 
-            match dereferenceablePointerArgument operation "output" instruction.Arguments.[1] with
+            match
+                bufferPointerArgument operation "output" instruction.Arguments.[1]
+                |> BufferPointer.dereferenceable
+            with
             | None -> fail UnixError.EFAULT
             | Some output ->
 
@@ -1670,6 +1820,23 @@ module NativeSystemNative =
                 fail UnixError.EINVAL
             else
 
+            let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
+
+            // `ksys_pread64` reaches `vfs_read` only after the descriptor and
+            // its seekability, and `vfs_read` screens the buffer before the file
+            // operation — so on Linux this beats EISDIR and fires even when the
+            // window below would have transferred nothing. Darwin screens
+            // nothing here and discovers a bad address at the copy.
+            //
+            // `vfs_read`'s own EBADF for a descriptor not open for reading sits
+            // between ESPIPE above and this check. It has nowhere to fire while
+            // `SystemNative_Open` refuses every write flag, so no O_WRONLY
+            // regular-file descriptor exists; the write path is where it starts
+            // mattering.
+            if faultsBeforeOperation state.Kernel buffer bufferSize then
+                fail UnixError.EFAULT
+            else
+
             let entry =
                 match VirtualFileSystem.tryGet inode state.Kernel.FileSystem with
                 | Some entry -> entry
@@ -1695,21 +1862,14 @@ module NativeSystemNative =
             let transfer =
                 VirtualFileSystem.readTransferCount fileOffset bufferSize contents.Length
 
-            // The buffer is decoded only on the path that actually writes
-            // through it. That is not an optimisation: a real kernel faults on
-            // `copy_to_user`, so a call that transfers nothing never touches the
-            // buffer at all, and `pread(fd, NULL, 5, offsetAtEof)` returns 0
-            // rather than EFAULT — measured on both platforms, and easy to get
-            // wrong by validating arguments up front.
-            //
-            // True of `NULL`, and of every address below `TASK_SIZE`. *Above*
-            // it, Linux's `access_ok` runs before the file operation and faults
-            // regardless: measured, `pread(f, (void*)-1, 5, offsetAtEof)` is
-            // EFAULT on Linux and 0 on macOS, as is `pread(f, (void*)-1, 0, 0)`.
-            // PawPrint models "mapped or not" rather than where an unmapped
-            // address lies, so it gives macOS's answer under both flavours. See
-            // the fuller note on `SystemNative_Read`, which shares the gap — as
-            // does `SystemNative_Write`.
+            // A buffer that survived the check above is resolved to storage only
+            // on the path that actually writes through it. That is not an
+            // optimisation: a kernel faults in `copy_to_user`, so a call that
+            // transfers nothing never touches the buffer, and
+            // `pread(fd, NULL, 5, offsetAtEof)` returns 0 rather than EFAULT —
+            // measured on both platforms, and easy to get wrong by validating
+            // arguments up front. `NULL` is an ordinary user address; what the
+            // screen above rejects is a range leaving the user address space.
             if transfer = 0 then
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
@@ -1717,26 +1877,30 @@ module NativeSystemNative =
                 |> Some
             else
 
-            // Only the *base* of the buffer is validated here, which is all
-            // `dereferenceablePointerArgument` can say. A guest that asks to
-            // read more bytes than its buffer holds — `pread(fd, stackalloc
-            // byte[1], 5, 0)` — therefore gets as far as the write and then
-            // fails inside `MemoryBlock.writeBytes`, naming the block rather
-            // than the syscall.
+            // Only the *base* of the buffer is validated, which is all
+            // `BufferPointer` describes. A guest that asks to read more bytes
+            // than its buffer holds — `pread(fd, stackalloc byte[1], 5, 0)` —
+            // therefore gets as far as the write and then fails inside
+            // `MemoryBlock.writeBytes`, naming the block rather than the
+            // syscall.
             //
-            // This is a property of the shared `writeBytesThrough` helper
-            // rather than of this handler: measured, `SystemNative_ReadLink`
-            // fails identically for a target longer than the buffer it was
-            // given, and `Stat`/`LStat`/`FStat` write through the same helper.
-            // Fixing it means giving `writeBytesThrough` an "is this whole
-            // range writable" query over every `ManagedPointerSource` shape —
-            // its own change, and one that should improve every caller at once.
+            // This is a property of the shared `writeBytesThrough` helper rather
+            // than of this handler: measured, `SystemNative_ReadLink` fails
+            // identically for a target longer than the buffer it was given, and
+            // `Stat`/`LStat`/`FStat` write through the same helper. Fixing it
+            // means a "is this whole range writable" query, which needs a byte
+            // extent for every `ByteStorageIdentity` —
+            // `StorageLocation.resolve` yields a container and a coordinate
+            // within it, but no size. That is its own change, and one that
+            // improves every caller at once.
             //
-            // The guest has overflowed its own buffer, which a real kernel
-            // services by corrupting whatever follows it; detecting that is
-            // more useful than reproducing it. What is missing is a message
-            // that names the syscall.
-            match dereferenceablePointerArgument operation "buffer" instruction.Arguments.[1] with
+            // Distinct from the address screen above, which is what a kernel
+            // checks: `access_ok` bounds the range against the address space,
+            // never against the guest's own allocation. A guest that overflows
+            // its buffer is served by a real kernel corrupting whatever follows
+            // it, and detecting that is more useful than reproducing it. What is
+            // missing is a message that names the syscall.
+            match BufferPointer.dereferenceable buffer with
             | None -> fail UnixError.EFAULT
             | Some buffer ->
 
@@ -1755,43 +1919,30 @@ module NativeSystemNative =
         // (pal_io_common.h:36), which rejects a negative size itself and then
         // calls `read(2)` with an EINTR retry.
         //
-        // Every row of this handler's contract was measured identically on
-        // Linux and macOS — the counts, the short read at EOF, EBADF, EISDIR,
-        // EFAULT, the untouched buffer when nothing transfers, and the check
-        // order. Unlike `SystemNative_LSeek` below, there is no flavour
-        // question to answer here.
-        //
-        // **With one measured exception, which PawPrint does not model.** Linux
-        // runs `access_ok` — a check that the whole buffer range lies below
-        // `TASK_SIZE`, 0x7ffffffff000 on x86-64 — inside `vfs_read`, *before*
-        // the file operation. So an address above that boundary faults even
-        // when nothing would have been transferred, and even when the
-        // descriptor is one the call would otherwise have rejected. Measured
-        // (Linux / macOS):
+        // The counts, the short read at EOF, EBADF, EISDIR, EFAULT and the
+        // untouched buffer when nothing transfers were measured identically on
+        // Linux and macOS. The one place the platforms part company is *when*
+        // the buffer is screened, and it is visible on single-fault inputs
+        // rather than only on pathological ones (Linux / macOS):
         //
         //   read(f, (void*)-1, 5) at EOF          EFAULT / 0
-        //   read(f, 0xffffffffffff, 5) at EOF     EFAULT / 0
-        //   read(f, 0x7ffffffff000, 5) at EOF     0      / 0   <- in range
-        //   read(f, NULL, 5) at EOF               0      / 0   <- in range
         //   read(f, (void*)-1, 0)                 EFAULT / 0
         //   read(dir, (void*)-1, 5)               EFAULT / EISDIR
+        //   read(f, 0xffffffffffff, 5) at EOF     EFAULT / 0
+        //   read(f, 0x7fff00000000, 5) at EOF     0      / 0
+        //   read(f, NULL, 5) at EOF               0      / 0
         //   read(badfd, (void*)-1, 5)             EBADF  / EBADF
         //
-        // So Linux's real order is fd -> address range -> kind -> window ->
-        // copy, and PawPrint implements the macOS rule under both flavours: it
-        // models "mapped" versus "not mapped", not *where* in a 64-bit address
-        // space an unmapped pointer lies, so it cannot tell 0x7ffffffff000 from
-        // 0xffffffffffff — and the two differ on Linux.
+        // Linux's `vfs_read` runs `access_ok(buf, count)` between the
+        // descriptor's access-mode check and the file operation, so its order is
+        // fd -> readability -> address range -> kind -> window -> copy.
+        // `SimulatedUnixPlatform.userBufferCheck` carries the rule, including
+        // which ranges each platform accepts: the fourth and fifth rows above
+        // straddle x86-64's `TASK_SIZE_MAX`, and an arm64 kernel accepts both.
         //
-        // Left alone here for the same reason as the
-        // whole-range writability gap `SystemNative_PRead` records: this is a
-        // property of PawPrint's address-space fidelity shared by every
-        // buffer-taking handler rather than of this one. Measured, `PRead` and
-        // `Write` — both already merged — behave identically, so fixing it
-        // means giving the simulated platform a user-address ceiling and
-        // consulting it in all of them at once. Unreachable from CoreLib, whose
-        // buffers are always real spans; a hand-rolled P/Invoke is the only way
-        // to produce such a pointer.
+        // This handler follows that factoring rather than deciding readability
+        // and the file operation together, so that the screen appears exactly
+        // once.
         | Some "SystemNative_Read",
           [ ConcreteIntPtr state.ConcreteTypes
             ConcretePointer _
@@ -1832,40 +1983,60 @@ module NativeSystemNative =
                 fail UnixError.EINVAL
             else
 
-            match FileDescriptorRegistry.tryFindTarget fd state.Kernel.FileDescriptors with
-            | None -> fail UnixError.EBADF
-            | Some (OpenFileTarget.StandardStream role) ->
-                match role with
-                | FileDescriptorRole.StandardOutput
-                | FileDescriptorRole.StandardError ->
+            // The descriptor's access mode, which `vfs_read` decides before it
+            // screens the buffer.
+            let target : Result<ReadTarget, UnixError> =
+                match FileDescriptorRegistry.tryFindTarget fd state.Kernel.FileDescriptors with
+                | None -> Error UnixError.EBADF
+                | Some (OpenFileTarget.StandardStream FileDescriptorRole.StandardOutput)
+                | Some (OpenFileTarget.StandardStream FileDescriptorRole.StandardError) ->
                     // A pipe's write end is not open for reading: EBADF on both
                     // platforms, and the same reasoning that makes
                     // `SystemNative_Write` to fd 0 EBADF.
-                    fail UnixError.EBADF
-                | FileDescriptorRole.StandardInput ->
-                    // **Immediate EOF, and this is a claim about the launch
-                    // rather than a fallback.** PawPrint models stdin as the read
-                    // end of a pipe whose write end was closed by whoever started
-                    // the process, so there is nothing to read and never will be.
-                    //
-                    // That is exactly the shape the differential oracle launches
-                    // guests in: `RealRuntime` redirects all three streams and
-                    // then closes the child's stdin immediately, so a guest that
-                    // reads fd 0 gets 0 under real .NET too. The alternative —
-                    // an open write end nobody writes to — would *block*, which
-                    // PawPrint has no way to represent and which would make the
-                    // oracle hang rather than answer.
-                    //
-                    // The buffer is deliberately not decoded: measured on both
-                    // platforms, a read that returns EOF never touches it, so
-                    // `read(0, NULL, 5)` is 0 rather than EFAULT. Same rule as
-                    // the transfer-window shortcut below.
-                    //
-                    // Seeding stdin content is a separate feature; when it lands
-                    // it changes this one sentence — "the write end is closed at
-                    // launch" — rather than this arm's structure.
-                    succeed 0 state
-            | Some (OpenFileTarget.File (inode, offset)) ->
+                    Error UnixError.EBADF
+                | Some (OpenFileTarget.StandardStream FileDescriptorRole.StandardInput) -> Ok ReadTarget.Stdin
+                | Some (OpenFileTarget.File (inode, offset)) -> Ok (ReadTarget.File (inode, offset))
+
+            match target with
+            | Error error -> fail error
+            | Ok target ->
+
+            let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
+
+            // Everything below this point is the file operation, which on Linux
+            // the buffer screen precedes: hence EFAULT ahead of both EISDIR and
+            // stdin's end-of-file, and a fault even for a zero-length request.
+            // Darwin screens nothing here, so its answers come from the
+            // operation itself.
+            if faultsBeforeOperation state.Kernel buffer bufferSize then
+                fail UnixError.EFAULT
+            else
+
+            match target with
+            | ReadTarget.Stdin ->
+                // **Immediate EOF, and this is a claim about the launch rather
+                // than a fallback.** PawPrint models stdin as the read end of a
+                // pipe whose write end was closed by whoever started the
+                // process, so there is nothing to read and never will be.
+                //
+                // That is exactly the shape the differential oracle launches
+                // guests in: `RealRuntime` redirects all three streams and then
+                // closes the child's stdin immediately, so a guest that reads fd
+                // 0 gets 0 under real .NET too. The alternative — an open write
+                // end nobody writes to — would *block*, which PawPrint has no
+                // way to represent and which would make the oracle hang rather
+                // than answer.
+                //
+                // The buffer is not resolved to storage: measured on both
+                // platforms, a read that returns end-of-file never touches it,
+                // so `read(0, NULL, 5)` is 0 rather than EFAULT. Same rule as
+                // the transfer-window shortcut below.
+                //
+                // Seeding stdin content is a separate feature; when it lands it
+                // changes this one sentence — "the write end is closed at
+                // launch" — rather than this arm's structure.
+                succeed 0 state
+            | ReadTarget.File (inode, offset) ->
 
             let entry =
                 match VirtualFileSystem.tryGet inode state.Kernel.FileSystem with
@@ -1892,17 +2063,13 @@ module NativeSystemNative =
             if transfer = 0 then
                 // Nothing moves, so neither the buffer nor the offset is
                 // touched: measured, `read(f, NULL, 5)` at EOF is 0 on both
-                // platforms, and the offset stays where it was rather than
-                // being clamped to the file's length.
-                //
-                // `NULL` specifically, and every other address *below*
-                // `TASK_SIZE`. An address above it faults here on Linux even
-                // though nothing would move — see the `access_ok` note on this
-                // handler for what PawPrint does not model.
+                // platforms, and the offset stays where it was rather than being
+                // clamped to the file's length. `NULL` is an ordinary user
+                // address, so it reaches here rather than being screened above.
                 succeed 0 state
             else
 
-            match dereferenceablePointerArgument operation "buffer" instruction.Arguments.[1] with
+            match BufferPointer.dereferenceable buffer with
             | None ->
                 // Measured: an EFAULT leaves the offset alone. A kernel faults
                 // in `copy_to_user`, after deciding what it would have
@@ -2205,7 +2372,10 @@ module NativeSystemNative =
             // Read before anything else looks at it, because a real kernel
             // copies the pathname in before it resolves anything: a path that
             // addresses nothing is EFAULT whatever the buffer is.
-            match dereferenceablePointerArgument operation "path" instruction.Arguments.[0] with
+            match
+                bufferPointerArgument operation "path" instruction.Arguments.[0]
+                |> BufferPointer.dereferenceable
+            with
             | None -> fail UnixError.EFAULT
             | Some pathPtr ->
 
@@ -2260,9 +2430,16 @@ module NativeSystemNative =
                 fail UnixError.EINVAL
             | Some (InodeContent.Symlink target) ->
 
-            // The output pointer is only decoded here, on the path that
-            // actually writes through it.
-            match dereferenceablePointerArgument operation "buffer" instruction.Arguments.[1] with
+            // The output pointer is only resolved to storage here, on the path
+            // that actually writes through it. `readlink(2)` runs no up-front
+            // address check on either platform: the target is built in the
+            // kernel and handed over with a single `copy_to_user`, so an
+            // unusable buffer is discovered at the copy and every earlier
+            // refusal wins.
+            match
+                bufferPointerArgument operation "buffer" instruction.Arguments.[1]
+                |> BufferPointer.dereferenceable
+            with
             | None -> fail UnixError.EFAULT
             | Some buffer ->
 
@@ -2576,35 +2753,39 @@ module NativeSystemNative =
                             -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
                         | FileDescriptorRole.StandardOutput
                         | FileDescriptorRole.StandardError ->
-                            if bufferSize = 0 then
-                                // `write(fd, _, 0)` is a no-op on every Unix
-                                // we model — no errno, no buffer
-                                // dereference, no observable effect. CoreLib
-                                // in principle never calls with
-                                // `bufferSize = 0` (it bails in
-                                // `Stream.Write`), but honour the C contract
-                                // so guests that DllImport directly behave
-                                // the same as on the host. Do
-                                // NOT touch `buffer` here: the pointer is
-                                // permitted to be any bit pattern (incl.
-                                // garbage) because it is not dereferenced.
+                            let bufferPointer =
+                                bufferPointerArgument operation "buffer" instruction.Arguments.[1]
+
+                            // `vfs_write` screens the buffer between the
+                            // descriptor's access mode and the file operation,
+                            // so on Linux this beats the zero-size no-op below:
+                            // measured, `write(1, (void*)-1, 0)` is EFAULT there
+                            // and 0 on macOS. The EBADF arms above still win,
+                            // being the access-mode check.
+                            if faultsBeforeOperation state.Kernel bufferPointer bufferSize then
+                                -1, StepEffect.NoEffect, setErrno state UnixError.EFAULT
+                            elif bufferSize = 0 then
+                                // `write(fd, _, 0)` is a no-op on every Unix we
+                                // model — no errno, no buffer dereference, no
+                                // observable effect. CoreLib in principle never
+                                // calls with `bufferSize = 0` (it bails in
+                                // `Stream.Write`), but honour the C contract so
+                                // guests that DllImport directly behave the same
+                                // as on the host. Do NOT resolve `buffer` to
+                                // storage here: any address that got past the
+                                // screen above is permitted, because it is not
+                                // dereferenced.
                                 0, StepEffect.NoEffect, state
                             else
-                                // Try to decode `buffer` as a managed
-                                // pointer. Real `write(2)` returns -1 +
-                                // EFAULT for any non-dereferenceable
-                                // address (including NULL and unmapped
-                                // verbatim bit patterns); collapse both
-                                // those cases to EFAULT here rather than
-                                // crashing PawPrint, so a direct P/Invoke
-                                // that the BCL would never produce
-                                // (`Stream.Write` short-circuits null
-                                // upstream) observes the same syscall
-                                // failure it would on the host.
-                                let dereferenceableBuffer : ManagedPointerSource option =
-                                    dereferenceablePointerArgument operation "buffer" instruction.Arguments.[1]
-
-                                match dereferenceableBuffer with
+                                // Real `write(2)` returns -1 + EFAULT for any
+                                // non-dereferenceable address (including NULL
+                                // and unmapped bit patterns); collapse both
+                                // cases to EFAULT here rather than crashing
+                                // PawPrint, so a direct P/Invoke that the BCL
+                                // would never produce (`Stream.Write`
+                                // short-circuits null upstream) observes the
+                                // same syscall failure it would on the host.
+                                match BufferPointer.dereferenceable bufferPointer with
                                 | None ->
                                     // EFAULT: bad address. Real kernels
                                     // perform no I/O on this path.

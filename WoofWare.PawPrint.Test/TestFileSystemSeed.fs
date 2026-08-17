@@ -579,7 +579,7 @@ module TestFileSystemSeed =
 
         // The presets are exactly their flavour plus their release, so a custom
         // platform that restates one *is* it.
-        SimulatedUnixPlatform.createOrFail "test" SimulatedUnixFlavour.Linux "6.8.0-51-generic"
+        SimulatedUnixPlatform.createOrFail "test" SimulatedUnixFlavour.Linux "6.17.0-1022-azure"
         |> shouldEqual linux
 
         SimulatedUnixPlatform.createOrFail "test" SimulatedUnixFlavour.Darwin "24.6.0"

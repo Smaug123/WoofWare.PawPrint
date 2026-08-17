@@ -43,10 +43,17 @@ class Program
 
         // Zero-byte write to stdout with a non-null, non-managed bit
         // pattern: same contract. write(2) does not dereference the
-        // buffer when count is zero, so the bit pattern is irrelevant.
-        // This guards against PawPrint regressing to eagerly decoding the
-        // pointer argument (which would crash on the verbatim 123) before
-        // checking bufferSize.
+        // buffer when count is zero. This guards against PawPrint
+        // regressing to eagerly decoding the pointer argument (which would
+        // crash on the verbatim 123) before checking bufferSize.
+        //
+        // 123 rather than an arbitrary bit pattern: the address still has
+        // to be below `TASK_SIZE_MAX`, which is what `access_ok` accepts.
+        // Linux screens the range before `vfs_write` reaches the zero-count
+        // no-op, so `write(1, (void*)-1, 0)` is EFAULT there and 0 on macOS
+        // — a divergence this suite's oracle (the host kernel) would
+        // resolve differently per runner. `TestUserBufferFault.fs` holds
+        // that row.
         if (SystemNative_Write((IntPtr)1, (byte*)123, 0) != 0) return 4;
 
         // Non-zero write to stdout with a NULL buffer: real write(2)
