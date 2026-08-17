@@ -531,3 +531,132 @@ public class Holder
             (signatureNamed "Q")
         |> snd
         |> shouldEqual true
+
+    [<Test>]
+    let ``the same reference spelled in two modules names different types`` () : unit =
+        // The other side of the same-token shortcut's gate. Two assemblies each reference a
+        // `Shared.Thing`, but from *different* defining assemblies, so the parsed references can be
+        // identical — same name, same namespace, same AssemblyRef row index — while naming
+        // genuinely different types. A shortcut that skipped the assembly check would say equal.
+        let definition = "namespace Shared { public class Thing { } }"
+
+        let user = "public class Holder { public Shared.Thing P { get; set; } }"
+
+        let read (image : byte[]) : DumpedAssembly =
+            use stream = new MemoryStream (image)
+            global.WoofWare.PawPrint.AssemblyApi.read fixture.LoggerFactory None stream
+
+        // The user assembly, and the assembly its `Shared.Thing` actually comes from.
+        let compileUser (name : string) (definingAssemblyName : string) : DumpedAssembly * DumpedAssembly =
+            let definingImage =
+                Roslyn.compileAssembly
+                    definingAssemblyName
+                    Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                    []
+                    [ definition ]
+
+            let image =
+                Roslyn.compileAssembly
+                    name
+                    Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                    [ Microsoft.CodeAnalysis.MetadataReference.CreateFromImage definingImage ]
+                    [ user ]
+
+            read image, read definingImage
+
+        let left, leftDefining = compileUser "SigRefCollisionLeft" "SigRefCollisionDefA"
+        let right, rightDefining = compileUser "SigRefCollisionRight" "SigRefCollisionDefB"
+
+        let propertyOf (assembly : DumpedAssembly) : MethodSignature<TypeDefn> =
+            let metadataReader = assembly.PeReader.GetMetadataReader ()
+            let holder = assembly.TypeDefs.Values |> Seq.find (fun td -> td.Name = "Holder")
+
+            let handle =
+                (metadataReader.GetTypeDefinition holder.TypeDefHandle).GetProperties ()
+                |> Seq.exactlyOne
+
+            PropertySignatureDecoding.decode
+                assembly.Name
+                metadataReader
+                (metadataReader.GetPropertyDefinition handle).Signature
+
+        let leftSig = propertyOf left
+        let rightSig = propertyOf right
+
+        // The premise: the two parsed references must actually be equal, or the assertion below
+        // would pass without the gate being what decided it.
+        match leftSig.ReturnType, rightSig.ReturnType with
+        | TypeDefn.FromReference (lRef, _), TypeDefn.FromReference (rRef, _) -> lRef |> shouldEqual rRef
+        | l, r -> failwith $"expected both to be TypeRefs, got %O{l} and %O{r}"
+
+        // Both defining assemblies loaded, so each reference resolves to its own `Shared.Thing` and
+        // the two identities are what separate them.
+        let state =
+            (IlMachineState.initial fixture.LoggerFactory ImmutableArray.Empty left)
+                .WithLoadedAssembly(right)
+                .WithLoadedAssembly(leftDefining)
+                .WithLoadedAssembly
+                rightDefining
+
+        NativeSignature.compareDecodedSignatures fixture.LoggerFactory "test" state left leftSig right rightSig
+        |> snd
+        |> shouldEqual false
+
+    [<Test>]
+    let ``the same reference in one module compares equal without resolving it`` () : unit =
+        // `CompareTypeTokens`'s first step is same-module-and-same-token, answered before any
+        // resolution. Two property blobs in one assembly that name a type through the *same*
+        // TypeRef row therefore agree even when nothing can resolve that row.
+        //
+        // Reachable: `Signature_Init` strips custom modifiers without loading their types, so two
+        // signatures can carry the same modifier from an assembly that was never loaded.
+        let midImage =
+            Roslyn.compileAssembly
+                "SignatureSameTokenMid"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ "public class Mid { }" ]
+
+        let userImage =
+            Roslyn.compileAssembly
+                "SignatureSameTokenUser"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                [ Microsoft.CodeAnalysis.MetadataReference.CreateFromImage midImage ]
+                [
+                    "public class Holder { public Mid P { get; set; } public Mid Q { get; set; } }"
+                ]
+
+        use userStream = new MemoryStream (userImage)
+
+        let user =
+            global.WoofWare.PawPrint.AssemblyApi.read fixture.LoggerFactory None userStream
+
+        let metadataReader = user.PeReader.GetMetadataReader ()
+        let holder = user.TypeDefs.Values |> Seq.find (fun td -> td.Name = "Holder")
+
+        let signatureNamed (name : string) : MethodSignature<TypeDefn> =
+            let handle =
+                (metadataReader.GetTypeDefinition holder.TypeDefHandle).GetProperties ()
+                |> Seq.find (fun handle ->
+                    metadataReader.GetString (metadataReader.GetPropertyDefinition handle).Name = name
+                )
+
+            PropertySignatureDecoding.decode
+                user.Name
+                metadataReader
+                (metadataReader.GetPropertyDefinition handle).Signature
+
+        // `SignatureSameTokenMid` is neither loaded nor on the (empty) runtime-dir list, so any
+        // attempt to resolve this reference fails outright.
+        let state = IlMachineState.initial fixture.LoggerFactory ImmutableArray.Empty user
+
+        NativeSignature.compareDecodedSignatures
+            fixture.LoggerFactory
+            "test"
+            state
+            user
+            (signatureNamed "P")
+            user
+            (signatureNamed "Q")
+        |> snd
+        |> shouldEqual true
