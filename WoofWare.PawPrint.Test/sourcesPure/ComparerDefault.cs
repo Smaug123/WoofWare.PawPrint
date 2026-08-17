@@ -6,9 +6,8 @@ using System.Collections.Generic;
 // picks is observable, so assert the selection as well as the resulting comparison behaviour:
 // getting it wrong would silently change ordering semantics rather than fail loudly.
 //
-// The `Nullable<T>` branch of the selection, and `EnumComparer<T>.Compare` itself, are each
-// blocked on an unrelated gap; they are covered by the parked `ComparerDefaultNullable.cs` and
-// `ComparerDefaultEnumCompare.cs`.
+// The `Nullable<T>` branch of the selection is covered by `ComparerDefaultNullable.cs`, and
+// calling the comparer the enum branch returns by `ComparerDefaultEnumCompare.cs`.
 
 namespace ComparerDefaultTest
 {
