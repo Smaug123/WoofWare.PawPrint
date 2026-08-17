@@ -73,14 +73,11 @@ module NativeSignature =
             let mdReader = assembly.PeReader.GetMetadataReader ()
             let methodDef = mdReader.GetMethodDefinition method.Get
             assembly, methodDef.Signature
-        | PeByteRangePointerSource.PropertySignatureBlob _ ->
-            // This one *is* a signature blob, so it does not belong with the arm below. It is
-            // minted by `MetadataImport.GetPropertyProps`, and reaches here only through
-            // `RuntimePropertyInfo.Signature` — which needs a fully constructed
-            // `RuntimePropertyInfo`. Parsing an ECMA II.23.2.5 PropertySig is the feature that
-            // unblocks this arm.
-            failwith
-                $"TODO: %s{operation} on a property signature blob is not implemented (%O{peByteRange}); PROPERTY signatures are not yet parsed"
+        | PeByteRangePointerSource.PropertySignatureBlob property ->
+            let assembly = assembly ()
+            let mdReader = assembly.PeReader.GetMetadataReader ()
+            let propertyDef = mdReader.GetPropertyDefinition property.Get
+            assembly, propertyDef.Signature
         | PeByteRangePointerSource.FieldRva _
         | PeByteRangePointerSource.ManagedResource _
         | PeByteRangePointerSource.ConstantBlob _ ->
@@ -423,12 +420,18 @@ module NativeSignature =
     let private managedCallingConventionOfHeader (operation : string) (header : SignatureHeader) : int =
         // CoreCLR dispatches on the blob's own calling convention, not on which handle it was
         // given, so a FIELD-shaped blob reached from a method handle would take the *field* arm
-        // there. No MethodDef can carry one; assert rather than silently reporting Standard.
+        // there. No MethodDef or Property row can carry one; assert rather than silently reporting
+        // Standard.
+        //
+        // Property is admitted alongside Method because CoreCLR's non-FIELD branch is what a
+        // PROPERTY blob takes, and `SetCallingConvention` reads only the VARARG / HASTHIS /
+        // EXPLICITTHIS bits — none of which distinguish the two.
         match header.Kind with
-        | SignatureKind.Method -> ()
+        | SignatureKind.Method
+        | SignatureKind.Property -> ()
         | other ->
             failwith
-                $"%s{operation}: method signature blob has signature kind %O{other}, not Method; a MethodDef cannot carry a field or local-variable calling convention"
+                $"%s{operation}: signature blob has signature kind %O{other}, not Method or Property; only those reach the calling-convention translation"
 
         let baseBits =
             if int header.CallingConvention = callingConventionVarArg then
@@ -649,6 +652,145 @@ module NativeSignature =
 
         setSignatureField state signatureAddr "_pMethod" methodHandleArg
 
+    /// Populate a Signature built from a raw PropertySig blob (ECMA-335 II.23.2.5), which is what
+    /// `RuntimePropertyInfo.Signature` produces: it uses the handle-less
+    /// `new Signature(void*, int, RuntimeType)` constructor, passing the blob
+    /// `MetadataImport.GetPropertyProps` handed back.
+    ///
+    /// CoreCLR reaches this through `Signature_Init`'s non-FIELD branch, so the property's type
+    /// lands in `_returnTypeORfieldType` and its index parameters in `_arguments`, exactly as a
+    /// method's return and parameter types would.
+    let private fillPropertyBlobSignature
+        (ctx : NativeCallContext)
+        (operation : string)
+        (signatureAddr : ManagedHeapAddress)
+        (peByteRange : PeByteRangePointer)
+        (pCorSig : CliType)
+        (cCorSig : int)
+        (propertyHandle : PropertyDefinitionHandle)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let assembly =
+            state.LoadedAssembly' peByteRange.AssemblyFullName
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: signature blob references unloaded assembly %s{peByteRange.AssemblyFullName}"
+            )
+
+        // As on the field path: every caller derives `cCorSig` from the same `ConstArray` whose
+        // pointer this is, so a disagreement is a PawPrint bug rather than a malformed image.
+        if cCorSig <> peByteRange.Size then
+            failwith
+                $"%s{operation}: cCorSig %d{cCorSig} does not match the %d{peByteRange.Size}-byte signature blob it points at (%O{peByteRange})"
+
+        let signatureObj = ManagedHeap.get signatureAddr state.ManagedHeap
+
+        // CoreCLR skips the type-derivation block entirely when `_returnTypeORfieldType` is already
+        // set, which serves the `DynamicMethod` constructor's pre-filled Signature. PawPrint
+        // declares dynamic code unsupported, so refuse that shape rather than overwrite it.
+        let returnTypeFieldId =
+            IlMachineState.requiredOwnInstanceFieldId state signatureObj.ConcreteType "_returnTypeORfieldType"
+
+        match AllocatedNonArrayObject.DereferenceFieldById returnTypeFieldId signatureObj with
+        | CliType.ObjectRef None -> ()
+        | already ->
+            failwith
+                $"%s{operation}: Signature._returnTypeORfieldType was already %O{already}; CoreCLR's pre-filled path serves DynamicMethod, which PawPrint does not support"
+
+        // `SigTypeContext::InitTypeContext(declType, &typeContext)` (runtimehandles.cpp:1647): the
+        // declaring type's class instantiation, and no method instantiation at all.
+        let typeGenerics = declaringTypeGenericsOfSignature operation state signatureObj
+
+        let mdReader = assembly.PeReader.GetMetadataReader ()
+
+        let decoded =
+            PropertySignatureDecoding.decode
+                assembly.Name
+                mdReader
+                (mdReader.GetPropertyDefinition propertyHandle).Signature
+
+        let concretize (state : IlMachineState) (defn : TypeDefn) : IlMachineState * ConcreteTypeHandle =
+            IlMachineState.concretizeType
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                state
+                assembly.Name
+                typeGenerics
+                ImmutableArray.Empty
+                // Custom modifiers need no stripping here: concretization drops them, because
+                // runtime type identity follows the unmodified type. So a `ref readonly int`
+                // property reports `Int32&`, as `MetaSig`'s type handles do.
+                defn
+
+        let state, propertyTypeHandle = concretize state decoded.ReturnType
+
+        let propertyTypeAddr, state =
+            IlMachineState.getOrAllocateType
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                (RuntimeTypeHandleTarget.Closed propertyTypeHandle)
+                state
+
+        let state =
+            setSignatureField state signatureAddr "_returnTypeORfieldType" (CliType.ObjectRef (Some propertyTypeAddr))
+
+        let state =
+            setSignatureField
+                state
+                signatureAddr
+                "_managedCallingConventionAndArgIteratorFlags"
+                (CliType.Numeric (CliNumericType.Int32 (managedCallingConventionOfHeader operation decoded.Header)))
+
+        // A PropertySig admits no VARARG calling convention and so no sentinel, which is why
+        // `NumFixedArgs` and the declared parameter count coincide. Assert it rather than assume:
+        // if they ever diverged we would publish optional parameters as fixed.
+        if decoded.ParameterTypes.Length <> decoded.RequiredParameterCount then
+            failwith
+                $"%s{operation}: PropertySig for %O{propertyHandle} has %d{decoded.ParameterTypes.Length} parameter types but %d{decoded.RequiredParameterCount} required parameters; a PropertySig was not expected to carry a VARARG sentinel"
+
+        let state, _, runtimeTypeElementHandle =
+            NativeRuntimeTypeHelpers.concretizeNonGenericCorelibType
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                state
+                "System"
+                "RuntimeType"
+
+        // Allocated unconditionally, as CoreCLR's `AllocateSzArray(arrayHandle, nArgs)` is: the
+        // managed `Signature.Arguments` getter asserts non-null, so a non-indexer property must
+        // still get an empty array rather than null.
+        let arrayAddr, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero runtimeTypeElementHandle)
+                (fun () -> CliType.ObjectRef None)
+                decoded.ParameterTypes.Length
+                state
+
+        let state =
+            ((state, 0), decoded.ParameterTypes)
+            ||> Seq.fold (fun (state, index) parameterType ->
+                let state, handle = concretize state parameterType
+
+                let addr, state =
+                    IlMachineState.getOrAllocateType
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        (RuntimeTypeHandleTarget.Closed handle)
+                        state
+
+                IlMachineState.setArrayValue arrayAddr (CliType.ObjectRef (Some addr)) index state, index + 1
+            )
+            |> fst
+
+        let state =
+            setSignatureField state signatureAddr "_arguments" (CliType.ObjectRef (Some arrayAddr))
+
+        // `_sig` and `_csig` are the caller's own arguments verbatim, as CoreCLR assigns them, so
+        // the blob's provenance survives for the byte-level readers.
+        let state = setSignatureField state signatureAddr "_sig" pCorSig
+
+        setSignatureField state signatureAddr "_csig" (CliType.Numeric (CliNumericType.Int32 cCorSig))
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -748,20 +890,40 @@ module NativeSignature =
                         state
                 | None, None ->
                     // Handle-less: the blob itself is the input. This is
-                    // `new Signature(void*, int, RuntimeType)`, i.e. `MdFieldInfo.FieldType`.
+                    // `new Signature(void*, int, RuntimeType)`, whose callers are
+                    // `MdFieldInfo.FieldType` and `RuntimePropertyInfo.Signature`. CoreCLR then
+                    // dispatches on the blob's own calling convention; PawPrint dispatches on the
+                    // byte range's provenance, which says the same thing and says it without
+                    // re-reading the bytes.
                     match corSigPeByteRange operation instruction.Arguments.[1] with
                     | Some peByteRange ->
-                        fillRawFieldBlobSignature
-                            ctx
-                            operation
-                            signatureAddr
-                            peByteRange
-                            instruction.Arguments.[1]
-                            (NativeCall.int32Argument operation instruction.Arguments.[2])
-                            "_returnTypeORfieldType"
-                            "_sig"
-                            "_csig"
-                            state
+                        let cCorSig = NativeCall.int32Argument operation instruction.Arguments.[2]
+
+                        match peByteRange.Source with
+                        | PeByteRangePointerSource.PropertySignatureBlob property ->
+                            fillPropertyBlobSignature
+                                ctx
+                                operation
+                                signatureAddr
+                                peByteRange
+                                instruction.Arguments.[1]
+                                cCorSig
+                                property.Get
+                                state
+                        | _ ->
+                            // Every other provenance is rejected inside this helper, which names
+                            // the ones it accepts.
+                            fillRawFieldBlobSignature
+                                ctx
+                                operation
+                                signatureAddr
+                                peByteRange
+                                instruction.Arguments.[1]
+                                cCorSig
+                                "_returnTypeORfieldType"
+                                "_sig"
+                                "_csig"
+                                state
                     | None ->
                         // CoreCLR asserts `pCorSig != NULL && cCorSig > 0` once both handles are
                         // null, so there is nothing left to derive a signature from.

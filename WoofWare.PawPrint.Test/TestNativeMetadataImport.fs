@@ -2227,7 +2227,8 @@ public class ParameterShapes
                 |> ignore
             )
 
-        ex.Message |> shouldContainText "expected FieldDef or ParamDef token"
+        ex.Message
+        |> shouldContainText "expected FieldDef, ParamDef or PropertyDef token"
 
     /// The bytes behind the `byte*` that `GetName` wrote, up to and including the NUL terminator,
     /// read straight out of the backing array rather than through `NativeCall.readNullTerminatedUtf8`.
@@ -3505,21 +3506,44 @@ public class ParameterShapes
             ex.Message |> shouldContainText "was not present in"
 
     [<Test>]
-    let ``MetadataImport GetDefaultValue refuses a PropertyDef token`` () : unit =
-        // The third HasConstant parent, deliberately unimplemented. It must stay loud: reporting
-        // VOID would turn "PawPrint has not implemented this" into "this property has no constant",
-        // which a guest cannot tell from the truth.
+    let ``MetadataImport GetDefaultValue reports VOID for a PropertyDef with no Constant row`` () : unit =
+        // The third HasConstant parent. C# emits no Constant row on a property, so this absent-row
+        // answer is the only one a Roslyn corpus can produce — and it is what
+        // `RuntimePropertyInfo.GetConstantValue` turns into an InvalidOperationException.
         let fixture = makeFixture ()
 
+        let mr = fixture.Assembly.PeReader.GetMetadataReader ()
+
         let propertyHandle =
-            (fixture.Assembly.PeReader.GetMetadataReader().GetTypeDefinition fixture.PropertyShapesType.TypeDefHandle)
-                .GetProperties ()
+            (mr.GetTypeDefinition fixture.PropertyShapesType.TypeDefHandle).GetProperties ()
             |> Seq.head
 
-        let ex =
-            Assert.Throws (fun () ->
-                invokeGetDefaultValue fixture (propertyToken propertyHandle) fixture.State
-                |> ignore
+        (mr.GetPropertyDefinition propertyHandle).GetDefaultValue().IsNil
+        |> shouldEqual true
+
+        let returnValue, out, _ =
+            invokeGetDefaultValue fixture (propertyToken propertyHandle) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+        out.CorElementType |> shouldEqual 0x01
+        out.Value |> shouldEqual 0L
+        out.Length |> shouldEqual 0
+        out.StringPointer |> shouldEqual ManagedPointerSource.Null
+
+    [<Test>]
+    let ``MetadataImport GetDefaultValue rejects a PropertyDef absent from the assembly`` () : unit =
+        // Both halves of `propertyDefinition`'s bounds guard; row 0 is also the nil PropertyDef
+        // token, so this is one input per half rather than two.
+        let fixture = makeFixture ()
+
+        let rowCount =
+            System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetTableRowCount (
+                fixture.Assembly.PeReader.GetMetadataReader (),
+                System.Reflection.Metadata.Ecma335.TableIndex.Property
             )
 
-        ex.Message |> shouldContainText "PropertyDef Constant rows are not implemented"
+        for token in [ 0x17000000 ; 0x17000000 ||| (rowCount + 1) ] do
+            let ex =
+                Assert.Throws (fun () -> invokeGetDefaultValue fixture token fixture.State |> ignore)
+
+            ex.Message |> shouldContainText "was not present in"

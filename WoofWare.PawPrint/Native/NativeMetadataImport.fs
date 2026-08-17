@@ -600,16 +600,15 @@ module NativeMetadataImport =
                 (metadataReader.GetFieldDefinition field.Handle).GetDefaultValue ()
             | MetadataToken.Parameter parameterHandle ->
                 (parameterDefinition operation assembly parameterHandle).GetDefaultValue ()
-            | MetadataToken.PropertyDefinition _ ->
-                // The third HasConstant parent. Reachable only through
-                // `RuntimePropertyInfo.GetRawConstantValue`, which needs a constructed
-                // `RuntimePropertyInfo` — and that dies first in `Signature_Init` on a raw
-                // PropertySignatureBlob, because ECMA II.23.2.5 PropertySigs are not yet parsed.
-                // Implementing that is what makes this arm worth writing.
-                failwith
-                    $"%s{operation}: PropertyDef Constant rows are not implemented (token 0x%08x{mdToken}); PROPERTY signatures are not yet parsed, so no guest can construct the RuntimePropertyInfo that would ask for one"
+            | MetadataToken.PropertyDefinition propertyHandle ->
+                // The third HasConstant parent, reached through
+                // `RuntimePropertyInfo.GetRawConstantValue` / `GetConstantValue`. C# emits no
+                // Constant row on a property, so in practice this reports "no row", which those
+                // callers turn into an InvalidOperationException.
+                (propertyDefinition operation assembly propertyHandle).GetDefaultValue ()
             | token ->
-                failwith $"%s{operation}: expected FieldDef or ParamDef token, got %O{token} from 0x%08x{mdToken}"
+                failwith
+                    $"%s{operation}: expected FieldDef, ParamDef or PropertyDef token, got %O{token} from 0x%08x{mdToken}"
 
         if constantHandle.IsNil then None else Some constantHandle
 
