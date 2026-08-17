@@ -11,6 +11,13 @@ open TypeIdentityTestHelpers
 
 [<TestFixture>]
 module TestTypeResolution =
+    /// A row handle for `TypeRef`s these tests build by hand rather than parse. They correspond to
+    /// no real TypeRef row, and resolution consumes name, namespace and resolution scope but never
+    /// the handle, so any value does — but it must be *some* value, since a `TypeRef` records which
+    /// row it came from.
+    let private syntheticTypeRefHandle : ComparableTypeReferenceHandle =
+        ComparableTypeReferenceHandle.Make (System.Reflection.Metadata.Ecma335.MetadataTokens.TypeReferenceHandle 1)
+
     let private baseClassTypes () : BaseClassTypes<DumpedAssembly> =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let corelibPath = typeof<obj>.Assembly.Location
@@ -407,6 +414,7 @@ public class Consumer
     let ``ModuleRef resolution fails explicitly`` () =
         let consumer =
             {
+                Handle = syntheticTypeRefHandle
                 Name = "Inner"
                 Namespace = "N"
                 ResolutionScope =
@@ -540,6 +548,7 @@ public class Consumer
 
         let forwardedRef =
             {
+                Handle = syntheticTypeRefHandle
                 Name = "Forwarded"
                 Namespace = "N"
                 ResolutionScope =
@@ -613,6 +622,7 @@ public class Placeholder { }
         // the original assembly, which later became a forwarder.
         let globalTypeRef : TypeRef =
             {
+                Handle = syntheticTypeRefHandle
                 Name = "GlobalType"
                 Namespace = ""
                 ResolutionScope =

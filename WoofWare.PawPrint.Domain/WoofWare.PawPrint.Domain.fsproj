@@ -21,7 +21,8 @@
         <Compile Include="ImmutableArray.fs" />
         <Compile Include="NonCryptoRandom.fs" />
         <Compile Include="Tokens.fs" />
-        <Compile Include="TypeRef.fs" />
+        <Compile Include="ComparableTypeReferenceHandle.fs" />
+    <Compile Include="TypeRef.fs" />
         <Compile Include="IlOp.fs" />
         <Compile Include="IlDecoding.fs" />
         <Compile Include="ContextSwitchPrior.fs" />

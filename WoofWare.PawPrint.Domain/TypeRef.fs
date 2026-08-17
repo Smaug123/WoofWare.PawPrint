@@ -69,6 +69,24 @@ type TypeRefResolutionScope =
 /// </summary>
 type TypeRef =
     {
+        /// <summary>
+        /// The TypeRef row this was parsed from — its identity, as distinct from the description
+        /// the other fields give.
+        /// </summary>
+        /// <remarks>
+        /// Metadata handles are indices into one module's tables, so this identifies the row only
+        /// relative to the assembly it came from. Two <c>TypeRef</c>s are the same reference when
+        /// they carry the same handle <i>and</i> come from the same assembly; comparing handles
+        /// across assemblies is meaningless. Callers already know the owning assembly — a
+        /// <c>TypeRef</c> is reached through that assembly's <c>TypeRefs</c> table — so it is not
+        /// repeated here, where it would cost a string per row.
+        ///
+        /// Name, namespace and resolution scope describe what is referenced and are what resolution
+        /// consumes; this says which row did the referencing. One module may hold several rows that
+        /// describe the same type, and only this tells them apart.
+        /// </remarks>
+        Handle : ComparableTypeReferenceHandle
+
         /// <summary>The simple name of the referenced type (without namespace).</summary>
         Name : string
 
@@ -97,6 +115,7 @@ module TypeRef =
             | handle -> failwith $"Unexpected TypeRef resolution scope: {handle}"
 
         {
+            Handle = ComparableTypeReferenceHandle.Make ty
             Name = prettyName
             Namespace = prettyNamespace
             ResolutionScope = resolutionScope
