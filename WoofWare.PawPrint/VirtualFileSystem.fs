@@ -791,6 +791,20 @@ type SeekWhence =
     /// `SEEK_END` (2): from the end of the file.
     | End
 
+/// Why a write to a regular file has no answer PawPrint can give.
+///
+/// Not a `UnixError`, and deliberately: this is a limit of the model rather than
+/// anything a kernel does, so a caller must fail loudly rather than translate it
+/// into an errno a guest could catch and interpret. Measured on ext4 and APFS
+/// alike, `pwrite` of one byte at offset 2^40 succeeds and leaves a sparse 1 TB
+/// file behind.
+[<RequireQualifiedAccess>]
+type FileWriteRefusal =
+    /// The write would leave the file longer than `VirtualFileSystem.maxFileLength`.
+    /// Carries the write rather than the resulting length, which need not be a
+    /// number: `offset + count` can leave `int64` entirely.
+    | WouldExceedMaxLength of offset : int64 * count : int
+
 /// Why a seek computation has no answer.
 ///
 /// Split into two cases rather than one because the platforms disagree about
@@ -909,6 +923,99 @@ module VirtualFileSystem =
             // `length - offset` is in `(0, length]` here, so the `int` conversion
             // cannot overflow however large `offset` was.
             min (int64 count) (int64 length - offset) |> int
+
+    /// The most bytes a regular file in this model can hold: `Array.MaxLength`,
+    /// contents being an `ImmutableArray<byte>`.
+    ///
+    /// Not any real filesystem's ceiling — ext4's is about 16 TiB and APFS's is
+    /// vastly larger — and reaching it is `FileWriteRefusal.WouldExceedMaxLength`
+    /// rather than an errno for that reason.
+    let maxFileLength : int64 = int64 System.Array.MaxLength
+
+    /// How long a regular file becomes when `count` bytes are written at
+    /// `offset` into contents `length` bytes long, or the refusal if that is
+    /// more than this model can hold.
+    ///
+    /// An empty write leaves the length *exactly* as it was, however far past the
+    /// end it was aimed: measured on both platforms, `pwrite(fd, buf, 0, 10000)`
+    /// on a four-byte file leaves it four bytes long. So a caller must not infer
+    /// a file's new length from `offset` and the count alone.
+    ///
+    /// Separate from `writtenContents` so that both sides of the ceiling can be
+    /// checked without allocating two gigabytes to do it.
+    let writtenLength (offset : int64) (count : int) (length : int) : Result<int, FileWriteRefusal> =
+        System.Diagnostics.Debug.Assert (offset >= 0L, "writtenLength: offset must not be negative")
+        System.Diagnostics.Debug.Assert (count >= 0, "writtenLength: count must not be negative")
+        System.Diagnostics.Debug.Assert (length >= 0, "writtenLength: length must not be negative")
+
+        if count = 0 then
+            Ok length
+        else if
+
+            // Rearranged to subtract rather than add, so that an offset near the top
+            // of the `int64` range is refused instead of wrapping onto a low sum the
+            // comparison would accept. Both operands of the subtraction are
+            // non-negative, so it cannot underflow.
+            offset > maxFileLength - int64 count
+        then
+            Error (FileWriteRefusal.WouldExceedMaxLength (offset, count))
+        else
+            // Bounded by `maxFileLength` just above, so the `int` conversion is
+            // exact however large `offset` was.
+            Ok (max (int64 length) (offset + int64 count) |> int)
+
+    /// The contents a regular file holds after `bytes` are written at `offset`.
+    ///
+    /// Bytes between the old end of the file and `offset` read as zero, which is
+    /// what a real filesystem reports for the hole a sparse write leaves
+    /// (measured on ext4 and APFS). A write landing inside the file overwrites
+    /// in place, and never truncates what follows it.
+    ///
+    /// Separated from `writeFile` for the reason `readTransferCount` is
+    /// separated from the handlers that use it: as a function of a byte array, an
+    /// offset and a byte array it is property-testable against naive splicing,
+    /// where the same arithmetic inlined into a syscall handler is reachable only
+    /// through a guest.
+    let writtenContents
+        (contents : ImmutableArray<byte>)
+        (offset : int64)
+        (bytes : ImmutableArray<byte>)
+        : Result<ImmutableArray<byte>, FileWriteRefusal>
+        =
+        // Both are `ImmutableArray`, a struct wrapping an array, so `default`
+        // carries a null one: it would throw on the first `Length` read rather
+        // than at the point the mistake was made. Rejected rather than treated as
+        // empty for the reason `createFile` gives.
+        if contents.IsDefault then
+            failwith
+                "VirtualFileSystem.writtenContents: contents is the default ImmutableArray, whose underlying array is null. That is not an empty file; pass ImmutableArray<byte>.Empty."
+
+        if bytes.IsDefault then
+            failwith
+                "VirtualFileSystem.writtenContents: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
+
+        // The handler is responsible for rejecting a negative offset (EINVAL), so
+        // it is established before here.
+        System.Diagnostics.Debug.Assert (offset >= 0L, "writtenContents: offset must not be negative")
+
+        if bytes.IsEmpty then
+            // Not merely an optimisation: the contents must come back untouched
+            // rather than zero-extended to `offset`. See `writtenLength`.
+            Ok contents
+        else
+
+        match writtenLength offset bytes.Length contents.Length with
+        | Error refusal -> Error refusal
+        | Ok length ->
+
+        // Zero-initialised, which is what fills the hole between the old end of
+        // the file and `offset` when there is one; where there is not, every byte
+        // is overwritten by one of the two copies below.
+        let result = Array.zeroCreate<byte> length
+        contents.CopyTo result
+        bytes.CopyTo (0, result, int offset, bytes.Length)
+
+        Ok (ImmutableArray.CreateRange result)
 
     /// Where `lseek(2)` would land, given where it is measuring from.
     ///
@@ -1201,6 +1308,73 @@ module VirtualFileSystem =
                                 }
                                 bound.Inodes
                     }
+
+    /// Write `bytes` at `offset` into the regular file at `inode`, moving its
+    /// `mtime` and `ctime`.
+    ///
+    /// Those two and no others: measured on both platforms, a write leaves
+    /// `atime` where it was, and `birth` never moves at all.
+    ///
+    /// Partial in the inode, which must name a regular file this filesystem
+    /// contains. A caller arrives here having resolved a descriptor open for
+    /// writing, and only a regular file can be opened that way — `open(2)`
+    /// answers EISDIR for a directory and resolves a symlink to whatever it names
+    /// — so anything else is an interpreter bug rather than a guest error.
+    ///
+    /// Must not be called with an empty `bytes`: a zero-length write moves no
+    /// timestamp, so treating it as an ordinary write of nothing would restamp
+    /// the inode for a call a real kernel makes no record of. The caller
+    /// short-circuits it.
+    let writeFile
+        (inode : InodeNumber)
+        (offset : int64)
+        (bytes : ImmutableArray<byte>)
+        (now : UnixTimestamp)
+        (vfs : VirtualFileSystem)
+        : Result<VirtualFileSystem, FileWriteRefusal>
+        =
+        if bytes.IsDefault then
+            failwith
+                "VirtualFileSystem.writeFile: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; a write of no bytes must be short-circuited by the caller."
+
+        System.Diagnostics.Debug.Assert (
+            not bytes.IsEmpty,
+            "writeFile: a zero-length write moves no timestamp, and must be short-circuited by the caller"
+        )
+
+        match Map.tryFind inode vfs.Inodes with
+        | None ->
+            failwith
+                $"VirtualFileSystem.writeFile: inode %O{inode} is not in this filesystem. A descriptor outliving its inode means an unlink removed a still-open file; the open file description must keep it alive."
+        | Some {
+                   Content = InodeContent.Directory _
+               } ->
+            failwith
+                $"VirtualFileSystem.writeFile: inode %O{inode} is a directory, so no descriptor naming it can be open for writing — `open(2)` answers EISDIR for every write access mode. The caller resolved a writable descriptor to it anyway (this is an interpreter bug)."
+        | Some {
+                   Content = InodeContent.Symlink _
+               } ->
+            failwith
+                $"VirtualFileSystem.writeFile: inode %O{inode} is a symbolic link. `open` resolves symlinks, so no descriptor should name one (this is an interpreter bug)."
+        | Some ({
+                    Content = InodeContent.RegularFile (contents, permissions)
+                } as entry) ->
+
+        match writtenContents contents offset bytes with
+        | Error refusal -> Error refusal
+        | Ok updated ->
+
+        Ok
+            { vfs with
+                Inodes =
+                    Map.add
+                        inode
+                        { entry with
+                            Content = InodeContent.RegularFile (updated, permissions)
+                            Times = InodeTimes.contentsChangedAt now entry.Times
+                        }
+                        vfs.Inodes
+            }
 
     // ------------------------------------------------------------ resolution
 

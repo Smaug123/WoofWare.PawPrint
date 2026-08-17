@@ -12,15 +12,26 @@ module TestFileDescriptorRegistry =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
+    /// The access mode is *derived* from the role here rather than passed in, so
+    /// that a test comparing against this cannot accidentally assert a mode of its
+    /// own choosing. Which mode each role gets is asserted directly, once, in
+    /// `initial gives each standard stream the access mode a redirected launch
+    /// would`.
     let private standardStream (role : FileDescriptorRole) : OpenFileDescription =
         {
             Target = OpenFileTarget.StandardStream role
+            AccessMode =
+                match role with
+                | FileDescriptorRole.StandardInput -> FileAccessMode.ReadOnly
+                | FileDescriptorRole.StandardOutput
+                | FileDescriptorRole.StandardError -> FileAccessMode.WriteOnly
             Flock = None
         }
 
     let private openOn (inode : InodeNumber) : OpenFileDescription =
         {
             Target = OpenFileTarget.File (inode, 0L)
+            AccessMode = FileAccessMode.ReadOnly
             Flock = None
         }
 
@@ -30,11 +41,13 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``openFile takes the lowest free descriptor and a fresh description`` () : unit =
         let a, registry =
-            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
 
         a |> shouldEqual 3
 
-        let b, registry = FileDescriptorRegistry.openFile otherInode registry
+        let b, registry =
+            FileDescriptorRegistry.openFile otherInode FileAccessMode.ReadOnly registry
+
         b |> shouldEqual 4
 
         FileDescriptorRegistry.tryFind a registry
@@ -53,9 +66,10 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``two opens of one inode are two descriptions, unlike dup`` () : unit =
         let a, registry =
-            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
 
-        let b, registry = FileDescriptorRegistry.openFile someInode registry
+        let b, registry =
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly registry
 
         FileDescriptorRegistry.tryFind a registry
         |> shouldEqual (FileDescriptorRegistry.tryFind b registry)
@@ -75,7 +89,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``a closed description's identity is never handed out again`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
 
         let firstId = FileDescriptorRegistry.tryFindId fd registry
 
@@ -84,7 +98,8 @@ module TestFileDescriptorRegistry =
             | Ok registry -> registry
             | Error e -> failwith $"expected close to succeed, got %O{e}"
 
-        let reused, registry = FileDescriptorRegistry.openFile otherInode registry
+        let reused, registry =
+            FileDescriptorRegistry.openFile otherInode FileAccessMode.ReadOnly registry
 
         // The *descriptor* comes back...
         reused |> shouldEqual fd
@@ -134,6 +149,64 @@ module TestFileDescriptorRegistry =
 
         FileDescriptorRegistry.tryFind 2 FileDescriptorRegistry.initial
         |> shouldEqual (Some (standardStream FileDescriptorRole.StandardError))
+
+    /// The shape a *redirected* launch produces, which is what PawPrint commits
+    /// to elsewhere: `SystemNative_IsATty` always reports 0, and a `write` to fd 0
+    /// is EBADF, both of which are only true of an `O_RDONLY` stdin. Under a tty
+    /// all three would be `O_RDWR` — that is the same fact as their sharing one
+    /// description, and is rejected for the same reason.
+    ///
+    /// Asserted here rather than left to the helper above, because these are the
+    /// modes every readability and writability answer in the syscall handlers is
+    /// derived from.
+    [<Test>]
+    let ``initial gives each standard stream the access mode a redirected launch would`` () : unit =
+        let modeOf (fd : int) : FileAccessMode =
+            match FileDescriptorRegistry.tryFind fd FileDescriptorRegistry.initial with
+            | Some description -> description.AccessMode
+            | None -> failwith $"fd %d{fd} should be live in the initial table"
+
+        modeOf 0 |> shouldEqual FileAccessMode.ReadOnly
+        modeOf 1 |> shouldEqual FileAccessMode.WriteOnly
+        modeOf 2 |> shouldEqual FileAccessMode.WriteOnly
+
+        // ...and hence, through the accessors the handlers actually consult:
+        // stdin is readable and not writable, and the output streams the reverse.
+        FileAccessMode.permitsRead (modeOf 0) |> shouldEqual true
+        FileAccessMode.permitsWrite (modeOf 0) |> shouldEqual false
+        FileAccessMode.permitsRead (modeOf 1) |> shouldEqual false
+        FileAccessMode.permitsWrite (modeOf 1) |> shouldEqual true
+
+    /// `dup(2)` shares the description, and the access mode lives on the
+    /// description — so a `dup` of a write-only descriptor is write-only too.
+    /// There is no `fcntl(F_SETFL)` that could change one afterwards, and POSIX
+    /// gives no other way, so this is the whole of the access mode's lifecycle.
+    [<Test>]
+    let ``openFile records the access mode it was given, and dup shares it`` () : unit =
+        for mode in
+            [
+                FileAccessMode.ReadOnly
+                FileAccessMode.WriteOnly
+                FileAccessMode.ReadWrite
+            ] do
+            let fd, registry =
+                FileDescriptorRegistry.openFile someInode mode FileDescriptorRegistry.initial
+
+            let duplicated, registry =
+                match FileDescriptorRegistry.dup fd registry with
+                | Ok result -> result
+                | Error e -> failwith $"expected dup to succeed, got %O{e}"
+
+            let modeOf (fd : int) : FileAccessMode =
+                match FileDescriptorRegistry.tryFind fd registry with
+                | Some description -> description.AccessMode
+                | None -> failwith $"fd %d{fd} should be live"
+
+            modeOf fd |> shouldEqual mode
+            modeOf duplicated |> shouldEqual mode
+
+            FileDescriptorRegistry.assertInvariants "openFile with an access mode" registry
+            |> ignore<FileDescriptorRegistry>
 
     /// An implementation that pointed every file descriptor at a single shared
     /// open file description would satisfy the dup-sharing property below, and
@@ -514,7 +587,7 @@ module TestFileDescriptorRegistry =
     /// and threading the Result through by hand at every step obscures which
     /// step is the one under test.
     let private openOrFail (inode : InodeNumber) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
-        FileDescriptorRegistry.openFile inode registry
+        FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly registry
 
     let private lockOrFail
         (fd : int)
@@ -770,6 +843,7 @@ module TestFileDescriptorRegistry =
         let locked (mode : FlockMode) : OpenFileDescription =
             {
                 Target = OpenFileTarget.File (someInode, 0L)
+                AccessMode = FileAccessMode.ReadOnly
                 Flock = Some mode
             }
 
@@ -807,6 +881,7 @@ module TestFileDescriptorRegistry =
         let locked (inode : InodeNumber) : OpenFileDescription =
             {
                 Target = OpenFileTarget.File (inode, 0L)
+                AccessMode = FileAccessMode.ReadOnly
                 Flock = Some FlockMode.Exclusive
             }
 
@@ -858,7 +933,9 @@ module TestFileDescriptorRegistry =
                 if choice < 3 || liveFds.IsEmpty then
                     // open
                     let inode = inodes.[rng.Next inodes.Length]
-                    let fd, registry' = FileDescriptorRegistry.openFile inode registry
+
+                    let fd, registry' =
+                        FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly registry
 
                     let id =
                         match FileDescriptorRegistry.tryFindId fd registry' with
@@ -1006,7 +1083,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``a fresh description starts at offset zero`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
 
         offsetOf fd registry |> shouldEqual (Some 0L)
 
@@ -1021,7 +1098,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``dup shares one offset`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
 
         let copy, registry =
             match FileDescriptorRegistry.dup fd registry with
@@ -1043,9 +1120,10 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``two opens on one file hold independent offsets`` () : unit =
         let first, registry =
-            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
 
-        let second, registry = FileDescriptorRegistry.openFile someInode registry
+        let second, registry =
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly registry
 
         let registry = FileDescriptorRegistry.setOffset first 9L registry
 
@@ -1058,9 +1136,10 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``seeking leaves the object identity alone`` () : unit =
         let first, registry =
-            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
 
-        let second, registry = FileDescriptorRegistry.openFile someInode registry
+        let second, registry =
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly registry
 
         // Positioned differently, and still the same file.
         let registry = FileDescriptorRegistry.setOffset first 40L registry
@@ -1101,7 +1180,7 @@ module TestFileDescriptorRegistry =
         onMissing.Message |> shouldContainText "EBADF"
 
         let fd, registry =
-            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
 
         let negative =
             Assert.Catch (fun () ->
@@ -1116,7 +1195,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``a reopened file starts from zero again`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.openFile someInode FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
 
         let registry = FileDescriptorRegistry.setOffset fd 11L registry
 
@@ -1125,7 +1204,9 @@ module TestFileDescriptorRegistry =
             | Ok registry -> registry
             | Error error -> failwith $"close failed: %O{error}"
 
-        let reopened, registry = FileDescriptorRegistry.openFile someInode registry
+        let reopened, registry =
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly registry
+
         offsetOf reopened registry |> shouldEqual (Some 0L)
 
     /// A negative offset is the one unsound position still representable, so `checkInvariants` names
@@ -1140,6 +1221,7 @@ module TestFileDescriptorRegistry =
                         OpenFileDescriptionId 7L,
                         {
                             Target = OpenFileTarget.File (someInode, offset)
+                            AccessMode = FileAccessMode.ReadOnly
                             Flock = None
                         }
                     ])

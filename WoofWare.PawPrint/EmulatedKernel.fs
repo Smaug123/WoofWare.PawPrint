@@ -1348,6 +1348,29 @@ module EmulatedKernel =
     [<Literal>]
     let nanosecondsPerTick : int64 = 100L
 
+    /// The moment the emulated kernel stamps on an inode it changes now, in the
+    /// `struct timespec` an inode's timestamps are kept in.
+    ///
+    /// The same wall clock `SystemNative_GetSystemTimeAsTicks` reports, so a
+    /// guest that writes a file and then reads `DateTime.UtcNow` sees two
+    /// readings of one clock rather than two clocks that happen to agree. Its
+    /// granularity is therefore the virtual clock's own 100 ns quantum: the
+    /// nanosecond part is always a multiple of 100, where a real filesystem
+    /// records whatever its kernel's clock offers.
+    let fileTimestamp (kernel : EmulatedKernel) : UnixTimestamp =
+        let ticks = systemTimeAsTicks kernel
+
+        // `systemTimeAsTicks` has established the count is non-negative, so
+        // neither the quotient nor the remainder can be, and the nanosecond part
+        // lands in `[0, 1e9)` without the floor correction
+        // `UnixTimestamp.ofMillisecondsSinceEpoch` needs for a pre-epoch instant.
+        let ticksPerSecond = ticksPerMillisecond * 1000L
+
+        UnixTimestamp.createOrFail
+            "EmulatedKernel.fileTimestamp"
+            (ticks / ticksPerSecond)
+            (int (ticks % ticksPerSecond) * int nanosecondsPerTick)
+
     /// Largest `VirtualClockTicks` from which a nanosecond timestamp can be
     /// derived without overflowing the `int64` the PAL entry point returns:
     /// `Int64.MaxValue / nanosecondsPerTick`, i.e. about 29 years of simulated

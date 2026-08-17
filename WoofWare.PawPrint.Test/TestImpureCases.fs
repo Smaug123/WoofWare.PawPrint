@@ -384,6 +384,40 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The write path's three unarbitrable parts: the descriptor whose
+                // errno the platforms disagree about (fd 0, a pipe's read end,
+                // where Linux lets unseekability win and Darwin unwritability),
+                // the EACCES a permission-bearing seed provokes — which the
+                // oracle cannot materialise, so a pure case carrying one would be
+                // skipped — and the timestamps a write does and does not move,
+                // which need PawPrint's deterministic clock to state without
+                // racing a real filesystem's granularity.
+                // `WriteSeeded.cs` is the differential half.
+                FileName = "PWriteRawSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        FileSystem =
+                            let name (s : string) = FileName.parseOrFail "test seed" s
+
+                            let bytes (s : string) =
+                                Text.Encoding.UTF8.GetBytes s |> ImmutableArray.CreateRange
+
+                            let mode (m : int) =
+                                PermissionBits.parseOrFail "test seed" m
+
+                            Map.ofList
+                                [
+                                    name "f", SeedEntry.file (bytes "hello")
+                                    name "ro", SeedEntry.File (bytes "hello", mode 0o444)
+                                    name "wo", SeedEntry.File (bytes "hello", mode 0o200)
+                                ]
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The `SystemNative_LSeek` rows on which Linux and Darwin
                 // disagree: the order `whence` validity and seekability are
                 // checked in, and the errno for an offset that leaves `int64`.

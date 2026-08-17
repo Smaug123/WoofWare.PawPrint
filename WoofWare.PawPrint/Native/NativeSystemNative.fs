@@ -444,6 +444,37 @@ module NativeSystemNative =
 
         builder.MoveToImmutable ()
 
+    /// Commit a write of `bytes` at `offset` to the regular file `inode`,
+    /// together with the `mtime` and `ctime` it moves.
+    ///
+    /// `bytes` must not be empty: a zero-length write moves no timestamp at all,
+    /// so each caller short-circuits it rather than passing it on.
+    ///
+    /// Does not touch the description's file offset. `write(2)` advances it and
+    /// `pwrite(2)` does not, which is the whole difference between them, so it is
+    /// each caller's business.
+    let private commitFileWrite
+        (operation : string)
+        (fd : int)
+        (inode : InodeNumber)
+        (offset : int64)
+        (bytes : ImmutableArray<byte>)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let now = EmulatedKernel.fileTimestamp state.Kernel
+
+        match VirtualFileSystem.writeFile inode offset bytes now state.Kernel.FileSystem with
+        | Ok filesystem ->
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    FileSystem = filesystem
+                }
+            )
+        | Error (FileWriteRefusal.WouldExceedMaxLength (offset, count)) ->
+            failwith
+                $"%s{operation}: fd %d{fd} asked to write %d{count} bytes at offset %d{offset} of inode %O{inode}, which would leave the file longer than the %d{VirtualFileSystem.maxFileLength} bytes PawPrint can represent. A real filesystem answers this without difficulty — measured on ext4 and APFS alike, a one-byte write at offset 2^40 succeeds and leaves a sparse 1 TB file — so this is a limit of the model, and refusing is better than reporting an errno no kernel would have produced."
+
     /// Turn the NUL-terminated bytes a guest passed as a pathname into a
     /// `UnixPath`, applying the length rule a kernel applies at *its* boundary.
     ///
@@ -1425,27 +1456,22 @@ module NativeSystemNative =
                 fail UnixError.EINVAL
             else
 
-            // Everything that would *write* is refused loudly rather than
-            // answered. PawPrint has no write path: there is no syscall that
-            // can change a byte of the emulated filesystem, so an `O_TRUNC`
-            // honoured as a no-op, or an `O_WRONLY` handle that silently reads,
-            // would hand a guest a descriptor whose contract PawPrint cannot
-            // keep. The crash names the flag, which is more use than the
-            // generic "unimplemented native" this replaces.
+            // The flags that would *create or destroy* content are refused loudly
+            // rather than answered: nothing in the emulated filesystem can yet
+            // bind a new name or shorten a file, so an `O_TRUNC` honoured as a
+            // no-op, or an `O_CREAT` that quietly reported ENOENT, would hand a
+            // guest a descriptor whose contract PawPrint cannot keep. The crash
+            // names the flag, which is more use than a generic "unimplemented
+            // native".
             //
-            // Known over-refusal, recorded because a green suite cannot show
-            // it: `FileMode.OpenOrCreate` with `FileAccess.Read` on a file that
-            // *exists* sets `O_CREAT`, and is a case this handler could answer
-            // correctly.
+            // Known over-refusal, recorded because a green suite cannot show it:
+            // `FileMode.OpenOrCreate` sets `O_CREAT` even for a file that
+            // *exists*, which is a case this handler could answer correctly.
             let refuse (flag : string) : NativeHandlerResult option =
                 failwith
-                    $"%s{operation}: the guest asked for %s{flag}, but PawPrint has no write path — nothing can yet modify the emulated filesystem, so a descriptor opened for writing could not honour its contract. Implement the write path (issue #956) before opening one."
+                    $"%s{operation}: the guest asked for %s{flag}, but PawPrint cannot yet create or truncate a file — nothing binds a new name in the emulated filesystem or shortens an existing one, so a descriptor opened this way could not honour its contract. Implement creation and truncation (issue #956) before opening one."
 
-            if accessMode = palWrOnly then
-                refuse "O_WRONLY"
-            elif accessMode = palRdWr then
-                refuse "O_RDWR"
-            elif flags &&& palCreat <> 0 then
+            if flags &&& palCreat <> 0 then
                 refuse "O_CREAT"
             elif flags &&& palExcl <> 0 then
                 refuse "O_EXCL"
@@ -1453,10 +1479,17 @@ module NativeSystemNative =
                 refuse "O_TRUNC"
             else
 
+            let requestedAccess =
+                if accessMode = palWrOnly then FileAccessMode.WriteOnly
+                elif accessMode = palRdWr then FileAccessMode.ReadWrite
+                else FileAccessMode.ReadOnly
+
             // `O_CLOEXEC` is accepted and ignored: it sets `FD_CLOEXEC`, which
             // matters only across `exec`, and PawPrint models neither `fork`
-            // nor `exec` (see `FileDescriptorRegistry`). `O_SYNC` likewise —
-            // it governs when *writes* reach storage, and there are none.
+            // nor `exec` (see `FileDescriptorRegistry`). `O_SYNC` likewise — it
+            // governs when a write reaches storage rather than whether it is
+            // visible, and this filesystem holds its bytes in memory, so every
+            // write is already as durable as the model gets.
             //
             // The `mode` argument is ignored rather than validated, and must
             // be: `SafeFileHandle.OpenReadOnly` passes `DefaultCreateMode`
@@ -1494,11 +1527,15 @@ module NativeSystemNative =
             | Error error -> fail error
             | Ok inode ->
 
-            match VirtualFileSystem.tryGetContent inode state.Kernel.FileSystem with
-            | None ->
-                failwith
-                    $"%s{operation}: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
-            | Some (InodeContent.Symlink _) ->
+            let entry =
+                match VirtualFileSystem.tryGet inode state.Kernel.FileSystem with
+                | Some entry -> entry
+                | None ->
+                    failwith
+                        $"%s{operation}: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
+
+            match entry.Content with
+            | InodeContent.Symlink _ ->
                 // Only reachable under `O_NOFOLLOW`, which is what
                 // `NoFollowFinal` above selects: without it the resolver would
                 // have followed the link (or failed ENOENT on a dangling one).
@@ -1506,34 +1543,77 @@ module NativeSystemNative =
                 // answer, and is what `SafeFileHandle.OpenNoFollowSymlink`
                 // reads back to decide a path was a symlink without racing.
                 fail UnixError.ELOOP
-            | Some (InodeContent.RegularFile _)
-            | Some (InodeContent.Directory _) ->
+            | InodeContent.Directory _ when FileAccessMode.permitsWrite requestedAccess ->
+                // Measured on both platforms, for `O_WRONLY` and `O_RDWR` alike,
+                // and at uid 0 as well as uid 1000: a directory cannot be opened
+                // for writing, and this beats the EACCES check below (a
+                // mode-0000 directory opened `O_WRONLY` is EISDIR, not EACCES).
+                // CoreLib *depends* on it rather than merely tolerating it —
+                // `SafeFileHandle.Init` skips its own directory check entirely
+                // when write access was asked for, on the strength of "open will
+                // have failed with EISDIR" (SafeFileHandle.Unix.cs:319).
+                //
+                // This is also what makes every writable descriptor name a
+                // regular file, which `VirtualFileSystem.writeFile` relies on.
+                fail UnixError.EISDIR
+            | InodeContent.RegularFile _
+            | InodeContent.Directory _ ->
 
-            // A directory opens perfectly well for reading, and CoreLib
+            // A directory opens perfectly well for *reading*, and CoreLib
             // *depends* on that: `SafeFileHandle.Init` opens, then `FStat`s,
             // and raises `UnauthorizedAccessException` on seeing `S_IFDIR`, so
             // refusing here would give `File.ReadAllBytes("d")` the wrong
             // exception. The type check belongs in what `FStat` reports.
+            let permissionBits =
+                match VirtualFileSystem.permissions entry with
+                | InodePermissions.Stored bits -> PermissionBits.toInt bits
+                | InodePermissions.PlatformSymlinkDefault ->
+                    failwith
+                        $"%s{operation}: inode %O{inode} reports platform-default symlink permissions, but the symlink arm above answered ELOOP for every link (this is an interpreter bug)."
+
+            // What `open(2)` itself checks: whether this process may open *this
+            // object* for the access it asked for. Measured identically on macOS
+            // and Linux, at uid 1000:
             //
-            // **No permission check, deliberately.** A real `open(O_RDONLY)`
-            // owes EACCES for a file whose owner-read bit is clear, and the
-            // resolution owes it for a directory whose owner-search bit is —
-            // and neither state is reachable. `SeedEntry.File` carries contents
-            // and nothing else, so every seeded file is
-            // `PermissionBits.defaultForRegularFile` (0644) and every directory
-            // `defaultForDirectory` (0755); no `SystemNative_ChMod` exists to
-            // change them, and the emulated process has the single identity
-            // that owns them all. So the owner bits are set by construction,
-            // and an EACCES arm here would be a branch no guest could take and
-            // no seed could provoke — dead code of exactly the kind #1008
-            // declined to write for the supplementary-group path.
+            //   mode   O_RDONLY  O_WRONLY  O_RDWR
+            //   0644   ok        ok        ok
+            //   0444   ok        EACCES    EACCES
+            //   0200   EACCES    ok        EACCES
+            //   0000   EACCES    EACCES    EACCES
             //
-            // When permissions do become expressible, the *search* half belongs
-            // in the resolver rather than here: every component of every path
-            // needs it, so `Stat`, `LStat` and `ReadLink` would owe the same
-            // answer, and only the final-file read check would be this arm's.
+            // Only the owner triple is ever consulted, and that is exact rather
+            // than a simplification: `stat` reports `Kernel.UserId` as *every*
+            // inode's `st_uid`, so the emulated process owns everything it can
+            // see and the group and other triples can never be the applicable
+            // ones.
+            let neededBits =
+                (if FileAccessMode.permitsRead requestedAccess then
+                     0o400
+                 else
+                     0)
+                ||| (if FileAccessMode.permitsWrite requestedAccess then
+                         0o200
+                     else
+                         0)
+
+            // Root gets read and write whatever the mode says — measured on Linux
+            // as uid 0, where a mode-0000 file opens for writing. (Only *execute*
+            // still needs a bit set for root, and `open` never asks for it.) The
+            // default `UserId` is 1000 precisely so that a guest does not skip its
+            // own privilege guards, but a host may configure 0.
+            let privileged = state.Kernel.UserId = 0u
+
+            if not privileged && permissionBits &&& neededBits <> neededBits then
+                fail UnixError.EACCES
+            else
+
+            // The *search* half of the permission rule is still missing, and
+            // belongs in the resolver rather than here: every component of every
+            // path needs it, so `Stat`, `LStat` and `ReadLink` all owe the same
+            // answer. Until it lands, a seed can describe a directory whose
+            // owner-search bit is clear and PawPrint will walk through it anyway.
             let fd, registry =
-                FileDescriptorRegistry.openFile inode state.Kernel.FileDescriptors
+                FileDescriptorRegistry.openFile inode requestedAccess state.Kernel.FileDescriptors
 
             state.MapKernel (fun kernel ->
                 { kernel with
@@ -1846,9 +1926,18 @@ module NativeSystemNative =
                 fail UnixError.EINVAL
             else
 
-            match FileDescriptorRegistry.tryFindObject fd state.Kernel.FileDescriptors with
+            match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
             | None -> fail UnixError.EBADF
-            | Some (OpenFileObject.StandardStream role) ->
+            | Some description ->
+
+            // Whether this description was opened for reading at all. Both arms
+            // below need it and neither may guess: for a standard stream it
+            // breaks the ESPIPE/EBADF tie, and for a regular file it is the whole
+            // answer.
+            let readable = FileAccessMode.permitsRead description.AccessMode
+
+            match description.Target with
+            | OpenFileTarget.StandardStream _ ->
                 // `pread` needs a seekable object, and PawPrint models the
                 // standard streams as pipes — stdin the read end, stdout and
                 // stderr write ends (which is why `SystemNative_Write` to fd 0
@@ -1872,23 +1961,31 @@ module NativeSystemNative =
                 // `SystemNative_Read`. The Darwin answer for stdout/stderr does
                 // *not* get that retry, EBADF not being one of the errnos that
                 // clears the flag.
-                let unreadable =
-                    match role with
-                    | FileDescriptorRole.StandardInput -> false
-                    | FileDescriptorRole.StandardOutput
-                    | FileDescriptorRole.StandardError -> true
-
                 match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
-                | SimulatedUnixFlavour.Darwin when unreadable -> fail UnixError.EBADF
+                | SimulatedUnixFlavour.Darwin when not readable -> fail UnixError.EBADF
                 | SimulatedUnixFlavour.Darwin
                 | SimulatedUnixFlavour.Linux -> fail UnixError.ESPIPE
-            | Some (OpenFileObject.File inode) ->
+            | OpenFileTarget.File (inode, _) ->
 
-            // Darwin's turn to validate the offset: it has now resolved the
-            // descriptor and rejected an unseekable one, which is exactly the
-            // window in which it differs from Linux. On Linux this cannot fire,
-            // because the check above already did.
-            if not offsetCheckedBeforeDescriptor && offsetInvalid then
+            // A descriptor not open for reading: EBADF on both platforms, which
+            // is `vfs_read`'s answer for a file whose `FMODE_READ` is clear.
+            //
+            // Ahead of Darwin's offset check rather than after it, and measured:
+            // `pread(wronlyFd, buf, 4, -1)` is EBADF on Darwin but EINVAL on
+            // Linux, so on Darwin the descriptor's access mode is settled before
+            // the offset is looked at — exactly as its seekability is above.
+            // On Linux this ordering cannot be observed, the offset check having
+            // already run.
+            if not readable then
+                fail UnixError.EBADF
+            else if
+
+                // Darwin's turn to validate the offset: it has now resolved the
+                // descriptor, its seekability and its access mode, which is exactly
+                // the window in which it differs from Linux. On Linux this cannot
+                // fire, because the check above already did.
+                not offsetCheckedBeforeDescriptor && offsetInvalid
+            then
                 fail UnixError.EINVAL
             else
 
@@ -1900,11 +1997,9 @@ module NativeSystemNative =
             // window below would have transferred nothing. Darwin screens
             // nothing here and discovers a bad address at the copy.
             //
-            // `vfs_read`'s own EBADF for a descriptor not open for reading sits
-            // between ESPIPE above and this check. It has nowhere to fire while
-            // `SystemNative_Open` refuses every write flag, so no O_WRONLY
-            // regular-file descriptor exists; the write path is where it starts
-            // mattering.
+            // `vfs_read`'s own EBADF for a descriptor not open for reading is the
+            // check just above, which precedes this one: measured,
+            // `pread(wronlyFd, (void*)-1, 4, 0)` is EBADF rather than EFAULT.
             if faultsBeforeOperation state.Kernel buffer bufferSize then
                 fail UnixError.EFAULT
             else
@@ -1970,6 +2065,143 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim transfer)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        // `int32_t SystemNative_PWrite(intptr_t fd, void* buffer, int32_t
+        // bufferSize, int64_t fileOffset)` (pal_io.c:1859): `pwrite(2)` verbatim
+        // with an EINTR retry, and — like `SystemNative_PRead`, and unlike
+        // `SystemNative_Write` — no `Common_Write` wrapper, so no negative-size
+        // guard of its own beyond a debug-only `assert`.
+        //
+        // This is the entry point the BCL's whole write path goes through:
+        // `RandomAccess.WriteAtOffset` prefers it for any handle that supports
+        // random access, and falls back to `SystemNative_Write` only on ENXIO or
+        // ESPIPE (RandomAccess.Unix.cs:113).
+        | Some "SystemNative_PWrite",
+          [ ConcreteIntPtr state.ConcreteTypes
+            ConcretePointer _
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64 ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_PWrite"
+            let fd = fdArgument operation instruction.Arguments.[0]
+            let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
+            let fileOffset = NativeCall.int64Argument operation instruction.Arguments.[3]
+
+            let fail (error : UnixError) : NativeHandlerResult option =
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        LastSystemError = UnixError.toRawErrnoUnder numbering error
+                    }
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            let succeed (count : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim count)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            // Refused before anything else, for the reason `SystemNative_PRead`
+            // gives at length: the C casts a negative size to an unsigned ~4 GB
+            // count, and what a kernel then does depends on how far the guest's
+            // buffer happens to be mapped — which PawPrint does not model to that
+            // fidelity. CoreLib never sends one, every caller's size coming from a
+            // span length.
+            if bufferSize < 0 then
+                failwith
+                    $"%s{operation}: fd %d{fd} was given bufferSize %d{bufferSize}, which is negative. The C shim casts that to an unsigned ~4 GB count rather than rejecting it (unlike SystemNative_Write, which goes through Common_Write and answers ERANGE), and what a kernel then does is not a fact PawPrint can state. Pass a non-negative size."
+            else if
+
+                // **Ahead of the descriptor, on both platforms** — which is where
+                // `pwrite` differs from `pread`, and it is measured rather than
+                // assumed. Every two-fault row is EINVAL on Linux *and* Darwin:
+                //
+                //   input                          Linux    Darwin
+                //   negative offset + bad fd       EINVAL   EINVAL
+                //   negative offset + pipe         EINVAL   EINVAL
+                //   negative offset + O_RDONLY fd  EINVAL   EINVAL
+                //
+                // For `pread`, Darwin resolves the descriptor first and answers EBADF
+                // or ESPIPE for the same shapes, so `SystemNative_PRead` needs a
+                // platform flag here and this does not. Do not copy that flag over.
+                fileOffset < 0L
+            then
+                fail UnixError.EINVAL
+            else
+
+            match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+            | None -> fail UnixError.EBADF
+            | Some description ->
+
+            let writable = FileAccessMode.permitsWrite description.AccessMode
+
+            match description.Target with
+            | OpenFileTarget.StandardStream _ ->
+                // The mirror of `SystemNative_PRead`'s tie: `pwrite` needs a
+                // seekable object, and PawPrint models the standard streams as
+                // pipes, so stdin fails *two* tests at once — it is neither
+                // seekable nor open for writing. Measured:
+                //
+                //   descriptor                        Linux    Darwin
+                //   pipe write end (unseekable)       ESPIPE   ESPIPE
+                //   pipe read end (also unwritable)   ESPIPE   EBADF
+                //   regular file O_RDONLY (seekable)  EBADF    EBADF
+                //
+                // Linux lets unseekability win while Darwin lets unwritability
+                // win, exactly as they do for `pread`; the third row is the
+                // control showing this is about the tie rather than about
+                // writability generally.
+                match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+                | SimulatedUnixFlavour.Darwin when not writable -> fail UnixError.EBADF
+                | SimulatedUnixFlavour.Darwin
+                | SimulatedUnixFlavour.Linux -> fail UnixError.ESPIPE
+            | OpenFileTarget.File (inode, _) ->
+
+            // `vfs_write`'s EBADF for a descriptor not open for writing, which
+            // precedes both the buffer screen and the zero-size no-op: measured,
+            // `pwrite(rdonlyFd, (void*)-1, 4, 0)` is EBADF rather than EFAULT and
+            // `pwrite(rdonlyFd, buf, 0, 0)` is EBADF rather than 0.
+            //
+            // This is also what makes a directory descriptor unreachable below:
+            // one can only be opened `O_RDONLY`, `SystemNative_Open` answering
+            // EISDIR for every write access mode.
+            if not writable then
+                fail UnixError.EBADF
+            else
+
+            let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
+
+            // Linux screens the buffer's address before performing the operation,
+            // so this fires even for a zero-length write: measured,
+            // `pwrite(f, (void*)-1, 0, 0)` is EFAULT there and 0 on macOS. Darwin
+            // screens nothing and discovers a bad address at the copy.
+            if faultsBeforeOperation state.Kernel buffer bufferSize then
+                fail UnixError.EFAULT
+            else if
+
+                // A no-op on both platforms, and specifically one that leaves the
+                // inode alone: measured, a zero-length write moves neither `mtime` nor
+                // `ctime` and does not extend the file, even at an offset far past its
+                // end. The buffer is not resolved to storage, because nothing is read
+                // through it — `NULL` is an ordinary user address, so it reaches here
+                // rather than being screened above.
+                bufferSize = 0
+            then
+                succeed 0 state
+            else
+
+            match BufferPointer.dereferenceable buffer with
+            | None -> fail UnixError.EFAULT
+            | Some buffer ->
+
+            let bytes = readBytesThrough ctx operation buffer bufferSize state
+
+            // Never short: PawPrint's filesystem cannot run out of space, and
+            // there is no signal that could interrupt the copy part-way.
+            commitFileWrite operation fd inode fileOffset bytes state |> succeed bufferSize
         // `int32_t SystemNative_Read(intptr_t fd, void* buffer, int32_t
         // bufferSize)` (pal_io.c:1178) forwards to `Common_Read`
         // (pal_io_common.h:36), which rejects a negative size itself and then
@@ -2040,18 +2272,28 @@ module NativeSystemNative =
             else
 
             // The descriptor's access mode, which `vfs_read` decides before it
-            // screens the buffer.
+            // screens the buffer: measured on both platforms,
+            // `read(wronlyFd, (void*)-1, 4)` is EBADF rather than EFAULT, and
+            // even `read(wronlyFd, buf, 0)` is EBADF rather than a no-op.
             let target : Result<ReadTarget, UnixError> =
-                match FileDescriptorRegistry.tryFindTarget fd state.Kernel.FileDescriptors with
+                match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
                 | None -> Error UnixError.EBADF
-                | Some (OpenFileTarget.StandardStream FileDescriptorRole.StandardOutput)
-                | Some (OpenFileTarget.StandardStream FileDescriptorRole.StandardError) ->
-                    // A pipe's write end is not open for reading: EBADF on both
-                    // platforms, and the same reasoning that makes
-                    // `SystemNative_Write` to fd 0 EBADF.
+                | Some description ->
+
+                if not (FileAccessMode.permitsRead description.AccessMode) then
+                    // A regular file opened `O_WRONLY` and a pipe's write end
+                    // alike: EBADF on both platforms. `read` has no seekability
+                    // requirement, so unlike `pread` there is no tie for the
+                    // platforms to break differently.
                     Error UnixError.EBADF
-                | Some (OpenFileTarget.StandardStream FileDescriptorRole.StandardInput) -> Ok ReadTarget.Stdin
-                | Some (OpenFileTarget.File (inode, offset)) -> Ok (ReadTarget.File (inode, offset))
+                else
+
+                match description.Target with
+                | OpenFileTarget.StandardStream FileDescriptorRole.StandardInput -> Ok ReadTarget.Stdin
+                | OpenFileTarget.StandardStream role ->
+                    failwith
+                        $"%s{operation}: fd %d{fd} names standard stream %O{role}, whose access mode permits reading. PawPrint models the output streams as the write ends of pipes, so only stdin is readable (this is an interpreter bug)."
+                | OpenFileTarget.File (inode, offset) -> Ok (ReadTarget.File (inode, offset))
 
             match target with
             | Error error -> fail error
@@ -2717,13 +2959,14 @@ module NativeSystemNative =
             // delegates to `Common_Write` in `pal_io_common.h`. The C path:
             //   * negative `bufferSize`            -> errno = ERANGE, return -1
             //   * otherwise call real `write(2)`   -> may return short, may EINTR (retried)
-            // PawPrint models only the writable standard streams (fds 1 and
-            // 2) and never returns short, never returns EINTR, and never
-            // blocks: there is no kernel that could push back on our
-            // simulated process. A guest depending on EAGAIN / partial
-            // writes from a non-blocking socket would need new
-            // FileDescriptorRole entries; we'll add those when that need
-            // arises rather than guessing at the contract now.
+            // PawPrint writes to the standard output streams (fds 1 and 2) and to
+            // a regular file opened for writing, and never returns short, never
+            // returns EINTR, and never blocks: there is no kernel that could push
+            // back on our simulated process, and its filesystem cannot run out of
+            // space. A guest depending on EAGAIN / partial writes from a
+            // non-blocking socket would need new FileDescriptorRole entries;
+            // we'll add those when that need arises rather than guessing at the
+            // contract now.
             let operation = "SystemNative_Write"
 
             let fd = fdArgument operation instruction.Arguments.[0]
@@ -2760,34 +3003,73 @@ module NativeSystemNative =
                     // crashing so the guest's own error reporting runs.
                     -1, StepEffect.NoEffect, setErrno state UnixError.ERANGE
                 else
-                    match FileDescriptorRegistry.tryFindObject fd state.Kernel.FileDescriptors with
+                    match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
                     | None ->
                         // Unknown fd: report EBADF the same way `write(2)`
                         // would.
                         -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
-                    | Some (OpenFileObject.File inode) ->
-                        // A descriptor on a real file. EBADF is what a real
-                        // kernel answers for a write to an `O_RDONLY`
-                        // descriptor, and every descriptor PawPrint hands out
-                        // today is one — `SystemNative_Open` refuses every
-                        // write flag loudly, so no other kind can exist.
+                    | Some description when not (FileAccessMode.permitsWrite description.AccessMode) ->
+                        // `write(2)` on a descriptor not open for writing is
+                        // EBADF on both platforms, and this precedes both the
+                        // buffer screen and the zero-size no-op: measured,
+                        // `write(rdonlyFd, buf, 0)` is EBADF rather than 0.
                         //
-                        // When the write path lands, the open file description
-                        // gains an access mode and this arm must consult it
-                        // instead of assuming.
-                        ignore<InodeNumber> inode
+                        // Covers stdin — which a redirected launch opens
+                        // `O_RDONLY`, the shape `FileDescriptorRegistry.initial`
+                        // commits to — and a regular file opened `O_RDONLY`
+                        // alike, including a directory, which can only ever be
+                        // opened for reading.
                         -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
-                    | Some (OpenFileObject.StandardStream role) ->
-                        match role with
-                        | FileDescriptorRole.StandardInput ->
-                            // `write(2)` on a read-only fd returns -1 + EBADF
-                            // on Linux (the fd's access mode is wrong for the
-                            // operation). Real stdin is opened O_RDONLY by
-                            // the shell, so this matches what guests would
-                            // observe on the host.
-                            -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
-                        | FileDescriptorRole.StandardOutput
-                        | FileDescriptorRole.StandardError ->
+                    | Some description ->
+                        match description.Target with
+                        | OpenFileTarget.File (inode, offset) ->
+                            let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
+
+                            // `vfs_write` screens the buffer between the access
+                            // mode above and the file operation, so on Linux this
+                            // beats the zero-size no-op below: measured,
+                            // `pwrite(f, (void*)-1, 0, 0)` is EFAULT there and 0
+                            // on macOS.
+                            if faultsBeforeOperation state.Kernel buffer bufferSize then
+                                -1, StepEffect.NoEffect, setErrno state UnixError.EFAULT
+                            elif bufferSize = 0 then
+                                // A no-op on both platforms, and specifically one
+                                // that moves no timestamp: measured, a
+                                // zero-length write leaves `mtime` and `ctime`
+                                // where they were and does not extend the file,
+                                // even at an offset past its end.
+                                0, StepEffect.NoEffect, state
+                            else
+                                match BufferPointer.dereferenceable buffer with
+                                | None -> -1, StepEffect.NoEffect, setErrno state UnixError.EFAULT
+                                | Some buffer ->
+
+                                let bytes = readBuffer buffer state
+
+                                // At the description's own offset, and advancing
+                                // it by what moved — the entire difference from
+                                // `pwrite`, which takes the offset as an argument
+                                // and leaves the description alone. Both measured.
+                                //
+                                // The commit comes first, so the advance cannot
+                                // overflow: a write that would carry the offset
+                                // past what the model can represent has already
+                                // been refused there.
+                                let state = commitFileWrite operation fd inode offset bytes state
+
+                                let state =
+                                    state.MapKernel (fun kernel ->
+                                        { kernel with
+                                            FileDescriptors =
+                                                FileDescriptorRegistry.setOffset
+                                                    fd
+                                                    (offset + int64 bytes.Length)
+                                                    kernel.FileDescriptors
+                                        }
+                                    )
+
+                                bufferSize, StepEffect.NoEffect, state
+                        | OpenFileTarget.StandardStream role ->
                             let bufferPointer =
                                 bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
