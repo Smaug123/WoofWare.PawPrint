@@ -203,6 +203,25 @@ type ThreadStatus =
     /// parallel map makes the invariant "no deadline once Runnable
     /// again" structural — a wake naturally forgets it.
     | BlockedOnSleep of deadlineTicks : int64 option
+    /// This thread called `SystemNative_WaitForSocketEvents` on the named socket event port
+    /// (`epoll_wait` on Linux, `kevent` on Darwin) and is parked until an event occurs on some
+    /// descriptor registered with that port. The wake comes from the port's ready set becoming
+    /// non-empty, which another thread causes either by making a registered descriptor ready or
+    /// by registering an already-ready one.
+    ///
+    /// Carries no deadline, unlike every other blocked variant: the wait cannot time out.
+    /// `Interop.Sys.WaitForSocketEvents` takes no timeout parameter on any CoreLib flavour, and
+    /// both PAL implementations wait indefinitely — `epoll_wait(port, events, *count, -1)` and
+    /// `kevent(port, NULL, 0, events, n, NULL)`. Both also retry `EINTR` in the native loop, so
+    /// signal delivery must not wake this thread.
+    ///
+    /// The port is identified by its open file description rather than by descriptor number
+    /// because an epoll instance *is* an open file description: `SystemNative_CloseSocketEventPort`
+    /// is `close(2)` on it, and a `dup`'d port descriptor waits on the same instance.
+    /// No description of this kind can yet exist in the registry — `OpenFileTarget` has no
+    /// epoll-instance case, and adding one is a separate change, along with the handler that
+    /// puts a thread into this status in the first place.
+    | BlockedOnSocketEvents of port : OpenFileDescriptionId
     /// This thread has executed its final `ret`; it will never run again. Its state is kept
     /// only so other threads can observe termination (e.g. to satisfy Join).
     | Terminated
@@ -260,6 +279,7 @@ module ThreadStatus =
         | ThreadStatus.BlockedOnWaitHandle _ -> false
         | ThreadStatus.BlockedOnWaitHandles _ -> false
         | ThreadStatus.BlockedOnSleep _ -> false
+        | ThreadStatus.BlockedOnSocketEvents _ -> false
 
     /// True iff a thread in this status parked with its program counter already advanced
     /// *past* the call that blocked it, so the active frame's `IlOpIndex` names the
@@ -277,6 +297,12 @@ module ThreadStatus =
     /// when the `.cctor` lock is released (see `NativeHandlerResult.BlockedOnClassInit`).
     /// Nothing has been popped and no PC has advanced.
     ///
+    /// `BlockedOnSocketEvents` answers the same way, but as a constraint rather than a
+    /// description: no handler parks a thread in it yet, and the one that does must park
+    /// re-entrantly — leaving its native frame in place and its caller's PC alone — so that
+    /// re-entry on port readiness re-reads the call's own arguments instead of the wake having
+    /// to write the event buffer from another thread's step.
+    ///
     /// Only diagnostics consume this; nothing about execution may depend on it. Callers
     /// must still confirm that the preceding instruction really is a call before stepping
     /// back onto it, because this classifier is a statement about how a status is *reached*
@@ -290,6 +316,7 @@ module ThreadStatus =
         | ThreadStatus.Runnable -> false
         | ThreadStatus.Terminated -> false
         | ThreadStatus.BlockedOnClassInit _ -> false
+        | ThreadStatus.BlockedOnSocketEvents _ -> false
         | ThreadStatus.BlockedOnJoin _ -> true
         | ThreadStatus.BlockedOnMonitorAcquire _ -> true
         | ThreadStatus.BlockedOnMonitorWait _ -> true

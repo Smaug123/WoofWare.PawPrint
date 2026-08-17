@@ -159,6 +159,11 @@ module DebuggerServer =
             | Some ticks -> writer.WriteNumber ("deadlineTicks", ticks)
 
             writer.WriteEndObject ()
+        | ThreadStatus.BlockedOnSocketEvents (OpenFileDescriptionId port) ->
+            writer.WriteStartObject ()
+            writer.WriteString ("kind", "blockedOnSocketEvents")
+            writer.WriteNumber ("port", port)
+            writer.WriteEndObject ()
         | ThreadStatus.Terminated -> writer.WriteStringValue "terminated"
         | ThreadStatus.Parked -> writer.WriteStringValue "parked"
 
