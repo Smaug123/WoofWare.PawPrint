@@ -1008,6 +1008,14 @@ module NativeSignature =
             let state, rIdentity =
                 resolveNominalIdentity loggerFactory operation state rightAssembly right
 
+            // Two definitions are the same type only if they are the same definition. CoreCLR has
+            // one escape from that — CLR type equivalence, which makes separately embedded
+            // `[TypeIdentifier]` interop types compare equal — but `CompareTypeTokens` reaches it
+            // only under `FEATURE_TYPEEQUIVALENCE`, and `clrfeatures.cmake` sets that solely for
+            // `CLR_CMAKE_TARGET_WIN32`. Everywhere else the arm reads `return FALSE`, commented
+            // "two type defs can't be the same unless they are identical" (siginfo.cpp:3603).
+            // PawPrint models a Linux guest (`SimulatedUnixPlatform`), so equivalence is not a
+            // behaviour it should reproduce; a build for a Windows guest would have to revisit it.
             state, lIdentity = rIdentity
         | _, _ -> state, false
 
