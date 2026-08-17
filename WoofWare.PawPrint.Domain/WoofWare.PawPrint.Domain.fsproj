@@ -39,6 +39,7 @@
         <Compile Include="SignatureBlobDecoding.fs" />
         <Compile Include="LocalSignatureDecoding.fs" />
         <Compile Include="MethodSignatureDecoding.fs" />
+        <Compile Include="PropertySignatureDecoding.fs" />
         <Compile Include="CustomAttribute.fs" />
         <Compile Include="GenericParameter.fs" />
         <Compile Include="ConcreteType.fs" />
