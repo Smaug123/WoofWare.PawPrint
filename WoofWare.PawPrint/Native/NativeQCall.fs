@@ -8,6 +8,7 @@ module NativeQCall =
             NativeRuntimeHelpers.tryExecuteQCall "ReflectionInvocation_RunClassConstructor"
             "RuntimeFieldHandle_GetRVAFieldInfo",
             NativeRuntimeFieldHandle.tryExecuteQCall "RuntimeFieldHandle_GetRVAFieldInfo"
+            "RuntimeFieldHandle_SetValue", NativeRuntimeFieldHandle.tryExecuteQCall "RuntimeFieldHandle_SetValue"
             "RuntimeMethodHandle_IsCAVisibleFromDecoratedType",
             NativeRuntimeMethodHandle.tryExecuteQCall "RuntimeMethodHandle_IsCAVisibleFromDecoratedType"
             "RuntimeMethodHandle_GetMethodInstantiation",

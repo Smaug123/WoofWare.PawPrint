@@ -788,58 +788,6 @@ module internal UnaryMetadataObjectOps =
 
         state, WhatWeDid.Executed
 
-    /// `Some zero` exactly when `executeBox` stored a *bare* primitive inside a synthetic
-    /// single-field struct, `zero` being the zero of that primitive (whose size is the field's
-    /// extent). `None` when the boxed storage is the value type's own fields — either because it
-    /// is primitive-like (IntPtr, RuntimeTypeHandle, an enum, ...) and stays wrapped, or because
-    /// it is a genuine value type.
-    ///
-    /// This distinction is what separates "a byref to the box addresses the value directly" from
-    /// "it addresses a wrapper around the value", so both `unboxedContents` and `executeUnbox`
-    /// hang off it.
-    let private barePrimitiveBoxShape
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (handle : ConcreteTypeHandle)
-        (contents : CliValueType)
-        (state : IlMachineState)
-        : CliType option * IlMachineState
-        =
-        if contents.PrimitiveLikeKind.IsSome then
-            None, state
-        else
-            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes handle
-
-            match zero with
-            | CliType.ValueType _ -> None, state
-            | bare -> Some bare, state
-
-    /// The CLI value logically held by a boxed object whose runtime type is `handle`; the inverse
-    /// of the shape `executeBox` writes. Callers must already have established that
-    /// `contents.Declared = handle` — both `executeBox` paths guarantee it, by constructing the
-    /// heap object's contents with `CliValueType.OfFields ... handle`.
-    ///
-    /// Three shapes come back out, matching the three `executeBox` writes:
-    ///   - primitive-like (IntPtr, RuntimeTypeHandle, an enum, ...): keep it wrapped, since the
-    ///     push path flattens it via the `PrimitiveLikeKind` invariant;
-    ///   - a genuine multi-field value type: keep it wrapped;
-    ///   - a bare primitive (Int32, Float64, ...), which `box` stored in a synthetic single-field
-    ///     struct: read field 0 back by offset and size. `box` guarantees that shape, so this is a
-    ///     nominal dereference rather than a structural guess.
-    let private unboxedContents
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (handle : ConcreteTypeHandle)
-        (contents : CliValueType)
-        (state : IlMachineState)
-        : CliType * IlMachineState
-        =
-        let shape, state = barePrimitiveBoxShape baseClassTypes handle contents state
-
-        match shape with
-        | None -> CliType.ValueType contents, state
-        | Some zero ->
-            let size = (CliType.SizeOf zero).Size
-            CliValueType.DereferenceFieldAt 0 size contents, state
-
     /// The outcome of the type test that ECMA-335 III.4.32 (`unbox`) and the value-type arm of
     /// III.4.33 (`unbox.any`) share; CoreCLR routes both through `CastHelpers.Unbox_Helper`.
     [<RequireQualifiedAccess>]
@@ -1019,9 +967,9 @@ module internal UnaryMetadataObjectOps =
                 match boxedOpt with
                 | Some boxed when boxed.ConcreteType = underlyingHandle ->
                     let value, state =
-                        unboxedContents baseClassTypes underlyingHandle boxed.Contents state
+                        BoxedValue.contents baseClassTypes underlyingHandle boxed.Contents state
 
-                    // No coercion needed: `unboxedContents` decides its shape from
+                    // No coercion needed: `BoxedValue.contents` decides its shape from
                     // `cliTypeZeroOfHandle underlyingHandle`, which is the same computation that
                     // produced the zero of the `value` field we are overwriting.
                     let hasValueField =
@@ -1101,10 +1049,10 @@ module internal UnaryMetadataObjectOps =
             | UnboxTypeTest.Accepted (_addr, boxed) ->
                 // Materialise using the *boxed object's* handle, not the target's: that is the
                 // handle its `Contents` were built with, which is the precondition
-                // `unboxedContents` documents. Under the enum relaxation the two can differ,
+                // `BoxedValue.contents` documents. Under the enum relaxation the two can differ,
                 // and it is the push/store path that reconciles the result with the target.
                 let toPush, state =
-                    unboxedContents baseClassTypes boxed.ConcreteType boxed.Contents state
+                    BoxedValue.contents baseClassTypes boxed.ConcreteType boxed.Contents state
 
                 state
                 |> IlMachineState.pushToEvalStack toPush thread
@@ -1228,7 +1176,7 @@ module internal UnaryMetadataObjectOps =
             // System.Private.CoreLib (`System.Index.Equals`, covered by UnboxFieldAccess.cs) is
             // one of those.
             let barePrimitive, state =
-                barePrimitiveBoxShape baseClassTypes boxed.ConcreteType boxed.Contents state
+                BoxedValue.barePrimitiveShape baseClassTypes boxed.ConcreteType boxed.Contents state
 
             match barePrimitive with
             | Some _ ->
