@@ -660,3 +660,94 @@ public class Holder
             (signatureNamed "Q")
         |> snd
         |> shouldEqual true
+
+    [<Test>]
+    let ``two rows describing one type are not the same reference`` () : unit =
+        // The shortcut above is keyed on the *row*, not on what the row says. Two TypeRef rows of
+        // one module may describe the same type — `CompareTypeTokens` misses `tk1 == tk2` for them
+        // and falls through to resolution, so this must too.
+        //
+        // Roslyn emits one row per referenced type, so the duplicate is built here: the same
+        // reference under a row number the corpus does not use. Its target cannot be resolved,
+        // which is what tells the two behaviours apart — a shortcut keyed on the description would
+        // answer "equal" without resolving, where falling through has to try.
+        let midImage =
+            Roslyn.compileAssembly
+                "SignatureTwoRowsMid"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ "public class Mid { }" ]
+
+        let userImage =
+            Roslyn.compileAssembly
+                "SignatureTwoRowsUser"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                [ Microsoft.CodeAnalysis.MetadataReference.CreateFromImage midImage ]
+                [ "public class Holder { public Mid P { get; set; } }" ]
+
+        use userStream = new MemoryStream (userImage)
+
+        let user =
+            global.WoofWare.PawPrint.AssemblyApi.read fixture.LoggerFactory None userStream
+
+        let metadataReader = user.PeReader.GetMetadataReader ()
+        let holder = user.TypeDefs.Values |> Seq.find (fun td -> td.Name = "Holder")
+
+        let original =
+            let handle =
+                (metadataReader.GetTypeDefinition holder.TypeDefHandle).GetProperties ()
+                |> Seq.exactlyOne
+
+            PropertySignatureDecoding.decode
+                user.Name
+                metadataReader
+                (metadataReader.GetPropertyDefinition handle).Signature
+
+        let typeRef, kind =
+            match original.ReturnType with
+            | TypeDefn.FromReference (typeRef, kind) -> typeRef, kind
+            | other -> failwith $"expected `Mid` to be spelled as a TypeRef, got %O{other}"
+
+        // Same description, different row.
+        let duplicateRow =
+            let moved =
+                { typeRef with
+                    Handle = ComparableTypeReferenceHandle.Make (MetadataTokens.TypeReferenceHandle 0x00FFFFFF)
+                }
+
+            MethodSignature<TypeDefn> (
+                original.Header,
+                TypeDefn.FromReference (moved, kind),
+                original.RequiredParameterCount,
+                original.GenericParameterCount,
+                original.ParameterTypes
+            )
+
+        // The premise: identical but for the row.
+        match duplicateRow.ReturnType with
+        | TypeDefn.FromReference (moved, _) ->
+            moved.Name |> shouldEqual typeRef.Name
+            moved.Namespace |> shouldEqual typeRef.Namespace
+            moved.ResolutionScope |> shouldEqual typeRef.ResolutionScope
+            moved.Handle |> shouldNotEqual typeRef.Handle
+        | other -> failwith $"expected a TypeRef, got %O{other}"
+
+        let state = IlMachineState.initial fixture.LoggerFactory ImmutableArray.Empty user
+
+        // Falling through to resolution is the point, and resolution cannot succeed here:
+        // `SignatureTwoRowsMid` is neither loaded nor findable. Taking the shortcut would instead
+        // answer "equal" without ever looking.
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                NativeSignature.compareDecodedSignatures
+                    fixture.LoggerFactory
+                    "test"
+                    state
+                    user
+                    duplicateRow
+                    user
+                    original
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "SignatureTwoRowsMid"
