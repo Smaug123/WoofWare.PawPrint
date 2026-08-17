@@ -225,6 +225,26 @@ public class ParameterShapes
 
     public void Defaulted(int mandatory, int optional = 7) { }
 
+    // Every default here differs from every other, and from `Defaulted`'s 7: an implementation that
+    // resolved some *other* parameter's Constant row would then report a value that is wrong rather
+    // than one that coincidentally matches. `noConstant` is the control with no Constant row at all,
+    // and the trailing paw print is astral, so `astral` is two UTF-16 code units in one code point —
+    // the only shape that separates a code-unit length from a code-point one.
+    public void DefaultShapes(
+        int noConstant,
+        int i = 11,
+        string s = "alpha",
+        double d = 0.125,
+        bool b = true,
+        char c = 'z',
+        long l = -5000000000L,
+        byte by = 253,
+        string nul = null,
+        string empty = "",
+        string astral = "mäß\U0001F43E")
+    {
+    }
+
     public void Variadic(params int[] rest) { }
 
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
@@ -2053,8 +2073,15 @@ public class ParameterShapes
             range.AssemblyFullName |> shouldEqual fixture.Assembly.Name.FullName
             range.Size |> shouldEqual 10
 
+            // Keyed on the Constant row, not on the field that owns it.
+            let mr = fixture.Assembly.PeReader.GetMetadataReader ()
+
+            let constantHandle = (mr.GetFieldDefinition field.Handle).GetDefaultValue ()
+
+            constantHandle.IsNil |> shouldEqual false
+
             range.Source
-            |> shouldEqual (PeByteRangePointerSource.ConstantBlob (ComparableFieldDefinitionHandle.Make field.Handle))
+            |> shouldEqual (PeByteRangePointerSource.ConstantBlob (ComparableConstantHandle.Make constantHandle))
 
             // Look up Char in the *post*-invocation state: the handler is what concretizes it.
             let expectedCharType =
@@ -2114,11 +2141,60 @@ public class ParameterShapes
         out.Length |> shouldEqual 0
         out.StringPointer |> shouldEqual ManagedPointerSource.Null
 
+    /// Rebuild the value the managed `MdConstant.GetValue` would produce from one set of
+    /// `GetDefaultValue` out-params, so a test can compare against a host-CLR answer. This checks
+    /// the packing and the element type together, in the way a guest would see them.
+    let private decodeDefaultValueOut
+        (fixture : MetadataImportFixture)
+        (state : IlMachineState)
+        (describe : string)
+        (out : DefaultValueOut)
+        : obj
+        =
+        match out.CorElementType with
+        | 0x02 -> box (out.Value <> 0L)
+        | 0x03 -> box (char (uint16 out.Value))
+        | 0x04 -> box (sbyte (byte out.Value))
+        | 0x05 -> box (byte out.Value)
+        | 0x06 -> box (int16 (uint16 out.Value))
+        | 0x07 -> box (uint16 out.Value)
+        | 0x08 -> box (int32 (uint32 out.Value))
+        | 0x09 -> box (uint32 out.Value)
+        | 0x0A -> box out.Value
+        | 0x0B -> box (uint64 out.Value)
+        | 0x0C -> box (System.BitConverter.Int32BitsToSingle (int32 (uint32 out.Value)))
+        | 0x0D -> box (System.BitConverter.Int64BitsToDouble out.Value)
+        | 0x0E ->
+            match out.StringPointer with
+            | ManagedPointerSource.Null -> box ""
+            | ManagedPointerSource.Byref (ByrefRoot.PeByteRange range, _) ->
+                let charTemplate, _ =
+                    IlMachineState.cliTypeZeroOfHandle
+                        state
+                        fixture.BaseClassTypes
+                        (AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Char)
+
+                System.String (
+                    Array.init
+                        out.Length
+                        (fun i ->
+                            match
+                                IlMachineState.readPeByteRangeBytesAs state range (i * 2) charTemplate
+                                |> CliType.unwrapPrimitiveLikeDeep
+                            with
+                            | CliType.Char (hi, lo) -> char ((int hi <<< 8) ||| int lo)
+                            | other -> failwith $"expected Char in constant blob, got %O{other}"
+                        )
+                )
+                |> box
+            | other -> failwith $"unexpected string pointer %O{other}"
+        | 0x12 -> null
+        | other -> failwith $"unexpected element type 0x%x{other} for %s{describe}"
+
     [<Test>]
     let ``MetadataImport GetDefaultValue agrees with the host runtime for every literal`` () : unit =
         // Outside oracle: the same image in the host CLR, asked the same question through its own
-        // metadata engine. This compares the *decoded* value rather than the raw out-params, so it
-        // checks the packing and the element type together, in the way a guest would see them.
+        // metadata engine.
         let fixture = makeFixture ()
 
         let hostType =
@@ -2138,56 +2214,11 @@ public class ParameterShapes
 
             state <- nextState
 
-            let expected = hostType.GetField(field.Name).GetRawConstantValue ()
-
-            // Recover the same value the managed `MdConstant` would build from our out-params.
-            let actual : obj =
-                match out.CorElementType with
-                | 0x02 -> box (out.Value <> 0L)
-                | 0x03 -> box (char (uint16 out.Value))
-                | 0x04 -> box (sbyte (byte out.Value))
-                | 0x05 -> box (byte out.Value)
-                | 0x06 -> box (int16 (uint16 out.Value))
-                | 0x07 -> box (uint16 out.Value)
-                | 0x08 -> box (int32 (uint32 out.Value))
-                | 0x09 -> box (uint32 out.Value)
-                | 0x0A -> box out.Value
-                | 0x0B -> box (uint64 out.Value)
-                | 0x0C -> box (System.BitConverter.Int32BitsToSingle (int32 (uint32 out.Value)))
-                | 0x0D -> box (System.BitConverter.Int64BitsToDouble out.Value)
-                | 0x0E ->
-                    match out.StringPointer with
-                    | ManagedPointerSource.Null -> box ""
-                    | ManagedPointerSource.Byref (ByrefRoot.PeByteRange range, _) ->
-                        let charTemplate, _ =
-                            IlMachineState.cliTypeZeroOfHandle
-                                state
-                                fixture.BaseClassTypes
-                                (AllConcreteTypes.getRequiredNonGenericHandle
-                                    state.ConcreteTypes
-                                    fixture.BaseClassTypes.Char)
-
-                        System.String (
-                            Array.init
-                                out.Length
-                                (fun i ->
-                                    match
-                                        IlMachineState.readPeByteRangeBytesAs state range (i * 2) charTemplate
-                                        |> CliType.unwrapPrimitiveLikeDeep
-                                    with
-                                    | CliType.Char (hi, lo) -> char ((int hi <<< 8) ||| int lo)
-                                    | other -> failwith $"expected Char in constant blob, got %O{other}"
-                                )
-                        )
-                        |> box
-                    | other -> failwith $"unexpected string pointer %O{other}"
-                | 0x12 -> null
-                | other -> failwith $"unexpected element type 0x%x{other} for %s{field.Name}"
-
-            actual |> shouldEqual expected
+            decodeDefaultValueOut fixture state field.Name out
+            |> shouldEqual (hostType.GetField(field.Name).GetRawConstantValue ())
 
     [<Test>]
-    let ``MetadataImport GetDefaultValue rejects a non-FieldDef token`` () : unit =
+    let ``MetadataImport GetDefaultValue rejects a token of an unsupported kind`` () : unit =
         let fixture = makeFixture ()
 
         let ex =
@@ -2196,7 +2227,7 @@ public class ParameterShapes
                 |> ignore
             )
 
-        ex.Message |> shouldContainText "expected FieldDef token"
+        ex.Message |> shouldContainText "expected FieldDef or ParamDef token"
 
     /// The bytes behind the `byte*` that `GetName` wrote, up to and including the NUL terminator,
     /// read straight out of the backing array rather than through `NativeCall.readNullTerminatedUtf8`.
@@ -3323,14 +3354,10 @@ public class ParameterShapes
         bytes |> shouldEqual [| 0uy |]
 
     [<Test>]
-    let ``MetadataImport GetDefaultValue refuses a ParamDef token rather than reporting no constant`` () : unit =
+    let ``MetadataImport GetDefaultValue reads a ParamDef Constant row`` () : unit =
         let fixture = makeFixture ()
 
-        // Now that ParamDef tokens exist, `ParameterInfo.HasDefaultValue` / `DefaultValue` /
-        // `RawDefaultValue` can put one here, and `Defaulted`'s second parameter is exactly the row
-        // that has a Constant. The handler covers FieldDef parents only, and the failure must stay
-        // loud: reporting ELEMENT_TYPE_VOID instead would turn "PawPrint has not implemented this"
-        // into "this optional parameter has no default", which the guest cannot tell from the truth.
+        // `Defaulted`'s second parameter is the one with a Constant row.
         let defaultedParameter =
             parametersOfMethod fixture.Assembly (parameterShapeMethod fixture "Defaulted")
             |> List.item 1
@@ -3340,10 +3367,159 @@ public class ParameterShapes
         (mr.GetParameter defaultedParameter).GetDefaultValue().IsNil
         |> shouldEqual false
 
+        let returnValue, out, _ =
+            invokeGetDefaultValue fixture (parameterToken defaultedParameter) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+        out.CorElementType |> shouldEqual 0x08
+        out.Value |> shouldEqual 7L
+        out.Length |> shouldEqual 4
+        out.StringPointer |> shouldEqual ManagedPointerSource.Null
+
+    [<Test>]
+    let ``MetadataImport GetDefaultValue reports VOID for a ParamDef with no Constant row`` () : unit =
+        // The distinction this pins: "no Constant row" is not "no default value". The caller
+        // (`RuntimeParameterInfo.TryGetDefaultValueInternal`) goes on to scan custom attributes
+        // after a VOID, so reporting anything else here would suppress that fallback.
+        let fixture = makeFixture ()
+
+        let mandatoryParameter =
+            parametersOfMethod fixture.Assembly (parameterShapeMethod fixture "DefaultShapes")
+            |> List.head
+
+        let mr = fixture.Assembly.PeReader.GetMetadataReader ()
+        let parameter = mr.GetParameter mandatoryParameter
+
+        // Sequence 1 is the first real parameter, `noConstant`; guard against the corpus growing a
+        // sequence-0 return row and silently shifting this to a different parameter.
+        parameter.SequenceNumber |> shouldEqual 1
+        parameter.GetDefaultValue().IsNil |> shouldEqual true
+
+        let returnValue, out, _ =
+            invokeGetDefaultValue fixture (parameterToken mandatoryParameter) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+        out.CorElementType |> shouldEqual 0x01
+        out.Value |> shouldEqual 0L
+        out.Length |> shouldEqual 0
+        out.StringPointer |> shouldEqual ManagedPointerSource.Null
+
+    [<Test>]
+    let ``MetadataImport GetDefaultValue agrees with the host runtime for every parameter default`` () : unit =
+        // Outside oracle, as for the literals: the host CLR's own metadata engine, over the same
+        // image. `RawDefaultValue` rather than `DefaultValue` because the raw form is the Constant
+        // row as-is — `DefaultValue` would apply `MdConstant`'s enum projection on top.
+        let fixture = makeFixture ()
+
+        let hostType =
+            (System.Reflection.Assembly.Load fixture.Image).GetType "ParameterShapes"
+
+        let mr = fixture.Assembly.PeReader.GetMetadataReader ()
+
+        // Every Param row in the image that has a Constant, paired with the host's answer for it.
+        // Built from the host side so the set under test is not chosen by PawPrint's own parse.
+        let expectations =
+            hostDeclaredMethods hostType
+            |> Array.collect (fun method -> method.GetParameters ())
+            |> Array.filter (fun p -> not (MetadataTokens.ParameterHandle (p.MetadataToken &&& 0x00FFFFFF)).IsNil)
+            |> Array.filter (fun p ->
+                not
+                    ((mr.GetParameter (MetadataTokens.ParameterHandle (p.MetadataToken &&& 0x00FFFFFF)))
+                        .GetDefaultValue ())
+                        .IsNil
+            )
+            |> Array.toList
+
+        // Ten from `DefaultShapes` plus `Defaulted`'s own, so a filter that silently emptied this
+        // list would be caught rather than passing vacuously.
+        expectations.Length |> shouldEqual 11
+
+        // Pairwise distinct, so misresolving one row to another's Constant cannot coincide.
+        let distinctValues =
+            expectations |> List.map (fun p -> p.RawDefaultValue) |> List.distinct
+
+        distinctValues.Length |> shouldEqual expectations.Length
+
+        let mutable state = fixture.State
+
+        for parameter in expectations do
+            let _, out, nextState = invokeGetDefaultValue fixture parameter.MetadataToken state
+
+            state <- nextState
+
+            decodeDefaultValueOut fixture state parameter.Name out
+            |> shouldEqual parameter.RawDefaultValue
+
+    [<Test>]
+    let ``MetadataImport GetDefaultValue points at the constant blob for a string parameter`` () : unit =
+        let fixture = makeFixture ()
+
+        // `astral` is a surrogate pair: five UTF-16 code units in ten bytes. A handler reporting
+        // the blob's byte count, or counting code points, gets 10 or 4 rather than 5.
+        let astralParameter =
+            parametersOfMethod fixture.Assembly (parameterShapeMethod fixture "DefaultShapes")
+            |> List.last
+
+        let mr = fixture.Assembly.PeReader.GetMetadataReader ()
+        (mr.GetParameter astralParameter).SequenceNumber |> shouldEqual 11
+
+        let _, out, state =
+            invokeGetDefaultValue fixture (parameterToken astralParameter) fixture.State
+
+        out.CorElementType |> shouldEqual 0x0E
+        out.Length |> shouldEqual 5
+
+        match out.StringPointer with
+        | ManagedPointerSource.Byref (ByrefRoot.PeByteRange range, [ ByrefProjection.ReinterpretAs _ ]) ->
+            range.Size |> shouldEqual 10
+
+            range.Source
+            |> shouldEqual (
+                PeByteRangePointerSource.ConstantBlob (
+                    ComparableConstantHandle.Make ((mr.GetParameter astralParameter).GetDefaultValue ())
+                )
+            )
+        | other -> failwith $"expected a char pointer over the constant blob, got %O{other}"
+
+        decodeDefaultValueOut fixture state "astral" out
+        |> shouldEqual (box "mäß\U0001F43E")
+
+    [<Test>]
+    let ``MetadataImport GetDefaultValue rejects a ParamDef absent from the assembly`` () : unit =
+        // Both halves of `parameterDefinition`'s bounds guard. Row 0 is also the *nil* ParamDef
+        // token (0x08000000): `MdToken.IsNullToken` is `(token &&& 0x00FFFFFF) = 0`, so there is one
+        // input here, not two, and a separate nil arm would be dead by construction.
+        //
+        // No managed caller can produce either: `TryGetDefaultValueInternal` short-circuits on a nil
+        // token before the FCall, and every other token it passes was minted from this image. So
+        // this pins PawPrint's refusal contract rather than CoreCLR's behaviour — CoreCLR in
+        // isolation reports VOID here, its Constant search simply missing on parent rid 0.
+        let fixture = makeFixture ()
+
+        let rowCount = paramTableRowCount fixture
+
+        for token in [ 0x08000000 ; 0x08000000 ||| (rowCount + 1) ] do
+            let ex =
+                Assert.Throws (fun () -> invokeGetDefaultValue fixture token fixture.State |> ignore)
+
+            ex.Message |> shouldContainText "was not present in"
+
+    [<Test>]
+    let ``MetadataImport GetDefaultValue refuses a PropertyDef token`` () : unit =
+        // The third HasConstant parent, deliberately unimplemented. It must stay loud: reporting
+        // VOID would turn "PawPrint has not implemented this" into "this property has no constant",
+        // which a guest cannot tell from the truth.
+        let fixture = makeFixture ()
+
+        let propertyHandle =
+            (fixture.Assembly.PeReader.GetMetadataReader().GetTypeDefinition fixture.PropertyShapesType.TypeDefHandle)
+                .GetProperties ()
+            |> Seq.head
+
         let ex =
             Assert.Throws (fun () ->
-                invokeGetDefaultValue fixture (parameterToken defaultedParameter) fixture.State
+                invokeGetDefaultValue fixture (propertyToken propertyHandle) fixture.State
                 |> ignore
             )
 
-        ex.Message |> shouldContainText "expected FieldDef token"
+        ex.Message |> shouldContainText "PropertyDef Constant rows are not implemented"

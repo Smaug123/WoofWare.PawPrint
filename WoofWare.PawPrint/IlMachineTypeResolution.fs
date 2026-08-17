@@ -785,30 +785,17 @@ module IlMachineTypeResolution =
         state,
         ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, [ ByrefProjection.ReinterpretAs byteType ])
 
-    /// PE byte range pointer over the Constant table's value blob for a field
-    /// definition (ECMA II.22.9).
-    let peByteRangeForConstantBlob
-        (assembly : DumpedAssembly)
-        (fieldHandle : FieldDefinitionHandle)
-        : PeByteRangePointer option
-        =
+    /// PE byte range pointer over a Constant table row's value blob (ECMA II.22.9).
+    let peByteRangeForConstantBlob (assembly : DumpedAssembly) (constantHandle : ConstantHandle) : PeByteRangePointer =
         let mdReader = assembly.PeReader.GetMetadataReader ()
-        let fieldDef = mdReader.GetFieldDefinition fieldHandle
-        let constantHandle = fieldDef.GetDefaultValue ()
-
-        if constantHandle.IsNil then
-            None
-        else
-
         let blobReader = mdReader.GetBlobReader (mdReader.GetConstant constantHandle).Value
 
         {
             AssemblyFullName = assembly.Name.FullName
-            Source = PeByteRangePointerSource.ConstantBlob (ComparableFieldDefinitionHandle.Make fieldHandle)
+            Source = PeByteRangePointerSource.ConstantBlob (ComparableConstantHandle.Make constantHandle)
             RelativeVirtualAddress = 0
             Size = blobReader.Length
         }
-        |> Some
 
     /// A `char*` over a PE byte range, as opposed to `peByteRangePointer`'s `byte*`.
     let peByteRangeCharPointer
