@@ -150,18 +150,58 @@ public static class Program
 
         template.Replace ("__ITERATIONS__", string guestIterations)
 
-[<MemoryDiagnoser>]
-type StackHeavyProgramBenchmarks () =
-    let sourceName = "PerformanceBaseline.StackHeavy.cs"
+    /// A guest whose calls pass reference-typed arguments, so that per-call work proportional to
+    /// the number of object arguments is visible in a measurement. `stackHeavy` passes only ints
+    /// and cannot show it.
+    let referenceArgHeavy (guestIterations : int) : string =
+        let template =
+            """
+public sealed class Node
+{
+    public int Value;
+    public Node (int value) { Value = value; }
+}
 
-    let mutable image : byte array = Array.empty
-    let mutable expectedExitCode : int = 0
-    let mutable dotnetRuntimeDirs : ImmutableArray<string> = ImmutableArray.Empty
+public static class Program
+{
+    const int Iterations = __ITERATIONS__;
 
-    [<Params(4096)>]
-    member val GuestIterations : int = 4096 with get, set
+    static int Combine (Node a, Node b, Node c, string tag)
+    {
+        return (a.Value + b.Value + c.Value + tag.Length) & 255;
+    }
 
-    member private _.RunPawPrint () : int =
+    public static int Main (string[] args)
+    {
+        Node x = new Node (1);
+        Node y = new Node (2);
+        Node z = new Node (3);
+        string tag = "tag";
+        int acc = 0;
+
+        for (int i = 0; i < Iterations; i++)
+        {
+            x.Value = (x.Value + i) & 255;
+            y.Value = (y.Value + x.Value) & 255;
+            z.Value = (z.Value + y.Value) & 255;
+            acc = acc + Combine (x, y, z, tag);
+        }
+
+        return acc & 255;
+    }
+}
+"""
+
+        template.Replace ("__ITERATIONS__", string guestIterations)
+
+[<RequireQualifiedAccess>]
+module private Harness =
+    /// Names this assembly, whose location `DotnetRuntime.SelectForDll` needs to pick the shared
+    /// framework the guests resolve against.
+    type private Marker = class end
+
+    /// Interpret `image` to completion and return the exit code the guest left on the stack.
+    let runPawPrint (sourceName : string) (image : byte array) (dotnetRuntimeDirs : ImmutableArray<string>) : int =
         use peImage = new MemoryStream (image)
 
         match
@@ -185,36 +225,89 @@ type StackHeavyProgramBenchmarks () =
         | RunOutcome.GuestUnhandledException (_, _, exn) ->
             failwith $"PawPrint threw an unhandled guest exception: %O{exn.ExceptionObject}"
 
-    [<GlobalSetup>]
-    member this.GlobalSetup () : unit =
-        image <-
-            GuestPrograms.stackHeavy this.GuestIterations
-            |> List.singleton
-            |> Roslyn.compile
+    /// Compile `source`, establish the expected exit code on real .NET, and check PawPrint agrees
+    /// before any timing is taken.
+    let setUp (sourceName : string) (source : string) : byte array * int * ImmutableArray<string> =
+        let image = Roslyn.compile [ source ]
 
-        expectedExitCode <-
+        let expectedExitCode =
             match RealRuntime.executeWithRealRuntime [||] image with
             | RealRuntimeResult.NormalExit exitCode -> exitCode
             | RealRuntimeResult.UnhandledException exn ->
                 failwith $"Real runtime threw unexpectedly while establishing perf baseline oracle: %O{exn}"
 
-        dotnetRuntimeDirs <-
-            DotnetRuntime.SelectForDll (typeof<StackHeavyProgramBenchmarks>.Assembly.Location)
+        let dotnetRuntimeDirs =
+            DotnetRuntime.SelectForDll (typeof<Marker>.Assembly.Location)
             |> ImmutableArray.CreateRange
 
-        let actualExitCode = this.RunPawPrint ()
+        let actualExitCode = runPawPrint sourceName image dotnetRuntimeDirs
 
         if actualExitCode <> expectedExitCode then
             failwith $"PawPrint returned %d{actualExitCode}, but real runtime returned %d{expectedExitCode}"
 
+        image, expectedExitCode, dotnetRuntimeDirs
+
+[<MemoryDiagnoser>]
+type StackHeavyProgramBenchmarks () =
+    let sourceName = "PerformanceBaseline.StackHeavy.cs"
+
+    let mutable image : byte array = Array.empty
+    let mutable expectedExitCode : int = 0
+    let mutable dotnetRuntimeDirs : ImmutableArray<string> = ImmutableArray.Empty
+
+    [<Params(4096)>]
+    member val GuestIterations : int = 4096 with get, set
+
+    [<GlobalSetup>]
+    member this.GlobalSetup () : unit =
+        let img, expected, dirs =
+            Harness.setUp sourceName (GuestPrograms.stackHeavy this.GuestIterations)
+
+        image <- img
+        expectedExitCode <- expected
+        dotnetRuntimeDirs <- dirs
+
     [<Benchmark(Description = "Run stack-heavy guest program")>]
-    member this.RunStackHeavyGuestProgram () : int =
-        let actualExitCode = this.RunPawPrint ()
+    member _.RunStackHeavyGuestProgram () : int =
+        let actualExitCode = Harness.runPawPrint sourceName image dotnetRuntimeDirs
 
         if actualExitCode <> expectedExitCode then
             failwith $"PawPrint returned %d{actualExitCode}, but real runtime returned %d{expectedExitCode}"
 
         actualExitCode
+
+/// Companion to `StackHeavyProgramBenchmarks`, whose guest passes only ints. Per-call work that
+/// scales with the number of *reference-typed* arguments is invisible there, so this guest passes
+/// objects and a string on every call.
+[<MemoryDiagnoser>]
+type ReferenceArgProgramBenchmarks () =
+    let sourceName = "PerformanceBaseline.ReferenceArgHeavy.cs"
+
+    let mutable image : byte array = Array.empty
+    let mutable expectedExitCode : int = 0
+    let mutable dotnetRuntimeDirs : ImmutableArray<string> = ImmutableArray.Empty
+
+    [<Params(4096)>]
+    member val GuestIterations : int = 4096 with get, set
+
+    [<GlobalSetup>]
+    member this.GlobalSetup () : unit =
+        let img, expected, dirs =
+            Harness.setUp sourceName (GuestPrograms.referenceArgHeavy this.GuestIterations)
+
+        image <- img
+        expectedExitCode <- expected
+        dotnetRuntimeDirs <- dirs
+
+    [<Benchmark(Description = "Run reference-argument-heavy guest program")>]
+    member _.RunReferenceArgGuestProgram () : int =
+        let actualExitCode = Harness.runPawPrint sourceName image dotnetRuntimeDirs
+
+        if actualExitCode <> expectedExitCode then
+            failwith $"PawPrint returned %d{actualExitCode}, but real runtime returned %d{expectedExitCode}"
+
+        actualExitCode
+
 
 module Program =
     [<EntryPoint>]

@@ -497,6 +497,138 @@ module internal UnaryMetadataCallOps =
 
             state, implementation, declaringTypeHandle
 
+    /// Refuse a `call`/`callvirt` whose arguments violate ECMA-335 III.3.19: each argument must be
+    /// assignable to its declared parameter type. Returns `state` unchanged when every argument
+    /// PawPrint is able to check satisfies that, and throws otherwise.
+    ///
+    /// Real .NET does not check this, so refusing declines a program the CLR would have run. That
+    /// is the intended trade. CoreCLR shares one instance `FieldDesc` across compatible generic
+    /// instantiations (`methodtable.h:1964`) whereas PawPrint keys field storage on the exact
+    /// instantiation, so an argument of the wrong instantiation can yield a wrong answer rather
+    /// than a late failure, and the callee is the wrong place to discover it.
+    ///
+    /// Only `ObjectRef` values passed to reference-typed parameters are checked. Anything else is
+    /// left unchecked rather than presumed correct.
+    ///
+    /// `checkReceiver` is set for a non-virtual `call`, where the token fixes the callee outright,
+    /// so a receiver of the wrong instantiation reaches a body that reads fields through the
+    /// declared one. It is not set for `callvirt`, which resolves the callee *from* the receiver,
+    /// making the receiver's type a dispatch question rather than an argument-passing one.
+    ///
+    /// The `SprintfBasic` F# case guards against over-refusal: it makes the same
+    /// `newobj PrintfFormat`5` / `call` taking the `PrintfFormat`4` base, with a consistent
+    /// instantiation, and must keep passing.
+    let private refuseUnverifiableArguments
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (op : string)
+        (checkReceiver : bool)
+        (concretizedMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (thread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let parameters = concretizedMethod.Signature.ParameterTypes
+        let arity = List.length parameters
+
+        // `tryIsValueType` answers `None` for a structural handle, which by design has no TypeDef to
+        // ask. An array is a reference type all the same, so leaving it to that lookup would skip
+        // every array-typed parameter. Byrefs, pointers and function pointers arrive as
+        // `ManagedPointer` or `NativeInt` rather than `ObjectRef`, so they never reach the test.
+        let isReferenceType (state : IlMachineState) (declared : ConcreteTypeHandle) : bool =
+            match declared with
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> true
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> false
+            | ConcreteTypeHandle.Concrete _ ->
+                AllConcreteTypes.tryIsValueType baseClassTypes state._LoadedAssemblies state.ConcreteTypes declared = Some
+                    false
+
+        let refuse
+            (state : IlMachineState)
+            (what : string)
+            (actual : ConcreteTypeHandle)
+            (declared : ConcreteTypeHandle)
+            : unit
+            =
+            let describe = AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes
+
+            failwith
+                $"Unverifiable %s{op} of %s{concretizedMethod.Name}: %s{what} has type %s{describe actual}, which is not assignable to the declared type %s{describe declared}. ECMA-335 III.3.19 requires each argument to be assignable to its declared parameter type; real .NET does not check this and would run the call, so this is a defect in the guest image rather than in the interpreter. PawPrint refuses because it keys field storage on the exact generic instantiation, so continuing risks a wrong answer rather than merely a late failure."
+
+        // The receiver sits directly beneath the arguments.
+        let state =
+            if not checkReceiver || concretizedMethod.IsStatic then
+                state
+            else
+
+            let declaring =
+                concretizedMethod.TryDeclaringType
+                |> Option.bind (fun ct ->
+                    AllConcreteTypes.findExistingConcreteType state.ConcreteTypes ct.Identity ct.Generics
+                )
+
+            match
+                declaring,
+                state.ThreadState.[thread].MethodState.EvaluationStack
+                |> EvalStack.PeekNthFromTop arity
+            with
+            | Some declaring, Some (EvalStackValue.ObjectRef addr) when isReferenceType state declaring ->
+                let actual = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
+
+                let state, assignable =
+                    IlMachineStateExecution.isAssignableFrom loggerFactory baseClassTypes actual declaring state
+
+                if not assignable then
+                    refuse state "the receiver" actual declaring
+
+                state
+            | _ -> state
+
+        // Arguments sit above the receiver, last argument on top: declared parameter `index` is
+        // `arity - 1 - index` slots down. The receiver of an instance method is at `arity`, and is
+        // not checked: `callvirt` resolves the callee from it, so a receiver of the wrong type is a
+        // dispatch question rather than an argument-passing one.
+        ((state, 0), parameters)
+        ||> List.fold (fun (state, index) declared ->
+            let argument =
+                state.ThreadState.[thread].MethodState.EvaluationStack
+                |> EvalStack.PeekNthFromTop (arity - 1 - index)
+
+            // `ObjectRef` is the only shape with a metadata type to compare against the
+            // declaration: `getTypeOfObj` is partial over `NativeInt`, `ManagedPointer` and
+            // `UserDefinedValueType`, so asking about those would turn a diagnostic into a crash.
+            //
+            // Value-typed parameters are excluded because an object reference arriving at one is
+            // usually PawPrint's representation rather than a guest defect: a `RuntimeTypeHandle`
+            // argument reaches `Type.GetTypeFromHandle` as an `ObjectRef` to the
+            // `System.RuntimeType` it wraps, and `RuntimeFieldHandle` reaches
+            // `RuntimeHelpers.CreateSpan` as a `RuntimeFieldInfoStub`. Assignability between
+            // reference types is the question ECMA's rule asks; boxing and handle representation
+            // are a different matter.
+            //
+            // The reference-type question is asked second because answering it can walk the
+            // assembly and TypeDef tables, and this runs on every interpreted call. Whole check
+            // measured by `WoofWare.PawPrint.Performance` at +3.6% on the reference-argument-heavy
+            // guest (783.4ms vs 756.4ms) and within noise on the stack-heavy one, which passes only
+            // ints and so reaches neither that lookup nor the assignability test.
+            match argument with
+            | Some (EvalStackValue.ObjectRef addr) when isReferenceType state declared ->
+                let actual = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
+
+                let state, assignable =
+                    IlMachineStateExecution.isAssignableFrom loggerFactory baseClassTypes actual declared state
+
+                if not assignable then
+                    refuse state $"argument %d{index}" actual declared
+
+                state, index + 1
+            | _ -> state, index + 1
+        )
+        |> fst
+
     /// Push a frame for the method `concretizedMethod`, having already resolved it however this
     /// opcode's operand demanded. Shared by the metadata and `DynamicScope` paths of `executeCall`
     /// so that the two cannot drift on how the callee is entered.
@@ -511,6 +643,16 @@ module internal UnaryMetadataCallOps =
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
         =
+        let state =
+            refuseUnverifiableArguments
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                "call"
+                true
+                concretizedMethod
+                ctx.Thread
+                state
+
         let threadState = state.ThreadState.[ctx.Thread]
 
         IlMachineStateExecution.callMethod
@@ -1084,6 +1226,9 @@ module internal UnaryMetadataCallOps =
                 thread
                 state
         else
+
+        let state =
+            refuseUnverifiableArguments loggerFactory baseClassTypes "callvirt" false concretizedMethod thread state
 
         let threadState = state.ThreadState.[thread]
 

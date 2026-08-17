@@ -15,6 +15,7 @@
     <Compile Include="SprintfBasic.fs" />
     <Compile Include="UnionVirtualSlots.fs" />
     <Compile Include="UnionReflection.fs" />
+    <Compile Include="PrintfCacheHit.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
 
