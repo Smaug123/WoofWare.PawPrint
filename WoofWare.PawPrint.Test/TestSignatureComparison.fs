@@ -751,3 +751,72 @@ public class Holder
             )
 
         exn.Message |> shouldContainText "SignatureTwoRowsMid"
+
+    [<Test>]
+    let ``nested types are separated by their enclosing names, without resolving`` () : unit =
+        // A nested type's row carries an empty namespace and only its own leaf name, its enclosing
+        // type living in the resolution scope. So `OuterA+Shared` and `OuterB+Shared` look
+        // identical to anything comparing the leaf alone, and would be left to resolution —
+        // whereupon an assembly nobody can load decides whether the comparison succeeds at all.
+        // `CompareTypeTokens` recurses on the scope and separates them by name.
+        let midImage =
+            Roslyn.compileAssembly
+                "SignatureNestedMid"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [
+                    "public class OuterA { public class Shared { } }\npublic class OuterB { public class Shared { } }"
+                ]
+
+        let userImage =
+            Roslyn.compileAssembly
+                "SignatureNestedUser"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                [ Microsoft.CodeAnalysis.MetadataReference.CreateFromImage midImage ]
+                [
+                    "public class Holder { public OuterA.Shared P { get; set; } public OuterB.Shared Q { get; set; } }"
+                ]
+
+        use userStream = new MemoryStream (userImage)
+
+        let user =
+            global.WoofWare.PawPrint.AssemblyApi.read fixture.LoggerFactory None userStream
+
+        let metadataReader = user.PeReader.GetMetadataReader ()
+        let holder = user.TypeDefs.Values |> Seq.find (fun td -> td.Name = "Holder")
+
+        let signatureNamed (name : string) : MethodSignature<TypeDefn> =
+            let handle =
+                (metadataReader.GetTypeDefinition holder.TypeDefHandle).GetProperties ()
+                |> Seq.find (fun handle ->
+                    metadataReader.GetString (metadataReader.GetPropertyDefinition handle).Name = name
+                )
+
+            PropertySignatureDecoding.decode
+                user.Name
+                metadataReader
+                (metadataReader.GetPropertyDefinition handle).Signature
+
+        // The premise: both rows really do describe a type called `Shared` with no namespace, so
+        // only the enclosing name tells them apart.
+        for name in [ "P" ; "Q" ] do
+            match (signatureNamed name).ReturnType with
+            | TypeDefn.FromReference (typeRef, _) ->
+                typeRef.Name |> shouldEqual "Shared"
+                typeRef.Namespace |> shouldEqual ""
+            | other -> failwith $"expected a nested TypeRef for %s{name}, got %O{other}"
+
+        // `SignatureNestedMid` is neither loaded nor findable, so anything that reached resolution
+        // would abort rather than answer.
+        let state = IlMachineState.initial fixture.LoggerFactory ImmutableArray.Empty user
+
+        NativeSignature.compareDecodedSignatures
+            fixture.LoggerFactory
+            "test"
+            state
+            user
+            (signatureNamed "P")
+            user
+            (signatureNamed "Q")
+        |> snd
+        |> shouldEqual false
