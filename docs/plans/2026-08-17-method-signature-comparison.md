@@ -149,6 +149,33 @@ comparison now reads the decoded signature directly. Two consequences:
 The `genericMethodTypeArgs` parameter of `resolveMemberWithGenerics` went with it: nothing substitutes
 method generics any more, so it was dead at all nine call sites.
 
+## Accepting generic overrides means validating their constraints
+
+Matching signatures are not the whole of CoreCLR's layout rule for a *generic* method: it then runs
+`MetaSig::CompareMethodConstraints` (`siginfo.cpp:5108`), and a mismatch is a failure to load the
+type — `IDS_CLASSLOAD_CONSTRAINT_MISMATCH_ON_IMPLICIT_OVERRIDE` (`methodtablebuilder.cpp:5449-5459`)
+— rather than a reason to give the method a slot of its own. Since the previous slot matcher refused
+every generic method outright, accepting them here takes on that validation too; without it PawPrint
+would lay out a vtable for a type the real runtime rejects.
+
+Measured before choosing how much to implement: **Roslyn copies a base method's constraints verbatim
+onto an override.** C# forbids restating them, but the GenericParam rows carry them all the same
+(`Derived.Constrained<T> attrs=[ReferenceTypeConstraint] constraints=[<typespec>]`). So refusing
+whenever constraints are present — the cheap option — would abort on ordinary C#, and the comparison
+has to be implemented. The corollary is that every constrained override in real code reaches it with
+both sides identical, which is what `sourcesPure/ReflectionConstrainedGenericOverrideSlots.cs` covers.
+
+The rules are asymmetric, and `CompareVariableConstraints` (`:5007`) spells out three separate shapes:
+an override may drop a requirement but not add one; `new()` is also satisfied by a value-type
+constraint; and `allows ref struct` compares in the *opposite* direction, because it widens what the
+parameter accepts rather than narrowing it. A constraint naming `System.Object` — or `System.ValueType`
+on an already value-type-constrained parameter — is skipped rather than matched, because the
+overridden parameter may leave it implicit.
+
+A mismatch `failwith`s, on the precedent of the sealed-override case in the same walk
+(`NativeRuntimeTypeHelpers.fs`): returning "no match" would hand the method a fresh slot, which is a
+*different* wrong vtable rather than a refusal.
+
 ## Mutation results
 
 16 mutations, one per rule. 14 killed. Notable:
@@ -162,6 +189,10 @@ method generics any more, so it was dead at all nine call sites.
 - `memberref-candidate-token-space` was killed only incidentally, by `ResizeArray.cs`.
   `TestCrossAssemblyOverloadTokenSpace` makes it attributable, on the `DecoyLib` recipe
   `TestCrossAssemblyFieldScope` established, and was itself checked to fail under the mutation.
+
+A further nine mutations cover the constraint comparison, all killed. One of them — making it always
+answer "no" — is what proves the check is *wired into* the slot matcher rather than merely present:
+both generic-override guests then fail with its diagnostic.
 
 **Two survivors, both about the dispatch site's return column**, and both pre-existing:
 `skipReturnType` may be flipped to `false`, and the `isAssignableFrom` behind it replaced with handle

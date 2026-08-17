@@ -156,6 +156,35 @@ module IlMachineTypeResolution =
 
         state, returnType
 
+    /// Do the constraints on a generic method's type parameters permit `impl` to override `decl`?
+    /// CoreCLR asks this only once the signatures already match, and a mismatch means the type does
+    /// not load at all rather than that the method gets a slot of its own.
+    let methodConstraintsMatch
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (impl : TypeConcretization.ConstraintComparand)
+        (decl : TypeConcretization.ConstraintComparand)
+        : IlMachineState * bool
+        =
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
+            }
+
+        let matches, ctx =
+            TypeConcretization.methodConstraintsMatch ctx (loader loggerFactory state) impl decl
+
+        let state =
+            { state with
+                _LoadedAssemblies = ctx.LoadedAssemblies
+                ConcreteTypes = ctx.ConcreteTypes
+            }
+
+        state, matches
+
     /// Do these two method signatures name the same signature, in the sense of CoreCLR's
     /// `MetaSig::CompareMethodSigs`? Use this, and not equality of two concretised signatures, for
     /// any question CoreCLR answers off the signature blob — which virtual slot a method fills, and

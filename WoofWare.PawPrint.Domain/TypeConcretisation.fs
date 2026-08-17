@@ -1537,6 +1537,126 @@ module TypeConcretization =
 
         matches, ctx
 
+    /// One side of a generic method's constraint comparison: what its type parameters are
+    /// constrained to, and the token space and declaring-type instantiation those constraints are
+    /// written in.
+    type ConstraintComparand =
+        {
+            Parameters : GenericParamMetadata list
+            Assembly : AssemblyName
+            DeclaringTypeGenerics : ImmutableArray<ConcreteTypeHandle>
+        }
+
+    /// `MetaSig::CompareMethodConstraints` (siginfo.cpp:5108) and the per-parameter rule it
+    /// delegates to, `CompareVariableConstraints` (:5007). CoreCLR runs this *after* the signatures
+    /// match, and treats a mismatch as a failure to load the type rather than as a reason to give the
+    /// method a slot of its own (methodtablebuilder.cpp:5449-5459).
+    ///
+    /// The rules are one-directional, so `impl` must be the overriding side: an override may not
+    /// *add* a requirement its base did not have, but it may drop one.
+    ///
+    /// Roslyn copies a base method's constraints verbatim onto an override — C# forbids restating
+    /// them, and the metadata carries them all the same — so ordinary C# reaches only the case where
+    /// the two sides are identical.
+    let methodConstraintsMatch
+        (ctx : ConcretizationContext<DumpedAssembly>)
+        (loadAssembly : IAssemblyLoad)
+        (impl : ConstraintComparand)
+        (decl : ConstraintComparand)
+        : bool * ConcretizationContext<DumpedAssembly>
+        =
+        if impl.Parameters.Length <> decl.Parameters.Length then
+            false, ctx
+        else
+
+        let implCtx : ElementContext =
+            {
+                Assembly = impl.Assembly
+                TypeGenerics = impl.DeclaringTypeGenerics
+            }
+
+        let declCtx : ElementContext =
+            {
+                Assembly = decl.Assembly
+                TypeGenerics = decl.DeclaringTypeGenerics
+            }
+
+        // A constraint naming `System.Object` says nothing, and neither does one naming
+        // `System.ValueType` on a parameter already constrained to a non-nullable value type.
+        // CoreCLR skips both rather than looking for a match, because the overridden parameter is
+        // entitled to leave them implicit (:5069-5079).
+        let isVacuous
+            (ctx : ConcretizationContext<DumpedAssembly>)
+            (isNotNullableValueType : bool)
+            (constraintType : TypeDefn)
+            : bool * ConcretizationContext<DumpedAssembly>
+            =
+            let identity, ctx = nominalIdentity ctx loadAssembly impl.Assembly constraintType
+
+            match identity with
+            | None -> false, ctx
+            | Some identity ->
+
+            let isBaseType (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>) =
+                identity = ResolvedTypeIdentity.ofTypeDefinition ty.Assembly ty.TypeDefHandle
+
+            isBaseType ctx.BaseTypes.Object
+            || (isNotNullableValueType && isBaseType ctx.BaseTypes.ValueType),
+            ctx
+
+        let mutable ctx = ctx
+        let mutable matches = true
+
+        for implParam, declParam in List.zip impl.Parameters decl.Parameters do
+            if matches then
+                let isNotNullableValueType =
+                    implParam.Constraint = Some GenericConstraint.NonNullableValue
+
+                let specialsMatch =
+                    // Each of these says the override must not demand more of a type argument than
+                    // the method it overrides already demanded.
+                    (match implParam.Constraint with
+                     | Some GenericConstraint.NonNullableValue ->
+                         declParam.Constraint = Some GenericConstraint.NonNullableValue
+                     | Some GenericConstraint.Reference -> declParam.Constraint = Some GenericConstraint.Reference
+                     | None -> true)
+                    && (not implParam.RequiresParameterlessConstructor
+                        || declParam.RequiresParameterlessConstructor
+                        // A non-nullable value type always has a parameterless constructor.
+                        || declParam.Constraint = Some GenericConstraint.NonNullableValue)
+                    // `allows ref struct` runs the other way, because it *widens* what the parameter
+                    // accepts: the override has to keep accepting what the base accepted.
+                    && (not declParam.AllowsByRefLike || implParam.AllowsByRefLike)
+
+                if not specialsMatch then
+                    matches <- false
+                else
+
+                for implConstraint in implParam.Constraints do
+                    if matches then
+                        let vacuous, newCtx = isVacuous ctx isNotNullableValueType implConstraint
+                        ctx <- newCtx
+
+                        if not vacuous then
+                            let mutable found = false
+
+                            for declConstraint in declParam.Constraints do
+                                if not found then
+                                    let equal, newCtx =
+                                        compareElements
+                                            ctx
+                                            loadAssembly
+                                            (Element.Spelled (implCtx, implConstraint))
+                                            (Element.Spelled (declCtx, declConstraint))
+
+                                    ctx <- newCtx
+                                    found <- equal
+
+                            if not found then
+                                matches <- false
+
+        matches, ctx
+
     /// Do these two method signatures name the same signature, in the sense of
     /// `MetaSig::CompareMethodSigs`? This is a comparison of what the blobs *say*, so it separates
     /// signatures that concretisation deliberately conflates: custom modifiers are compared in every

@@ -644,6 +644,192 @@ public class OpenGeneric<T>
         equivalent fixture (staticSignature [ int32 ]) (staticSignature [ int32 ; int32 ])
         |> shouldEqual false
 
+    // ----- generic method constraints -------------------------------------------------------
+
+    let private nominalOf (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>) : TypeDefn =
+        TypeDefn.FromDefinition (
+            ResolvedTypeIdentity.ofTypeDefinition ty.Assembly ty.TypeDefHandle,
+            SignatureTypeKind.Class
+        )
+
+    let private parameter
+        (kind : GenericConstraint option)
+        (requiresParameterlessConstructor : bool)
+        (allowsByRefLike : bool)
+        (constraints : TypeDefn list)
+        : GenericParamMetadata
+        =
+        {
+            Variance = None
+            Constraint = kind
+            RequiresParameterlessConstructor = requiresParameterlessConstructor
+            AllowsByRefLike = allowsByRefLike
+            Constraints = ImmutableArray.CreateRange constraints
+        }
+
+    let private unconstrained : GenericParamMetadata = parameter None false false []
+
+    /// `impl` is the overriding side.
+    let private constraintsMatch
+        (fixture : Fixture)
+        (impl : GenericParamMetadata list)
+        (decl : GenericParamMetadata list)
+        : bool
+        =
+        let comparand (parameters : GenericParamMetadata list) : TypeConcretization.ConstraintComparand =
+            {
+                Parameters = parameters
+                Assembly = fixture.Assembly.Name
+                DeclaringTypeGenerics = ImmutableArray.Empty
+            }
+
+        let _, matches =
+            IlMachineState.methodConstraintsMatch
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                fixture.State
+                (comparand impl)
+                (comparand decl)
+
+        matches
+
+    /// The case ordinary C# always produces, since Roslyn copies a base method's constraints onto the
+    /// override verbatim. If this went wrong every constrained generic override would take a slot of
+    /// its own.
+    [<Test>]
+    let ``identical constraints match`` () =
+        let fixture = fixture ()
+        let comparable = nominalOf fixture.BaseClassTypes.String
+
+        let cases =
+            [
+                unconstrained
+                parameter (Some GenericConstraint.Reference) false false []
+                parameter (Some GenericConstraint.NonNullableValue) false false []
+                parameter None true false []
+                parameter None false true []
+                parameter (Some GenericConstraint.Reference) false false [ comparable ]
+            ]
+
+        for case in cases do
+            constraintsMatch fixture [ case ] [ case ] |> shouldEqual true
+
+    /// An override may drop a requirement its base had, but not add one: a type argument that
+    /// satisfied the base must still satisfy the override.
+    [<Test>]
+    let ``an override may not add a special constraint`` () =
+        let fixture = fixture ()
+
+        let valueType = parameter (Some GenericConstraint.NonNullableValue) false false []
+        let referenceType = parameter (Some GenericConstraint.Reference) false false []
+
+        constraintsMatch fixture [ valueType ] [ unconstrained ] |> shouldEqual false
+        constraintsMatch fixture [ unconstrained ] [ valueType ] |> shouldEqual true
+
+        constraintsMatch fixture [ referenceType ] [ unconstrained ]
+        |> shouldEqual false
+
+        constraintsMatch fixture [ unconstrained ] [ referenceType ] |> shouldEqual true
+
+        // The two are compared for equality rather than merely for presence.
+        constraintsMatch fixture [ valueType ] [ referenceType ] |> shouldEqual false
+
+    /// `new()` is the one special constraint with a second way to be satisfied: a non-nullable value
+    /// type always has a parameterless constructor.
+    [<Test>]
+    let ``a value-type constraint satisfies a parameterless-constructor constraint`` () =
+        let fixture = fixture ()
+        let requiresCtor = parameter None true false []
+        let valueType = parameter (Some GenericConstraint.NonNullableValue) false false []
+
+        constraintsMatch fixture [ requiresCtor ] [ unconstrained ] |> shouldEqual false
+        constraintsMatch fixture [ requiresCtor ] [ valueType ] |> shouldEqual true
+        constraintsMatch fixture [ requiresCtor ] [ requiresCtor ] |> shouldEqual true
+
+    /// `allows ref struct` is compared in the opposite direction from the rest, because it *widens*
+    /// what the parameter accepts rather than narrowing it.
+    [<Test>]
+    let ``an override may not withdraw allows-ref-struct`` () =
+        let fixture = fixture ()
+        let allows = parameter None false true []
+
+        constraintsMatch fixture [ unconstrained ] [ allows ] |> shouldEqual false
+        constraintsMatch fixture [ allows ] [ unconstrained ] |> shouldEqual true
+
+    [<Test>]
+    let ``an override may not add a type constraint`` () =
+        let fixture = fixture ()
+
+        let constrained =
+            parameter None false false [ nominalOf fixture.BaseClassTypes.String ]
+
+        constraintsMatch fixture [ constrained ] [ unconstrained ] |> shouldEqual false
+        constraintsMatch fixture [ unconstrained ] [ constrained ] |> shouldEqual true
+
+        // A different type does not satisfy it either; only a matching one does.
+        let other = parameter None false false [ nominalOf fixture.BaseClassTypes.Array ]
+
+        constraintsMatch fixture [ constrained ] [ other ] |> shouldEqual false
+        constraintsMatch fixture [ constrained ] [ constrained ] |> shouldEqual true
+
+    /// A constraint naming `System.Object` says nothing, and neither does `System.ValueType` on a
+    /// parameter already constrained to a value type. CoreCLR skips both rather than looking for a
+    /// match, because the overridden parameter is entitled to leave them implicit.
+    [<Test>]
+    let ``vacuous type constraints are not required to match`` () =
+        let fixture = fixture ()
+
+        let objectConstrained =
+            parameter None false false [ nominalOf fixture.BaseClassTypes.Object ]
+
+        constraintsMatch fixture [ objectConstrained ] [ unconstrained ]
+        |> shouldEqual true
+
+        let valueTypeConstrained =
+            parameter
+                (Some GenericConstraint.NonNullableValue)
+                false
+                false
+                [ nominalOf fixture.BaseClassTypes.ValueType ]
+
+        constraintsMatch
+            fixture
+            [ valueTypeConstrained ]
+            [ parameter (Some GenericConstraint.NonNullableValue) false false [] ]
+        |> shouldEqual true
+
+        // Only vacuous *because* the parameter is value-type constrained: without that, a
+        // `System.ValueType` constraint is an ordinary one and has to be matched.
+        let plainValueTypeConstrained =
+            parameter None false false [ nominalOf fixture.BaseClassTypes.ValueType ]
+
+        constraintsMatch fixture [ plainValueTypeConstrained ] [ unconstrained ]
+        |> shouldEqual false
+
+    /// The slot matcher only asks this once the signatures already agree, which settles the arity —
+    /// but this is a comparison in its own right, and a caller that has not established that must get
+    /// an answer rather than an exception from zipping two different-length lists.
+    [<Test>]
+    let ``differing numbers of type parameters do not match`` () =
+        let fixture = fixture ()
+
+        constraintsMatch fixture [ unconstrained ] [ unconstrained ; unconstrained ]
+        |> shouldEqual false
+
+        constraintsMatch fixture [ unconstrained ; unconstrained ] [ unconstrained ]
+        |> shouldEqual false
+
+    [<Test>]
+    let ``every parameter is compared, not just the first`` () =
+        let fixture = fixture ()
+        let valueType = parameter (Some GenericConstraint.NonNullableValue) false false []
+
+        constraintsMatch fixture [ unconstrained ; valueType ] [ unconstrained ; unconstrained ]
+        |> shouldEqual false
+
+        constraintsMatch fixture [ unconstrained ; unconstrained ] [ unconstrained ; valueType ]
+        |> shouldEqual true
+
     /// `skipReturnType` is how CoreCLR expresses "a covariant return is acceptable", so it must omit
     /// the return column and nothing else.
     [<Test>]
