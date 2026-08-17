@@ -103,6 +103,7 @@
     <Compile Include="DynamicMethodExecution.fs" />
     <Compile Include="UnaryMetadataIlOpContext.fs" />
     <Compile Include="UnaryMetadataCallOps.fs" />
+    <Compile Include="BoxedValue.fs" />
     <Compile Include="UnaryMetadataObjectOps.fs" />
     <Compile Include="UnaryMetadataFieldOps.fs" />
     <Compile Include="UnaryMetadataArrayOps.fs" />

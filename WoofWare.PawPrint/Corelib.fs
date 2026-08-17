@@ -124,6 +124,8 @@ module Corelib =
 
         let missingFieldException = findCorelibType corelib "System" "MissingFieldException"
 
+        let fieldAccessException = findCorelibType corelib "System" "FieldAccessException"
+
         let missingMethodException =
             findCorelibType corelib "System" "MissingMethodException"
 
@@ -222,6 +224,7 @@ module Corelib =
             BadImageFormatException = badImageFormatException
             ArgumentOutOfRangeException = argumentOutOfRangeException
             MissingFieldException = missingFieldException
+            FieldAccessException = fieldAccessException
             MissingMethodException = missingMethodException
             NotSupportedException = notSupportedException
             DuplicateWaitObjectException = duplicateWaitObjectException
