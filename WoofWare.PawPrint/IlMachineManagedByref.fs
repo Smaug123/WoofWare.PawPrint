@@ -773,6 +773,13 @@ module IlMachineManagedByref =
                 // non-byte-renderable cell rather than silently returning a
                 // wrongly-shaped value.
                 match CliType.ByteAddressability cellValue with
+                // A cell whose bytes only *name* a native int belongs here for exactly the reason
+                // in (a): the byte-scatter path cannot serve it without losing the identity those
+                // names carry. This arm is wider than `tryNameCellForByrefAccess` below, which
+                // gates on `isCellIdentityCompatible` and so refuses the wrapper layer
+                // `haveSameCliShape` bridges -- reading an `IntPtr[]` cell holding a type handle
+                // through an `IntPtr` template is that pair, and it is served here or nowhere.
+                | CliByteAddressability.SymbolicallyAddressable _
                 | CliByteAddressability.Rejected _ when haveSameCliShape cellValue targetTemplate -> ValueSome cellValue
                 | _ -> ValueNone
             else

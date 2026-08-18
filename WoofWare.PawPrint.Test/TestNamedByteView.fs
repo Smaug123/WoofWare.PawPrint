@@ -211,3 +211,75 @@ module TestNamedByteView =
 
         IlMachineState.readManagedByrefBytesAs baseClassTypes st (plainCursor 3) byteTemplate
         |> shouldEqual byteTemplate
+
+    [<Test>]
+    let ``a whole-cell read of a handle out of an array still yields the handle`` () : unit =
+        // A cell holding a bare handle, read at its own width. This has always been served by the
+        // array whole-cell shortcut, whose stated reason is that the byte-scatter path cannot
+        // serve such a cell without losing provenance -- which is exactly as true of a cell whose
+        // bytes are only nameable, so the shortcut has to recognise that case too.
+        let st = state ()
+
+        let cell = CliType.Numeric (CliNumericType.NativeInt handleSource)
+
+        let arrayAddr, st =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero intPtrHandle)
+                (fun () -> CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+                2
+                st
+
+        let st = IlMachineState.setArrayValue arrayAddr cell 1 st
+
+        let wholeCellCursor =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (arrayAddr, 1),
+                [
+                    ByrefProjection.ReinterpretAs byteConcreteType
+                    ByrefProjection.ByteOffset 0
+                ]
+            )
+
+        IlMachineState.readManagedByrefBytesAs
+            baseClassTypes
+            st
+            wholeCellCursor
+            (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+        |> shouldEqual cell
+
+    [<Test>]
+    let ``a wrapper-shaped template over an array cell holding a handle still yields the handle`` () : unit =
+        // The array whole-cell shortcut's shape gate is `haveSameCliShape`, which bridges a
+        // primitive-like wrapper and the thing it wraps, so an `IntPtr[]` cell holding a bare
+        // handle answers an `IntPtr`-struct template. Nothing else in the read path will: the
+        // `tryNameCellForByrefAccess` fallback gates on `isCellIdentityCompatible`, which refuses
+        // a `Numeric` cell against a `ValueType` template, and the byte walk would hand back eight
+        // named bytes with nowhere to put them. Measured against this branch's parent, where the
+        // shortcut fired because the cell was refused outright.
+        let st = state ()
+
+        let arrayAddr, st =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero intPtrHandle)
+                (fun () -> CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+                2
+                st
+
+        let st =
+            IlMachineState.setArrayValue arrayAddr (CliType.Numeric (CliNumericType.NativeInt handleSource)) 1 st
+
+        let cursor =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (arrayAddr, 1),
+                [
+                    ByrefProjection.ReinterpretAs byteConcreteType
+                    ByrefProjection.ByteOffset 0
+                ]
+            )
+
+        IlMachineState.readManagedByrefBytesAs
+            baseClassTypes
+            st
+            cursor
+            (CliType.ValueType (intPtrHolding (NativeIntSource.Verbatim 0L)))
+        |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt handleSource))
