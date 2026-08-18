@@ -630,10 +630,17 @@ module MethodHandleRegistry =
         =
         Map.tryFind handle reg.DynamicMethods
 
-    /// The address of the `RuntimeMethodInfoStub` naming this method, which is the
-    /// `IRuntimeMethodInfo` CoreCLR's `MethodDesc::AllocateStubMethodInfo` hands back. Freshly
-    /// allocated if this registry has not already allocated one for the same method.
-    let getOrAllocateStub
+    /// A *fresh* `RuntimeMethodInfoStub` naming this method, which is what
+    /// `MethodDesc::AllocateStubMethodInfo` (method.cpp:3809) hands back: CoreCLR allocates one
+    /// unconditionally at every call site, and never caches. The registry id inside it is reused,
+    /// which is what keeps `RuntimeMethodHandle` equality and reflection's member cache seeing one
+    /// identity across the several stubs that may name one method.
+    ///
+    /// Use this wherever CoreCLR calls `AllocateStubMethodInfo` directly; the difference from
+    /// `getOrAllocateStub` is guest-visible, because a stub handed back through an
+    /// `ObjectHandleOnStack` reaches managed code as an object whose reference identity can be
+    /// compared.
+    let allocateFreshStub
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (allConcreteTypes : AllConcreteTypes)
         (allocState : 'allocState)
@@ -643,10 +650,6 @@ module MethodHandleRegistry =
         : ManagedHeapAddress * MethodHandleRegistry * 'allocState
         =
         let handle = makeMethodHandle allConcreteTypes method
-
-        match Map.tryFind handle reg.MethodToHandle with
-        | Some v -> v, reg, allocState
-        | None ->
 
         // Reuse an existing registry id for this method if one was minted earlier (e.g., via
         // `getOrAllocateInternalHandle` while iterating introduced methods); otherwise mint a new one.
@@ -676,6 +679,32 @@ module MethodHandleRegistry =
             buildRuntimeMethodInfoStub baseClassTypes allConcreteTypes runtimeMethodHandleInternal
 
         let alloc, allocState = allocate runtimeMethodInfoStub allocState
+
+        alloc, reg, allocState
+
+    /// The address of the `RuntimeMethodInfoStub` naming this method, reusing the one this
+    /// registry allocated for the same method before if there is one. Unlike `allocateFreshStub`
+    /// this is *not* what CoreCLR does at any single call site; it is the F#-side dedup that lets
+    /// the several PawPrint paths which hand a `RuntimeMethodHandle` to the guest agree on one
+    /// object. Prefer `allocateFreshStub` when transcribing a specific
+    /// `AllocateStubMethodInfo` call.
+    let getOrAllocateStub
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (allConcreteTypes : AllConcreteTypes)
+        (allocState : 'allocState)
+        (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
+        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (reg : MethodHandleRegistry)
+        : ManagedHeapAddress * MethodHandleRegistry * 'allocState
+        =
+        let handle = makeMethodHandle allConcreteTypes method
+
+        match Map.tryFind handle reg.MethodToHandle with
+        | Some v -> v, reg, allocState
+        | None ->
+
+        let alloc, reg, allocState =
+            allocateFreshStub baseClassTypes allConcreteTypes allocState allocate method reg
 
         let reg =
             { reg with

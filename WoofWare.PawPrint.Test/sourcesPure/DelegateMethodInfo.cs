@@ -236,6 +236,20 @@ public class DelegateMethodInfo
         if (f.Method.GetParameters ().Length != 1) return 113;
         if (f.Method.GetParameters ()[0].ParameterType != typeof (int)) return 114;
 
+        // The QCall itself, called twice. CoreCLR's `AllocateStubMethodInfo` allocates
+        // unconditionally, so the two `IRuntimeMethodInfo`s are distinct objects even though they
+        // name one method — a stub that were cached and shared would fail this while passing
+        // every check above, because the `MethodInfo` identity checked there is decided by
+        // `RuntimeType.GetMethodBase`'s cache rather than by the stub.
+        MethodInfo findMethodHandle = typeof (Delegate).GetMethod (
+            "FindMethodHandle",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        if (findMethodHandle == null) return 120;
+        object firstStub = findMethodHandle.Invoke (f, null);
+        object secondStub = findMethodHandle.Invoke (f, null);
+        if (firstStub == null || secondStub == null) return 121;
+        if (ReferenceEquals (firstStub, secondStub)) return 122;
+
         return 0;
     }
 }

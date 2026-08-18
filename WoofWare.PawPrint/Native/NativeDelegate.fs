@@ -842,7 +842,7 @@ module NativeDelegate =
                     // `Delegate.GetMethodImpl` returns that without consulting the runtime.
                     // `sourcesImpure/DelegateMethodOnDynamicMethod.cs` is what keeps it that way.
                     // Serving it would need a stub over a method with no MethodDef row, which
-                    // `MethodHandleRegistry.getOrAllocateStub` cannot mint.
+                    // `MethodHandleRegistry.allocateFreshStub` cannot mint.
                     failwith
                         $"TODO: %s{operation} was handed a delegate bound to %O{handle}, a method minted by Reflection.Emit; DynamicMethod.CreateDelegate caches that MethodInfo in _methodBase, so Delegate.Method answers from there and never reaches this QCall"
                 | FunctionPointerTarget.RuntimeAllocator ->
@@ -900,17 +900,20 @@ module NativeDelegate =
             // `FunctionPointerTarget.Managed` carries a fully concretised method, and PawPrint has
             // no shared method representation for it to have been one of.
             //
-            // The stub itself is deduplicated rather than freshly allocated per call as CoreCLR's
-            // `AllocateStubMethodInfo` does. That is unobservable: the stub is consumed by
-            // `RuntimeType.GetMethodBase` and never reaches the guest, and sharing it with the
-            // `ldtoken` path is what makes `someDelegate.Method` and `GetMethod(...)` agree.
+            // A *fresh* stub, matching CoreCLR's unconditional `AllocateStubMethodInfo`, and not
+            // the `ldtoken` path's deduplicated one. The difference is guest-visible: measured,
+            // real .NET hands back two distinct objects for two reflective calls to
+            // `Delegate.FindMethodHandle` on one delegate, where sharing gave one. Only the
+            // *object* differs — the registry id inside it is reused, so
+            // `RuntimeType.GetMethodBase`'s cache still returns one `MethodInfo`, which is what
+            // makes `someDelegate.Method` and `GetMethod(...)` agree.
             let runtimeMethodInfoStubType =
                 AllConcreteTypes.getRequiredNonGenericHandle
                     state.ConcreteTypes
                     ctx.BaseClassTypes.RuntimeMethodInfoStub
 
             let stubAddress, registry, state =
-                MethodHandleRegistry.getOrAllocateStub
+                MethodHandleRegistry.allocateFreshStub
                     ctx.BaseClassTypes
                     state.ConcreteTypes
                     state

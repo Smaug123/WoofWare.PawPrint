@@ -236,6 +236,26 @@ public static class HasMethod
 
         assertRuntimeMethodInfoStub baseClassTypes state stubAddr
 
+        // `allocateFreshStub` is the other half of the contract: it must *not* reuse, because
+        // CoreCLR's `AllocateStubMethodInfo` allocates at every call site and a guest can compare
+        // two of the resulting objects by reference.
+        let freshAddr, registry, state =
+            MethodHandleRegistry.allocateFreshStub
+                baseClassTypes
+                state.ConcreteTypes
+                state
+                (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
+                concretizedMethod
+                state.MethodHandles
+
+        freshAddr |> shouldNotEqual stubAddr
+        assertRuntimeMethodInfoStub baseClassTypes state freshAddr
+
+        let state =
+            { state with
+                MethodHandles = registry
+            }
+
         // Asking again does not mint a second stub, in either direction.
         let stubAddrAgain, registry, state =
             MethodHandleRegistry.getOrAllocateStub
