@@ -640,6 +640,17 @@ type Int32Source =
     /// way to being stored back as one; `SignatureHelper.InternalAddRuntimeType` copies a type
     /// handle into a `Reflection.Emit` signature blob exactly that way. See
     /// <see cref="UInt8Source" />, which is where such a byte lives at rest.
+    ///
+    /// Which conversions carry this is decided by the conversion layer's shape rather than by
+    /// this case. `conv.i4`/`conv.u4` return an `EvalStackValue`, so they can pass it through, and
+    /// do — the value is already a zero-extended byte in a 32-bit slot, so those are the identity
+    /// on it. `conv.i1`/`conv.u1`/`conv.i2`/`conv.u2` return a bare `int32`, so they cannot carry
+    /// any provenance at all and refuse it by name; `Int32Source.NarrowedManagedPointer` is
+    /// refused there for exactly the same reason. Widening those four signatures would make
+    /// `conv.u1`/`conv.u2`/`conv.i2` identities too — `conv.i1` never, since sign extension
+    /// changes the value of a byte at or above 128 and PawPrint does not know which byte this is —
+    /// but no guest reaches them on this route: `m_signature[m_currSig++] = phandle[i]` stores a
+    /// byte into a `byte[]` element with no conversion in between.
     | NativeIntByte of source : NativeIntSource * index : int
 
     override this.ToString () : string =

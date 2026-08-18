@@ -170,6 +170,46 @@ module TestNamedByteView =
         |> shouldFail<exn>
 
     [<Test>]
+    let ``conversions carry a named byte exactly as far as their return type allows`` () : unit =
+        let pushed = EvalStackValue.Int32 (Int32Source.NativeIntByte (handleSource, 5))
+
+        // `conv.i4`/`conv.u4` return an `EvalStackValue`, and the value is already a zero-extended
+        // byte in a 32-bit slot, so both are the identity on it.
+        EvalStackValue.convToUInt32 pushed PointerHashState.empty
+        |> fst
+        |> shouldEqual pushed
+
+        EvalStackValue.convToInt32 pushed PointerHashState.empty
+        |> fst
+        |> shouldEqual pushed
+
+        // The narrow conversions return a bare `int32`, so they can carry no provenance at all and
+        // refuse. That is the shape of the conversion layer rather than anything about this case:
+        // `Int32Source.NarrowedManagedPointer` is refused by the same call for the same reason,
+        // which is what the second half of each iteration below pins. Widening those signatures
+        // would make `conv.u1`/`conv.u2`/`conv.i2` identities on a named byte -- but never
+        // `conv.i1`, whose sign extension changes the value of a byte at or above 128, and PawPrint
+        // does not know which byte this is.
+        let narrowedByref =
+            EvalStackValue.Int32 (
+                Int32Source.NarrowedManagedPointer (
+                    ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 1), [])
+                )
+            )
+
+        for convert in
+            [
+                EvalStackValue.convToUInt8
+                EvalStackValue.convToUInt16
+                EvalStackValue.convToInt8
+                EvalStackValue.convToInt16
+            ] do
+            (fun () -> convert pushed PointerHashState.empty |> ignore) |> shouldFail<exn>
+
+            (fun () -> convert narrowedByref PointerHashState.empty |> ignore)
+            |> shouldFail<exn>
+
+    [<Test>]
     let ``a named byte stored in a byte array reads back through the array byte view`` () : unit =
         // `m_signature[m_currSig++] = phandle[i]` puts the byte here, and PawPrint's QCall
         // boundary reads the blob back out through exactly this route.
