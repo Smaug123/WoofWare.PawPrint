@@ -1050,6 +1050,25 @@ module TypeConcretization =
                     ImmutableArray.Empty // Void has no generic parameters
 
         | TypeDefn.FunctionPointer signature ->
+            // A GENERIC calling convention on a *function pointer* is refused here, the one place a
+            // function-pointer handle is minted, so that no such handle can exist further in. Comparing
+            // two of them is a question CoreCLR answers by reading `argCnt` where the blob holds the
+            // generic-parameter count and then comparing `GenParamCount + 1` elements of the resulting
+            // misaligned stream (siginfo.cpp:4135-4168), which cannot be reproduced from a decoded
+            // signature — see the FNPTR arm of `compareElements`, which refuses the spelled form.
+            //
+            // No compiler emits this and no reflection API can name it, so this is an assertion of that
+            // belief rather than a case to handle: if something does produce one, it should say so here,
+            // at the point of construction and with the assembly in hand, rather than be discovered
+            // later by whatever consumes the handle.
+            //
+            // Note this is a function-pointer *type*, not a generic method: `concretizeMethodSignature`
+            // serves ordinary generic methods, whose GENERIC calling convention is entirely normal.
+            if signature.Header.Get.IsGeneric then
+                failwithf
+                    "TODO: concretising a function pointer type whose signature carries the GENERIC calling convention, in %s. No compiler emits such a type and no reflection API can name one, so this indicates either hand-authored metadata or a decoder fault; signature comparison could not answer for it in any case."
+                    assembly.FullName
+
             // Function pointer types are structural: the signature is the type identity.
             // Concretize each parameter and the return type under the current generic context.
             let concretized, ctx =

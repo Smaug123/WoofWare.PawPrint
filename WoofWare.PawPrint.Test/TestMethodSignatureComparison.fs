@@ -775,6 +775,66 @@ public class OpenGeneric<T>
             (takes (genericFunctionPointer SignatureAttributes.Instance 1))
         |> shouldEqual false
 
+    /// Concretising the given type, which is where a function-pointer handle would be minted.
+    let private concretise (fixture : Fixture) (ty : TypeDefn) : unit -> ConcreteTypeHandle =
+        fun () ->
+            IlMachineState.concretizeType
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                fixture.State
+                fixture.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                ty
+            |> snd
+
+    /// A generic function pointer has no runtime handle at all: it is refused where such a handle is
+    /// minted, so that no substituted type argument can carry one and the comparison never has to ask.
+    ///
+    /// This is an assertion about what metadata exists, not a case being handled — no compiler emits
+    /// such a type and no reflection API can name one. If that ever stops being true, the failure should
+    /// arrive here, at the construction site.
+    [<Test>]
+    let ``a generic function pointer type cannot be concretised`` () =
+        let fixture = fixture ()
+
+        let thrown =
+            Assert.Throws<exn> (fun () ->
+                concretise fixture (genericFunctionPointer SignatureAttributes.None 1) ()
+                |> ignore<ConcreteTypeHandle>
+            )
+
+        thrown.Message |> shouldContainText "GENERIC calling convention"
+
+        // Nested inside another type, since a type argument is the route by which one would otherwise
+        // reach the comparison as a substituted handle.
+        let nested =
+            TypeDefn.OneDimensionalArrayLowerBoundZero (genericFunctionPointer SignatureAttributes.None 1)
+
+        let thrownNested =
+            Assert.Throws<exn> (fun () -> concretise fixture nested () |> ignore<ConcreteTypeHandle>)
+
+        thrownNested.Message |> shouldContainText "GENERIC calling convention"
+
+    /// The control: an ordinary function pointer must still concretise, and a *generic method* signature
+    /// carries the same GENERIC calling convention entirely legitimately — the refusal above must not be
+    /// reading that.
+    [<Test>]
+    let ``an ordinary function pointer type still concretises`` () =
+        let fixture = fixture ()
+
+        let plain =
+            TypeDefn.FunctionPointer (staticSignature [ TypeDefn.PrimitiveType PrimitiveType.Int32 ])
+
+        concretise fixture plain () |> ignore<ConcreteTypeHandle>
+
+        // A generic method is compared, and concretised, without complaint.
+        let genericMethod =
+            (findMethod "OpenGeneric`1" "TakesMethodParameter" fixture.Assembly).Signature
+
+        genericMethod.GenericParameterCount |> shouldEqual 1
+        equivalent fixture genericMethod genericMethod |> shouldEqual true
+
     /// The control for the refusal: an ordinary non-generic function pointer carries a zero
     /// generic-parameter count and no GENERIC bit, so the guard must not fire for it at all.
     [<Test>]
