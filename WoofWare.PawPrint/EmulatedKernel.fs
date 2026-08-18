@@ -358,6 +358,43 @@ module ObservedUserAddressLimit =
     [<Literal>]
     let Arm64FortyEightBit : uint64 = 0x0001_0000_0000_0000UL
 
+/// The two constants of Linux's `epoll_wait` that follow from
+/// `sizeof(struct epoll_event)`.
+///
+/// That size is an *architecture* fact, not a flavour one, so these are not
+/// derived from `SimulatedUnixPlatform`: `linux/eventpoll.h` defines
+/// `EPOLL_PACKED` as `__attribute__((packed))` under `#ifdef __x86_64__` and
+/// empty otherwise, over `{ __poll_t events; __u64 data; }`. The values here are
+/// x86-64's, which is right for `SimulatedUnixPlatform.linuxX64` — the only
+/// Linux platform PawPrint can currently be asked to simulate. A linux-arm64
+/// preset would want 16 and 134_217_727, and this is the one place to teach.
+///
+/// Kept out of `SimulatedUnixPlatform` itself because every fact derived from
+/// that type is a total function of the flavour, and epoll has no Darwin answer:
+/// `SystemNative_WaitForSocketEvents`' kqueue arm reads neither of these.
+///
+/// Note that `SocketEventBufferElementSize` — the stride of the buffer CoreLib
+/// allocates — is *not* affected, and so is absent here: it is
+/// `max(sizeof(struct epoll_event), sizeof(SocketEvent))`, and that `max` is 16
+/// under either packing.
+[<RequireQualifiedAccess>]
+module LinuxEpollLimits =
+    /// `sizeof(struct epoll_event)`. The unit of the byte range `epoll_wait`
+    /// screens with `access_ok(events, maxevents * sizeof(struct epoll_event))`.
+    [<Literal>]
+    let EventSize : int = 12
+
+    /// `EP_MAX_EVENTS`, which is `INT_MAX / sizeof(struct epoll_event)`
+    /// (fs/eventpoll.c). `epoll_wait` rejects a `maxevents` above this with
+    /// EINVAL, and the bound is what keeps `maxevents * EventSize` inside
+    /// `int32` for every count that gets past it — so a handler must consult it
+    /// before computing that product, not after.
+    ///
+    /// `TestLinuxEpollLimits` checks the arithmetic rather than trusting the
+    /// literal.
+    [<Literal>]
+    let MaxEvents : int = 178_956_970
+
 [<RequireQualifiedAccess>]
 module UserBufferCheck =
     /// Whether this platform refuses a buffer of `length` bytes at `address`
