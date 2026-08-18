@@ -923,6 +923,43 @@ module NativeSystemNative =
             // `SystemNative_GetSocketAddressSizes`, so serving this one says
             // nothing about those.
             pushInt32 SimulatedUnixPlatform.maximumSocketAddressSize ctx |> Some
+        | Some "SystemNative_PlatformSupportsDualModeIPv4PacketInfo",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_PlatformSupportsDualModeIPv4PacketInfo(void)`
+            // (pal_networking.c) is nothing but `return 1;` or `return 0;` under
+            // an `#if` on how the shim was built — no socket, no errno and no
+            // state, like `SystemNative_GetMaximumAddressSize` above. Unlike that
+            // one it takes the flavour;
+            // `SimulatedUnixPlatform.supportsDualModeIPv4PacketInfo` records the
+            // cmake condition it comes from and why we answer as the platform we
+            // impersonate rather than conservatively.
+            //
+            // Reported to CoreLib as an `int` that
+            // `SocketPal.GetPlatformSupportsDualModeIPv4PacketInfo` compares
+            // against zero, so any non-zero value would do; we answer 1 because
+            // that is the literal upstream returns.
+            //
+            // Together with `SystemNative_GetMaximumAddressSize` this supplies
+            // both of the native calls in `System.Net.Sockets.SocketPal`'s class
+            // initialiser; its one remaining statement derives
+            // `SelectOverPollIsBroken` from `OperatingSystem.IsMacOS` and
+            // friends, which reach no native code.
+            //
+            // The latched result has exactly two readers, both branching on
+            // `SocketPal.SupportsDualModeIPv4PacketInfo`. When it is false,
+            // `CheckDualModePacketInfoSupport` throws
+            // `PlatformNotSupportedException` out of `Socket.ReceiveMessageFrom`
+            // and `ReceiveMessageFromAsync` on a dual-mode socket (the SR key is
+            // named `..._dualmode_receivefrom_notsupported`, but plain
+            // `ReceiveFrom` never consults it), and
+            // `SetReceivingDualModeIPv4PacketInformation` becomes a no-op. When
+            // it is true, that second one sets `SocketOptionLevel.IP` /
+            // `SocketOptionName.PacketInformation`.
+            let supported =
+                SimulatedUnixPlatform.supportsDualModeIPv4PacketInfo state.Kernel.UnixPlatform
+
+            pushInt32 (if supported then 1 else 0) ctx |> Some
         | Some "SystemNative_GetErrNo",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->

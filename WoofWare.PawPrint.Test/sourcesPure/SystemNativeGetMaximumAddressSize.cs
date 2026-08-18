@@ -8,12 +8,12 @@ using System.Runtime.InteropServices;
 //     { return sizeof(struct sockaddr_storage); }
 //
 // A direct stub rather than reaching it through the BCL. The only managed caller
-// is System.Net.Sockets.SocketPal's class initialiser, and the statement right
-// after it calls Interop.Sys.PlatformSupportsDualModeIPv4PacketInfo -- a
-// different entry point, which is its own change -- so a socket-using guest
-// cannot be the vehicle for this one. The shim exports the symbol on every Unix
-// (pal_networking.c has no platform #if around it), so the stub resolves on the
-// real runtime too.
+// is System.Net.Sockets.SocketPal's class initialiser, which is internal to that
+// assembly, so no guest can name it: running it means constructing a Socket, and
+// measured, that reaches SystemNative_CreateSocketEventBuffer, which is not
+// implemented. So a socket-using guest cannot be the vehicle for this one. The
+// shim exports the symbol on every Unix (pal_networking.c has no platform #if
+// around it), so the stub resolves on the real runtime too.
 //
 // This is a *pure* case, so it is differentially compared against the real
 // runtime and may only assert facts that hold on both. The exact value is such a
