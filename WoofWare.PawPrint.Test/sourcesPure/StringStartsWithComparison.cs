@@ -11,8 +11,11 @@
 // 1-char tail), and to land a mismatch in each.
 //
 // Deliberately not covered here: non-ASCII OrdinalIgnoreCase comparison. Both scalar paths
-// bail out of the ASCII fast path into `Ordinal.CompareStringIgnoreCase`, which is a separate
-// (unimplemented) casing-table boundary; the ASCII paths above never reach it.
+// bail out of the ASCII fast path into `Ordinal.CompareStringIgnoreCase`. PawPrint does answer
+// that path — under the guest's DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 it bottoms out in
+// `InvariantModeCasing`'s managed `CharUnicodeInfo` tables, which PawPrint runs — but the real
+// runtime this is differenced against collates with ICU, so agreement would be a fact about
+// those two casing tables rather than about StartsWith/EndsWith.
 
 using System;
 using System.Runtime.CompilerServices;

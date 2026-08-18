@@ -358,6 +358,43 @@ module ObservedUserAddressLimit =
     [<Literal>]
     let Arm64FortyEightBit : uint64 = 0x0001_0000_0000_0000UL
 
+/// The two constants of Linux's `epoll_wait` that follow from
+/// `sizeof(struct epoll_event)`.
+///
+/// That size is an *architecture* fact, not a flavour one, so these are not
+/// derived from `SimulatedUnixPlatform`: `linux/eventpoll.h` defines
+/// `EPOLL_PACKED` as `__attribute__((packed))` under `#ifdef __x86_64__` and
+/// empty otherwise, over `{ __poll_t events; __u64 data; }`. The values here are
+/// x86-64's, which is right for `SimulatedUnixPlatform.linuxX64` — the only
+/// Linux platform PawPrint can currently be asked to simulate. A linux-arm64
+/// preset would want 16 and 134_217_727, and this is the one place to teach.
+///
+/// Kept out of `SimulatedUnixPlatform` itself because every fact derived from
+/// that type is a total function of the flavour, and epoll has no Darwin answer:
+/// `SystemNative_WaitForSocketEvents`' kqueue arm reads neither of these.
+///
+/// Note that `SocketEventBufferElementSize` — the stride of the buffer CoreLib
+/// allocates — is *not* affected, and so is absent here: it is
+/// `max(sizeof(struct epoll_event), sizeof(SocketEvent))`, and that `max` is 16
+/// under either packing.
+[<RequireQualifiedAccess>]
+module LinuxEpollLimits =
+    /// `sizeof(struct epoll_event)`. The unit of the byte range `epoll_wait`
+    /// screens with `access_ok(events, maxevents * sizeof(struct epoll_event))`.
+    [<Literal>]
+    let EventSize : int = 12
+
+    /// `EP_MAX_EVENTS`, which is `INT_MAX / sizeof(struct epoll_event)`
+    /// (fs/eventpoll.c). `epoll_wait` rejects a `maxevents` above this with
+    /// EINVAL, and the bound is what keeps `maxevents * EventSize` inside
+    /// `int32` for every count that gets past it — so a handler must consult it
+    /// before computing that product, not after.
+    ///
+    /// `TestLinuxEpollLimits` checks the arithmetic rather than trusting the
+    /// literal.
+    [<Literal>]
+    let MaxEvents : int = 178_956_970
+
 [<RequireQualifiedAccess>]
 module UserBufferCheck =
     /// Whether this platform refuses a buffer of `length` bytes at `address`
@@ -627,6 +664,40 @@ module SimulatedUnixPlatform =
     /// Linux): that belongs to `SystemNative_GetDomainSocketSizes`, and when it
     /// arrives these numbers want collecting into one flavour-derived record.
     let maximumSocketAddressSize : int = 128
+
+    /// Whether this platform's sockets report IPv4 packet information on a
+    /// dual-mode socket — an IPv6 socket receiving IPv4-mapped traffic. Reported
+    /// to the guest by `SystemNative_PlatformSupportsDualModeIPv4PacketInfo`.
+    ///
+    /// A compile-time property of the native shim rather than of any socket, like
+    /// `reportsBirthTime`: upstream the whole function body is
+    /// `#if HAVE_SUPPORT_FOR_DUAL_MODE_IPV4_PACKET_INFO return 1 #else return 0`,
+    /// and `configure.cmake` sets that define to 1 for every Linux target and
+    /// leaves it 0 elsewhere. There is no probe of the running kernel involved, so
+    /// this is not a fact about the machine but about which shim was built.
+    ///
+    /// (Linux includes Android here: the `NOT CLR_CMAKE_TARGET_ANDROID` test
+    /// nested inside that `if` scopes only a `CMAKE_REQUIRED_LIBRARIES` setting,
+    /// not the define.)
+    ///
+    /// Follows the flavour rather than conservatively reporting `false`
+    /// everywhere, because both of CoreLib's readers of it are guest-visible
+    /// control flow (see the handler arm for which): answering `false` while
+    /// impersonating Linux makes a guest see a `PlatformNotSupportedException`
+    /// real Linux does not raise, and does so silently, with no abort and no
+    /// diagnostic.
+    ///
+    /// Answering `true` carries an obligation for whoever implements the socket
+    /// emulation this leads on to: a Linux-flavour `recvmsg` on a dual-mode
+    /// socket must actually produce the IPv4 `pktinfo` control message, because
+    /// CoreLib latches this once per process and will thereafter ask for the
+    /// packet information and expect to be given it. Reporting support and then
+    /// handing back a default `IPPacketInformation` would be the data-level
+    /// version of the lie this function exists to avoid.
+    let supportsDualModeIPv4PacketInfo (platform : SimulatedUnixPlatform) : bool =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> true
+        | SimulatedUnixFlavour.Darwin -> false
 
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
 /// syscall-emulation state: process-wide last-error registers, the native

@@ -222,9 +222,15 @@ module IntrinsicMethodKeys =
             // resolves to it. Its `[Intrinsic]` is a pure codegen hint ("Unrolled and vectorized
             // for half-constant input"), so the managed body is the semantic definition:
             // ReferenceEquals, a null check, a Length compare, then `EqualsHelper`. All of those
-            // are already-modelled string primitives. (The *static* two-argument
-            // `String.Equals(string, string)` overload is handled explicitly in Intrinsics.fs
-            // instead; this pattern is parameter-count-specific so the two do not overlap.)
+            // are already-modelled string primitives.
+            //
+            // Four `String.Equals` overloads can reach this allowlist, and they are served three
+            // different ways, which is why every pattern here is parameter-shape-specific rather
+            // than `anyParams`. This one and the two `StringComparison`-taking overloads below
+            // run their own IL. The *static* two-argument `String.Equals(string, string)` is
+            // served by a hand-written arm in `Intrinsics.fs` instead, so it is deliberately
+            // absent. The `Equals(object)` override carries no `[Intrinsic]` at all, so it never
+            // consults this list. No two of those parameter shapes overlap.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/String.Comparison.cs#L607-L625
             pattern
                 "System.Private.CoreLib"
@@ -255,10 +261,17 @@ module IntrinsicMethodKeys =
             //    PawPrint's scalar CPU profile folds to false (see `vectorAccelerationAvailable`),
             //    so the first guard sends every input to `EqualsIgnoreCase_Scalar`: an unrolled
             //    walk of `Unsafe.ReadUnaligned` / `Unsafe.AddByteOffset` over a byte cursor plus
-            //    `Utf16Utility` bit-twiddling, with no P/Invoke. Non-ASCII input leaves that fast
-            //    path for `Ordinal.CompareStringIgnoreCase`, whose casing tables PawPrint does not
-            //    implement, so such input fails loudly there rather than silently misbehaving —
-            //    as would ASCII input under a hypothetical SIMD-reporting profile.
+            //    `Utf16Utility` bit-twiddling, with no P/Invoke. (No CPU profile PawPrint offers
+            //    reports vector acceleration, so `EqualsIgnoreCase_Vector` is unreachable, and
+            //    no test can cover it.) Non-ASCII input leaves that fast path for
+            //    `Ordinal.CompareStringIgnoreCase`, which under the guest's
+            //    `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` bottoms out in `InvariantModeCasing`'s
+            //    managed `CharUnicodeInfo` tables. PawPrint runs those, so non-ASCII input is
+            //    answered rather than refused — measured on Latin-1, Greek and Cyrillic case
+            //    pairs, and on the `U+017F`/`S` and `U+0130`/`i` folds. No test asserts those
+            //    answers, because the differential oracle runs *without* that variable and so
+            //    collates with the host's ICU; agreement would then be a fact about two casing
+            //    tables rather than about the method under test.
             //  * The four culture-sensitive arms delegate to `CompareInfo.IsPrefix`/`IsSuffix`,
             //    an already-working boundary.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/String.Comparison.cs#L1086-L1135
@@ -276,6 +289,60 @@ module IntrinsicMethodKeys =
                 "System.String"
                 "EndsWith"
                 [
+                    IntrinsicParameterPattern.Exact "System.String"
+                    IntrinsicParameterPattern.Exact "System.StringComparison"
+                ]
+            // `String.Equals(string, StringComparison)` and the static
+            // `String.Equals(string, string, StringComparison)`. The same shape as the two
+            // entries above and for the same reason: the `[Intrinsic]` is the codegen hint
+            // "Unrolled and vectorized for half-constant input (Ordinal)", so the managed body is
+            // the semantic definition — and here too the body is mostly argument validation whose
+            // *ordering* a native reimplementation would have to duplicate. `CheckStringComparison`
+            // runs on both short-circuit paths before either returns, so a reference-equal pair
+            // and a null argument each throw `ArgumentException` when `comparisonType` is out of
+            // range rather than returning their answer. (Unlike `StartsWith`, neither overload has
+            // an `ArgumentNullException.ThrowIfNull`: null is a legal argument to both, and for
+            // the static overload two nulls compare equal. So `Equals(null, null, invalid)` throws
+            // by the reference-equality route, not by a null check.)
+            //
+            // The switch arms bottom out one step earlier than `StartsWith`'s, because equality
+            // needs no offset arithmetic:
+            //  * Ordinal compares `Length`, then `EqualsHelper` — i.e.
+            //    `SpanHelpers.SequenceEqual(ref byte, ref byte, nuint)` over
+            //    `GetRawStringDataAsUInt8()`, intercepted explicitly in `Intrinsics.fs`.
+            //  * OrdinalIgnoreCase compares `Length`, then `EqualsOrdinalIgnoreCaseNoLengthCheck`
+            //    — the same `Ordinal.EqualsIgnoreCase(ref char, ref char, int)` the
+            //    `StartsWith` entry above describes, so the same scalar walk and the same
+            //    non-ASCII tail.
+            //  * The four culture-sensitive arms are the one genuinely new callee:
+            //    `CompareInfo.Compare(a, b, options) == 0`, where `StartsWith` used
+            //    `IsPrefix`/`IsSuffix`. Under the guest's
+            //    `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` the span overload short-circuits ahead
+            //    of any ICU call, to `ReadOnlySpan<char>.SequenceCompareTo` for the case-sensitive
+            //    options and to `Ordinal.CompareStringIgnoreCase` for the IgnoreCase ones. Both
+            //    are ordinary IL over the same `Unsafe.ReadUnaligned` byte-cursor shape the
+            //    OrdinalIgnoreCase arm already relies on; `MemoryExtensions.SequenceCompareTo` is
+            //    not itself `[Intrinsic]`, so it needs no entry of its own.
+            //
+            // Because the API exposes only `Compare(...) == 0`, a comparer that were wrong in
+            // *sign* alone would be invisible from here; `sourcesPure/StringEqualsComparison.cs`
+            // pins what is observable, which is the equality verdict.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/String.Comparison.cs#L626-L664
+            pattern
+                "System.Private.CoreLib"
+                "System.String"
+                "Equals"
+                [
+                    IntrinsicParameterPattern.Exact "System.String"
+                    IntrinsicParameterPattern.Exact "System.StringComparison"
+                ]
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/String.Comparison.cs#L684-L725
+            pattern
+                "System.Private.CoreLib"
+                "System.String"
+                "Equals"
+                [
+                    IntrinsicParameterPattern.Exact "System.String"
                     IntrinsicParameterPattern.Exact "System.String"
                     IntrinsicParameterPattern.Exact "System.StringComparison"
                 ]
