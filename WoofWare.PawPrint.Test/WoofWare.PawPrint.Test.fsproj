@@ -96,6 +96,8 @@
     <Compile Include="TestCrossAssemblyEnumAttribute.fs" />
     <Compile Include="TestCrossAssemblyStructZero.fs" />
     <Compile Include="TestCrossAssemblyInitSetter.fs" />
+    <Compile Include="TestCrossAssemblyFnPtrOverload.fs" />
+    <Compile Include="TestCrossAssemblyOverloadTokenSpace.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestUnsafeAccessorRead.fs" />
     <Compile Include="TestNativeKernel32.fs" />
@@ -119,6 +121,7 @@
     <Compile Include="TestMethodHandleRegistry.fs" />
     <Compile Include="TestNativeGetDynamicMethod.fs" />
     <Compile Include="TestMethodReturnType.fs" />
+    <Compile Include="TestMethodSignatureComparison.fs" />
     <Compile Include="TestFunctionPointerConcretization.fs" />
     <Compile Include="Netstandard21FSharpCore.fs" />
     <Compile Include="TestZeroOfBaseAssemblies.fs" />

@@ -14,7 +14,6 @@ module IlMachineMemberResolution =
         (assy : DumpedAssembly)
         (typeGenerics : ImmutableArray<TypeDefn>)
         (methodGenerics : ImmutableArray<TypeDefn>)
-        (genericMethodTypeArgs : ImmutableArray<ConcreteTypeHandle>)
         (m : MemberReferenceHandle)
         (state : IlMachineState)
         : IlMachineState *
@@ -130,50 +129,41 @@ module IlMachineMemberResolution =
             let availableMethods =
                 targetType.Methods |> List.filter (fun mi -> mi.Name = memberName)
 
-            // Both sides of the comparison below are brought into concrete form, which is what makes
-            // a MemberRef written in one assembly comparable to a MethodDef declared in another --
-            // the same type is a TypeRef in the referrer and a TypeDef in the declarer. It also
-            // normalises away custom modifiers in every position, so a reference whose signature
-            // carries a `modreq` the target does not (a stale reference against a rebuilt library,
-            // say) binds here where CoreCLR's `MetaSig::CompareMethodSigs` would compare the modifier
-            // tokens (siginfo.cpp:4078-4100) and report a missing member. No compiler emits such a
-            // pair: a MemberRef's blob is written from the target's own signature.
-            let state, memberSig =
-                memberSig
-                |> IlMachineTypeResolution.concretizeMethodSignature
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    sourceAssembly.Name
-                    concreteExtractedTypeArgs
-                    genericMethodTypeArgs
+            // CoreCLR answers this off the signature blobs, with `MemberLoader::FindMethod` ->
+            // `MetaSig::CompareMethodSigs`, so `signaturesEquivalent` is what makes a reference
+            // written in one assembly comparable to a definition declared in another: the same type
+            // is a TypeRef in the referrer and a TypeDef in the declarer, and the target type's
+            // instantiation supplies `!0` on both sides. Equality of two *concretised* signatures
+            // would answer a different question, one blind to custom modifiers -- which is how a
+            // reference to `Take(delegate* unmanaged[Cdecl, SuppressGCTransition]<void>)` came to
+            // match its `Stdcall` sibling as well, both overloads being legal C#.
+            let referenceComparand : TypeConcretization.SignatureComparand =
+                {
+                    Signature = memberSig
+                    Assembly = sourceAssembly.Name
+                    DeclaringTypeGenerics = concreteExtractedTypeArgs
+                }
 
             let state, availableMethods =
                 ((state, []), availableMethods)
                 ||> List.fold (fun (state, acc) meth ->
-                    // A candidate overload whose generic arity doesn't match the call site
-                    // cannot be the target. Reject it up front: concretising its signature
-                    // would otherwise index past the end of `genericMethodTypeArgs` (which
-                    // was sized for `memberSig`) whenever the candidate signature mentions
-                    // a `GenericMethodParameter`. See e.g. Interlocked.CompareExchange,
-                    // where the generic `<T>` overload sits alongside type-specific ones.
-                    if meth.Signature.GenericParameterCount <> memberSig.GenericParameterCount then
-                        state, acc
-                    else
-                        let state, methSig =
-                            meth.Signature
-                            |> IlMachineTypeResolution.concretizeMethodSignature
-                                loggerFactory
-                                baseClassTypes
-                                state
-                                assy.Name
-                                concreteExtractedTypeArgs
-                                genericMethodTypeArgs
+                    let candidateComparand : TypeConcretization.SignatureComparand =
+                        {
+                            Signature = meth.Signature
+                            Assembly = assy.Name
+                            DeclaringTypeGenerics = concreteExtractedTypeArgs
+                        }
 
-                        if methSig = memberSig then
-                            state, meth :: acc
-                        else
-                            state, acc
+                    let state, matches =
+                        IlMachineTypeResolution.signaturesEquivalent
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            false
+                            referenceComparand
+                            candidateComparand
+
+                    if matches then state, meth :: acc else state, acc
                 )
 
             let method =
@@ -195,7 +185,6 @@ module IlMachineMemberResolution =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (currentThread : ThreadId)
         (assy : DumpedAssembly)
-        (genericMethodTypeArgs : ImmutableArray<ConcreteTypeHandle>)
         (m : MemberReferenceHandle)
         (state : IlMachineState)
         : IlMachineState *
@@ -219,13 +208,4 @@ module IlMachineMemberResolution =
         let methodGenerics =
             executing.Generics |> Seq.map toTypeDefn |> ImmutableArray.CreateRange
 
-        resolveMemberWithGenerics
-            loggerFactory
-            baseClassTypes
-            currentThread
-            assy
-            typeGenerics
-            methodGenerics
-            genericMethodTypeArgs
-            m
-            state
+        resolveMemberWithGenerics loggerFactory baseClassTypes currentThread assy typeGenerics methodGenerics m state

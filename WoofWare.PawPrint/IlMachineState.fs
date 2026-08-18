@@ -17,6 +17,11 @@ module IlMachineState =
     let concretizeType = IlMachineTypeResolution.concretizeType
 
     let concretizeMethodSignature = IlMachineTypeResolution.concretizeMethodSignature
+    let concretizeReturnColumn = IlMachineTypeResolution.concretizeReturnColumn
+
+    let signaturesEquivalent = IlMachineTypeResolution.signaturesEquivalent
+
+    let methodConstraintsMatch = IlMachineTypeResolution.methodConstraintsMatch
 
     let internal resolveTopLevelTypeFromName =
         IlMachineTypeResolution.resolveTopLevelTypeFromName
