@@ -3173,9 +3173,15 @@ module NativeSystemNative =
             // kernels do not.
             let operation = "SystemNative_WaitForSocketEvents"
 
-            let fd = fdArgument operation instruction.Arguments.[0]
+            // `port` is deliberately *not* decoded yet, and neither is `count`
+            // classified: the wrapper's screen is `buffer == NULL || count == NULL
+            // || *count < 0`, which short-circuits, and only then reaches
+            // `ToFileDescriptor(port)`. So a guest may legally pass a `port` that is
+            // no number at all — a function pointer, a type handle — alongside a null
+            // buffer, and the answer is EFAULT rather than anything about a
+            // descriptor. `fdArgument` refuses such a value, which is right, so it
+            // must not run until the call is known to consult the argument.
             let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
-            let countPointer = bufferPointerArgument operation "count" instruction.Arguments.[2]
 
             let flavour = SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform
 
@@ -3193,6 +3199,8 @@ module NativeSystemNative =
             match buffer with
             | BufferPointer.RawAddress 0UL -> refuseBeforeSyscall ()
             | _ ->
+
+            let countPointer = bufferPointerArgument operation "count" instruction.Arguments.[2]
 
             match countPointer with
             | BufferPointer.RawAddress 0UL -> refuseBeforeSyscall ()
@@ -3221,6 +3229,9 @@ module NativeSystemNative =
                 // never sees this value.
                 refuseBeforeSyscall ()
             else
+
+            // Past the wrapper, so the call really does consult `port` now.
+            let fd = fdArgument operation instruction.Arguments.[0]
 
             let openFile = FileDescriptorRegistry.tryFindWithId fd state.Kernel.FileDescriptors
 

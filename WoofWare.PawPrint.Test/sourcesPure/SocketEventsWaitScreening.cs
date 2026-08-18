@@ -43,6 +43,11 @@ class Program
     // contain that race.
     const int ClosedFd = 500;
 
+    // Somewhere to point a function pointer at. Never called.
+    static void Nothing()
+    {
+    }
+
     static unsafe int Main()
     {
         int check;
@@ -100,7 +105,19 @@ class Program
         check = 11;
         if (count != -1) return check;
 
+        // ---- The screens are ahead of `ToFileDescriptor(port)` as well, and that
+        // is observable with a `port` whose value is not a number: a function
+        // pointer. The C never inspects the argument on this path, so the answer is
+        // EFAULT and says nothing about any descriptor -- where an implementation
+        // that decoded `port` up front would have to make something up for a value
+        // that is not an fd.
         check = 12;
+        count = 1;
+        if (WaitForSocketEvents((IntPtr)(void*)(delegate*<void>)&Nothing, null, &count) != PAL_EFAULT) return check;
+        check = 13;
+        if (count != 1) return check;
+
+        check = 14;
         if (CloseSocketEventPort(port) != PAL_SUCCESS) return check;
 
         return 0;
