@@ -338,18 +338,55 @@ module IlMachineStateExecution =
             (state : IlMachineState)
             : IlMachineState * bool
             =
-            if
-                candidateSignature.GenericParameterCount
-                <> methodToCall.Signature.GenericParameterCount
-                || candidateSignature.RequiredParameterCount
-                   <> methodToCall.Signature.RequiredParameterCount
-            then
+            // The target's own signature as its blob spells it. `methodToCall.Signature` has been
+            // concretised, which has already discarded the custom modifiers and the choice of
+            // encoding that this comparison turns on.
+            let targetSignature =
+                match methodToCall.TryMetadata with
+                | Some metadata -> declaringAssy.Methods.[metadata.Handle].Signature
+                | None ->
+                    // Every dispatch target reached from a metadata token has a MethodDef row. A
+                    // synthesised method has no blob to compare against, so refuse rather than fall
+                    // back to a comparison that would answer a different question.
+                    failwith
+                        $"TODO: virtual dispatch to synthesised method %s{methodToCall.Name} on %O{methodToCall.RequiredDeclaringType.Name}, which has no MethodDef row and so no signature blob to match candidates against"
+
+            let candidateComparand : TypeConcretization.SignatureComparand =
+                {
+                    Signature = candidateSignature
+                    Assembly = candidateAssembly
+                    DeclaringTypeGenerics = candidateTypeGenerics
+                }
+
+            let targetComparand : TypeConcretization.SignatureComparand =
+                {
+                    Signature = targetSignature
+                    Assembly = methodToCall.DeclaringAssembly
+                    DeclaringTypeGenerics = methodToCall.DeclaringTypeGenerics
+                }
+
+            // The return column is compared separately, because PawPrint's *dispatch* rule is
+            // deliberately looser than CoreCLR's *layout* rule: it accepts an assignable return so
+            // that a covariant-return override can be found, where
+            // `NativeRuntimeTypeHelpers.candidateFillsSlot` requires the exact signature CoreCLR
+            // requires. `skipReturnType` is how `MethodSignature::SignaturesEquivalent` expresses
+            // the same latitude.
+            let state, signatureMatches =
+                IlMachineTypeResolution.signaturesEquivalent
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    true
+                    candidateComparand
+                    targetComparand
+
+            if not signatureMatches then
                 state, false
             else
 
-            let state, candidateSignature =
-                candidateSignature
-                |> IlMachineState.concretizeMethodSignature
+            let state, candidateReturn =
+                candidateSignature.ReturnType
+                |> IlMachineState.concretizeReturnColumn
                     loggerFactory
                     baseClassTypes
                     state
@@ -357,28 +394,12 @@ module IlMachineStateExecution =
                     candidateTypeGenerics
                     methodToCall.Generics
 
-            // Custom modifiers play no part in this comparison, in any position: concretisation
-            // looks through `TypeDefn.Modified`, so `int32 modreq(X)` and `int32` are one handle
-            // here, and a `void` return under a modifier is `Void`. CoreCLR's
-            // `MetaSig::CompareMethodSigs` does compare them (siginfo.cpp:4078-4100), so a
-            // hand-authored derived `virtual void M()` over a base `virtual void modreq(X) M()`
-            // occupies its own slot there and is matched as an override here. That is a divergence
-            // this comparison shares with every other modifier position rather than one about
-            // returns, and it is bounded by what the check is *for*: finding the implementation to
-            // run, which is why the return types need only be assignable rather than equal — already
-            // looser than any blob comparison. `NativeRuntimeTypeHelpers.concretiseSignatureForSlotMatch`
-            // is the modifier-aware comparison, and it answers reflection's questions about slots.
-            let state, retAssignable =
-                match candidateSignature.ReturnType, methodToCall.Signature.ReturnType with
-                | MethodReturnType.Void, MethodReturnType.Void -> state, true
-                | MethodReturnType.Returns retType, MethodReturnType.Returns targetType ->
-                    isAssignableFrom loggerFactory baseClassTypes retType targetType state
-                | MethodReturnType.Void, MethodReturnType.Returns _
-                | MethodReturnType.Returns _, MethodReturnType.Void -> state, false
-
-            state,
-            retAssignable
-            && candidateSignature.ParameterTypes = methodToCall.Signature.ParameterTypes
+            match candidateReturn, methodToCall.Signature.ReturnType with
+            | MethodReturnType.Void, MethodReturnType.Void -> state, true
+            | MethodReturnType.Returns retType, MethodReturnType.Returns targetType ->
+                isAssignableFrom loggerFactory baseClassTypes retType targetType state
+            | MethodReturnType.Void, MethodReturnType.Returns _
+            | MethodReturnType.Returns _, MethodReturnType.Void -> state, false
 
         // When dispatching through a variant interface (ECMA-335 §I.8.7), the MethodImpl's
         // declaration may name a variance-compatible — not identical — instantiation of the
@@ -531,7 +552,6 @@ module IlMachineStateExecution =
                         relativeAssembly
                         contextTypeGenerics
                         contextMethodGenerics
-                        methodGenerics
                         h
                         state
 

@@ -125,9 +125,9 @@ public sealed class ModifiedReturnShapes
 
     /// A decoded signature mirrors its blob, so the modifier is still there. The metadata questions
     /// that read a decoded signature are blob comparisons — CoreCLR's `ExactlyEqual`, which is what
-    /// decides whether a `.ctor` becomes a type's default constructor, and vtable slot matching,
-    /// which compares a return's modifiers alongside its handle — and a modifier makes two
-    /// signatures different to them. Folding it away here would take that information from them:
+    /// decides whether a `.ctor` becomes a type's default constructor, and `signaturesEquivalent`,
+    /// which decides which vtable slot a method fills — and a modifier makes two signatures
+    /// different to them. Folding it away here would take that information from them:
     /// `TestFabricatedVtableLayout`'s modopt-void constructor is what notices.
     [<Test>]
     let ``a decoded init-only setter keeps the custom modifier on its return`` () =

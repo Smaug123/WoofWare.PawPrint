@@ -36,41 +36,22 @@ module NativeKernel32 =
                     ValueToWrite = Some value
                 }
 
-    /// Refuse an environment entry that no real environment block can express,
-    /// rather than flattening it into a block whose parse disagrees with the
-    /// table it came from.
+    /// Re-assert `EmulatedKernel.environmentEntryProblem` at the point the map is
+    /// flattened back into an environment list.
     ///
-    /// A name containing `=` splits in the wrong place: name `A=B` with value
-    /// `C` becomes the entry `A=B=C`, which CoreLib reads back as `A` ->
-    /// `B=C` while PawPrint's own `GetEnvironmentVariableW` still answers `C`
-    /// for `A=B`. An empty name produces `=value`, which CoreLib skips
-    /// outright, so the variable would be invisible to
-    /// `Environment.GetEnvironmentVariables` and visible to
-    /// `Environment.GetEnvironmentVariable`. A NUL in either half truncates the
-    /// entry at that point, splitting one variable into a variable and a
-    /// fragment.
-    ///
-    /// Only `KernelConfig.Environment` can produce such an entry:
-    /// `EmulatedKernel.defaultEnvironment` satisfies the rule, the CLI's host
-    /// snapshot comes from real .NET's own `GetEnvironmentVariables` (whose
-    /// parse already drops names that are empty or contain `=`), and PawPrint
-    /// services no `SetEnvironmentVariableW`, so no guest can add one.
+    /// `EmulatedKernel.withEnvironment` already rejects such an entry when the
+    /// table is built, so this is unreachable through `KernelConfig`. It is here
+    /// because a kernel assembled by record-copy — as tests do — never passed
+    /// through that writer, and emitting the block anyway would hand a guest
+    /// variables that differ from the ones `GetEnvironmentVariableW` reports for
+    /// the same table. Same reasoning as `systemTimeAsTicks` re-asserting its
+    /// epoch bound.
     let private requireBlockRepresentable (name : string) (value : string) : unit =
-        if name = "" then
+        match EmulatedKernel.environmentEntryProblem name value with
+        | None -> ()
+        | Some problem ->
             failwith
-                "GetEnvironmentStringsW: the emulated environment holds a variable with an empty name, which an environment block cannot express (the entry would read `=value`, which every reader skips). Fix the KernelConfig.Environment this run was given."
-
-        if name.Contains '=' then
-            failwith
-                $"GetEnvironmentStringsW: the emulated environment holds a variable whose name contains '=' (%s{name}), which an environment block cannot express unambiguously (a reader would split it at the first '=' and see a different name and value). Fix the KernelConfig.Environment this run was given."
-
-        if name.Contains (char 0) then
-            failwith
-                $"GetEnvironmentStringsW: the emulated environment holds a variable whose name contains a NUL code unit (%s{name}), which would terminate its entry early. Fix the KernelConfig.Environment this run was given."
-
-        if value.Contains (char 0) then
-            failwith
-                $"GetEnvironmentStringsW: the emulated environment holds a variable (%s{name}) whose value contains a NUL code unit, which would terminate its entry early. Fix the KernelConfig.Environment this run was given."
+                $"GetEnvironmentStringsW: the emulated environment holds %s{problem}. A kernel built through KernelConfig cannot reach this, so the table was assembled by record-copy."
 
     /// The bytes `GetEnvironmentStringsW` hands back: every variable as
     /// `name=value` followed by a NUL code unit, then one further NUL code unit
@@ -88,7 +69,7 @@ module NativeKernel32 =
     /// function of the environment alone, which is what a replay needs; no
     /// fixed order can also match the host's.
     ///
-    /// Fails rather than emitting a block that would parse back to a different
+    /// Fails rather than emitting a list that would parse back to a different
     /// table; see `requireBlockRepresentable`.
     let internal environmentBlockBytes (environment : Map<string, string>) : byte array =
         for KeyValue (name, value) in environment do
