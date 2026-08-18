@@ -327,12 +327,12 @@ module MethodHandleRegistry =
 
     /// Returns a bare `System.RuntimeMethodHandleInternal` value type identifying the given method
     /// declared on `declaringType`, allocating a fresh registry id if necessary. No managed-heap
-    /// allocation is performed; this is the representation used by
-    /// `RuntimeTypeHandle.GetFirstIntroducedMethod` / `GetNextIntroducedMethod`, which surface raw
-    /// method-table slots rather than full handles. Method-generic parameters of the input
-    /// `method` are intentionally NOT instantiated: the iterator returns the method definition
-    /// (analogous to a CoreCLR open `MethodDesc*`), so the registered handle has empty
-    /// `MethodGenerics`.
+    /// allocation is performed; this is the representation `RuntimeTypeHandle.GetFirstIntroducedMethod`
+    /// / `GetNextIntroducedMethod` surface, being raw method-table slots rather than full handles,
+    /// and the one `RuntimeMethodHandle_GetStubIfNeededSlow` rebinds onto when the declaring type is
+    /// a generic type *definition*. Method-generic parameters of the input `method` are intentionally
+    /// NOT instantiated, so the registered handle has empty `MethodGenerics`: that is the method
+    /// definition, analogous to a CoreCLR open `MethodDesc*`, which is what both callers want.
     let getOrAllocateInternalHandle
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (allConcreteTypes : AllConcreteTypes)
