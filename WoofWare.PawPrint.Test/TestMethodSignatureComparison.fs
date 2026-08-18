@@ -678,6 +678,121 @@ public class OpenGeneric<T>
             (takes (functionPointer [ int32 ; string ] []))
         |> shouldEqual false
 
+    /// Two function pointers spelling the same GENERIC calling convention *and the same
+    /// generic-parameter count* are a shape CoreCLR cannot compare. Its FNPTR arm (siginfo.cpp:4135)
+    /// reads one compressed integer after the calling-convention bytes and treats it as `argCnt`; for a
+    /// GENERIC signature that integer is the generic-parameter count, so it goes on to read the real
+    /// parameter count as an element type. There is no answer there to be faithful to, so PawPrint
+    /// refuses.
+    ///
+    /// Differing counts are a different matter: that same `argCnt` comparison rejects them cleanly
+    /// (siginfo.cpp:4158-4163), so they must still answer "unequal".
+    ///
+    /// C# cannot spell a generic function pointer, so these signatures are built directly.
+    let private genericFunctionPointer (attributes : SignatureAttributes) (genericParameterCount : int) : TypeDefn =
+        TypeDefn.FunctionPointer
+            { staticSignature [ TypeDefn.PrimitiveType PrimitiveType.Int32 ] with
+                Header =
+                    ComparableSignatureHeader.Make (
+                        SignatureHeader (
+                            SignatureKind.Method,
+                            SignatureCallingConvention.Default,
+                            attributes ||| SignatureAttributes.Generic
+                        )
+                    )
+                GenericParameterCount = genericParameterCount
+            }
+
+    [<Test>]
+    let ``two function pointers with the same generic calling convention and count are refused`` () =
+        let fixture = fixture ()
+        let takes (ty : TypeDefn) = staticSignature [ ty ]
+
+        let compareAt (leftCount : int) (rightCount : int) : unit -> bool =
+            fun () ->
+                equivalent
+                    fixture
+                    (takes (genericFunctionPointer SignatureAttributes.None leftCount))
+                    (takes (genericFunctionPointer SignatureAttributes.None rightCount))
+
+        // Equal counts: this is where CoreCLR walks off the end of the blob, so refuse.
+        let thrown = Assert.Throws<exn> (fun () -> compareAt 1 1 () |> ignore<bool>)
+        thrown.Message |> shouldContainText "GENERIC calling convention"
+
+        // Differing generic counts: CoreCLR reads them as `argCnt` and returns FALSE without parsing an
+        // element, so this pair has a defined answer and must not be refused.
+        compareAt 1 2 () |> shouldEqual false
+        compareAt 2 1 () |> shouldEqual false
+
+        // Differing *parameter* counts at equal generic arity are refused too, not answered. That
+        // comparison happens inside `CompareElementType`, with the count byte reinterpreted as an
+        // element type — 0x01 as ELEMENT_TYPE_VOID, other values able to fail the signature outright —
+        // so which answer comes back is a fact about the byte values, not about the decoded signature.
+        let withParameters (parameters : TypeDefn list) : TypeDefn =
+            TypeDefn.FunctionPointer
+                { staticSignature parameters with
+                    Header =
+                        ComparableSignatureHeader.Make (
+                            SignatureHeader (
+                                SignatureKind.Method,
+                                SignatureCallingConvention.Default,
+                                SignatureAttributes.Generic
+                            )
+                        )
+                    GenericParameterCount = 1
+                }
+
+        let int32 = TypeDefn.PrimitiveType PrimitiveType.Int32
+
+        let differingParameterCounts =
+            Assert.Throws<exn> (fun () ->
+                equivalent fixture (takes (withParameters [ int32 ])) (takes (withParameters [ int32 ; int32 ]))
+                |> ignore<bool>
+            )
+
+        differingParameterCounts.Message
+        |> shouldContainText "GENERIC calling convention"
+
+    /// The refusal is conditioned on the two calling-convention bytes *agreeing* and carrying GENERIC,
+    /// because every other pairing has an answer CoreCLR defines: it compares the bytes before it
+    /// reads any count. These two cases are what make each half of that condition load-bearing.
+    [<Test>]
+    let ``a generic function pointer is unequal, not refused, when the convention bytes differ`` () =
+        let fixture = fixture ()
+        let takes (ty : TypeDefn) = staticSignature [ ty ]
+
+        let nonGeneric =
+            TypeDefn.FunctionPointer (staticSignature [ TypeDefn.PrimitiveType PrimitiveType.Int32 ])
+
+        // Generic against non-generic: the GENERIC bit alone makes the bytes differ.
+        equivalent fixture (takes (genericFunctionPointer SignatureAttributes.None 1)) (takes nonGeneric)
+        |> shouldEqual false
+
+        // Both generic, but differing in HASTHIS: still a byte mismatch, so still a defined answer.
+        equivalent
+            fixture
+            (takes (genericFunctionPointer SignatureAttributes.None 1))
+            (takes (genericFunctionPointer SignatureAttributes.Instance 1))
+        |> shouldEqual false
+
+    /// The control for the refusal: an ordinary non-generic function pointer carries a zero
+    /// generic-parameter count and no GENERIC bit, so the guard must not fire for it at all.
+    [<Test>]
+    let ``a non-generic function pointer is still compared`` () =
+        let fixture = fixture ()
+        let int32 = TypeDefn.PrimitiveType PrimitiveType.Int32
+        let string = TypeDefn.PrimitiveType PrimitiveType.String
+        let takes (ty : TypeDefn) = staticSignature [ ty ]
+
+        let functionPointer (parameters : TypeDefn list) =
+            TypeDefn.FunctionPointer (staticSignature parameters)
+
+        equivalent fixture (takes (functionPointer [ int32 ])) (takes (functionPointer [ int32 ]))
+        |> shouldEqual true
+
+        equivalent fixture (takes (functionPointer [ int32 ])) (takes (functionPointer [ string ]))
+        |> shouldEqual false
+
     [<Test>]
     let ``differing parameter counts are not equivalent without a vararg sentinel`` () =
         let fixture = fixture ()
