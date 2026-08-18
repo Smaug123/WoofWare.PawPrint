@@ -123,6 +123,7 @@ The right call depends on what downstream code does with the result.
 ### Development Workflow
 
 Use the `/implement-il-instruction` skill when adding support for a new IL opcode.
+For guidance on mutation-testing a fix or new test, see `.claude/commands/mutation-testing.md`; for probing runtime behaviour before writing a claim about it, see `.claude/commands/probe-methodology.md`.
 
 The project uses deterministic builds and treats warnings as errors to maintain code quality.
 It strongly prefers to avoid special-casing to get around problems, but instead to implement general correct solutions; cases where this has failed to happen are considered to be tech debt and at some point in the future we'll be cleaning them up.
@@ -135,9 +136,19 @@ If this happens, the right strategy is to make incremental progress only: don't 
 We really want to keep changes in small, reviewable chunks; leaving tests in the `unimplemented` category is fine if they're not yet passing, because it means we won't forget about them.
 If you find you really do need to implement a dependency, please consider whether we can implement the dependency *first*, getting that PR'ed into main before continuing, because that's greatly preferable; either way, stop and ask me what to do, because I never intend you to implement more than one feature at once.
 
+### Git and PR workflow
+
+* Patrick keeps many worktrees under `.claude/worktrees/`. Before implementing an agreed plan item, run `git worktree list` and `git branch --list` and look for a matching name — a prior session may have already committed the work there without ever pushing or opening a PR. `gh pr list` alone will not find it. If you adopt such a branch, it is likely already checked out in its own entry under `.claude/worktrees/` — git refuses to rebase a branch that's checked out in a different worktree from your current one, so run the rebase there: `git -C <worktree-path> rebase --onto origin/main <merge-base> <branch>`, then work in that worktree (its build is warm). Read its commit message before adopting it wholesale — authorship is Patrick's git identity even when a previous Claude wrote it, so weigh its design choices on the merits rather than assuming "the user already decided this".
+* Before stacking a new branch on an open PR, rebase onto plain `origin/main` and re-run your probes first — the dependency you think you need may already be merged, or may turn out not to be needed at all (the failures that looked like they needed it can be on a different code path). A needless stack makes the PR unreviewable against main and inherits the parent's rebases.
+* Stacked PRs (base = another feature branch, not `main`) show "no checks reported" indefinitely — the `.NET` CI workflow only triggers on `pull_request: branches: [main]`, and only fires once the parent merges and GitHub retargets the child. This is not a stuck run. Run the full suite locally at the tip of the stack and say so in the PR body.
+* Review turnaround here is fast enough (~5-10 minutes) that a PR can be squash-merged *while* you're addressing its review findings. `git push` succeeding says nothing about whether an open PR will carry the commit — before pushing review fixes, run `gh pr view <n> --json state`; if it's `MERGED`, branch fresh from `origin/main` and cherry-pick the fix into a new follow-up PR instead of pushing to the old branch.
+
 ### Common Gotchas
 
 * I've named several types in such a way as to overlap with built-in types, e.g. MethodInfo is in both WoofWare.PawPrint and System.Reflection.Metadata namespaces. Build errors can usually be fixed by fully-qualifying the type.
+* BSD-style `sed -i '' 's/…/…/' file` fails in this harness's shell (the empty backup-suffix argument gets dropped, so sed consumes the script as the suffix). For mechanical multi-file rewrites use `rg -l <pat> | xargs perl -pi -e 's/.../.../g'` instead, and verify with `rg -c <old-token>` afterwards — a failed sed invocation can still half-apply, so its error is not proof nothing changed. Note perl interpolates in the replacement: an F# interpolated string like `$"...{x}..."` pasted into a perl replacement expands `$"` (perl's list-separator variable) and corrupts the line — use single-quoted perl and escape `\$`, or a `python3 - <<'PY'` heredoc with plain `str.replace` when the payload contains F# string interpolation.
+* Never run the test suite as `dotnet test ... | grep ... | head -N` in the background: `head` closes the pipe once it has N lines, so the reported exit code is *head's* (always 0), and the `Total tests:` / `Test Run Successful` summary — emitted last — gets cut off entirely. A run that looks green may have failed. Capture output directly to a file with no pipeline, then grep the file afterwards for `"Total tests:|Test Run (Successful|Failed)"`.
+* `dotnet test --no-build` runs whatever binary is already in `bin/`. Reverting a temporary source edit (a probe, a mutation-testing edit, an un-parked test) does not take effect until the next build — `git status` only describes the source tree. When a suite fails on precisely the test you were just poking, suspect the stale binary before suspecting the diff.
 
 ## Hosted Type System
 
