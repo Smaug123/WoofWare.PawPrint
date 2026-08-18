@@ -519,6 +519,31 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The event-buffer stride under the epoll backend, seen through the
+                // count at which PawPrint can no longer address the block. Not
+                // differential: a real libc succeeds at every count here.
+                FileName = "SocketEventBufferLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The same rows under kqueue, whose 32-byte stride halves the
+                // largest representable count. The last row of each file is the pair
+                // that disagrees.
+                FileName = "SocketEventBufferDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The `SystemNative_LSeek` rows on which Linux and Darwin
                 // disagree: the order `whence` validity and seekability are
                 // checked in, and the errno for an offset that leaves `int64`.
