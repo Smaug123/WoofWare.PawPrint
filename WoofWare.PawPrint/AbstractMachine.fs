@@ -148,6 +148,14 @@ module AbstractMachine =
                 // Another thread owns this type's .cctor lock; the native frame must persist
                 // until that thread finishes, then we re-enter.
                 ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy, effect)
+            | NativeHandlerResult.BlockedRetainingFrame (state, effect) ->
+                // The handler parked its own thread and wants re-entering from the top when it
+                // wakes, so the native frame stays on the stack and the caller's program
+                // counter is left naming the call. `Executed` is what the Scheduler is told
+                // because a step really was retired — the handler ran, and blocking is what it
+                // did — and the transition it would otherwise apply here has already been
+                // performed by the handler.
+                ExecutionResult.Stepped (state, WhatWeDid.Executed, effect)
             | NativeHandlerResult.ThrowingTypeInitializationException (state, effect) ->
                 // A sub-call's exception has already unwound past this native frame to the
                 // matching handler; returnStackFrame would pop the wrong frame.

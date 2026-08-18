@@ -167,7 +167,9 @@
     <Compile Include="TestSignalHandler.fs" />
     <Compile Include="TestSignalDispatcherThread.fs" />
     <Compile Include="TestSignalDispatch.fs" />
+    <Compile Include="TestLinuxEpollLimits.fs" />
     <Compile Include="TestSocketEventsWaitReason.fs" />
+    <Compile Include="TestSocketEventsWait.fs" />
     <Compile Include="TestEffectiveProcessorCount.fs" />
     <Compile Include="TestEnvironmentEntryInvariant.fs" />
     <Compile Include="TestSystemTimeAsTicks.fs" />

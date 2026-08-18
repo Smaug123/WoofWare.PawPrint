@@ -433,6 +433,28 @@ type NativeHandlerResult =
     /// can be re-entered when the lock is released. Reports `WhatWeDid.BlockedOnClassInit`
     /// to the Scheduler.
     | BlockedOnClassInit of IlMachineState * blockedBy : ThreadId * StepEffect
+    /// Native handler has parked its own thread — it has already performed the
+    /// `ThreadStatus` transition, via the purpose-built `Scheduler` helper for whatever it
+    /// blocked on — and wants to be re-entered from the top when that thread wakes.
+    /// Dispatcher leaves the native frame on the stack, and does not advance the caller's
+    /// program counter, so re-entry re-reads the call's own arguments. Reports
+    /// `WhatWeDid.Executed` to the Scheduler, which is truthful: a step was retired, in
+    /// which the handler ran and decided to block.
+    ///
+    /// Distinct from `BlockedOnClassInit`, which names a *reason* the dispatcher then acts
+    /// on, because that reason has producers other than native handlers (IL ops raise it
+    /// too) and so has to travel by `WhatWeDid`. This variant carries no reason at all: the
+    /// handler is the only producer of whatever it blocked on, so routing the transition
+    /// through the shared channel would buy nothing and cost an arm at every site that
+    /// translates a managed sub-call's outcome.
+    ///
+    /// Contrast the blocking handlers that report `Completed` instead (`ThreadNative_Sleep`,
+    /// `ThreadNative_Join`): those park *past* the blocking call, having advanced the PC, so
+    /// the wake resumes after it and the frame can go. Use this one only where the wake must
+    /// re-run the call — which is the case exactly when the wake's own results have to be
+    /// written through the caller's arguments, as
+    /// `SystemNative_WaitForSocketEvents`' event buffer does.
+    | BlockedRetainingFrame of IlMachineState * StepEffect
     /// A sub-call's exception (typically a `TypeInitializationException` raised by a
     /// previously-failed `.cctor`) has already been dispatched into the guest and unwound
     /// past this native frame to a matching handler. The state already reflects the
@@ -585,6 +607,12 @@ module NativeHandlerResult =
     /// entry from re-entry via markers placed on the eval stack).
     let pushedManagedCallee (state : IlMachineState) : NativeHandlerResult =
         NativeHandlerResult.PushedManagedCallee (state, StepEffect.NoEffect)
+
+    /// Native handler has parked its own thread and wants re-entering from the top when it
+    /// wakes. The caller must already have performed the `ThreadStatus` transition through
+    /// the relevant `Scheduler` helper; this only tells the dispatcher to keep the frame.
+    let blockedRetainingFrame (state : IlMachineState) : NativeHandlerResult =
+        NativeHandlerResult.BlockedRetainingFrame (state, StepEffect.NoEffect)
 
     /// Native handler is raising the given exception type. The dispatcher allocates
     /// the exception, calls its parameterless ctor, arms dispatch-on-return, and

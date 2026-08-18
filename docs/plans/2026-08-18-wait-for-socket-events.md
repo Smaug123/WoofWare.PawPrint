@@ -483,3 +483,68 @@ bug here given §1's four-deep ladder. Each adjacent pair needs an input on whic
 orders disagree. The corrected flavour ladder supplies these naturally — e.g. `(bad fd,
 *count == 0)` separates rows 1 and 2, and `(live non-port fd, unmappable buffer)` separates
 rows 3 and 4 — so the reorder mutants are killable without inventing anything.
+
+## 7. PR 2 as built
+
+PR 1 landed as #1057. This section records what PR 2 decided that §1–§6 did not
+anticipate, so the surprise is on the record rather than only in the diff.
+
+### `sizeof(struct epoll_event)` is not confined to the buffer allocator
+
+§1 says the element size "only matters to `SystemNative_CreateSocketEventBuffer`,
+which is not in scope here". That is wrong, and it is wrong twice, both times
+inside this handler:
+
+- `EP_MAX_EVENTS` is `INT_MAX / sizeof(struct epoll_event)`, so the value of the
+  Linux `maxevents` cap depends on it.
+- `access_ok(events, maxevents * sizeof(struct epoll_event))` is a *byte* range,
+  so the extent PawPrint screens against `UserAddressLimit` depends on it.
+
+`max(12, 16)` hid it: that identity is what makes the element size architecture-
+independent for the *buffer*, and neither use above goes through the `max`.
+
+The size is 12 on x86-64 (`EPOLL_PACKED` is `__attribute__((packed))` under
+`#ifdef __x86_64__`, over `{ __poll_t events; __u64 data; }`) and 16 everywhere
+else, so the cap is 178_956_970 on x86-64 and 134_217_727 on aarch64. That is an
+*architecture* fact, where `SimulatedUnixPlatform` carries only a flavour, and
+`EmulatedKernel` already treats the one other architecture-dependent value
+(`UserAddressLimit`) as host configuration rather than as derived.
+
+Three options, and the choice is the first:
+
+- **Hardcode the x86-64 value** as a named constant beside
+  `ObservedUserAddressLimit`, consumed only by the handler's Linux arm.
+  `SimulatedUnixPlatform.linuxX64` is the only Linux preset there is, so this is
+  exactly right for every platform PawPrint can currently simulate, and it is one
+  named place to change if a linux-arm64 preset ever appears. Kept out of
+  `SimulatedUnixPlatform` itself, whose docstring promises that every fact derived
+  from it is a *total* function of the flavour — an `epollEventSize` would need a
+  Darwin arm that can only fail.
+- Add a `KernelConfig` field, mirroring `UserAddressLimit`. Most honest about what
+  the value is a property of, but it widens a config type external hosts construct,
+  for a knob nothing else reads, and lets a host describe a machine that does not
+  exist.
+- Answer `EINVAL` only above aarch64's cap and refuse the band the two
+  architectures disagree about. Refuses inputs the modelled platform has a clear
+  answer for.
+
+The cap is not optional under any of them: without it, `12 * count` overflows
+`int32` before it can be screened. That ordering is measurable, and both halves of
+it are asserted — `*count = EP_MAX_EVENTS + 1` with an unmappable buffer answers
+`EINVAL` (the cap is consulted first, so the multiplication never happens), and
+`*count = EP_MAX_EVENTS` with the same buffer answers `EFAULT` (the cap is
+inclusive). Between them they kill an off-by-one in the constant *and* a reordering
+of the two screens, which one row alone could not.
+
+### `errno` is set on the syscall rows and not on the wrapper's own
+
+The entry point returns a PAL `Error`, so §1 concluded it "never touches
+`Kernel.LastSystemError`". Half true. `WaitForSocketEventsInner` reaches
+`SystemNative_ConvertErrorPlatformToPal(errno)`, which means the syscall ran and
+set `errno` on the way past; the wrapper's three `EFAULT` rows run no syscall at
+all and so leave it alone. A guest that declares the entry point
+`SetLastError = true` can see the difference, and PR 1 already drew exactly this
+distinction for `SystemNative_CloseSocketEventPort`. Both directions are asserted,
+each from a known prior `errno` (`ESPIPE`, arranged by an `lseek` on a standard
+stream) so that "unchanged" and "overwritten" are distinguishable values rather
+than coincidentally equal ones.

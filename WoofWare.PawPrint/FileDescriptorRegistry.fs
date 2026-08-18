@@ -353,12 +353,21 @@ module FileDescriptorRegistry =
     let tryFindId (fd : int) (registry : FileDescriptorRegistry) : OpenFileDescriptionId option =
         Map.tryFind fd registry.Fds
 
-    /// The description `fd` names, if `fd` is live.
-    let tryFind (fd : int) (registry : FileDescriptorRegistry) : OpenFileDescription option =
+    /// The description `fd` names *and* its identity, if `fd` is live.
+    ///
+    /// For callers that need both, which is otherwise two lookups whose results
+    /// could not be shown to agree: `SystemNative_WaitForSocketEvents` keys the
+    /// waiter it parks on the identity, while which answer it gives at all
+    /// depends on the target.
+    let tryFindWithId
+        (fd : int)
+        (registry : FileDescriptorRegistry)
+        : (OpenFileDescriptionId * OpenFileDescription) option
+        =
         Map.tryFind fd registry.Fds
         |> Option.map (fun id ->
             match Map.tryFind id registry.Descriptions with
-            | Some description -> description
+            | Some description -> id, description
             | None ->
                 // `checkInvariants` calls this a `DanglingFd`; reaching it
                 // through a lookup means the table was mutated by something
@@ -366,6 +375,10 @@ module FileDescriptorRegistry =
                 failwith
                     $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is an interpreter bug)"
         )
+
+    /// The description `fd` names, if `fd` is live.
+    let tryFind (fd : int) (registry : FileDescriptorRegistry) : OpenFileDescription option =
+        tryFindWithId fd registry |> Option.map snd
 
     /// What `fd` refers to, if `fd` is live. Discards the offset, so it is the
     /// wrong lookup for `read(2)` and `lseek(2)`; they want `tryFindTarget`.
