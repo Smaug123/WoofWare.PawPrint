@@ -851,22 +851,28 @@ module NativeDelegate =
                     failwith
                         $"TODO: %s{operation} was handed a delegate whose _methodPtr is the runtime's newobj allocation helper, which has no MethodInfo to report"
 
-            // PawPrint cannot tell an open delegate from one closed over null: both are
-            // `(_target = null, _methodPtrAux = 0)` here, where CoreCLR distinguishes them by the
-            // aux field -- see docs/divergences.md, "An open delegate stores no shuffle thunk",
-            // under "What this costs later". For a static target that costs nothing, because
-            // `Delegate.GetMethodImpl` reads `_target` only on its instance path; for an instance
-            // target it dereferences `_target` to walk the base chain whenever the declaring type
-            // is generic (Delegate.CoreCLR.cs:189), so answering here would hand the guest a
-            // NullReferenceException out of CoreLib in place of a MethodInfo.
+            // A null `_target` on an *instance* target arises two ways here, and PawPrint's
+            // representation cannot tell them apart: a legal open instance delegate, where
+            // `Invoke` supplies the receiver and CoreCLR records the target in `_methodPtrAux`
+            // (which PawPrint does not write -- docs/divergences.md, "An open delegate stores no
+            // shuffle thunk"); and an illegal delegate closed over a null receiver, which
+            // CoreCLR's `CtorClosed` refuses with `ArgumentException(Arg_DlgtNullInst)`
+            // (MulticastDelegate.CoreCLR.cs:552-556) and `executeDelegateConstructor` does not.
             //
-            // The delegate should not exist in the first place: CoreCLR's `CtorClosed` refuses a
-            // null receiver with `ArgumentException(Arg_DlgtNullInst)`
-            // (MulticastDelegate.CoreCLR.cs:552-556) and there is no `newobj` route past it,
-            // whereas `IlMachineRuntimeMetadata.executeDelegateConstructor` performs no such
-            // check. That is a separate gap, parked as
-            // `sourcesPure/DelegateOverNullInstanceReceiver.cs`; this refuses rather than
-            // compounding it.
+            // Neither is refused for its own sake -- the method this handler resolves is right in
+            // both cases. What is refused is handing it back when CoreLib will then fault on it:
+            // `Delegate.GetMethodImpl` dereferences `_target` to walk the base chain whenever the
+            // target is an instance method on a *generic* declaring type
+            // (Delegate.CoreCLR.cs:189), because a zero `_methodPtrAux` sends it down the closed
+            // branch. Measured: the guest gets a NullReferenceException where real .NET returns a
+            // MethodInfo. Off a non-generic declaring type that branch is never entered and the
+            // answer is correct, so those are served.
+            //
+            // No test reaches this: the illegal shape is parked as
+            // `sourcesPure/DelegateOverNullInstanceReceiver.cs`, and the legal open one needs
+            // either raw `ldnull; ldftn; newobj` IL, which the C# harness cannot emit, or
+            // `Delegate.CreateDelegate(Type, MethodInfo)`, which `Delegate_BindToMethodInfo`
+            // refuses first.
             let targetIsNull =
                 let delegateTypeHandle =
                     AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes ctx.BaseClassTypes.DelegateType
@@ -879,9 +885,13 @@ module NativeDelegate =
                     | CliType.ObjectRef target -> target.IsNone
                     | other -> failwith $"%s{operation}: expected _target to be an object reference, got %O{other}"
 
-            if not method.IsStatic && targetIsNull then
+            // A concretised declaring type is closed, so a non-empty instantiation is exactly
+            // what `RuntimeType.IsGenericType` answers true to.
+            let declaringTypeIsGeneric = not method.DeclaringTypeGenerics.IsEmpty
+
+            if not method.IsStatic && targetIsNull && declaringTypeIsGeneric then
                 failwith
-                    $"TODO: %s{operation} was handed a delegate over the instance method %s{method.Name} with a null _target; CoreCLR has no such delegate — an open instance delegate carries its target in _methodPtrAux, which PawPrint does not write, and a closed one cannot have a null receiver"
+                    $"TODO: %s{operation} was handed a delegate over the instance method %s{method.Name} on a generic declaring type, with a null _target; Delegate.GetMethodImpl would dereference _target to walk its base chain, because PawPrint leaves the _methodPtrAux that would send it down the open-delegate branch at zero"
 
             // CoreCLR follows `GetMethodDesc` with
             // `FindOrCreateAssociatedMethodDescForReflection`, whose whole job is to replace a
