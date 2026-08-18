@@ -630,6 +630,60 @@ module MethodHandleRegistry =
         =
         Map.tryFind handle reg.DynamicMethods
 
+    /// The address of the `RuntimeMethodInfoStub` naming this method, which is the
+    /// `IRuntimeMethodInfo` CoreCLR's `MethodDesc::AllocateStubMethodInfo` hands back. Freshly
+    /// allocated if this registry has not already allocated one for the same method.
+    let getOrAllocateStub
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (allConcreteTypes : AllConcreteTypes)
+        (allocState : 'allocState)
+        (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
+        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (reg : MethodHandleRegistry)
+        : ManagedHeapAddress * MethodHandleRegistry * 'allocState
+        =
+        let handle = makeMethodHandle allConcreteTypes method
+
+        match Map.tryFind handle reg.MethodToHandle with
+        | Some v -> v, reg, allocState
+        | None ->
+
+        // Reuse an existing registry id for this method if one was minted earlier (e.g., via
+        // `getOrAllocateInternalHandle` while iterating introduced methods); otherwise mint a new one.
+        let registryId, reg =
+            match Map.tryFind handle reg.MethodHandleToId with
+            | Some existing -> existing, reg
+            | None ->
+                let newId = reg.NextHandle
+
+                let reg =
+                    { reg with
+                        MethodHandleToId = reg.MethodHandleToId |> Map.add handle newId
+                        IdToMethodHandle = reg.IdToMethodHandle |> Map.add newId handle
+                        NextHandle = reg.NextHandle + 1L
+                    }
+
+                newId, reg
+
+        let runtimeMethodHandleInternal =
+            let mHandle =
+                CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle registryId)
+
+            buildRuntimeMethodHandleInternal baseClassTypes allConcreteTypes mHandle
+            |> CliType.ValueType
+
+        let runtimeMethodInfoStub =
+            buildRuntimeMethodInfoStub baseClassTypes allConcreteTypes runtimeMethodHandleInternal
+
+        let alloc, allocState = allocate runtimeMethodInfoStub allocState
+
+        let reg =
+            { reg with
+                MethodToHandle = reg.MethodToHandle |> Map.add handle alloc
+            }
+
+        alloc, reg, allocState
+
     /// Returns a (struct) System.RuntimeMethodHandle, with its contents (reference type) freshly allocated if necessary.
     let getOrAllocate
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -664,44 +718,7 @@ module MethodHandleRegistry =
                 (DeclaredTypeFacts.ofCorelibType baseClassTypes baseClassTypes.RuntimeMethodHandle)
             |> CliType.ValueType
 
-        let handle = makeMethodHandle allConcreteTypes method
+        let alloc, reg, allocState =
+            getOrAllocateStub baseClassTypes allConcreteTypes allocState allocate method reg
 
-        match Map.tryFind handle reg.MethodToHandle with
-        | Some v -> runtimeMethodHandle v, reg, allocState
-        | None ->
-
-        // Reuse an existing registry id for this method if one was minted earlier (e.g., via
-        // `getOrAllocateInternalHandle` while iterating introduced methods); otherwise mint a new one.
-        let registryId, reg =
-            match Map.tryFind handle reg.MethodHandleToId with
-            | Some existing -> existing, reg
-            | None ->
-                let newId = reg.NextHandle
-
-                let reg =
-                    { reg with
-                        MethodHandleToId = reg.MethodHandleToId |> Map.add handle newId
-                        IdToMethodHandle = reg.IdToMethodHandle |> Map.add newId handle
-                        NextHandle = reg.NextHandle + 1L
-                    }
-
-                newId, reg
-
-        let runtimeMethodHandleInternal =
-            let mHandle =
-                CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle registryId)
-
-            buildRuntimeMethodHandleInternal baseClassTypes allConcreteTypes mHandle
-            |> CliType.ValueType
-
-        let runtimeMethodInfoStub =
-            buildRuntimeMethodInfoStub baseClassTypes allConcreteTypes runtimeMethodHandleInternal
-
-        let alloc, state = allocate runtimeMethodInfoStub allocState
-
-        let reg =
-            { reg with
-                MethodToHandle = reg.MethodToHandle |> Map.add handle alloc
-            }
-
-        runtimeMethodHandle alloc, reg, state
+        runtimeMethodHandle alloc, reg, allocState

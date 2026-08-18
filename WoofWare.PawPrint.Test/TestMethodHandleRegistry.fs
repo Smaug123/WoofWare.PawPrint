@@ -208,6 +208,62 @@ public static class HasMethod
         assertRuntimeMethodInfoStub baseClassTypes state runtimeMethodInfoStubAddr
 
     [<Test>]
+    let ``getOrAllocateStub names the stub inside the RuntimeMethodHandle`` () : unit =
+        // `Delegate_FindMethodHandle` writes back a bare `IRuntimeMethodInfo`, so it takes the
+        // stub address directly rather than unwrapping the `RuntimeMethodHandle` struct that
+        // `getOrAllocateMethod` builds around it. The two must name one object: a guest that
+        // reaches the same method through `Delegate.Method` and through `ldtoken` must see one
+        // identity, not two.
+        let loggerFactory, baseClassTypes, _assembly, _targetMethod, concretizedMethod, state =
+            loadFixture ()
+
+        let runtimeMethodInfoStubType =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeMethodInfoStub
+
+        let stubAddr, registry, state =
+            MethodHandleRegistry.getOrAllocateStub
+                baseClassTypes
+                state.ConcreteTypes
+                state
+                (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
+                concretizedMethod
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = registry
+            }
+
+        assertRuntimeMethodInfoStub baseClassTypes state stubAddr
+
+        // Asking again does not mint a second stub, in either direction.
+        let stubAddrAgain, registry, state =
+            MethodHandleRegistry.getOrAllocateStub
+                baseClassTypes
+                state.ConcreteTypes
+                state
+                (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
+                concretizedMethod
+                state.MethodHandles
+
+        stubAddrAgain |> shouldEqual stubAddr
+
+        let state =
+            { state with
+                MethodHandles = registry
+            }
+
+        let methodHandle, _state =
+            IlMachineState.getOrAllocateMethod loggerFactory baseClassTypes concretizedMethod state
+
+        match methodHandle with
+        | CliType.ValueType vt ->
+            match CliValueType.DereferenceField "m_value" vt with
+            | CliType.ObjectRef (Some addr) -> addr |> shouldEqual stubAddr
+            | other -> failwith $"Expected RuntimeMethodHandle.m_value to be an object ref, got %O{other}"
+        | other -> failwith $"Expected RuntimeMethodHandle value type, got %O{other}"
+
+    [<Test>]
     let ``Ldtoken MethodDef pushes RuntimeMethodInfoStub object`` () : unit =
         let loggerFactory, baseClassTypes, assembly, targetMethod, concretizedMethod, state =
             loadFixture ()

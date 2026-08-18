@@ -1074,6 +1074,26 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // `Delegate.Method` on a delegate bound to a dynamic method. It is the one route
+                // to `Delegate_FindMethodHandle` that does *not* reach that QCall: the MethodInfo
+                // is cached in `_methodBase` by `DynamicMethod.CreateDelegate`, so
+                // `Delegate.GetMethodImpl` answers from there. Registered so that the handler's
+                // `FunctionPointerTarget.Dynamic` refusal stays unreachable — the short-circuit
+                // lives in interpreted CoreLib IL, which nothing in PawPrint enforces.
+                FileName = "DelegateMethodOnDynamicMethod.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `SystemNative_GetCwd` must classify its error returns before
                 // resolving the caller's buffer to storage, because the C
                 // decides them without dereferencing it. Impure because the
