@@ -4489,3 +4489,43 @@ public unsafe struct PointerWrapper
                 [ ByrefProjection.ReinterpretAs int32Type ; ByrefProjection.ByteOffset 3 ]
             )
         )
+
+    /// A handle in `stackalloc` or native memory, read a byte at a time. `TestNamedByteView`
+    /// covers the local, array and boxed roots; these two roots reach the byte view through the
+    /// memory pools instead, and a read that answered for one root and refused for another would
+    /// make the answer depend on where the guest happened to put the handle.
+    [<Test>]
+    let ``a byte cursor into a handle in stack memory names that byte of that handle`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let frame = state.ThreadState.[thread].ActiveMethodState
+
+        let ptr, state =
+            IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 8 state
+
+        let block =
+            match ptr with
+            | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (_, _, block, 0), []) -> block
+            | other -> failwith $"Expected local-memory root pointer, got %O{other}"
+
+        let handleSource =
+            NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed (handleFor bct.Int32))
+
+        let state =
+            IlMachineState.writeManagedByrefBytesOrTypedCell
+                bct
+                state
+                ptr
+                (CliType.Numeric (CliNumericType.NativeInt handleSource))
+
+        let byteTemplate = CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))
+
+        for offset in 0..7 do
+            let cursor =
+                ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, offset), [])
+
+            IlMachineState.readManagedByrefBytesAs bct state cursor byteTemplate
+            |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.NativeIntByte (handleSource, offset))))

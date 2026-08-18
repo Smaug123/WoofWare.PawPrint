@@ -1094,8 +1094,8 @@ module IlMachineManagedByref =
         | Some cell -> cell
         | None ->
 
-        let buf = StackMemoryPool.readBytes block byteOffset targetSize pool
-        CliType.ofBytesLike targetTemplate buf
+        let buf = StackMemoryPool.readNamedBytes block byteOffset targetSize pool
+        CliType.ofSymbolicBytesLike targetTemplate buf
 
     /// Mirror of `readStackMemoryBytesAs` for native-heap blocks. Use-after-free is
     /// reported if the block was freed.
@@ -1135,8 +1135,8 @@ module IlMachineManagedByref =
         | Some cell -> cell
         | None ->
 
-        let buf = NativeMemoryPool.readBytes block byteOffset targetSize pool
-        CliType.ofBytesLike targetTemplate buf
+        let buf = NativeMemoryPool.readNamedBytes block byteOffset targetSize pool
+        CliType.ofSymbolicBytesLike targetTemplate buf
 
     let internal zeroForConcreteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

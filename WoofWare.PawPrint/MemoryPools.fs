@@ -291,10 +291,13 @@ module MemoryBlock =
     /// Read `count` bytes starting at `offset`. Throws if the range is out of
     /// bounds, contains uninitialised bytes, or crosses a cell whose typed
     /// view is not byte-addressable (a tagged-pointer cell, for instance).
-    let readBytes (containerDesc : string) (offset : int) (count : int) (block : MemoryBlock) : byte[] =
+    /// The bytes of `[offset, offset + count)`, where a byte covered by a cell PawPrint models as
+    /// an identity rather than as an address is named rather than materialised. See
+    /// <see cref="UInt8Source" />.
+    let readNamedBytes (containerDesc : string) (offset : int) (count : int) (block : MemoryBlock) : UInt8Source[] =
         checkRange "MemoryBlock.readBytes" containerDesc block.Size offset count
 
-        let result = Array.zeroCreate<byte> count
+        let result = Array.create<UInt8Source> count (UInt8Source.Verbatim 0uy)
         let mutable i = 0
 
         while i < count do
@@ -303,27 +306,34 @@ module MemoryBlock =
             match readByteSource containerDesc pos block with
             | MemoryByteSource.Cell (cellOffset, cell) ->
                 match CliType.ByteAddressability cell with
-                | CliByteAddressability.ByteAddressable ->
+                | CliByteAddressability.ByteAddressable
+                | CliByteAddressability.SymbolicallyAddressable _ ->
                     let inCellOffset = pos - cellOffset
                     let cellSize = CliType.sizeOf cell
                     let take = min (cellSize - inCellOffset) (count - i)
-                    let bytes = CliType.BytesAt inCellOffset take cell
+                    let bytes = CliType.SymbolicBytesAt inCellOffset take cell
                     Array.blit bytes 0 result i take
                     i <- i + take
-                | CliByteAddressability.SymbolicallyAddressable rejection
                 | CliByteAddressability.Rejected rejection ->
                     failwith
                         $"MemoryBlock.readBytes: refusing byte view over %s{rejection.Description} at offset %d{cellOffset} in %s{containerDesc}"
             | MemoryByteSource.Overlay b ->
-                result.[i] <- b
+                result.[i] <- UInt8Source.Verbatim b
                 i <- i + 1
             | MemoryByteSource.DefaultZero ->
-                result.[i] <- 0uy
+                result.[i] <- UInt8Source.Verbatim 0uy
                 i <- i + 1
             | MemoryByteSource.Uninitialized ->
                 failwith $"MemoryBlock.readBytes: byte at offset %d{pos} in %s{containerDesc} is uninitialised"
 
         result
+
+    /// <see cref="readNamedBytes" />, for callers whose currency is a `byte[]`: a byte that names a
+    /// native int rather than holding a number is refused by name. Defined in terms of it so the
+    /// two cannot disagree about which bytes a range contains.
+    let readBytes (containerDesc : string) (offset : int) (count : int) (block : MemoryBlock) : byte[] =
+        readNamedBytes containerDesc offset count block
+        |> Array.map (UInt8Source.value $"MemoryBlock.readBytes in %s{containerDesc}")
 
     /// Scatter `bytes` into the block starting at `offset`. Bytes that fall
     /// inside an existing cell are merged through `CliType.WithBytesAtIfChanged`
@@ -446,6 +456,16 @@ module StackMemoryPool =
     let readBytes (blockId : StackMemoryBlockId) (offset : int) (count : int) (pool : StackMemoryPool) : byte[] =
         MemoryBlock.readBytes (string blockId) offset count (getBlock blockId pool)
 
+    /// <see cref="MemoryBlock.readNamedBytes" />.
+    let readNamedBytes
+        (blockId : StackMemoryBlockId)
+        (offset : int)
+        (count : int)
+        (pool : StackMemoryPool)
+        : UInt8Source[]
+        =
+        MemoryBlock.readNamedBytes (string blockId) offset count (getBlock blockId pool)
+
     let writeBytes
         (blockId : StackMemoryBlockId)
         (offset : int)
@@ -558,6 +578,16 @@ module NativeMemoryPool =
 
     let readBytes (blockId : NativeMemoryBlockId) (offset : int) (count : int) (pool : NativeMemoryPool) : byte[] =
         MemoryBlock.readBytes (string blockId) offset count (getBlock blockId pool)
+
+    /// <see cref="MemoryBlock.readNamedBytes" />.
+    let readNamedBytes
+        (blockId : NativeMemoryBlockId)
+        (offset : int)
+        (count : int)
+        (pool : NativeMemoryPool)
+        : UInt8Source[]
+        =
+        MemoryBlock.readNamedBytes (string blockId) offset count (getBlock blockId pool)
 
     let writeBytes
         (blockId : NativeMemoryBlockId)

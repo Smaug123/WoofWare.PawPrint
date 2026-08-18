@@ -82,6 +82,12 @@ module StackMemoryPool =
     /// not zero-initialised.
     val readBytes : blockId : StackMemoryBlockId -> offset : int -> count : int -> pool : StackMemoryPool -> byte[]
 
+    /// `readBytes`, for a caller that can carry a byte naming a native int PawPrint models as an
+    /// identity rather than as an address (see `UInt8Source`) instead of demanding a number for
+    /// it. `readBytes` is this, with every byte required to be a number.
+    val readNamedBytes :
+        blockId : StackMemoryBlockId -> offset : int -> count : int -> pool : StackMemoryPool -> UInt8Source[]
+
     /// Overwrite the `bytes.Length` bytes at `offset`.
     ///
     /// Unlike `writeCell`, this evicts nothing. A byte landing inside a byte-addressable
@@ -148,6 +154,12 @@ module NativeMemoryPool =
     /// The `count` bytes at `offset`, failing if any was never written in a block that was
     /// not zero-initialised.
     val readBytes : blockId : NativeMemoryBlockId -> offset : int -> count : int -> pool : NativeMemoryPool -> byte[]
+
+    /// `readBytes`, for a caller that can carry a byte naming a native int PawPrint models as an
+    /// identity rather than as an address (see `UInt8Source`) instead of demanding a number for
+    /// it. `readBytes` is this, with every byte required to be a number.
+    val readNamedBytes :
+        blockId : NativeMemoryBlockId -> offset : int -> count : int -> pool : NativeMemoryPool -> UInt8Source[]
 
     /// Overwrite the `bytes.Length` bytes at `offset`. As for the stack pool, this evicts
     /// nothing: a byte inside a byte-addressable cell edits that cell in place, a byte
