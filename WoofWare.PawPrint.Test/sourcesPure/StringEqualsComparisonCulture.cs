@@ -24,30 +24,46 @@
 //    `[A-Za-z]`, then `return lengthA - lengthB` when it runs out of input.
 //    `TestIgnoreCaseStepShapes` covers the fold, the letter-gating, and that length exit.
 //
-// Two things bound what this file can claim.
+// Three things bound what this file can claim.
 //
 // First, only `Compare(...) == 0` is observable through `Equals`, so a comparer wrong in *sign*
-// alone would be invisible here. What is pinned is the equality verdict.
+// alone would be invisible here. What is asserted is the equality verdict.
 //
 // Second, the differential oracle runs the guest without DOTNET_SYSTEM_GLOBALIZATION_INVARIANT,
-// so it collates with the host's ICU under the host's current culture while PawPrint collates
-// with the invariant tables above. Every case below is therefore restricted to an alphabet on
-// which those two agree, and the restriction is load-bearing rather than incidental:
+// so it collates with the host's ICU while PawPrint collates with the invariant tables above.
+// The `CurrentCulture` arms therefore depend on the *host's* culture, and that dependence is not
+// hypothetical: with the operands below and no intervention, this file fails under
+// `LC_ALL=th_TH.UTF-8` with exit code 6, because Thai's ICU tailoring makes '!' an ignorable
+// character and so collates "Hello, world" equal to "Hello, world!", where PawPrint's invariant
+// comparer sees different lengths. So `Main` pins `CultureInfo.CurrentCulture` to
+// `CultureInfo.InvariantCulture` before running any of the pinned sections, which makes both
+// runtimes use a locale-independent collation for those arms. Verified: with the pin, the file
+// passes under both the default host locale and `th_TH.UTF-8`.
+//
+// What that leaves assumed is only that ICU's *root* collation agrees with ordinal comparison on
+// the alphabet used here — which is why the alphabet is still curated, and the curation is
+// load-bearing rather than incidental:
 //
 //  * Printable ASCII only. ICU treats several C0 control characters as completely ignorable, so
-//    `"a\u0001"` collates *equal* to `"a"` under the oracle, while `SequenceCompareTo` under
-//    PawPrint calls them different lengths and so unequal.
-//  * No 'i' or 'I' anywhere. On a tr-TR or az-Latn host, ICU says `"i"` and `"I"` differ even
-//    ignoring case, because 'i' upper-cases to 'İ'. A test using them would pass everywhere
-//    except on such a host. The alphabet below is drawn from a..h / A..H for that reason.
+//    `"a\u0001"` would collate *equal* to `"a"` under the oracle, while `SequenceCompareTo`
+//    under PawPrint sees different lengths and so calls them unequal.
+//  * No 'i' or 'I' anywhere, so that nothing here depends on the one ASCII case mapping that is
+//    locale-tailored ('i' upper-cases to 'İ' under tr-TR and az-Latn). The alphabet is drawn
+//    from a..h / A..H for that reason.
 //  * No expansions, ignorables or locale-specific orderings — no 'æ', no combining marks, no
 //    non-ASCII at all.
 //
-// So this file asserts that PawPrint's invariant-mode answer agrees with host ICU on a curated
-// alphabet. It does not, and with this harness cannot, assert that PawPrint agrees with an
-// invariant-mode *real* .NET process on arbitrary input.
+// Third, `TestHostCulture` deliberately runs *before* the pin, and asserts only that a string
+// compares equal to a distinct object with identical content. That is true under every collation
+// — identical input yields identical sort keys — so it is safe to assert against whatever culture
+// the host actually has, and it exercises the two `CurrentCulture` arms under a real tailoring
+// rather than only under the root one.
+//
+// None of this amounts to asserting that PawPrint agrees with an invariant-mode *real* .NET
+// process on arbitrary input; this harness has no way to run the oracle in that mode.
 
 using System;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 
 public class Program
@@ -69,6 +85,30 @@ public class Program
         return new string(s.AsSpan());
     }
 
+    // Runs before `Main` pins the culture, so this is the host's real tailoring — whatever it
+    // happens to be. Only the locale-universal direction is asserted: a string compares equal to
+    // a distinct object holding the same characters, which holds under every collation. The
+    // *unequal* direction is not asserted here, because whether two different strings collate
+    // apart depends on the tailoring (see the header's Thai '!' case).
+    private static int TestHostCulture()
+    {
+        string s = Id("Hello, world");
+        string copy = Copy(s);
+
+        if (ReferenceEquals(s, copy)) return 1;
+
+        if (!s.Equals(copy, StringComparison.CurrentCulture)) return 2;
+        if (!s.Equals(copy, StringComparison.CurrentCultureIgnoreCase)) return 3;
+        if (!String.Equals(s, copy, StringComparison.CurrentCulture)) return 4;
+        if (!String.Equals(s, copy, StringComparison.CurrentCultureIgnoreCase)) return 5;
+        // A null argument short-circuits ahead of the comparer, so its answer cannot depend on
+        // the tailoring either.
+        if (s.Equals(null, StringComparison.CurrentCulture)) return 6;
+        if (!String.Equals(null, null, StringComparison.CurrentCultureIgnoreCase)) return 7;
+
+        return 0;
+    }
+
     private static int TestCurrentCulture()
     {
         string s = Id("Hello, world");
@@ -76,6 +116,7 @@ public class Program
 
         if (ReferenceEquals(s, copy)) return 1;
 
+        // Reached with the culture pinned, so these are root-collation answers.
         if (!s.Equals(copy, StringComparison.CurrentCulture)) return 2;
         if (s.Equals(Id("hello, world"), StringComparison.CurrentCulture)) return 3;
         if (!s.Equals(Id("hello, world"), StringComparison.CurrentCultureIgnoreCase)) return 4;
@@ -219,23 +260,33 @@ public class Program
     }
 
     // The offsets keep every failure distinguishable while staying inside the 8 bits a process
-    // exit code has: the largest value any branch below can return is 117.
+    // exit code has: the largest value any branch below can return is 94.
     public static int Main(string[] args)
     {
-        int result = TestCurrentCulture();
+        // Before the pin: the host's real culture, asserted only where the answer cannot depend
+        // on it.
+        int result = TestHostCulture();
         if (result != 0) return result;
 
+        // Everything below compares against ICU's root collation in the oracle rather than the
+        // host's tailoring of it. See the header: without this the file is host-locale-dependent,
+        // and measurably fails under th-TH.
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+
+        result = TestCurrentCulture();
+        if (result != 0) return 8 + result;
+
         result = TestInvariantCulture();
-        if (result != 0) return 15 + result;
+        if (result != 0) return 22 + result;
 
         result = TestNoneStepShapes();
-        if (result != 0) return 32 + result;
+        if (result != 0) return 38 + result;
 
         result = TestNoneLengthDelta();
-        if (result != 0) return 57 + result;
+        if (result != 0) return 62 + result;
 
         result = TestIgnoreCaseStepShapes();
-        if (result != 0) return 95 + result;
+        if (result != 0) return 72 + result;
 
         return 0;
     }
