@@ -820,3 +820,141 @@ public class Holder
             (signatureNamed "Q")
         |> snd
         |> shouldEqual false
+
+    // ----- function pointers ---------------------------------------------------------------------
+
+    /// A property whose type is the given function pointer. Built from a real decoded signature so
+    /// that the header and parameter list are a property's, with only the type swapped: C# cannot
+    /// declare a property of generic function-pointer type.
+    let private propertyOfFunctionPointerType (functionPointer : TypeDefn) : MethodSignature<TypeDefn> =
+        let original = signature "Corpus" "Number"
+
+        MethodSignature<TypeDefn> (
+            original.Header,
+            functionPointer,
+            original.RequiredParameterCount,
+            original.GenericParameterCount,
+            original.ParameterTypes
+        )
+
+    /// A function pointer taking one `int32` and returning void, whose own signature carries the
+    /// given calling-convention attributes and generic-parameter count.
+    let private functionPointerType (attributes : SignatureAttributes) (genericParameterCount : int) : TypeDefn =
+        TypeDefn.FunctionPointer
+            {
+                Header =
+                    ComparableSignatureHeader.Make (
+                        SignatureHeader (SignatureKind.Method, SignatureCallingConvention.Default, attributes)
+                    )
+                ParameterTypes = [ TypeDefn.PrimitiveType PrimitiveType.Int32 ]
+                GenericParameterCount = genericParameterCount
+                RequiredParameterCount = 1
+                ReturnType = MethodReturnType.Void
+            }
+
+    /// Two function pointers spelling the same GENERIC calling convention *and the same
+    /// generic-parameter count* are a shape CoreCLR cannot compare. Its FNPTR arm (siginfo.cpp:4135)
+    /// reads one compressed integer after the calling-convention bytes and compares it as `argCnt`; for
+    /// a GENERIC signature that integer is the generic-parameter count, so having consumed it CoreCLR
+    /// reads the real parameter count as an element type. Refuse rather than guess.
+    ///
+    /// Differing counts are rejected by that same `argCnt` comparison, before any element is parsed, so
+    /// they have a defined answer and must not be refused — this arm previously had no count comparison
+    /// at all and would have compared the parameter lists and called them equal.
+    [<Test>]
+    let ``two function pointers with the same generic calling convention and count are refused`` () : unit =
+        let compareAt (leftCount : int) (rightCount : int) : unit -> bool =
+            fun () ->
+                compare
+                    (propertyOfFunctionPointerType (functionPointerType SignatureAttributes.Generic leftCount))
+                    (propertyOfFunctionPointerType (functionPointerType SignatureAttributes.Generic rightCount))
+
+        let thrown = Assert.Throws<exn> (fun () -> compareAt 1 1 () |> ignore<bool>)
+        thrown.Message |> shouldContainText "GENERIC calling convention"
+
+        // The parameter lists are identical here, so without the count comparison these would have
+        // answered "equal" rather than "unequal".
+        compareAt 1 2 () |> shouldEqual false
+        compareAt 2 1 () |> shouldEqual false
+
+        // Differing *parameter* counts at equal generic arity are refused too, not answered: that
+        // comparison happens inside `CompareElementType` with the count byte reinterpreted as an element
+        // type, so the answer is a fact about byte values rather than about the decoded signature.
+        let generic (parameters : TypeDefn list) : TypeDefn =
+            TypeDefn.FunctionPointer
+                {
+                    Header =
+                        ComparableSignatureHeader.Make (
+                            SignatureHeader (
+                                SignatureKind.Method,
+                                SignatureCallingConvention.Default,
+                                SignatureAttributes.Generic
+                            )
+                        )
+                    ParameterTypes = parameters
+                    GenericParameterCount = 1
+                    RequiredParameterCount = List.length parameters
+                    ReturnType = MethodReturnType.Void
+                }
+
+        let int32 = TypeDefn.PrimitiveType PrimitiveType.Int32
+
+        let differingParameterCounts =
+            Assert.Throws<exn> (fun () ->
+                compare
+                    (propertyOfFunctionPointerType (generic [ int32 ]))
+                    (propertyOfFunctionPointerType (generic [ int32 ; int32 ]))
+                |> ignore<bool>
+            )
+
+        differingParameterCounts.Message
+        |> shouldContainText "GENERIC calling convention"
+
+    /// The refusal sits *after* the calling-convention comparison, because every pairing whose bytes
+    /// differ has an answer CoreCLR defines: it compares those bytes before it reads any count.
+    [<Test>]
+    let ``a generic function pointer is unequal, not refused, when the convention bytes differ`` () : unit =
+        // The GENERIC bit alone makes the bytes differ.
+        compare
+            (propertyOfFunctionPointerType (functionPointerType SignatureAttributes.Generic 1))
+            (propertyOfFunctionPointerType (functionPointerType SignatureAttributes.None 0))
+        |> shouldEqual false
+
+        // Both generic, differing in HASTHIS: still a byte mismatch, so still a defined answer.
+        compare
+            (propertyOfFunctionPointerType (functionPointerType SignatureAttributes.Generic 1))
+            (propertyOfFunctionPointerType (
+                functionPointerType (SignatureAttributes.Generic ||| SignatureAttributes.Instance) 1
+            ))
+        |> shouldEqual false
+
+    /// The control: an ordinary non-generic function pointer carries no GENERIC bit, so the refusal
+    /// must not fire for it and the arm must still compare it.
+    [<Test>]
+    let ``a non-generic function pointer is still compared`` () : unit =
+        compare
+            (propertyOfFunctionPointerType (functionPointerType SignatureAttributes.None 0))
+            (propertyOfFunctionPointerType (functionPointerType SignatureAttributes.None 0))
+        |> shouldEqual true
+
+        // A differing parameter list is what the arm is for, and it must still separate these.
+        compare
+            (propertyOfFunctionPointerType (functionPointerType SignatureAttributes.None 0))
+            (propertyOfFunctionPointerType (
+                TypeDefn.FunctionPointer
+                    {
+                        Header =
+                            ComparableSignatureHeader.Make (
+                                SignatureHeader (
+                                    SignatureKind.Method,
+                                    SignatureCallingConvention.Default,
+                                    SignatureAttributes.None
+                                )
+                            )
+                        ParameterTypes = [ TypeDefn.PrimitiveType PrimitiveType.String ]
+                        GenericParameterCount = 0
+                        RequiredParameterCount = 1
+                        ReturnType = MethodReturnType.Void
+                    }
+            ))
+        |> shouldEqual false

@@ -954,7 +954,34 @@ module NativeSignature =
         | TypeDefn.FunctionPointer l, TypeDefn.FunctionPointer r ->
             if l.Header.Get.RawValue <> r.Header.Get.RawValue then
                 state, false
+            elif l.GenericParameterCount <> r.GenericParameterCount then
+                // CoreCLR reads one compressed integer from each blob after the calling-convention
+                // bytes and compares it as `argCnt` (siginfo.cpp:4158-4163). For a GENERIC signature
+                // that integer is the generic-parameter count, since the blob spells
+                // CallConv | GenParamCount | ParamCount | RetType | Params — so differing counts are
+                // rejected there, before any element is parsed. For a non-GENERIC signature the count
+                // is zero on both sides and this branch cannot fire.
+                state, false
+            elif l.Header.Get.IsGeneric then
+                // The calling-convention bytes and the generic-parameter counts are equal by the
+                // branches above, and those are the last two things CoreCLR decides without
+                // reinterpreting a byte: both are integers read as integers
+                // (`CorSigUncompressData_EndPtr`, siginfo.cpp:4157-4163).
+                //
+                // Past that point it compares `GenParamCount + 1` elements of a stream misaligned by one
+                // integer, so the *parameter count* byte is handed to `CompareElementType` as a
+                // `CorElementType` — 0x01 read as ELEMENT_TYPE_VOID and compared as such, other values
+                // able to fail the signature outright — and it answers from the real return type as
+                // though it were a parameter, ignoring the rest. Which answer comes back is a fact about
+                // the numeric count values reinterpreted as element types, which a correctly decoded
+                // signature no longer knows. So refuse every pair that reaches here, including one whose
+                // parameter counts differ, rather than trying to predict it.
+                failwith
+                    $"%s{operation}: comparing two function pointer signatures that spell the same GENERIC calling convention and the same generic-parameter count (in %s{leftAssembly.Name.FullName} against %s{rightAssembly.Name.FullName}); from here CoreCLR compares elements read at a one-integer offset into each blob, reinterpreting the parameter-count byte as an element type, which cannot be reproduced from a decoded signature"
             elif List.length l.ParameterTypes <> List.length r.ParameterTypes then
+                // For a non-GENERIC signature this *is* CoreCLR's `argCnt` comparison: the integer it
+                // reads after the calling-convention byte is the parameter count. A GENERIC one never
+                // reaches here, having been refused above.
                 state, false
             else
                 let state, returnMatches =
