@@ -851,6 +851,38 @@ module NativeDelegate =
                     failwith
                         $"TODO: %s{operation} was handed a delegate whose _methodPtr is the runtime's newobj allocation helper, which has no MethodInfo to report"
 
+            // PawPrint cannot tell an open delegate from one closed over null: both are
+            // `(_target = null, _methodPtrAux = 0)` here, where CoreCLR distinguishes them by the
+            // aux field -- see docs/divergences.md, "An open delegate stores no shuffle thunk",
+            // under "What this costs later". For a static target that costs nothing, because
+            // `Delegate.GetMethodImpl` reads `_target` only on its instance path; for an instance
+            // target it dereferences `_target` to walk the base chain whenever the declaring type
+            // is generic (Delegate.CoreCLR.cs:189), so answering here would hand the guest a
+            // NullReferenceException out of CoreLib in place of a MethodInfo.
+            //
+            // The delegate should not exist in the first place: CoreCLR's `CtorClosed` refuses a
+            // null receiver with `ArgumentException(Arg_DlgtNullInst)`
+            // (MulticastDelegate.CoreCLR.cs:552-556) and there is no `newobj` route past it,
+            // whereas `IlMachineRuntimeMetadata.executeDelegateConstructor` performs no such
+            // check. That is a separate gap, parked as
+            // `sourcesPure/DelegateOverNullInstanceReceiver.cs`; this refuses rather than
+            // compounding it.
+            let targetIsNull =
+                let delegateTypeHandle =
+                    AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes ctx.BaseClassTypes.DelegateType
+
+                FieldIdentity.requiredOwnInstanceField ctx.BaseClassTypes.DelegateType "_target"
+                |> FieldIdentity.fieldId delegateTypeHandle
+                |> fun fieldId -> AllocatedNonArrayObject.DereferenceFieldById fieldId delegateObject
+                |> CliType.unwrapPrimitiveLikeDeep
+                |> function
+                    | CliType.ObjectRef target -> target.IsNone
+                    | other -> failwith $"%s{operation}: expected _target to be an object reference, got %O{other}"
+
+            if not method.IsStatic && targetIsNull then
+                failwith
+                    $"TODO: %s{operation} was handed a delegate over the instance method %s{method.Name} with a null _target; CoreCLR has no such delegate — an open instance delegate carries its target in _methodPtrAux, which PawPrint does not write, and a closed one cannot have a null receiver"
+
             // CoreCLR follows `GetMethodDesc` with
             // `FindOrCreateAssociatedMethodDescForReflection`, whose whole job is to replace a
             // *shared* (`__Canon`) `MethodDesc` -- or an unboxing or instantiating stub -- with
