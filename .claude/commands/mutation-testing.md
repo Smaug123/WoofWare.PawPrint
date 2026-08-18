@@ -1,0 +1,41 @@
+# Mutation testing in this codebase
+
+Mutation testing — deliberately breaking an implementation to confirm a test catches it — is how you validate that a new test or guard is load-bearing rather than vacuously green. This describes the operational pitfalls found doing it in this repo.
+
+## Why mutate
+
+A green suite proves nothing about a *specific* test unless you've watched it turn red for the reason you expect. Two recurring traps produce vacuous coverage:
+
+- **BCL short-circuits.** Writing `LockHeldByOtherThread.cs`, a worker asked `gate.IsHeldByCurrentThread` about a lock the main thread held. It passed — and kept passing when `osThreadIdForGuest` was made to hand every thread the same id — because `IsHeldByCurrentThread` reads `ThreadId.Current_NoInitialize`, which returns the raw `[ThreadStatic]` *without populating it*: a worker that never took a lock reports `IsInitialized = false` and returns `False` before comparing any ids. Fix: make the worker enter an uncontended lock of its own first.
+- **Lossless destination slots.** Decoding a byte-underlying enum attribute argument as signed still reads one byte, and the ctor parameter slot truncates -56 back to 200 — no guest can tell, so the e2e case survives and only the decoder's own unit test dies. A mutation table tells you *which layer* a test actually covers; don't claim end-to-end coverage of a property that round-trips losslessly through the slot.
+
+**How to apply:** before claiming a new end-to-end case covers a failure mode, break the implementation and watch it fail — once per mode the file's comment claims — and check the *exit code* is the expected one, not merely that something failed. For a fix that adds a guard across N symmetric arms, mutate each arm separately; a surviving mutant means either a missing test or an unjustified line (in one fix, a helper that survived mutation to the identity was deleted rather than given an invented test, once analysis showed it was unobservable for any metadata-representable shape). Record confirmed mutations in the PR body as a table — it tells a reviewer exactly what the test is load-bearing for.
+
+## Operational hazards: the harness owns the tree
+
+A mutation run — background or scripted — holds exclusive access to the working tree, the same as `codex review`: nothing else should touch the worktree until it finishes. Several ways to lose an edit or leave a mutant live:
+
+- **Never `git checkout` to restore a mutated file.** It reverts to HEAD, discarding the *entire* uncommitted diff, not just the mutation — this has destroyed a finished implementation twice in one session. Instead, `cp` every file you plan to mutate to a scratchpad before the first mutation, mutate with a script that asserts `s.count(old) == 1`, and restore with `cp` back.
+- **A killed harness leaves a mutant live.** Editing a file mid-run, or stopping a run early, means the harness's unconditional restore-on-finish never happens — a killed process never reaches its `finally`. After stopping one early, `grep` for every mutant anchor before doing anything else; the `.bak` files that exist tell you which mutation it had reached.
+- **An inline background command inherits `errexit`.** The first killed mutant (a non-zero `dotnet test` — the very outcome you're hoping for) aborts the loop between "apply" and "restore" and leaves that mutant live. Put the battery in a script file with `set +e`, not pasted inline — the same loop that ran 15 mutations cleanly as a script died on mutation 1 when pasted inline.
+- **Restoring from a backup preserves the old mtime.** `shutil.copy2` + `shutil.move` puts back the *original* mtime, older than the DLL built from the mutant — incremental MSBuild then considers the output up to date and silently replays the mutant on the next `dotnet test`, even without `--no-build`. `touch` the file after restoring (or `os.utime(path, None)` in the harness's `finally`).
+- **A stale `.bak` reverts real edits.** A script that does `[ -f "$BAK" ] || cp "$SRC" "$BAK"` then `cp "$BAK" "$SRC"` will, on a second battery, copy a *stale* backup over source that's since been legitimately fixed. The perl then matches nothing, prints `MUTATION-DID-NOT-APPLY`, and restores the stale file again — silently discarding the fix. Always refresh the backup from the working tree, and refuse to run when the target differs from HEAD:
+  ```bash
+  if ! git diff --quiet -- "$REL"; then
+    echo "REFUSING: $REL differs from HEAD; commit or revert first."; exit 4
+  fi
+  cp "$SRC" "$BAK"
+  ```
+  Commit before each battery. Treat `MUTATION-DID-NOT-APPLY` as "check the file right now", never as "nothing happened".
+- **`--no-build` runs whatever binary is already there.** Reverting a temporary source edit (a probe, a mutation) doesn't take effect until the next build — `git status` describes the source tree, but `--no-build` depends on `bin/`, and those two disagree for exactly as long as it takes to rebuild. When a suite fails on precisely the test you were just poking, suspect the stale binary before suspecting the diff: rebuild and re-run that one test before investigating further.
+
+Prefer running a mutation battery when you have no pending edits at all.
+
+## Parked tests are a mutation blind spot
+
+`WoofWare.PawPrint.Test/TestPureCases.fs`'s `unimplemented` fixture ("Unimplemented tests have correct real-runtime behaviour") only asserts what the *real* .NET runtime does — it never runs PawPrint against a parked case. So a case that actually already passes under PawPrint can sit in `unimplemented` unnoticed, and a case whose assertion is vacuous can sit there for months and later silently bless a wrong implementation once un-parked.
+
+- **Verify a park is genuine:** delete its line from `unimplemented`, run it as a normal test, confirm it fails, and read the actual error rather than trusting the predicted one. In `TestFSharpPureCases.fs` the case name appears *twice* (in `testCases` and in `unimplemented`) — edit by surrounding context, not first occurrence, and confirm the un-parked case appears in the run as `F# pure tests(<name>)`, not just the real-runtime-only "Unimplemented tests" fixture. Where several parked files share a root cause, un-park them all at once and check each fails for its *own* distinct reason.
+- **Verify a parked assertion isn't vacuous:** name the wrong implementation that would still pass it, and change the case until you cannot. Prefer assertions that distinguish *which* of several things happened over assertions that something happened at all — two non-matching typed catch clauses instead of one catch-all, a struct argument that discriminates by value instead of a class that would bind either way, a value that's actually inspected instead of just checked non-null. Also confirm the case is parked on the blocker it claims and not an unrelated one — otherwise it measures nothing about its subject; shrink it until it reaches the gap it names.
+- **Tightening a rule can make working guests refuse silently.** A change that makes PawPrint *refuse* more shapes (crash-over-divergence) cannot fail the suite by itself — a guest that stops working just moves to `unimplemented`, where it's checked only against real .NET. One refusal rule turned a correct `false` comparison into a hard crash and survived 3050 tests and nine review rounds, because nothing active exercised the root kind the rule misclassified. When tightening a classifier: ask which shapes newly refuse, add an *active* guest for a shape that must still be answered (not another parked one), then mutation-test by restoring the old classification and checking that guest dies. Measure the control on `origin/main` before calling something pre-existing rather than a regression.
+- **A green suite after adding a `failwith` already answers "how often does this happen".** If a code path crashes on some shape and the suite stays green, frequency across the active guest corpus is zero by construction — instrumenting a counter to measure it re-derives a known answer. But that zero is a fact about the corpus, not about real programs in general (the corpus only contains what somebody could write a *passing* guest for): state the real payoff honestly, and count the newly-*parked* guests instead — they're enumerable by reading `unimplemented`.
