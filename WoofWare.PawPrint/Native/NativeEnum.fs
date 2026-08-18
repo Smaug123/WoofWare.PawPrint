@@ -154,8 +154,9 @@ module NativeEnum =
 
         match underlying, typeCode with
         | PrimitiveType.SByte, ConstantTypeCode.SByte ->
-            CliType.Numeric (CliNumericType.UInt8 (byte (reader.ReadSByte ())))
-        | PrimitiveType.Byte, ConstantTypeCode.Byte -> CliType.Numeric (CliNumericType.UInt8 (reader.ReadByte ()))
+            CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim (byte (reader.ReadSByte ()))))
+        | PrimitiveType.Byte, ConstantTypeCode.Byte ->
+            CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim (reader.ReadByte ())))
         | PrimitiveType.Int16, ConstantTypeCode.Int16 ->
             CliType.Numeric (CliNumericType.UInt16 (uint16 (reader.ReadInt16 ())))
         | PrimitiveType.UInt16, ConstantTypeCode.UInt16 ->

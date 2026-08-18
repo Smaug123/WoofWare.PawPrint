@@ -82,7 +82,7 @@ module TestEvalStackBoxedPrimitiveView =
             PrimitiveType.Byte,
             ArbMap.defaults
             |> ArbMap.generate<byte>
-            |> Gen.map (CliNumericType.UInt8 >> CliType.Numeric)
+            |> Gen.map (UInt8Source.Verbatim >> CliNumericType.UInt8 >> CliType.Numeric)
             "Int16",
             bct.Int16,
             PrimitiveType.Int16,

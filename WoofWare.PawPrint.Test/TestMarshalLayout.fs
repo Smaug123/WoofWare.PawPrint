@@ -110,7 +110,10 @@ module TestMarshalLayout =
     /// is what places it.
     let private fieldKinds : (string * (int -> CliType) * ConcreteTypeHandle * int) list =
         [
-            "u8", (fun i -> CliType.Numeric (CliNumericType.UInt8 (byte i))), handleOf bct.Byte, 1
+            "u8",
+            (fun i -> CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim (byte i)))),
+            handleOf bct.Byte,
+            1
             "i16", (fun i -> CliType.Numeric (CliNumericType.Int16 (int16 i))), handleOf bct.Int16, 2
             "i32", (fun i -> CliType.Numeric (CliNumericType.Int32 i)), handleOf bct.Int32, 4
             "i64",

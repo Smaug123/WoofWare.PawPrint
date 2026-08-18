@@ -340,7 +340,11 @@ public interface IOpenInterface<T>
         =
         let readEx =
             Assert.Throws<System.Exception> (fun () ->
-                IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.Numeric (CliNumericType.UInt8 0uy))
+                IlMachineState.readManagedByrefBytesAs
+                    bct
+                    state
+                    ptr
+                    (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
                 |> ignore
             )
 
@@ -353,7 +357,7 @@ public interface IOpenInterface<T>
                     bct
                     state
                     ptr
-                    (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
+                    (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0xAAuy)))
                 |> ignore
             )
 
@@ -679,7 +683,11 @@ public unsafe struct PointerWrapper
                 ]
             )
 
-        IlMachineState.writeManagedByrefWithBase bct state ptr (CliType.Numeric (CliNumericType.UInt8 replacement))
+        IlMachineState.writeManagedByrefWithBase
+            bct
+            state
+            ptr
+            (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim replacement)))
 
     let private hasComponentSizeFlag : int32 = int32 0x80000000u
     let private containsGcPointersFlag : int32 = 0x01000000
@@ -1840,7 +1848,11 @@ public unsafe struct PointerWrapper
             )
 
         let state =
-            IlMachineState.writeManagedByrefWithBase bct state ptr (CliType.Numeric (CliNumericType.UInt8 0xFFuy))
+            IlMachineState.writeManagedByrefWithBase
+                bct
+                state
+                ptr
+                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0xFFuy)))
 
         wrapperValue types addr state |> shouldEqual 0x010203FF
 
@@ -1862,7 +1874,11 @@ public unsafe struct PointerWrapper
             )
 
         let state =
-            IlMachineState.writeManagedByrefWithBase bct state ptr (CliType.Numeric (CliNumericType.UInt8 0xEEuy))
+            IlMachineState.writeManagedByrefWithBase
+                bct
+                state
+                ptr
+                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0xEEuy)))
 
         wrapperValue types addr state |> shouldEqual 0x0102EE04
 
@@ -1913,7 +1929,11 @@ public unsafe struct PointerWrapper
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                IlMachineState.writeManagedByrefWithBase bct state ptr (CliType.Numeric (CliNumericType.UInt8 0xFFuy))
+                IlMachineState.writeManagedByrefWithBase
+                    bct
+                    state
+                    ptr
+                    (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0xFFuy)))
                 |> ignore
             )
 
@@ -1949,7 +1969,11 @@ public unsafe struct PointerWrapper
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                IlMachineState.writeManagedByrefWithBase bct state ptr (CliType.Numeric (CliNumericType.UInt8 0xFFuy))
+                IlMachineState.writeManagedByrefWithBase
+                    bct
+                    state
+                    ptr
+                    (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0xFFuy)))
                 |> ignore
             )
 
@@ -2073,7 +2097,7 @@ public unsafe struct PointerWrapper
                     bct
                     state
                     byteViewPtr
-                    (CliType.Numeric (CliNumericType.UInt8 initialBytes.[sample.Offset]))
+                    (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim initialBytes.[sample.Offset])))
 
             System.Object.ReferenceEquals (stateAfterByteView, state) |> shouldEqual true
 
@@ -2226,7 +2250,10 @@ public unsafe struct PointerWrapper
             ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, 0), [])
 
         let stateAfterBare =
-            IlMachineState.writeManagedByref state bareBytePtr (CliType.Numeric (CliNumericType.UInt8 0x44uy))
+            IlMachineState.writeManagedByref
+                state
+                bareBytePtr
+                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0x44uy)))
 
         System.Object.ReferenceEquals (stateAfterBare, state) |> shouldEqual true
 
@@ -2280,14 +2307,14 @@ public unsafe struct PointerWrapper
                 bct
                 state
                 (byteViewAt 1)
-                (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
+                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0xAAuy)))
 
         let state =
             IlMachineState.writeManagedByrefBytesOrTypedCell
                 bct
                 state
                 (byteViewAt 2)
-                (CliType.Numeric (CliNumericType.UInt8 0xBBuy))
+                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0xBBuy)))
 
         let pool = IlMachineState.getStackMemoryPool thread frame state
 
@@ -2447,7 +2474,10 @@ public unsafe struct PointerWrapper
             ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, 1), [])
 
         Assert.Throws<System.Exception> (fun () ->
-            IlMachineState.writeManagedByref state midCellPtr (CliType.Numeric (CliNumericType.UInt8 0xFFuy))
+            IlMachineState.writeManagedByref
+                state
+                midCellPtr
+                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0xFFuy)))
             |> ignore
         )
         |> ignore
@@ -2616,7 +2646,7 @@ public unsafe struct PointerWrapper
                 bct
                 state
                 midCellPtr
-                (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
+                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0xAAuy)))
 
         // Reading the Int32 cell should reflect the byte overlay: the second
         // little-endian byte of 0x11223344 (0x33) becomes 0xAA, giving
@@ -2976,7 +3006,7 @@ public unsafe struct PointerWrapper
 
             let readField (fieldIndex : int) : byte =
                 match CliValueType.DereferenceFieldById types.FourBytesFields.[fieldIndex] vt with
-                | CliType.Numeric (CliNumericType.UInt8 b) -> b
+                | CliType.Numeric (CliNumericType.UInt8 b) -> UInt8Source.value "byte-view read" b
                 | other -> failwith $"FourBytes::B%d{fieldIndex} was not UInt8: %O{other}"
 
             [| readField 0 ; readField 1 ; readField 2 ; readField 3 |]
@@ -4100,7 +4130,11 @@ public unsafe struct PointerWrapper
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.Numeric (CliNumericType.UInt8 0uy))
+                IlMachineState.readManagedByrefBytesAs
+                    bct
+                    state
+                    ptr
+                    (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
                 |> ignore
             )
 
@@ -4352,27 +4386,44 @@ public unsafe struct PointerWrapper
             |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs byteReinterpret)
 
         let state =
-            IlMachineState.writeManagedByref state bareReinterpretPtr (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
+            IlMachineState.writeManagedByref
+                state
+                bareReinterpretPtr
+                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0xAAuy)))
 
-        IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.Numeric (CliNumericType.UInt8 0uy))
-        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
+        IlMachineState.readManagedByrefBytesAs
+            bct
+            state
+            ptr
+            (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0xAAuy)))
 
         let offsetReinterpretPtr =
             bareReinterpretPtr
             |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 2)
 
         let state =
-            IlMachineState.writeManagedByref state offsetReinterpretPtr (CliType.Numeric (CliNumericType.UInt8 0xBBuy))
+            IlMachineState.writeManagedByref
+                state
+                offsetReinterpretPtr
+                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0xBBuy)))
 
         let readAt (offset : int) : CliType =
             let readPtr =
                 bareReinterpretPtr
                 |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset offset)
 
-            IlMachineState.readManagedByrefBytesAs bct state readPtr (CliType.Numeric (CliNumericType.UInt8 0uy))
+            IlMachineState.readManagedByrefBytesAs
+                bct
+                state
+                readPtr
+                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
 
-        readAt 0 |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
-        readAt 2 |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0xBBuy))
+        readAt 0
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0xAAuy)))
+
+        readAt 2
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0xBBuy)))
 
     [<Test>]
     let ``reinterpretAs is the identity on the non-anchored pointer forms`` () : unit =

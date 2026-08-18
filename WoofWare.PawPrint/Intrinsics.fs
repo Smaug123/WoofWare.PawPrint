@@ -2336,11 +2336,13 @@ module Intrinsics =
             let inputAddressable =
                 match CliType.ByteAddressability inputCli with
                 | CliByteAddressability.ByteAddressable -> true
+                | CliByteAddressability.SymbolicallyAddressable _
                 | CliByteAddressability.Rejected _ -> false
 
             let targetAddressable =
                 match CliType.ByteAddressability toZero with
                 | CliByteAddressability.ByteAddressable -> true
+                | CliByteAddressability.SymbolicallyAddressable _
                 | CliByteAddressability.Rejected _ -> false
 
             // `!typeof(T).IsValueType` from the BCL guard. Reference types are pointer-sized on
@@ -3275,7 +3277,7 @@ module Intrinsics =
                         | CliNumericType.Int32 i -> int64 i
                         | CliNumericType.Int64 (Int64Source.Verbatim i) -> i
                         | CliNumericType.Int8 i -> int64 i
-                        | CliNumericType.UInt8 i -> int64 i
+                        | CliNumericType.UInt8 i -> int64 (UInt8Source.value "Enum.HasFlag" i)
                         | CliNumericType.Int16 i -> int64 i
                         | CliNumericType.UInt16 i -> int64 i
                         | other -> failwith $"Enum.HasFlag: unexpected underlying numeric type %O{other}"

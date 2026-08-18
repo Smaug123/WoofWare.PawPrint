@@ -632,11 +632,21 @@ type Int32Source =
     /// produced by `Unsafe.AsRef<T>((void*)bits)`) to `Verbatim` instead: those are
     /// values, not addresses, and truncating them is ordinary truncation.
     | NarrowedManagedPointer of source : ManagedPointerSource
+    /// Byte `index` (0-based, little-endian) of the eight-byte image of a native int PawPrint
+    /// models as an identity rather than as an address, zero-extended into an int32 by
+    /// `ldind.u1`.
+    ///
+    /// The evaluation stack has no byte slot, so a byte loaded from storage arrives here on its
+    /// way to being stored back as one; `SignatureHelper.InternalAddRuntimeType` copies a type
+    /// handle into a `Reflection.Emit` signature blob exactly that way. See
+    /// <see cref="UInt8Source" />, which is where such a byte lives at rest.
+    | NativeIntByte of source : NativeIntSource * index : int
 
     override this.ToString () : string =
         match this with
         | Int32Source.Verbatim i -> $"%i{i}"
         | Int32Source.NarrowedManagedPointer ptr -> $"<managed pointer %O{ptr}, truncated to 32 bits>"
+        | Int32Source.NativeIntByte (source, index) -> $"<byte %i{index} of %O{source}>"
 
 [<RequireQualifiedAccess>]
 module Int32Source =
@@ -661,3 +671,6 @@ module Int32Source =
         | Int32Source.NarrowedManagedPointer ptr ->
             failwith
                 $"%s{operation}: refusing to use managed pointer %O{ptr}, truncated to 32 bits, as a number; its value depends on the container's address, which PawPrint does not model"
+        | Int32Source.NativeIntByte (source, index) ->
+            failwith
+                $"%s{operation}: refusing to use byte %i{index} of %O{source} as a number; PawPrint models that native int as an identity rather than as an address, so it has no byte value"

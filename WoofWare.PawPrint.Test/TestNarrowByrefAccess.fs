@@ -159,13 +159,12 @@ module TestNarrowByrefAccess =
         let storage = pointerSlots [ for i in 1..4 -> somewhere i ]
 
         match CliValueType.ByteAddressability storage with
-        | CliByteAddressability.ByteAddressable ->
-            failwith "a value type holding managed pointers was classified byte-addressable"
         | CliByteAddressability.Rejected _ -> ()
+        | other -> failwith $"a value type holding managed pointers must have no byte image at all, got %O{other}"
 
         match CliType.ByteAddressability (byReferenceTo (somewhere 1)) with
-        | CliByteAddressability.ByteAddressable -> failwith "System.ByReference was classified byte-addressable"
         | CliByteAddressability.Rejected _ -> ()
+        | other -> failwith $"System.ByReference must have no byte image at all, got %O{other}"
 
     /// The shape `*(ByReference*)(p + 0) = ...` produces: `p + 0` is `p` (BinaryArithmetic.fs:347),
     /// so the destination byref carries no projections at all and the write must take its width

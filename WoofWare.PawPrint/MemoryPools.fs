@@ -276,6 +276,7 @@ module MemoryBlock =
                         let bytes = CliType.BytesAt inCellOffset take cell
                         Array.blit bytes 0 result i take
                         i <- i + take
+                    | CliByteAddressability.SymbolicallyAddressable _
                     | CliByteAddressability.Rejected _ -> readable <- false
                 | MemoryByteSource.Overlay b ->
                     result.[i] <- b
@@ -309,6 +310,7 @@ module MemoryBlock =
                     let bytes = CliType.BytesAt inCellOffset take cell
                     Array.blit bytes 0 result i take
                     i <- i + take
+                | CliByteAddressability.SymbolicallyAddressable rejection
                 | CliByteAddressability.Rejected rejection ->
                     failwith
                         $"MemoryBlock.readBytes: refusing byte view over %s{rejection.Description} at offset %d{cellOffset} in %s{containerDesc}"
@@ -353,6 +355,7 @@ module MemoryBlock =
                     | Some updatedCell -> block <- replaceCell containerDesc cellOffset updatedCell block
 
                     filled <- filled + take
+                | CliByteAddressability.SymbolicallyAddressable rejection
                 | CliByteAddressability.Rejected rejection ->
                     failwith
                         $"MemoryBlock.writeBytes: refusing byte view over %s{rejection.Description} at offset %d{cellOffset} in %s{containerDesc}"

@@ -510,8 +510,11 @@ module EvalStackValue =
     let convToUInt32 (value : EvalStackValue) (counters : PointerHashState) : EvalStackValue * PointerHashState =
         match value with
         // A narrowed byref is already 32 bits wide, and `conv.u4` only reinterprets
-        // those bits; it neither discards any nor makes the value knowable.
-        | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _ as i) -> EvalStackValue.Int32 i, counters
+        // those bits; it neither discards any nor makes the value knowable. A byte of an
+        // unmodelled native int is the same: it arrived zero-extended, so reinterpreting the
+        // same 32 bits as unsigned is the identity and there is no number to demand.
+        | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _ as i)
+        | EvalStackValue.Int32 (Int32Source.NativeIntByte _ as i) -> EvalStackValue.Int32 i, counters
         | EvalStackValue.Int32 (Int32Source.Verbatim i) ->
             convU4FromInt32 i |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
         | EvalStackValue.Int64 (Int64Source.Verbatim i) ->
@@ -612,7 +615,10 @@ module EvalStackValue =
     let rec tryExactIntegerBits (value : EvalStackValue) : int64 voption =
         match value with
         | EvalStackValue.Int32 (Int32Source.Verbatim i) -> ValueSome (int64<int32> i)
-        | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _) -> ValueNone
+        | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _)
+        // The bits exist in the identity PawPrint carries, but not as a number: naming byte 3 of
+        // a type handle says nothing about its value.
+        | EvalStackValue.Int32 (Int32Source.NativeIntByte _) -> ValueNone
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> ValueSome i
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> ValueSome bits
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> ValueNone
@@ -638,7 +644,14 @@ module EvalStackValue =
             // Sign-extend types int8 and int16
             // Zero-extend unsigned int8/unsigned int16
             | CliNumericType.Int8 b -> int32<int8> b |> Int32Source.Verbatim |> EvalStackValue.Int32
-            | CliNumericType.UInt8 b -> int32<uint8> b |> Int32Source.Verbatim |> EvalStackValue.Int32
+            | CliNumericType.UInt8 (UInt8Source.Verbatim b) ->
+                int32<uint8> b |> Int32Source.Verbatim |> EvalStackValue.Int32
+            // The evaluation stack has no byte slot, so a byte that names a native int rather
+            // than holding a number keeps its provenance across the widening: `ldind.u1` of one
+            // is on its way to being stored back as a byte, and zero-extending it here would need
+            // a number there is none of.
+            | CliNumericType.UInt8 (UInt8Source.NativeIntByte (source, index)) ->
+                EvalStackValue.Int32 (Int32Source.NativeIntByte (source, index))
             | CliNumericType.Int16 s -> int32<int16> s |> Int32Source.Verbatim |> EvalStackValue.Int32
             | CliNumericType.UInt16 s -> int32<uint16> s |> Int32Source.Verbatim |> EvalStackValue.Int32
             | CliNumericType.Float32 f -> EvalStackValue.Float (float<float32> f)
@@ -809,9 +822,13 @@ module EvalStackValue =
                 | _ -> failwith $"TODO: {popped}"
             | CliNumericType.UInt8 _ ->
                 match popped with
+                // The narrowing back to a byte is the identity for this case: the value is one
+                // byte of a native int, and it is landing in a byte-wide cell.
+                | EvalStackValue.Int32 (Int32Source.NativeIntByte (source, index)) ->
+                    CliType.Numeric (CliNumericType.UInt8 (UInt8Source.NativeIntByte (source, index)))
                 | EvalStackValue.Int32 int32Source ->
                     let i = Int32Source.value "storing to a uint8 location" int32Source
-                    CliType.Numeric (CliNumericType.UInt8 (i % 256 |> uint8))
+                    CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim (i % 256 |> uint8)))
                 | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"todo: {i} to uint8"
             | CliNumericType.UInt16 _ ->

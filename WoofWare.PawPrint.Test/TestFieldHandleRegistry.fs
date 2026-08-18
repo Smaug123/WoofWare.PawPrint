@@ -1084,13 +1084,13 @@ public static class HasRvaData
         let state, ptr =
             IlMachineState.peByteRangePointer loggerFactory baseClassTypes peByteRange state
 
-        let byteTemplate = CliType.Numeric (CliNumericType.UInt8 0uy)
+        let byteTemplate = CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))
 
         ManagedPointerSource.tryStableAddressBits ptr
         |> shouldEqual (Some (int64 peByteRange.RelativeVirtualAddress))
 
         IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr byteTemplate
-        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0x11uy))
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0x11uy)))
 
         let offsetPtr =
             ptr |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 4)
@@ -1100,7 +1100,7 @@ public static class HasRvaData
 
         offsetPtr
         |> fun ptr -> IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr byteTemplate
-        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0x55uy))
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0x55uy)))
 
         let outOfBoundsPtr =
             ptr

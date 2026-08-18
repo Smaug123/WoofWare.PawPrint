@@ -443,7 +443,11 @@ module TestStackMemoryPool =
         // Evicts the Int32 cell wholesale (it intersects offset 0), but covers only byte 0,
         // so byte 1 is now backed by neither a cell nor — if eviction worked — the overlay.
         let pool =
-            StackMemoryPool.writeCell block 0 (CliType.Numeric (CliNumericType.UInt8 0x55uy)) pool
+            StackMemoryPool.writeCell
+                block
+                0
+                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0x55uy)))
+                pool
 
         // Zero from the block's zero-initialisation. Without the eviction, 0xAA resurfaces.
         StackMemoryPool.readBytes block 1 1 pool |> shouldEqual [| 0uy |]

@@ -1023,7 +1023,7 @@ public static class StreamVersionLibrary
             array.Elements
             |> Seq.map (fun element ->
                 match CliType.unwrapPrimitiveLikeDeep element with
-                | CliType.Numeric (CliNumericType.UInt8 b) -> b
+                | CliType.Numeric (CliNumericType.UInt8 b) -> UInt8Source.value "byte array element" b
                 | other -> failwith $"expected byte element, got %O{other}"
             )
             |> Seq.toArray

@@ -75,7 +75,9 @@ module TestCliTypeBytes =
         Gen.oneof
             [
                 ArbMap.defaults |> ArbMap.generate<sbyte> |> Gen.map CliNumericType.Int8
-                ArbMap.defaults |> ArbMap.generate<byte> |> Gen.map CliNumericType.UInt8
+                ArbMap.defaults
+                |> ArbMap.generate<byte>
+                |> Gen.map (UInt8Source.Verbatim >> CliNumericType.UInt8)
                 ArbMap.defaults |> ArbMap.generate<int16> |> Gen.map CliNumericType.Int16
                 ArbMap.defaults |> ArbMap.generate<uint16> |> Gen.map CliNumericType.UInt16
                 ArbMap.defaults |> ArbMap.generate<int32> |> Gen.map CliNumericType.Int32
@@ -151,16 +153,16 @@ module TestCliTypeBytes =
             cliField "AsInt" (CliType.Numeric (CliNumericType.Int32 asInt)) (Some 0) int32Handle
 
         let byte0 =
-            cliField "Byte0" (CliType.Numeric (CliNumericType.UInt8 0uy)) (Some 0) byteHandle
+            cliField "Byte0" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) (Some 0) byteHandle
 
         let byte1 =
-            cliField "Byte1" (CliType.Numeric (CliNumericType.UInt8 0uy)) (Some 1) byteHandle
+            cliField "Byte1" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) (Some 1) byteHandle
 
         let byte2 =
-            cliField "Byte2" (CliType.Numeric (CliNumericType.UInt8 0uy)) (Some 2) byteHandle
+            cliField "Byte2" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) (Some 2) byteHandle
 
         let byte3 =
-            cliField "Byte3" (CliType.Numeric (CliNumericType.UInt8 0uy)) (Some 3) byteHandle
+            cliField "Byte3" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) (Some 3) byteHandle
 
         SynthesisedLayoutKind.ofFields
             bct
@@ -172,7 +174,7 @@ module TestCliTypeBytes =
 
     let private paddedValueType () : CliValueType =
         let byteField =
-            cliField "Byte" (CliType.Numeric (CliNumericType.UInt8 0uy)) None byteHandle
+            cliField "Byte" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) None byteHandle
 
         let intField =
             cliField "Int" (CliType.Numeric (CliNumericType.Int32 0)) None int32Handle
@@ -202,7 +204,7 @@ module TestCliTypeBytes =
             cliField "Inner" (paddedValueType () |> CliType.ValueType) (Some 0) declaredHandle
 
         let other =
-            cliField "Other" (CliType.Numeric (CliNumericType.UInt8 0uy)) (Some 1) byteHandle
+            cliField "Other" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) (Some 1) byteHandle
 
         SynthesisedLayoutKind.ofFields
             bct
@@ -434,14 +436,10 @@ module TestCliTypeBytes =
         | NativeIntSource.SyntheticCrossArrayOffset offset -> offset
         | other -> failwith $"Expected synthetic cross-storage offset, got %O{other}"
 
-    let private nonByteRenderableNativeIntSources () : NativeIntSource list =
+    /// Native ints that are *handles*: an identity PawPrint carries in place of an address, so
+    /// each byte of one is a position within that identity and can be named.
+    let private namedByteNativeIntSources () : NativeIntSource list =
         [
-            NativeIntSource.ManagedPointer (
-                ManagedPointerSource.Byref (
-                    ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, 0),
-                    []
-                )
-            )
             NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed int32Handle)
             NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed int32Handle)
             NativeIntSource.MethodTableAuxiliaryDataPtr (RuntimeTypeHandleTarget.Closed int32Handle)
@@ -451,8 +449,24 @@ module TestCliTypeBytes =
             NativeIntSource.ModuleHandle "module"
             NativeIntSource.MetadataImportHandle "metadata"
             NativeIntSource.GcHandlePtr (GcHandleAddress 0, 0L)
+        ]
+
+    /// Native ints with no byte image at all: a byref is a storage location rather than an
+    /// identity, and the synthetic cross-storage offset is a sentinel standing in for a distance
+    /// that does not exist.
+    let private refusedNativeIntSources () : NativeIntSource list =
+        [
+            NativeIntSource.ManagedPointer (
+                ManagedPointerSource.Byref (
+                    ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, 0),
+                    []
+                )
+            )
             syntheticCrossStorageNativeIntSource ()
         ]
+
+    let private nonByteRenderableNativeIntSources () : NativeIntSource list =
+        namedByteNativeIntSources () @ refusedNativeIntSources ()
 
     let private genByteAddressabilityCliType : Gen<CliType> =
         Gen.oneof
@@ -571,15 +585,24 @@ module TestCliTypeBytes =
                 CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L))
             )
         with
-        | CliByteAddressability.Rejected rejection -> rejection.Description |> shouldContainText "native int"
-        | CliByteAddressability.ByteAddressable ->
-            failwith "Expected FieldHandlePtr native int to be rejected as byte-unaddressable"
+        | CliByteAddressability.SymbolicallyAddressable obstruction ->
+            obstruction.Description |> shouldContainText "native int"
+        | other -> failwith $"Expected FieldHandlePtr native int to be addressable only as named bytes, got %O{other}"
 
-        for source in nonByteRenderableNativeIntSources () do
+        for source in namedByteNativeIntSources () do
+            match CliType.ByteAddressability (CliType.Numeric (CliNumericType.NativeInt source)) with
+            | CliByteAddressability.SymbolicallyAddressable obstruction ->
+                obstruction.Description |> shouldContainText "native int"
+            | other ->
+                failwith $"Expected native int source %O{source} to be addressable only as named bytes, got %O{other}"
+
+        // The control that keeps the line above meaningful: not every native int PawPrint refuses
+        // to render becomes nameable. A byref is a storage location rather than an identity, so
+        // there is nothing for a byte to be a position in.
+        for source in refusedNativeIntSources () do
             match CliType.ByteAddressability (CliType.Numeric (CliNumericType.NativeInt source)) with
             | CliByteAddressability.Rejected rejection -> rejection.Description |> shouldContainText "native int"
-            | CliByteAddressability.ByteAddressable ->
-                failwith $"Expected native int source %O{source} to be rejected as byte-unaddressable"
+            | other -> failwith $"Expected native int source %O{source} to stay refused outright, got %O{other}"
 
         match
             CliType.ByteAddressability (
@@ -588,6 +611,8 @@ module TestCliTypeBytes =
                 )
             )
         with
+        | CliByteAddressability.SymbolicallyAddressable obstruction ->
+            failwith $"int64 provenance has no per-byte naming rule, so it must stay refused outright: %O{obstruction}"
         | CliByteAddressability.Rejected rejection -> rejection.Description |> shouldContainText "int64"
         | CliByteAddressability.ByteAddressable ->
             failwith "Expected widened FieldHandlePtr int64 to be rejected as byte-unaddressable"
@@ -599,6 +624,8 @@ module TestCliTypeBytes =
                 )
             )
         with
+        | CliByteAddressability.SymbolicallyAddressable obstruction ->
+            failwith $"int64 provenance has no per-byte naming rule, so it must stay refused outright: %O{obstruction}"
         | CliByteAddressability.Rejected rejection -> rejection.Description |> shouldContainText "int64"
         | CliByteAddressability.ByteAddressable ->
             failwith "Expected synthetic cross-storage int64 to be rejected as byte-unaddressable"
@@ -610,6 +637,8 @@ module TestCliTypeBytes =
                 )
             )
         with
+        | CliByteAddressability.SymbolicallyAddressable obstruction ->
+            failwith $"int64 provenance has no per-byte naming rule, so it must stay refused outright: %O{obstruction}"
         | CliByteAddressability.Rejected rejection -> rejection.Description |> shouldContainText "int64"
         | CliByteAddressability.ByteAddressable ->
             failwith "Expected non-canonical widened verbatim int64 to be rejected as byte-unaddressable"
@@ -643,22 +672,24 @@ module TestCliTypeBytes =
         let taggedNativeIntValueType = taggedNativeIntValueType ()
 
         match CliType.ByteAddressability (CliType.ValueType taggedNativeIntValueType) with
-        | CliByteAddressability.Rejected rejection ->
-            rejection.Description
+        | CliByteAddressability.SymbolicallyAddressable obstruction ->
+            obstruction.Description
             |> shouldContainText "value type containing non-byte-addressable field"
-        | CliByteAddressability.ByteAddressable ->
-            failwith "Expected value type containing tagged native int to be rejected as byte-unaddressable"
+        | other ->
+            failwith
+                $"Expected value type containing tagged native int to be addressable only as named bytes, got %O{other}"
 
         let nestedTaggedNativeIntValueType = nestedTaggedNativeIntValueType ()
 
         match CliType.ByteAddressability (CliType.ValueType nestedTaggedNativeIntValueType) with
-        | CliByteAddressability.Rejected rejection ->
-            rejection.Description
+        | CliByteAddressability.SymbolicallyAddressable obstruction ->
+            obstruction.Description
             |> shouldContainText "value type containing non-byte-addressable field"
 
-            rejection.Description |> shouldContainText "native int"
-        | CliByteAddressability.ByteAddressable ->
-            failwith "Expected nested value type containing tagged native int to be rejected as byte-unaddressable"
+            obstruction.Description |> shouldContainText "native int"
+        | other ->
+            failwith
+                $"Expected nested value type containing tagged native int to be addressable only as named bytes, got %O{other}"
 
         let nestedObjectValueType = nestedObjectReferenceValueType ()
 
@@ -687,6 +718,7 @@ module TestCliTypeBytes =
         // invariant we need from accepted values is that byte helpers can
         // actually materialise their byte image.
         let mutable byteAddressableCount = 0
+        let mutable symbolicCount = 0
         let mutable rejectedCount = 0
 
         let property (value : CliType) : unit =
@@ -698,10 +730,21 @@ module TestCliTypeBytes =
                 bytes.Length |> shouldEqual (CliType.SizeOf(value).Size)
 
                 CliType.BytesAt 0 bytes.Length value |> shouldEqual bytes
+            | CliByteAddressability.SymbolicallyAddressable _ ->
+                symbolicCount <- symbolicCount + 1
+
+                // The corresponding invariant for a value whose bytes are only nameable: the
+                // named image exists and is the declared width, and the `byte[]` helpers still
+                // refuse it.
+                let size = CliType.SizeOf(value).Size
+                CliType.SymbolicBytesAt 0 size value |> Array.length |> shouldEqual size
+
+                (fun () -> CliType.BytesAt 0 size value |> ignore) |> shouldFail<exn>
             | CliByteAddressability.Rejected _ -> rejectedCount <- rejectedCount + 1
 
         Check.One (config, Prop.forAll (Arb.fromGen genByteAddressabilityCliType) property)
         byteAddressableCount > 0 |> shouldEqual true
+        symbolicCount > 0 |> shouldEqual true
         rejectedCount > 0 |> shouldEqual true
 
     [<Test>]
@@ -967,7 +1010,7 @@ module TestCliTypeBytes =
                 CliValueType.BytesAt 1 3 updated |> shouldEqual expected.[1..3]
 
                 CliValueType.DereferenceField "Byte" updated
-                |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 expected.[0]))
+                |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim expected.[0])))
 
                 CliValueType.DereferenceField "Int" updated
                 |> shouldEqual (CliType.Numeric (CliNumericType.Int32 (System.BitConverter.ToInt32 (expected, 4))))
@@ -1088,7 +1131,7 @@ module TestCliTypeBytes =
 
             for i = 0 to expectedBytes.Length - 1 do
                 CliValueType.DereferenceField $"Byte%i{i}" recovered
-                |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 expectedBytes.[i]))
+                |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim expectedBytes.[i])))
 
         Check.One (config, Prop.forAll (ArbMap.defaults |> ArbMap.generate<int32> |> Arb.fromGen) property)
 
@@ -1147,7 +1190,10 @@ module TestCliTypeBytes =
         CliValueType.ToBytes recovered |> shouldEqual bytes
 
         let updated =
-            CliValueType.WithFieldSet "Byte" (CliType.Numeric (CliNumericType.UInt8 9uy)) recovered
+            CliValueType.WithFieldSet
+                "Byte"
+                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 9uy)))
+                recovered
 
         let expected = Array.copy bytes
         expected.[0] <- 9uy
@@ -1175,7 +1221,7 @@ module TestCliTypeBytes =
         CliValueType.ToBytes recovered |> shouldEqual bytes
 
         CliValueType.DereferenceField "Other" recovered
-        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 5uy))
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 5uy)))
 
     [<Test>]
     let ``field writes preserve trailing storage recovered from bytes`` () : unit =
@@ -1338,6 +1384,7 @@ module TestCliTypeBytes =
             let zero = CliType.ZeroLike template
 
             match CliType.ByteAddressability zero with
+            | CliByteAddressability.SymbolicallyAddressable _
             | CliByteAddressability.Rejected _ -> true
             | CliByteAddressability.ByteAddressable -> CliType.ToBytes zero |> Array.forall (fun b -> b = 0uy)
 
@@ -1471,6 +1518,7 @@ module TestCliTypeBytes =
                 match CliType.ByteAddressability value with
                 | CliByteAddressability.ByteAddressable ->
                     CliType.ToBytes value = CliType.ToBytes (CliType.ZeroLike value)
+                | CliByteAddressability.SymbolicallyAddressable _
                 | CliByteAddressability.Rejected _ -> true
 
         Check.One (config, Prop.forAll (Arb.fromGen genByteAddressabilityCliType) property)
@@ -1505,6 +1553,7 @@ module TestCliTypeBytes =
         // byte-write path is the oracle: zeroing a range must be writing that many zero bytes.
         let property (value : CliType, offset : int, count : int) : bool =
             match CliType.ByteAddressability value with
+            | CliByteAddressability.SymbolicallyAddressable _
             | CliByteAddressability.Rejected _ -> true
             | CliByteAddressability.ByteAddressable ->
                 let viaBytes = CliType.WithBytesAtIfChanged offset (Array.zeroCreate count) value
@@ -1772,9 +1821,8 @@ module TestCliTypeBytes =
             |> CliType.ValueType
 
         match CliType.ByteAddressability vt with
-        | CliByteAddressability.ByteAddressable ->
-            failwith "test premise broken: this struct is supposed to have no byte rendering"
         | CliByteAddressability.Rejected _ -> ()
+        | other -> failwith $"test premise broken: this struct is supposed to have no byte rendering, got %O{other}"
 
         match CliType.WithZeroedRangeIfChanged 0 (CliType.SizeOf vt).Size vt with
         | None ->
@@ -1804,3 +1852,241 @@ module TestCliTypeBytes =
 
         // The whole 4-byte range is still legal.
         CliType.WithZeroedRangeIfChanged 0 4 value |> Option.isSome |> shouldEqual true
+
+    // ------------------------------------------------------------------
+    // Named bytes over a native int PawPrint models as an identity.
+    //
+    // `SignatureHelper.InternalAddRuntimeType` copies the eight bytes of `type.TypeHandle.Value`
+    // into a `Reflection.Emit` signature blob one at a time, so the shape below -- an `IntPtr`
+    // whose single field is a type handle -- has to answer a byte view without any bits being
+    // invented for it.
+    // ------------------------------------------------------------------
+
+    let private typeHandleTarget : RuntimeTypeHandleTarget =
+        RuntimeTypeHandleTarget.Closed int32Handle
+
+    let private typeHandleSource : NativeIntSource =
+        NativeIntSource.TypeHandlePtr typeHandleTarget
+
+    /// An `IntPtr`-shaped struct whose single `_value` field holds a type handle.
+    let private typeHandleIntPtr () : CliValueType =
+        SynthesisedLayoutKind.ofFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = 8, packingSize = 0))
+            CharSet.Ansi
+            [
+                cliField "_value" (CliType.Numeric (CliNumericType.NativeInt typeHandleSource)) (Some 0) intPtrHandle
+            ]
+
+    /// Eight bytes of handle at offset 0, then four ordinary bytes at offset 8, so that a slice
+    /// can miss the handle entirely and a slice that straddles the boundary can be checked.
+    let private handleThenIntValueType () : CliValueType =
+        SynthesisedLayoutKind.ofFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = 12, packingSize = 0))
+            CharSet.Ansi
+            [
+                cliField "_value" (CliType.Numeric (CliNumericType.NativeInt typeHandleSource)) (Some 0) intPtrHandle
+                cliField "Tail" (CliType.Numeric (CliNumericType.Int32 0x11223344)) (Some 8) int32Handle
+            ]
+
+    [<Test>]
+    let ``A native int carrying an identity is symbolically addressable, not rejected`` () : unit =
+        CliType.ByteAddressability (CliType.Numeric (CliNumericType.NativeInt typeHandleSource))
+        |> shouldEqual (
+            CliByteAddressability.SymbolicallyAddressable (
+                CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable typeHandleSource
+            )
+        )
+
+    [<Test>]
+    let ``A struct whose only obstruction is such a native int is symbolically addressable`` () : unit =
+        match CliType.ByteAddressability (typeHandleIntPtr () |> CliType.ValueType) with
+        | CliByteAddressability.SymbolicallyAddressable (CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (_,
+                                                                                                                                  field,
+                                                                                                                                  inner)) ->
+            field |> shouldEqual (FieldId.named "_value")
+
+            inner
+            |> shouldEqual (CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable typeHandleSource)
+        | other -> failwith $"expected a symbolically-addressable struct, got %O{other}"
+
+    [<Test>]
+    let ``An object reference is still rejected outright, not named`` () : unit =
+        // The discriminating control for the classifier: a reference has no byte image *at all*,
+        // so widening "name it instead of refusing" to cover every non-addressable value would
+        // promise a byte for something that has none.
+        match CliType.ByteAddressability (CliType.ObjectRef None) with
+        | CliByteAddressability.Rejected CliByteAddressabilityRejection.ObjectReference -> ()
+        | other -> failwith $"expected an object reference to stay rejected, got %O{other}"
+
+        match CliType.ByteAddressability (objectReferenceValueType () |> CliType.ValueType) with
+        | CliByteAddressability.Rejected (CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _) -> ()
+        | other -> failwith $"expected a reference-containing struct to stay rejected, got %O{other}"
+
+    [<Test>]
+    let ``A rejected field dominates a nameable one`` () : unit =
+        // Order matters here: the nameable field comes first, so an implementation that reports
+        // whichever obstruction it met first would call this whole struct nameable and then owe a
+        // `UInt8Source` for the reference's bytes, which do not exist.
+        let mixed =
+            SynthesisedLayoutKind.ofFields
+                bct
+                allCt
+                declaredHandle
+                (Layout.Custom (size = 16, packingSize = 0))
+                CharSet.Ansi
+                [
+                    cliField
+                        "_value"
+                        (CliType.Numeric (CliNumericType.NativeInt typeHandleSource))
+                        (Some 0)
+                        intPtrHandle
+                    cliField "Obj" (CliType.ObjectRef None) (Some 8) objectHandle
+                ]
+
+        match CliType.ByteAddressability (mixed |> CliType.ValueType) with
+        | CliByteAddressability.Rejected (CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _) -> ()
+        | other -> failwith $"expected the object reference to dominate, got %O{other}"
+
+    [<Test>]
+    let ``SymbolicBytesAt names every byte of a type handle, in ascending order`` () : unit =
+        // The primary anchor. Both the source and the *index* are asserted, because an
+        // implementation that named all eight bytes identically would round-trip through a
+        // decoder that only checked the source, and would then be unable to tell a handle from
+        // its own bytes reversed.
+        let bytes = CliType.SymbolicBytesAt 0 8 (typeHandleIntPtr () |> CliType.ValueType)
+
+        bytes
+        |> shouldEqual (Array.init 8 (fun i -> UInt8Source.NativeIntByte (typeHandleSource, i)))
+
+    [<Test>]
+    let ``SymbolicBytesAt reports the index within the native int, not within the slice`` () : unit =
+        // A slice starting part-way into the handle must still say which byte of the *handle* each
+        // one is: the decoder reassembles by index, so an index rebased on the slice would name
+        // byte 0 of a handle whose byte 0 is elsewhere.
+        CliType.SymbolicBytesAt 3 4 (typeHandleIntPtr () |> CliType.ValueType)
+        |> shouldEqual (Array.init 4 (fun i -> UInt8Source.NativeIntByte (typeHandleSource, i + 3)))
+
+    [<Test>]
+    let ``SymbolicBytesAt over a bare native int indexes from the start of the handle`` () : unit =
+        // The value here *is* the native int, with no struct around it, which is the shape a byref
+        // to a bare `nint` local names. The offset is the caller's, so the index has to be rebased
+        // onto the handle: an index counted from the start of the slice would call this byte 0.
+        let bare = CliType.Numeric (CliNumericType.NativeInt typeHandleSource)
+
+        CliType.SymbolicBytesAt 5 3 bare
+        |> shouldEqual (Array.init 3 (fun i -> UInt8Source.NativeIntByte (typeHandleSource, i + 5)))
+
+        CliType.SymbolicBytesAt 0 8 bare
+        |> shouldEqual (Array.init 8 (fun i -> UInt8Source.NativeIntByte (typeHandleSource, i)))
+
+    [<Test>]
+    let ``SymbolicBytesAt indexes a handle from the field's own start, not the struct's`` () : unit =
+        // A handle at a non-zero field offset: the byte at struct offset 9 is byte *1* of the
+        // handle, not byte 9 of it. With the handle at offset 0 the two are indistinguishable,
+        // which is why this struct puts an int in front of it.
+        let intThenHandle =
+            SynthesisedLayoutKind.ofFields
+                bct
+                allCt
+                declaredHandle
+                (Layout.Custom (size = 16, packingSize = 0))
+                CharSet.Ansi
+                [
+                    cliField "Head" (CliType.Numeric (CliNumericType.Int32 0x11223344)) (Some 0) int32Handle
+                    cliField
+                        "_value"
+                        (CliType.Numeric (CliNumericType.NativeInt typeHandleSource))
+                        (Some 8)
+                        intPtrHandle
+                ]
+            |> CliType.ValueType
+
+        CliType.SymbolicBytesAt 8 8 intThenHandle
+        |> shouldEqual (Array.init 8 (fun i -> UInt8Source.NativeIntByte (typeHandleSource, i)))
+
+        CliType.SymbolicBytesAt 9 2 intThenHandle
+        |> shouldEqual
+            [|
+                UInt8Source.NativeIntByte (typeHandleSource, 1)
+                UInt8Source.NativeIntByte (typeHandleSource, 2)
+            |]
+
+    [<Test>]
+    let ``SymbolicBytesAt is verbatim where the slice misses the handle`` () : unit =
+        let value = handleThenIntValueType () |> CliType.ValueType
+
+        CliType.SymbolicBytesAt 8 4 value
+        |> shouldEqual (System.BitConverter.GetBytes 0x11223344 |> Array.map UInt8Source.Verbatim)
+
+    [<Test>]
+    let ``SymbolicBytesAt spans the boundary between named and verbatim bytes`` () : unit =
+        let value = handleThenIntValueType () |> CliType.ValueType
+        let tail = System.BitConverter.GetBytes 0x11223344
+
+        CliType.SymbolicBytesAt 6 4 value
+        |> shouldEqual
+            [|
+                UInt8Source.NativeIntByte (typeHandleSource, 6)
+                UInt8Source.NativeIntByte (typeHandleSource, 7)
+                UInt8Source.Verbatim tail.[0]
+                UInt8Source.Verbatim tail.[1]
+            |]
+
+    [<Test>]
+    let ``SymbolicBytesAt refuses a value with no byte image at all`` () : unit =
+        (fun () -> CliType.SymbolicBytesAt 0 8 (CliType.ObjectRef None) |> ignore)
+        |> shouldFail<exn>
+
+        (fun () ->
+            CliType.SymbolicBytesAt 0 8 (objectReferenceValueType () |> CliType.ValueType)
+            |> ignore
+        )
+        |> shouldFail<exn>
+
+    [<Test>]
+    let ``BytesAt still refuses a value whose bytes are only nameable`` () : unit =
+        // The currency of every existing caller is `byte[]`, and a named byte is not a number, so
+        // nothing that was refused before starts succeeding.
+        (fun () -> CliType.BytesAt 0 8 (typeHandleIntPtr () |> CliType.ValueType) |> ignore)
+        |> shouldFail<exn>
+
+        (fun () ->
+            CliType.BytesAt 0 8 (CliType.Numeric (CliNumericType.NativeInt typeHandleSource))
+            |> ignore
+        )
+        |> shouldFail<exn>
+
+    [<Test>]
+    let ``SymbolicBytesAt agrees with BytesAt wherever BytesAt succeeds`` () : unit =
+        // The oracle: for anything that does have a byte image, naming must not change what the
+        // bytes are, only how they are spelled.
+        let property (value : CliType) (offset : int) (count : int) : bool =
+            let size = CliType.sizeOf value
+            let offset = if size = 0 then 0 else abs offset % size
+
+            let count =
+                if size - offset <= 0 then
+                    0
+                else
+                    abs count % (size - offset) + 1
+
+            let expected = CliType.BytesAt offset count value |> Array.map UInt8Source.Verbatim
+            CliType.SymbolicBytesAt offset count value = expected
+
+        let config : Config = Config.QuickThrowOnFailure.WithMaxTest 2000
+
+        let gen =
+            gen {
+                let! value = genPrimitiveCliType
+                let! offset = Gen.choose (0, 64)
+                let! count = Gen.choose (0, 64)
+                return value, offset, count
+            }
+
+        Check.One (config, Prop.forAll (Arb.fromGen gen) (fun (v, o, c) -> property v o c))
