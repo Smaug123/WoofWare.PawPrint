@@ -924,6 +924,43 @@ module NativeSystemNative =
             // `SystemNative_GetSocketAddressSizes`, so serving this one says
             // nothing about those.
             pushInt32 SimulatedUnixPlatform.maximumSocketAddressSize ctx |> Some
+        | Some "SystemNative_PlatformSupportsDualModeIPv4PacketInfo",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_PlatformSupportsDualModeIPv4PacketInfo(void)`
+            // (pal_networking.c) is nothing but `return 1;` or `return 0;` under
+            // an `#if` on how the shim was built — no socket, no errno and no
+            // state, like `SystemNative_GetMaximumAddressSize` above. Unlike that
+            // one it takes the flavour;
+            // `SimulatedUnixPlatform.supportsDualModeIPv4PacketInfo` records the
+            // cmake condition it comes from and why we answer as the platform we
+            // impersonate rather than conservatively.
+            //
+            // Reported to CoreLib as an `int` that
+            // `SocketPal.GetPlatformSupportsDualModeIPv4PacketInfo` compares
+            // against zero, so any non-zero value would do; we answer 1 because
+            // that is the literal upstream returns.
+            //
+            // Together with `SystemNative_GetMaximumAddressSize` this supplies
+            // both of the native calls in `System.Net.Sockets.SocketPal`'s class
+            // initialiser; its one remaining statement derives
+            // `SelectOverPollIsBroken` from `OperatingSystem.IsMacOS` and
+            // friends, which reach no native code.
+            //
+            // The latched result has exactly two readers, both branching on
+            // `SocketPal.SupportsDualModeIPv4PacketInfo`. When it is false,
+            // `CheckDualModePacketInfoSupport` throws
+            // `PlatformNotSupportedException` out of `Socket.ReceiveMessageFrom`
+            // and `ReceiveMessageFromAsync` on a dual-mode socket (the SR key is
+            // named `..._dualmode_receivefrom_notsupported`, but plain
+            // `ReceiveFrom` never consults it), and
+            // `SetReceivingDualModeIPv4PacketInformation` becomes a no-op. When
+            // it is true, that second one sets `SocketOptionLevel.IP` /
+            // `SocketOptionName.PacketInformation`.
+            let supported =
+                SimulatedUnixPlatform.supportsDualModeIPv4PacketInfo state.Kernel.UnixPlatform
+
+            pushInt32 (if supported then 1 else 0) ctx |> Some
         | Some "SystemNative_GetErrNo",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
@@ -3142,6 +3179,233 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim error)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_WaitForSocketEvents",
+          [ ConcreteIntPtr state.ConcreteTypes
+            ConcretePointer _
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            // `int32_t SystemNative_WaitForSocketEvents(intptr_t port,
+            // SocketEvent* buffer, int32_t* count)` (pal_networking.c:3492):
+            //
+            //     if (buffer == NULL || count == NULL || *count < 0) return Error_EFAULT;
+            //     return WaitForSocketEventsInner(ToFileDescriptor(port), buffer, count);
+            //
+            // and the inner function is `epoll_wait(port, events, *count, -1)`
+            // under epoll or `kevent(port, NULL, 0, events, *count, NULL)` under
+            // kqueue — an *infinite* timeout in both cases, with the EINTR retry
+            // in the loop condition, so signal delivery must not wake a thread
+            // parked here.
+            //
+            // The buffer's element type is matched with a wildcard: CoreLib
+            // declares it `SocketEvent*` (Interop.SocketEvent.cs), and a guest
+            // hand-rolling the P/Invoke will say `byte*` or `void*`. Nothing here
+            // addresses an element, only the byte range they span, so the pointee
+            // type is not consulted.
+            //
+            // Five of the eight rows of this entry point's contract differ between
+            // the two flavours, so the ladder below is flavour-branching
+            // throughout rather than in one place. Each ordering is measured — on
+            // Linux 6.18.5 and Darwin 25.6.0 — rather than read off the kernel
+            // sources, because the widely-reproduced `do_epoll_wait` listing
+            // checks `maxevents` and `access_ok` *before* `fdget` and current
+            // kernels do not.
+            let operation = "SystemNative_WaitForSocketEvents"
+
+            // `port` is deliberately *not* decoded yet, and neither is `count`
+            // classified: the wrapper's screen is `buffer == NULL || count == NULL
+            // || *count < 0`, which short-circuits, and only then reaches
+            // `ToFileDescriptor(port)`. So a guest may legally pass a `port` that is
+            // no number at all — a function pointer, a type handle — alongside a null
+            // buffer, and the answer is EFAULT rather than anything about a
+            // descriptor. `fdArgument` refuses such a value, which is right, so it
+            // must not run until the call is known to consult the argument.
+            let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
+
+            let flavour = SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform
+
+            // The wrapper's own three rows. It answers them in user space, having
+            // run no syscall — so `errno` keeps whatever it already held, and
+            // `*count` is left exactly as the caller set it.
+            let refuseBeforeSyscall () : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal UnixError.EFAULT)))
+                    ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match buffer with
+            | BufferPointer.RawAddress 0UL -> refuseBeforeSyscall ()
+            | _ ->
+
+            let countPointer = bufferPointerArgument operation "count" instruction.Arguments.[2]
+
+            match countPointer with
+            | BufferPointer.RawAddress 0UL -> refuseBeforeSyscall ()
+            | _ ->
+
+            let countCell =
+                match BufferPointer.dereferenceable countPointer with
+                | Some cell -> cell
+                | None ->
+                    // Deliberately not EFAULT. `*count` is dereferenced by the
+                    // wrapper itself, in user space, so a non-null address naming
+                    // no storage is a SIGSEGV that kills the process rather than
+                    // an error code the guest can catch — the same reasoning
+                    // `SystemNative_CreateSocketEventPort` applies to its own
+                    // out-parameter store.
+                    failwith
+                        $"%s{operation}: `count` is %O{countPointer}, which is not null but names no storage. The C wrapper dereferences it in user space, so a real run would fault; PawPrint does not model that fault. Pass a real in-out parameter."
+
+            let requestedCount =
+                let bytes = readBytesThrough ctx operation countCell 4 state
+                BinaryPrimitives.ReadInt32LittleEndian (bytes.AsSpan ())
+
+            if requestedCount < 0 then
+                // EFAULT, which is the wrapper's own choice and neither kernel's:
+                // `epoll_wait` answers EINVAL for a non-positive `maxevents`, and
+                // never sees this value.
+                refuseBeforeSyscall ()
+            else
+
+            // Past the wrapper, so the call really does consult `port` now.
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            let openFile = FileDescriptorRegistry.tryFindWithId fd state.Kernel.FileDescriptors
+
+            // A row the syscall reached and failed. Two consequences beyond the
+            // returned PAL code: the inner function writes its flavour's sentinel
+            // through `count`, and the syscall set `errno` on the way past — which
+            // a guest declaring this entry point `SetLastError = true` can read
+            // back, exactly as for `SystemNative_CloseSocketEventPort`.
+            let failFromSyscall (error : UnixError) : NativeHandlerResult option =
+                let sentinel =
+                    // `*count = 0` under epoll and `*count = -1` under kqueue,
+                    // both unconditional in their own error branch.
+                    match flavour with
+                    | SimulatedUnixFlavour.Linux -> 0
+                    | SimulatedUnixFlavour.Darwin -> -1
+
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+                let bytes = Array.zeroCreate<byte> 4
+                BinaryPrimitives.WriteInt32LittleEndian (Span<byte> bytes, sentinel)
+
+                writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange bytes) state
+                |> fun state ->
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            LastSystemError = UnixError.toRawErrnoUnder numbering error
+                        }
+                    )
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal error)))
+                    ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            // Park re-entrantly: leave the native frame on the stack and the
+            // caller's program counter naming the call, so that a wake re-enters
+            // this handler and writes the event batch through the caller's own
+            // `buffer` — rather than the wake having to reach into a frame it does
+            // not own from some other thread's step.
+            //
+            // Nothing wakes it today, and that is faithful rather than a stub: no
+            // descriptor can be registered with a port yet
+            // (`SystemNative_TryChangeSocketEventRegistration` is deliberately
+            // still unimplemented), and both PAL implementations carry the comment
+            // that with an infinite timeout the wait blocks until a descriptor is
+            // added *and* an event occurs on it. `SocketAsyncEngine.EventLoop`'s
+            // thread does exactly this in a process that never opens a socket.
+            let park (port : OpenFileDescriptionId) : NativeHandlerResult option =
+                Scheduler.blockOnSocketEvents ctx.Thread port state
+                |> NativeHandlerResult.blockedRetainingFrame
+                |> Some
+
+            match flavour with
+            | SimulatedUnixFlavour.Linux ->
+                // Measured on 6.18.5, each adjacent pair separated by an input that
+                // provokes exactly one of the two: descriptor, then `maxevents`,
+                // then the buffer, then is-it-an-epoll-instance.
+                match openFile with
+                | None -> failFromSyscall UnixError.EBADF
+                | Some (port, description) ->
+
+                // The kernel's predicate is `maxevents <= 0 || maxevents > EP_MAX_EVENTS`;
+                // the wrapper has already turned every negative value into EFAULT,
+                // so zero is the only non-positive one that gets here.
+                if requestedCount = 0 || requestedCount > LinuxEpollLimits.MaxEvents then
+                    failFromSyscall UnixError.EINVAL
+                else
+
+                // The byte range `access_ok(events, maxevents * sizeof(struct
+                // epoll_event))` screens. This multiplication is safe only *below*
+                // the cap just applied, which is what `EP_MAX_EVENTS` exists for:
+                // it is `INT_MAX / EventSize`, so every count that reaches here has
+                // a product inside `int32`.
+                let bufferExtent = requestedCount * LinuxEpollLimits.EventSize
+
+                // Not a mappedness check. On 64-bit Linux `access_ok` only rejects
+                // ranges reaching into the kernel half, so a merely-unmapped
+                // userspace address passes and the wait then blocks, faulting at
+                // delivery — which is why this must not eagerly validate that the
+                // buffer is real before parking. `faultsBeforeOperation` is exactly
+                // that range test against `UserAddressLimit`.
+                if faultsBeforeOperation state.Kernel buffer bufferExtent then
+                    failFromSyscall UnixError.EFAULT
+                else
+
+                match description.Target with
+                | OpenFileTarget.StandardStream _
+                | OpenFileTarget.File _ ->
+                    // A live descriptor onto the wrong kind of object. EINVAL is
+                    // epoll's own answer for it, and it is the last of the four
+                    // screens — behind the buffer, which is why an unmappable
+                    // buffer on a non-port descriptor is EFAULT rather than this.
+                    failFromSyscall UnixError.EINVAL
+                | OpenFileTarget.SocketEventPort -> park port
+            | SimulatedUnixFlavour.Darwin ->
+                // Measured on 25.6.0, and flatter: `kevent` resolves the descriptor
+                // before its `nevents == 0` early return, has no "wrong kind of
+                // object" answer to give, and screens no buffer at all — so the
+                // whole ladder is one question about the descriptor followed by one
+                // about the count.
+                match openFile with
+                | None -> failFromSyscall UnixError.EBADF
+                | Some (port, description) ->
+
+                match description.Target with
+                | OpenFileTarget.StandardStream _
+                | OpenFileTarget.File _ ->
+                    // EBADF, where epoll says EINVAL: kqueue folds "not a kqueue"
+                    // into "bad descriptor".
+                    failFromSyscall UnixError.EBADF
+                | OpenFileTarget.SocketEventPort ->
+
+                if requestedCount = 0 then
+                    // The one input on which the flavours disagree about whether
+                    // the call blocks at all. Measured:
+                    // `kevent(kq, NULL, 0, evs, 0, NULL)` returns 0 immediately,
+                    // where `epoll_wait` with `maxevents == 0` is EINVAL. The
+                    // "we should never see 0 events" assertion that follows is
+                    // compiled out of the shipped release build, so the wrapper
+                    // falls through, writes `*count = 0` and reports success.
+                    //
+                    // `errno` is untouched, the syscall having not failed.
+                    let bytes = Array.zeroCreate<byte> 4
+                    BinaryPrimitives.WriteInt32LittleEndian (Span<byte> bytes, 0)
+
+                    writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange bytes) state
+                    |> IlMachineState.pushToEvalStack'
+                        (EvalStackValue.Int32 (Int32Source.Verbatim UnixError.palSuccess))
+                        ctx.Thread
+                    |> NativeHandlerResult.completed
+                    |> Some
+                else
+
+                // No buffer screen, so an unmappable buffer parks here rather than
+                // faulting: `UserBufferCheck.AtCopyTime` is Darwin's answer, and a
+                // wait that never delivers an event never copies anything.
+                park port
         | Some "SystemNative_IsATty",
           [ ConcreteIntPtr state.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->

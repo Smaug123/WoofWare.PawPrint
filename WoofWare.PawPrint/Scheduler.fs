@@ -502,6 +502,47 @@ module Scheduler =
                     ))
         }
 
+    /// Park `blocked` in `BlockedOnSocketEvents port`, transitioning out of
+    /// `Runnable`. Called from the `SystemNative_WaitForSocketEvents` handler,
+    /// which is the only producer this status will ever have — the entry point
+    /// is the only way into an `epoll_wait`.
+    ///
+    /// `port` is the open file *description* the waited-on descriptor names, not
+    /// the descriptor number: an epoll instance *is* a description, so a `dup`'d
+    /// port waits on the same one, and a wake keyed on the descriptor would miss
+    /// a waiter that had closed the fd it originally waited through.
+    ///
+    /// Carries no deadline, unlike `blockOnJoin` and `blockOnSleep`: the wait
+    /// cannot time out, so `Program.fireExpiredDeadlines` will never route a
+    /// thread out of this status and there is no `fire...Timeout` counterpart
+    /// below. Nothing else wakes it either, today — no descriptor can be
+    /// registered with a port yet, and upstream's own comment says the wait
+    /// blocks until one is *and* an event occurs on it, so parking forever is
+    /// this thread's faithful behaviour rather than a stub.
+    ///
+    /// Unlike every other blocking helper here, the caller must *not* advance
+    /// the program counter past the call site before parking: the wake has to
+    /// re-enter the handler so it can write the event batch through the caller's
+    /// own buffer argument. `NativeHandlerResult.BlockedRetainingFrame` is what
+    /// keeps the frame in place for that.
+    let blockOnSocketEvents
+        (blocked : ThreadId)
+        (port : OpenFileDescriptionId)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        { state with
+            ThreadState =
+                state.ThreadState
+                |> Map.change
+                    blocked
+                    (Option.map (fun s ->
+                        { s with
+                            Status = ThreadStatus.BlockedOnSocketEvents port
+                        }
+                    ))
+        }
+
     /// Fire a `Thread.Sleep` timeout: the deadline-firing path has
     /// observed that `thread` is parked in `BlockedOnSleep (Some _)` and
     /// the virtual clock has advanced past its deadline. Flip the status

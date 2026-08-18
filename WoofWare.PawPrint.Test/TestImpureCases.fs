@@ -486,6 +486,39 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // `SystemNative_WaitForSocketEvents` under the Linux flavour:
+                // `epoll_wait`'s four screens, the order they are applied in, and
+                // the `*count = 0` sentinel each error row writes.
+                //
+                // Not differential: five of the eight rows of the entry point's
+                // contract differ between the two kernels, so a differential guest
+                // would have to agree with whichever kernel the test host is. The
+                // rows both kernels agree on are in
+                // `sourcesPure/SocketEventsWaitScreening.cs`.
+                FileName = "SocketEventsWaitLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The wait rows Darwin answers differently: `*count = -1` as the
+                // error sentinel, EBADF rather than EINVAL for a live non-port
+                // descriptor, and a `*count == 0` that succeeds immediately instead
+                // of being rejected. Configured as macOS for the same reason
+                // `SocketEventPortDarwin.cs` is.
+                FileName = "SocketEventsWaitDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The `SystemNative_LSeek` rows on which Linux and Darwin
                 // disagree: the order `whence` validity and seekability are
                 // checked in, and the errno for an offset that leaves `int64`.

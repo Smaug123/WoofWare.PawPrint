@@ -143,6 +143,7 @@
     <Compile Include="TestUserBufferCheck.fs" />
     <Compile Include="TestUserBufferFault.fs" />
     <Compile Include="TestUserBufferCheckAgainstHost.fs" />
+    <Compile Include="TestPlatformSocketSupport.fs" />
     <Compile Include="TestBufferRangeFit.fs" />
     <Compile Include="TestNonCryptoRandom.fs" />
     <Compile Include="TestDeterministicMath.fs" />
@@ -167,7 +168,9 @@
     <Compile Include="TestSignalHandler.fs" />
     <Compile Include="TestSignalDispatcherThread.fs" />
     <Compile Include="TestSignalDispatch.fs" />
+    <Compile Include="TestLinuxEpollLimits.fs" />
     <Compile Include="TestSocketEventsWaitReason.fs" />
+    <Compile Include="TestSocketEventsWait.fs" />
     <Compile Include="TestEffectiveProcessorCount.fs" />
     <Compile Include="TestEnvironmentEntryInvariant.fs" />
     <Compile Include="TestSystemTimeAsTicks.fs" />
