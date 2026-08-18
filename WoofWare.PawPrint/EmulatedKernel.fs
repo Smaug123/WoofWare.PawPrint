@@ -853,10 +853,18 @@ type EmulatedKernel =
         /// `SetEnvironmentVariableW`, so `Environment.SetEnvironmentVariable`
         /// aborts loudly rather than mutating the table.
         ///
-        /// A name that is empty or contains `=`, and a name or value containing
-        /// a NUL, cannot be expressed as an environment block entry; the block
-        /// shim refuses such a table rather than handing a guest one that would
-        /// parse back to different variables than this map holds.
+        /// Every name here is one a real process could hold: non-empty, free of
+        /// `=`, and free of NUL, as is every value. `EmulatedKernel
+        /// .withEnvironment` — the only way an entry enters the table — rejects
+        /// anything else, so readers may rely on it. See
+        /// `environmentEntryProblem` for why those are exactly the expressible
+        /// names.
+        ///
+        /// That invariant is what makes `GetEnvironmentVariableW`'s plain
+        /// `Map.tryFind` faithful without reproducing the PAL's own two
+        /// name guards: for a name the PAL would refuse, the lookup misses and
+        /// reports `ERROR_ENVVAR_NOT_FOUND`, which is exactly what the PAL
+        /// returns on that path.
         Environment : Map<string, string>
         /// Number of logical processors the simulated process observes, as
         /// reported by `Environment.ProcessorCount`. Deliberately a value in
@@ -1731,6 +1739,60 @@ module EmulatedKernel =
         // and `Int32.MaxValue + 1` is less than half of `0xFFFF_FFFF`.
         OsThreadId (uint32 i + 1u)
 
+    /// Why `name`/`value` could not be a variable of a real process, or `None` if
+    /// it could. The string describes the problem for a caller to prefix with its
+    /// own context. Total: a null name or value is itself one of the answers,
+    /// rather than something this dereferences.
+    ///
+    /// A real process's environment is not a name-to-value map at all: it is a
+    /// list of `name=value` strings, and the map every environment API presents
+    /// is a *view* of that list, obtained by splitting each entry at its first
+    /// `=`. CoreCLR makes that view total by refusing, in
+    /// `GetEnvironmentVariableA` (`pal/src/misc/environ.cpp`), to look up a name
+    /// that is empty or contains `=`; `Environment.GetEnvironmentVariables`
+    /// likewise discards any entry whose first `=` is not after the first
+    /// character. So the set of names the view can ever produce is exactly the
+    /// non-empty, `=`-free ones, and a NUL cannot occur at all because the
+    /// entries are C strings.
+    ///
+    /// PawPrint stores the map rather than the list, which is the more convenient
+    /// representation but admits names that view could never yield. Such a name
+    /// has no consistent behaviour to model: measured against real .NET, an
+    /// inherited entry `A=B=C` is the variable `A` with value `B=C`, and looking
+    /// up `A=B` returns null — so a PawPrint table holding the key `A=B` would
+    /// have to answer that lookup both ways at once. Rejecting the table is what
+    /// keeps the two environment APIs in agreement with each other and with the
+    /// real runtime.
+    ///
+    /// Shared with the `GetEnvironmentStringsW` shim, which flattens the map back
+    /// into a list and so re-checks; keeping one copy of the rule is what stops
+    /// the two disagreeing about which tables are legal.
+    let environmentEntryProblem (name : string) (value : string) : string option =
+        // Null first, and as its own case rather than lumped in with the empty
+        // name. `Map<string, string>` holds a null key or value quite happily —
+        // F#'s comparer sorts null first, and a consumer of this package writing
+        // C# has nothing stopping it — so this function would otherwise dereference
+        // null and abort a run with a bare NullReferenceException, which is the
+        // opposite of what a validating classifier is for. Same reason
+        // `AbsoluteUnixPath.assertValid` exists.
+        if isNull name then
+            Some "a variable whose name is null, which is not a string an environment list could hold"
+        elif isNull value then
+            // `name` is known non-null by now, so it is safe to name the offender.
+            Some $"a variable (%s{name}) whose value is null, which is not a string an environment list could hold"
+        elif name = "" then
+            Some
+                "a variable with an empty name, which no environment list can express (the entry would read `=value`, which every reader discards)"
+        elif name.Contains '=' then
+            Some
+                $"a variable whose name contains '=' (%s{name}), which no environment list can express unambiguously: a reader splits at the first '=', so it would see a different name and value"
+        elif name.Contains (char 0) then
+            Some $"a variable whose name contains a NUL code unit (%s{name}), which would terminate its entry early"
+        elif value.Contains (char 0) then
+            Some $"a variable (%s{name}) whose value contains a NUL code unit, which would terminate its entry early"
+        else
+            None
+
     /// Overlay the supplied environment variables on top of the kernel's
     /// existing `Environment` map. Used by `Program.run` / the CLI to layer
     /// host or test-supplied env vars on top of `defaultEnvironment` without
@@ -1741,7 +1803,22 @@ module EmulatedKernel =
     /// are treated as distinct variables — which is what CoreCLR's Unix PAL
     /// does for `GetEnvironmentVariableW` on the macOS/Linux hosts this
     /// project runs on.
+    ///
+    /// Rejects an overlay entry that no real process could have, per
+    /// `environmentEntryProblem`. This is the only way an entry enters the table
+    /// — `defaultEnvironment` is the sole other source and satisfies the rule,
+    /// and PawPrint services no `SetEnvironmentVariableW`, so no guest can add
+    /// one — which is what lets every reader of the table treat its names as
+    /// ones a real process could hold. Failing here rather than at the first read
+    /// means a host learns at configuration time, before any guest code runs.
     let withEnvironment (env : Map<string, string>) (kernel : EmulatedKernel) : EmulatedKernel =
+        for KeyValue (name, value) in env do
+            match environmentEntryProblem name value with
+            | None -> ()
+            | Some problem ->
+                failwith
+                    $"EmulatedKernel.Environment: refusing to install %s{problem}. Fix the KernelConfig.Environment this run was given."
+
         let merged =
             (kernel.Environment, env)
             ||> Map.fold (fun acc key value -> Map.add key value acc)
@@ -1770,6 +1847,12 @@ type KernelConfig =
         /// `EmulatedKernel.defaultEnvironment`. Keys the caller does not set
         /// keep their seeded defaults, so the invariant-globalization switch
         /// survives a caller who supplies an unrelated overlay.
+        ///
+        /// A name must be non-empty and free of `=`, and neither a name nor a
+        /// value may contain a NUL: those are exactly the variables a real
+        /// process can have, and applying a config that breaks the rule fails
+        /// rather than handing a guest an environment it could not observe on
+        /// real .NET. See `EmulatedKernel.environmentEntryProblem`.
         Environment : Map<string, string>
         /// Logical processor count the guest observes via
         /// `Environment.ProcessorCount`. Must be at least 1.
