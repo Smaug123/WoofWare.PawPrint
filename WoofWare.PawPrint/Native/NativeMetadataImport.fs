@@ -612,6 +612,57 @@ module NativeMetadataImport =
 
         if constantHandle.IsNil then None else Some constantHandle
 
+    /// The <c>NativeType</c> blob of the FieldMarshal row (ECMA-335 II.22.17) whose Parent is
+    /// <paramref name="mdToken"/> — a MarshalSpec (II.23.4) — or <c>None</c> when that token has no
+    /// FieldMarshal row, which is the ordinary "no <c>[MarshalAs]</c>" answer rather than a failure.
+    ///
+    /// The token must name a HasFieldMarshal parent (ECMA-335 II.24.2.6): FieldDef or ParamDef. A
+    /// nil ParamDef is also accepted and reports no row; see the comment on that arm.
+    let private marshalDescriptorOfHasFieldMarshalToken
+        (operation : string)
+        (assembly : DumpedAssembly)
+        (mdToken : int32)
+        : ImmutableArray<byte> option
+        =
+        let metadataReader = metadataReaderOf assembly
+
+        let blobHandle =
+            match MetadataToken.ofInt mdToken with
+            | MetadataToken.FieldDefinition fieldDefHandle ->
+                // Unlike the ParamDef arm below, a nil FieldDef is a bug rather than a shape the
+                // runtime produces: every `RuntimeFieldInfo` carries a real token (`RtFieldInfo`
+                // from its FieldDesc, `MdFieldInfo` from the token it was built from), so nothing
+                // manufactures a rid-0 one. Reported here because `fieldDefinition` would otherwise
+                // call it "not present in", which describes a bad row number rather than a nil.
+                if fieldDefHandle.IsNil then
+                    failwith
+                        $"%s{operation}: nil FieldDef token 0x%08x{mdToken}; a FieldDef token reaching this call always names a real row"
+
+                // Rejects a FieldDef absent from this assembly before the reader sees it: an
+                // out-of-range handle would otherwise surface as `BadImageFormatException: Read out
+                // of bounds`, which reads as a corrupt image rather than as a bad token.
+                let field = fieldDefinition operation assembly mdToken
+
+                Some ((metadataReader.GetFieldDefinition field.Handle).GetMarshallingDescriptor ())
+            | MetadataToken.Parameter parameterHandle ->
+                if parameterHandle.IsNil then
+                    // `RuntimeParameterInfo` sets `m_tkParamDef` to `mdtParamDef | 0` whenever the
+                    // parameter has no Param row (RuntimeParameterInfo.cs:175, 190, 208) — the usual
+                    // case for a return value carrying no attributes — and
+                    // `PseudoCustomAttribute.GetCustomAttributes` asks about it unconditionally. So
+                    // this is a shape real guests reach, not a bad token: CoreCLR's
+                    // `FindFieldMarshalFor(0, mdtParamDef, ...)` simply matches no row.
+                    None
+                else
+                    // Same bounds check as the FieldDef arm, inside `parameterDefinition`.
+                    Some ((parameterDefinition operation assembly parameterHandle).GetMarshallingDescriptor ())
+            | token ->
+                failwith $"%s{operation}: expected FieldDef or ParamDef token, got %O{token} from 0x%08x{mdToken}"
+
+        blobHandle
+        |> Option.filter (fun handle -> not handle.IsNil)
+        |> Option.map metadataReader.GetBlobContent
+
     /// ECMA-335 II.23.1.16 <c>ELEMENT_TYPE_*</c> code for a Constant row's type, paired with the
     /// number of bytes its value blob must contain — CoreCLR's <c>_FillMDDefaultValue</c> checks
     /// exactly this width per code and reports <c>CLDB_E_FILE_CORRUPT</c> when the blob is shorter.
@@ -1501,6 +1552,67 @@ module NativeMetadataImport =
             // (MdImport.cs, ThrowBadImageExceptionForHR). Every failure above is instead a host-level
             // crash, as in the sibling handlers: the only guest caller passes tokens the runtime
             // itself minted, so a rejected token is a PawPrint bug rather than a malformed image.
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System.Reflection",
+          "MetadataImport",
+          "GetFieldMarshal",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                             "System.Reflection",
+                                                             "ConstArray",
+                                                             constArrayGenerics)) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            constArrayGenerics.IsEmpty
+            ->
+            // CoreCLR's FCall (managedmdimport.cpp:338) forwards to
+            // `IMDInternalImport::GetFieldMarshal`, which binary-searches the FieldMarshal table for
+            // a row whose HasFieldMarshal Parent is this token (mdinternalro.cpp:2233) — so, unlike
+            // its `GetSigOfFieldDef` neighbour, it never reads the parent row itself. The FCall then
+            // launders `CLDB_E_RECORD_NOTFOUND` into S_OK with a null, zero-length `ConstArray`, so
+            // "this member has no [MarshalAs]" is a successful call rather than an error HRESULT;
+            // `GetMarshalAsCustomAttribute` tests `nativeType.Length == 0` for exactly that.
+            let operation = "MetadataImport.GetFieldMarshal"
+            let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
+            let assembly = metadataImportAssembly operation state assemblyFullName
+
+            let mdToken =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.Numeric (CliNumericType.Int32 mdToken) -> mdToken
+                | other -> failwith $"%s{operation}: expected Int32 fieldToken argument, got %O{other}"
+
+            let fieldMarshalOut =
+                NativeCall.managedPointerOfPointerArgument
+                    operation
+                    "fieldMarshal out pointer"
+                    instruction.Arguments.[2]
+
+            let blob =
+                marshalDescriptorOfHasFieldMarshalToken operation assembly mdToken
+                |> Option.defaultValue ImmutableArray.Empty
+
+            // A copy rather than the PE byte range `GetSigOfFieldDef` hands back. A MarshalSpec
+            // carries type names as length-prefixed UTF-8 strings rather than as metadata tokens,
+            // and its one consumer — `MetadataImport.GetMarshalAs`, which resolves those names
+            // against a `RuntimeModule` it is passed separately — has no use for the blob's
+            // provenance, which is the condition `buildConstArrayOverPeByteRange` documents for
+            // preferring a range. An absent row yields the empty array, and `buildConstArray` turns
+            // that into `{m_length = 0; m_constArray = null}`, which is what CoreCLR writes.
+            let constArrayValue, state =
+                buildConstArray ctx.LoggerFactory ctx.BaseClassTypes operation blob state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state fieldMarshalOut constArrayValue
+
+            // S_OK. Every rejection above is a host-level crash rather than the negative HRESULT
+            // CoreCLR's managed wrapper would turn into a BadImageFormatException, as in the sibling
+            // handlers: the only guest callers pass tokens the runtime itself minted, so a rejected
+            // token is a PawPrint bug rather than a malformed image. That makes the out-of-range
+            // arms a deliberate divergence here, since CoreCLR's search would just report no row.
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
 
