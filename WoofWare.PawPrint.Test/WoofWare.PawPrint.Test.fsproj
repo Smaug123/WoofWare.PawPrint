@@ -137,6 +137,7 @@
     <Compile Include="TestGenericConstraintSatisfaction.fs" />
     <Compile Include="TestGcHandleRegistry.fs" />
     <Compile Include="TestUnixError.fs" />
+    <Compile Include="TestSocketCreation.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />
     <Compile Include="TestFlockBlocking.fs" />
     <Compile Include="TestPReadNegativeSize.fs" />
@@ -235,6 +236,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="socketMatrix\*.tsv" />
     <EmbeddedResource Include="sourcesPure\*.cs" />
     <EmbeddedResource Include="sourcesImpure\*.cs" />
     <EmbeddedResource Include="sources\*.cs" />

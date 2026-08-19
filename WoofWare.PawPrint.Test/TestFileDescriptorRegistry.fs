@@ -205,6 +205,7 @@ module TestFileDescriptorRegistry =
                 (Map.ofList [ 0, OpenFileDescriptionId 7L ])
                 (Map.ofList [ OpenFileDescriptionId 7L, openOn someInode ])
                 (OpenFileDescriptionId next)
+                (SocketId 0L)
 
         FileDescriptorRegistry.checkInvariants registry
         |> shouldEqual
@@ -218,6 +219,7 @@ module TestFileDescriptorRegistry =
             (Map.ofList [ 0, OpenFileDescriptionId 7L ])
             (Map.ofList [ OpenFileDescriptionId 7L, openOn someInode ])
             (OpenFileDescriptionId 8L)
+            (SocketId 0L)
         |> FileDescriptorRegistry.checkInvariants
         |> shouldEqual []
 
@@ -628,6 +630,7 @@ module TestFileDescriptorRegistry =
                 (Map.ofList [ 0, OpenFileDescriptionId 7L ])
                 Map.empty
                 (OpenFileDescriptionId 8L)
+                (SocketId 0L)
 
         FileDescriptorRegistry.checkInvariants registry
         |> shouldEqual [ FileDescriptorRegistryDefect.DanglingFd (0, OpenFileDescriptionId 7L) ]
@@ -639,6 +642,7 @@ module TestFileDescriptorRegistry =
                 Map.empty
                 (Map.ofList [ OpenFileDescriptionId 7L, standardStream FileDescriptorRole.StandardOutput ])
                 (OpenFileDescriptionId 8L)
+                (SocketId 0L)
 
         FileDescriptorRegistry.checkInvariants registry
         |> shouldEqual
@@ -656,6 +660,7 @@ module TestFileDescriptorRegistry =
                 (Map.ofList [ 0, OpenFileDescriptionId 7L ])
                 Map.empty
                 (OpenFileDescriptionId 8L)
+                (SocketId 0L)
 
         let exc =
             Assert.Throws<System.Exception> (fun () ->
@@ -938,6 +943,7 @@ module TestFileDescriptorRegistry =
                         OpenFileDescriptionId 8L, locked second
                     ])
                 (OpenFileDescriptionId 9L)
+                (SocketId 0L)
 
         let expected =
             [
@@ -975,6 +981,7 @@ module TestFileDescriptorRegistry =
                     OpenFileDescriptionId 8L, locked otherInode
                 ])
             (OpenFileDescriptionId 9L)
+            (SocketId 0L)
         |> FileDescriptorRegistry.checkInvariants
         |> shouldEqual []
 
@@ -1145,6 +1152,7 @@ module TestFileDescriptorRegistry =
                 (Map.ofList [ 0, OpenFileDescriptionId 7L ])
                 Map.empty
                 (OpenFileDescriptionId 8L)
+                (SocketId 0L)
 
         let exc =
             Assert.Throws<System.Exception> (fun () -> FileDescriptorRegistry.tryFind 0 registry |> ignore)
@@ -1160,7 +1168,8 @@ module TestFileDescriptorRegistry =
         match FileDescriptorRegistry.tryFindTarget fd registry with
         | None -> failwith $"fd %d{fd} is not live"
         | Some (OpenFileTarget.StandardStream _)
-        | Some OpenFileTarget.SocketEventPort -> None
+        | Some OpenFileTarget.SocketEventPort
+        | Some (OpenFileTarget.Socket _) -> None
         | Some (OpenFileTarget.File (_, offset)) -> Some offset
 
     [<Test>]
@@ -1309,6 +1318,7 @@ module TestFileDescriptorRegistry =
                         }
                     ])
                 (OpenFileDescriptionId 9L)
+                (SocketId 0L)
 
         FileDescriptorRegistry.checkInvariants (table -1L)
         |> shouldEqual [ FileDescriptorRegistryDefect.NegativeOffset (OpenFileDescriptionId 7L, -1L) ]
