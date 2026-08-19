@@ -150,7 +150,7 @@ public class OpenGeneric<T>
             {
                 Signature = signature
                 Assembly = fixture.Assembly.Name
-                DeclaringTypeGenerics = generics
+                DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed generics
             }
 
         let _, equivalent =
@@ -897,7 +897,7 @@ public class OpenGeneric<T>
             {
                 Parameters = parameters
                 Assembly = fixture.Assembly.Name
-                DeclaringTypeGenerics = ImmutableArray.Empty
+                DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed ImmutableArray.Empty
             }
 
         let _, matches =
@@ -1092,7 +1092,7 @@ public class OpenGeneric<T>
                 {
                     Signature = signature
                     Assembly = fixture.Assembly.Name
-                    DeclaringTypeGenerics = ImmutableArray.Empty
+                    DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed ImmutableArray.Empty
                 }
 
             let _, equivalent =
@@ -1112,3 +1112,209 @@ public class OpenGeneric<T>
         compare false differingReturns |> shouldEqual false
         compare true differingReturns |> shouldEqual true
         compare true differingParameters |> shouldEqual false
+
+    /// The two sides read against *different* declaring contexts, which is what laying a method table
+    /// out over a base chain needs: an inherited signature is read in the context of the type that
+    /// declared it, and the candidate override in that of the type being laid out.
+    let private equivalentBetween
+        (fixture : Fixture)
+        (leftContext : TypeConcretization.SubstitutionContext)
+        (rightContext : TypeConcretization.SubstitutionContext)
+        (left : TypeMethodSignature<TypeDefn>)
+        (right : TypeMethodSignature<TypeDefn>)
+        : bool
+        =
+        let comparand
+            (context : TypeConcretization.SubstitutionContext)
+            (signature : TypeMethodSignature<TypeDefn>)
+            : TypeConcretization.SignatureComparand
+            =
+            {
+                Signature = signature
+                Assembly = fixture.Assembly.Name
+                DeclaringTypeGenerics = context
+            }
+
+        let _, equivalent =
+            IlMachineState.signaturesEquivalent
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                fixture.State
+                false
+                (comparand leftContext left)
+                (comparand rightContext right)
+
+        equivalent
+
+    /// A definition whose type variables a comparison can be rooted at.
+    let private openGenericIdentity (fixture : Fixture) : ResolvedTypeIdentity =
+        (findMethod "OpenGeneric`1" "TakesTypeParameter" fixture.Assembly).RequiredDeclaringType.Identity
+
+    /// A second, unrelated identity, for the pair of variables that must not be compared at all.
+    let private shapesIdentity (fixture : Fixture) : ResolvedTypeIdentity =
+        (findMethod "Shapes" "TakesInt" fixture.Assembly).RequiredDeclaringType.Identity
+
+    let private takesFormal (index : int) : TypeMethodSignature<TypeDefn> =
+        staticSignature [ TypeDefn.GenericTypeParameter index ]
+
+    let private takesString : TypeMethodSignature<TypeDefn> =
+        staticSignature [ TypeDefn.PrimitiveType PrimitiveType.String ]
+
+    /// The contrast that the definition-level context exists for: under a closed instantiation at
+    /// `T = string`, `void (!0)` and `void (string)` *are* the same signature. A method table laid out
+    /// against an instantiation therefore cannot tell two declarations apart that CoreCLR keeps apart,
+    /// because CoreCLR lays slots out on the definition.
+    [<Test>]
+    let ``a type parameter and the argument supplied for it agree in a closed context`` () =
+        let fixture = fixture ()
+
+        let closed =
+            TypeConcretization.SubstitutionContext.ofClosed (ImmutableArray.Create (stringHandle fixture))
+
+        equivalentBetween fixture closed closed (takesFormal 0) takesString
+        |> shouldEqual true
+
+    /// The same pair, read where nothing is supplied for `!0`: `MetaSig::CompareElementType` leaves an
+    /// unsubstituted `ELEMENT_TYPE_VAR` to a positional comparison, and a variable is not a `string`.
+    [<Test>]
+    let ``a type parameter is not the argument an instantiation would supply, in a definition context`` () =
+        let fixture = fixture ()
+
+        let definition =
+            TypeConcretization.SubstitutionContext.forDefinition (openGenericIdentity fixture) 1
+
+        equivalentBetween fixture definition definition (takesFormal 0) takesString
+        |> shouldEqual false
+
+    [<Test>]
+    let ``a type parameter is equivalent to itself in a definition context`` () =
+        let fixture = fixture ()
+
+        let definition =
+            TypeConcretization.SubstitutionContext.forDefinition (openGenericIdentity fixture) 1
+
+        equivalentBetween fixture definition definition (takesFormal 0) (takesFormal 0)
+        |> shouldEqual true
+
+    /// Positionally, as `varNum1 == varNum2`: two variables of one definition are as different as two
+    /// unrelated types.
+    [<Test>]
+    let ``two different type parameters are not equivalent in a definition context`` () =
+        let fixture = fixture ()
+
+        let definition =
+            TypeConcretization.SubstitutionContext.forDefinition (openGenericIdentity fixture) 2
+
+        equivalentBetween fixture definition definition (takesFormal 0) (takesFormal 1)
+        |> shouldEqual false
+
+    /// The shape that makes a definition-level walk necessary rather than merely tidier. With
+    /// `Kb<T> : Ka<string>`, Ka's `!0` and Kb's `!0` are both written `!0` and denote different things:
+    /// Ka's is pinned to `string` by the extends clause, so an override in Kb's vocabulary declaring
+    /// `void (string)` fills Ka's slot, and one declaring `void (!0)` does not.
+    [<Test>]
+    let ``a base's type parameter is read through the extends clause`` () =
+        let fixture = fixture ()
+
+        let derived =
+            TypeConcretization.SubstitutionContext.forDefinition (openGenericIdentity fixture) 1
+
+        let baseContext =
+            TypeConcretization.SubstitutionContext.forBase
+                fixture.Assembly.Name
+                (ImmutableArray.Create (TypeDefn.PrimitiveType PrimitiveType.String))
+                derived
+
+        equivalentBetween fixture baseContext derived (takesFormal 0) takesString
+        |> shouldEqual true
+
+        equivalentBetween fixture baseContext derived (takesFormal 0) (takesFormal 0)
+        |> shouldEqual false
+
+    /// An extends clause may apply the base to a type *built from* the derived type's variable rather
+    /// than to the variable itself — `WhenAllPromise<T> : Task<T[]>` in corelib. The substitution has
+    /// to carry that whole spelling, not just a choice between "closed" and "a variable".
+    [<Test>]
+    let ``a composite extends argument substitutes into the base's type parameter`` () =
+        let fixture = fixture ()
+
+        let derived =
+            TypeConcretization.SubstitutionContext.forDefinition (openGenericIdentity fixture) 1
+
+        let arrayOfFormal =
+            TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.GenericTypeParameter 0)
+
+        let baseContext =
+            TypeConcretization.SubstitutionContext.forBase
+                fixture.Assembly.Name
+                (ImmutableArray.Create arrayOfFormal)
+                derived
+
+        equivalentBetween fixture baseContext derived (takesFormal 0) (staticSignature [ arrayOfFormal ])
+        |> shouldEqual true
+
+        equivalentBetween fixture baseContext derived (takesFormal 0) (takesFormal 0)
+        |> shouldEqual false
+
+    /// A method's own variables are never substituted, so `!!0` cannot become a type variable however
+    /// the declaring context is read. The closed sibling of this is
+    /// `a substituted type parameter is not equivalent to an open method parameter`.
+    [<Test>]
+    let ``a method generic parameter is not equivalent to a type parameter in a definition context`` () =
+        let fixture = fixture ()
+
+        let definition =
+            TypeConcretization.SubstitutionContext.forDefinition (openGenericIdentity fixture) 1
+
+        let takesTypeParameter =
+            (findMethod "OpenGeneric`1" "GenericMethodTakingTypeParameter" fixture.Assembly).Signature
+
+        let takesMethodParameter =
+            (findMethod "OpenGeneric`1" "GenericMethodTakingMethodParameter" fixture.Assembly).Signature
+
+        equivalentBetween fixture definition definition takesTypeParameter takesMethodParameter
+        |> shouldEqual false
+
+    /// A comparison is rooted either at closed instantiations or at one definition, and the two answer
+    /// different questions. Meeting both in one comparison means the comparands were built against
+    /// different declaring contexts, which would silently mis-lay a method table, so it is refused
+    /// rather than answered `false`.
+    [<Test>]
+    let ``comparing a type variable against a closed instantiation is refused`` () =
+        let fixture = fixture ()
+
+        let definition =
+            TypeConcretization.SubstitutionContext.forDefinition (openGenericIdentity fixture) 1
+
+        let closed =
+            TypeConcretization.SubstitutionContext.ofClosed (ImmutableArray.Create (stringHandle fixture))
+
+        let failure =
+            Assert.Throws<exn> (fun () ->
+                equivalentBetween fixture definition closed (takesFormal 0) (takesFormal 0)
+                |> ignore<bool>
+            )
+
+        failure.Message
+        |> shouldContainText "rooted either at closed instantiations or at a generic definition"
+
+    /// The invariant CoreCLR gets for free from the shape of its substitution chain: every variable
+    /// that survives it belongs to the one definition being laid out. Here the owner is carried, so a
+    /// chain built wrongly is caught rather than answered by comparing indices across definitions.
+    [<Test>]
+    let ``comparing type variables of two different definitions is refused`` () =
+        let fixture = fixture ()
+
+        let one =
+            TypeConcretization.SubstitutionContext.forDefinition (openGenericIdentity fixture) 1
+
+        let other =
+            TypeConcretization.SubstitutionContext.forDefinition (shapesIdentity fixture) 1
+
+        let failure =
+            Assert.Throws<exn> (fun () ->
+                equivalentBetween fixture one other (takesFormal 0) (takesFormal 0)
+                |> ignore<bool>
+            )
+
+        failure.Message |> shouldContainText "the substitution chain was built wrong"

@@ -648,15 +648,37 @@ module NativeRuntimeTypeHelpers =
         =
         MethodTableProjection.targetContainsGenericVariables operation state typeHandleTarget
 
+    /// The type a vtable slot's occupant was read from, reduced to what deciding the layout needs:
+    /// the token space its signature is spelled in, the identity that orders ties by derivation, and
+    /// the substitution its `!i` are read against. The base chain's entries carry a different
+    /// substitution from the derived type's -- which is the whole difficulty of matching an override
+    /// against the slot it fills.
+    type SlotOwner =
+        {
+            Assembly : AssemblyName
+            Identity : ResolvedTypeIdentity
+            Substitution : TypeConcretization.SubstitutionContext
+            /// How to name this type in a diagnostic. Held rather than derived, because the walk that
+            /// builds it knows whether it is looking at an instantiation or at a definition and the
+            /// identity alone does not carry a name.
+            Description : string
+        }
+
+    /// The owner of a slot read from a closed type.
+    let private slotOwnerOfClosed (concreteType : ConcreteType<ConcreteTypeHandle>) : SlotOwner =
+        {
+            SlotOwner.Assembly = concreteType.Assembly
+            SlotOwner.Identity = concreteType.Identity
+            SlotOwner.Substitution = TypeConcretization.SubstitutionContext.ofClosed concreteType.Generics
+            SlotOwner.Description = string concreteType
+        }
+
     /// One entry of a type's instance vtable: the method currently occupying the slot, together
-    /// with the closed type it was read from. That type's generic arguments are the substitution
-    /// context its signature must be concretised in, and the base chain's entries carry a
-    /// different context from the derived type's -- which is the whole difficulty of matching an
-    /// override against the slot it fills.
+    /// with the type it was read from.
     type VtableSlot =
         {
             Method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
-            DeclaredBy : ConcreteType<ConcreteTypeHandle>
+            DeclaredBy : SlotOwner
         }
 
     /// Does this signature type mention a generic parameter of its *declaring type* anywhere? Used
@@ -776,10 +798,10 @@ module NativeRuntimeTypeHelpers =
             {
                 Signature = slot.Method.Signature
                 Assembly = slot.DeclaredBy.Assembly
-                // A slot's occupant is read through the closed type it was found on, and the base
-                // chain's entries carry a different instantiation from the derived type's. That is
-                // the substitution the comparison needs.
-                DeclaringTypeGenerics = slot.DeclaredBy.Generics
+                // A slot's occupant is read through the type it was found on, and the base chain's
+                // entries carry a different substitution from the derived type's. That is the
+                // substitution the comparison needs.
+                DeclaringTypeGenerics = slot.DeclaredBy.Substitution
             }
 
         IlMachineState.signaturesEquivalent
@@ -796,7 +818,7 @@ module NativeRuntimeTypeHelpers =
         {
             Parameters = slot.Method.Generics |> Seq.map snd |> List.ofSeq
             Assembly = slot.DeclaredBy.Assembly
-            DeclaringTypeGenerics = slot.DeclaredBy.Generics
+            DeclaringTypeGenerics = slot.DeclaredBy.Substitution
         }
 
     /// The methods of a type that CoreCLR's `DeclaredMethodIterator` ranges over, paired with their
@@ -1050,7 +1072,7 @@ module NativeRuntimeTypeHelpers =
                     let candidate =
                         {
                             VtableSlot.Method = method
-                            VtableSlot.DeclaredBy = concreteTypeInfo
+                            VtableSlot.DeclaredBy = slotOwnerOfClosed concreteTypeInfo
                         }
 
                     let state, matched =
@@ -1150,7 +1172,7 @@ module NativeRuntimeTypeHelpers =
 
                         if occupant.Method.IsFinal then
                             failwith
-                                $"%s{operation}: virtual method %s{method.Name} on %O{concreteTypeInfo} is not marked newslot and matches vtable slot %i{mostDerived}, which is occupied by the final method %s{occupant.Method.Name} declared by %O{occupant.DeclaredBy}; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
+                                $"%s{operation}: virtual method %s{method.Name} on %O{concreteTypeInfo} is not marked newslot and matches vtable slot %i{mostDerived}, which is occupied by the final method %s{occupant.Method.Name} declared by %s{occupant.DeclaredBy.Description}; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
 
                         // Matching signatures are not the whole of the layout rule for a *generic*
                         // method: CoreCLR compares the type parameters' constraints too, and refuses
@@ -1181,7 +1203,7 @@ module NativeRuntimeTypeHelpers =
 
                         if not constraintsMatch then
                             failwith
-                                $"%s{operation}: generic method %s{method.Name} on %O{concreteTypeInfo} fills vtable slot %i{mostDerived}, held by %s{occupant.Method.Name} declared by %O{occupant.DeclaredBy}, but its type parameters' constraints do not permit it to override that slot; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
+                                $"%s{operation}: generic method %s{method.Name} on %O{concreteTypeInfo} fills vtable slot %i{mostDerived}, held by %s{occupant.Method.Name} declared by %s{occupant.DeclaredBy.Description}, but its type parameters' constraints do not permit it to override that slot; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
 
                         state, (slots |> List.mapi (fun j slot -> if j = mostDerived then candidate else slot)), fresh
                     | [] ->
@@ -1383,7 +1405,7 @@ module NativeRuntimeTypeHelpers =
                 VtableSlot.Method = method
                 // Slots beyond the vtable are never inherited, so the declaring type is always this
                 // one -- unlike a vtable slot, which routinely still holds a base type's method.
-                VtableSlot.DeclaredBy = concreteTypeInfo
+                VtableSlot.DeclaredBy = slotOwnerOfClosed concreteTypeInfo
             }
         )
 

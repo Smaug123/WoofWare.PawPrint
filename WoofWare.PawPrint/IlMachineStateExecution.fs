@@ -355,14 +355,15 @@ module IlMachineStateExecution =
                 {
                     Signature = candidateSignature
                     Assembly = candidateAssembly
-                    DeclaringTypeGenerics = candidateTypeGenerics
+                    DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed candidateTypeGenerics
                 }
 
             let targetComparand : TypeConcretization.SignatureComparand =
                 {
                     Signature = targetSignature
                     Assembly = methodToCall.DeclaringAssembly
-                    DeclaringTypeGenerics = methodToCall.DeclaringTypeGenerics
+                    DeclaringTypeGenerics =
+                        TypeConcretization.SubstitutionContext.ofClosed methodToCall.DeclaringTypeGenerics
                 }
 
             // The return column is compared separately, because PawPrint's *dispatch* rule is

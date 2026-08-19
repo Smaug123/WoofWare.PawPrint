@@ -141,7 +141,7 @@ module IlMachineMemberResolution =
                 {
                     Signature = memberSig
                     Assembly = sourceAssembly.Name
-                    DeclaringTypeGenerics = concreteExtractedTypeArgs
+                    DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed concreteExtractedTypeArgs
                 }
 
             let state, availableMethods =
@@ -151,7 +151,8 @@ module IlMachineMemberResolution =
                         {
                             Signature = meth.Signature
                             Assembly = assy.Name
-                            DeclaringTypeGenerics = concreteExtractedTypeArgs
+                            DeclaringTypeGenerics =
+                                TypeConcretization.SubstitutionContext.ofClosed concreteExtractedTypeArgs
                         }
 
                     let state, matches =
