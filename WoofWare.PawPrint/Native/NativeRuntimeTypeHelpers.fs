@@ -680,92 +680,6 @@ module NativeRuntimeTypeHelpers =
             DeclaredBy : SlotOwner
         }
 
-    /// Does this signature type mention a generic parameter of its *declaring type* anywhere? Used
-    /// only to decide whether substituting that type's generic arguments could have changed a
-    /// comparison.
-    ///
-    /// A generic *method* parameter deliberately does not count. `signaturesEquivalent` compares
-    /// those positionally and never substitutes them, exactly as `MetaSig::CompareElementType` does,
-    /// so no instantiation can make two of them coincide — and counting them would call every tie
-    /// between two generic methods an artifact, which rejects ordinary C#: `A` declaring
-    /// `virtual M&lt;T&gt;()`, `B` hiding it with a `new virtual M&lt;T&gt;()`, and `C` overriding `B`'s
-    /// leaves two identically-signed slots on the chain for `C`'s to match.
-    let rec private mentionsGenericParameter (ty : TypeDefn) : bool =
-        match ty with
-        | TypeDefn.GenericTypeParameter _ -> true
-        | TypeDefn.GenericMethodParameter _ -> false
-        | TypeDefn.Array (element, _)
-        | TypeDefn.Pinned element
-        | TypeDefn.Pointer element
-        | TypeDefn.Byref element
-        | TypeDefn.OneDimensionalArrayLowerBoundZero element -> mentionsGenericParameter element
-        | TypeDefn.Modified m -> mentionsGenericParameter m.Unmodified || mentionsGenericParameter m.Modifier
-        | TypeDefn.GenericInstantiation (generic, args) ->
-            mentionsGenericParameter generic
-            || (args |> Seq.exists mentionsGenericParameter)
-        | TypeDefn.FunctionPointer signature ->
-            (match signature.ReturnType with
-             | MethodReturnType.Void -> false
-             | MethodReturnType.Returns ret -> mentionsGenericParameter ret)
-            || (signature.ParameterTypes |> List.exists mentionsGenericParameter)
-        | TypeDefn.PrimitiveType _
-        | TypeDefn.FromReference _
-        | TypeDefn.FromDefinition _
-        | TypeDefn.Void -> false
-
-    /// The raw, unsubstituted signature of a slot's occupant, for asking whether two slots were
-    /// already identical *before* their declaring types' generic arguments were substituted in.
-    let private rawSignature (slot : VtableSlot) : TypeDefn list * MethodReturnType<TypeDefn> =
-        slot.Method.Signature.ParameterTypes, slot.Method.Signature.ReturnType
-
-    /// Could substituting the declaring types' generic arguments have created this tie, rather than
-    /// the candidate and the slots it matched being genuinely the same at the generic-definition
-    /// level?
-    ///
-    /// Answered conservatively, because the exact question is not decidable from what a closed
-    /// walk carries. Syntactic equality of the raw signatures does not prove the tie genuine: a
-    /// raw `!0` is scoped to the type that wrote it, and two types' `!0` need
-    /// not denote the same thing at a shared instantiation. Measured: with `Ka<T>.M(T)`,
-    /// `Kb&lt;T&gt; : Ka&lt;string&gt;` declaring `M(T)`, and `Kc&lt;T&gt; : Kb&lt;T&gt;` overriding `M(string)`, both
-    /// inherited signatures are raw `[!0]` yet .NET replaces Ka's slot and reports `Kc`/`Kb`;
-    /// trusting the syntactic equality picks Kb's slot and reports `Kc`/`Ka`.
-    ///
-    /// So: if no signature involved mentions a generic parameter at all, no substitution can have
-    /// changed anything and the tie is genuine (any raw difference is then just the same type
-    /// spelled as a TypeDef in one assembly and a TypeRef in another). Otherwise, refuse to guess.
-    ///
-    /// The *candidate's* own signature is swept alongside the slots it matched, not just the slots
-    /// against each other. Without it the guard is weaker than the rule above: let non-generic `A`
-    /// declare `virtual string M(string)` and `B : A` re-declare it `newslot`, so that two slots
-    /// hold identical parameter-free signatures; then let `C&lt;T&gt; : B` declare a *non-newslot*
-    /// `virtual string M(!0)`. At `T = string` the candidate matches both slots, yet neither
-    /// slot's raw signature mentions a parameter, so sweeping only the slots calls the tie genuine
-    /// and answers `B`'s slot -- where CoreCLR, comparing at the definition level, matches neither
-    /// (`!0` is not `string`) and allocates a fresh slot. Only the candidate carries the evidence
-    /// that a substitution happened at all.
-    let private tieCouldBeSubstitutionArtifact (slots : VtableSlot list) : bool =
-        let types (slot : VtableSlot) =
-            let parameters, ret = rawSignature slot
-
-            match ret with
-            | MethodReturnType.Void -> parameters
-            | MethodReturnType.Returns ty -> ty :: parameters
-
-        slots |> List.collect types |> List.exists mentionsGenericParameter
-
-    // One limitation remains in comparing a candidate against a slot, and it is about substitution
-    // rather than about what the comparison reads: a single match can itself be a substitution
-    // artifact. `A.M(string)` with `C&lt;T&gt;` declaring a non-newslot `M(T)` is not an override at the
-    // generic-definition level, so CoreCLR gives it a fresh slot; inspected as `C&lt;string&gt;` the two
-    // signatures coincide and this walk overwrites A's slot. The multi-match guard above cannot
-    // catch it because there is only one match, and the obvious "does a generic parameter appear"
-    // screen would reject every ordinary override of a generic base (`G1&lt;string&gt;.Id(T)` overridden
-    // by `G2.Id(string)`), which is common C#. It needs the substitution chain that CoreCLR carries
-    // down the `extends` clauses, which is a different thing from comparing two signatures.
-    //
-    // Roslyn does not emit that shape -- it needs a hand-written non-newslot override -- but it is
-    // legal IL, so a guest built by another toolchain could reach it.
-
     /// Does `candidate`, a non-newslot instance virtual declared on some derived type, fill the
     /// vtable slot currently occupied by `slot`?
     ///
@@ -850,7 +764,7 @@ module NativeRuntimeTypeHelpers =
     /// (and the fabricated test) observes is a `TypeLoadException`.
     let private declaredMethodsOf
         (operation : string)
-        (concreteTypeInfo : ConcreteType<ConcreteTypeHandle>)
+        (owner : SlotOwner)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : (MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> * MetadataMethodFacts) list
         =
@@ -895,7 +809,7 @@ module NativeRuntimeTypeHelpers =
                 then
                     if not (isWellFormedGapName method.Name) then
                         failwith
-                            $"%s{operation}: method %s{method.Name} on %O{concreteTypeInfo} is marked RTSpecialName and begins `_VtblGap`, but the rest of the name is not the vtable-gap count grammar; CoreCLR rejects the type at load time (methodtablebuilder.cpp:2865-2907) rather than laying out a method table for it"
+                            $"%s{operation}: method %s{method.Name} on %s{owner.Description} is marked RTSpecialName and begins `_VtblGap`, but the rest of the name is not the vtable-gap count grammar; CoreCLR rejects the type at load time (methodtablebuilder.cpp:2865-2907) rather than laying out a method table for it"
 
                     None
                 else
@@ -934,35 +848,172 @@ module NativeRuntimeTypeHelpers =
                 // `PlaceVirtualMethods` skips it for being static.
                 if method.IsStatic && method.IsVirtual && not typeInfo.IsInterface then
                     failwith
-                        $"%s{operation}: method %s{method.Name} on %O{concreteTypeInfo} is both static and virtual, which is legal only on an interface; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5124-5131) rather than laying out a method table for it"
+                        $"%s{operation}: method %s{method.Name} on %s{owner.Description} is both static and virtual, which is legal only on an interface; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5124-5131) rather than laying out a method table for it"
 
                 if facts.MethodAttributes.HasFlag MethodAttributes.RTSpecialName then
                     if method.IsVirtual then
                         failwith
-                            $"%s{operation}: method %s{method.Name} on %O{concreteTypeInfo} is marked RTSpecialName and virtual; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5001-5004) rather than laying out a method table for it"
+                            $"%s{operation}: method %s{method.Name} on %s{owner.Description} is marked RTSpecialName and virtual; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5001-5004) rather than laying out a method table for it"
 
                     if method.IsStatic then
                         if method.Name <> ".cctor" || not (hasNullaryVoidSignature method) then
                             failwith
-                                $"%s{operation}: static method %s{method.Name} on %O{concreteTypeInfo} is marked RTSpecialName but is not exactly `static void .cctor()`; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5011-5019) rather than laying out a method table for it"
+                                $"%s{operation}: static method %s{method.Name} on %s{owner.Description} is marked RTSpecialName but is not exactly `static void .cctor()`; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5011-5019) rather than laying out a method table for it"
                     else if method.Name <> ".ctor" then
                         failwith
-                            $"%s{operation}: instance method %s{method.Name} on %O{concreteTypeInfo} is marked RTSpecialName but is not named `.ctor`; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5023-5026) rather than laying out a method table for it"
+                            $"%s{operation}: instance method %s{method.Name} on %s{owner.Description} is marked RTSpecialName but is not named `.ctor`; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5023-5026) rather than laying out a method table for it"
                     elif not (returnsVoidThroughModifiers method) then
                         failwith
-                            $"%s{operation}: constructor on %O{concreteTypeInfo} does not return void; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5028-5037) rather than laying out a method table for it"
+                            $"%s{operation}: constructor on %s{owner.Description} does not return void; CoreCLR rejects the type at load time (methodtablebuilder.cpp:5028-5037) rather than laying out a method table for it"
 
                 Some (method, facts)
         )
 
-    /// The instance vtable of a closed type, base-first: index `i` is the method that currently
-    /// occupies slot `i`. A type inherits its base's layout, replaces the entries its own
-    /// non-newslot virtuals override, and appends a slot for each `newslot` virtual it introduces.
+    /// The assembly and metadata of the type a definition-level walk is laid out on.
+    let private definitionMetadata
+        (operation : string)
+        (state : IlMachineState)
+        (identity : ResolvedTypeIdentity)
+        : DumpedAssembly * TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        let assembly =
+            state.LoadedAssembly identity.Assembly
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: assembly %s{identity.AssemblyFullName} is not loaded"
+            )
+
+        assembly, Assembly.resolveTypeIdentityDefinition assembly identity
+
+    /// The owner for a type read as its own definition: each `!i` denotes the type's own `i`th
+    /// variable, which is the context CoreCLR builds a method table in.
+    let ownerOfDefinition (operation : string) (state : IlMachineState) (identity : ResolvedTypeIdentity) : SlotOwner =
+        let assembly, typeInfo = definitionMetadata operation state identity
+
+        {
+            SlotOwner.Assembly = identity.Assembly
+            SlotOwner.Identity = identity
+            SlotOwner.Substitution =
+                TypeConcretization.SubstitutionContext.forDefinition identity typeInfo.Generics.Length
+            SlotOwner.Description = TypeInfo.fullName (fun handle -> assembly.TypeDefs.[handle]) typeInfo
+        }
+
+    /// The type a nominal signature element names.
+    let private nominalIdentityOfSpelling
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (assembly : DumpedAssembly)
+        (ty : TypeDefn)
+        : IlMachineState * ResolvedTypeIdentity
+        =
+        match ty with
+        | TypeDefn.FromDefinition (identity, _) -> state, identity
+        | TypeDefn.FromReference (typeRef, _) ->
+            let state, _, resolved =
+                IlMachineTypeResolution.resolveTypeFromRef loggerFactory assembly typeRef ImmutableArray.Empty state
+
+            state, ResolvedTypeIdentity.ofTypeDefinition resolved.Assembly resolved.TypeDefHandle
+        | TypeDefn.PrimitiveType PrimitiveType.Object ->
+            // A TypeSpec may spell System.Object as a bare `ELEMENT_TYPE_OBJECT`, which names the same
+            // type as the nominal form; CoreCLR resolves the two alike (`CompareElementTypeToToken`,
+            // siginfo.cpp:4915).
+            let object = baseClassTypes.Object
+            state, ResolvedTypeIdentity.ofTypeDefinition object.Assembly object.TypeDefHandle
+        | other ->
+            failwith
+                $"%s{operation}: a base type is spelled %O{other}, which names no type definition; an extends clause is a TypeDefOrRefOrSpec, so it resolves to a nominal type or to `object`"
+
+    /// The base type a definition extends, and the arguments its extends clause applies to it, read in
+    /// the extending type's own vocabulary.
+    ///
+    /// The base is deliberately *not* returned as something to lay out in that vocabulary: placement
+    /// belongs to the base's own definition. These arguments are what re-reads the resulting slots for
+    /// comparison against this type's methods.
+    ///
+    /// `None` is `System.Object`, which extends nothing.
+    let private baseOfDefinition
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (owner : SlotOwner)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : IlMachineState * (ResolvedTypeIdentity * ImmutableArray<TypeConcretization.SubstitutionArgument>) option
+        =
+        match typeInfo.BaseType with
+        | None -> state, None
+        | Some baseTypeInfo ->
+
+        let assembly, _ = definitionMetadata operation state owner.Identity
+
+        // Only a TypeSpec can carry generic arguments: a TypeDef or TypeRef token names a type without
+        // an instantiation, so a generic base is always spelled as a TypeSpec. That is why this
+        // decomposes `BaseTypeInfo` itself rather than going through
+        // `IlMachineRuntimeMetadata.resolveBaseTypeInfo`, whose TypeDefn for the other two arms is
+        // rebuilt from the *resolved* type -- for a generic one that is the typical instantiation
+        // `G<!0, !1>`, whose variables are G's own rather than this type's, and substituting those
+        // into this type's context would re-index another type's variables.
+        let state, baseIdentity, arguments =
+            match baseTypeInfo with
+            | BaseTypeInfo.TypeDef handle ->
+                state, ResolvedTypeIdentity.ofTypeDefinition owner.Identity.Assembly handle, ImmutableArray.Empty
+            | BaseTypeInfo.TypeRef handle ->
+                let state, _, resolved =
+                    IlMachineTypeResolution.resolveTypeFromRef
+                        loggerFactory
+                        assembly
+                        assembly.TypeRefs.[handle]
+                        ImmutableArray.Empty
+                        state
+
+                state,
+                ResolvedTypeIdentity.ofTypeDefinition resolved.Assembly resolved.TypeDefHandle,
+                ImmutableArray.Empty
+            | BaseTypeInfo.TypeSpec handle ->
+                match assembly.TypeSpecs.[handle].Signature with
+                | TypeDefn.GenericInstantiation (generic, arguments) ->
+                    let state, identity =
+                        nominalIdentityOfSpelling loggerFactory baseClassTypes operation state assembly generic
+
+                    state, identity, ImmutableArray.CreateRange arguments
+                | nominal ->
+                    let state, identity =
+                        nominalIdentityOfSpelling loggerFactory baseClassTypes operation state assembly nominal
+
+                    state, identity, ImmutableArray.Empty
+
+        let baseAssembly, baseTypeDefinition =
+            definitionMetadata operation state baseIdentity
+
+        // The clause supplies one argument per variable the base declares, or the image would not
+        // load. Checked because a decomposition bug above would otherwise surface as a signature
+        // comparison reading past the end of a substitution.
+        if arguments.Length <> baseTypeDefinition.Generics.Length then
+            failwith
+                $"%s{operation}: %s{owner.Description} extends %s{baseAssembly.Name.Name}/%O{baseIdentity.TypeDefinition.Get}, which declares %d{baseTypeDefinition.Generics.Length} generic parameter(s), but its extends clause supplies %d{arguments.Length} argument(s)"
+
+        // The clause's arguments are spelled in the token space of the type that *writes* the clause,
+        // which is this type's and not the base's.
+        let arguments =
+            (TypeConcretization.SubstitutionContext.forBase owner.Assembly arguments owner.Substitution).Arguments
+
+        state, Some (baseIdentity, arguments)
+
+    /// The instance vtable of a type *definition*, base-first: index `i` is the method that occupies
+    /// slot `i`. A type inherits its base's layout, replaces the entries its own non-newslot virtuals
+    /// override, and appends a slot for each `newslot` virtual it introduces.
     ///
     /// This is the single definition of "which slot" in PawPrint: `GetSlot` is an index into this
     /// list and `GetNumVirtuals` is its length, so the two cannot disagree -- which matters,
     /// because the BCL *compares* them (`isVirtual = slot &lt; GetNumVirtuals(declaringType)`,
     /// RuntimeType.CoreCLR.cs:685-686).
+    ///
+    /// Laid out on the definition rather than on an instantiation because that is what CoreCLR does,
+    /// and the difference is observable: `A&lt;T&gt;.M(T)` and `B&lt;T&gt;.M(string)` are distinct declarations
+    /// occupying distinct slots, and closing them at `T = string` first would make an override of one
+    /// appear to fill the other. Signatures are therefore compared with the type's variables left
+    /// standing, each ancestor's read through the substitution its extends clause supplies.
     ///
     /// Note that MethodImpls are deliberately not consulted. A MethodImpl overwrites a slot's
     /// implementation but not the slot number its body was declared at
@@ -972,7 +1023,260 @@ module NativeRuntimeTypeHelpers =
     ///
     /// This is recomputed on every `GetSlot`/`GetNumVirtuals` query, and `PopulateMethods` issues
     /// one query per virtual method: the walk is not memoised, so populating a type is quadratic in
-    /// its virtual count before counting the concretisation each signature comparison performs.
+    /// its virtual count. A cache would be keyed on the definition, every instantiation of which
+    /// shares this answer.
+    let rec private vtableOfDefinitionOwner
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (owner : SlotOwner)
+        : IlMachineState * VtableSlot list
+        =
+        let _, typeInfo = definitionMetadata operation state owner.Identity
+
+        let state, baseType =
+            baseOfDefinition loggerFactory baseClassTypes operation state owner typeInfo
+
+        let state, baseSlots =
+            match baseType with
+            | None -> state, []
+            | Some (baseIdentity, arguments) ->
+                // The parent's table is built once, in the parent's own context: which slot each of its
+                // methods occupies was decided before any argument was supplied, and `CopyParentVtable`
+                // copies the result rather than rebuilding it (methodtablebuilder.cpp:1143). Re-running
+                // that placement here would fold two of the parent's slots together whenever this
+                // type's arguments make two of its distinct declarations coincide.
+                let state, inherited =
+                    ownerOfDefinition operation state baseIdentity
+                    |> vtableOfDefinitionOwner loggerFactory baseClassTypes operation state
+
+                // Matching this type's own methods against those slots is the separate question, and it
+                // does need them read in this type's vocabulary.
+                let inherited =
+                    inherited
+                    |> List.map (fun slot ->
+                        { slot with
+                            VtableSlot.DeclaredBy =
+                                { slot.DeclaredBy with
+                                    SlotOwner.Substitution =
+                                        TypeConcretization.SubstitutionContext.rebase
+                                            baseIdentity
+                                            arguments
+                                            slot.DeclaredBy.Substitution
+                                }
+                        }
+                    )
+
+                state, inherited
+
+        // Shared with the walk past the vtable, so that the two cannot disagree about what the
+        // type declares -- see `declaredMethodsOf` for what it drops and why. Upstream's
+        // `PlaceVirtualMethods` takes exactly the declared *instance* virtuals from that same
+        // list; a `static virtual` is placed past the vtable instead.
+        let instanceVirtuals =
+            declaredMethodsOf operation owner typeInfo
+            |> List.filter (fun (method, _) -> not method.IsStatic && method.IsVirtual)
+            |> List.map fst
+
+        // Upstream is a single pass over the declared methods in MethodDef row order
+        // (`DeclaredMethodIterator` over the array `EnumerateClassMethods` fills in row order),
+        // and each method either replaces a parent slot or takes the next free one
+        // (`MethodTableBuilder::PlaceVirtualMethods`, methodtablebuilder.cpp:5405-5482). So
+        // overrides and fresh slots interleave, and it is *declaration* order -- not NewSlot --
+        // that decides the order of the fresh ones. Partitioning on NewSlot and appending the
+        // groups separately would agree only while fresh slots were the exclusive preserve of
+        // NewSlot methods, which stopped being true the moment the unmatched case below started
+        // allocating one. Measured on a fabricated type declaring an unmatched NewSlot virtual
+        // before an unmatched non-NewSlot one: the host CLR gives the NewSlot method the lower
+        // slot, and a NewSlot-grouped layout gets it backwards (TestFabricatedVtableLayout).
+        //
+        // Only the *parent's* slots are candidates for a match: upstream searches
+        // `bmtParent->pParentMethodHash`, built once from the parent MethodTable
+        // (methodtablebuilder.cpp:174-193) and never extended as this type's own methods are
+        // placed. A slot appended by an earlier method of *this* type is therefore not something
+        // a later one can land on.
+        //
+        // That is why the fold below carries the inherited slots and the fresh ones as two
+        // values rather than one growing list. `inherited` only ever has entries *replaced*, so
+        // it stays exactly the parent's vtable and the search cannot reach a fresh slot however
+        // the search is written. Threading one list and capping the search at the parent's length
+        // would compute the same answer, but this way the invariant is a property of the shape
+        // rather than of remembering to cap; it also keeps appending O(1) rather than copying the
+        // accumulated vtable per method, which for an interface -- where every member appends --
+        // is the difference between a linear layout and a quadratic one.
+        //
+        // The restriction bites on legal metadata, not only on corrupt images. ECMA-335
+        // II.22.26 stops a type repeating a method blob-for-blob, but `candidateFillsSlot`
+        // compares *concretised* signatures -- which is what lets an ordinary override of a
+        // generic base match at all -- and that conflates blobs which genuinely differ. The
+        // worked example is `GenericConflation`1` in TestFabricatedVtableLayout: it declares
+        // `Conflated(!0)` as NewSlot and `Conflated(string)` without it, and closing it at
+        // `T = string` makes the second match the slot the first was just appended to. CoreCLR
+        // lays slots out on the generic definition, where the two are distinct, and gives each
+        // its own; a search that could see fresh slots would have the second replace the first
+        // and the vtable would come out a slot short.
+        let state, inherited, freshReversed =
+            ((state, baseSlots, []), instanceVirtuals)
+            ||> List.fold (fun (state, slots, fresh) method ->
+                let candidate =
+                    {
+                        VtableSlot.Method = method
+                        VtableSlot.DeclaredBy = owner
+                    }
+
+                let state, matched =
+                    if method.IsNewSlot then
+                        // "If the member is marked with a new slot we do not need to find it in
+                        // the parent" -- it is asking for a slot of its own by construction.
+                        state, []
+                    else
+                        // An interface reaches here with no inherited slots, so the search is
+                        // empty and every method it declares appends -- which is exactly what
+                        // upstream's `IsInterface` arm does, an interface having no parent whose
+                        // slots it could reuse. That arm needs no special case here, but it does
+                        // need the unmatched case below to allocate rather than fail: corelib's
+                        // `INumberBase<T>` declares `System.IUtf8SpanFormattable.TryFormat` as
+                        // `Private, Final, Virtual, HideBySig` with no NewSlot -- measured, the
+                        // only such method in corelib -- and it takes this path.
+                        ((state, []), List.indexed slots)
+                        ||> List.fold (fun (state, acc) (i, slot) ->
+                            let state, fills =
+                                candidateFillsSlot loggerFactory baseClassTypes state candidate slot
+
+                            state, (if fills then i :: acc else acc)
+                        )
+
+                // More than one slot can legitimately match: `A` declares `virtual M()`, `B :
+                // A` declares `new virtual M()` with the identical signature, and `C : B`
+                // overrides it. CoreCLR resolves this in `LoaderFindMethodInParentClass`, and
+                // the tie-break lives in how that lookup's index is built rather than in the
+                // lookup itself: `CreateMethodChainHash` walks the *parent's* slot table in
+                // ascending slot order and inserts each slot's occupant at the **head** of its
+                // name bucket, and `Lookup` returns the first entry in the bucket. So the entry
+                // returned is the one inserted last, i.e. the occupant of the highest matching
+                // slot -- the most-derived declaration, which is also C#'s meaning, since
+                // `C.M` overrides the `M` that `B` introduced and leaves `A`'s alone. Slots are
+                // appended as the walk descends, so that is the matching slot with the largest
+                // index; the fold above prepends, so `matched` is already in descending index
+                // order.
+                // Every tie here is genuine, and highest-matching-slot is its answer. Laid out on an
+                // instantiation a tie could instead be an *artifact* -- `A<T>.M(T)` and
+                // `B<T>.M(string)` are distinct declarations that closing at `T = string` makes
+                // identical -- and this walk used to refuse that shape rather than guess. Reading the
+                // definition's variables as themselves removes the possibility, so there is nothing
+                // left to separate.
+                //
+                // Two slots of the *same* owner can tie too, and that is not illegal metadata: with
+                // `B<T>` declaring both `M(T)` and `M(string)`, a derived `D : B<string>` reading
+                // B's slots sees two `M(string)`s. C# refuses to compile it (CS0462) but the CLR
+                // loads it, and measured against the host on a fabricated image it gives the
+                // reuse-slot override B's *second* slot -- the highest match, the same rule as
+                // above. `TestFabricatedVtableLayout` pins it.
+                match matched with
+                | mostDerived :: _ ->
+                    // CoreCLR refuses to load a type whose non-newslot virtual matches a
+                    // `final` parent slot: having picked the override candidate out of the
+                    // parent chain, `MethodTableBuilder::PlaceVirtualMethods` throws
+                    // `IDS_CLASSLOAD_MI_FINAL_DECL` when `IsMdFinal(dwParentAttrs)`
+                    // (methodtablebuilder.cpp:5445-5448). The check is against the single method
+                    // the lookup returned, which is the most-derived match -- the same slot the
+                    // tie-break above selects -- so testing the chosen occupant is upstream's
+                    // rule and not an approximation of it.
+                    //
+                    // Filling the slot anyway would hand out a vtable layout for a type the real
+                    // runtime would refuse to load, and every slot number derived from it would
+                    // then be answering a question about a type that cannot exist. Roslyn cannot
+                    // emit this shape, but -- like the unmatched-override case below -- assembly
+                    // version skew can, by sealing a virtual in a base that a derived assembly
+                    // was already compiled against.
+                    let occupant = List.item mostDerived slots
+
+                    if occupant.Method.IsFinal then
+                        failwith
+                            $"%s{operation}: virtual method %s{method.Name} on %s{owner.Description} is not marked newslot and matches vtable slot %i{mostDerived}, which is occupied by the final method %s{occupant.Method.Name} declared by %s{occupant.DeclaredBy.Description}; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
+
+                    // Matching signatures are not the whole of the layout rule for a *generic*
+                    // method: CoreCLR compares the type parameters' constraints too, and refuses
+                    // to load the type if the override demands more of a type argument than the
+                    // method it overrides did (`MetaSig::CompareMethodConstraints`,
+                    // methodtablebuilder.cpp:5449-5459).
+                    //
+                    // Like the `final` check above, this belongs *after* the most-derived match
+                    // is chosen rather than inside the predicate that finds matches. A base
+                    // chain may hold several slots this candidate matches by signature -- `A`
+                    // declaring `virtual M<T>()`, `B` hiding it with a `new virtual M<T>()` that
+                    // adds a constraint, `C` overriding `B`'s -- and only the one it actually
+                    // fills has any say. Comparing against the others would reject ordinary C#.
+                    //
+                    // Roslyn copies a base method's constraints verbatim onto an override, so a
+                    // genuine override always agrees here; assembly version skew and
+                    // hand-authored IL are what can disagree.
+                    let state, constraintsMatch =
+                        if candidate.Method.Generics.IsEmpty then
+                            state, true
+                        else
+                            IlMachineState.methodConstraintsMatch
+                                loggerFactory
+                                baseClassTypes
+                                state
+                                (constraintComparand candidate)
+                                (constraintComparand occupant)
+
+                    if not constraintsMatch then
+                        failwith
+                            $"%s{operation}: generic method %s{method.Name} on %s{owner.Description} fills vtable slot %i{mostDerived}, held by %s{occupant.Method.Name} declared by %s{occupant.DeclaredBy.Description}, but its type parameters' constraints do not permit it to override that slot; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
+
+                    state, (slots |> List.mapi (fun j slot -> if j = mostDerived then candidate else slot)), fresh
+                | [] ->
+                    // "Else, place the method in the next available empty vtable slot"
+                    // (methodtablebuilder.cpp:5401). Both kinds of method arrive here: one
+                    // marked NewSlot, which skipped the search and is asking for a slot of its
+                    // own, and one *not* marked NewSlot whose search came up empty. Upstream
+                    // makes no distinction between them -- both go to `AddVirtualMethod` -- and
+                    // neither does this.
+                    //
+                    // The second kind is what F# emits constantly: the structural equality and
+                    // comparison members of a union or record are `Public, Final, Virtual,
+                    // HideBySig` with no NewSlot, so `Equals(T)` and `CompareTo(object,
+                    // IComparer)` match nothing on `Object` and land here. Roslyn never emits
+                    // it -- 0 of corelib's 1470 non-generic classes trigger it, measured.
+                    //
+                    // Appending is the whole of the rule, but it costs a diagnostic: a gap in
+                    // `candidateFillsSlot` shows up as a spurious extra slot rather than a
+                    // failure here, so what catches one is the slot-by-slot comparison against
+                    // the host CLR's own `GetSlot` in TestVirtualMethodSlots -- a check on the
+                    // layout rather than merely on its length, because a walk that appends one
+                    // slot too many while dropping a real one has the right length.
+                    state, slots, candidate :: fresh
+            )
+
+        // The fresh slots were accumulated head-first, so undo that once here rather than
+        // copying the accumulated vtable on every append.
+        let slots = inherited @ List.rev freshReversed
+
+        state, slots
+
+    /// The instance vtable of the generic definition `identity` -- the layout every instantiation of
+    /// it shares.
+    let vtableOfDefinition
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (identity : ResolvedTypeIdentity)
+        : IlMachineState * VtableSlot list
+        =
+        ownerOfDefinition operation state identity
+        |> vtableOfDefinitionOwner loggerFactory baseClassTypes operation state
+
+    /// The instance vtable of a runtime type, base-first: index `i` is the method that occupies slot
+    /// `i`.
+    ///
+    /// For a nominal type this is its *definition's* vtable, which is the same list for every
+    /// instantiation -- see `vtableOfDefinition`, where the rule lives. A structural handle has no
+    /// definition to ask: byrefs, pointers and function pointers are TypeDescs with no method table,
+    /// and a synthesised array's slots are `System.Array`'s.
     let rec vtableOfClosed
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -981,12 +1285,6 @@ module NativeRuntimeTypeHelpers =
         (concreteType : ConcreteTypeHandle)
         : IlMachineState * VtableSlot list
         =
-        // The un-memoised quadratic walk is affordable at this interpreter's speed and has not
-        // been measured as a bottleneck. If it ever is, note that the cache key must be the
-        // `ConcreteTypeHandle` and not the underlying type definition: `List<int>` and
-        // `List<string>` share a definition, and the whole point of this walk is that it compares
-        // *substituted* signatures, so a definition-keyed cache would serve one instantiation's
-        // layout for another.
         match concreteType with
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
@@ -1005,234 +1303,21 @@ module NativeRuntimeTypeHelpers =
             | None -> state, []
             | Some bh -> vtableOfClosed loggerFactory baseClassTypes operation state bh
         | ConcreteTypeHandle.Concrete _ ->
-            let concreteTypeInfo, typeInfo =
+            // A nominal type's own generic arguments say nothing about which slot anything occupies:
+            // CoreCLR hands the method-table builder its parent as a raw `SigPointer` into the
+            // extends-clause blob with no substitution for the type being built
+            // (methodtablebuilder.cpp:1330-1337), and clones the canonical method table for every
+            // instantiation that shares code
+            // (`Generics::CreateTypeHandleForNonCanonicalGenericInstantiation`, generics.cpp:159-495).
+            // Measured over corelib, System.Linq, System.Text.Json, System.Collections.Concurrent and
+            // System.Private.Uri: 2683 (definition, instantiation) pairs agree on the whole layout.
+            let concreteTypeInfo, _ =
                 IlMachineState.tryGetConcreteTypeInfo state concreteType
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: concrete type handle was not registered: %O{concreteType}"
                 )
 
-            let state, baseHandle =
-                IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state concreteType
-
-            let state, baseSlots =
-                match baseHandle with
-                | None -> state, []
-                | Some bh -> vtableOfClosed loggerFactory baseClassTypes operation state bh
-
-            // Shared with the walk past the vtable, so that the two cannot disagree about what the
-            // type declares -- see `declaredMethodsOf` for what it drops and why. Upstream's
-            // `PlaceVirtualMethods` takes exactly the declared *instance* virtuals from that same
-            // list; a `static virtual` is placed past the vtable instead.
-            let instanceVirtuals =
-                declaredMethodsOf operation concreteTypeInfo typeInfo
-                |> List.filter (fun (method, _) -> not method.IsStatic && method.IsVirtual)
-                |> List.map fst
-
-            // Upstream is a single pass over the declared methods in MethodDef row order
-            // (`DeclaredMethodIterator` over the array `EnumerateClassMethods` fills in row order),
-            // and each method either replaces a parent slot or takes the next free one
-            // (`MethodTableBuilder::PlaceVirtualMethods`, methodtablebuilder.cpp:5405-5482). So
-            // overrides and fresh slots interleave, and it is *declaration* order -- not NewSlot --
-            // that decides the order of the fresh ones. Partitioning on NewSlot and appending the
-            // groups separately would agree only while fresh slots were the exclusive preserve of
-            // NewSlot methods, which stopped being true the moment the unmatched case below started
-            // allocating one. Measured on a fabricated type declaring an unmatched NewSlot virtual
-            // before an unmatched non-NewSlot one: the host CLR gives the NewSlot method the lower
-            // slot, and a NewSlot-grouped layout gets it backwards (TestFabricatedVtableLayout).
-            //
-            // Only the *parent's* slots are candidates for a match: upstream searches
-            // `bmtParent->pParentMethodHash`, built once from the parent MethodTable
-            // (methodtablebuilder.cpp:174-193) and never extended as this type's own methods are
-            // placed. A slot appended by an earlier method of *this* type is therefore not something
-            // a later one can land on.
-            //
-            // That is why the fold below carries the inherited slots and the fresh ones as two
-            // values rather than one growing list. `inherited` only ever has entries *replaced*, so
-            // it stays exactly the parent's vtable and the search cannot reach a fresh slot however
-            // the search is written. Threading one list and capping the search at the parent's length
-            // would compute the same answer, but this way the invariant is a property of the shape
-            // rather than of remembering to cap; it also keeps appending O(1) rather than copying the
-            // accumulated vtable per method, which for an interface -- where every member appends --
-            // is the difference between a linear layout and a quadratic one.
-            //
-            // The restriction bites on legal metadata, not only on corrupt images. ECMA-335
-            // II.22.26 stops a type repeating a method blob-for-blob, but `candidateFillsSlot`
-            // compares *concretised* signatures -- which is what lets an ordinary override of a
-            // generic base match at all -- and that conflates blobs which genuinely differ. The
-            // worked example is `GenericConflation`1` in TestFabricatedVtableLayout: it declares
-            // `Conflated(!0)` as NewSlot and `Conflated(string)` without it, and closing it at
-            // `T = string` makes the second match the slot the first was just appended to. CoreCLR
-            // lays slots out on the generic definition, where the two are distinct, and gives each
-            // its own; a search that could see fresh slots would have the second replace the first
-            // and the vtable would come out a slot short.
-            let state, inherited, freshReversed =
-                ((state, baseSlots, []), instanceVirtuals)
-                ||> List.fold (fun (state, slots, fresh) method ->
-                    let candidate =
-                        {
-                            VtableSlot.Method = method
-                            VtableSlot.DeclaredBy = slotOwnerOfClosed concreteTypeInfo
-                        }
-
-                    let state, matched =
-                        if method.IsNewSlot then
-                            // "If the member is marked with a new slot we do not need to find it in
-                            // the parent" -- it is asking for a slot of its own by construction.
-                            state, []
-                        else
-                            // An interface reaches here with no inherited slots, so the search is
-                            // empty and every method it declares appends -- which is exactly what
-                            // upstream's `IsInterface` arm does, an interface having no parent whose
-                            // slots it could reuse. That arm needs no special case here, but it does
-                            // need the unmatched case below to allocate rather than fail: corelib's
-                            // `INumberBase<T>` declares `System.IUtf8SpanFormattable.TryFormat` as
-                            // `Private, Final, Virtual, HideBySig` with no NewSlot -- measured, the
-                            // only such method in corelib -- and it takes this path.
-                            ((state, []), List.indexed slots)
-                            ||> List.fold (fun (state, acc) (i, slot) ->
-                                let state, fills =
-                                    candidateFillsSlot loggerFactory baseClassTypes state candidate slot
-
-                                state, (if fills then i :: acc else acc)
-                            )
-
-                    // More than one slot can legitimately match: `A` declares `virtual M()`, `B :
-                    // A` declares `new virtual M()` with the identical signature, and `C : B`
-                    // overrides it. CoreCLR resolves this in `LoaderFindMethodInParentClass`, and
-                    // the tie-break lives in how that lookup's index is built rather than in the
-                    // lookup itself: `CreateMethodChainHash` walks the *parent's* slot table in
-                    // ascending slot order and inserts each slot's occupant at the **head** of its
-                    // name bucket, and `Lookup` returns the first entry in the bucket. So the entry
-                    // returned is the one inserted last, i.e. the occupant of the highest matching
-                    // slot -- the most-derived declaration, which is also C#'s meaning, since
-                    // `C.M` overrides the `M` that `B` introduced and leaves `A`'s alone. Slots are
-                    // appended as the walk descends, so that is the matching slot with the largest
-                    // index; the fold above prepends, so `matched` is already in descending index
-                    // order.
-                    // A candidate legitimately matching several slots is the `new virtual` case
-                    // above, where the tie is real and most-derived is the answer. But a tie can
-                    // also be an *artifact* of matching closed signatures: CoreCLR lays slots out on
-                    // the generic definition, where `A<T>.M(T)` and `B<T>.M(string)` are distinct
-                    // methods, whereas concretising at `T = string` first makes them identical. In
-                    // that case most-derived silently picks the wrong slot -- measured: .NET reports
-                    // `C<string>.M` and `B.M`, and matching closed signatures yields `A.M` instead.
-                    //
-                    // The two are separable. A tie can only be an artifact if some generic
-                    // substitution actually happened, so when several slots match and any type
-                    // involved is generic, fail rather than guess. A single match is safe *whenever
-                    // the method overrides at all*: the definition-level match is then still among
-                    // the candidates, so if only one slot matches, it is that one. That proviso
-                    // matters -- substitution can manufacture a lone match
-                    // for a method that overrides nothing, which is the first limitation recorded
-                    // above (non-newslot `C<T>.M(T)` over `A.M(string)`: one closed match, zero
-                    // definition-level matches, and CoreCLR allocates a fresh slot). Detecting that
-                    // needs the generic-definition layout this walk does not have, so it is refused
-                    // there rather than answered here.
-                    if List.length matched > 1 then
-                        let matchedSlots = matched |> List.map (fun i -> List.item i slots)
-
-                        let artifact = tieCouldBeSubstitutionArtifact (candidate :: matchedSlots)
-
-                        if artifact then
-                            failwith
-                                $"TODO: %s{operation}: virtual method %s{method.Name} on %O{concreteTypeInfo} matches %i{List.length matched} base vtable slots that are only identical once the declaring types' generic arguments are substituted; CoreCLR lays out slots on the generic definition, which PawPrint cannot yet walk (see the open-generic TODO in `numVirtuals`)"
-
-                        // Same-type ties are not orderable by derivation either: one type declaring
-                        // two virtuals this candidate cannot be told apart from is illegal metadata
-                        // unless the signatures differ somewhere the normalisation cannot see.
-                        let distinctOwners =
-                            matched
-                            |> List.map (fun i -> (List.item i slots).DeclaredBy.Identity)
-                            |> List.distinct
-                            |> List.length
-
-                        if distinctOwners <> List.length matched then
-                            failwith
-                                $"%s{operation}: virtual method %s{method.Name} on %O{concreteTypeInfo} matches %i{List.length matched} base vtable slots held by the same type, so the most-derived rule cannot order them; the signatures must differ somewhere PawPrint's slot-matching normalisation does not distinguish"
-
-                    match matched with
-                    | mostDerived :: _ ->
-                        // CoreCLR refuses to load a type whose non-newslot virtual matches a
-                        // `final` parent slot: having picked the override candidate out of the
-                        // parent chain, `MethodTableBuilder::PlaceVirtualMethods` throws
-                        // `IDS_CLASSLOAD_MI_FINAL_DECL` when `IsMdFinal(dwParentAttrs)`
-                        // (methodtablebuilder.cpp:5445-5448). The check is against the single method
-                        // the lookup returned, which is the most-derived match -- the same slot the
-                        // tie-break above selects -- so testing the chosen occupant is upstream's
-                        // rule and not an approximation of it.
-                        //
-                        // Filling the slot anyway would hand out a vtable layout for a type the real
-                        // runtime would refuse to load, and every slot number derived from it would
-                        // then be answering a question about a type that cannot exist. Roslyn cannot
-                        // emit this shape, but -- like the unmatched-override case below -- assembly
-                        // version skew can, by sealing a virtual in a base that a derived assembly
-                        // was already compiled against.
-                        let occupant = List.item mostDerived slots
-
-                        if occupant.Method.IsFinal then
-                            failwith
-                                $"%s{operation}: virtual method %s{method.Name} on %O{concreteTypeInfo} is not marked newslot and matches vtable slot %i{mostDerived}, which is occupied by the final method %s{occupant.Method.Name} declared by %s{occupant.DeclaredBy.Description}; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
-
-                        // Matching signatures are not the whole of the layout rule for a *generic*
-                        // method: CoreCLR compares the type parameters' constraints too, and refuses
-                        // to load the type if the override demands more of a type argument than the
-                        // method it overrides did (`MetaSig::CompareMethodConstraints`,
-                        // methodtablebuilder.cpp:5449-5459).
-                        //
-                        // Like the `final` check above, this belongs *after* the most-derived match
-                        // is chosen rather than inside the predicate that finds matches. A base
-                        // chain may hold several slots this candidate matches by signature -- `A`
-                        // declaring `virtual M<T>()`, `B` hiding it with a `new virtual M<T>()` that
-                        // adds a constraint, `C` overriding `B`'s -- and only the one it actually
-                        // fills has any say. Comparing against the others would reject ordinary C#.
-                        //
-                        // Roslyn copies a base method's constraints verbatim onto an override, so a
-                        // genuine override always agrees here; assembly version skew and
-                        // hand-authored IL are what can disagree.
-                        let state, constraintsMatch =
-                            if candidate.Method.Generics.IsEmpty then
-                                state, true
-                            else
-                                IlMachineState.methodConstraintsMatch
-                                    loggerFactory
-                                    baseClassTypes
-                                    state
-                                    (constraintComparand candidate)
-                                    (constraintComparand occupant)
-
-                        if not constraintsMatch then
-                            failwith
-                                $"%s{operation}: generic method %s{method.Name} on %O{concreteTypeInfo} fills vtable slot %i{mostDerived}, held by %s{occupant.Method.Name} declared by %s{occupant.DeclaredBy.Description}, but its type parameters' constraints do not permit it to override that slot; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
-
-                        state, (slots |> List.mapi (fun j slot -> if j = mostDerived then candidate else slot)), fresh
-                    | [] ->
-                        // "Else, place the method in the next available empty vtable slot"
-                        // (methodtablebuilder.cpp:5401). Both kinds of method arrive here: one
-                        // marked NewSlot, which skipped the search and is asking for a slot of its
-                        // own, and one *not* marked NewSlot whose search came up empty. Upstream
-                        // makes no distinction between them -- both go to `AddVirtualMethod` -- and
-                        // neither does this.
-                        //
-                        // The second kind is what F# emits constantly: the structural equality and
-                        // comparison members of a union or record are `Public, Final, Virtual,
-                        // HideBySig` with no NewSlot, so `Equals(T)` and `CompareTo(object,
-                        // IComparer)` match nothing on `Object` and land here. Roslyn never emits
-                        // it -- 0 of corelib's 1470 non-generic classes trigger it, measured.
-                        //
-                        // Appending is the whole of the rule, but it costs a diagnostic: a gap in
-                        // `candidateFillsSlot` shows up as a spurious extra slot rather than a
-                        // failure here, so what catches one is the slot-by-slot comparison against
-                        // the host CLR's own `GetSlot` in TestVirtualMethodSlots -- a check on the
-                        // layout rather than merely on its length, because a walk that appends one
-                        // slot too many while dropping a real one has the right length.
-                        state, slots, candidate :: fresh
-                )
-
-            // The fresh slots were accumulated head-first, so undo that once here rather than
-            // copying the accumulated vtable on every append.
-            let slots = inherited @ List.rev freshReversed
-
-            state, slots
+            vtableOfDefinition loggerFactory baseClassTypes operation state concreteTypeInfo.Identity
 
     /// The occupants of the region of a type's method table that follows its vtable, in slot order,
     /// so that the method at index `i` holds slot `numVirtuals + i`.
@@ -1264,9 +1349,9 @@ module NativeRuntimeTypeHelpers =
     /// Verified against the host CLR's own `RuntimeMethodHandle.GetSlot` for every method reflection
     /// can reach: 31064 methods over 2336 corelib types, 5499 over 1153 FSharp.Core types, and 352
     /// over closed generic instantiations, with no disagreement.
-    let private slotsBeyondVtableOfClosed
+    let private slotsBeyondVtableOfDefinition
         (operation : string)
-        (concreteTypeInfo : ConcreteType<ConcreteTypeHandle>)
+        (owner : SlotOwner)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : VtableSlot list
         =
@@ -1275,7 +1360,7 @@ module NativeRuntimeTypeHelpers =
         // vtable-gap marker never reaches the validation below, which would otherwise see a
         // runtime-special-named method that is not a constructor and wrongly report that CoreCLR
         // rejects the type.
-        let declared = declaredMethodsOf operation concreteTypeInfo typeInfo
+        let declared = declaredMethodsOf operation owner typeInfo
 
         // `PlaceVirtualMethods` places exactly the declared *instance* virtuals, so everything else
         // is still unplaced when `PlaceNonVirtualMethods` runs. A `static virtual` -- an interface
@@ -1390,8 +1475,7 @@ module NativeRuntimeTypeHelpers =
         // So on a non-generic class a generic method is numbered *ahead* of a non-generic one
         // declared earlier: `System.Version` puts its four generic methods at slots 12-15 and starts
         // everything else at 16, though its lowest-numbered row is among the latter.
-        let canHaveNonVtableSlots =
-            concreteTypeInfo.Generics.IsEmpty && not typeInfo.IsInterface
+        let canHaveNonVtableSlots = typeInfo.Generics.IsEmpty && not typeInfo.IsInterface
 
         let needsRealSlot ((method, _) : MethodInfo<_, _, _> * MetadataMethodFacts) : bool =
             not canHaveNonVtableSlots || isGenericSignature method
@@ -1404,7 +1488,7 @@ module NativeRuntimeTypeHelpers =
                 VtableSlot.Method = method
                 // Slots beyond the vtable are never inherited, so the declaring type is always this
                 // one -- unlike a vtable slot, which routinely still holds a base type's method.
-                VtableSlot.DeclaredBy = slotOwnerOfClosed concreteTypeInfo
+                VtableSlot.DeclaredBy = owner
             }
         )
 
@@ -1466,17 +1550,44 @@ module NativeRuntimeTypeHelpers =
             failwith
                 $"TODO: %s{operation} for synthesised array handle %O{concreteType}; the array intrinsic methods (Get/Set/Address/.ctor) occupy slots beyond the vtable that PawPrint does not model"
         | ConcreteTypeHandle.Concrete _ ->
-            let concreteTypeInfo, typeInfo =
+            let concreteTypeInfo, _ =
                 IlMachineState.tryGetConcreteTypeInfo state concreteType
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: concrete type handle was not registered: %O{concreteType}"
                 )
 
+            let owner = ownerOfDefinition operation state concreteTypeInfo.Identity
+            let _, typeInfo = definitionMetadata operation state concreteTypeInfo.Identity
+
             state,
             {
                 MethodSlotTable.Vtable = virtualSlots
-                MethodSlotTable.BeyondVtable = slotsBeyondVtableOfClosed operation concreteTypeInfo typeInfo
+                MethodSlotTable.BeyondVtable = slotsBeyondVtableOfDefinition operation owner typeInfo
             }
+
+    /// The whole method table of a generic definition, which is the table every instantiation of it
+    /// shares. An open generic type definition has no other spelling, so this is what
+    /// `RuntimeTypeHandle.GetNumVirtuals` and `RuntimeMethodHandle.GetSlot` answer from when the
+    /// declaring type a guest names is the definition itself.
+    let slotTableOfDefinition
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (identity : ResolvedTypeIdentity)
+        : IlMachineState * MethodSlotTable
+        =
+        let state, virtualSlots =
+            vtableOfDefinition loggerFactory baseClassTypes operation state identity
+
+        let owner = ownerOfDefinition operation state identity
+        let _, typeInfo = definitionMetadata operation state identity
+
+        state,
+        {
+            MethodSlotTable.Vtable = virtualSlots
+            MethodSlotTable.BeyondVtable = slotsBeyondVtableOfDefinition operation owner typeInfo
+        }
 
     /// What identifies a vtable slot's occupant well enough to find it again: the full name of the
     /// assembly that declares the method, paired with the method's within-assembly identity.

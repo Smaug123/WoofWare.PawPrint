@@ -599,3 +599,59 @@ module TestVirtualMethodSlots =
                         failwith
                             $"%s{label}: slot %i{i} holds %s{slot.Method.Name} declared by %O{slot.DeclaredBy}, which is neither the inherited entry nor a method of this type"
                 )
+
+    /// Corelib's open generic type *definitions*, which is the shape `RuntimeTypeHandle.GetNumVirtuals`
+    /// and `RuntimeMethodHandle.GetSlot` are asked about when a guest reflects over `typeof(G<>)`, and
+    /// the layout every instantiation of one shares.
+    ///
+    /// Chosen for their extends clauses rather than for their popularity, because that is the half a
+    /// closed instantiation cannot exercise: `NullableComparer<T> : Comparer<Nullable<T>>` applies its
+    /// base to a type *built from* its own variable, and `Dictionary<K,V>.Enumerator` is a nested type
+    /// that redeclares both of its enclosing type's parameters. `List`1` and `Nullable`1` are here as
+    /// the ordinary cases, and `Nullable`1` is a value type, whose layout CoreCLR builds afresh for
+    /// each instantiation rather than cloning from a canonical one.
+    let private definitionCorpus : (string * string) list =
+        [
+            "System", "Nullable`1"
+            "System", "Lazy`1"
+            "System.Collections.Generic", "List`1"
+            "System.Collections.Generic", "Dictionary`2"
+            "System.Collections.Generic", "Comparer`1"
+            "System.Collections.Generic", "EqualityComparer`1"
+            // The composite extends clause: `Comparer<Nullable<T>>`.
+            "System.Collections.Generic", "NullableComparer`1"
+            "System.Collections.Generic", "NullableEqualityComparer`1"
+            "System.Threading.Tasks", "Task`1"
+        ]
+
+    let private definitionCorpusNames : string list =
+        definitionCorpus |> List.map (fun (ns, name) -> $"%s{ns}.%s{name}")
+
+    /// The host CLR lays a method table out on the generic definition and shares it with every
+    /// instantiation, so a definition has a layout of its own to compare against -- and
+    /// `typeof(G<>).GetMethods()` plus the internal `GetSlot` report it without any private API beyond
+    /// the one this fixture already uses.
+    [<TestCaseSource(nameof definitionCorpusNames)>]
+    let ``a definition's vtable layout matches the host's`` (fullName : string) : unit =
+        let ``namespace``, name =
+            let index = fullName.LastIndexOf '.'
+            fullName.Substring (0, index), fullName.Substring (index + 1)
+
+        let typeInfo =
+            match corelib.TryGetTopLevelTypeDef ``namespace`` name with
+            | None -> failwith $"%s{fullName} not found in corelib"
+            | Some typeInfo -> typeInfo
+
+        let identity =
+            ResolvedTypeIdentity.ofTypeDefinition typeInfo.Assembly typeInfo.TypeDefHandle
+
+        let _, slots =
+            NativeRuntimeTypeHelpers.vtableOfDefinition loggerFactory bct "test" (state ()) identity
+
+        let expected = hostSlotLayout (hostType ``namespace`` name)
+
+        // Not vacuous: a definition that reported no virtuals at all would agree with a walk that
+        // returned nothing.
+        expected |> shouldNotEqual []
+
+        pawPrintSlotLayout slots |> shouldEqual expected
