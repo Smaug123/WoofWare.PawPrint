@@ -627,8 +627,22 @@ module CreatingOpenRules =
     /// all), then the process's umask. A bit above the permission word is
     /// dropped rather than rejected — `mode` 0o10777 creates 0o0755 on both
     /// kernels.
+    ///
+    /// Only the low nine bits of `umask` take part, and that is exact on both
+    /// platforms for two *different* measured reasons. Linux's `umask(2)` stores
+    /// just `mask & 0o777` — `umask(0o4000)` reads back 0o0000 — so a requested
+    /// 0o4644 stays 0o4644 there; a mask applied at full width would strip the
+    /// set-user-ID bit instead, making a setuid file impossible for a guest to
+    /// create. Darwin *does* store all twelve bits, but creation cannot see the
+    /// upper three because `ModeMask` has already cleared them from the mode:
+    /// measured, `umask 0o4000` with mode 0o4644 gives 0o0644 there whether or
+    /// not the mask is truncated. So one expression is right for both.
     let createdPermissions (rules : CreatingOpenRules) (umask : PermissionBits) (mode : int) : PermissionBits =
-        mode &&& PermissionBits.toInt rules.ModeMask &&& ~~~(PermissionBits.toInt umask)
+        let permissionBitsOnly = 0o777
+
+        mode
+        &&& PermissionBits.toInt rules.ModeMask
+        &&& ~~~(PermissionBits.toInt umask &&& permissionBitsOnly)
         |> PermissionBits.parseOrFail "CreatingOpenRules.createdPermissions"
 
 [<RequireQualifiedAccess>]
