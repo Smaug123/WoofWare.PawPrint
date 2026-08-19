@@ -472,6 +472,165 @@ type SocketCreationRefusal =
     /// an errno: there is nothing truthful to report.
     | Unmodelled
 
+/// Everything a kernel does differently when `open(2)` is asked to *create*.
+///
+/// One record rather than a scatter of booleans, because the divergence is
+/// several facts that always travel together: a platform that answers one of
+/// them Linux's way answers all of them Linux's way, and a third Unix must
+/// supply every field before it compiles. All four were measured on macOS
+/// 26.6/APFS and Linux 6.x, at an unprivileged uid.
+type CreatingOpenRules =
+    {
+        /// What the walk owes a final component carrying a trailing separator.
+        /// Linux refuses such a path outright; Darwin resolves it as any lookup
+        /// would, so `open("d/", O_CREAT)` opens the directory there and is
+        /// EISDIR on Linux.
+        TrailingSeparator : TrailingSeparatorPolicy
+        /// Whether a creating open that lands on an existing *directory* is
+        /// refused. Linux answers EISDIR — so `open(dir, O_RDONLY|O_CREAT)`
+        /// fails where a plain `open(dir, O_RDONLY)` succeeds — while Darwin
+        /// treats `O_CREAT` as having no bearing on an object that exists.
+        ///
+        /// `O_EXCL`'s EEXIST is measured to beat this on both, so a caller must
+        /// check that first.
+        RefusesExistingDirectory : bool
+        /// What a path that consumed *no component at all* — "/" itself, or a
+        /// symlink whose target is "/" — owes a creating open.
+        ///
+        /// Darwin answers EEXIST even without `O_EXCL`; Linux folds the case
+        /// into `RefusesExistingDirectory` and so wants `None` here. Pinned as a
+        /// property of the *navigation* rather than of the root inode: on macOS
+        /// "/" is EEXIST while "/.", "/../" and "/private/.." reach the same
+        /// inode and open fine, and "/System/Volumes/Data" — a writable volume's
+        /// mount root — opens fine too, which rules out a read-only-mount
+        /// artefact.
+        RootNavigation : UnixError option
+        /// The bits `open(2)` keeps from its `mode` argument before the umask is
+        /// applied. XNU masks with `ACCESSPERMS`, so a Darwin guest cannot
+        /// create a setuid, setgid or sticky file at all — measured, 0o4644,
+        /// 0o2644 and 0o1644 all land as 0o644. Linux keeps all twelve bits.
+        ModeMask : PermissionBits
+    }
+
+/// What `open(2)` should do next, once the path has been resolved and the
+/// creating flags have been read.
+///
+/// A verdict rather than an action, so the rule can be decided — and compared
+/// against a real kernel — without a machine to act on it. The handler is then
+/// only the part that cannot be pure: allocating the inode, registering a
+/// descriptor and pushing the result.
+[<RequireQualifiedAccess>]
+type CreatingOpenVerdict =
+    /// Answer the guest with this errno.
+    | Refuse of error : UnixError
+    /// Bind a new empty regular file under `name` in `directory`.
+    | Create of directory : InodeNumber * name : FileName
+    /// The object is already there; open it, subject to the checks any
+    /// non-creating open would apply.
+    | OpenExisting of inode : InodeNumber
+
+[<RequireQualifiedAccess>]
+module CreatingOpenRules =
+    /// Decide what an `open(2)` owes, given how its path resolved and whether it
+    /// carried `O_CREAT` and `O_EXCL`.
+    ///
+    /// The order of the refusals is measured, and each beats the ones below it:
+    ///
+    ///  * `O_EXCL` on anything that exists is EEXIST — including a directory,
+    ///    where it beats the EISDIR below: `open(".", O_CREAT|O_EXCL)` is EEXIST
+    ///    while `open(".", O_CREAT)` is EISDIR on Linux.
+    ///  * A *free* name that demands to be a directory creates nothing and is
+    ///    ENOENT. Only Darwin reaches this: Linux refuses such a path inside the
+    ///    walk, via `CreatingOpenRules.TrailingSeparator`.
+    ///  * A path that consumed no component at all — "/" — is whatever
+    ///    `RootNavigation` says, which is Darwin's EEXIST.
+    ///  * A creating open landing on an existing directory is EISDIR on Linux.
+    ///  * Binding a name needs *both* write and search on the directory that
+    ///    will hold it: measured at uid 1000, 0o333 and 0o300 succeed while
+    ///    0o644, 0o555 and 0o111 are all EACCES. Root bypasses it.
+    ///
+    /// A freshly created inode is deliberately *not* screened against the mode
+    /// it was just given — measured unanimously, `open(free, O_CREAT|O_RDWR, 0)`
+    /// succeeds and stores mode 0, while re-opening that same file `O_RDONLY` is
+    /// EACCES. That is why `Create` is a distinct verdict from `OpenExisting`
+    /// rather than a step before it.
+    let verdict
+        (rules : CreatingOpenRules)
+        (privileged : bool)
+        (creating : bool)
+        (exclusive : bool)
+        (resolution : Resolution)
+        (vfs : VirtualFileSystem)
+        : CreatingOpenVerdict
+        =
+        let existing = VirtualFileSystem.existingOf resolution.Target |> Result.toOption
+
+        if not creating then
+            match existing with
+            | Some inode -> CreatingOpenVerdict.OpenExisting inode
+            | None -> CreatingOpenVerdict.Refuse UnixError.ENOENT
+        elif exclusive && existing.IsSome then
+            CreatingOpenVerdict.Refuse UnixError.EEXIST
+        else
+
+        let isDirectory (inode : InodeNumber) : bool =
+            match VirtualFileSystem.tryGetContent inode vfs with
+            | Some (InodeContent.Directory _) -> true
+            | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.Symlink _)
+            | None -> false
+
+        match resolution.Target with
+        | ResolvedTarget.Entry (_, _, None) when resolution.TrailingSeparatorDemanded ->
+            CreatingOpenVerdict.Refuse UnixError.ENOENT
+        | ResolvedTarget.Directory (_, FinalNavigation.Root) when rules.RootNavigation.IsSome ->
+            CreatingOpenVerdict.Refuse rules.RootNavigation.Value
+        | ResolvedTarget.Directory (inode, _) ->
+            if rules.RefusesExistingDirectory then
+                CreatingOpenVerdict.Refuse UnixError.EISDIR
+            else
+                CreatingOpenVerdict.OpenExisting inode
+        | ResolvedTarget.Entry (_, _, Some inode) ->
+            if rules.RefusesExistingDirectory && isDirectory inode then
+                CreatingOpenVerdict.Refuse UnixError.EISDIR
+            else
+                CreatingOpenVerdict.OpenExisting inode
+        | ResolvedTarget.Entry (directory, name, None) ->
+
+        // Only the owner triple can ever apply: `stat` reports `Kernel.UserId`
+        // as every inode's `st_uid`, so the emulated process owns everything it
+        // can see.
+        let bindBits = 0o300
+
+        let parentBits =
+            match VirtualFileSystem.tryGet directory vfs with
+            | Some parent ->
+                match VirtualFileSystem.permissions parent with
+                | InodePermissions.Stored bits -> PermissionBits.toInt bits
+                | InodePermissions.PlatformSymlinkDefault ->
+                    failwith
+                        $"CreatingOpenRules.verdict: the walk resolved \"%s{FileName.toString name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
+            | None ->
+                failwith
+                    $"CreatingOpenRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{FileName.toString name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
+
+        if not privileged && parentBits &&& bindBits <> bindBits then
+            CreatingOpenVerdict.Refuse UnixError.EACCES
+        else
+            CreatingOpenVerdict.Create (directory, name)
+
+    /// The permission bits a file created with this `mode` argument ends up
+    /// with, under `umask`.
+    ///
+    /// Two masks, in this order, and both measured: the platform's own
+    /// (`ModeMask`, which is how a Darwin guest cannot create a setuid file at
+    /// all), then the process's umask. A bit above the permission word is
+    /// dropped rather than rejected — `mode` 0o10777 creates 0o0755 on both
+    /// kernels.
+    let createdPermissions (rules : CreatingOpenRules) (umask : PermissionBits) (mode : int) : PermissionBits =
+        mode &&& PermissionBits.toInt rules.ModeMask &&& ~~~(PermissionBits.toInt umask)
+        |> PermissionBits.parseOrFail "CreatingOpenRules.createdPermissions"
+
 [<RequireQualifiedAccess>]
 module SimulatedUnixPlatform =
     /// Loosest ceiling any Unix we model imposes on `utsname.release`:
@@ -608,15 +767,37 @@ module SimulatedUnixPlatform =
     /// simulation a stored value could only ever describe a filesystem no
     /// kernel produced.
     ///
-    /// The Darwin answer here is the `umask 022` one, which PawPrint has to
-    /// invent because it models no umask yet (nothing can read or set one —
-    /// CoreLib's interop surface has no `SystemNative_UMask` — and no creating
-    /// native exists). When a umask arrives, this becomes a function of it.
+    /// The Darwin answer here is the `umask 022` one, and stays a constant even
+    /// though `EmulatedKernel.Umask` now exists: a symbolic link can only enter
+    /// this filesystem through a *seed*, and a seed describes a tree some other
+    /// process built, so this run's configured umask is not the one that applied
+    /// to it. The day `SystemNative_SymLink` lets a guest create one, that link
+    /// *is* created by this process and this must become a function of
+    /// `Kernel.Umask` — that is the trigger, not the existence of the field.
     let symlinkPermissions (platform : SimulatedUnixPlatform) : PermissionBits =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> PermissionBits.parseOrFail "SimulatedUnixPlatform.symlinkPermissions" 0o777
         | SimulatedUnixFlavour.Darwin ->
             PermissionBits.parseOrFail "SimulatedUnixPlatform.symlinkPermissions" (0o777 &&& ~~~0o022)
+
+    /// How this platform's `open(2)` behaves when asked to create; see
+    /// `CreatingOpenRules` for what each field means and how it was measured.
+    let creatingOpenRules (platform : SimulatedUnixPlatform) : CreatingOpenRules =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux ->
+            {
+                TrailingSeparator = TrailingSeparatorPolicy.RefuseIsDirectory
+                RefusesExistingDirectory = true
+                RootNavigation = None
+                ModeMask = PermissionBits.parseOrFail "SimulatedUnixPlatform.creatingOpenRules" 0o7777
+            }
+        | SimulatedUnixFlavour.Darwin ->
+            {
+                TrailingSeparator = TrailingSeparatorPolicy.Demand
+                RefusesExistingDirectory = false
+                RootNavigation = Some UnixError.EEXIST
+                ModeMask = PermissionBits.parseOrFail "SimulatedUnixPlatform.creatingOpenRules" 0o0777
+            }
 
     /// Whether this platform's kernel screens a read or write buffer before it
     /// performs the operation.
@@ -1314,15 +1495,15 @@ type EmulatedKernel =
         /// The simulated process's filesystem: every inode a guest can reach
         /// through the `SystemNative_*` path calls.
         ///
-        /// Seeded from `KernelConfig.FileSystem` and, for now, immutable — no
-        /// native mutates it yet. It is emulated kernel state rather than
-        /// anything the interpreter reads from the host, for the usual reason:
+        /// Seeded from `KernelConfig.FileSystem`, and mutated in place by the
+        /// natives that write, create or truncate. It is emulated kernel state
+        /// rather than anything the interpreter reads from the host, for the
+        /// usual reason:
         /// a filesystem read from the host would make a replay depend on the
         /// machine that produced it, and guests branch on what they find.
         FileSystem : VirtualFileSystem
         /// The effective user ID the simulated process runs as, reported by
-        /// `stat` as every inode's `st_uid` and (when it lands) by
-        /// `SystemNative_GetEUid`.
+        /// `stat` as every inode's `st_uid` and by `SystemNative_GetEUid`.
         ///
         /// Process-wide rather than per-inode: no managed caller can change a
         /// file's owner, because `SystemNative_ChOwn` does not exist anywhere in
@@ -1332,6 +1513,21 @@ type EmulatedKernel =
         /// The effective group ID, reported as every inode's `st_gid`. See
         /// `UserId`.
         GroupId : uint32
+        /// The simulated process's file-mode creation mask: the permission bits
+        /// `open(O_CREAT)` clears from the mode its caller asked for.
+        ///
+        /// Process state rather than filesystem state, and immutable for the
+        /// whole run: CoreLib's interop surface has no `SystemNative_UMask` at
+        /// all, so no guest can read or change it, and a host that wants to
+        /// replay a differently-masked process sets it once through
+        /// `KernelConfig`.
+        ///
+        /// Deliberately *not* consulted for seed entries. A seed describes a
+        /// tree that some other process built, so this run's mask has no bearing
+        /// on it; `PermissionBits.defaultForRegularFile` shares the same 0o022
+        /// literal but is not derived from this field, so raising the mask
+        /// cannot silently change what an unannotated seed entry means.
+        Umask : PermissionBits
         /// Pure data model of the simulated process's signal disposition,
         /// per-thread sigprocmasks, and pending-signal queue. Populated by
         /// future slices: nothing in the simulator dispatches signals yet,
@@ -1522,6 +1718,14 @@ module EmulatedKernel =
     /// `defaultUserId`, as a Linux user-private group does.
     let defaultGroupId : uint32 = 1000u
 
+    /// File-mode creation mask a freshly-minted simulated process reports.
+    /// 0o022 because that is what essentially every Unix login shell and service
+    /// manager sets, and because it is the mask the existing seed defaults were
+    /// written against (`PermissionBits.defaultForRegularFile` is 0o666 with
+    /// these bits cleared). Hosts choose otherwise via `KernelConfig.Umask`.
+    let defaultUmask : PermissionBits =
+        PermissionBits.parseOrFail "EmulatedKernel.defaultUmask" 0o022
+
     /// The `st_dev` every inode in the emulated filesystem reports.
     ///
     /// One device for the whole tree, since PawPrint models no mounts. The
@@ -1562,6 +1766,7 @@ module EmulatedKernel =
             FileSystem = VirtualFileSystem.empty (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
             UserId = defaultUserId
             GroupId = defaultGroupId
+            Umask = defaultUmask
             Signals = SignalState.empty
         }
 
@@ -1603,6 +1808,11 @@ module EmulatedKernel =
         }
 
     /// Set the effective user and group IDs the simulated process runs as.
+    let withUmask (umask : PermissionBits) (kernel : EmulatedKernel) : EmulatedKernel =
+        { kernel with
+            Umask = PermissionBits.assertValid "EmulatedKernel.Umask" umask
+        }
+
     let withUserAndGroupId (userId : uint32) (groupId : uint32) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
             UserId = userId
@@ -2263,6 +2473,11 @@ type KernelConfig =
         /// Effective group ID the simulated process runs as, observed as every
         /// inode's `st_gid`.
         GroupId : uint32
+        /// The file-mode creation mask `open(O_CREAT)` applies to the mode its
+        /// caller asked for. See `EmulatedKernel.Umask`; it does not affect the
+        /// modes `FileSystem` states, which describe a tree this process did not
+        /// build.
+        Umask : PermissionBits
     }
 
     /// Configuration a host gets if it expresses no preference: no environment
@@ -2281,6 +2496,7 @@ type KernelConfig =
             FileSystem = FileSystemSeed.empty
             UserId = EmulatedKernel.defaultUserId
             GroupId = EmulatedKernel.defaultGroupId
+            Umask = EmulatedKernel.defaultUmask
         }
 
 [<RequireQualifiedAccess>]
@@ -2303,3 +2519,4 @@ module KernelConfig =
             (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)
             config.FileSystem
         |> EmulatedKernel.withUserAndGroupId config.UserId config.GroupId
+        |> EmulatedKernel.withUmask config.Umask

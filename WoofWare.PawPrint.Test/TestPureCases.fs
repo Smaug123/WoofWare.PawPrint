@@ -200,6 +200,18 @@ module TestPureCases =
                     name "big", file (String.init 10000 (fun i -> string<char> (char (int 'a' + (i % 251) % 26))))
                 ]
             "FileStreamHandleSeeded.cs", Map.ofList [ name "f", file "hello" ]
+            "CreateSeeded.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    name "d", SeedEntry.directory Map.empty
+                    name "lf", SeedEntry.Symlink (target "f")
+                    // The link the plain-O_CREAT row follows: creating through it
+                    // must bind "viadangtarget", not replace the link.
+                    name "viadang", SeedEntry.Symlink (target "viadangtarget")
+                    name "dang", SeedEntry.Symlink (target "nx")
+                    name "cyc", SeedEntry.Symlink (target "cyc")
+                ]
             "WriteSeeded.cs",
             Map.ofList
                 [

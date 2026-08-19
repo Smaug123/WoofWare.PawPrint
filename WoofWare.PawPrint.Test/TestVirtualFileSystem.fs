@@ -150,8 +150,14 @@ module TestVirtualFileSystem =
         // and would make a free name report ENOENT.
         let vfs = emptyFs
 
-        let resolution =
-            VirtualFileSystem.resolveFull limits (rootOf vfs) SymlinkPolicy.Follow (path "/nx/") vfs
+        let resolution : Resolution =
+            VirtualFileSystem.resolveFull
+                limits
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                TrailingSeparatorPolicy.Demand
+                (path "/nx/")
+                vfs
             |> ok
 
         resolution.Target
@@ -162,7 +168,13 @@ module TestVirtualFileSystem =
         // Whereas the genuinely-dotted path has no final name at all, which is
         // what makes rmdir able to tell the two apart and report EINVAL.
         let withDot =
-            VirtualFileSystem.resolveFull limits (rootOf vfs) SymlinkPolicy.Follow (path "/nx/.") vfs
+            VirtualFileSystem.resolveFull
+                limits
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                TrailingSeparatorPolicy.Demand
+                (path "/nx/.")
+                vfs
 
         withDot |> shouldEqual (Error UnixError.ENOENT)
 
@@ -200,7 +212,13 @@ module TestVirtualFileSystem =
             |> ok
 
         let withSlash =
-            VirtualFileSystem.resolveFull limits (rootOf vfs) SymlinkPolicy.NoFollowFinal (path "/ld/") vfs
+            VirtualFileSystem.resolveFull
+                limits
+                (rootOf vfs)
+                SymlinkPolicy.NoFollowFinal
+                TrailingSeparatorPolicy.Demand
+                (path "/ld/")
+                vfs
             |> ok
 
         withSlash.Target
@@ -342,6 +360,118 @@ module TestVirtualFileSystem =
             )
 
         exn.Message |> shouldContainText "wrong way round"
+
+    // ------------------------------------------- TrailingSeparatorPolicy
+
+    /// The filesystem the trailing-separator rows below resolve against, holding
+    /// one of every shape a final component can have.
+    let private separatorFs : VirtualFileSystem =
+        let r = rootOf emptyFs
+
+        build
+            [
+                mkdir r "d"
+                mkfile r "f"
+                mklink r "ld" "d"
+                mklink r "dang" "nx"
+                mklink r "cyc" "cyc"
+                // A link whose *target* carries the separator, so the demand arrives
+                // from a splice rather than from the guest's own path.
+                mklink r "lslash" "d/"
+                mklink r "cycslash" "cycslash/"
+            ]
+
+    let private refuse (candidate : string) : Result<Resolution, UnixError> =
+        VirtualFileSystem.resolveFull
+            limits
+            (rootOf separatorFs)
+            SymlinkPolicy.Follow
+            TrailingSeparatorPolicy.RefuseIsDirectory
+            (path candidate)
+            separatorFs
+
+    let private demand (candidate : string) : Result<Resolution, UnixError> =
+        VirtualFileSystem.resolveFull
+            limits
+            (rootOf separatorFs)
+            SymlinkPolicy.Follow
+            TrailingSeparatorPolicy.Demand
+            (path candidate)
+            separatorFs
+
+    [<Test>]
+    let ``RefuseIsDirectory answers EISDIR for every final-component shape`` () : unit =
+        // Measured on Linux with O_CREAT: the errno does not depend on what the
+        // name turns out to be, because the refusal happens before the lookup.
+        // Under `Demand` the same paths answer four *different* things, which is
+        // what makes this table load-bearing rather than a restatement.
+        for candidate in [ "/d/" ; "/f/" ; "/dang/" ; "/ld/" ; "/nx/" ] do
+            refuse candidate |> shouldEqual (Error UnixError.EISDIR)
+
+    [<Test>]
+    let ``RefuseIsDirectory fires before the NAME_MAX check`` () : unit =
+        // Measured on Linux: `<300 a>/` is EISDIR while `<300 a>` is
+        // ENAMETOOLONG. So the refusal cannot be placed after
+        // `PathLimits.nameWithinLimit`, and the second row is what proves the
+        // limit is still enforced when there is no separator to refuse.
+        let long = String.replicate 300 "a"
+
+        refuse ("/" + long + "/") |> shouldEqual (Error UnixError.EISDIR)
+        refuse ("/" + long) |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+    [<Test>]
+    let ``RefuseIsDirectory fires before a symlink is traversed`` () : unit =
+        // Measured on Linux: `cyc/` with O_CREAT is EISDIR, *not* ELOOP, even
+        // though `cyc` is a self-referential link that would otherwise exhaust
+        // the traversal budget. This is the row that pins the check above the
+        // symlink arm rather than merely above the lookup.
+        refuse "/cyc/" |> shouldEqual (Error UnixError.EISDIR)
+        demand "/cyc/" |> shouldEqual (Error UnixError.ELOOP)
+
+    [<Test>]
+    let ``RefuseIsDirectory sees a separator spliced in from a symlink target`` () : unit =
+        // The guest's own path has no trailing separator here: it arrives when
+        // the walk splices "d/" in. Measured on Linux, `l -> "d/"` opened with
+        // O_CREAT is EISDIR, and `l -> "cyc2/"` is EISDIR rather than ELOOP —
+        // so a check at the syscall boundary, on the path as passed, would be
+        // wrong for both.
+        refuse "/lslash" |> shouldEqual (Error UnixError.EISDIR)
+        refuse "/cycslash" |> shouldEqual (Error UnixError.EISDIR)
+
+        // Under `Demand` the same two resolve and loop respectively, so neither
+        // row is an artefact of the link being broken.
+        demand "/lslash"
+        |> Result.map (fun (r : Resolution) -> r.TrailingSeparatorDemanded)
+        |> shouldEqual (Ok true)
+
+        demand "/cycslash" |> shouldEqual (Error UnixError.ELOOP)
+
+    [<Test>]
+    let ``RefuseIsDirectory does not pre-empt a failure on an earlier component`` () : unit =
+        // Measured on Linux: `nodir/new/` is ENOENT and `f/new/` is ENOTDIR, not
+        // EISDIR — the walk never reaches the final component in either. This is
+        // what rules out checking the raw path text before resolving, and it is
+        // the half a check placed too early would break.
+        refuse "/nodir/new/" |> shouldEqual (Error UnixError.ENOENT)
+        refuse "/f/new/" |> shouldEqual (Error UnixError.ENOTDIR)
+
+    [<Test>]
+    let ``RefuseIsDirectory leaves a path with no trailing separator alone`` () : unit =
+        // The other half of the guard: the policy must key on the separator, not
+        // on "this is a creating walk". Every one of these resolves exactly as it
+        // does under `Demand`.
+        for candidate in [ "/d" ; "/f" ; "/ld" ; "/nx" ] do
+            refuse candidate |> shouldEqual (demand candidate)
+
+    [<Test>]
+    let ``RefuseIsDirectory does not touch a path that consumed no component`` () : unit =
+        // "/" and "/." reach the `None` arm of the walk, which the policy never
+        // sees. Darwin and Linux disagree about what a *creating* open then owes,
+        // and that disagreement is settled by the caller from `FinalNavigation`,
+        // not here.
+        refuse "/" |> shouldEqual (demand "/")
+        refuse "/." |> shouldEqual (demand "/.")
+        refuse "/d/.." |> shouldEqual (demand "/d/..")
 
     // ------------------------------------------------------------- NAME_MAX
 
@@ -1106,7 +1236,13 @@ module TestVirtualFileSystem =
 
         let property (vfs : VirtualFileSystem, candidate : string) : unit =
             for policy in [ SymlinkPolicy.Follow ; SymlinkPolicy.NoFollowFinal ] do
-                VirtualFileSystem.resolveFull limits (rootOf vfs) policy (path candidate) vfs
+                VirtualFileSystem.resolveFull
+                    limits
+                    (rootOf vfs)
+                    policy
+                    TrailingSeparatorPolicy.Demand
+                    (path candidate)
+                    vfs
                 |> ignore<Result<Resolution, UnixError>>
 
         Check.One (config, Prop.forAll (Arb.fromGen (Gen.zip filesystemGen pathGen)) property)
@@ -2270,3 +2406,238 @@ module TestSeekTarget =
 
         VirtualFileSystem.seekTarget SeekWhence.Current Int64.MaxValue (lazy 5L) 1L
         |> shouldEqual (Error SeekFault.Overflow)
+
+/// `CreatingOpenRules.verdict` is the whole of what `open(O_CREAT)` decides, and
+/// most of it is compared against a real kernel in
+/// `TestVirtualFileSystemAgainstHost`. These are the rows that comparison cannot
+/// reach: the flavour it is *not* running on, the paths its temporary root
+/// cannot express, and the permission bits its corpus does not have. Every
+/// expectation is a measurement against real `open(2)` on macOS 26.6/APFS and
+/// Linux 6.x, at an unprivileged uid with umask 022.
+[<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
+module TestCreatingOpenRules =
+
+    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+
+    let private path (s : string) : UnixPath = UnixPath.parseOrFail "test" s
+
+    let private buildTime : UnixTimestamp =
+        UnixTimestamp.createOrFail "test" 1_700_000_000L 0
+
+    let private linux : CreatingOpenRules =
+        SimulatedUnixPlatform.creatingOpenRules SimulatedUnixPlatform.linuxX64
+
+    let private darwin : CreatingOpenRules =
+        SimulatedUnixPlatform.creatingOpenRules SimulatedUnixPlatform.macOsArm64
+
+    let private mode (raw : int) : PermissionBits = PermissionBits.parseOrFail "test" raw
+
+    /// A root holding a directory `d`, a file `f`, and a directory `locked`
+    /// whose permission bits are given.
+    let private treeWith (lockedBits : PermissionBits) : VirtualFileSystem =
+        let vfs = VirtualFileSystem.empty buildTime
+        let root = VirtualFileSystem.root vfs
+
+        let apply (result : Result<InodeNumber * VirtualFileSystem, UnixError>) : VirtualFileSystem =
+            match result with
+            | Ok (_, vfs) -> vfs
+            | Error error -> failwith $"could not build the tree: %O{error}"
+
+        vfs
+        |> fun vfs ->
+            apply (VirtualFileSystem.createDirectory root (name "d") PermissionBits.defaultForDirectory buildTime vfs)
+        |> fun vfs ->
+            apply (
+                VirtualFileSystem.createFile
+                    root
+                    (name "f")
+                    PermissionBits.defaultForRegularFile
+                    buildTime
+                    ImmutableArray<byte>.Empty
+                    vfs
+            )
+        |> fun vfs -> apply (VirtualFileSystem.createDirectory root (name "locked") lockedBits buildTime vfs)
+
+    let private tree : VirtualFileSystem = treeWith PermissionBits.defaultForDirectory
+
+    /// Resolve as a creating open of the given flavour would, then ask for the
+    /// verdict — so the `Resolution` under test is one the walk really produces
+    /// rather than one this test hand-assembled.
+    let private verdict
+        (rules : CreatingOpenRules)
+        (privileged : bool)
+        (exclusive : bool)
+        (vfs : VirtualFileSystem)
+        (candidate : string)
+        : CreatingOpenVerdict
+        =
+        let limits = SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
+
+        let policy =
+            if exclusive then
+                SymlinkPolicy.NoFollowFinal
+            else
+                SymlinkPolicy.Follow
+
+        match
+            VirtualFileSystem.resolveFull
+                limits
+                (VirtualFileSystem.root vfs)
+                policy
+                rules.TrailingSeparator
+                (path candidate)
+                vfs
+        with
+        | Error error -> CreatingOpenVerdict.Refuse error
+        | Ok resolution -> CreatingOpenRules.verdict rules privileged true exclusive resolution vfs
+
+    [<Test>]
+    let ``a path that consumed no component diverges between the two kernels`` () : unit =
+        // Measured: `open("/", O_RDONLY|O_CREAT)` is EEXIST on macOS and EISDIR
+        // on Linux. Pinned as a property of the *navigation* rather than of the
+        // root inode -- on macOS "/." and "/../" reach the same inode and open
+        // fine, and "/System/Volumes/Data", a writable volume's mount root, does
+        // too. `TestVirtualFileSystemAgainstHost` cannot carry this row: it
+        // prefixes every path with a temporary directory, so the kernel never
+        // sees a path with no components.
+        verdict darwin false false tree "/"
+        |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.EEXIST)
+
+        verdict linux false false tree "/"
+        |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.EISDIR)
+
+        // ...while the navigations that reach the same inode do not diverge on
+        // Darwin, which is what makes this about `FinalNavigation` rather than
+        // about the root.
+        verdict darwin false false tree "/."
+        |> shouldEqual (CreatingOpenVerdict.OpenExisting (VirtualFileSystem.root tree))
+
+        verdict darwin false false tree "/d/.."
+        |> shouldEqual (CreatingOpenVerdict.OpenExisting (VirtualFileSystem.root tree))
+
+    [<Test>]
+    let ``only Linux refuses a creating open that lands on a directory`` () : unit =
+        // Measured: `open("d", O_RDONLY|O_CREAT)` is EISDIR on Linux and opens
+        // the directory on macOS, where a plain `open("d", O_RDONLY)` succeeds
+        // on both. This is the divergence CI checks from the other side.
+        match verdict darwin false false tree "/d" with
+        | CreatingOpenVerdict.OpenExisting _ -> ()
+        | other -> failwith $"expected Darwin to open the directory, got %A{other}"
+
+        verdict linux false false tree "/d"
+        |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.EISDIR)
+
+    [<Test>]
+    let ``O_EXCL on an existing directory beats the directory refusal`` () : unit =
+        // Measured on both: `open(".", O_CREAT|O_EXCL)` is EEXIST while
+        // `open(".", O_CREAT)` is EISDIR on Linux. So the two refusals are
+        // ordered, and a handler that checked the directory rule first would
+        // report EISDIR where every kernel reports EEXIST.
+        for rules in [ linux ; darwin ] do
+            verdict rules false true tree "/d"
+            |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.EEXIST)
+
+    [<Test>]
+    let ``binding a name needs both write and search on the holding directory`` () : unit =
+        // Measured unanimously at uid 1000: 0o333 and 0o300 succeed, while 0o644
+        // (write, no search), 0o555 (search, no write) and 0o111 (search only)
+        // are all EACCES. The host oracle's corpus has no such directory, so
+        // this is the only place the rule is stated.
+        for permitted in [ 0o333 ; 0o300 ; 0o777 ] do
+            match verdict linux false false (treeWith (mode permitted)) "/locked/new" with
+            | CreatingOpenVerdict.Create (_, created) -> created |> shouldEqual (name "new")
+            | other -> failwith $"expected mode 0o%s{Convert.ToString (permitted, 8)} to permit creation, got %A{other}"
+
+        for refused in [ 0o644 ; 0o555 ; 0o111 ; 0o000 ] do
+            verdict linux false false (treeWith (mode refused)) "/locked/new"
+            |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.EACCES)
+
+    [<Test>]
+    let ``root bypasses the permission rule but not the others`` () : unit =
+        // Measured: as uid 0 a creating open succeeds in a mode-0000 directory.
+        // The second half is what stops "privileged" being read as "unchecked":
+        // root still gets EISDIR from Linux's directory rule.
+        match verdict linux true false (treeWith (mode 0o000)) "/locked/new" with
+        | CreatingOpenVerdict.Create _ -> ()
+        | other -> failwith $"expected root to create in a mode-0000 directory, got %A{other}"
+
+        verdict linux true false tree "/d"
+        |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.EISDIR)
+
+    [<Test>]
+    let ``a free name that demands a directory creates nothing`` () : unit =
+        // Measured on Darwin: `open("nx/", O_CREAT)` and `open("nx/", O_CREAT|O_EXCL)`
+        // are both ENOENT and leave the name free. Linux never reaches this arm,
+        // having refused the path in the walk -- which the second row states, so
+        // that a reader can see the two kernels reach the same "nothing was
+        // created" by different routes.
+        for exclusive in [ false ; true ] do
+            verdict darwin false exclusive tree "/nx/"
+            |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.ENOENT)
+
+            verdict linux false exclusive tree "/nx/"
+            |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.EISDIR)
+
+    [<Test>]
+    let ``a non-creating open never creates and never refuses a directory`` () : unit =
+        // The guard on `creating`: with it false, the verdict must be exactly
+        // what an ordinary `open` wants, whatever the flavour says about
+        // creating opens.
+        let limits = SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
+
+        let resolveFor (candidate : string) : Resolution =
+            match
+                VirtualFileSystem.resolveFull
+                    limits
+                    (VirtualFileSystem.root tree)
+                    SymlinkPolicy.Follow
+                    TrailingSeparatorPolicy.Demand
+                    (path candidate)
+                    tree
+            with
+            | Ok resolution -> resolution
+            | Error error -> failwith $"could not resolve %s{candidate}: %O{error}"
+
+        for rules in [ linux ; darwin ] do
+            match CreatingOpenRules.verdict rules false false false (resolveFor "/d") tree with
+            | CreatingOpenVerdict.OpenExisting _ -> ()
+            | other -> failwith $"a non-creating open of a directory must open it, got %A{other}"
+
+            CreatingOpenRules.verdict rules false false false (resolveFor "/nx") tree
+            |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.ENOENT)
+
+    [<Test>]
+    let ``the created mode is masked by the platform and then by the umask`` () : unit =
+        // Measured with umask 022: `mode 0o7777` creates 0o7755 on Linux and
+        // 0o0755 on macOS, because XNU masks the mode with ACCESSPERMS and so a
+        // Darwin guest cannot create a setuid, setgid or sticky file at all.
+        let umask = mode 0o022
+
+        CreatingOpenRules.createdPermissions linux umask 0o7777
+        |> shouldEqual (mode 0o7755)
+
+        CreatingOpenRules.createdPermissions darwin umask 0o7777
+        |> shouldEqual (mode 0o0755)
+
+        // Each special bit on its own, which is what separates "Darwin drops
+        // setuid" from "Darwin drops all three".
+        for raw, expected in [ 0o4644, 0o4644 ; 0o2644, 0o2644 ; 0o1644, 0o1644 ] do
+            CreatingOpenRules.createdPermissions linux (mode 0o000) raw
+            |> shouldEqual (mode expected)
+
+            CreatingOpenRules.createdPermissions darwin (mode 0o000) raw
+            |> shouldEqual (mode 0o644)
+
+        // A bit above the permission word is dropped rather than rejected:
+        // measured, `mode` 0o10777 creates 0o0755 on both.
+        for rules in [ linux ; darwin ] do
+            CreatingOpenRules.createdPermissions rules umask 0o10777
+            |> shouldEqual (mode 0o0755)
+
+        // The umask applies to all twelve bits, and 0 masks nothing.
+        CreatingOpenRules.createdPermissions linux (mode 0o7777) 0o0777
+        |> shouldEqual (mode 0o000)
+
+        CreatingOpenRules.createdPermissions linux (mode 0o000) 0o0666
+        |> shouldEqual (mode 0o666)
