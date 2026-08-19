@@ -1311,6 +1311,45 @@ module TypeConcretization =
                     )
             }
 
+        /// Re-read a substitution built in `definition`'s own vocabulary as one in the vocabulary of a
+        /// type that instantiates it: every `Formal (definition, i)` becomes `arguments.[i]`.
+        ///
+        /// Which slot a method occupies is decided once per definition, in that definition's own
+        /// context, and inherited unchanged -- CoreCLR builds each method table once and
+        /// `CopyParentVtable` copies it (methodtablebuilder.cpp:1143). *Comparing* an inherited
+        /// signature against a derived type's own is the separate question, and that needs both read in
+        /// the derived type's world, which is what this supplies. Re-running the parent's placement
+        /// under the child's arguments instead would fold two of the parent's slots together whenever
+        /// the child's arguments make two of its distinct declarations coincide.
+        let rebase
+            (definition : ResolvedTypeIdentity)
+            (arguments : ImmutableArray<SubstitutionArgument>)
+            (context : SubstitutionContext)
+            : SubstitutionContext
+            =
+            let rec rebaseArgument (argument : SubstitutionArgument) : SubstitutionArgument =
+                match argument with
+                | SubstitutionArgument.Closed _ -> argument
+                | SubstitutionArgument.Formal (owner, index) ->
+                    if owner <> definition then
+                        // A definition-rooted layout mentions only the variables of the one definition
+                        // it was laid out on, so another owner here means the slot came from a walk
+                        // rooted elsewhere.
+                        failwith
+                            $"Cannot re-read a substitution against %s{definition.AssemblyFullName}/%O{definition.TypeDefinition.Get}: it mentions variable !%d{index} of %s{owner.AssemblyFullName}/%O{owner.TypeDefinition.Get}"
+
+                    if index >= arguments.Length then
+                        failwith
+                            $"Cannot re-read a substitution against %s{definition.AssemblyFullName}/%O{definition.TypeDefinition.Get}: it mentions variable !%d{index} but only %d{arguments.Length} argument(s) were supplied"
+
+                    arguments.[index]
+                | SubstitutionArgument.Spelled (assembly, spelling, context) ->
+                    SubstitutionArgument.Spelled (assembly, spelling, context |> ImmutableArray.map rebaseArgument)
+
+            {
+                Arguments = context.Arguments |> ImmutableArray.map rebaseArgument
+            }
+
     /// One side of a method-signature comparison: a signature as its own blob spells it, the
     /// assembly whose token space those spellings live in, and the instantiation of the type
     /// that declared it — which is what ECMA-335 `!0` denotes in this signature.
