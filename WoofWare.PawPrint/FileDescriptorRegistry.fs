@@ -22,6 +22,88 @@ type OpenFileDescriptionId =
         match this with
         | OpenFileDescriptionId value -> string<int64> value
 
+/// Identity of a socket. Never guest-visible: `SystemNative_FStat` refuses a
+/// socket, so no modelled syscall reports one.
+///
+/// Deliberately *not* an inode number, despite Linux putting sockets on
+/// `sockfs` and giving each one an inode. Measured, a Darwin `AF_INET` socket
+/// reports `st_dev` and `st_ino` of 0, so there is no number here that both
+/// platforms would agree this value *is*. Its jobs are to keep two sockets from
+/// contending under `flock` (see `OpenFileObject.Socket`) and to be what a
+/// socket table keys on if one is ever needed; it is `OpenFileDescriptionId`'s
+/// sibling, not `InodeNumber`'s.
+[<Struct>]
+type SocketId =
+    | SocketId of value : int64
+
+    override this.ToString () : string =
+        match this with
+        | SocketId value -> string<int64> value
+
+/// The communication domain of a socket PawPrint can create, as the PAL numbers
+/// it (`AddressFamily` in `pal_networking.h`).
+///
+/// Only the domains a socket can actually *be*: `AF_UNSPEC`, `AF_PACKET` and
+/// `AF_CAN` all convert in the shim's address-family screen but reach no socket
+/// PawPrint models, so they are refused by `EmulatedKernel.createSocket` rather
+/// than represented here.
+[<RequireQualifiedAccess>]
+type SocketDomain =
+    /// `AF_INET`, PAL 2.
+    | InterNetwork
+    /// `AF_INET6`, PAL 23.
+    | InterNetworkV6
+    /// `AF_UNIX`, PAL 1.
+    | Unix
+
+/// The communication semantics of a socket PawPrint can create, as the PAL
+/// numbers it (`SocketType` in `pal_networking.h`).
+///
+/// `SOCK_RDM` is absent: it converts in the shim's screen but no kernel we model
+/// creates one, so it never reaches a live socket.
+[<RequireQualifiedAccess>]
+type SocketKind =
+    /// `SOCK_STREAM`, PAL 1.
+    | Stream
+    /// `SOCK_DGRAM`, PAL 2.
+    | Datagram
+    /// `SOCK_RAW`, PAL 3. Reachable only in the `AF_UNIX` domain under the Linux
+    /// flavour: an IP raw socket needs `CAP_NET_RAW`, which is not modelled.
+    | Raw
+    /// `SOCK_SEQPACKET`, PAL 5. Reachable only in the `AF_UNIX` domain under the
+    /// Linux flavour.
+    | SeqPacket
+
+/// The protocol of a socket PawPrint can create, as the PAL numbers it
+/// (`ProtocolType` in `pal_networking.h`) — *not* as the platform numbers it.
+/// The shim's conversion can change the value (`AF_INET6` with `PT_ICMP`
+/// becomes `IPPROTO_ICMPV6`), and it is the PAL value that
+/// `SystemNative_GetSocketType` will owe a caller.
+[<RequireQualifiedAccess>]
+type SocketProtocol =
+    /// `PT_UNSPECIFIED`, PAL 0: "the default protocol for this domain and kind".
+    /// Not resolved to that default here — the kernel resolves it, and what it
+    /// resolves to is `SystemNative_GetSocketType`'s question to measure.
+    | Unspecified
+    /// `PT_TCP`, PAL 6.
+    | Tcp
+    /// `PT_UDP`, PAL 17.
+    | Udp
+
+/// A socket, as an open file description refers to it.
+type SocketDescription =
+    {
+        /// What distinguishes this socket from every other one. See `SocketId`.
+        Id : SocketId
+        /// The domain given to `socket(2)`, and fixed for the socket's life:
+        /// no modelled syscall can change it.
+        Domain : SocketDomain
+        /// The type given to `socket(2)`, likewise fixed.
+        Kind : SocketKind
+        /// The protocol given to `socket(2)`, likewise fixed.
+        Protocol : SocketProtocol
+    }
+
 /// What an open file description refers to — the kernel object on the far side
 /// of the descriptor.
 [<RequireQualifiedAccess>]
@@ -50,9 +132,21 @@ type OpenFileObject =
     /// ports apart wants `OpenFileDescriptionId`, which is what
     /// `ThreadStatus.BlockedOnSocketEvents` keys on.
     ///
-    /// Not the answer for a socket, when one lands: Linux puts those on
-    /// `sockfs` with an inode each, not on `anon_inodefs`.
+    /// Not the answer for a socket: Linux puts those on `sockfs` with an inode
+    /// each, not on `anon_inodefs`. See `Socket`.
     | AnonymousInode
+    /// One socket. Carries an identity, and that is a `flock` fact rather than
+    /// an aesthetic one — it is exactly where a socket differs from
+    /// `AnonymousInode` above. Measured on Linux 6.18.5: two `socket(2)` calls
+    /// report distinct `st_ino` (4127 and 4130, both `st_dev` 8), and
+    /// `flock(LOCK_EX|LOCK_NB)` succeeds on *both*, where two epoll ports
+    /// contend. A payload-free case here would grant one exclusive lock where
+    /// Linux grants two.
+    ///
+    /// Darwin never reaches this: measured, `flock` on any socket there is
+    /// ENOTSUP, which `SystemNative_FLock` refuses ahead of any contention
+    /// test.
+    | Socket of SocketId
 
 /// The mode of an advisory whole-file lock taken by `flock(2)`. "No lock" is
 /// the absence of one of these (`OpenFileDescription.Flock` is an option).
@@ -105,6 +199,20 @@ type OpenFileTarget =
     /// resulting readiness is `SystemNative_WaitForSocketEvents`. Neither
     /// exists yet, so a registration stored here would be state nothing reads.
     | SocketEventPort
+    /// A socket, handed out by `SystemNative_Socket`.
+    ///
+    /// No offset, because neither kernel maintains one: measured, `lseek` on a
+    /// socket is ESPIPE on both for every whence in 0..4 and every offset.
+    ///
+    /// The socket itself lives here rather than in a table the id points into,
+    /// because the correspondence is 1:1 — PawPrint models no way to obtain a
+    /// second open file description onto one socket, `/proc/self/fd` reopening
+    /// and `SCM_RIGHTS` both being absent (and the latter sharing the
+    /// description in any case). So the socket dies with its description, which
+    /// costs no lifetime bookkeeping. A socket that must outlive or precede
+    /// every descriptor — a completed connection waiting in a listening
+    /// socket's backlog — would break that, and wants the table.
+    | Socket of socket : SocketDescription
 
 /// Which transfers `open(2)`'s access mode permits: `O_RDONLY`, `O_WRONLY` or
 /// `O_RDWR`.
@@ -194,6 +302,9 @@ module OpenFileDescription =
         // every anon-inode file shares one inode and so they all contend under
         // `flock`. See `OpenFileObject.AnonymousInode`.
         | OpenFileTarget.SocketEventPort -> OpenFileObject.AnonymousInode
+        // Each socket is its own object, unlike the ports above: measured, two
+        // sockets do not contend under `flock`. See `OpenFileObject.Socket`.
+        | OpenFileTarget.Socket socket -> OpenFileObject.Socket socket.Id
 
 /// In-memory model of a Unix per-process file descriptor table, and of the
 /// open file descriptions those descriptors point at.
@@ -235,6 +346,16 @@ type FileDescriptorRegistry =
             /// `VirtualFileSystem.NextInode` is stored for the stronger version
             /// of this reason, inode reuse being guest-visible.
             NextId : OpenFileDescriptionId
+            /// The identity the next `SystemNative_Socket` will allocate.
+            /// Monotonic for the same reason `NextId` is.
+            ///
+            /// A counter of its own rather than a projection of `NextId`:
+            /// today one socket description is minted per `socket(2)` call so
+            /// the two advance together, but a `SocketId` means "this socket"
+            /// and an `OpenFileDescriptionId` means "this description", and
+            /// deriving one from the other would make a coincidence look like
+            /// a definition.
+            NextSocketId : SocketId
         }
 
 [<RequireQualifiedAccess>]
@@ -301,6 +422,15 @@ type FileDescriptorRegistryDefect =
     /// exclusive. This is the mutual-exclusion property itself rather than a
     /// bookkeeping check.
     | ConflictingFlocks of first : OpenFileDescriptionId * second : OpenFileDescriptionId
+    /// A live socket's identity is at or above the next one to allocate, so a
+    /// future `socket(2)` would mint a duplicate. `NextIdNotFresh`'s sibling,
+    /// for the same reason.
+    | NextSocketIdNotFresh of nextSocketId : SocketId * existing : SocketId
+    /// Two distinct open file descriptions name the same socket. PawPrint
+    /// models no way to produce that — `dup(2)` shares a description rather
+    /// than copying it — and it would be guest-visible through `flock`, which
+    /// contends between descriptions naming one object but not within one.
+    | DuplicateSocketId of first : OpenFileDescriptionId * second : OpenFileDescriptionId * socket : SocketId
 
 [<RequireQualifiedAccess>]
 module FileDescriptorRegistry =
@@ -345,6 +475,7 @@ module FileDescriptorRegistry =
                 |> Map.add stdoutId (stream FileDescriptorRole.StandardOutput FileAccessMode.WriteOnly)
                 |> Map.add stderrId (stream FileDescriptorRole.StandardError FileAccessMode.WriteOnly)
             NextId = OpenFileDescriptionId 3L
+            NextSocketId = SocketId 0L
         }
 
     /// Which description `fd` names, if `fd` is live. Callers that need to know
@@ -555,6 +686,60 @@ module FileDescriptorRegistry =
             NextId = OpenFileDescriptionId (raw + 1L)
         }
 
+    /// Mirrors `socket(2)`: allocate a fresh socket, a fresh open file
+    /// description naming it, and the lowest non-negative descriptor not in use.
+    ///
+    /// Says nothing about whether this domain/kind/protocol combination *can*
+    /// exist — that is `EmulatedKernel.createSocket`'s question, and this is
+    /// reached only once it has answered yes.
+    ///
+    /// The access mode is `ReadWrite`, and that is load-bearing rather than
+    /// cosmetic, for the reason `createSocketEventPort`'s is:
+    /// `SystemNative_Read` and `SystemNative_Write` test the access mode before
+    /// they look at the target, so anything narrower would answer EBADF where a
+    /// real socket answers about its connection state instead (measured:
+    /// ENOTCONN, EINVAL, or a block, never EBADF).
+    ///
+    /// Total, like `openFile` and `createSocketEventPort`: PawPrint models no
+    /// descriptor limit, so there is no `EMFILE`/`ENFILE` to report, and no
+    /// resource a socket could exhaust.
+    let createSocket
+        (domain : SocketDomain)
+        (kind : SocketKind)
+        (protocol : SocketProtocol)
+        (registry : FileDescriptorRegistry)
+        : int * FileDescriptorRegistry
+        =
+        let id = registry.NextId
+        let (OpenFileDescriptionId raw) = id
+        let socketId = registry.NextSocketId
+        let (SocketId rawSocket) = socketId
+        let fd = lowestFree registry.Fds
+
+        fd,
+        { registry with
+            Fds = Map.add fd id registry.Fds
+            Descriptions =
+                Map.add
+                    id
+                    {
+                        Target =
+                            OpenFileTarget.Socket
+                                {
+                                    Id = socketId
+                                    Domain = domain
+                                    Kind = kind
+                                    Protocol = protocol
+                                }
+                        AccessMode = FileAccessMode.ReadWrite
+                        // `socket(2)` takes no lock, exactly as `open(2)` does not.
+                        Flock = None
+                    }
+                    registry.Descriptions
+            NextId = OpenFileDescriptionId (raw + 1L)
+            NextSocketId = SocketId (rawSocket + 1L)
+        }
+
     /// May two *different* open file descriptions on one file hold these two
     /// locks at the same time? Symmetric, so `checkInvariants` can apply it to
     /// an unordered pair.
@@ -695,6 +880,9 @@ module FileDescriptorRegistry =
         | OpenFileTarget.SocketEventPort ->
             failwith
                 $"setOffset: fd %d{fd} names a socket event port, which holds no file offset on either platform — Linux's lseek on one is noop_llseek and Darwin's is ESPIPE (this is an interpreter bug: the caller should have answered without moving a position)."
+        | OpenFileTarget.Socket socket ->
+            failwith
+                $"setOffset: fd %d{fd} names socket %O{socket.Id}, which holds no file offset on either platform — `lseek` on a socket is ESPIPE on both (this is an interpreter bug: the caller should have answered ESPIPE)."
         | OpenFileTarget.File (inode, _) ->
 
         { registry with
@@ -739,7 +927,8 @@ module FileDescriptorRegistry =
             |> List.choose (fun (id, description) ->
                 match description.Target with
                 | OpenFileTarget.StandardStream _
-                | OpenFileTarget.SocketEventPort -> None
+                | OpenFileTarget.SocketEventPort
+                | OpenFileTarget.Socket _ -> None
                 | OpenFileTarget.File (_, offset) ->
                     if offset < 0L then
                         Some (FileDescriptorRegistryDefect.NegativeOffset (id, offset))
@@ -773,7 +962,46 @@ module FileDescriptorRegistry =
                 )
             )
 
-        dangling @ unreferenced @ freshness @ negativeOffsets @ conflicting
+        let sockets =
+            registry.Descriptions
+            |> Map.toList
+            |> List.choose (fun (id, description) ->
+                match description.Target with
+                | OpenFileTarget.StandardStream _
+                | OpenFileTarget.SocketEventPort
+                | OpenFileTarget.File _ -> None
+                | OpenFileTarget.Socket socket -> Some (id, socket.Id)
+            )
+
+        let socketFreshness =
+            sockets
+            |> List.filter (fun (_, socketId) -> socketId >= registry.NextSocketId)
+            |> List.map (fun (_, socketId) ->
+                FileDescriptorRegistryDefect.NextSocketIdNotFresh (registry.NextSocketId, socketId)
+            )
+
+        // Every unordered pair of distinct descriptions, as `conflicting` above
+        // does it and for the same reason: a handful of live descriptions, and
+        // the clarity is worth more than the asymptotics.
+        let duplicateSockets =
+            sockets
+            |> List.collect (fun (firstId, firstSocket) ->
+                sockets
+                |> List.choose (fun (secondId, secondSocket) ->
+                    if firstId < secondId && firstSocket = secondSocket then
+                        Some (FileDescriptorRegistryDefect.DuplicateSocketId (firstId, secondId, firstSocket))
+                    else
+                        None
+                )
+            )
+
+        dangling
+        @ unreferenced
+        @ freshness
+        @ negativeOffsets
+        @ conflicting
+        @ socketFreshness
+        @ duplicateSockets
 
     /// Fail loudly if `registry` is not sound, naming `context`.
     let assertInvariants (context : string) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
@@ -794,10 +1022,12 @@ module FileDescriptorRegistry =
             (fds : Map<int, OpenFileDescriptionId>)
             (descriptions : Map<OpenFileDescriptionId, OpenFileDescription>)
             (nextId : OpenFileDescriptionId)
+            (nextSocketId : SocketId)
             : FileDescriptorRegistry
             =
             {
                 Fds = fds
                 Descriptions = descriptions
                 NextId = nextId
+                NextSocketId = nextSocketId
             }

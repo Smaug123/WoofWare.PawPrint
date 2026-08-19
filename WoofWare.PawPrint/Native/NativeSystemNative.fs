@@ -1734,6 +1734,19 @@ module NativeSystemNative =
                 // both identity fields.
                 failwith
                     $"%s{operation}: fd %d{fd} is a socket event port, an anonymous kernel object for which PawPrint holds no inode. Every field `fstat` owes one would be invented here, and the platforms agree on none of them; decide what an inode-free descriptor's `struct stat` is — for streams, ports and sockets together (issue #956) — rather than guessing."
+            | Some (OpenFileObject.Socket socketId) ->
+                // Refused for the same reason as the streams and the port above.
+                // A socket does have an identity here, but `SocketId` is not an
+                // inode: measured, only Linux gives a socket one (`st_dev` 8 and
+                // a distinct `st_ino` per socket, on `sockfs`), while a Darwin
+                // `AF_INET` socket reports 0 for both. And the remaining fields
+                // would be invented either way — measured, `st_mode` is
+                // `S_IFSOCK|0777` on Linux against `S_IFSOCK|0666` on Darwin,
+                // `st_nlink` 1 against 0, and Darwin's `st_blksize` varies with
+                // the socket itself (131072 for TCP, 9216 for UDP, 8192 for a
+                // Unix-domain socket).
+                failwith
+                    $"%s{operation}: fd %d{fd} is socket %O{socketId}, for which PawPrint holds no inode — `SocketId` is a contention key, not an inode number, and Darwin gives an AF_INET socket no inode at all. Every field `fstat` owes one would be invented here, and the platforms agree on none of them; decide what an inode-free descriptor's `struct stat` is — for streams, ports and sockets together (issue #956) — rather than guessing."
             | Some (OpenFileObject.File inode) ->
 
             let entry =
@@ -1866,6 +1879,15 @@ module NativeSystemNative =
                     // `flock` while the rest of it stays unmodelled.
                     refuseDarwin
                         $"fd %d{fd} is a socket event port. Linux permits `flock` on an epoll descriptor and returns 0; Darwin refuses it on a kqueue with ENOTSUP (raw 45), for every operation including LOCK_UN."
+                | OpenFileObject.Socket socketId ->
+                    // The same divergence again, and measured on a socket
+                    // specifically rather than assumed from the port: Linux
+                    // takes the lock and returns 0, Darwin answers ENOTSUP (raw
+                    // 45). Refused rather than reported for the same reason —
+                    // modelling one row of Darwin's `flock` while the rest of it
+                    // stays unmodelled.
+                    refuseDarwin
+                        $"fd %d{fd} is socket %O{socketId}. Linux permits `flock` on a socket and returns 0; Darwin refuses it with ENOTSUP (raw 45)."
                 | OpenFileObject.File _ ->
 
                 match flockRequest, description.Flock with
@@ -2055,6 +2077,13 @@ module NativeSystemNative =
                 // `pread(port, buf, 0, 0)` are both ESPIPE on both platforms,
                 // and so is `pread(port, (void*)-1, 8, 0)` — unseekability
                 // precedes the buffer screen.
+                fail UnixError.ESPIPE
+            | OpenFileTarget.Socket _ ->
+                // Unseekable on both platforms, with no tie to break for the
+                // same reason the port has none: a socket description is
+                // `ReadWrite`, so Darwin's unreadability arm above cannot apply.
+                // Measured, `pread` on a fresh socket is ESPIPE on both
+                // platforms, for a TCP, a UDP and a Unix-domain socket alike.
                 fail UnixError.ESPIPE
             | OpenFileTarget.File (inode, _) ->
 
@@ -2258,6 +2287,12 @@ module NativeSystemNative =
                 // `pwrite(port, buf, 0, 0)` — so the zero-length shortcut does
                 // not apply either.
                 fail UnixError.ESPIPE
+            | OpenFileTarget.Socket _ ->
+                // Unseekable on both platforms, and — like the port and unlike a
+                // standard stream — with no tie to break, a socket description
+                // being `ReadWrite`. Measured, `pwrite` on a fresh socket is
+                // ESPIPE on both platforms.
+                fail UnixError.ESPIPE
             | OpenFileTarget.File (inode, _) ->
 
             // `vfs_write`'s EBADF for a descriptor not open for writing, which
@@ -2411,6 +2446,25 @@ module NativeSystemNative =
                     match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
                     | SimulatedUnixFlavour.Linux -> Error UnixError.EINVAL
                     | SimulatedUnixFlavour.Darwin -> Error UnixError.ENXIO
+                | OpenFileTarget.Socket socket ->
+                    // Refused rather than answered, and the reason is that there
+                    // is no single answer to give. Measured on a fresh,
+                    // unbound, unconnected socket, `read` is ENOTCONN for a
+                    // TCP socket on both platforms, EINVAL on Linux but ENOTCONN
+                    // on Darwin for a Unix-domain stream socket, and for a
+                    // datagram socket it *blocks with no wake source* — the
+                    // probe saw EAGAIN only because it had set `O_NONBLOCK`, and
+                    // a socket from `socket(2)` is blocking.
+                    //
+                    // Every one of those answers is really a claim about
+                    // connection state, which PawPrint does not model yet: any
+                    // constant here would become a lie the moment `connect`
+                    // lands. Nor is anything waiting on it — CoreLib reaches a
+                    // socket through `SystemNative_Receive`, never through
+                    // `SystemNative_Read`, `SafeSocketHandle` not being a
+                    // `SafeFileHandle` — so this is a hand-rolled P/Invoke.
+                    failwith
+                        $"%s{operation}: fd %d{fd} is socket %O{socket.Id} (%O{socket.Domain}, %O{socket.Kind}). PawPrint models no socket connection state, and `read(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is ENOTCONN for a TCP socket, EINVAL on Linux against ENOTCONN on Darwin for a Unix-domain stream socket, and a block with no wake source for a datagram socket. Model the connection state before answering this."
                 | OpenFileTarget.File (inode, offset) -> Ok (ReadTarget.File (inode, offset))
 
             match target with
@@ -2594,6 +2648,15 @@ module NativeSystemNative =
                     match flavour with
                     | SimulatedUnixFlavour.Darwin -> Some DescriptorFault.NotSeekable
                     | SimulatedUnixFlavour.Linux -> None
+                | Some (OpenFileTarget.Socket _) ->
+                    // Unseekable on both, unlike the port above: measured, both
+                    // platforms answer ESPIPE for every whence in 0..4 and every
+                    // offset, `-1` and `INT64_MAX` alike. The whence-ordering
+                    // divergence still shows through this, and is exactly what
+                    // the ladder below reproduces — measured,
+                    // `lseek(sock, 0, 9)` is EINVAL on Linux (whence checked
+                    // first) and ESPIPE on Darwin (seekability checked first).
+                    Some DescriptorFault.NotSeekable
                 | Some (OpenFileTarget.File _) -> None
 
             // The two descriptor faults are ordered *differently* against the
@@ -3065,6 +3128,110 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim resultCode)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        // `int32_t SystemNative_Socket(int32_t addressFamily, int32_t socketType,
+        // int32_t protocolType, intptr_t* createdSocket)` (pal_networking.c:2812).
+        //
+        // The three enum parameters are matched loosely for the reason
+        // `SystemNative_Open`'s flags are: CoreLib declares them `int` while a
+        // guest hand-rolling the P/Invoke may write `AddressFamily` and friends,
+        // and `int32Argument` peels the enum boxing so both reach one decode.
+        //
+        // Returns a PAL `Interop.Error` rather than -1-and-errno, and — unlike
+        // `SystemNative_Open` or `SystemNative_FLock` — leaves `LastSystemError`
+        // strictly alone. Every path PawPrint models here is one of the C's own
+        // pre-syscall screens, which set no errno; the only paths that would are
+        // the `socket(2)` failures, and those are refused rather than reported.
+        | Some "SystemNative_Socket",
+          [ _ ; _ ; _ ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            let operation = "SystemNative_Socket"
+
+            let palAddressFamily = NativeCall.int32Argument operation instruction.Arguments.[0]
+            let palSocketType = NativeCall.int32Argument operation instruction.Arguments.[1]
+            let palProtocolType = NativeCall.int32Argument operation instruction.Arguments.[2]
+
+            let createdSocketArgument =
+                bufferPointerArgument operation "createdSocket" instruction.Arguments.[3]
+
+            match createdSocketArgument with
+            | BufferPointer.RawAddress 0UL ->
+                // The wrapper's first screen, ahead of every conversion, and it
+                // stores nothing — the `*createdSocket = -1` assignments below
+                // belong to the three conversion failures, not to this.
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal UnixError.EFAULT)))
+                    ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | _ ->
+
+            match BufferPointer.dereferenceable createdSocketArgument with
+            | None ->
+                // Deliberately *not* EFAULT, for the reason
+                // `SystemNative_CreateSocketEventPort` gives: a non-null address
+                // naming no storage passes the wrapper's null check, so the real
+                // code runs on and faults storing through it — a SIGSEGV that
+                // kills the process, not an error code the guest can catch.
+                failwith
+                    $"%s{operation}: `createdSocket` is %O{createdSocketArgument}, which is not null but names no storage. The C screens only `createdSocket == NULL`, so a real run would store through this address and fault; PawPrint does not model that fault. Pass a real out-parameter."
+            | Some createdSocket ->
+
+            // `*createdSocket = <fd>`, as an `intptr_t`: eight bytes, little-endian
+            // on both architectures PawPrint models.
+            let storeCreatedSocket (value : int64) (state : IlMachineState) : IlMachineState =
+                let bytes = Array.zeroCreate<byte> 8
+                BinaryPrimitives.WriteInt64LittleEndian (Span<byte> bytes, value)
+                writeBytesThrough ctx operation createdSocket (ImmutableArray.CreateRange bytes) state
+
+            let completeWith (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match
+                SimulatedUnixPlatform.socketCreation
+                    state.Kernel.UnixPlatform
+                    palAddressFamily
+                    palSocketType
+                    palProtocolType
+            with
+            | Error refusal ->
+                let error =
+                    match refusal with
+                    | SocketCreationRefusal.AddressFamily -> UnixError.EAFNOSUPPORT
+                    | SocketCreationRefusal.SocketType -> UnixError.EPROTOTYPE
+                    | SocketCreationRefusal.Protocol -> UnixError.EPROTONOSUPPORT
+                    | SocketCreationRefusal.Unmodelled ->
+                        // Past every screen the shim applies, so a real run
+                        // would call `socket(2)` here. What it would answer is
+                        // either configuration PawPrint does not model
+                        // (`CAP_NET_RAW` for any raw or packet socket,
+                        // `net.ipv4.ping_group_range` for Linux's ICMP datagram
+                        // sockets) or a deterministic kernel refusal PawPrint
+                        // has simply not modelled. Either way the creatable set
+                        // is this emulated kernel's declared protocol table, and
+                        // a row outside it wants a decision rather than a guess.
+                        failwith
+                            $"%s{operation}: PawPrint does not model a socket with PAL address family %d{palAddressFamily}, type %d{palSocketType} and protocol %d{palProtocolType} under %O{state.Kernel.UnixPlatform}. Every screen the native shim applies passed, so a real run would reach socket(2); what that answers is privilege-dependent for a raw or packet socket, sysctl-dependent for a Linux ICMP datagram socket, and otherwise a deterministic kernel refusal nobody has modelled. Extend SimulatedUnixPlatform.socketCreation with a measured row rather than guessing an errno."
+
+                // Each of the three conversion failures stores -1 before
+                // returning, so a caller that ignores the return code sees an
+                // invalid handle rather than whatever was in the variable.
+                state |> storeCreatedSocket -1L |> completeWith (UnixError.toPal error)
+            | Ok (domain, kind, protocol) ->
+
+            let fd, registry =
+                FileDescriptorRegistry.createSocket domain kind protocol state.Kernel.FileDescriptors
+
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    FileDescriptors = registry
+                }
+            )
+            |> storeCreatedSocket (int64 fd)
+            |> completeWith UnixError.palSuccess
         | Some "SystemNative_CreateSocketEventPort",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
@@ -3529,11 +3696,17 @@ module NativeSystemNative =
 
                 match description.Target with
                 | OpenFileTarget.StandardStream _
-                | OpenFileTarget.File _ ->
+                | OpenFileTarget.File _
+                | OpenFileTarget.Socket _ ->
                     // A live descriptor onto the wrong kind of object. EINVAL is
                     // epoll's own answer for it, and it is the last of the four
                     // screens — behind the buffer, which is why an unmappable
                     // buffer on a non-port descriptor is EFAULT rather than this.
+                    //
+                    // A socket is measured to be exactly like the other two here
+                    // rather than assumed to be: `epoll_wait` on a socket fd is
+                    // EINVAL, and EFAULT still wins ahead of it for an
+                    // unmappable buffer.
                     failFromSyscall UnixError.EINVAL
                 | OpenFileTarget.SocketEventPort -> park port
             | SimulatedUnixFlavour.Darwin ->
@@ -3548,9 +3721,11 @@ module NativeSystemNative =
 
                 match description.Target with
                 | OpenFileTarget.StandardStream _
-                | OpenFileTarget.File _ ->
+                | OpenFileTarget.File _
+                | OpenFileTarget.Socket _ ->
                     // EBADF, where epoll says EINVAL: kqueue folds "not a kqueue"
-                    // into "bad descriptor".
+                    // into "bad descriptor". Measured on a socket too, and for
+                    // both a zero and a non-zero event count.
                     failFromSyscall UnixError.EBADF
                 | OpenFileTarget.SocketEventPort ->
 
@@ -3702,6 +3877,25 @@ module NativeSystemNative =
                                 | SimulatedUnixFlavour.Darwin -> UnixError.ENXIO
 
                             -1, StepEffect.NoEffect, setErrno state error
+                        | OpenFileTarget.Socket socket ->
+                            // Refused for the same reason `SystemNative_Read`
+                            // refuses a socket: measured on a fresh, unbound,
+                            // unconnected socket, `write` is EPIPE on Linux but
+                            // ENOTCONN on Darwin for a TCP socket, ENOTCONN on
+                            // Linux but the same on Darwin for a Unix-domain
+                            // stream socket, and EDESTADDRREQ for a datagram
+                            // socket — all of them claims about connection state
+                            // PawPrint does not model.
+                            //
+                            // The Linux TCP row is worth recording precisely:
+                            // the syscall raises SIGPIPE as well as answering
+                            // EPIPE, but a .NET guest never sees the signal,
+                            // CoreCLR having installed `signal(SIGPIPE, SIG_IGN)`
+                            // process-wide (`src/coreclr/pal/src/exception/
+                            // signal.cpp:244`). So the guest-visible fact is the
+                            // bare errno.
+                            failwith
+                                $"%s{operation}: fd %d{fd} is socket %O{socket.Id} (%O{socket.Domain}, %O{socket.Kind}). PawPrint models no socket connection state, and `write(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is EPIPE on Linux against ENOTCONN on Darwin for a TCP socket, ENOTCONN on both for a Unix-domain stream socket, and EDESTADDRREQ for a datagram socket. Model the connection state before answering this."
                         | OpenFileTarget.File (inode, offset) ->
                             let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 

@@ -470,6 +470,33 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The `SystemNative_Socket` rows true only under the Linux
+                // flavour — the Unix-domain sockets Darwin refuses — together
+                // with the two descriptor-level rows a differential guest cannot
+                // reach: `flock` on a socket, and `lseek`'s screen order.
+                FileName = "SocketCreateLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The two address families the shim's own `#ifdef`s compile out
+                // on Darwin, so that the wrapper refuses them before any kernel
+                // sees them. Configured as macOS for the same reason
+                // `SocketEventPortDarwin.cs` is.
+                FileName = "SocketCreateDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The port rows Darwin answers differently: ENXIO rather than
                 // EINVAL for read/write, and ESPIPE rather than a successful 0
                 // for `lseek` — a kqueue is not seekable at all, where an epoll
