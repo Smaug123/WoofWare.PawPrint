@@ -210,10 +210,9 @@ module NativeCastHelpers =
           "CastHelpers",
           [ ConcretePointer (ConcreteVoid state.ConcreteTypes)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              objectHandleGenerics) ],
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
             objectHandleGenerics.IsEmpty
             ->

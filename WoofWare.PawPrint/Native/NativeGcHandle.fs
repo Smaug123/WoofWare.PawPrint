@@ -18,14 +18,8 @@ module NativeGcHandle =
           "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallTypeHandle",
-                                              qCallGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.InteropServices",
-                                              "GCHandleType",
-                                              gcHandleTypeGenerics) ],
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.InteropServices", "GCHandleType", gcHandleTypeGenerics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) when
             qCallGenerics.IsEmpty && gcHandleTypeGenerics.IsEmpty
             ->
@@ -54,10 +48,7 @@ module NativeGcHandle =
           "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallTypeHandle",
-                                              qCallGenerics)
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
           returnType when qCallGenerics.IsEmpty ->
             let operation = "RuntimeTypeHandle.FreeGCHandle (QCall_FreeGCHandleForTypeHandle)"
@@ -105,10 +96,7 @@ module NativeGcHandle =
           "GCHandle",
           "_InternalAlloc",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.InteropServices",
-                                              "GCHandleType",
-                                              gcHandleTypeGenerics) ],
+            CorelibType state.ConcreteTypes ("System.Runtime.InteropServices", "GCHandleType", gcHandleTypeGenerics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) when
             gcHandleTypeGenerics.IsEmpty
             ->

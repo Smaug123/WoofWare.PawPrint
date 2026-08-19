@@ -252,18 +252,13 @@ module NativeEnum =
           "System.Private.CoreLib",
           "System",
           "Enum",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallTypeHandle",
-                                              qCallGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              valuesHandleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              namesHandleGenerics)
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             valuesHandleGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             namesHandleGenerics)
             _getNamesType ],
           MethodReturnType.Void when
             qCallGenerics.IsEmpty

@@ -42,10 +42,9 @@ module NativeRuntimeTypeFCall =
           "MethodTable",
           "GetPrimitiveCorElementType",
           [],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                      "System.Reflection",
-                                                                      "CorElementType",
-                                                                      corElementTypeGenerics)) when
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection",
+                                                                     "CorElementType",
+                                                                     corElementTypeGenerics)) when
             corElementTypeGenerics.IsEmpty
             ->
             let operation = "MethodTable.GetPrimitiveCorElementType"
@@ -64,10 +63,9 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "InternalAllocNoChecks_FastPath",
-          [ ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                               "System.Runtime.CompilerServices",
-                                                               "MethodTable",
-                                                               methodTableGenerics)) ],
+          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                              "MethodTable",
+                                                              methodTableGenerics)) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Object) when
             methodTableGenerics.IsEmpty
             ->
@@ -107,7 +105,7 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "GetFields",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics)
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics)
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when
@@ -175,10 +173,9 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "GetUtf8NameInternal",
-          [ ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                               "System.Runtime.CompilerServices",
-                                                               "MethodTable",
-                                                               methodTableGenerics)) ],
+          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                              "MethodTable",
+                                                              methodTableGenerics)) ],
           MethodReturnType.Returns (ConcretePointer (ConcreteVoid state.ConcreteTypes)) when methodTableGenerics.IsEmpty ->
             // CoreCLR's RuntimeTypeHandle::GetUtf8Name (runtimehandles.cpp:732) is an FCall
             // that reads the type's UTF-8 name straight out of the metadata string heap:
@@ -269,11 +266,10 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "GetCorElementType",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                      "System.Reflection",
-                                                                      "CorElementType",
-                                                                      corElementTypeGenerics)) when
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection",
+                                                                     "CorElementType",
+                                                                     corElementTypeGenerics)) when
             runtimeTypeGenerics.IsEmpty && corElementTypeGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.GetCorElementType"
@@ -293,7 +289,7 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "GetToken",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
             runtimeTypeGenerics.IsEmpty
             ->
@@ -315,7 +311,7 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "IsGenericVariable",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when
             runtimeTypeGenerics.IsEmpty
             ->
@@ -347,7 +343,7 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "GetGenericVariableIndex",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
             runtimeTypeGenerics.IsEmpty
             ->
@@ -384,11 +380,8 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "GetDeclaringMethod",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                      "System",
-                                                                      "IRuntimeMethodInfo",
-                                                                      methodInfoGenerics)) when
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System", "IRuntimeMethodInfo", methodInfoGenerics)) when
             runtimeTypeGenerics.IsEmpty && methodInfoGenerics.IsEmpty
             ->
             // GetDeclaringMethod returns null for type-level generic parameters and
@@ -420,11 +413,8 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "GetDeclaringType",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                      "System",
-                                                                      "RuntimeType",
-                                                                      returnTypeGenerics)) when
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System", "RuntimeType", returnTypeGenerics)) when
             runtimeTypeGenerics.IsEmpty && returnTypeGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.GetDeclaringType"
@@ -444,7 +434,7 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "ContainsGenericVariables",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when
             runtimeTypeGenerics.IsEmpty
             ->
@@ -464,11 +454,8 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "GetBaseType",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                      "System",
-                                                                      "RuntimeType",
-                                                                      returnTypeGenerics)) when
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System", "RuntimeType", returnTypeGenerics)) when
             runtimeTypeGenerics.IsEmpty && returnTypeGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.GetBaseType"
@@ -488,11 +475,8 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "GetElementType",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                      "System",
-                                                                      "RuntimeType",
-                                                                      returnTypeGenerics)) when
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System", "RuntimeType", returnTypeGenerics)) when
             runtimeTypeGenerics.IsEmpty && returnTypeGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.GetElementType"
@@ -512,11 +496,10 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "GetAssembly",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                      "System.Reflection",
-                                                                      "RuntimeAssembly",
-                                                                      runtimeAssemblyGenerics)) when
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection",
+                                                                     "RuntimeAssembly",
+                                                                     runtimeAssemblyGenerics)) when
             runtimeTypeGenerics.IsEmpty && runtimeAssemblyGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.GetAssembly"
@@ -540,11 +523,10 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "GetModule",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                      "System.Reflection",
-                                                                      "RuntimeModule",
-                                                                      runtimeModuleGenerics)) when
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection",
+                                                                     "RuntimeModule",
+                                                                     runtimeModuleGenerics)) when
             runtimeTypeGenerics.IsEmpty && runtimeModuleGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.GetModule"
@@ -568,11 +550,10 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "GetAssemblyIfExists",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                      "System.Reflection",
-                                                                      "RuntimeAssembly",
-                                                                      runtimeAssemblyGenerics)) when
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection",
+                                                                     "RuntimeAssembly",
+                                                                     runtimeAssemblyGenerics)) when
             runtimeTypeGenerics.IsEmpty && runtimeAssemblyGenerics.IsEmpty
             ->
             // .NET 10 InternalCall fast path: returns the cached RuntimeAssembly for the type, or
@@ -599,11 +580,10 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "GetModuleIfExists",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                      "System.Reflection",
-                                                                      "RuntimeModule",
-                                                                      runtimeModuleGenerics)) when
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection",
+                                                                     "RuntimeModule",
+                                                                     runtimeModuleGenerics)) when
             runtimeTypeGenerics.IsEmpty && runtimeModuleGenerics.IsEmpty
             ->
             // .NET 10 InternalCall fast path: same shape as GetAssemblyIfExists.
@@ -670,8 +650,8 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "CanCastTo",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", sourceGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", targetGenerics) ],
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", sourceGenerics)
+            CorelibType state.ConcreteTypes ("System", "RuntimeType", targetGenerics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when
             sourceGenerics.IsEmpty && targetGenerics.IsEmpty
             ->
@@ -753,11 +733,10 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "GetAttributes",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                      "System.Reflection",
-                                                                      "TypeAttributes",
-                                                                      typeAttributesGenerics)) when
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection",
+                                                                     "TypeAttributes",
+                                                                     typeAttributesGenerics)) when
             runtimeTypeGenerics.IsEmpty && typeAttributesGenerics.IsEmpty
             ->
             // RuntimeTypeHandle.GetAttributes is the InternalCall boundary backing
@@ -833,7 +812,7 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "GetNumVirtuals",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
             runtimeTypeGenerics.IsEmpty
             ->
@@ -861,11 +840,10 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "GetFirstIntroducedMethod",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                      "System",
-                                                                      "RuntimeMethodHandleInternal",
-                                                                      returnGenerics)) when
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System",
+                                                                     "RuntimeMethodHandleInternal",
+                                                                     returnGenerics)) when
             runtimeTypeGenerics.IsEmpty && returnGenerics.IsEmpty
             ->
             // First half of the IntroducedMethodEnumerator pair: returns the bare
@@ -914,10 +892,7 @@ module NativeRuntimeTypeFCall =
           "System",
           "RuntimeTypeHandle",
           "GetNextIntroducedMethod",
-          [ ConcreteByref (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                             "System",
-                                                             "RuntimeMethodHandleInternal",
-                                                             refGenerics)) ],
+          [ ConcreteByref (CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", refGenerics)) ],
           MethodReturnType.Void when refGenerics.IsEmpty ->
             // Second half of the IntroducedMethodEnumerator pair. Reads the byref'd handle,
             // advances to the next introduced method on the same declaring type (in metadata

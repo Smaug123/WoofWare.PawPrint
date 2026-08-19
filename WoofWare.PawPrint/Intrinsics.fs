@@ -223,11 +223,10 @@ module Intrinsics =
             // corresponding primitive: a same-shaped object holding the same cells, which is
             // exactly the shallow copy the method promises.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [],
-              MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                          "System",
-                                                                          "Object",
-                                                                          generics)) when generics.IsEmpty -> ()
+            | [], MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System", "Object", generics)) when
+                generics.IsEmpty
+                ->
+                ()
             | _ -> failwith "bad signature for System.Private.CoreLib.Object.MemberwiseClone"
 
             let receiver, state = IlMachineState.popEvalStack currentThread state
@@ -254,11 +253,10 @@ module Intrinsics =
             | other -> failwith $"Object.MemberwiseClone: expected an object reference receiver, got %O{other}"
         | "System.Private.CoreLib", "Object", "GetType" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [],
-              MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                          "System",
-                                                                          "Type",
-                                                                          generics)) when generics.IsEmpty -> ()
+            | [], MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System", "Type", generics)) when
+                generics.IsEmpty
+                ->
+                ()
             | _ -> failwith "bad signature Object.GetType"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -313,10 +311,9 @@ module Intrinsics =
             | _ -> failwith "bad signature RuntimeHelpers.GetMethodTable"
 
             match methodToCall.Signature.ReturnType with
-            | MethodReturnType.Returns (ConcreteTypeHandle.Pointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                                                      "System.Runtime.CompilerServices",
-                                                                                                      "MethodTable",
-                                                                                                      generics))) when
+            | MethodReturnType.Returns (ConcreteTypeHandle.Pointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                                                     "MethodTable",
+                                                                                                     generics))) when
                 generics.IsEmpty
                 ->
                 ()
@@ -3120,11 +3117,10 @@ module Intrinsics =
             // the boundary is "allocate a same-shaped array holding the same element cells",
             // which `IlMachineState.cloneArray` performs directly.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [],
-              MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                          "System",
-                                                                          "Object",
-                                                                          generics)) when generics.IsEmpty -> ()
+            | [], MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System", "Object", generics)) when
+                generics.IsEmpty
+                ->
+                ()
             | _ -> failwith "bad signature Array.Clone"
 
             let receiver, state = IlMachineState.popEvalStack currentThread state

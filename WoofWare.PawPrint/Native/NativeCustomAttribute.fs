@@ -194,25 +194,19 @@ module NativeCustomAttribute =
           "System.Private.CoreLib",
           "System.Reflection",
           "CustomAttribute",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallModule",
-                                              moduleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              typeHandleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              ctorHandleGenerics)
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             typeHandleGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             ctorHandleGenerics)
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              instanceHandleGenerics) ],
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             instanceHandleGenerics) ],
           MethodReturnType.Void when
             moduleGenerics.IsEmpty
             && typeHandleGenerics.IsEmpty
@@ -575,25 +569,13 @@ module NativeCustomAttribute =
           "System.Private.CoreLib",
           "System.Reflection",
           "CustomAttribute",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallModule",
-                                              moduleGenerics)
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "StringHandleOnStack",
-                                              nameGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "StringHandleOnStack", nameGenerics)
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              typeGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              valueGenerics) ],
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", typeGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", valueGenerics) ],
           MethodReturnType.Void when
             moduleGenerics.IsEmpty
             && nameGenerics.IsEmpty

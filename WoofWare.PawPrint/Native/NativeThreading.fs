@@ -252,10 +252,9 @@ module NativeThreading =
           "System.Threading",
           "Thread",
           "GetCurrentThread",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              objectHandleGenerics) ],
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics) ],
           MethodReturnType.Void when objectHandleGenerics.IsEmpty ->
             // .NET 10 QCall: writes the calling thread's managed Thread object into *thread.
             let operation = "ThreadNative_GetCurrentThread"
@@ -282,10 +281,9 @@ module NativeThreading =
           "System.Threading",
           "Thread",
           "Initialize",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              objectHandleGenerics) ],
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics) ],
           MethodReturnType.Void when objectHandleGenerics.IsEmpty ->
             // .NET 10 QCall replacing the parameterless Thread.Initialize InternalCall. The Thread
             // reference comes in through ObjectHandleOnStack rather than as `this`.
@@ -313,10 +311,9 @@ module NativeThreading =
           "System.Threading",
           "Thread",
           _,
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              objectHandleGenerics)
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
             objectHandleGenerics.IsEmpty
@@ -361,11 +358,8 @@ module NativeThreading =
           "System.Threading",
           "Thread",
           "SetIsBackground",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Threading",
-                                              "ThreadHandle",
-                                              threadHandleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "", "BOOL", boolGenerics) ],
+          [ CorelibType state.ConcreteTypes ("System.Threading", "ThreadHandle", threadHandleGenerics)
+            CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics) ],
           MethodReturnType.Void when threadHandleGenerics.IsEmpty && boolGenerics.IsEmpty ->
             // .NET 10 QCall backing `Thread.IsBackground = value`. We don't yet model the
             // "process terminates when the last foreground thread exits" semantics, so the
@@ -427,11 +421,8 @@ module NativeThreading =
           "System.Threading",
           "Thread",
           "GetIsBackground",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Threading",
-                                              "ThreadHandle",
-                                              threadHandleGenerics) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "", "BOOL", boolGenerics)) when
+          [ CorelibType state.ConcreteTypes ("System.Threading", "ThreadHandle", threadHandleGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
             threadHandleGenerics.IsEmpty && boolGenerics.IsEmpty
             ->
             // .NET 10 QCall backing the `Thread.IsBackground` getter. Returns Interop.BOOL
@@ -480,10 +471,7 @@ module NativeThreading =
           // signature shape on the parameter-types pattern below; the QCall entry-point
           // tuple element is already an exact match. Same approach as Environment_FailFast.
           _,
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Threading",
-                                              "ThreadHandle",
-                                              threadHandleGenerics)
+          [ CorelibType state.ConcreteTypes ("System.Threading", "ThreadHandle", threadHandleGenerics)
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void when threadHandleGenerics.IsEmpty ->
@@ -570,7 +558,7 @@ module NativeThreading =
           // `Environment_FailFast`.
           _,
           [],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "", "BOOL", boolGenerics)) when
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
             boolGenerics.IsEmpty
             ->
             // .NET 10 QCall backing `Thread.Yield()`:
@@ -801,10 +789,9 @@ module NativeThreading =
           "Thread",
           "GetCurrentThreadNative",
           [],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                      "System.Threading",
-                                                                      "Thread",
-                                                                      threadGenerics)) when threadGenerics.IsEmpty ->
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Threading", "Thread", threadGenerics)) when
+            threadGenerics.IsEmpty
+            ->
             let addr, state =
                 IlMachineState.getOrAllocateManagedThreadObject ctx.LoggerFactory ctx.BaseClassTypes ctx.Thread state
 

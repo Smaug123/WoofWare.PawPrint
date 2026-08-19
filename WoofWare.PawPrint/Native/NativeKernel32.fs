@@ -270,7 +270,7 @@ module NativeKernel32 =
           "System.Private.CoreLib",
           "Kernel32",
           [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Char) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "", "BOOL", boolGenerics)) when
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
             boolGenerics.IsEmpty
             ->
             let operation = "FreeEnvironmentStringsW"
