@@ -20,10 +20,7 @@ module NativeRuntimeHelpers =
           "System.Runtime.CompilerServices",
           "RuntimeHelpers",
           "RunClassConstructor",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallTypeHandle",
-                                              generics) ],
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", generics) ],
           MethodReturnType.Void when generics.IsEmpty ->
             let operation = "RuntimeHelpers.RunClassConstructor"
             let qCallHandle = instruction.Arguments.[0] |> EvalStackValue.ofCliType

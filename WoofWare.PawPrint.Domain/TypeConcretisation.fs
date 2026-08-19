@@ -389,13 +389,27 @@ module ConcreteActivePatterns =
             | _ -> None
         | _ -> None
 
-    /// Active pattern to match any concrete type by assembly/namespace/name and generics
-    let (|ConcreteType|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) =
+    /// Matches a concrete type by namespace, name and generic arguments, in whatever assembly
+    /// declares it. Prefer `CorelibType` where the declaring assembly is known: a namespace and
+    /// name alone do not identify a type, and two assemblies may spell the same one.
+    let (|NamedType|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) =
         match handle with
         | ConcreteTypeHandle.Concrete id ->
             match concreteTypes.Mapping |> Map.tryFind id with
-            | Some ct -> Some (ct.Assembly.Name, ct.Namespace, ct.Name, ct.Generics)
+            | Some ct -> Some (ct.Namespace, ct.Name, ct.Generics)
             | None -> None
+        | _ -> None
+
+    /// Matches a concrete type declared by CoreLib, by namespace, name and generic arguments.
+    ///
+    /// Yields no assembly name: every caller of the general form spelled CoreLib, so the name
+    /// went straight back into a comparison against the literal below.
+    let (|CorelibType|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct when ct.Assembly.Name = "System.Private.CoreLib" -> Some (ct.Namespace, ct.Name, ct.Generics)
+            | _ -> None
         | _ -> None
 
     let (|ConcreteChar|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =

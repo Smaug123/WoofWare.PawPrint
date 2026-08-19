@@ -477,20 +477,11 @@ module internal NativeReflectionInvocation =
           "System",
           "RuntimeMethodHandle",
           "InvokeMethod",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              targetGenerics)
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", targetGenerics)
             ConcretePointer (ConcretePointer (ConcreteVoid state.ConcreteTypes))
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              sigGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "", "BOOL", boolGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              resultGenerics) ],
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", sigGenerics)
+            CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", resultGenerics) ],
           MethodReturnType.Void when
             targetGenerics.IsEmpty
             && sigGenerics.IsEmpty
@@ -837,10 +828,7 @@ module internal NativeReflectionInvocation =
           "",
           "BoxCache",
           "GetBoxInfo",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallTypeHandle",
-                                              typeHandleGenerics)
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", typeHandleGenerics)
             ConcretePointer (ConcreteFunctionPointer _)
             ConcretePointer (ConcretePointer (ConcreteVoid state.ConcreteTypes))
             ConcretePointer (ConcreteInt32 state.ConcreteTypes)
