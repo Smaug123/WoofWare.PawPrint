@@ -655,23 +655,11 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "IsCAVisibleFromDecoratedType",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallTypeHandle",
-                                              attrGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeMethodHandleInternal",
-                                              ctorGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallTypeHandle",
-                                              sourceGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallModule",
-                                              moduleGenerics) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "", "BOOL", boolGenerics)) when
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", attrGenerics)
+            CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", ctorGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", sourceGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
             attrGenerics.IsEmpty
             && ctorGenerics.IsEmpty
             && sourceGenerics.IsEmpty
@@ -804,15 +792,11 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetMethodInstantiation",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeMethodHandleInternal",
-                                              handleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              objectHandleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "", "BOOL", boolGenerics) ],
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics)
+            CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics) ],
           MethodReturnType.Void when handleGenerics.IsEmpty && objectHandleGenerics.IsEmpty && boolGenerics.IsEmpty ->
             // CoreCLR runtimehandles.cpp:1708:
             //   Instantiation inst = pMethod->LoadMethodInstantiation();
@@ -875,22 +859,14 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetStubIfNeededSlow",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeMethodHandleInternal",
-                                              handleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallTypeHandle",
-                                              qCallGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              objectHandleGenerics) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                      "System",
-                                                                      "RuntimeMethodHandleInternal",
-                                                                      retGenerics)) when
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System",
+                                                                     "RuntimeMethodHandleInternal",
+                                                                     retGenerics)) when
             handleGenerics.IsEmpty
             && qCallGenerics.IsEmpty
             && objectHandleGenerics.IsEmpty
@@ -1168,10 +1144,7 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetUtf8NameInternal",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeMethodHandleInternal",
-                                              generics) ],
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
           MethodReturnType.Returns (ConcretePointer (ConcreteVoid state.ConcreteTypes)) when generics.IsEmpty ->
             // CoreCLR's RuntimeMethodHandle.GetUtf8NameInternal returns a raw pointer into
             // metadata; the managed wrapper RuntimeMethodHandle.GetUtf8Name(...) wraps the
@@ -1195,14 +1168,10 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetAttributes",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeMethodHandleInternal",
-                                              generics) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                      "System.Reflection",
-                                                                      "MethodAttributes",
-                                                                      retGenerics)) when
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection",
+                                                                     "MethodAttributes",
+                                                                     retGenerics)) when
             generics.IsEmpty && retGenerics.IsEmpty
             ->
             // CoreCLR (runtimehandles.cpp): asserts non-null and returns
@@ -1235,10 +1204,7 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetSlot",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeMethodHandleInternal",
-                                              generics) ],
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when generics.IsEmpty ->
             // CoreCLR (runtimehandles.cpp:1352): asserts non-null and returns
             // (INT32)pMethod->GetSlot(), which is a bare read of the MethodDesc's slot number as
@@ -1302,10 +1268,7 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetMethodDef",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeMethodHandleInternal",
-                                              generics) ],
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when generics.IsEmpty ->
             // CoreCLR (runtimehandles.cpp:1577): asserts non-null and returns
             // (INT32)pMethod->GetMemberDef(). See `methodDefToken` above for what that token is and
@@ -1331,10 +1294,7 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "IsGenericMethodDefinition",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeMethodHandleInternal",
-                                              generics) ],
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->
             // CoreCLR (runtimehandles.cpp:1730): FC_RETURN_BOOL(pMethod->IsGenericMethodDefinition()).
             // See `isGenericMethodDefinition` above for the predicate and how it maps onto
@@ -1356,10 +1316,7 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "IsDynamicMethod",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeMethodHandleInternal",
-                                              generics) ],
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->
             // CoreCLR (runtimehandles.cpp:1746): FC_RETURN_BOOL(pMethod->IsNoMetadata()).
             // See `isDynamicMethod` above for the predicate.
@@ -1380,14 +1337,10 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetMethodTable",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeMethodHandleInternal",
-                                              generics) ],
-          MethodReturnType.Returns (ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                                       "System.Runtime.CompilerServices",
-                                                                                       "MethodTable",
-                                                                                       retGenerics))) when
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                                      "MethodTable",
+                                                                                      retGenerics))) when
             generics.IsEmpty && retGenerics.IsEmpty
             ->
             // CoreCLR (runtimehandles.cpp:1344): asserts non-null and returns
@@ -1446,10 +1399,7 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "HasMethodInstantiation",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeMethodHandleInternal",
-                                              generics) ],
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->
             // CoreCLR (runtimehandles.cpp:1722): FC_RETURN_BOOL(pMethod->HasMethodInstantiation()).
             // See `hasMethodInstantiation` above for the predicate, and in particular for why the
@@ -1468,10 +1418,7 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "IsConstructor",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeMethodHandleInternal",
-                                              generics) ],
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->
             // CoreCLR (runtimehandles.cpp:2135): asserts non-null and returns
             // pMethod->IsClassConstructorOrCtor(). See `isConstructorOrClassConstructor` above for
@@ -1493,15 +1440,11 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetStubIfNeededInternal",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeMethodHandleInternal",
-                                              handleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                      "System",
-                                                                      "RuntimeMethodHandleInternal",
-                                                                      retGenerics)) when
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
+            CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System",
+                                                                     "RuntimeMethodHandleInternal",
+                                                                     retGenerics)) when
             handleGenerics.IsEmpty && runtimeTypeGenerics.IsEmpty && retGenerics.IsEmpty
             ->
             // CoreCLR runtimehandles.cpp:1886-1911. Fast path that returns the same MethodDesc*
@@ -1552,14 +1495,8 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetLoaderAllocatorInternal",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeMethodHandleInternal",
-                                              handleGenerics) ],
-          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                      "System.Reflection",
-                                                                      "LoaderAllocator",
-                                                                      retGenerics)) when
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection", "LoaderAllocator", retGenerics)) when
             handleGenerics.IsEmpty && retGenerics.IsEmpty
             ->
             // CoreCLR runtimehandles.cpp:2148 returns

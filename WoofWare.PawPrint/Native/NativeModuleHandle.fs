@@ -126,10 +126,7 @@ module NativeModuleHandle =
           "System.Private.CoreLib",
           "System",
           "ModuleHandle",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallModule",
-                                              qCallModuleGenerics) ],
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", qCallModuleGenerics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
             qCallModuleGenerics.IsEmpty
             ->
@@ -173,10 +170,7 @@ module NativeModuleHandle =
           "System.Private.CoreLib",
           "System",
           "ModuleHandle",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallModule",
-                                              qCallModuleGenerics)
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", qCallModuleGenerics)
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
           MethodReturnType.Void when qCallModuleGenerics.IsEmpty ->
@@ -222,21 +216,16 @@ module NativeModuleHandle =
           "System.Private.CoreLib",
           "System",
           "ModuleHandle",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallModule",
-                                              qCallModuleGenerics)
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", qCallModuleGenerics)
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              resolverHandleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              resultHandleGenerics) ],
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             resolverHandleGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             resultHandleGenerics) ],
           MethodReturnType.Void when
             qCallModuleGenerics.IsEmpty
             && resolverHandleGenerics.IsEmpty

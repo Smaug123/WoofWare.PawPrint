@@ -156,7 +156,7 @@ module NativeGc =
           "System",
           "GC",
           "GetMemoryInfo",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "GCMemoryInfoData", dataGenerics)
+          [ CorelibType state.ConcreteTypes ("System", "GCMemoryInfoData", dataGenerics)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void when dataGenerics.IsEmpty ->
             let operation = "GC.GetMemoryInfo"
@@ -264,11 +264,10 @@ module NativeGc =
             // `GC_ALLOC_FLAGS` is nested in `GC`, and a nested TypeDef carries an empty
             // namespace in ECMA metadata (II.22.37), so it is matched with "" rather than
             // "System" — as `NativeException` matches the nested `ExceptionMessageKind`.
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "", "GC_ALLOC_FLAGS", flagsGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              objectHandleGenerics) ],
+            CorelibType state.ConcreteTypes ("", "GC_ALLOC_FLAGS", flagsGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics) ],
           MethodReturnType.Void when flagsGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             let operation = "GC.AllocateNewArray"
 

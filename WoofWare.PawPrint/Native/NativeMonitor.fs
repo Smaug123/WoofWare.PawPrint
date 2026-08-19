@@ -8,10 +8,7 @@ module NativeMonitor =
     /// They live in CoreLib with empty namespace (nested types) and matching simple name.
     let private (|MonitorNestedEnum|_|) (concreteTypes : AllConcreteTypes) (enumName : string) handle =
         match handle with
-        | ConcreteType concreteTypes (asm, "", name, generics) when
-            asm = "System.Private.CoreLib" && name = enumName && generics.IsEmpty
-            ->
-            Some ()
+        | CorelibType concreteTypes ("", name, generics) when name = enumName && generics.IsEmpty -> Some ()
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
@@ -102,10 +99,9 @@ module NativeMonitor =
           "System.Threading",
           "Monitor",
           _,
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              objectHandleGenerics)
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
             objectHandleGenerics.IsEmpty
@@ -176,10 +172,9 @@ module NativeMonitor =
           "System.Threading",
           "Monitor",
           _,
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              objectHandleGenerics) ],
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics) ],
           MethodReturnType.Void when objectHandleGenerics.IsEmpty ->
             // .NET 10 QCall: Monitor.Pulse(ObjectHandleOnStack obj) -> void.
             let operation = "Monitor_Pulse"
@@ -198,10 +193,9 @@ module NativeMonitor =
           "System.Threading",
           "Monitor",
           _,
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              objectHandleGenerics) ],
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics) ],
           MethodReturnType.Void when objectHandleGenerics.IsEmpty ->
             // .NET 10 QCall: Monitor.PulseAll(ObjectHandleOnStack obj) -> void.
             let operation = "Monitor_PulseAll"
@@ -220,10 +214,9 @@ module NativeMonitor =
           "System.Threading",
           "Monitor",
           _,
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              objectHandleGenerics)
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
             objectHandleGenerics.IsEmpty

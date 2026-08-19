@@ -1011,10 +1011,9 @@ module NativeMetadataImport =
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              objectHandleGenerics) ],
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics) ],
           MethodReturnType.Void when objectHandleGenerics.IsEmpty ->
             let operation = "MetadataImport.Enum"
             let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
@@ -1104,10 +1103,7 @@ module NativeMetadataImport =
           "System.Reflection",
           "MetadataImport",
           "GetMetadataImport",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Reflection",
-                                              "RuntimeModule",
-                                              runtimeModuleGenerics) ],
+          [ CorelibType state.ConcreteTypes ("System.Reflection", "RuntimeModule", runtimeModuleGenerics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) when
             runtimeModuleGenerics.IsEmpty
             ->
@@ -1392,10 +1388,7 @@ module NativeMetadataImport =
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
             ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcreteByref (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                             "System.Reflection",
-                                                             "ConstArray",
-                                                             constArrayGenerics)) ],
+            ConcreteByref (CorelibType state.ConcreteTypes ("System.Reflection", "ConstArray", constArrayGenerics)) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
             constArrayGenerics.IsEmpty
             ->
@@ -1450,10 +1443,7 @@ module NativeMetadataImport =
           "GetSigOfMethodDef",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                             "System.Reflection",
-                                                             "ConstArray",
-                                                             constArrayGenerics)) ],
+            ConcreteByref (CorelibType state.ConcreteTypes ("System.Reflection", "ConstArray", constArrayGenerics)) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
             constArrayGenerics.IsEmpty
             ->
@@ -1503,10 +1493,7 @@ module NativeMetadataImport =
           "GetSigOfFieldDef",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                             "System.Reflection",
-                                                             "ConstArray",
-                                                             constArrayGenerics)) ],
+            ConcreteByref (CorelibType state.ConcreteTypes ("System.Reflection", "ConstArray", constArrayGenerics)) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
             constArrayGenerics.IsEmpty
             ->
@@ -1562,10 +1549,7 @@ module NativeMetadataImport =
           "GetFieldMarshal",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                             "System.Reflection",
-                                                             "ConstArray",
-                                                             constArrayGenerics)) ],
+            ConcreteByref (CorelibType state.ConcreteTypes ("System.Reflection", "ConstArray", constArrayGenerics)) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
             constArrayGenerics.IsEmpty
             ->
@@ -1625,10 +1609,7 @@ module NativeMetadataImport =
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
             ConcreteByref (ConcretePointer (ConcreteVoid state.ConcreteTypes))
             ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcreteByref (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                             "System.Reflection",
-                                                             "ConstArray",
-                                                             constArrayGenerics)) ],
+            ConcreteByref (CorelibType state.ConcreteTypes ("System.Reflection", "ConstArray", constArrayGenerics)) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
             constArrayGenerics.IsEmpty
             ->
@@ -1713,10 +1694,7 @@ module NativeMetadataImport =
           "GetMemberRefProps",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                             "System.Reflection",
-                                                             "ConstArray",
-                                                             constArrayGenerics)) ],
+            ConcreteByref (CorelibType state.ConcreteTypes ("System.Reflection", "ConstArray", constArrayGenerics)) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
             constArrayGenerics.IsEmpty
             ->

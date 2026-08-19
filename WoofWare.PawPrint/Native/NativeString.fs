@@ -81,10 +81,9 @@ module NativeString =
           "System",
           "String",
           "FastAllocateString",
-          [ ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                               "System.Runtime.CompilerServices",
-                                                               "MethodTable",
-                                                               methodTableGenerics))
+          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                              "MethodTable",
+                                                              methodTableGenerics))
             ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.String) when
             methodTableGenerics.IsEmpty

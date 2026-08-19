@@ -810,20 +810,13 @@ module NativeSignature =
           "System",
           "Signature",
           "Init",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              objectHandleGenerics)
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics)
             ConcretePointer (ConcreteVoid state.ConcreteTypes)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeFieldHandleInternal",
-                                              fieldHandleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeMethodHandleInternal",
-                                              methodHandleGenerics) ],
+            CorelibType state.ConcreteTypes ("System", "RuntimeFieldHandleInternal", fieldHandleGenerics)
+            CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", methodHandleGenerics) ],
           MethodReturnType.Void when
             objectHandleGenerics.IsEmpty
             && fieldHandleGenerics.IsEmpty
@@ -937,16 +930,10 @@ module NativeSignature =
           "System",
           "Signature",
           "GetCustomModifiersAtOffset",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              sigObjGenerics)
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", sigObjGenerics)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "", "BOOL", boolGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              resultGenerics) ],
+            CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", resultGenerics) ],
           MethodReturnType.Void when sigObjGenerics.IsEmpty && boolGenerics.IsEmpty && resultGenerics.IsEmpty ->
             // CoreCLR's Signature_GetCustomModifiersAtOffset (runtimehandles.cpp:1461)
             // walks the field/method signature blob from `offset`, collecting
@@ -1198,15 +1185,9 @@ module NativeSignature =
           "GetSignature",
           [ ConcretePointer (ConcreteVoid state.ConcreteTypes)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeFieldHandleInternal",
-                                              fieldHandleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "IRuntimeMethodInfo",
-                                              methodHandleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", declaringTypeGenerics) ],
+            CorelibType state.ConcreteTypes ("System", "RuntimeFieldHandleInternal", fieldHandleGenerics)
+            CorelibType state.ConcreteTypes ("System", "IRuntimeMethodInfo", methodHandleGenerics)
+            CorelibType state.ConcreteTypes ("System", "RuntimeType", declaringTypeGenerics) ],
           MethodReturnType.Void when
             fieldHandleGenerics.IsEmpty
             && methodHandleGenerics.IsEmpty
