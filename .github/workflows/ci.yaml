@@ -31,8 +31,13 @@ jobs:
       run: nix develop --command dotnet restore
     - name: Build
       run: nix develop --command dotnet build --no-restore --configuration Release
+    # Tests the Release binaries the step above produced, rather than rebuilding and
+    # testing Debug: a bare `dotnet test` did the latter, so this job threw away its own
+    # build and then ran the more expensive configuration. Debug costs ~20% more time and
+    # ~20% more allocation than Release across the suite, and this was the only job that
+    # tested Debug and the only one whose runner ever died of resource starvation.
     - name: Test
-      run: nix develop --command dotnet test
+      run: nix develop --command dotnet test --no-build --configuration Release
 
   build-nix:
     runs-on: ubuntu-latest
