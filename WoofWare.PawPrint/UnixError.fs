@@ -209,6 +209,39 @@ type UnixError =
     /// `EPROGMISMATCH` on Darwin, and raw 84 is `EOVERFLOW` on Darwin but
     /// `EILSEQ` on Linux (both read off the two `strerror` tables).
     | EOVERFLOW
+    /// `EAFNOSUPPORT` — Address family not supported.
+    ///
+    /// Reported by `SystemNative_Socket` when the requested address family is
+    /// not one the native shim knows how to translate. That screen is the C's
+    /// own, ahead of any syscall, so this is the shim's answer rather than a
+    /// kernel's.
+    ///
+    /// Platform-dependent: Linux numbers this 97 and Darwin 47, and neither
+    /// number is free on the other platform — raw 97 is `ENOLINK` on Darwin and
+    /// raw 47 is `EL3RST` on Linux. Measured from both `strerror` tables.
+    | EAFNOSUPPORT
+    /// `EPROTOTYPE` — Protocol wrong type for socket.
+    ///
+    /// Reported by `SystemNative_Socket` when the requested socket type is not
+    /// one the native shim knows how to translate. Note that the C reports the
+    /// *socket type* screen with this rather than with `ESOCKTNOSUPPORT`, which
+    /// is what a kernel would say; that mismatch is upstream's, not PawPrint's.
+    ///
+    /// Platform-dependent: Linux numbers this 91 and Darwin 41. Raw 91 is
+    /// `ENOMSG` on Darwin, and raw 41 has no name at all on Linux — `strerror`
+    /// reports "Unknown error 41" — so neither number is safe to reuse.
+    | EPROTOTYPE
+    /// `EPROTONOSUPPORT` — Protocol not supported.
+    ///
+    /// Reported by `SystemNative_Socket` when the requested protocol is not one
+    /// the native shim knows how to translate *for the requested address
+    /// family*: the C's protocol conversion is a per-family table, so the same
+    /// protocol can convert under `AF_INET` and be refused under `AF_UNIX`.
+    ///
+    /// Platform-dependent: Linux numbers this 93 and Darwin 43, and neither
+    /// number is free on the other platform — raw 93 is `ENOATTR` on Darwin and
+    /// raw 43 is `EIDRM` on Linux.
+    | EPROTONOSUPPORT
 
 /// The raw and PAL numbering of one `UnixError`.
 type UnixErrorNumbering =
@@ -281,6 +314,9 @@ module UnixError =
             UnixError.ENAMETOOLONG
             UnixError.EAGAIN
             UnixError.EOVERFLOW
+            UnixError.EAFNOSUPPORT
+            UnixError.EPROTOTYPE
+            UnixError.EPROTONOSUPPORT
         ]
 
     let private portable (pal : int) (raw : int) : UnixErrorNumbering =
@@ -347,6 +383,15 @@ module UnixError =
         // Measured on both: raw 75 is EOVERFLOW on Linux and EPROGMISMATCH on
         // Darwin; raw 84 is EOVERFLOW on Darwin and EILSEQ on Linux.
         | UnixError.EOVERFLOW -> platformDependent 0x10040 75 84
+        // Measured on both: raw 97 is EAFNOSUPPORT on Linux and ENOLINK on
+        // Darwin; raw 47 is EAFNOSUPPORT on Darwin and EL3RST on Linux.
+        | UnixError.EAFNOSUPPORT -> platformDependent 0x10005 97 47
+        // Likewise: raw 91 is EPROTOTYPE on Linux and ENOMSG on Darwin, while
+        // raw 41 is EPROTOTYPE on Darwin and unnamed on Linux.
+        | UnixError.EPROTOTYPE -> platformDependent 0x10046 91 41
+        // Likewise: raw 93 is EPROTONOSUPPORT on Linux and ENOATTR on Darwin,
+        // while raw 43 is EPROTONOSUPPORT on Darwin and EIDRM on Linux.
+        | UnixError.EPROTONOSUPPORT -> platformDependent 0x10045 93 43
 
     /// The `Interop.Error` value CoreLib switches on. Total: the PAL numbering is
     /// platform-independent, so it is always answerable.

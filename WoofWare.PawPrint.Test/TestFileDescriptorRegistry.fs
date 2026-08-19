@@ -83,6 +83,130 @@ module TestFileDescriptorRegistry =
             FileDescriptorRegistry.tryFindId duplicate registry
             |> shouldEqual (FileDescriptorRegistry.tryFindId a registry)
 
+    /// Two sockets are two descriptions *and* two `flock` objects — the exact
+    /// opposite of the two ports below, and the reason `OpenFileObject.Socket`
+    /// carries an identity where `AnonymousInode` does not.
+    ///
+    /// Measured on Linux 6.18.5: two `socket(2)` calls report distinct inodes
+    /// (4127 and 4130, `st_dev` 8 for both, on `sockfs`), and
+    /// `flock(LOCK_EX|LOCK_NB)` succeeds on each. Two epoll ports on
+    /// `anon_inodefs` share one inode and so exclude one another.
+    ///
+    /// No guest observer: Darwin refuses `flock` on a socket outright, and the
+    /// Linux-flavour observation would need two sockets and two locks in one
+    /// guest, which is what this asserts instead.
+    [<Test>]
+    let ``two sockets are two descriptions and two flock objects`` () : unit =
+        let a, registry =
+            FileDescriptorRegistry.createSocket
+                SocketDomain.InterNetwork
+                SocketKind.Stream
+                SocketProtocol.Tcp
+                FileDescriptorRegistry.initial
+
+        let b, registry =
+            FileDescriptorRegistry.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp registry
+
+        a |> shouldEqual 3
+        b |> shouldEqual 4
+
+        FileDescriptorRegistry.tryFindId a registry
+        |> shouldNotEqual (FileDescriptorRegistry.tryFindId b registry)
+
+        // Two objects, so they do *not* contend.
+        FileDescriptorRegistry.tryFindObject a registry
+        |> shouldNotEqual (FileDescriptorRegistry.tryFindObject b registry)
+
+        // And that shows up as behaviour rather than only as inequality: an
+        // exclusive lock on one leaves the other free to take its own.
+        let registry =
+            match FileDescriptorRegistry.flock a (FlockRequest.Acquire FlockMode.Exclusive) registry with
+            | registry, None -> registry
+            | _, Some e -> failwith $"expected the first lock to be granted, got %O{e}"
+
+        match FileDescriptorRegistry.flock b (FlockRequest.Acquire FlockMode.Exclusive) registry with
+        | registry, None -> FileDescriptorRegistry.assertInvariants "two sockets locked" registry |> ignore
+        | _, Some e -> failwith $"expected the second lock to be granted too, got %O{e}"
+
+    /// A `dup` of a socket descriptor names the same socket, not a copy of it.
+    /// So the pair shares one `flock` slot and converts rather than contending —
+    /// which is what makes the distinctness above a fact about *sockets* rather
+    /// than about descriptors.
+    [<Test>]
+    let ``dup of a socket names the same socket`` () : unit =
+        let a, registry =
+            FileDescriptorRegistry.createSocket
+                SocketDomain.Unix
+                SocketKind.Datagram
+                SocketProtocol.Unspecified
+                FileDescriptorRegistry.initial
+
+        match FileDescriptorRegistry.dup a registry with
+        | Error e -> failwith $"expected dup to succeed, got %O{e}"
+        | Ok (b, registry) ->
+
+        FileDescriptorRegistry.tryFindId b registry
+        |> shouldEqual (FileDescriptorRegistry.tryFindId a registry)
+
+        FileDescriptorRegistry.tryFindObject b registry
+        |> shouldEqual (FileDescriptorRegistry.tryFindObject a registry)
+
+    /// The description a socket gets, field by field.
+    ///
+    /// The access mode is not cosmetic: `SystemNative_Read` and
+    /// `SystemNative_Write` test it *before* they look at the target, so
+    /// anything narrower than `ReadWrite` would answer EBADF where a real socket
+    /// answers about its connection state (measured: ENOTCONN, EINVAL, or a
+    /// block — never EBADF).
+    ///
+    /// The triple is asserted per field because nothing else in the runtime
+    /// reads it back yet: a transposition here would otherwise survive until
+    /// `SystemNative_GetSocketType` reported it.
+    [<Test>]
+    let ``a fresh socket description carries its triple and is ReadWrite`` () : unit =
+        let fd, registry =
+            FileDescriptorRegistry.createSocket
+                SocketDomain.InterNetworkV6
+                SocketKind.Datagram
+                SocketProtocol.Udp
+                FileDescriptorRegistry.initial
+
+        match FileDescriptorRegistry.tryFind fd registry with
+        | None -> failwith "the socket descriptor is not live"
+        | Some description ->
+
+        description.AccessMode |> shouldEqual FileAccessMode.ReadWrite
+        // `socket(2)` takes no lock, exactly as `open(2)` does not.
+        description.Flock |> shouldEqual None
+
+        match description.Target with
+        | OpenFileTarget.Socket socket ->
+            socket.Domain |> shouldEqual SocketDomain.InterNetworkV6
+            socket.Kind |> shouldEqual SocketKind.Datagram
+            socket.Protocol |> shouldEqual SocketProtocol.Udp
+        | other -> failwith $"expected a socket target, got %O{other}"
+
+    /// Closing the last descriptor destroys the socket with its description. This
+    /// is the property that lets a socket live in its description rather than in
+    /// a table of its own: there is no second lifetime to manage.
+    [<Test>]
+    let ``closing the last descriptor destroys the socket`` () : unit =
+        let fd, registry =
+            FileDescriptorRegistry.createSocket
+                SocketDomain.InterNetwork
+                SocketKind.Stream
+                SocketProtocol.Unspecified
+                FileDescriptorRegistry.initial
+
+        FileDescriptorRegistry.descriptions registry |> Map.count |> shouldEqual 4
+
+        match FileDescriptorRegistry.close fd registry with
+        | Error e -> failwith $"expected close to succeed, got %O{e}"
+        | Ok registry ->
+
+        FileDescriptorRegistry.descriptions registry |> Map.count |> shouldEqual 3
+        FileDescriptorRegistry.assertInvariants "socket closed" registry |> ignore
+
     /// Two socket event ports are two *descriptions* but one `flock` object.
     /// That split is why `OpenFileObject` must stay the contention key rather
     /// than becoming a general-purpose identity: on Linux every anon-inode file
@@ -205,6 +329,7 @@ module TestFileDescriptorRegistry =
                 (Map.ofList [ 0, OpenFileDescriptionId 7L ])
                 (Map.ofList [ OpenFileDescriptionId 7L, openOn someInode ])
                 (OpenFileDescriptionId next)
+                (SocketId 0L)
 
         FileDescriptorRegistry.checkInvariants registry
         |> shouldEqual
@@ -218,6 +343,7 @@ module TestFileDescriptorRegistry =
             (Map.ofList [ 0, OpenFileDescriptionId 7L ])
             (Map.ofList [ OpenFileDescriptionId 7L, openOn someInode ])
             (OpenFileDescriptionId 8L)
+            (SocketId 0L)
         |> FileDescriptorRegistry.checkInvariants
         |> shouldEqual []
 
@@ -628,6 +754,7 @@ module TestFileDescriptorRegistry =
                 (Map.ofList [ 0, OpenFileDescriptionId 7L ])
                 Map.empty
                 (OpenFileDescriptionId 8L)
+                (SocketId 0L)
 
         FileDescriptorRegistry.checkInvariants registry
         |> shouldEqual [ FileDescriptorRegistryDefect.DanglingFd (0, OpenFileDescriptionId 7L) ]
@@ -639,6 +766,7 @@ module TestFileDescriptorRegistry =
                 Map.empty
                 (Map.ofList [ OpenFileDescriptionId 7L, standardStream FileDescriptorRole.StandardOutput ])
                 (OpenFileDescriptionId 8L)
+                (SocketId 0L)
 
         FileDescriptorRegistry.checkInvariants registry
         |> shouldEqual
@@ -656,6 +784,7 @@ module TestFileDescriptorRegistry =
                 (Map.ofList [ 0, OpenFileDescriptionId 7L ])
                 Map.empty
                 (OpenFileDescriptionId 8L)
+                (SocketId 0L)
 
         let exc =
             Assert.Throws<System.Exception> (fun () ->
@@ -938,6 +1067,7 @@ module TestFileDescriptorRegistry =
                         OpenFileDescriptionId 8L, locked second
                     ])
                 (OpenFileDescriptionId 9L)
+                (SocketId 0L)
 
         let expected =
             [
@@ -975,6 +1105,7 @@ module TestFileDescriptorRegistry =
                     OpenFileDescriptionId 8L, locked otherInode
                 ])
             (OpenFileDescriptionId 9L)
+            (SocketId 0L)
         |> FileDescriptorRegistry.checkInvariants
         |> shouldEqual []
 
@@ -1145,6 +1276,7 @@ module TestFileDescriptorRegistry =
                 (Map.ofList [ 0, OpenFileDescriptionId 7L ])
                 Map.empty
                 (OpenFileDescriptionId 8L)
+                (SocketId 0L)
 
         let exc =
             Assert.Throws<System.Exception> (fun () -> FileDescriptorRegistry.tryFind 0 registry |> ignore)
@@ -1160,7 +1292,8 @@ module TestFileDescriptorRegistry =
         match FileDescriptorRegistry.tryFindTarget fd registry with
         | None -> failwith $"fd %d{fd} is not live"
         | Some (OpenFileTarget.StandardStream _)
-        | Some OpenFileTarget.SocketEventPort -> None
+        | Some OpenFileTarget.SocketEventPort
+        | Some (OpenFileTarget.Socket _) -> None
         | Some (OpenFileTarget.File (_, offset)) -> Some offset
 
     [<Test>]
@@ -1293,6 +1426,201 @@ module TestFileDescriptorRegistry =
         offsetOf reopened registry |> shouldEqual (Some 0L)
 
     /// A negative offset is the one unsound position still representable, so `checkInvariants` names
+    let private socketOn (socketId : int64) : OpenFileDescription =
+        {
+            Target =
+                OpenFileTarget.Socket
+                    {
+                        Id = SocketId socketId
+                        Domain = SocketDomain.InterNetwork
+                        Kind = SocketKind.Stream
+                        Protocol = SocketProtocol.Tcp
+                    }
+            AccessMode = FileAccessMode.ReadWrite
+            Flock = None
+        }
+
+    /// A socket identity at or above the cursor would be minted again by the next
+    /// `socket(2)`, giving two sockets one identity — and hence, through
+    /// `OpenFileObject`, one `flock` contention key. `NextIdNotFresh`'s sibling.
+    [<TestCase(5L)>]
+    [<TestCase(0L)>]
+    let ``checkInvariants rejects a NextSocketId at or below a live socket`` (next : int64) : unit =
+        let registry =
+            FileDescriptorRegistry.Unchecked.ofParts
+                (Map.ofList [ 0, OpenFileDescriptionId 7L ])
+                (Map.ofList [ OpenFileDescriptionId 7L, socketOn 5L ])
+                (OpenFileDescriptionId 8L)
+                (SocketId next)
+
+        FileDescriptorRegistry.checkInvariants registry
+        |> shouldEqual
+            [
+                FileDescriptorRegistryDefect.NextSocketIdNotFresh (SocketId next, SocketId 5L)
+            ]
+
+    [<Test>]
+    let ``checkInvariants accepts a NextSocketId above every live socket`` () : unit =
+        FileDescriptorRegistry.Unchecked.ofParts
+            (Map.ofList [ 0, OpenFileDescriptionId 7L ])
+            (Map.ofList [ OpenFileDescriptionId 7L, socketOn 5L ])
+            (OpenFileDescriptionId 8L)
+            (SocketId 6L)
+        |> FileDescriptorRegistry.checkInvariants
+        |> shouldEqual []
+
+    /// Two descriptions naming one socket. PawPrint models no way to produce
+    /// this — `dup(2)` shares a description rather than copying it — and it
+    /// would be guest-visible: `flock` contends *between* descriptions naming one
+    /// object but not within one, so a duplicated identity would make a socket
+    /// contend with itself.
+    [<Test>]
+    let ``checkInvariants rejects two descriptions naming one socket`` () : unit =
+        FileDescriptorRegistry.Unchecked.ofParts
+            (Map.ofList [ 0, OpenFileDescriptionId 7L ; 1, OpenFileDescriptionId 8L ])
+            (Map.ofList
+                [
+                    OpenFileDescriptionId 7L, socketOn 5L
+                    OpenFileDescriptionId 8L, socketOn 5L
+                ])
+            (OpenFileDescriptionId 9L)
+            (SocketId 6L)
+        |> FileDescriptorRegistry.checkInvariants
+        |> shouldEqual
+            [
+                FileDescriptorRegistryDefect.DuplicateSocketId (
+                    OpenFileDescriptionId 7L,
+                    OpenFileDescriptionId 8L,
+                    SocketId 5L
+                )
+            ]
+
+    /// ...and two descriptions naming two *different* sockets are accepted, so
+    /// the check above is not simply "two sockets".
+    [<Test>]
+    let ``checkInvariants accepts two descriptions naming different sockets`` () : unit =
+        FileDescriptorRegistry.Unchecked.ofParts
+            (Map.ofList [ 0, OpenFileDescriptionId 7L ; 1, OpenFileDescriptionId 8L ])
+            (Map.ofList
+                [
+                    OpenFileDescriptionId 7L, socketOn 5L
+                    OpenFileDescriptionId 8L, socketOn 4L
+                ])
+            (OpenFileDescriptionId 9L)
+            (SocketId 6L)
+        |> FileDescriptorRegistry.checkInvariants
+        |> shouldEqual []
+
+    /// Every allocating operation the module offers, interleaved at random, must
+    /// leave a table `checkInvariants` accepts. The two socket clauses are the
+    /// reason this exists in its present form: they are asserted directly above
+    /// against tables `Unchecked.ofParts` built by hand, and this is what
+    /// connects them to the allocation path — a `createSocket` that failed to
+    /// advance `NextSocketId` would hand two sockets one identity, and hence one
+    /// `flock` contention key, which shows up here as both new defects at once.
+    [<Test>]
+    let ``a random mix of allocations and closes keeps the table sound`` () : unit =
+        let mutable observedSockets = 0
+        let mutable observedCloses = 0
+        let mutable observedDups = 0
+        let mutable observedLiveSocketPairs = 0
+
+        let property (NonNegativeInt seed : NonNegativeInt) : unit =
+            let rng = System.Random (seed)
+            let steps = rng.Next (1, 30)
+
+            let mutable registry = FileDescriptorRegistry.initial
+
+            for _ in 1..steps do
+                let live = FileDescriptorRegistry.fds registry |> Map.toList |> List.map fst
+
+                // Biased towards allocation so the table grows on average and
+                // several sockets are live at once, which is what makes the
+                // duplicate-identity clause reachable at all.
+                //
+                // `close` and `dup` need something to name, and an unlucky run
+                // of closes really can empty the table — the standard streams
+                // are ordinary descriptors here, with nothing pinning them — so
+                // an empty table falls through to the allocating arms rather
+                // than indexing an empty list.
+                match (if List.isEmpty live then 9 else rng.Next 10) with
+                | 0
+                | 1 ->
+                    match FileDescriptorRegistry.close live.[rng.Next live.Length] registry with
+                    | Ok registry' ->
+                        registry <- registry'
+                        observedCloses <- observedCloses + 1
+                    | Error e -> failwith $"unexpected close error: %O{e}"
+                | 2
+                | 3 ->
+                    match FileDescriptorRegistry.dup live.[rng.Next live.Length] registry with
+                    | Ok (_, registry') ->
+                        registry <- registry'
+                        observedDups <- observedDups + 1
+                    | Error e -> failwith $"unexpected dup error: %O{e}"
+                | 4
+                | 5 ->
+                    let _, registry' =
+                        FileDescriptorRegistry.openFile
+                            (InodeNumber (int64 (rng.Next 5)))
+                            FileAccessMode.ReadOnly
+                            registry
+
+                    registry <- registry'
+                | 6 ->
+                    let _, registry' = FileDescriptorRegistry.createSocketEventPort registry
+                    registry <- registry'
+                | _ ->
+                    // A different triple each time, so that a `createSocket`
+                    // which keyed identity off the triple rather than off a
+                    // counter would not be saved by them all being equal.
+                    let domain =
+                        match rng.Next 3 with
+                        | 0 -> SocketDomain.InterNetwork
+                        | 1 -> SocketDomain.InterNetworkV6
+                        | _ -> SocketDomain.Unix
+
+                    let kind =
+                        if rng.Next 2 = 0 then
+                            SocketKind.Stream
+                        else
+                            SocketKind.Datagram
+
+                    let _, registry' =
+                        FileDescriptorRegistry.createSocket domain kind SocketProtocol.Unspecified registry
+
+                    registry <- registry'
+                    observedSockets <- observedSockets + 1
+
+                let liveSockets =
+                    FileDescriptorRegistry.descriptions registry
+                    |> Map.toList
+                    |> List.choose (fun (_, description) ->
+                        match description.Target with
+                        | OpenFileTarget.Socket socket -> Some socket.Id
+                        | _ -> None
+                    )
+
+                if liveSockets.Length > 1 then
+                    observedLiveSocketPairs <- observedLiveSocketPairs + 1
+
+                    // The property the duplicate clause protects, stated
+                    // positively: distinct descriptions never share a socket.
+                    liveSockets |> List.distinct |> List.length |> shouldEqual liveSockets.Length
+
+                FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
+
+        Check.One (propertyConfig, property)
+
+        // Without these the run could be sound while never having exercised the
+        // operations the clauses are about.
+        observedSockets |> shouldBeGreaterThan 500
+        observedCloses |> shouldBeGreaterThan 100
+        observedDups |> shouldBeGreaterThan 100
+        // And specifically: two or more sockets alive at once, which is the only
+        // state in which one could collide with another.
+        observedLiveSocketPairs |> shouldBeGreaterThan 500
+
     /// it. Reachable only through `Unchecked.ofParts`: every operation in the module maintains it.
     [<Test>]
     let ``checkInvariants rejects a negative offset`` () : unit =
@@ -1309,6 +1637,7 @@ module TestFileDescriptorRegistry =
                         }
                     ])
                 (OpenFileDescriptionId 9L)
+                (SocketId 0L)
 
         FileDescriptorRegistry.checkInvariants (table -1L)
         |> shouldEqual [ FileDescriptorRegistryDefect.NegativeOffset (OpenFileDescriptionId 7L, -1L) ]

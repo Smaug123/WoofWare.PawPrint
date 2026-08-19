@@ -452,6 +452,26 @@ type SimulatedUnixPlatform =
     override this.GetHashCode () : int =
         System.HashCode.Combine (this.Flavour, this.Release)
 
+/// Why `socketCreation` would not hand back a socket.
+[<RequireQualifiedAccess>]
+type SocketCreationRefusal =
+    /// The shim's address-family conversion has no case for this value, so
+    /// it returns `Error_EAFNOSUPPORT` without reaching `socket(2)`.
+    | AddressFamily
+    /// The shim's socket-type conversion has no case for this value:
+    /// `Error_EPROTOTYPE`. Note that is the *shim's* choice of errno; a
+    /// kernel asked the same question would say `ESOCKTNOSUPPORT`.
+    | SocketType
+    /// The shim's protocol conversion has no case for this value *in this
+    /// address family*: `Error_EPROTONOSUPPORT`. Per-family, so the same
+    /// protocol number can convert under one family and be refused under
+    /// another.
+    | Protocol
+    /// Every one of the shim's screens passed, so a real run would reach
+    /// `socket(2)` — and PawPrint has not decided what this socket is. Not
+    /// an errno: there is nothing truthful to report.
+    | Unmodelled
+
 [<RequireQualifiedAccess>]
 module SimulatedUnixPlatform =
     /// Loosest ceiling any Unix we model imposes on `utsname.release`:
@@ -722,6 +742,238 @@ module SimulatedUnixPlatform =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> 16
         | SimulatedUnixFlavour.Darwin -> 32
+
+    /// The PAL numbering `SystemNative_Socket`'s three arguments arrive in
+    /// (`AddressFamily`, `SocketType` and `ProtocolType` in `pal_networking.h`).
+    /// Platform-independent by construction: upstream chose values that do not
+    /// coincide with any kernel's, precisely so the shim has to translate.
+    [<RequireQualifiedAccess>]
+    module private Pal =
+        [<Literal>]
+        let AfUnspec = 0
+
+        [<Literal>]
+        let AfUnix = 1
+
+        [<Literal>]
+        let AfInet = 2
+
+        [<Literal>]
+        let AfInet6 = 23
+
+        [<Literal>]
+        let AfPacket = 65536
+
+        [<Literal>]
+        let AfCan = 65537
+
+        [<Literal>]
+        let SockStream = 1
+
+        [<Literal>]
+        let SockDgram = 2
+
+        [<Literal>]
+        let SockRaw = 3
+
+        [<Literal>]
+        let SockRdm = 4
+
+        [<Literal>]
+        let SockSeqPacket = 5
+
+        [<Literal>]
+        let PtUnspecified = 0
+
+        [<Literal>]
+        let PtIcmp = 1
+
+        [<Literal>]
+        let PtIgmp = 2
+
+        [<Literal>]
+        let PtTcp = 6
+
+        [<Literal>]
+        let PtUdp = 17
+
+        [<Literal>]
+        let PtRouting = 43
+
+        [<Literal>]
+        let PtFragment = 44
+
+        [<Literal>]
+        let PtIcmpV6 = 58
+
+        [<Literal>]
+        let PtNone = 59
+
+        [<Literal>]
+        let PtDstOpts = 60
+
+        [<Literal>]
+        let PtRaw = 255
+
+    /// What `SystemNative_Socket` does with a domain, type and protocol, all in
+    /// the PAL numbering its caller supplies them in.
+    ///
+    /// Three of the four answers are the native shim's own screens, transcribed
+    /// from `TryConvertAddressFamilyPalToPlatform`,
+    /// `TryConvertSocketTypePalToPlatform` and
+    /// `TryConvertProtocolTypePalToPlatform` (`pal_networking.c:218`, `:2497`,
+    /// `:2535`) and applied in the order `SystemNative_Socket` applies them. They
+    /// are pure C running before any syscall, so they are exactly knowable, and
+    /// their flavour-dependence is the shim's `#ifdef`s rather than any kernel's
+    /// behaviour.
+    ///
+    /// The fourth, `Unmodelled`, stands where the kernel's answer would be. The
+    /// combinations that do *not* get one are refused rather than reported for
+    /// three different reasons — some are privilege-dependent (every raw and
+    /// packet socket: measured, 70 Linux rows change answer between euid 1000
+    /// and euid 0), some sysctl-dependent (Linux's ping sockets, gated by
+    /// `net.ipv4.ping_group_range`), and some deterministic but simply not
+    /// modelled (`AF_INET`/`SOCK_STREAM`/`PT_UDP` and friends). The set below is
+    /// this emulated kernel's declared protocol table; a row outside it is a
+    /// socket PawPrint has not decided how to be, and a refusal leaves that
+    /// decision open where a guessed errno would not.
+    let socketCreation
+        (platform : SimulatedUnixPlatform)
+        (palAddressFamily : int)
+        (palSocketType : int)
+        (palProtocolType : int)
+        : Result<SocketDomain * SocketKind * SocketProtocol, SocketCreationRefusal>
+        =
+        let isLinux =
+            match flavour platform with
+            | SimulatedUnixFlavour.Linux -> true
+            | SimulatedUnixFlavour.Darwin -> false
+
+        // `TryConvertAddressFamilyPalToPlatform`. `AF_PACKET` and `AF_CAN` are
+        // the only flavour-dependent arms: both are `#ifdef`-guarded on a symbol
+        // Linux's headers define and Darwin's do not, so on Darwin they fall to
+        // the default and are refused here rather than by any kernel.
+        let familyConverts =
+            match palAddressFamily with
+            | Pal.AfUnspec
+            | Pal.AfUnix
+            | Pal.AfInet
+            | Pal.AfInet6 -> true
+            | Pal.AfPacket
+            | Pal.AfCan -> isLinux
+            | _ -> false
+
+        if not familyConverts then
+            Error SocketCreationRefusal.AddressFamily
+        else
+
+        // `TryConvertSocketTypePalToPlatform`. Every arm is `#ifdef`-guarded on a
+        // `SOCK_*` symbol, but both flavours define all five, so this screen
+        // takes no flavour and fires only for a value outside the enum.
+        let typeConverts =
+            match palSocketType with
+            | Pal.SockStream
+            | Pal.SockDgram
+            | Pal.SockRaw
+            | Pal.SockRdm
+            | Pal.SockSeqPacket -> true
+            | _ -> false
+
+        if not typeConverts then
+            Error SocketCreationRefusal.SocketType
+        else
+
+        // `TryConvertProtocolTypePalToPlatform`, whose table is per address
+        // family. Only the *converts or not* answer matters here: the platform
+        // protocol number it produces can differ from the PAL one it was given
+        // (`AF_INET6` with `PT_ICMP` becomes `IPPROTO_ICMPV6`), and it is the PAL
+        // value that is worth keeping.
+        let protocolConverts =
+            match palAddressFamily with
+            // The `AF_PACKET` arm passes the number straight through as an IEEE
+            // 802.3 protocol in network order, so every value converts.
+            | Pal.AfPacket -> true
+            // `#if HAVE_LINUX_CAN_H` — a `check_include_files` probe of the
+            // *shim's* build host (`configure.cmake:970`) rather than of any
+            // kernel. PawPrint models the header as present, which is what an
+            // official linux-x64 build has. Were it absent, this arm would
+            // vanish and every `AF_CAN` protocol would be refused below.
+            | Pal.AfCan ->
+                match palProtocolType with
+                | Pal.PtUnspecified
+                | Pal.PtRaw -> true
+                | _ -> false
+            | Pal.AfInet ->
+                match palProtocolType with
+                | Pal.PtUnspecified
+                | Pal.PtIcmp
+                | Pal.PtTcp
+                | Pal.PtUdp
+                | Pal.PtIgmp
+                | Pal.PtRaw -> true
+                | _ -> false
+            | Pal.AfInet6 ->
+                match palProtocolType with
+                | Pal.PtUnspecified
+                | Pal.PtIcmpV6
+                | Pal.PtIcmp
+                | Pal.PtTcp
+                | Pal.PtUdp
+                | Pal.PtIgmp
+                | Pal.PtRaw
+                | Pal.PtDstOpts
+                | Pal.PtNone
+                | Pal.PtRouting
+                | Pal.PtFragment -> true
+                | _ -> false
+            // `AF_UNSPEC` and `AF_UNIX` share the C's `default` arm, which
+            // accepts the unspecified protocol and nothing else.
+            | _ ->
+                match palProtocolType with
+                | Pal.PtUnspecified -> true
+                | _ -> false
+
+        if not protocolConverts then
+            Error SocketCreationRefusal.Protocol
+        else
+
+        // Past every screen the shim applies, so a real run would now call
+        // `socket(2)`. These are the rows measured to succeed unprivileged, on
+        // Linux 6.18.5 and Darwin 25.6.0 respectively.
+        //
+        // The protocol conjunct on the `AF_UNIX` rows is not falsifiable: the
+        // conversion above already refused every protocol but `PT_UNSPECIFIED`
+        // for that family. It is written out because the alternative — a
+        // wildcard — would read as a claim that any protocol is accepted, which
+        // is a claim about a *different* screen and would silently become true
+        // if that screen ever changed.
+        match palAddressFamily, palSocketType, palProtocolType with
+        | Pal.AfInet, Pal.SockStream, Pal.PtUnspecified ->
+            Ok (SocketDomain.InterNetwork, SocketKind.Stream, SocketProtocol.Unspecified)
+        | Pal.AfInet, Pal.SockStream, Pal.PtTcp -> Ok (SocketDomain.InterNetwork, SocketKind.Stream, SocketProtocol.Tcp)
+        | Pal.AfInet, Pal.SockDgram, Pal.PtUnspecified ->
+            Ok (SocketDomain.InterNetwork, SocketKind.Datagram, SocketProtocol.Unspecified)
+        | Pal.AfInet, Pal.SockDgram, Pal.PtUdp ->
+            Ok (SocketDomain.InterNetwork, SocketKind.Datagram, SocketProtocol.Udp)
+        | Pal.AfInet6, Pal.SockStream, Pal.PtUnspecified ->
+            Ok (SocketDomain.InterNetworkV6, SocketKind.Stream, SocketProtocol.Unspecified)
+        | Pal.AfInet6, Pal.SockStream, Pal.PtTcp ->
+            Ok (SocketDomain.InterNetworkV6, SocketKind.Stream, SocketProtocol.Tcp)
+        | Pal.AfInet6, Pal.SockDgram, Pal.PtUnspecified ->
+            Ok (SocketDomain.InterNetworkV6, SocketKind.Datagram, SocketProtocol.Unspecified)
+        | Pal.AfInet6, Pal.SockDgram, Pal.PtUdp ->
+            Ok (SocketDomain.InterNetworkV6, SocketKind.Datagram, SocketProtocol.Udp)
+        | Pal.AfUnix, Pal.SockStream, Pal.PtUnspecified ->
+            Ok (SocketDomain.Unix, SocketKind.Stream, SocketProtocol.Unspecified)
+        | Pal.AfUnix, Pal.SockDgram, Pal.PtUnspecified ->
+            Ok (SocketDomain.Unix, SocketKind.Datagram, SocketProtocol.Unspecified)
+        // Linux-only, and measured rather than reasoned: Darwin refuses both
+        // with EPROTONOSUPPORT from the kernel, not from a shim screen.
+        | Pal.AfUnix, Pal.SockRaw, Pal.PtUnspecified when isLinux ->
+            Ok (SocketDomain.Unix, SocketKind.Raw, SocketProtocol.Unspecified)
+        | Pal.AfUnix, Pal.SockSeqPacket, Pal.PtUnspecified when isLinux ->
+            Ok (SocketDomain.Unix, SocketKind.SeqPacket, SocketProtocol.Unspecified)
+        | _, _, _ -> Error SocketCreationRefusal.Unmodelled
 
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
 /// syscall-emulation state: process-wide last-error registers, the native
