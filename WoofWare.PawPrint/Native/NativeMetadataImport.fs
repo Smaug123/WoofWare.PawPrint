@@ -81,7 +81,7 @@ module NativeMetadataImport =
         (assemblyFullName : string)
         : DumpedAssembly
         =
-        state.LoadedAssembly' assemblyFullName
+        state.LoadedAssembly assemblyFullName
         |> Option.defaultWith (fun () ->
             failwith $"%s{operation}: metadata import assembly is not loaded: %s{assemblyFullName}"
         )
@@ -224,7 +224,8 @@ module NativeMetadataImport =
                 typeInfo.Fields
                 |> List.map (fun field -> metadataTokenOfFieldDefinitionHandle field.Handle)
             else
-                failwith $"%s{operation}: TypeDef token 0x%08x{parent} was not present in %s{assembly.Name.FullName}"
+                failwith
+                    $"%s{operation}: TypeDef token 0x%08x{parent} was not present in %s{assembly.DefinitionFullName}"
         | token ->
             failwith
                 $"%s{operation}: expected TypeDef parent token for FieldDef enumeration, got %O{token} from 0x%08x{parent}"
@@ -248,7 +249,8 @@ module NativeMetadataImport =
             // reader as `BadImageFormatException: Read out of bounds`, which reads as a corrupt
             // image when the real problem is a token PawPrint should never have minted.
             if not (assembly.TypeDefs.ContainsKey typeDefHandle) then
-                failwith $"%s{operation}: TypeDef token 0x%08x{parent} was not present in %s{assembly.Name.FullName}"
+                failwith
+                    $"%s{operation}: TypeDef token 0x%08x{parent} was not present in %s{assembly.DefinitionFullName}"
 
             let metadataReader = metadataReaderOf assembly
 
@@ -286,7 +288,7 @@ module NativeMetadataImport =
 
         if rowNumber < 1 || rowNumber > propertyRowCount then
             failwith
-                $"%s{operation}: PropertyDef token 0x%08x{metadataTokenOfPropertyDefinitionHandle propertyHandle} was not present in %s{assembly.Name.FullName}"
+                $"%s{operation}: PropertyDef token 0x%08x{metadataTokenOfPropertyDefinitionHandle propertyHandle} was not present in %s{assembly.DefinitionFullName}"
 
         metadataReader.GetPropertyDefinition propertyHandle
 
@@ -319,7 +321,8 @@ module NativeMetadataImport =
             // as `BadImageFormatException: Read out of bounds`, which reads as a corrupt image when
             // the real problem is a token PawPrint should never have minted.
             if not (assembly.Methods.ContainsKey methodDefHandle) then
-                failwith $"%s{operation}: MethodDef token 0x%08x{parent} was not present in %s{assembly.Name.FullName}"
+                failwith
+                    $"%s{operation}: MethodDef token 0x%08x{parent} was not present in %s{assembly.DefinitionFullName}"
 
             let metadataReader = metadataReaderOf assembly
 
@@ -360,7 +363,7 @@ module NativeMetadataImport =
 
         if rowNumber < 1 || rowNumber > parameterRowCount then
             failwith
-                $"%s{operation}: ParamDef token 0x%08x{metadataTokenOfParameterHandle parameterHandle} was not present in %s{assembly.Name.FullName}"
+                $"%s{operation}: ParamDef token 0x%08x{metadataTokenOfParameterHandle parameterHandle} was not present in %s{assembly.DefinitionFullName}"
 
         metadataReader.GetParameter parameterHandle
 
@@ -389,7 +392,8 @@ module NativeMetadataImport =
                     $"%s{operation}: nil TypeDef parent token 0x%08x{parent} for nested-type enumeration; the caller should have screened this out"
 
             if not (assembly.TypeDefs.ContainsKey typeDefHandle) then
-                failwith $"%s{operation}: TypeDef token 0x%08x{parent} was not present in %s{assembly.Name.FullName}"
+                failwith
+                    $"%s{operation}: TypeDef token 0x%08x{parent} was not present in %s{assembly.DefinitionFullName}"
 
             match
                 assembly.NestedTypeDefsByEnclosing.TryGetValue (ComparableTypeDefinitionHandle.Make typeDefHandle)
@@ -441,7 +445,7 @@ module NativeMetadataImport =
                     |> fun row -> row < 1 || row > rowCount System.Reflection.Metadata.Ecma335.TableIndex.Property
                 then
                     failwith
-                        $"%s{operation}: PropertyDef token 0x%08x{parent} was not present in %s{assembly.Name.FullName}"
+                        $"%s{operation}: PropertyDef token 0x%08x{parent} was not present in %s{assembly.DefinitionFullName}"
 
                 System.Reflection.Metadata.PropertyDefinitionHandle.op_Implicit propertyHandle
             | MetadataToken.EventDefinition eventHandle ->
@@ -452,7 +456,7 @@ module NativeMetadataImport =
                     |> fun row -> row < 1 || row > rowCount System.Reflection.Metadata.Ecma335.TableIndex.Event
                 then
                     failwith
-                        $"%s{operation}: EventDef token 0x%08x{parent} was not present in %s{assembly.Name.FullName}"
+                        $"%s{operation}: EventDef token 0x%08x{parent} was not present in %s{assembly.DefinitionFullName}"
 
                 System.Reflection.Metadata.EventDefinitionHandle.op_Implicit eventHandle
             | token ->
@@ -496,7 +500,7 @@ module NativeMetadataImport =
         // catch a wholesale wrong rule. The Semantics column is a fixed 2-byte constant.
         if rowSize <> 2 + methodIndexSize + associationIndexSize then
             failwith
-                $"%s{operation}: MethodSemantics row size %d{rowSize} in %s{assembly.Name.FullName} disagrees with the ECMA-335 II.24.2.6 widths derived from the table row counts (2 + %d{methodIndexSize} + %d{associationIndexSize})"
+                $"%s{operation}: MethodSemantics row size %d{rowSize} in %s{assembly.DefinitionFullName} disagrees with the ECMA-335 II.24.2.6 widths derived from the table row counts (2 + %d{methodIndexSize} + %d{associationIndexSize})"
 
         // The coded index for the target, compared as an integer against each row's raw
         // Association column. `CodedIndex.HasSemantics` rather than a hand-rolled tag bit,
@@ -553,7 +557,8 @@ module NativeMetadataImport =
             if assembly.Fields.TryGetValue (fieldDefHandle, &fieldInfo) then
                 fieldInfo
             else
-                failwith $"%s{operation}: FieldDef token 0x%08x{mdToken} was not present in %s{assembly.Name.FullName}"
+                failwith
+                    $"%s{operation}: FieldDef token 0x%08x{mdToken} was not present in %s{assembly.DefinitionFullName}"
         | token -> failwith $"%s{operation}: expected FieldDef token, got %O{token} from 0x%08x{mdToken}"
 
     /// The Constant table row (ECMA-335 II.22.9) attached to a field definition: its declared type
@@ -806,7 +811,7 @@ module NativeMetadataImport =
         | Some ty -> ty
         | None ->
             failwith
-                $"%s{operation}: System.Reflection.ConstArray was not found in corelib %s{baseClassTypes.Corelib.Name.FullName}"
+                $"%s{operation}: System.Reflection.ConstArray was not found in corelib %s{baseClassTypes.Corelib.DefinitionFullName}"
 
     /// Concretize <c>System.Reflection.ConstArray</c> and return its handle (cached implicitly via
     /// <c>AllConcreteTypes</c>).
@@ -828,7 +833,7 @@ module NativeMetadataImport =
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
 

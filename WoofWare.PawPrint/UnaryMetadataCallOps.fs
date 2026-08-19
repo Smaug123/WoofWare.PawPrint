@@ -440,7 +440,8 @@ module internal UnaryMetadataCallOps =
           WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
           ConcreteTypeHandle
         =
-        let methodDeclAssy = state._LoadedAssemblies.[methodToCall.DeclaringAssembly]
+        let methodDeclAssy =
+            state._LoadedAssemblies.ByDefinitionName methodToCall.DeclaringAssemblyFullName
 
         let methodDeclType =
             methodDeclAssy.TypeDefs.[methodToCall.RequiredDeclaringType.Definition.Get]
@@ -761,7 +762,7 @@ module internal UnaryMetadataCallOps =
                                 loggerFactory
                                 baseClassTypes
                                 state
-                                activeAssy.Name
+                                activeAssy.DefinitionFullName
                                 currentMethod.DeclaringTypeGenerics
                                 currentMethod.Generics
                                 typeDefn
@@ -893,7 +894,7 @@ module internal UnaryMetadataCallOps =
                                 loggerFactory
                                 baseClassTypes
                                 state
-                                activeAssy.Name
+                                activeAssy.DefinitionFullName
                                 currentMethod.DeclaringTypeGenerics
                                 currentMethod.Generics
                                 typeDefn
@@ -1048,7 +1049,7 @@ module internal UnaryMetadataCallOps =
                     AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes tHandle
                     |> Option.get
 
-                let tAssy = state._LoadedAssemblies.[tConcrete.Assembly]
+                let tAssy = state._LoadedAssemblies.ByDefinitionName tConcrete.AssemblyFullName
 
                 let tIsValueType =
                     DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies tDefn
@@ -1061,12 +1062,12 @@ module internal UnaryMetadataCallOps =
                     // non-virtually with the managed pointer still serving as `this` (ECMA
                     // case 2). Otherwise, if the method belongs to Object/ValueType/Enum, box
                     // and let ordinary virtual dispatch handle the boxed receiver (case 3).
-                    let methodDeclAssyName = methodToCall.DeclaringAssembly
+                    let methodDeclAssyName = methodToCall.DeclaringAssemblyFullName
                     let methodDeclTypeName = methodToCall.RequiredDeclaringType.Name
                     let methodDeclNamespace = methodToCall.RequiredDeclaringType.Namespace
 
                     let isBaseMethodType =
-                        methodDeclAssyName.FullName = baseClassTypes.Corelib.Name.FullName
+                        methodDeclAssyName = baseClassTypes.Corelib.DefinitionFullName
                         && methodDeclNamespace = "System"
                         && (methodDeclTypeName = "Object"
                             || methodDeclTypeName = "ValueType"
@@ -1280,7 +1281,7 @@ module internal UnaryMetadataCallOps =
                 loggerFactory
                 baseClassTypes
                 state
-                assy.Name
+                assy.DefinitionFullName
                 currentMethod.DeclaringTypeGenerics
                 currentMethod.Generics
                 ty

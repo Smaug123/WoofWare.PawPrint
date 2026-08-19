@@ -74,7 +74,13 @@ module TestArrayInterfaceMap =
             | Some typeInfo -> typeInfo
 
         DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
-        |> IlMachineState.concretizeType loggerFactory bct state corelib.Name ImmutableArray.Empty ImmutableArray.Empty
+        |> IlMachineState.concretizeType
+            loggerFactory
+            bct
+            state
+            corelib.DefinitionFullName
+            ImmutableArray.Empty
+            ImmutableArray.Empty
 
     let private arrayBaseType (state : IlMachineState) (handle : ConcreteTypeHandle) : ResolvedTypeIdentity =
         let state, baseHandle =
@@ -163,7 +169,7 @@ module TestArrayInterfaceMap =
                         loggerFactory
                         bct
                         state
-                        implAssy.Name
+                        implAssy.DefinitionFullName
                         ImmutableArray.Empty
                         ImmutableArray.Empty
                         implTypeDefn

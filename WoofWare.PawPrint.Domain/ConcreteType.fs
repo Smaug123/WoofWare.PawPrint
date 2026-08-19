@@ -31,7 +31,8 @@ type ConcreteType<'typeGeneric> =
         }
 
     override this.ToString () : string =
-        let basic = $"%s{this.Assembly.Name}.%s{this.Namespace}.%s{this.Name}"
+        let basic =
+            $"%s{AssemblyDefinitionName.simpleName this.AssemblyFullName}.%s{this.Namespace}.%s{this.Name}"
 
         let generics =
             if this.Generics.IsEmpty then
@@ -45,7 +46,8 @@ type ConcreteType<'typeGeneric> =
         basic + generics
 
     member this.Identity : ResolvedTypeIdentity = this._Identity
-    member this.Assembly : AssemblyName = this._Identity.Assembly
+    /// This type's declaring assembly, as the definition identity <c>LoadedAssemblies</c> keys on.
+    member this.AssemblyFullName : string = this._Identity.AssemblyFullName
     member this.Definition : ComparableTypeDefinitionHandle = this._Identity.TypeDefinition
     member this.Generics : ImmutableArray<'typeGeneric> = this._Generics
     member this.Name = this._Name

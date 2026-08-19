@@ -23,13 +23,27 @@ type AssemblyDefinition =
         /// The fully specified name of the assembly, including name, version, culture, and public key token.
         /// </summary>
         Name : AssemblyName
+        /// <summary>
+        /// <c>Name</c> serialised to a display name: this assembly's <em>definition identity</em>, which
+        /// <c>LoadedAssemblies</c> keys on.
+        /// </summary>
+        /// <remarks>
+        /// Stored rather than recomputed from <c>Name</c>. A metadata-derived <c>AssemblyName</c> carries the
+        /// assembly's public <em>key</em> rather than its token, and <c>AssemblyName.FullName</c> derives the
+        /// token from the key on every call — a SHA-1 over the key, and 613 bytes, each time, over a value
+        /// that cannot change.
+        /// </remarks>
+        FullName : string
     }
 
 [<RequireQualifiedAccess>]
 module AssemblyDefinition =
     let make (assy : System.Reflection.Metadata.AssemblyDefinition) : AssemblyDefinition =
+        let name = assy.GetAssemblyName ()
+
         {
-            Name = assy.GetAssemblyName ()
+            Name = name
+            FullName = name.FullName
         }
 
 /// Metadata for a manifest resource whose payload is embedded in this assembly image.
@@ -398,6 +412,10 @@ type DumpedAssembly =
 
     member this.Name = this.ThisAssemblyDefinition.Name
 
+    /// This assembly's definition identity: the display name <c>LoadedAssemblies</c> keys on. Prefer this
+    /// to <c>Name.FullName</c>, which re-derives the public key token from the public key on every call.
+    member this.DefinitionFullName : string = this.ThisAssemblyDefinition.FullName
+
     /// <summary>
     /// The module version ID: a GUID the compiler stamps afresh on every build. Useful for
     /// reporting, but it is metadata like any other — see <c>HasSameContentAs</c>.
@@ -508,7 +526,7 @@ type DumpedAssembly =
 
         if signature <> 0x424A5342u then
             failwith
-                $"expected metadata root signature 0x424A5342 in assembly %s{this.Name.FullName}, got 0x%08X{signature}"
+                $"expected metadata root signature 0x424A5342 in assembly %s{this.DefinitionFullName}, got 0x%08X{signature}"
 
         reader.ReadUInt16 () |> ignore<uint16> // root MajorVersion, not the table schema's
         reader.ReadUInt16 () |> ignore<uint16> // root MinorVersion, likewise
@@ -547,7 +565,7 @@ type DumpedAssembly =
         match tableStreamOffset with
         | None ->
             failwith
-                $"assembly %s{this.Name.FullName} has no #~ or #- metadata table stream, so it has no table schema version"
+                $"assembly %s{this.DefinitionFullName} has no #~ or #- metadata table stream, so it has no table schema version"
         | Some offset ->
             // ECMA-335 II.24.2.6: Reserved (4 bytes), then MajorVersion and MinorVersion.
             let mutable header = block.GetReader (offset + 4, 2)
@@ -584,7 +602,7 @@ type DumpedAssembly =
             match headers.CorHeader with
             | null ->
                 failwith
-                    $"assembly %s{this.Name.FullName} has no COR header, so it is not a managed image; it should never have parsed as an assembly"
+                    $"assembly %s{this.DefinitionFullName} has no COR header, so it is not a managed image; it should never have parsed as an assembly"
             | corHeader -> corHeader
 
         // `sizeof(READYTORUN_HEADER)`: Signature, MajorVersion, MinorVersion, and the core
@@ -770,8 +788,8 @@ type DumpedAssembly =
         // method's declaring type*, which makes the mismatch unreachable; assert it rather than
         // trusting it, at no cost in release.
         Debug.Assert (
-            method.DeclaringAssembly.FullName = this.Name.FullName,
-            $"TryResolveMethodSource: {method.Name} is declared by {method.DeclaringAssembly.FullName}, not {this.Name.FullName}"
+            method.DeclaringAssemblyFullName = this.DefinitionFullName,
+            $"TryResolveMethodSource: {method.Name} is declared by {method.DeclaringAssemblyFullName}, not {this.DefinitionFullName}"
         )
 
         match method.TryMetadata with
@@ -794,7 +812,7 @@ type DumpedAssembly =
 ///
 /// <para>
 /// A <em>definition</em> identity is an assembly's own <c>AssemblyDefinition</c> FullName. It is
-/// what <c>DumpedAssembly.Name</c>, <c>ConcreteType.Assembly</c> and
+/// what <c>DumpedAssembly.DefinitionFullName</c>, <c>ConcreteType.AssemblyFullName</c> and
 /// <c>ResolvedTypeIdentity.AssemblyFullName</c> all carry, and it is the load context's key.
 /// </para>
 ///

@@ -159,8 +159,8 @@ type IlMachineState =
         this.Logger.LogDebug (
             "{Transition} of type {s_Assembly}.{TypeName}, handle {TypeDefinitionHandle}",
             transition,
-            concreteType.Assembly.FullName,
-            this.LoadedAssembly(concreteType.Assembly).Value.TypeDefs.[concreteType.Definition.Get].Name,
+            concreteType.AssemblyFullName,
+            this.LoadedAssembly(concreteType.AssemblyFullName).Value.TypeDefs.[concreteType.Definition.Get].Name,
             concreteType.Definition.Get.GetHashCode ()
         )
 
@@ -204,14 +204,12 @@ type IlMachineState =
             _LoadedAssemblies = this._LoadedAssemblies.WithLoadedAssembly value
         }
 
-    member this.LoadedAssembly' (fullName : string) : DumpedAssembly option =
-        this._LoadedAssemblies.TryByDefinitionName fullName
-
-    member this.LoadedAssembly (name : AssemblyName) : DumpedAssembly option =
-        this._LoadedAssemblies.TryByDefinition name
+    /// The loaded assembly with this definition identity, if it is loaded.
+    member this.LoadedAssembly (definitionFullName : string) : DumpedAssembly option =
+        this._LoadedAssemblies.TryByDefinitionName definitionFullName
 
     member this.ActiveAssembly (thread : ThreadId) =
-        let active = this.ThreadState.[thread].ActiveAssembly
+        let active = this.ThreadState.[thread].ActiveAssemblyFullName
 
         match this.LoadedAssembly active with
         | Some v -> v

@@ -192,7 +192,7 @@ public class Consumer
             TypeConcretization.concretizeType
                 (emptyConcretizationContext [ consumer ])
                 (loader :> IAssemblyLoad)
-                consumer.Name
+                consumer.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 innerDefn
@@ -561,7 +561,7 @@ public class Consumer
             TypeConcretization.concretizeType
                 (emptyConcretizationContext [ consumer ])
                 (loader :> IAssemblyLoad)
-                consumer.Name
+                consumer.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 forwardedDefn
@@ -853,7 +853,7 @@ public class Placeholder { }
             resolvedAssembly.Name.FullName |> shouldEqual target.Name.FullName
             resolvedType.TypeDefHandle |> shouldEqual inner.TypeDefHandle
 
-            match state.LoadedAssembly target.Name with
+            match state.LoadedAssembly target.DefinitionFullName with
             | Some loaded -> loaded.Name.FullName |> shouldEqual target.Name.FullName
             | None -> failwith "Expected target assembly to be loaded after exported-type retry"
         finally
@@ -996,7 +996,7 @@ public class Outer
             TypeConcretization.concretizeType
                 ctx
                 (NoAssemblyLoad ())
-                defining.Name
+                defining.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 genericType
@@ -1005,7 +1005,7 @@ public class Outer
             TypeConcretization.concretizeType
                 ctx
                 (NoAssemblyLoad ())
-                defining.Name
+                defining.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 genericType
@@ -1191,7 +1191,7 @@ public class Outer<T>
             TypeConcretization.concretizeType
                 ctx
                 (NoAssemblyLoad ())
-                defining.Name
+                defining.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 firstInstantiated
@@ -1200,7 +1200,7 @@ public class Outer<T>
             TypeConcretization.concretizeType
                 ctx
                 (NoAssemblyLoad ())
-                defining.Name
+                defining.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 firstInstantiated
@@ -1209,7 +1209,7 @@ public class Outer<T>
             TypeConcretization.concretizeType
                 ctx
                 (NoAssemblyLoad ())
-                defining.Name
+                defining.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 secondInstantiated

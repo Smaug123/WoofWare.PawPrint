@@ -509,8 +509,9 @@ type ThreadState =
     member this.MethodState : MethodState =
         ThreadState.getFrame this.ActiveMethodState this
 
-    member this.ActiveAssembly : AssemblyName =
-        this.MethodState.ExecutingMethod.DeclaringAssembly
+    /// The definition identity of the assembly whose token space the running method's IL is spelled in.
+    member this.ActiveAssemblyFullName : string =
+        this.MethodState.ExecutingMethod.DeclaringAssemblyFullName
 
     member this.LiveFrameCount : int = this.MethodStates.Count
 

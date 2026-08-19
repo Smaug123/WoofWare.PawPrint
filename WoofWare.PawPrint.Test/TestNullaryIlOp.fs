@@ -78,7 +78,7 @@ module TestNullaryIlOp =
                 loggerFactory
                 baseClassTypes
                 state
-                corelib.Name
+                corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 objectToString.Signature

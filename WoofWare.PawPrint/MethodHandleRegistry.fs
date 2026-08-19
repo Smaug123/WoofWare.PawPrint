@@ -226,7 +226,7 @@ module MethodHandleRegistry =
         : MethodHandle
         =
         {
-            AssemblyFullName = method.DeclaringAssembly.FullName
+            AssemblyFullName = method.DeclaringAssemblyFullName
             MethodDefinition = ComparableMethodDefinitionHandle.Make (requireDeclaredMethod method)
             DeclaringType =
                 // `requireDeclaredMethod` has already refused anything without a MethodDef row,

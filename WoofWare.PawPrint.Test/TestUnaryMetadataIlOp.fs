@@ -45,7 +45,7 @@ module TestUnaryMetadataIlOp =
                 loggerFactory
                 baseClassTypes
                 state
-                corelib.Name
+                corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 objectToString.Signature
@@ -135,7 +135,7 @@ module TestUnaryMetadataIlOp =
                 loggerFactory
                 baseClassTypes
                 state
-                corelib.Name
+                corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 typeDefn

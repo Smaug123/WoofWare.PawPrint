@@ -194,7 +194,7 @@ module AppContextSeed =
                 ImmutableArray.Empty
                 setup
                 None
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
 

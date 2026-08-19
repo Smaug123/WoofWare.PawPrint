@@ -129,6 +129,7 @@
     <Compile Include="TestTypeResolutionBaseAssemblies.fs" />
     <Compile Include="TestGenericEnvironmentCycles.fs" />
     <Compile Include="TestSharedTypeGraphResolution.fs" />
+    <Compile Include="TestAssemblyDefinitionName.fs" />
     <Compile Include="TestAssemblyDictionaryKeying.fs" />
     <Compile Include="TestLoadedAssemblies.fs" />
     <Compile Include="TestSharedFrameworkForwardSweep.fs" />

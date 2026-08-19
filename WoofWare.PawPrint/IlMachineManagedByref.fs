@@ -860,7 +860,7 @@ module IlMachineManagedByref =
                 $"PE byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside byte range size %d{peByteRange.Size}: %O{peByteRange}"
 
         let assembly =
-            state.LoadedAssembly' peByteRange.AssemblyFullName
+            state.LoadedAssembly peByteRange.AssemblyFullName
             |> Option.defaultWith (fun () ->
                 failwith $"PE byte-view read needs loaded assembly %s{peByteRange.AssemblyFullName}"
             )

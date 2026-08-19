@@ -109,7 +109,7 @@ module NativeCustomAttribute =
                     ctx.LoggerFactory
                     ctx.BaseClassTypes
                     state
-                    ctorAssembly.Name
+                    ctorAssembly.DefinitionFullName
                     declaringTypeGenerics
                     methodGenerics
                     elt
@@ -125,7 +125,7 @@ module NativeCustomAttribute =
                 ctx.LoggerFactory
                 ctx.BaseClassTypes
                 state
-                ctorAssembly.Name
+                ctorAssembly.DefinitionFullName
                 declaringTypeGenerics
                 methodGenerics
                 paramType
@@ -356,10 +356,10 @@ module NativeCustomAttribute =
                     )
 
                 let attrAssembly =
-                    state.LoadedAssembly concreteType.Assembly
+                    state.LoadedAssembly concreteType.AssemblyFullName
                     |> Option.defaultWith (fun () ->
                         failwith
-                            $"%s{operation}: attribute type's assembly %s{concreteType.Assembly.FullName} is not loaded"
+                            $"%s{operation}: attribute type's assembly %s{concreteType.AssemblyFullName} is not loaded"
                     )
 
                 let attrTypeInfo = attrAssembly.TypeDefs.[concreteType.Definition.Get]
@@ -404,7 +404,7 @@ module NativeCustomAttribute =
                 let ctorAssemblyName = identity.GetAssemblyFullName ()
 
                 let ctorAssembly =
-                    state.LoadedAssembly' ctorAssemblyName
+                    state.LoadedAssembly ctorAssemblyName
                     |> Option.defaultWith (fun () ->
                         failwith $"%s{operation}: ctor's declaring assembly %s{ctorAssemblyName} is not loaded"
                     )
@@ -738,7 +738,7 @@ module NativeCustomAttribute =
                             ctx.LoggerFactory
                             ctx.BaseClassTypes
                             state
-                            ctx.BaseClassTypes.Corelib.Name
+                            ctx.BaseClassTypes.Corelib.DefinitionFullName
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             (TypeDefn.PrimitiveType PrimitiveType.String)
@@ -772,7 +772,7 @@ module NativeCustomAttribute =
                         ctx.LoggerFactory
                         ctx.BaseClassTypes
                         state
-                        ctx.BaseClassTypes.Corelib.Name
+                        ctx.BaseClassTypes.Corelib.DefinitionFullName
                         ImmutableArray.Empty
                         ImmutableArray.Empty
                         (TypeDefn.PrimitiveType valuePrimitive)

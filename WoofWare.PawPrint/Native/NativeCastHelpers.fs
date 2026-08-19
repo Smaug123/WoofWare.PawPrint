@@ -59,7 +59,7 @@ module NativeCastHelpers =
         match identity with
         | None -> false
         | Some identity ->
-            match state.LoadedAssembly identity.Assembly with
+            match state.LoadedAssembly identity.AssemblyFullName with
             | None -> false
             | Some assy ->
                 let typeInfo = assy.TypeDefs.[identity.TypeDefinition.Get]

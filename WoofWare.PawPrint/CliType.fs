@@ -3150,11 +3150,11 @@ and CliValueType =
         // cheaper, and it is what lets a handle from any other assembly answer without resolving
         // at all.
         if
-            concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
+            concreteType.AssemblyFullName = corelib.Corelib.DefinitionFullName
             && concreteType.Generics.IsEmpty
         then
             let typeDef =
-                assemblies.[concreteType.Assembly].TypeDefs.[concreteType.Definition.Get]
+                (assemblies.ByDefinitionName concreteType.AssemblyFullName).TypeDefs.[concreteType.Definition.Get]
 
             TypeInfo.NominallyEqual typeDef target
         else
@@ -3231,7 +3231,7 @@ and CliValueType =
             match AllConcreteTypes.lookup handle concreteTypes with
             | None -> false
             | Some concreteType ->
-                match assemblies.TryByDefinition concreteType.Assembly with
+                match assemblies.TryByDefinitionName concreteType.AssemblyFullName with
                 | None -> false
                 | Some assy ->
                     match assy.TypeDefs.TryGetValue concreteType.Definition.Get with
@@ -4131,12 +4131,12 @@ module CliType =
                 | None -> failwithf "ConcreteTypeHandle %A not found in AllConcreteTypes" handle
 
             // Get the type definition from the assembly
-            let assembly = assemblies.[concreteType.Assembly]
+            let assembly = assemblies.ByDefinitionName concreteType.AssemblyFullName
             let typeDef = assembly.TypeDefs.[concreteType.Definition.Get]
 
             // Check if it's a primitive type by comparing with corelib types FIRST
             if
-                concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
+                concreteType.AssemblyFullName = corelib.Corelib.DefinitionFullName
                 && concreteType.Generics.IsEmpty
             then
                 // Check against known primitive types
@@ -4201,7 +4201,7 @@ module CliType =
             // Not from corelib or has generics
             // This is an array type, so null is appropriate
             else if
-                concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
+                concreteType.AssemblyFullName = corelib.Corelib.DefinitionFullName
                 && TypeInfo.NominallyEqual typeDef corelib.Array
                 && concreteType.Generics.Length = 1
             then
@@ -4249,7 +4249,7 @@ module CliType =
             Concretization.ensureTypeDefinitionBaseAssembliesLoaded
                 loadAssembly
                 assemblies
-                assemblies.[concreteType.Assembly]
+                (assemblies.ByDefinitionName concreteType.AssemblyFullName)
                 concreteType.Definition.Get
 
         let isValueType = DumpedAssembly.isValueType corelib assemblies typeDef
@@ -4339,7 +4339,7 @@ module CliType =
             TypeConcretization.concretizeType
                 ctx
                 loadAssembly
-                declaringType.Assembly
+                declaringType.AssemblyFullName
                 declaringType.Generics
                 methodGenerics
                 fieldType

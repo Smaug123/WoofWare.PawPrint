@@ -51,9 +51,9 @@ module NativeEnum =
             )
 
         let assembly =
-            state.LoadedAssembly concreteType.Assembly
+            state.LoadedAssembly concreteType.AssemblyFullName
             |> Option.defaultWith (fun () ->
-                failwith $"%s{operation}: defining assembly is not loaded: %s{concreteType.Assembly.FullName}"
+                failwith $"%s{operation}: defining assembly is not loaded: %s{concreteType.AssemblyFullName}"
             )
 
         let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]

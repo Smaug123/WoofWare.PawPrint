@@ -37,7 +37,7 @@ module internal UnaryMetadataMemoryOps =
                     loggerFactory
                     baseClassTypes
                     state
-                    assy.Name
+                    assy.DefinitionFullName
                     declaringTypeGenerics
                     currentMethod.Generics
                     targetType
@@ -84,7 +84,7 @@ module internal UnaryMetadataMemoryOps =
                     loggerFactory
                     baseClassTypes
                     state
-                    assy.Name
+                    assy.DefinitionFullName
                     currentMethod.DeclaringTypeGenerics
                     currentMethod.Generics
                     ty
@@ -159,7 +159,7 @@ module internal UnaryMetadataMemoryOps =
                     loggerFactory
                     baseClassTypes
                     state
-                    assy.Name
+                    assy.DefinitionFullName
                     currentMethod.DeclaringTypeGenerics
                     currentMethod.Generics
                     ty
@@ -284,7 +284,7 @@ module internal UnaryMetadataMemoryOps =
                     loggerFactory
                     baseClassTypes
                     state
-                    assy.Name
+                    assy.DefinitionFullName
                     currentMethod.DeclaringTypeGenerics
                     currentMethod.Generics
                     ty

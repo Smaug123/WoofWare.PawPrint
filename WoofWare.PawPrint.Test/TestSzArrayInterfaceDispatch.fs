@@ -64,7 +64,7 @@ module TestSzArrayInterfaceDispatch =
             loggerFactory
             bct
             state
-            bct.Corelib.Name
+            bct.Corelib.DefinitionFullName
             ImmutableArray.Empty
             ImmutableArray.Empty
 

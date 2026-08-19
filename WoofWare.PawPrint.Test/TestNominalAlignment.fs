@@ -110,7 +110,7 @@ module TestNominalAlignment =
             TypeConcretization.concretizeType
                 ctx
                 IAssemblyLoad.alreadyLoadedOnly
-                corelib.Name
+                corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (ti.Identity, SignatureTypeKind.ValueType))

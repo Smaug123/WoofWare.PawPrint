@@ -65,7 +65,7 @@ module internal UnaryMetadataIlOp =
             match operand with
             | MetadataOperand.FromMetadata sourced ->
                 let activeAssy =
-                    state.LoadedAssembly sourced.SourceAssembly
+                    state.LoadedAssembly sourced.SourceAssembly.FullName
                     |> Option.defaultWith (fun () ->
                         let available = state._LoadedAssemblies.DefinitionNames |> String.concat " ; "
 

@@ -56,7 +56,7 @@ module ExceptionDispatching =
                 loggerFactory
                 baseClassTypes
                 state
-                catchAssy.Name
+                catchAssy.DefinitionFullName
                 typeGenerics
                 methodGenerics
                 catchTypeDefn
@@ -173,7 +173,7 @@ module ExceptionDispatching =
         // search only ever looked at the active frame; the first pass below searches frames the
         // thread is *not* in, so relying on the coincidence would resolve a `catch`'s type token
         // against the wrong assembly as soon as an exception crossed an assembly boundary.
-        let name = method.DeclaringAssembly
+        let name = method.DeclaringAssemblyFullName
 
         match state.LoadedAssembly name with
         | Some assy -> assy
@@ -1359,7 +1359,7 @@ module ExceptionDispatching =
                 loggerFactory
                 baseClassTypes
                 state
-                exceptionTypeInfo.Assembly
+                exceptionTypeInfo.Assembly.FullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (exceptionTypeInfo.Identity, stk))

@@ -46,7 +46,7 @@ module internal UnaryMetadataFieldOps =
         && field.DeclaringType.Generics.IsEmpty
         && field.DeclaringType.Namespace = "System.Runtime.CompilerServices"
         && field.DeclaringType.Name = "CastHelpers"
-        && field.DeclaringType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+        && field.DeclaringType.AssemblyFullName = baseClassTypes.Corelib.DefinitionFullName
 
     /// Resolve a field-bearing operand — a metadata token, or a `DynamicScope` entry already
     /// resolved to a `FieldHandle` — to the field it names, together with the assembly whose
@@ -125,7 +125,7 @@ module internal UnaryMetadataFieldOps =
                 match activeAssy.Fields.TryGetValue fieldHandle with
                 | false, _ ->
                     failwith
-                        $"TODO: %s{opName} - throw MissingFieldException. Field definition handle %O{fieldHandle} is absent from %s{activeAssy.Name.FullName}."
+                        $"TODO: %s{opName} - throw MissingFieldException. Field definition handle %O{fieldHandle} is absent from %s{activeAssy.DefinitionFullName}."
                 | true, field ->
                     let field =
                         field
@@ -147,10 +147,10 @@ module internal UnaryMetadataFieldOps =
 
         // Resolving the token is what loads the declaring assembly, so it is expected to be present.
         let declaringAssy =
-            state.LoadedAssembly field.DeclaringType.Assembly
+            state.LoadedAssembly field.DeclaringType.AssemblyFullName
             |> Option.defaultWith (fun () ->
                 failwith
-                    $"%s{opName}: declaring assembly %s{field.DeclaringType.Assembly.FullName} of field %s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name} was not loaded. Resolving the field token is expected to have loaded it."
+                    $"%s{opName}: declaring assembly %s{field.DeclaringType.AssemblyFullName} of field %s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name} was not loaded. Resolving the field token is expected to have loaded it."
             )
 
         state, field, declaringAssy
@@ -195,7 +195,7 @@ module internal UnaryMetadataFieldOps =
                     "ECMA-335 permits this form — the receiver is evaluated for its side effects and discarded — but PawPrint does not implement it; it has no path from an instance field op to static storage."
 
             failwith
-                $"%s{opName} cannot %s{verb} %s{adjective} field %O{field.DeclaringType.Assembly.Name}.%s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name}; use %s{alternativeOp}. %s{reason}"
+                $"%s{opName} cannot %s{verb} %s{adjective} field %O{AssemblyDefinitionName.simpleName field.DeclaringType.AssemblyFullName}.%s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name}; use %s{alternativeOp}. %s{reason}"
 
     let executeStfld (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
@@ -208,7 +208,7 @@ module internal UnaryMetadataFieldOps =
         do
             logger.LogTrace (
                 "Storing in object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
-                field.DeclaringType.Assembly.Name,
+                field.DeclaringType.AssemblyFullName,
                 field.DeclaringType.Name,
                 field.Name,
                 field.Signature
@@ -301,7 +301,7 @@ module internal UnaryMetadataFieldOps =
         // declaring assembly's metadata.
         logger.LogTrace (
             "Storing in static field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
-            field.DeclaringType.Assembly.Name,
+            field.DeclaringType.AssemblyFullName,
             field.DeclaringType.Name,
             field.Name,
             field.Signature
@@ -356,7 +356,7 @@ module internal UnaryMetadataFieldOps =
         // assembly's metadata, not the active assembly's.
         logger.LogTrace (
             "Loading object field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
-            field.DeclaringType.Assembly.Name,
+            field.DeclaringType.AssemblyFullName,
             field.DeclaringType.Name,
             field.Name,
             field.Signature
@@ -539,13 +539,13 @@ module internal UnaryMetadataFieldOps =
 
         do
             let declaring =
-                state.LoadedAssembly field.DeclaringType.Assembly
+                state.LoadedAssembly field.DeclaringType.AssemblyFullName
                 |> Option.get
                 |> fun a -> a.TypeDefs.[field.DeclaringType.Definition.Get]
 
             logger.LogTrace (
                 "Loading from static field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType})",
-                field.DeclaringType.Assembly.Name,
+                field.DeclaringType.AssemblyFullName,
                 declaring.Name,
                 field.Name,
                 field.Signature
@@ -616,11 +616,13 @@ module internal UnaryMetadataFieldOps =
 
         do
             let declaring =
-                state.LoadedAssembly(field.DeclaringType.Assembly).Value.TypeDefs.[field.DeclaringType.Definition.Get]
+                state
+                    .LoadedAssembly(field.DeclaringType.AssemblyFullName)
+                    .Value.TypeDefs.[field.DeclaringType.Definition.Get]
 
             logger.LogTrace (
                 "Loaded from static field {FieldAssembly}.{FieldDeclaringType}.{FieldName} (type {FieldType}), value {LoadedValue}",
-                field.DeclaringType.Assembly.Name,
+                field.DeclaringType.AssemblyFullName,
                 declaring.Name,
                 field.Name,
                 field.Signature,

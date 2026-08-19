@@ -153,8 +153,8 @@ module Intrinsics =
 
         // In general, some implementations are in:
         // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L192
-        match methodToCall.DeclaringAssembly.Name, methodToCall.RequiredDeclaringType.Name, methodToCall.Name with
-        | "System.Private.CoreLib", _, "get_IsSupported" when
+        match methodToCall.DeclaringAssemblyFullName, methodToCall.RequiredDeclaringType.Name, methodToCall.Name with
+        | CorelibAssembly, _, "get_IsSupported" when
             scalarOnlyFalseIsSupportedIntrinsics.Contains intrinsicKey.DeclaringTypeFullName
             ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -165,7 +165,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.ofBool false) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", ("ReadOnlySpan`1" | "Span`1"), ".ctor" when
+        | CorelibAssembly, ("ReadOnlySpan`1" | "Span`1"), ".ctor" when
             intrinsicKey.ParameterShapes = [ "*" ; "System.Int32" ]
             && (intrinsicKey.DeclaringTypeFullName = "System.ReadOnlySpan`1"
                 || intrinsicKey.DeclaringTypeFullName = "System.Span`1")
@@ -178,19 +178,17 @@ module Intrinsics =
                 methodToCall
                 state
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", ("ReadOnlySpan`1" | "Span`1"), "ToString" ->
+        | CorelibAssembly, ("ReadOnlySpan`1" | "Span`1"), "ToString" ->
             spanToString loggerFactory baseClassTypes currentThread methodToCall state
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "MemoryExtensions", "Equals" ->
+        | CorelibAssembly, "MemoryExtensions", "Equals" ->
             memoryExtensionsEquals baseClassTypes currentThread methodToCall state
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "SpanHelpers", "SequenceEqual" when
-            isSpanHelpersByteSequenceEqual state methodToCall
-            ->
+        | CorelibAssembly, "SpanHelpers", "SequenceEqual" when isSpanHelpersByteSequenceEqual state methodToCall ->
             spanHelpersSequenceEqual baseClassTypes currentThread methodToCall state
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", ("Vector128" | "Vector256" | "Vector512"), "get_IsHardwareAccelerated"
-        | "System.Private.CoreLib", "Vector", "get_IsHardwareAccelerated" when
+        | CorelibAssembly, ("Vector128" | "Vector256" | "Vector512"), "get_IsHardwareAccelerated"
+        | CorelibAssembly, "Vector", "get_IsHardwareAccelerated" when
             // System.Runtime.Intrinsics.Vector{128,256,512}.IsHardwareAccelerated and
             // System.Numerics.Vector.IsHardwareAccelerated are JIT intrinsic capability queries
             // whose IL bodies are recursive self-calls the JIT replaces with a constant. PawPrint
@@ -212,7 +210,7 @@ module Intrinsics =
             IlMachineState.pushToEvalStack (CliType.ofBool isAccelerated) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Object", "MemberwiseClone" ->
+        | CorelibAssembly, "Object", "MemberwiseClone" ->
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Object.CoreCLR.cs#L26-L45
             // The managed body allocates an uninitialised clone via the
             // `RuntimeHelpers.AllocateUninitializedClone` QCall and then raw-byte-copies the object
@@ -251,7 +249,7 @@ module Intrinsics =
                 // reaches this.
                 IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
             | other -> failwith $"Object.MemberwiseClone: expected an object reference receiver, got %O{other}"
-        | "System.Private.CoreLib", "Object", "GetType" ->
+        | CorelibAssembly, "Object", "GetType" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System", "Type", generics)) when
                 generics.IsEmpty
@@ -305,7 +303,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some runtimeTypeAddr)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "RuntimeHelpers", "GetMethodTable" ->
+        | CorelibAssembly, "RuntimeHelpers", "GetMethodTable" ->
             match methodToCall.Signature.ParameterTypes with
             | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ] -> ()
             | _ -> failwith "bad signature RuntimeHelpers.GetMethodTable"
@@ -349,7 +347,7 @@ module Intrinsics =
                 currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Unsafe", "AsPointer" ->
+        | CorelibAssembly, "Unsafe", "AsPointer" ->
             // Method signature: 1 generic parameter, we take a Byref of that parameter, and return a TypeDefn.Pointer(Void)
             let arg, state = IlMachineState.popEvalStack currentThread state
 
@@ -361,7 +359,7 @@ module Intrinsics =
             IlMachineState.pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Unsafe", "SkipInit" ->
+        | CorelibAssembly, "Unsafe", "SkipInit" ->
             // `SkipInit<T>(out T)` is a JIT intrinsic that deliberately leaves
             // the byref target untouched. PawPrint's storage is already
             // deterministic, so the only observable effect is consuming the
@@ -384,7 +382,7 @@ module Intrinsics =
             state
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Unsafe", "AsRef" ->
+        | CorelibAssembly, "Unsafe", "AsRef" ->
             // `AsRef<T>(ref readonly T)` and `AsRef<T>(void* source)` are JIT
             // intrinsics. The CoreLib bodies in this runtime throw
             // PlatformNotSupportedException; the intended intrinsic semantics
@@ -440,7 +438,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' toPush currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Unsafe", "NullRef" ->
+        | CorelibAssembly, "Unsafe", "NullRef" ->
             // CoreCLR's UNSAFE__BYREF_NULLREF intrinsic replaces the CoreLib
             // body with a null managed byref (`ldc.i4.0; conv.u; ret`).
             let t =
@@ -460,7 +458,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ManagedPointerSource.Null) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Unsafe", "IsNullRef" ->
+        | CorelibAssembly, "Unsafe", "IsNullRef" ->
             // The JIT intrinsic compares the byref argument against the null
             // managed byref.
             let t =
@@ -489,7 +487,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.ofBool isNullRef) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Interlocked", ("Add" | "ExchangeAdd") ->
+        | CorelibAssembly, "Interlocked", ("Add" | "ExchangeAdd") ->
             // `Add` returns the newly-stored sum; the private `ExchangeAdd`
             // primitive returns the original value. The read-modify-write
             // happens inside one intrinsic dispatch, so the scheduler cannot
@@ -600,7 +598,7 @@ module Intrinsics =
               MethodReturnType.Returns (ConcreteUInt64 state.ConcreteTypes) -> executeInt64 operation state
             | _ -> IntrinsicResult.Unrecognised
 
-        | "System.Private.CoreLib", "Interlocked", ("And" | "Or") ->
+        | CorelibAssembly, "Interlocked", ("And" | "Or") ->
             // Both return the *original* value at the location, not the combined one.
             // The read-modify-write happens inside one intrinsic dispatch, so the
             // scheduler cannot interleave another guest thread between the read and
@@ -695,7 +693,7 @@ module Intrinsics =
               MethodReturnType.Returns (ConcreteInt64 state.ConcreteTypes) -> executeInt64 operation state
             | _ -> IntrinsicResult.Unrecognised
 
-        | "System.Private.CoreLib", "Interlocked", "MemoryBarrier" ->
+        | CorelibAssembly, "Interlocked", "MemoryBarrier" ->
             // [Intrinsic] public static void MemoryBarrier() => MemoryBarrier();
             // Same shape as Volatile.{Read,Write}Barrier (below): the managed body is
             // infinite self-recursion and the JIT replaces the call with the
@@ -713,7 +711,7 @@ module Intrinsics =
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
 
-        | "System.Private.CoreLib", "Interlocked", "CompareExchange" ->
+        | CorelibAssembly, "Interlocked", "CompareExchange" ->
             // The native-int-shaped overloads need their own path: the shipped IL wrappers do
             // `Unsafe.As<_, long>` and delegate to the Int64 overload, which would destroy our
             // NativeIntSource provenance.
@@ -911,7 +909,7 @@ module Intrinsics =
                 // A signature shape this intrinsic does not recognise at all — the four types are
                 // not all the same, or the parameter count is wrong.
                 IntrinsicResult.Unrecognised
-        | "System.Private.CoreLib", "Interlocked", "Exchange" ->
+        | CorelibAssembly, "Interlocked", "Exchange" ->
             // Same intrinsic-boundary motivation as CompareExchange: the shipped CoreLib
             // bodies for Exchange ride Unsafe.As / InternalCall paths that would either
             // destroy NativeIntSource provenance for IntPtr/UIntPtr or re-enter this
@@ -1052,7 +1050,7 @@ module Intrinsics =
                 // A signature shape this intrinsic does not recognise at all — the three types are
                 // not all the same, or the parameter count is wrong.
                 IntrinsicResult.Unrecognised
-        | "System.Private.CoreLib", "Thread", "FastPollGC" ->
+        | CorelibAssembly, "Thread", "FastPollGC" ->
             // [Intrinsic] internal static void Thread.FastPollGC() => Thread.FastPollGC();
             // The managed IL body is an infinite self-recursive call; the JIT replaces
             // every call site with an inline fast GC poll. PawPrint has no GC, so the
@@ -1066,7 +1064,7 @@ module Intrinsics =
             state
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Volatile", ("ReadBarrier" | "WriteBarrier") ->
+        | CorelibAssembly, "Volatile", ("ReadBarrier" | "WriteBarrier") ->
             // [Intrinsic] public static void Volatile.{Read,Write}Barrier() => Volatile.{Read,Write}Barrier();
             // Same shape as Thread.FastPollGC: the managed body is infinite self-recursion
             // and the JIT replaces the call with the appropriate processor fence. PawPrint
@@ -1082,7 +1080,7 @@ module Intrinsics =
             state
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "BitConverter", "SingleToInt32Bits" ->
+        | CorelibAssembly, "BitConverter", "SingleToInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteSingle state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.SingleToInt32Bits"
@@ -1101,7 +1099,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "BitConverter", "Int32BitsToSingle" ->
+        | CorelibAssembly, "BitConverter", "Int32BitsToSingle" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteSingle state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.Int32BitsToSingle"
@@ -1120,7 +1118,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "BitConverter", "DoubleToUInt64Bits" ->
+        | CorelibAssembly, "BitConverter", "DoubleToUInt64Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteUInt64 state.ConcreteTypes) ->
                 ()
@@ -1144,7 +1142,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "BitConverter", "UInt64BitsToDouble" ->
+        | CorelibAssembly, "BitConverter", "UInt64BitsToDouble" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteUInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
                 ()
@@ -1164,7 +1162,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "BitConverter", "Int64BitsToDouble" ->
+        | CorelibAssembly, "BitConverter", "Int64BitsToDouble" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.Int64BitsToDouble"
@@ -1183,7 +1181,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "BitConverter", "DoubleToInt64Bits" ->
+        | CorelibAssembly, "BitConverter", "DoubleToInt64Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt64 state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.DoubleToInt64Bits"
@@ -1200,7 +1198,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "BitConverter", "SingleToUInt32Bits" ->
+        | CorelibAssembly, "BitConverter", "SingleToUInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteSingle state.ConcreteTypes ], MethodReturnType.Returns (ConcreteUInt32 state.ConcreteTypes) ->
                 ()
@@ -1221,7 +1219,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "BitConverter", "UInt32BitsToSingle" ->
+        | CorelibAssembly, "BitConverter", "UInt32BitsToSingle" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteSingle state.ConcreteTypes) ->
                 ()
@@ -1241,7 +1239,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "BitOperations", "TrailingZeroCount" when
+        | CorelibAssembly, "BitOperations", "TrailingZeroCount" when
             intrinsicKey.DeclaringTypeFullName = "System.Numerics.BitOperations"
             ->
             // BitOperations.TrailingZeroCount is a JIT intrinsic in the real CLR, lowered to
@@ -1274,7 +1272,7 @@ module Intrinsics =
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> IntrinsicResult.Completed
             | _ -> failwith $"BitOperations.TrailingZeroCount: unexpected signature %s{formatMethodKey intrinsicKey}"
-        | "System.Private.CoreLib", "BitOperations", "LeadingZeroCount" when
+        | CorelibAssembly, "BitOperations", "LeadingZeroCount" when
             intrinsicKey.DeclaringTypeFullName = "System.Numerics.BitOperations"
             ->
             // BitOperations.LeadingZeroCount is a JIT intrinsic in the real CLR, lowered to
@@ -1323,7 +1321,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "BitOperations", "Log2" ->
+        | CorelibAssembly, "BitOperations", "Log2" ->
             // BitOperations.Log2 is a JIT intrinsic in the real CLR. The BCL IL body falls
             // through to a software fallback that reads from a De Bruijn lookup table backed
             // by a PE byte range, which collides with paths PawPrint does not yet model.
@@ -1376,7 +1374,7 @@ module Intrinsics =
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> IntrinsicResult.Completed
             | _ -> failwith $"BitOperations.Log2: unexpected signature %s{formatMethodKey intrinsicKey}"
-        | "System.Private.CoreLib", "Math", "Pow" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
+        | CorelibAssembly, "Math", "Pow" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
             // Math.Pow has no IL body at all, so it cannot be allowlisted in safeIntrinsics:
             // CoreCLR declares it `[Intrinsic]` + `MethodImplOptions.InternalCall` and the JIT
             // lowers it to a call into the platform C library's `pow`.
@@ -1412,7 +1410,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Math", "Cos" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
+        | CorelibAssembly, "Math", "Cos" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
             // As with `Math.Pow` above: `[Intrinsic]` + `MethodImplOptions.InternalCall` with
             // no IL body, lowered by the JIT to the platform C library's `cos`.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Math.CoreCLR.cs#L56-L57
@@ -1443,7 +1441,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Math", "Sin" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
+        | CorelibAssembly, "Math", "Sin" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
             // The twin of `Math.Cos` above, and the same shape: `[Intrinsic]` +
             // `MethodImplOptions.InternalCall` with no IL body, lowered by the JIT to the
             // platform C library's `sin`.
@@ -1474,7 +1472,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Math", "Sqrt" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
+        | CorelibAssembly, "Math", "Sqrt" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
             // Declared the same way as the three above -- `[Intrinsic]` +
             // `MethodImplOptions.InternalCall`, no IL body -- so it likewise cannot be
             // allowlisted in `safeIntrinsics`.
@@ -1512,7 +1510,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Math", "Ceiling" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
+        | CorelibAssembly, "Math", "Ceiling" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
             // Declared like the four above -- `[Intrinsic]` + `MethodImplOptions.InternalCall`,
             // no IL body -- so it likewise cannot be allowlisted in `safeIntrinsics`. The JIT
             // lowers it to `roundsd`/`frintp` where the hardware has them and to the platform
@@ -1548,7 +1546,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Math", "Round" when
+        | CorelibAssembly, "Math", "Round" when
             intrinsicKey.DeclaringTypeFullName = "System.Math"
             && intrinsicKey.ParameterShapes = [ "System.Double" ]
             ->
@@ -1593,7 +1591,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "String", "Equals" ->
+        | CorelibAssembly, "String", "Equals" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteString state.ConcreteTypes ; ConcreteString state.ConcreteTypes ],
               MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) ->
@@ -1631,7 +1629,7 @@ module Intrinsics =
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> IntrinsicResult.Completed
             | _ -> IntrinsicResult.Unrecognised
-        | "System.Private.CoreLib", "Unsafe", "ReadUnaligned" ->
+        | CorelibAssembly, "Unsafe", "ReadUnaligned" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L558
             // Semantically this returns the T that would be read by
             // reinterpreting the pointer as `ref T` and dereferencing. The JIT
@@ -1699,7 +1697,7 @@ module Intrinsics =
 
                 IntrinsicResult.Completed state
             | _ -> IntrinsicResult.Unrecognised
-        | "System.Private.CoreLib", "Unsafe", "WriteUnaligned" ->
+        | CorelibAssembly, "Unsafe", "WriteUnaligned" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L609
             // Symmetric to ReadUnaligned: writes a T through a byte-level
             // byref by delegating byte scattering to managed byref byte helpers.
@@ -1778,7 +1776,7 @@ module Intrinsics =
                 let state = state |> IlMachineState.advanceProgramCounter currentThread
                 IntrinsicResult.Completed state
             | _ -> IntrinsicResult.Unrecognised
-        | "System.Private.CoreLib", "Unsafe", ("CopyBlock" | "CopyBlockUnaligned") ->
+        | CorelibAssembly, "Unsafe", ("CopyBlock" | "CopyBlockUnaligned") ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L313
             // The CoreLib bodies throw PlatformNotSupportedException; the real JIT replaces
             // these with `cpblk` (optionally prefixed by `unaligned.`). Both overloads accept
@@ -1794,7 +1792,7 @@ module Intrinsics =
                 executeUnsafeCopyBlock baseClassTypes currentThread operation state
                 |> IntrinsicResult.Completed
             | _ -> IntrinsicResult.Unrecognised
-        | "System.Private.CoreLib", "SpanHelpers", "Memmove" ->
+        | CorelibAssembly, "SpanHelpers", "Memmove" ->
             // `[Intrinsic] internal static void Memmove(ref byte dest, ref byte src, nuint len)`
             // (SpanHelpers.ByteMemOps.cs:37). The managed body executes the platform-tuned
             // byte/Block16 unrolled walk and P/Invokes into native memmove on overlap; both
@@ -1813,7 +1811,7 @@ module Intrinsics =
                 executeSpanHelpersMemmove baseClassTypes currentThread operation state
                 |> IntrinsicResult.Completed
             | _ -> IntrinsicResult.Unrecognised
-        | "System.Private.CoreLib", "SpanHelpers", "ClearWithoutReferences" ->
+        | CorelibAssembly, "SpanHelpers", "ClearWithoutReferences" ->
             // `[Intrinsic] public static void ClearWithoutReferences(ref byte dest, nuint len)`
             // (SpanHelpers.ByteMemOps.cs:246). This is the boundary `Array.Clear` reaches for
             // every element type without GC pointers, and `NativeMemory.Clear` reaches for all
@@ -1833,7 +1831,7 @@ module Intrinsics =
                 executeSpanHelpersClearWithoutReferences baseClassTypes currentThread operation state
                 |> IntrinsicResult.Completed
             | _ -> IntrinsicResult.Unrecognised
-        | "System.Private.CoreLib", "String", "op_Implicit" ->
+        | CorelibAssembly, "String", "op_Implicit" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ par ], MethodReturnType.Returns ret ->
                 let par = state.ConcreteTypes |> AllConcreteTypes.lookup par |> Option.get
@@ -1859,7 +1857,7 @@ module Intrinsics =
                 else
                     failwith "TODO: unexpected params to String.op_Implicit"
             | _ -> failwith "TODO: unexpected params to String.op_Implicit"
-        | "System.Private.CoreLib", "RuntimeHelpers", "IsReferenceOrContainsReferences" ->
+        | CorelibAssembly, "RuntimeHelpers", "IsReferenceOrContainsReferences" ->
             // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L207
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
@@ -1876,7 +1874,7 @@ module Intrinsics =
                 |> IlMachineState.advanceProgramCounter currentThread
 
             IntrinsicResult.Completed state
-        | "System.Private.CoreLib", "RuntimeHelpers", "InitializeArray" ->
+        | CorelibAssembly, "RuntimeHelpers", "InitializeArray" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L18
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteSystemArray state.ConcreteTypes ; ConcreteRuntimeFieldHandle state.ConcreteTypes ],
@@ -2153,7 +2151,7 @@ module Intrinsics =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
             IntrinsicResult.Completed state
-        | "System.Private.CoreLib", "RuntimeHelpers", "IsBitwiseEquatable" ->
+        | CorelibAssembly, "RuntimeHelpers", "IsBitwiseEquatable" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.IsBitwiseEquatable"
@@ -2191,7 +2189,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "GC", "KeepAlive" ->
+        | CorelibAssembly, "GC", "KeepAlive" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ], MethodReturnType.Void -> ()
             | _ -> failwith "bad signature for System.Private.CoreLib.GC.KeepAlive"
@@ -2201,7 +2199,7 @@ module Intrinsics =
             state
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Unsafe", "As" ->
+        | CorelibAssembly, "Unsafe", "As" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L64
             let byrefAs () =
                 let inputType, retType =
@@ -2289,7 +2287,7 @@ module Intrinsics =
                     |> IntrinsicResult.Completed
                 | other -> failwith $"Unsafe.As<T>(object): expected object reference, got %O{other}"
             | _ -> byrefAs ()
-        | "System.Private.CoreLib", "Unsafe", "BitCast" ->
+        | CorelibAssembly, "Unsafe", "BitCast" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L259
             // BCL body:
             //   if (sizeof(TFrom) != sizeof(TTo)
@@ -2412,7 +2410,7 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack result currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Unsafe", "SizeOf" ->
+        | CorelibAssembly, "Unsafe", "SizeOf" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L51
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) -> ()
@@ -2431,7 +2429,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Unsafe", "AreSame" ->
+        | CorelibAssembly, "Unsafe", "AreSame" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L55
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with ceq on two byrefs.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -2478,7 +2476,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.ofBool areSame) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Unsafe", "IsAddressLessThan" ->
+        | CorelibAssembly, "Unsafe", "IsAddressLessThan" ->
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L62-L67
             // The source-level IL body throws PlatformNotSupportedException; the runtime replaces
             // it with `ldarg.0; ldarg.1; clt.un; ret` (the commented-out body in CoreLib's
@@ -2500,7 +2498,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.ofBool isLessThan) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Unsafe", "Add" ->
+        | CorelibAssembly, "Unsafe", "Add" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L99
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sizeof + conv.i + mul + add.
             let t =
@@ -2549,7 +2547,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' ptr currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Unsafe", "Subtract" ->
+        | CorelibAssembly, "Unsafe", "Subtract" ->
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L812-L833
             // The CORECLR managed body throws PlatformNotSupportedException; the JIT replaces it
             // with `sizeof !!T; conv.i; mul; sub`, which is exactly the `Unsafe.Add<T>(ref T, int32)`
@@ -2590,7 +2588,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' ptr currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Unsafe", "AddByteOffset" ->
+        | CorelibAssembly, "Unsafe", "AddByteOffset" ->
             // CoreCLR's managed body throws PlatformNotSupportedException; the JIT replaces
             // the call with raw byref + native-int addition. Both overloads (IntPtr and
             // UIntPtr) share the same semantics: advance the byref by `byteOffset` bytes,
@@ -2768,7 +2766,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Unsafe", "ByteOffset" ->
+        | CorelibAssembly, "Unsafe", "ByteOffset" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L69
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sub on two byrefs.
             let t =
@@ -2871,7 +2869,7 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt byteOffset) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", ("ReadOnlySpan`1" | "Span`1"), "get_Item" ->
+        | CorelibAssembly, ("ReadOnlySpan`1" | "Span`1"), "get_Item" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L141
             // The source-level body returns `ref Unsafe.Add(ref _reference, index)`;
             // the method is intrinsic so we model that primitive boundary directly.
@@ -2947,7 +2945,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' ptr currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Span`1", "Clear" ->
+        | CorelibAssembly, "Span`1", "Clear" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Span.cs#L280
             // Span<T>.Clear is a JIT intrinsic; the BCL IL falls through to
             // SpanHelpers.ClearWithReferences (for a T containing references) or
@@ -3022,10 +3020,10 @@ module Intrinsics =
             state
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
+        | CorelibAssembly, "RuntimeHelpers", "CreateSpan" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             IntrinsicResult.Unrecognised
-        | "System.Private.CoreLib", "MemoryMarshal", "GetArrayDataReference" ->
+        | CorelibAssembly, "MemoryMarshal", "GetArrayDataReference" ->
             // Two `[Intrinsic]` overloads, distinguished by arity of `Generics`:
             //
             //   ref T    GetArrayDataReference<T>(T[] array)   MemoryMarshal.CoreCLR.cs#L20
@@ -3104,7 +3102,7 @@ module Intrinsics =
                 IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
             | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
             | EvalStackValue.ManagedPointer _ -> failwith "todo"
-        | "System.Private.CoreLib", "Array", "Clone" ->
+        | CorelibAssembly, "Array", "Clone" ->
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Array.cs#L1071-L1077
             // The managed body is `return MemberwiseClone();`, and CoreCLR's MemberwiseClone
             // (Object.CoreCLR.cs) allocates an uninitialised clone via the
@@ -3146,7 +3144,7 @@ module Intrinsics =
                 // non-virtual `call` could reach this arm.
                 IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
             | other -> failwith $"Array.Clone: expected an object reference receiver, got %O{other}"
-        | "System.Private.CoreLib", "Array", (("GetLength" | "GetLowerBound" | "GetUpperBound") as boundKind) ->
+        | CorelibAssembly, "Array", (("GetLength" | "GetLowerBound" | "GetUpperBound") as boundKind) ->
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Array.cs#L763-L806
             // All three are `[Intrinsic]` and every upstream body bottoms out in
             // `this.GetMultiDimensionalArrayBounds()`, a raw walk over the inline bounds block
@@ -3236,7 +3234,7 @@ module Intrinsics =
                 // first. See the matching note on the Array.Clone arm above.
                 IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
             | other -> failwith $"Array.%s{boundKind}: expected an object reference receiver, got %O{other}"
-        | "System.Private.CoreLib", "Enum", "HasFlag" ->
+        | CorelibAssembly, "Enum", "HasFlag" ->
             // https://github.com/dotnet/runtime/blob/dbd3e33df9ccf74b91045e095477726c2bf83916/src/libraries/System.Private.CoreLib/src/System/Enum.cs#L398
             // Enum.HasFlag(Enum flag) returns (thisValue & flagValue) == flagValue
             // The arguments are boxed enums (ObjectRef) since the method signature takes System.Enum.

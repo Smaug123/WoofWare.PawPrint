@@ -152,7 +152,7 @@ type FunctionPointerTarget =
     override this.ToString () : string =
         match this with
         | FunctionPointerTarget.Managed methodDefinition ->
-            $"{methodDefinition.Name} in {methodDefinition.DeclaringAssembly.Name}"
+            $"{methodDefinition.Name} in {AssemblyDefinitionName.simpleName methodDefinition.DeclaringAssemblyFullName}"
         | FunctionPointerTarget.RuntimeAllocator -> "the runtime's newobj allocation helper"
         | FunctionPointerTarget.Dynamic handle -> string<DynamicMethodHandle> handle
 

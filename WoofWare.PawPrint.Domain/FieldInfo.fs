@@ -75,7 +75,9 @@ type FieldInfo<'typeGeneric, 'fieldGeneric> =
     member this.IsStatic = this.Attributes.HasFlag FieldAttributes.Static
 
     override this.ToString () : string =
-        $"%s{this.DeclaringType.Assembly.Name}.{this.DeclaringType.Name}.%s{this.Name}"
+        let assembly = AssemblyDefinitionName.simpleName this.DeclaringType.AssemblyFullName
+
+        $"%s{assembly}.{this.DeclaringType.Name}.%s{this.Name}"
 
 [<RequireQualifiedAccess>]
 module FieldMarshalDescriptor =

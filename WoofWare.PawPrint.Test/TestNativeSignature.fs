@@ -35,7 +35,7 @@ module TestNativeSignature =
         MethodHandleRegistry.getOrAllocateInternalHandle
             baseClassTypes
             concreteTypes
-            declaringConcrete.Assembly.FullName
+            declaringConcrete.AssemblyFullName
             target
             method
             reg
@@ -102,7 +102,7 @@ public sealed class MethodSignatureHost
             loggerFactory
             baseClassTypes
             state
-            typeInfo.Assembly
+            typeInfo.Assembly.FullName
             ImmutableArray.Empty
             ImmutableArray.Empty
             typeDefn
@@ -192,7 +192,7 @@ public sealed class MethodSignatureHost
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
                 state
-                fixture.Assembly.Name
+                fixture.Assembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 distinctiveDefn
@@ -208,7 +208,7 @@ public sealed class MethodSignatureHost
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
                 state
-                fixture.Assembly.Name
+                fixture.Assembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 closedHostDefn
@@ -222,7 +222,7 @@ public sealed class MethodSignatureHost
                 state.ConcreteTypes
                 state
                 (fun fields state -> IlMachineState.allocateManagedObject runtimeFieldInfoStubHandle fields state)
-                fixture.Assembly.Name
+                fixture.Assembly.DefinitionFullName
                 (RuntimeTypeHandleTarget.Closed closedHostHandle)
                 fixture.Field.Handle
                 state.FieldHandles
@@ -275,7 +275,7 @@ public sealed class MethodSignatureHost
                 ImmutableArray.Empty
                 rawMethod
                 None
-                fixture.BaseClassTypes.Corelib.Name
+                fixture.BaseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
 
@@ -360,7 +360,7 @@ public sealed class MethodSignatureHost
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
                 state
-                fixture.BaseClassTypes.Corelib.Name
+                fixture.BaseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (objectHandleOnStackType.Identity, SignatureTypeKind.ValueType))
@@ -501,7 +501,7 @@ public sealed class MethodSignatureHost
                 ImmutableArray.Empty
                 (requiredHostMethod fixture methodName)
                 None
-                fixture.Assembly.Name
+                fixture.Assembly.DefinitionFullName
                 ImmutableArray.Empty
                 state
 
@@ -686,7 +686,7 @@ public sealed class MethodSignatureHost
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
                 state
-                fixture.Assembly.Name
+                fixture.Assembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 defn
@@ -916,7 +916,7 @@ public sealed class MethodSignatureHost
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
                 state
-                fixture.Assembly.Name
+                fixture.Assembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 distinctiveDefn
@@ -932,7 +932,7 @@ public sealed class MethodSignatureHost
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
                 state
-                fixture.Assembly.Name
+                fixture.Assembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 closedHostDefn

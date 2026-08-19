@@ -281,7 +281,7 @@ public class H2_BaseThenMarker<A, B> where A : BaseType where B : IMarker { }
                         loggerFactory
                         bct
                         state
-                        guest.Name
+                        guest.DefinitionFullName
                         ImmutableArray.Empty
                         ImmutableArray.Empty
                         arg
