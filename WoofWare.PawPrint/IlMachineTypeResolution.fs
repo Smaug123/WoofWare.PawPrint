@@ -295,6 +295,28 @@ module IlMachineTypeResolution =
         resolvedAssy,
         typeInfo
 
+    /// Resolve a TypeRef to the identity of the TypeDef it names, without priming that type's base
+    /// chain — see <c>TypeResolution.resolveTypeRefIdentity</c> for why the two differ.
+    let resolveTypeRefIdentity
+        (loggerFactory : ILoggerFactory)
+        (referencedInAssembly : DumpedAssembly)
+        (target : TypeRef)
+        (state : IlMachineState)
+        : IlMachineState * ResolvedTypeIdentity
+        =
+        let assemblies, identity =
+            TypeResolution.resolveTypeRefIdentity
+                loggerFactory
+                state.DotnetRuntimeDirs
+                referencedInAssembly
+                target
+                state._LoadedAssemblies
+
+        { state with
+            _LoadedAssemblies = assemblies
+        },
+        identity
+
     let resolveType
         (loggerFactory : ILoggerFactory)
         (ty : TypeReferenceHandle)

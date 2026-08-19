@@ -2,6 +2,7 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 open System.Reflection.Metadata
+open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module NativeSignature =
@@ -792,6 +793,389 @@ module NativeSignature =
 
         setSignatureField state signatureAddr "_csig" (CliType.Numeric (CliNumericType.Int32 cCorSig))
 
+    /// The name a nominal `TypeDefn` leaf carries in its *own* metadata, without resolving it.
+    /// `CompareTypeTokens` (siginfo.cpp:3545) compares these strings before it resolves anything,
+    /// so a comparison that resolves eagerly would fail on images CoreCLR answers cleanly.
+    /// A metadata nesting depth no real image reaches. The enclosing walks below follow links that
+    /// malformed metadata could make cyclic, and a cycle would otherwise hang the interpreter.
+    let private maxNestingDepth : int = 256
+
+    let private nominalName
+        (operation : string)
+        (state : IlMachineState)
+        (assembly : DumpedAssembly)
+        (defn : TypeDefn)
+        : (string * string) list option
+        =
+        match defn with
+        | TypeDefn.FromReference (typeRef, _) ->
+            // A nested type's row carries an empty namespace and only its own leaf name, with its
+            // enclosing type in the resolution scope, so the leaf alone does not tell `A+X` from
+            // `B+X`. Walk out to the enclosing type that names an assembly or module, innermost
+            // first, then reverse.
+            let rec walk (depth : int) (acc : (string * string) list) (current : TypeRef) =
+                if depth > maxNestingDepth then
+                    failwith
+                        $"%s{operation}: type reference %s{current.Name} in %s{assembly.Name.FullName} is nested more than %d{maxNestingDepth} deep; its enclosing chain is cyclic"
+
+                let acc = (current.Namespace, current.Name) :: acc
+
+                match current.ResolutionScope with
+                | TypeRefResolutionScope.TypeRef enclosing ->
+                    match assembly.TypeRefs.TryGetValue enclosing with
+                    | true, enclosing -> walk (depth + 1) acc enclosing
+                    | false, _ ->
+                        failwith
+                            $"%s{operation}: type reference %s{current.Name} in %s{assembly.Name.FullName} is scoped to a TypeRef row that assembly does not contain"
+                | TypeRefResolutionScope.Assembly _
+                | TypeRefResolutionScope.ModuleDef _
+                | TypeRefResolutionScope.ModuleRef _ -> acc
+
+            Some (walk 0 [] typeRef)
+        | TypeDefn.FromDefinition (identity, _) ->
+            let definingAssembly =
+                state.LoadedAssembly' identity.AssemblyFullName
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: type definition %O{identity.TypeDefinition.Get} names unloaded assembly %s{identity.AssemblyFullName}"
+                )
+
+            let rec walk
+                (depth : int)
+                (acc : (string * string) list)
+                (current : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+                =
+                if depth > maxNestingDepth then
+                    failwith
+                        $"%s{operation}: type definition %s{current.Name} in %s{identity.AssemblyFullName} is nested more than %d{maxNestingDepth} deep; its enclosing chain is cyclic"
+
+                let acc = (current.Namespace, current.Name) :: acc
+
+                if current.IsNested then
+                    match definingAssembly.TypeDefs.TryGetValue current.DeclaringType with
+                    | true, enclosing -> walk (depth + 1) acc enclosing
+                    | false, _ ->
+                        failwith
+                            $"%s{operation}: type definition %s{current.Name} in %s{identity.AssemblyFullName} names an enclosing type that assembly does not contain"
+                else
+                    acc
+
+            Some (walk 0 [] definingAssembly.TypeDefs.[identity.TypeDefinition.Get])
+        | _ ->
+            ignore<DumpedAssembly> assembly
+            None
+
+    /// Resolve a nominal `TypeDefn` leaf to the TypeDef that defines it, which is the identity
+    /// `CompareTypeTokens` ultimately compares. Following a reference can load the assembly it
+    /// names, hence the state.
+    ///
+    /// Deliberately the identity-only resolver: this comparison never looks at the resolved type
+    /// beyond its identity, and priming a base chain would let an assembly reachable only from
+    /// some base type decide whether two signatures can be compared at all. CoreCLR's
+    /// `ClassLoader::ResolveTokenToTypeDefThrowing` likewise reads metadata and loads no types.
+    let private resolveNominalIdentity
+        (loggerFactory : ILoggerFactory)
+        (operation : string)
+        (state : IlMachineState)
+        (assembly : DumpedAssembly)
+        (defn : TypeDefn)
+        : IlMachineState * ResolvedTypeIdentity
+        =
+        match defn with
+        | TypeDefn.FromDefinition (identity, _) -> state, identity
+        | TypeDefn.FromReference (typeRef, _) ->
+            IlMachineTypeResolution.resolveTypeRefIdentity loggerFactory assembly typeRef state
+        | other -> failwith $"%s{operation}: %O{other} is not a nominal type reference"
+
+    /// Compare two decoded signature types the way `MetaSig::CompareMethodSigs` compares two blobs
+    /// with both `Substitution`s null: structurally, *symbolically* in generic parameters (a `VAR`
+    /// equals only the same-indexed `VAR`, never the type an instantiation would put there), and
+    /// nominally in type references.
+    ///
+    /// Custom modifiers participate: `CompareState.IgnoreCustomModifiers` defaults to false
+    /// (siginfo.hpp:999) and this QCall's path never sets it, so `ref readonly int` and `ref int`
+    /// — which differ only by a `modreq(InAttribute)` — are different signatures.
+    let rec compareSignatureTypes
+        (loggerFactory : ILoggerFactory)
+        (operation : string)
+        (state : IlMachineState)
+        (leftAssembly : DumpedAssembly)
+        (left : TypeDefn)
+        (rightAssembly : DumpedAssembly)
+        (right : TypeDefn)
+        : IlMachineState * bool
+        =
+        let recurse state l r =
+            compareSignatureTypes loggerFactory operation state leftAssembly l rightAssembly r
+
+        match left, right with
+        | TypeDefn.PrimitiveType l, TypeDefn.PrimitiveType r -> state, l = r
+        | TypeDefn.Void, TypeDefn.Void -> state, true
+        // Symbolic, as CoreCLR is: with a null Substitution the VAR/MVAR arms of
+        // `CompareElementType` compare the index and nothing else. This is what stops a type
+        // parameter comparing equal to whatever an instantiation would substitute for it.
+        | TypeDefn.GenericTypeParameter l, TypeDefn.GenericTypeParameter r -> state, l = r
+        | TypeDefn.GenericMethodParameter l, TypeDefn.GenericMethodParameter r -> state, l = r
+        | TypeDefn.Byref l, TypeDefn.Byref r
+        | TypeDefn.Pointer l, TypeDefn.Pointer r
+        | TypeDefn.Pinned l, TypeDefn.Pinned r
+        | TypeDefn.OneDimensionalArrayLowerBoundZero l, TypeDefn.OneDimensionalArrayLowerBoundZero r ->
+            recurse state l r
+        | TypeDefn.Array (lElt, lRank), TypeDefn.Array (rElt, rRank) ->
+            if lRank <> rRank then
+                state, false
+            else
+                recurse state lElt rElt
+        | TypeDefn.Modified l, TypeDefn.Modified r ->
+            // A modreq never equals a modopt, and the modifier itself is compared nominally.
+            // Nesting order is preserved by the decoder, so recursing through `Unmodified`
+            // compares multiple modifiers pairwise in order, as `CompareElementType`'s `goto redo`
+            // does.
+            if l.IsRequired <> r.IsRequired then
+                state, false
+            else
+                let state, modifiersMatch = recurse state l.Modifier r.Modifier
+
+                if not modifiersMatch then
+                    state, false
+                else
+                    recurse state l.Unmodified r.Unmodified
+        | TypeDefn.GenericInstantiation (lGeneric, lArgs), TypeDefn.GenericInstantiation (rGeneric, rArgs) ->
+            if lArgs.Length <> rArgs.Length then
+                state, false
+            else
+                let state, genericMatches = recurse state lGeneric rGeneric
+
+                if not genericMatches then
+                    state, false
+                else
+                    ((state, true), Seq.zip lArgs rArgs)
+                    ||> Seq.fold (fun (state, soFar) (l, r) -> if not soFar then (state, false) else recurse state l r)
+        | TypeDefn.FunctionPointer l, TypeDefn.FunctionPointer r ->
+            if l.Header.Get.RawValue <> r.Header.Get.RawValue then
+                state, false
+            elif l.GenericParameterCount <> r.GenericParameterCount then
+                // CoreCLR reads one compressed integer from each blob after the calling-convention
+                // bytes and compares it as `argCnt` (siginfo.cpp:4158-4163). For a GENERIC signature
+                // that integer is the generic-parameter count, since the blob spells
+                // CallConv | GenParamCount | ParamCount | RetType | Params — so differing counts are
+                // rejected there, before any element is parsed. For a non-GENERIC signature the count
+                // is zero on both sides and this branch cannot fire.
+                state, false
+            elif l.Header.Get.IsGeneric then
+                // The calling-convention bytes and the generic-parameter counts are equal by the
+                // branches above, and those are the last two things CoreCLR decides without
+                // reinterpreting a byte: both are integers read as integers
+                // (`CorSigUncompressData_EndPtr`, siginfo.cpp:4157-4163).
+                //
+                // Past that point it compares `GenParamCount + 1` elements of a stream misaligned by one
+                // integer, so the *parameter count* byte is handed to `CompareElementType` as a
+                // `CorElementType` — 0x01 read as ELEMENT_TYPE_VOID and compared as such, other values
+                // able to fail the signature outright — and it answers from the real return type as
+                // though it were a parameter, ignoring the rest. Which answer comes back is a fact about
+                // the numeric count values reinterpreted as element types, which a correctly decoded
+                // signature no longer knows. So refuse every pair that reaches here, including one whose
+                // parameter counts differ, rather than trying to predict it.
+                failwith
+                    $"%s{operation}: comparing two function pointer signatures that spell the same GENERIC calling convention and the same generic-parameter count (in %s{leftAssembly.Name.FullName} against %s{rightAssembly.Name.FullName}); from here CoreCLR compares elements read at a one-integer offset into each blob, reinterpreting the parameter-count byte as an element type, which cannot be reproduced from a decoded signature"
+            elif List.length l.ParameterTypes <> List.length r.ParameterTypes then
+                // For a non-GENERIC signature this *is* CoreCLR's `argCnt` comparison: the integer it
+                // reads after the calling-convention byte is the parameter count. A GENERIC one never
+                // reaches here, having been refused above.
+                state, false
+            else
+                let state, returnMatches =
+                    match l.ReturnType, r.ReturnType with
+                    | MethodReturnType.Void, MethodReturnType.Void -> state, true
+                    | MethodReturnType.Returns l, MethodReturnType.Returns r -> recurse state l r
+                    | _, _ -> state, false
+
+                if not returnMatches then
+                    state, false
+                else
+                    ((state, true), List.zip l.ParameterTypes r.ParameterTypes)
+                    ||> List.fold (fun (state, soFar) (l, r) -> if not soFar then (state, false) else recurse state l r)
+        | TypeDefn.FromReference (lRef, _), TypeDefn.FromReference (rRef, _) when
+            leftAssembly.Name.FullName = rightAssembly.Name.FullName
+            && lRef.Handle = rRef.Handle
+            ->
+            // `CompareTypeTokens`'s first step, `tk1 == tk2` within one module, answered before
+            // anything is resolved. That step earns its place rather than merely saving work —
+            // `Signature_Init` strips custom modifiers without loading their types, so two
+            // signatures can carry the same modifier naming an assembly nothing has loaded, and
+            // resolving it would fail where CoreCLR answers.
+            //
+            // The row, not the description: two rows of one module may describe the same type, and
+            // CoreCLR does not take this shortcut for them. The assembly check is what makes the
+            // comparison meaningful, since a handle indexes its own module's tables.
+            state, true
+        | (TypeDefn.FromDefinition _ | TypeDefn.FromReference _), (TypeDefn.FromDefinition _ | TypeDefn.FromReference _) ->
+            // The `SignatureTypeKind` these carry — CoreCLR's E_T_CLASS versus E_T_VALUETYPE — is
+            // deliberately not compared. It is decoded from the blob's own element-type byte, so
+            // well-formed metadata spells a given type with the same kind everywhere, and the
+            // identity comparison below already separates every pair the kind could have.
+            //
+            // Names before resolution, as `CompareTypeTokens` does — and enclosing names too,
+            // which it compares by recursing on the scope. This is not an optimisation: resolution
+            // is partial (an unresolvable reference makes PawPrint fail loudly, where CoreCLR
+            // answers FALSE), so every pair separated here is a pair whose comparison cannot be
+            // decided by whether some assembly happens to be loadable. Comparing only the leaf
+            // would leave every nested type to resolution, since a nested row carries an empty
+            // namespace and its own name alone.
+            let lName = nominalName operation state leftAssembly left
+            let rName = nominalName operation state rightAssembly right
+
+            if lName <> rName then
+                state, false
+            else
+
+            let state, lIdentity =
+                resolveNominalIdentity loggerFactory operation state leftAssembly left
+
+            let state, rIdentity =
+                resolveNominalIdentity loggerFactory operation state rightAssembly right
+
+            // Two definitions are the same type only if they are the same definition. CoreCLR has
+            // one escape from that — CLR type equivalence, which makes separately embedded
+            // `[TypeIdentifier]` interop types compare equal — but `CompareTypeTokens` reaches it
+            // only under `FEATURE_TYPEEQUIVALENCE`, and `clrfeatures.cmake` sets that solely for
+            // `CLR_CMAKE_TARGET_WIN32`. Everywhere else the arm reads `return FALSE`, commented
+            // "two type defs can't be the same unless they are identical" (siginfo.cpp:3603).
+            // PawPrint models a Linux guest (`SimulatedUnixPlatform`), so equivalence is not a
+            // behaviour it should reproduce; a build for a Windows guest would have to revisit it.
+            state, lIdentity = rIdentity
+        | _, _ -> state, false
+
+    /// Compare two decoded signatures as `MetaSig::CompareMethodSigs` (siginfo.cpp:4549) does once
+    /// its same-module byte-equality fast path has failed: calling convention, then argument count,
+    /// then the return type and each parameter in order.
+    let compareDecodedSignatures
+        (loggerFactory : ILoggerFactory)
+        (operation : string)
+        (state : IlMachineState)
+        (leftAssembly : DumpedAssembly)
+        (left : MethodSignature<TypeDefn>)
+        (rightAssembly : DumpedAssembly)
+        (right : MethodSignature<TypeDefn>)
+        : IlMachineState * bool
+        =
+        // CoreCLR masks out `CORINFO_CALLCONV_PARAMTYPE`, a bit the JIT sets on internal
+        // signatures; it cannot appear in a signature read from PE metadata, so the raw bytes are
+        // compared. This is what makes a static property differ from an instance one (HASTHIS) and
+        // a PROPERTY blob differ from a METHOD one.
+        // CoreCLR reads one argument count from the blob and uses it for both the comparison and
+        // the walk. Only a call site's MemberRef can carry a VARARG sentinel, so for the signatures
+        // that reach here the decoded parameter list is always exactly that long. Assert it rather
+        // than branch on it: the fold below zips the two lists, which would silently compare a
+        // prefix if a count and its list ever disagreed.
+        if left.RequiredParameterCount <> left.ParameterTypes.Length then
+            failwith
+                $"%s{operation}: the first signature declares %d{left.RequiredParameterCount} parameters but decoded %d{left.ParameterTypes.Length} of them; a signature reaching this comparison was not expected to carry a VARARG sentinel"
+
+        if right.RequiredParameterCount <> right.ParameterTypes.Length then
+            failwith
+                $"%s{operation}: the second signature declares %d{right.RequiredParameterCount} parameters but decoded %d{right.ParameterTypes.Length} of them; a signature reaching this comparison was not expected to carry a VARARG sentinel"
+
+        if left.Header.RawValue <> right.Header.RawValue then
+            state, false
+        elif left.GenericParameterCount <> right.GenericParameterCount then
+            state, false
+        elif left.ParameterTypes.Length <> right.ParameterTypes.Length then
+            state, false
+        else
+
+        let state, returnMatches =
+            compareSignatureTypes
+                loggerFactory
+                operation
+                state
+                leftAssembly
+                left.ReturnType
+                rightAssembly
+                right.ReturnType
+
+        if not returnMatches then
+            state, false
+        else
+
+        ((state, true), Seq.zip left.ParameterTypes right.ParameterTypes)
+        ||> Seq.fold (fun (state, soFar) (l, r) ->
+            if not soFar then
+                (state, false)
+            else
+                compareSignatureTypes loggerFactory operation state leftAssembly l rightAssembly r
+        )
+
+    /// Compare two signatures exactly as `Signature_AreEqual` does: CoreCLR's same-module
+    /// byte-equality fast path (siginfo.cpp:4568), then the structural comparison.
+    ///
+    /// The fast path must stay gated on the assembly. A signature blob's type tokens are indices
+    /// into its *own* module's tables, so two byte-identical blobs in different assemblies can name
+    /// entirely different types — which is exactly what happens when two assemblies of the same
+    /// shape each declare a property of their own local type.
+    let signaturesAreEqual
+        (loggerFactory : ILoggerFactory)
+        (operation : string)
+        (state : IlMachineState)
+        (leftAssembly : DumpedAssembly)
+        (leftBytes : byte[])
+        (left : MethodSignature<TypeDefn>)
+        (rightAssembly : DumpedAssembly)
+        (rightBytes : byte[])
+        (right : MethodSignature<TypeDefn>)
+        : IlMachineState * bool
+        =
+        if
+            leftAssembly.Name.FullName = rightAssembly.Name.FullName
+            && leftBytes = rightBytes
+        then
+            state, true
+        else
+            compareDecodedSignatures loggerFactory operation state leftAssembly left rightAssembly right
+
+    /// One side of `Signature_AreEqual`: the assembly owning the blob, and the blob decoded.
+    ///
+    /// `EqualsSig` is this QCall's only caller in the BCL, and it always passes two property
+    /// signatures, so a Field- or Method-provenance blob is refused rather than guessed at.
+    let private decodeSignatureOperand
+        (operation : string)
+        (state : IlMachineState)
+        (side : string)
+        (sigArg : CliType)
+        (cSigArg : CliType)
+        : DumpedAssembly * MethodSignature<TypeDefn>
+        =
+        let peByteRange =
+            corSigPeByteRange operation sigArg
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{operation}: the %s{side} COR signature pointer was null; `Signature._sig` is populated by Signature_Init and is never null by the time two signatures are compared"
+            )
+
+        let cSig = NativeCall.int32Argument operation cSigArg
+
+        if cSig <> peByteRange.Size then
+            failwith
+                $"%s{operation}: the %s{side} cSig %d{cSig} does not match the %d{peByteRange.Size}-byte signature blob it points at (%O{peByteRange})"
+
+        let assembly =
+            state.LoadedAssembly' peByteRange.AssemblyFullName
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{operation}: the %s{side} signature blob references unloaded assembly %s{peByteRange.AssemblyFullName}"
+            )
+
+        let metadataReader = assembly.PeReader.GetMetadataReader ()
+
+        match peByteRange.Source with
+        | PeByteRangePointerSource.PropertySignatureBlob property ->
+            let propertyDef = metadataReader.GetPropertyDefinition property.Get
+
+            assembly, PropertySignatureDecoding.decode assembly.Name metadataReader propertyDef.Signature
+        | other ->
+            failwith
+                $"TODO: %s{operation} on a %s{side} signature whose blob is %O{other}; `RuntimePropertyInfo.EqualsSig` is the only BCL caller and it compares two PropertySig blobs"
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -805,6 +1189,66 @@ module NativeSignature =
             instruction.ExecutingMethod.Signature.ParameterTypes,
             instruction.ExecutingMethod.Signature.ReturnType
         with
+        | "Signature_AreEqual",
+          "System.Private.CoreLib",
+          "System",
+          "Signature",
+          _,
+          [ ConcretePointer (ConcreteVoid state.ConcreteTypes)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", leftHandleGenerics)
+            ConcretePointer (ConcreteVoid state.ConcreteTypes)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", rightHandleGenerics) ],
+          returnType when leftHandleGenerics.IsEmpty && rightHandleGenerics.IsEmpty ->
+            let operation = "Signature_AreEqual"
+
+            match returnType with
+            | MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
+                boolGenerics.IsEmpty
+                ->
+                ()
+            | other -> failwith $"%s{operation}: unexpected QCall stub return type %O{other}"
+
+            if instruction.Arguments.Length <> 6 then
+                failwith $"%s{operation}: expected six native arguments, got %d{instruction.Arguments.Length}"
+
+            // The two QCallTypeHandle arguments are deliberately unread. CoreCLR passes each
+            // signature's `_declaringType` only to reach `GetModule()` for token resolution, and
+            // never as a `Substitution` — both of those are null. PawPrint's byte range already
+            // names its owning assembly, so the declaring types carry nothing extra. Reading them
+            // as generic arguments would rebuild exactly the substitution CoreCLR is refusing to
+            // do, making a type parameter compare equal to whatever an instantiation supplies.
+
+            let leftAssembly, left =
+                decodeSignatureOperand operation state "first" instruction.Arguments.[0] instruction.Arguments.[1]
+
+            let rightAssembly, right =
+                decodeSignatureOperand operation state "second" instruction.Arguments.[3] instruction.Arguments.[4]
+
+            let leftBytes = resolveSignatureBlob operation state instruction.Arguments.[0]
+            let rightBytes = resolveSignatureBlob operation state instruction.Arguments.[3]
+
+            let state, areEqual =
+                signaturesAreEqual
+                    ctx.LoggerFactory
+                    operation
+                    state
+                    leftAssembly
+                    leftBytes
+                    left
+                    rightAssembly
+                    rightBytes
+                    right
+
+            // Interop.BOOL is int32-backed, with FALSE = 0 and TRUE = 1.
+            let state =
+                IlMachineState.pushToEvalStack
+                    (CliType.Numeric (CliNumericType.Int32 (if areEqual then 1 else 0)))
+                    ctx.Thread
+                    state
+
+            NativeHandlerResult.completed state |> Some
         | "Signature_Init",
           "System.Private.CoreLib",
           "System",

@@ -108,6 +108,7 @@
     <Compile Include="TestLocalSignatureDecoding.fs" />
     <Compile Include="TestMethodSignatureDecoding.fs" />
     <Compile Include="TestPropertySignatureDecoding.fs" />
+    <Compile Include="TestSignatureComparison.fs" />
     <Compile Include="TestNativeSignature.fs" />
     <Compile Include="TestNativeCustomAttribute.fs" />
     <Compile Include="TestNativeRuntimeFieldHandleSetValue.fs" />
