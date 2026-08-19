@@ -877,7 +877,7 @@ module NativeRuntimeTypeHelpers =
         : DumpedAssembly * TypeInfo<GenericParamFromMetadata, TypeDefn>
         =
         let assembly =
-            state.LoadedAssembly identity.Assembly
+            state.LoadedAssembly identity.AssemblyFullName
             |> Option.defaultWith (fun () ->
                 failwith $"%s{operation}: assembly %s{identity.AssemblyFullName} is not loaded"
             )
@@ -890,7 +890,7 @@ module NativeRuntimeTypeHelpers =
         let assembly, typeInfo = definitionMetadata operation state identity
 
         {
-            SlotOwner.Assembly = identity.Assembly
+            SlotOwner.AssemblyFullName = identity.AssemblyFullName
             SlotOwner.Identity = identity
             SlotOwner.Substitution =
                 TypeConcretization.SubstitutionContext.forDefinition identity typeInfo.Generics.Length
@@ -957,7 +957,9 @@ module NativeRuntimeTypeHelpers =
         let state, baseIdentity, arguments =
             match baseTypeInfo with
             | BaseTypeInfo.TypeDef handle ->
-                state, ResolvedTypeIdentity.ofTypeDefinition owner.Identity.Assembly handle, ImmutableArray.Empty
+                state,
+                ResolvedTypeIdentity.ofDefinitionInAssembly owner.Identity.AssemblyFullName handle,
+                ImmutableArray.Empty
             | BaseTypeInfo.TypeRef handle ->
                 let state, _, resolved =
                     IlMachineTypeResolution.resolveTypeFromRef
@@ -996,7 +998,8 @@ module NativeRuntimeTypeHelpers =
         // The clause's arguments are spelled in the token space of the type that *writes* the clause,
         // which is this type's and not the base's.
         let arguments =
-            (TypeConcretization.SubstitutionContext.forBase owner.Assembly arguments owner.Substitution).Arguments
+            (TypeConcretization.SubstitutionContext.forBase owner.AssemblyFullName arguments owner.Substitution)
+                .Arguments
 
         state, Some (baseIdentity, arguments)
 

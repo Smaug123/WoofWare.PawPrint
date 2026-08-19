@@ -10,8 +10,8 @@ open WoofWare.PawPrint
 
 /// `AssemblyDefinitionName.isNamed` answers "does this definition identity name that assembly?"
 /// without parsing the identity, by relying on the display-name grammar putting the simple name
-/// first. That makes it worth pinning against the thing it is a shortcut for: `AssemblyName`'s own
-/// round trip, which is what every caller used to spell.
+/// first. That makes it worth pinning against the thing it is a shortcut for: parsing the identity
+/// with `AssemblyName` and comparing its `Name`.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestAssemblyDefinitionName =
@@ -102,6 +102,26 @@ module TestAssemblyDefinitionName =
             AssemblyDefinitionName.simpleName (identityOf simpleName) = simpleName
 
         Check.One (config, Prop.forAll (Arb.fromGen simpleNameGen) property)
+
+    /// A definition identity is a fixed point of `AssemblyName`'s round trip, so keying a lookup on
+    /// the identity string answers the same question as parsing an `AssemblyName` out of it and
+    /// asking for `FullName` back. Every lookup keyed on a definition identity rests on that.
+    ///
+    /// `FullName` does not fill in an absent culture or public key token, so a name carrying only a
+    /// version is a fixed point too.
+    [<Test>]
+    let ``a definition identity is a fixed point of AssemblyName's round trip`` () =
+        let property (simpleName : string) : bool =
+            let identity = identityOf simpleName
+            AssemblyName(identity).FullName = identity
+
+        Check.One (config, Prop.forAll (Arb.fromGen simpleNameGen) property)
+
+        // A real, public-key-bearing identity: the shape `identityOf` never generates, and the one
+        // whose `FullName` re-derives its token by SHA-1 on every call.
+        let corelib = typeof<obj>.Assembly.GetName().FullName
+
+        AssemblyName(corelib).FullName |> shouldEqual corelib
 
     /// The active pattern the 66-arm intrinsic match is keyed on, pinned against the predicate it
     /// delegates to. It returns `bool` rather than an option so that applying it once per arm

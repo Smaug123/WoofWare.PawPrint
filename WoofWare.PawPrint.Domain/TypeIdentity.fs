@@ -113,11 +113,9 @@ module AssemblyDefinitionName =
 /// reconstituting an `AssemblyName` to ask for its simple name.
 [<AutoOpen>]
 module AssemblyDefinitionNamePatterns =
-    // Bool-returning rather than `unit option`: a match applies a partial active pattern once per
-    // arm, and `Intrinsics.handle` keys 66 arms on this one, so an option allocates once per
-    // successful application -- 214k of them on a regex-construction guest. That is only ~5 MB of
-    // that guest's 8.4 GB, but a bool-returning pattern has nothing to allocate and reads the same
-    // at every use site.
+    // Must stay allocation-free in its result: a match applies a partial active pattern once per
+    // arm, `Intrinsics.handle` keys 66 arms on this one, and it is applied 214k times on a
+    // regex-construction guest. Returning an option would allocate on each of those.
     let (|CorelibAssembly|_|) (identity : string) : bool =
         AssemblyDefinitionName.isNamed "System.Private.CoreLib" identity
 
@@ -131,3 +129,11 @@ module ResolvedTypeIdentity =
 
     let ofTypeDefinition (assemblyName : AssemblyName) (handle : TypeDefinitionHandle) : ResolvedTypeIdentity =
         make assemblyName.FullName (ComparableTypeDefinitionHandle.Make handle)
+
+    /// The identity of a TypeDef row in the assembly with this definition identity.
+    ///
+    /// Takes the identity rather than an <c>AssemblyName</c>, for a caller that already holds one:
+    /// <c>ofTypeDefinition</c> has to serialise the name it is given, and a metadata-derived one
+    /// derives its public key token by SHA-1 on every such call.
+    let ofDefinitionInAssembly (assemblyFullName : string) (handle : TypeDefinitionHandle) : ResolvedTypeIdentity =
+        make assemblyFullName (ComparableTypeDefinitionHandle.Make handle)
