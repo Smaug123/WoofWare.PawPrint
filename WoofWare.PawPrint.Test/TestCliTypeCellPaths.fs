@@ -92,7 +92,7 @@ module TestCliTypeCellPaths =
         ofFields
             [
                 cliField "Payload" (CliType.ObjectRef None) None objectHandle
-                cliField "Tag" (CliType.Numeric (CliNumericType.UInt8 0uy)) None byteHandle
+                cliField "Tag" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) None byteHandle
             ]
 
     let private buffer () : CliType =
@@ -123,7 +123,9 @@ module TestCliTypeCellPaths =
         match CliType.CellPathsExactlyCovering 8 1 value with
         | [ (path, contents) ] ->
             path |> shouldEqual [ FieldId.named "_item" ; FieldId.named "Tag" ]
-            contents |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0uy))
+
+            contents
+            |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
         | other -> failwith $"expected exactly one cover of slot 0's Tag, got %O{other}"
 
     [<Test>]
@@ -221,7 +223,11 @@ module TestCliTypeCellPaths =
                 4
                 [
                     cliField "AsInt" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
-                    cliField "Byte0" (CliType.Numeric (CliNumericType.UInt8 0uy)) (Some 0) byteHandle
+                    cliField
+                        "Byte0"
+                        (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
+                        (Some 0)
+                        byteHandle
                 ]
 
         CliType.CellPathsExactlyCovering 0 4 value |> shouldEqual []
@@ -310,13 +316,13 @@ module TestCliTypeCellPaths =
         let path = [ FieldId.named "_item[1]" ; FieldId.named "Tag" ]
 
         CliType.getCellAtPath path value
-        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0uy))
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
 
         let updated =
-            CliType.withCellAtPathSet path (CliType.Numeric (CliNumericType.UInt8 9uy)) value
+            CliType.withCellAtPathSet path (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 9uy))) value
 
         CliType.getCellAtPath path updated
-        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 9uy))
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 9uy)))
 
         // The sibling slot, and the sibling field within the same slot, are untouched.
         CliType.getCellAtPath [ FieldId.named "_item" ] updated
@@ -371,7 +377,7 @@ module TestCliTypeCellPaths =
 
     let rec private buildShape (path : string) (shape : Shape) : CliType * ConcreteTypeHandle =
         match shape with
-        | Shape.Prim 1 -> CliType.Numeric (CliNumericType.UInt8 0uy), byteHandle
+        | Shape.Prim 1 -> CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)), byteHandle
         | Shape.Prim 2 -> CliType.Numeric (CliNumericType.UInt16 0us), byteHandle
         | Shape.Prim 4 -> CliType.Numeric (CliNumericType.Int32 0), int32Handle
         | Shape.Prim 8 -> CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)), int64Handle
@@ -482,6 +488,7 @@ module TestCliTypeCellPaths =
             let value, _ = buildShape "r" (Shape.Struct [ shape ])
 
             match CliType.ByteAddressability value with
+            | CliByteAddressability.SymbolicallyAddressable _
             | CliByteAddressability.Rejected _ -> true
             | CliByteAddressability.ByteAddressable ->
 
@@ -548,7 +555,8 @@ module TestCliTypeCellPaths =
                 // A value distinguishable from the zero the tree was built with.
                 let replacement =
                     match contents with
-                    | CliType.Numeric (CliNumericType.UInt8 _) -> Some (CliType.Numeric (CliNumericType.UInt8 3uy))
+                    | CliType.Numeric (CliNumericType.UInt8 _) ->
+                        Some (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 3uy)))
                     | CliType.Numeric (CliNumericType.UInt16 _) -> Some (CliType.Numeric (CliNumericType.UInt16 3us))
                     | CliType.Numeric (CliNumericType.Int32 _) -> Some (CliType.Numeric (CliNumericType.Int32 3))
                     | CliType.Numeric (CliNumericType.Int64 _) ->
@@ -865,6 +873,7 @@ module TestCliTypeCellPaths =
             let value, _ = buildShape "r" (Shape.Struct [ shape ])
 
             match CliType.ByteAddressability value with
+            | CliByteAddressability.SymbolicallyAddressable _
             | CliByteAddressability.Rejected _ -> true
             | CliByteAddressability.ByteAddressable ->
 
@@ -969,8 +978,8 @@ module TestCliTypeCellPaths =
         // The runs are readable and writable even though the value as a whole has no byte image,
         // which is the entire reason the primitive exists.
         match CliType.ByteAddressability value with
-        | CliByteAddressability.ByteAddressable -> failwith "expected a reference-containing value to be rejected"
         | CliByteAddressability.Rejected _ -> ()
+        | other -> failwith $"expected a reference-containing value to be rejected, got %O{other}"
 
         let updated =
             CliType.WithPaddingBytesAtIfChanged 11 [| 1uy ; 2uy ; 3uy ; 4uy ; 5uy |] value
@@ -996,7 +1005,7 @@ module TestCliTypeCellPaths =
         let inner =
             ofFields
                 [
-                    cliField "Tag" (CliType.Numeric (CliNumericType.UInt8 0uy)) None byteHandle
+                    cliField "Tag" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) None byteHandle
                     cliField "V" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) None int64Handle
                 ]
 
@@ -1050,7 +1059,7 @@ module TestCliTypeCellPaths =
         let oversized =
             ofFields
                 [
-                    cliField "Tag" (CliType.Numeric (CliNumericType.UInt8 0uy)) None byteHandle
+                    cliField "Tag" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) None byteHandle
                     cliField "Wide" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) None int64Handle
                 ]
 
@@ -1070,7 +1079,10 @@ module TestCliTypeCellPaths =
         // the value is unrenderable rather than mis-attributed: `ToBytes` overlays the field's own
         // image across its full `Size` and runs off the end of it.
         let narrowed =
-            CliType.withFieldSetById (FieldId.named "A") (CliType.Numeric (CliNumericType.UInt8 0uy)) value
+            CliType.withFieldSetById
+                (FieldId.named "A")
+                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
+                value
 
         for b in 0..7 do
             CliType.TryPaddingRunAt b narrowed |> shouldEqual None

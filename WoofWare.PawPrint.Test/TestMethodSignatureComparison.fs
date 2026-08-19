@@ -150,7 +150,7 @@ public class OpenGeneric<T>
             {
                 Signature = signature
                 Assembly = fixture.Assembly.Name
-                DeclaringTypeGenerics = generics
+                DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed generics
             }
 
         let _, equivalent =
@@ -678,6 +678,181 @@ public class OpenGeneric<T>
             (takes (functionPointer [ int32 ; string ] []))
         |> shouldEqual false
 
+    /// Two function pointers spelling the same GENERIC calling convention *and the same
+    /// generic-parameter count* are a shape CoreCLR cannot compare. Its FNPTR arm (siginfo.cpp:4135)
+    /// reads one compressed integer after the calling-convention bytes and treats it as `argCnt`; for a
+    /// GENERIC signature that integer is the generic-parameter count, so it goes on to read the real
+    /// parameter count as an element type. There is no answer there to be faithful to, so PawPrint
+    /// refuses.
+    ///
+    /// Differing counts are a different matter: that same `argCnt` comparison rejects them cleanly
+    /// (siginfo.cpp:4158-4163), so they must still answer "unequal".
+    ///
+    /// C# cannot spell a generic function pointer, so these signatures are built directly.
+    let private genericFunctionPointer (attributes : SignatureAttributes) (genericParameterCount : int) : TypeDefn =
+        TypeDefn.FunctionPointer
+            { staticSignature [ TypeDefn.PrimitiveType PrimitiveType.Int32 ] with
+                Header =
+                    ComparableSignatureHeader.Make (
+                        SignatureHeader (
+                            SignatureKind.Method,
+                            SignatureCallingConvention.Default,
+                            attributes ||| SignatureAttributes.Generic
+                        )
+                    )
+                GenericParameterCount = genericParameterCount
+            }
+
+    [<Test>]
+    let ``two function pointers with the same generic calling convention and count are refused`` () =
+        let fixture = fixture ()
+        let takes (ty : TypeDefn) = staticSignature [ ty ]
+
+        let compareAt (leftCount : int) (rightCount : int) : unit -> bool =
+            fun () ->
+                equivalent
+                    fixture
+                    (takes (genericFunctionPointer SignatureAttributes.None leftCount))
+                    (takes (genericFunctionPointer SignatureAttributes.None rightCount))
+
+        // Equal counts: this is where CoreCLR walks off the end of the blob, so refuse.
+        let thrown = Assert.Throws<exn> (fun () -> compareAt 1 1 () |> ignore<bool>)
+        thrown.Message |> shouldContainText "GENERIC calling convention"
+
+        // Differing generic counts: CoreCLR reads them as `argCnt` and returns FALSE without parsing an
+        // element, so this pair has a defined answer and must not be refused.
+        compareAt 1 2 () |> shouldEqual false
+        compareAt 2 1 () |> shouldEqual false
+
+        // Differing *parameter* counts at equal generic arity are refused too, not answered. That
+        // comparison happens inside `CompareElementType`, with the count byte reinterpreted as an
+        // element type — 0x01 as ELEMENT_TYPE_VOID, other values able to fail the signature outright —
+        // so which answer comes back is a fact about the byte values, not about the decoded signature.
+        let withParameters (parameters : TypeDefn list) : TypeDefn =
+            TypeDefn.FunctionPointer
+                { staticSignature parameters with
+                    Header =
+                        ComparableSignatureHeader.Make (
+                            SignatureHeader (
+                                SignatureKind.Method,
+                                SignatureCallingConvention.Default,
+                                SignatureAttributes.Generic
+                            )
+                        )
+                    GenericParameterCount = 1
+                }
+
+        let int32 = TypeDefn.PrimitiveType PrimitiveType.Int32
+
+        let differingParameterCounts =
+            Assert.Throws<exn> (fun () ->
+                equivalent fixture (takes (withParameters [ int32 ])) (takes (withParameters [ int32 ; int32 ]))
+                |> ignore<bool>
+            )
+
+        differingParameterCounts.Message
+        |> shouldContainText "GENERIC calling convention"
+
+    /// The refusal is conditioned on the two calling-convention bytes *agreeing* and carrying GENERIC,
+    /// because every other pairing has an answer CoreCLR defines: it compares the bytes before it
+    /// reads any count. These two cases are what make each half of that condition load-bearing.
+    [<Test>]
+    let ``a generic function pointer is unequal, not refused, when the convention bytes differ`` () =
+        let fixture = fixture ()
+        let takes (ty : TypeDefn) = staticSignature [ ty ]
+
+        let nonGeneric =
+            TypeDefn.FunctionPointer (staticSignature [ TypeDefn.PrimitiveType PrimitiveType.Int32 ])
+
+        // Generic against non-generic: the GENERIC bit alone makes the bytes differ.
+        equivalent fixture (takes (genericFunctionPointer SignatureAttributes.None 1)) (takes nonGeneric)
+        |> shouldEqual false
+
+        // Both generic, but differing in HASTHIS: still a byte mismatch, so still a defined answer.
+        equivalent
+            fixture
+            (takes (genericFunctionPointer SignatureAttributes.None 1))
+            (takes (genericFunctionPointer SignatureAttributes.Instance 1))
+        |> shouldEqual false
+
+    /// Concretising the given type, which is where a function-pointer handle would be minted.
+    let private concretise (fixture : Fixture) (ty : TypeDefn) : unit -> ConcreteTypeHandle =
+        fun () ->
+            IlMachineState.concretizeType
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                fixture.State
+                fixture.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                ty
+            |> snd
+
+    /// A generic function pointer has no runtime handle at all: it is refused where such a handle is
+    /// minted, so that no substituted type argument can carry one and the comparison never has to ask.
+    ///
+    /// This is an assertion about what metadata exists, not a case being handled — no compiler emits
+    /// such a type and no reflection API can name one. If that ever stops being true, the failure should
+    /// arrive here, at the construction site.
+    [<Test>]
+    let ``a generic function pointer type cannot be concretised`` () =
+        let fixture = fixture ()
+
+        let thrown =
+            Assert.Throws<exn> (fun () ->
+                concretise fixture (genericFunctionPointer SignatureAttributes.None 1) ()
+                |> ignore<ConcreteTypeHandle>
+            )
+
+        thrown.Message |> shouldContainText "GENERIC calling convention"
+
+        // Nested inside another type, since a type argument is the route by which one would otherwise
+        // reach the comparison as a substituted handle.
+        let nested =
+            TypeDefn.OneDimensionalArrayLowerBoundZero (genericFunctionPointer SignatureAttributes.None 1)
+
+        let thrownNested =
+            Assert.Throws<exn> (fun () -> concretise fixture nested () |> ignore<ConcreteTypeHandle>)
+
+        thrownNested.Message |> shouldContainText "GENERIC calling convention"
+
+    /// The control: an ordinary function pointer must still concretise, and a *generic method* signature
+    /// carries the same GENERIC calling convention entirely legitimately — the refusal above must not be
+    /// reading that.
+    [<Test>]
+    let ``an ordinary function pointer type still concretises`` () =
+        let fixture = fixture ()
+
+        let plain =
+            TypeDefn.FunctionPointer (staticSignature [ TypeDefn.PrimitiveType PrimitiveType.Int32 ])
+
+        concretise fixture plain () |> ignore<ConcreteTypeHandle>
+
+        // A generic method is compared, and concretised, without complaint.
+        let genericMethod =
+            (findMethod "OpenGeneric`1" "TakesMethodParameter" fixture.Assembly).Signature
+
+        genericMethod.GenericParameterCount |> shouldEqual 1
+        equivalent fixture genericMethod genericMethod |> shouldEqual true
+
+    /// The control for the refusal: an ordinary non-generic function pointer carries a zero
+    /// generic-parameter count and no GENERIC bit, so the guard must not fire for it at all.
+    [<Test>]
+    let ``a non-generic function pointer is still compared`` () =
+        let fixture = fixture ()
+        let int32 = TypeDefn.PrimitiveType PrimitiveType.Int32
+        let string = TypeDefn.PrimitiveType PrimitiveType.String
+        let takes (ty : TypeDefn) = staticSignature [ ty ]
+
+        let functionPointer (parameters : TypeDefn list) =
+            TypeDefn.FunctionPointer (staticSignature parameters)
+
+        equivalent fixture (takes (functionPointer [ int32 ])) (takes (functionPointer [ int32 ]))
+        |> shouldEqual true
+
+        equivalent fixture (takes (functionPointer [ int32 ])) (takes (functionPointer [ string ]))
+        |> shouldEqual false
+
     [<Test>]
     let ``differing parameter counts are not equivalent without a vararg sentinel`` () =
         let fixture = fixture ()
@@ -722,7 +897,7 @@ public class OpenGeneric<T>
             {
                 Parameters = parameters
                 Assembly = fixture.Assembly.Name
-                DeclaringTypeGenerics = ImmutableArray.Empty
+                DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed ImmutableArray.Empty
             }
 
         let _, matches =
@@ -917,7 +1092,7 @@ public class OpenGeneric<T>
                 {
                     Signature = signature
                     Assembly = fixture.Assembly.Name
-                    DeclaringTypeGenerics = ImmutableArray.Empty
+                    DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed ImmutableArray.Empty
                 }
 
             let _, equivalent =
@@ -937,3 +1112,209 @@ public class OpenGeneric<T>
         compare false differingReturns |> shouldEqual false
         compare true differingReturns |> shouldEqual true
         compare true differingParameters |> shouldEqual false
+
+    /// The two sides read against *different* declaring contexts, which is what laying a method table
+    /// out over a base chain needs: an inherited signature is read in the context of the type that
+    /// declared it, and the candidate override in that of the type being laid out.
+    let private equivalentBetween
+        (fixture : Fixture)
+        (leftContext : TypeConcretization.SubstitutionContext)
+        (rightContext : TypeConcretization.SubstitutionContext)
+        (left : TypeMethodSignature<TypeDefn>)
+        (right : TypeMethodSignature<TypeDefn>)
+        : bool
+        =
+        let comparand
+            (context : TypeConcretization.SubstitutionContext)
+            (signature : TypeMethodSignature<TypeDefn>)
+            : TypeConcretization.SignatureComparand
+            =
+            {
+                Signature = signature
+                Assembly = fixture.Assembly.Name
+                DeclaringTypeGenerics = context
+            }
+
+        let _, equivalent =
+            IlMachineState.signaturesEquivalent
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                fixture.State
+                false
+                (comparand leftContext left)
+                (comparand rightContext right)
+
+        equivalent
+
+    /// A definition whose type variables a comparison can be rooted at.
+    let private openGenericIdentity (fixture : Fixture) : ResolvedTypeIdentity =
+        (findMethod "OpenGeneric`1" "TakesTypeParameter" fixture.Assembly).RequiredDeclaringType.Identity
+
+    /// A second, unrelated identity, for the pair of variables that must not be compared at all.
+    let private shapesIdentity (fixture : Fixture) : ResolvedTypeIdentity =
+        (findMethod "Shapes" "TakesInt" fixture.Assembly).RequiredDeclaringType.Identity
+
+    let private takesFormal (index : int) : TypeMethodSignature<TypeDefn> =
+        staticSignature [ TypeDefn.GenericTypeParameter index ]
+
+    let private takesString : TypeMethodSignature<TypeDefn> =
+        staticSignature [ TypeDefn.PrimitiveType PrimitiveType.String ]
+
+    /// The contrast that the definition-level context exists for: under a closed instantiation at
+    /// `T = string`, `void (!0)` and `void (string)` *are* the same signature. A method table laid out
+    /// against an instantiation therefore cannot tell two declarations apart that CoreCLR keeps apart,
+    /// because CoreCLR lays slots out on the definition.
+    [<Test>]
+    let ``a type parameter and the argument supplied for it agree in a closed context`` () =
+        let fixture = fixture ()
+
+        let closed =
+            TypeConcretization.SubstitutionContext.ofClosed (ImmutableArray.Create (stringHandle fixture))
+
+        equivalentBetween fixture closed closed (takesFormal 0) takesString
+        |> shouldEqual true
+
+    /// The same pair, read where nothing is supplied for `!0`: `MetaSig::CompareElementType` leaves an
+    /// unsubstituted `ELEMENT_TYPE_VAR` to a positional comparison, and a variable is not a `string`.
+    [<Test>]
+    let ``a type parameter is not the argument an instantiation would supply, in a definition context`` () =
+        let fixture = fixture ()
+
+        let definition =
+            TypeConcretization.SubstitutionContext.forDefinition (openGenericIdentity fixture) 1
+
+        equivalentBetween fixture definition definition (takesFormal 0) takesString
+        |> shouldEqual false
+
+    [<Test>]
+    let ``a type parameter is equivalent to itself in a definition context`` () =
+        let fixture = fixture ()
+
+        let definition =
+            TypeConcretization.SubstitutionContext.forDefinition (openGenericIdentity fixture) 1
+
+        equivalentBetween fixture definition definition (takesFormal 0) (takesFormal 0)
+        |> shouldEqual true
+
+    /// Positionally, as `varNum1 == varNum2`: two variables of one definition are as different as two
+    /// unrelated types.
+    [<Test>]
+    let ``two different type parameters are not equivalent in a definition context`` () =
+        let fixture = fixture ()
+
+        let definition =
+            TypeConcretization.SubstitutionContext.forDefinition (openGenericIdentity fixture) 2
+
+        equivalentBetween fixture definition definition (takesFormal 0) (takesFormal 1)
+        |> shouldEqual false
+
+    /// The shape that makes a definition-level walk necessary rather than merely tidier. With
+    /// `Kb<T> : Ka<string>`, Ka's `!0` and Kb's `!0` are both written `!0` and denote different things:
+    /// Ka's is pinned to `string` by the extends clause, so an override in Kb's vocabulary declaring
+    /// `void (string)` fills Ka's slot, and one declaring `void (!0)` does not.
+    [<Test>]
+    let ``a base's type parameter is read through the extends clause`` () =
+        let fixture = fixture ()
+
+        let derived =
+            TypeConcretization.SubstitutionContext.forDefinition (openGenericIdentity fixture) 1
+
+        let baseContext =
+            TypeConcretization.SubstitutionContext.forBase
+                fixture.Assembly.Name
+                (ImmutableArray.Create (TypeDefn.PrimitiveType PrimitiveType.String))
+                derived
+
+        equivalentBetween fixture baseContext derived (takesFormal 0) takesString
+        |> shouldEqual true
+
+        equivalentBetween fixture baseContext derived (takesFormal 0) (takesFormal 0)
+        |> shouldEqual false
+
+    /// An extends clause may apply the base to a type *built from* the derived type's variable rather
+    /// than to the variable itself — `WhenAllPromise<T> : Task<T[]>` in corelib. The substitution has
+    /// to carry that whole spelling, not just a choice between "closed" and "a variable".
+    [<Test>]
+    let ``a composite extends argument substitutes into the base's type parameter`` () =
+        let fixture = fixture ()
+
+        let derived =
+            TypeConcretization.SubstitutionContext.forDefinition (openGenericIdentity fixture) 1
+
+        let arrayOfFormal =
+            TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.GenericTypeParameter 0)
+
+        let baseContext =
+            TypeConcretization.SubstitutionContext.forBase
+                fixture.Assembly.Name
+                (ImmutableArray.Create arrayOfFormal)
+                derived
+
+        equivalentBetween fixture baseContext derived (takesFormal 0) (staticSignature [ arrayOfFormal ])
+        |> shouldEqual true
+
+        equivalentBetween fixture baseContext derived (takesFormal 0) (takesFormal 0)
+        |> shouldEqual false
+
+    /// A method's own variables are never substituted, so `!!0` cannot become a type variable however
+    /// the declaring context is read. The closed sibling of this is
+    /// `a substituted type parameter is not equivalent to an open method parameter`.
+    [<Test>]
+    let ``a method generic parameter is not equivalent to a type parameter in a definition context`` () =
+        let fixture = fixture ()
+
+        let definition =
+            TypeConcretization.SubstitutionContext.forDefinition (openGenericIdentity fixture) 1
+
+        let takesTypeParameter =
+            (findMethod "OpenGeneric`1" "GenericMethodTakingTypeParameter" fixture.Assembly).Signature
+
+        let takesMethodParameter =
+            (findMethod "OpenGeneric`1" "GenericMethodTakingMethodParameter" fixture.Assembly).Signature
+
+        equivalentBetween fixture definition definition takesTypeParameter takesMethodParameter
+        |> shouldEqual false
+
+    /// A comparison is rooted either at closed instantiations or at one definition, and the two answer
+    /// different questions. Meeting both in one comparison means the comparands were built against
+    /// different declaring contexts, which would silently mis-lay a method table, so it is refused
+    /// rather than answered `false`.
+    [<Test>]
+    let ``comparing a type variable against a closed instantiation is refused`` () =
+        let fixture = fixture ()
+
+        let definition =
+            TypeConcretization.SubstitutionContext.forDefinition (openGenericIdentity fixture) 1
+
+        let closed =
+            TypeConcretization.SubstitutionContext.ofClosed (ImmutableArray.Create (stringHandle fixture))
+
+        let failure =
+            Assert.Throws<exn> (fun () ->
+                equivalentBetween fixture definition closed (takesFormal 0) (takesFormal 0)
+                |> ignore<bool>
+            )
+
+        failure.Message
+        |> shouldContainText "rooted either at closed instantiations or at a generic definition"
+
+    /// The invariant CoreCLR gets for free from the shape of its substitution chain: every variable
+    /// that survives it belongs to the one definition being laid out. Here the owner is carried, so a
+    /// chain built wrongly is caught rather than answered by comparing indices across definitions.
+    [<Test>]
+    let ``comparing type variables of two different definitions is refused`` () =
+        let fixture = fixture ()
+
+        let one =
+            TypeConcretization.SubstitutionContext.forDefinition (openGenericIdentity fixture) 1
+
+        let other =
+            TypeConcretization.SubstitutionContext.forDefinition (shapesIdentity fixture) 1
+
+        let failure =
+            Assert.Throws<exn> (fun () ->
+                equivalentBetween fixture one other (takesFormal 0) (takesFormal 0)
+                |> ignore<bool>
+            )
+
+        failure.Message |> shouldContainText "the substitution chain was built wrong"

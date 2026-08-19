@@ -18,13 +18,19 @@ module NativeGcFrameRegistration =
     /// future CoreLib grows another caller, the failure names it rather than silently assuming
     /// the new caller has the same escape property.
     ///
-    /// Only the first entry is exercised by a test; the others are unreachable today because a
-    /// guest calling `ConstructorInfo.Invoke` with six arguments (the shape that would reach
-    /// `InvokeConstructorWithoutAlloc`) stops earlier, in the
-    /// `RuntimeMethodHandle_InvokeMethod` QCall: "InvokeMethod with isConstructor=true;
-    /// ConstructorInfo.Invoke allocates its own instance and is not implemented" (measured). They
-    /// are on the list on the authority of the upstream grep; leaving a real caller off would turn
-    /// a working path into a loud failure the moment it became reachable.
+    /// Three of the four are reached by guests today, measured by removing each entry and watching
+    /// the refusal below name it: `MethodBaseInvoker.InvokeWithManyArgs` and
+    /// `ConstructorInvoker.InvokeWithManyArgs` each have a covering test
+    /// (`sourcesPure/ReflectionInvokeMethodManyArguments.cs` and
+    /// `sourcesPure/ReflectionInvokeConstructor.cs`), and `MethodInvoker.InvokeWithManyArgs` is
+    /// reached by the same shape on the method side but has no test here.
+    /// `MethodBaseInvoker.InvokeConstructorWithoutAlloc` is the exception: its five-argument
+    /// overload is the only one that registers anything, and reaching it means invoking a
+    /// constructor against an existing instance with more than four arguments, which stops a few
+    /// instructions later in `MethodBaseInvoker.CopyBack` reading its uninitialised
+    /// `stackalloc bool[argCount]` (measured). It is on the list on the authority of the upstream
+    /// grep; leaving a real caller off would turn a working path into a loud failure the moment it
+    /// became reachable.
     let private permittedCallers : (string * string) list =
         [
             "MethodBaseInvoker", "InvokeWithManyArgs"
@@ -128,10 +134,9 @@ module NativeGcFrameRegistration =
           "System.Runtime",
           "GCFrameRegistration",
           (("RegisterForGCReporting" | "UnregisterForGCReporting") as methodName),
-          [ ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                               "System.Runtime",
-                                                               "GCFrameRegistration",
-                                                               registrationGenerics)) ],
+          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime",
+                                                              "GCFrameRegistration",
+                                                              registrationGenerics)) ],
           MethodReturnType.Void when registrationGenerics.IsEmpty ->
             let operation = $"GCFrameRegistration.%s{methodName}"
 

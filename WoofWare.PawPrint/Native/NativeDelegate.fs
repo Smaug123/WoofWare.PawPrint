@@ -483,23 +483,15 @@ module NativeDelegate =
           "System.Private.CoreLib",
           "System",
           "Delegate",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              delegateHandleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              targetHandleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System",
-                                              "RuntimeMethodHandleInternal",
-                                              methodHandleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallTypeHandle",
-                                              typeHandleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "DelegateBindingFlags", flagsGenerics) ],
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             delegateHandleGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             targetHandleGenerics)
+            CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", methodHandleGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", typeHandleGenerics)
+            CorelibType state.ConcreteTypes ("System", "DelegateBindingFlags", flagsGenerics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
             delegateHandleGenerics.IsEmpty
             && targetHandleGenerics.IsEmpty
@@ -733,14 +725,12 @@ module NativeDelegate =
           "System.Private.CoreLib",
           "System",
           "Delegate",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              delegateHandleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              resultHandleGenerics) ],
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             delegateHandleGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             resultHandleGenerics) ],
           MethodReturnType.Void when delegateHandleGenerics.IsEmpty && resultHandleGenerics.IsEmpty ->
             // `Delegate_FindMethodHandle` (comdelegate.cpp:2122): which method does this delegate
             // point at? `Delegate.GetMethodImpl` asks whenever its `_methodBase` cache is empty,

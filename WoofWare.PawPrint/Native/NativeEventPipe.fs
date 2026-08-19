@@ -85,10 +85,9 @@ module NativeEventPipe =
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
           [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Char)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Diagnostics.Tracing",
-                                              "EventPipeSerializationFormat",
-                                              formatGenerics)
+            CorelibType state.ConcreteTypes ("System.Diagnostics.Tracing",
+                                             "EventPipeSerializationFormat",
+                                             formatGenerics)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32
             ConcretePointer _
             ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32 ],
@@ -189,8 +188,7 @@ module NativeEventPipe =
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32 ; ConcretePointer guidPtrHandle ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
             (match guidPtrHandle with
-             | ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "Guid", guidGenerics) ->
-                 guidGenerics.IsEmpty
+             | CorelibType state.ConcreteTypes ("System", "Guid", guidGenerics) -> guidGenerics.IsEmpty
              | _ -> false)
             ->
             // The C# wrapper takes `ref Guid`, but the LibraryImport source generator marshals
@@ -241,14 +239,8 @@ module NativeEventPipe =
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
             ConcretePointer _
             ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32
-            ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                               "System",
-                                                               "Guid",
-                                                               activityGuidGenerics))
-            ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                               "System",
-                                                               "Guid",
-                                                               relatedGuidGenerics)) ],
+            ConcretePointer (CorelibType state.ConcreteTypes ("System", "Guid", activityGuidGenerics))
+            ConcretePointer (CorelibType state.ConcreteTypes ("System", "Guid", relatedGuidGenerics)) ],
           MethodReturnType.Void when activityGuidGenerics.IsEmpty && relatedGuidGenerics.IsEmpty ->
             let operation = "EventPipeInternal_WriteEventData"
 

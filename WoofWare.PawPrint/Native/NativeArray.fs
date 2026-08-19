@@ -76,18 +76,14 @@ module NativeArray =
           "System.Private.CoreLib",
           "System",
           "Array",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallTypeHandle",
-                                              qCallGenerics)
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              objectHandleGenerics) ],
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics) ],
           MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             let operation = "Array.CreateInstance"
 

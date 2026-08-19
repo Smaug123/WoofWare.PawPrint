@@ -126,15 +126,13 @@ module NativeEnvironment =
             match
                 instruction.ExecutingMethod.Signature.ParameterTypes, instruction.ExecutingMethod.Signature.ReturnType
             with
-            | [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                  "System.Runtime.CompilerServices",
-                                                  "StackCrawlMarkHandle",
-                                                  stackMarkGenerics)
+            | [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                 "StackCrawlMarkHandle",
+                                                 stackMarkGenerics)
                 ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
-                ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                  "System.Runtime.CompilerServices",
-                                                  "ObjectHandleOnStack",
-                                                  objHandleGenerics)
+                CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                 "ObjectHandleOnStack",
+                                                 objHandleGenerics)
                 ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16) ],
               MethodReturnType.Void when stackMarkGenerics.IsEmpty && objHandleGenerics.IsEmpty ->
                 if instruction.Arguments.Length <> 4 then

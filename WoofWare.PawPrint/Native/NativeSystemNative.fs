@@ -132,10 +132,8 @@ module NativeSystemNative =
     let private (|PosixSignalParam|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
         match handle with
         | ConcretePrimitive concreteTypes PrimitiveType.Int32 -> Some ()
-        | ConcreteType concreteTypes ("System.Private.CoreLib",
-                                      "System.Runtime.InteropServices",
-                                      "PosixSignal",
-                                      generics) when generics.IsEmpty -> Some ()
+        | CorelibType concreteTypes ("System.Runtime.InteropServices", "PosixSignal", generics) when generics.IsEmpty ->
+            Some ()
         | _ -> None
 
     /// Matches the type `Interop.Sys.ConvertErrorPlatformToPal` *returns*.
@@ -154,7 +152,7 @@ module NativeSystemNative =
     let private (|PalErrorReturn|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
         match handle with
         | ConcretePrimitive concreteTypes PrimitiveType.Int32 -> Some ()
-        | ConcreteType concreteTypes (_, "", "Error", generics) when generics.IsEmpty -> Some ()
+        | NamedType concreteTypes ("", "Error", generics) when generics.IsEmpty -> Some ()
         | _ -> None
 
     /// Decode an `nint`-shaped Unix file-descriptor argument. CoreLib passes
@@ -404,7 +402,7 @@ module NativeSystemNative =
                     ctx.BaseClassTypes
                     state
                     dest
-                    (CliType.Numeric (CliNumericType.UInt8 bytes.[i]))
+                    (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim bytes.[i])))
 
         state
 
@@ -434,10 +432,11 @@ module NativeSystemNative =
                     ctx.BaseClassTypes
                     state
                     src
-                    (CliType.Numeric (CliNumericType.UInt8 0uy))
+                    (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
 
             match cell with
-            | CliType.Numeric (CliNumericType.UInt8 b) -> builder.Add b
+            | CliType.Numeric (CliNumericType.UInt8 b) ->
+                builder.Add (UInt8Source.value $"%s{operation}: byte read at offset %d{i}" b)
             | other ->
                 failwith
                     $"%s{operation}: byte read at offset %d{i} returned non-UInt8 cell %O{other} (this is an interpreter bug)"

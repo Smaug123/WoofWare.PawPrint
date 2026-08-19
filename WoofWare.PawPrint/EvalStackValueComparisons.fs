@@ -30,6 +30,11 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _), _
         | _, EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _) ->
             failwith $"Clt instruction invalid for ordering a truncated managed pointer, %O{var1} vs %O{var2}"
+        // Likewise a byte of a native int PawPrint models as an identity: it names a position in
+        // that identity rather than holding a number, so there is nothing to order.
+        | EvalStackValue.Int32 (Int32Source.NativeIntByte _), _
+        | _, EvalStackValue.Int32 (Int32Source.NativeIntByte _) ->
+            failwith $"Clt instruction invalid for ordering a byte of an unmodelled native int, %O{var1} vs %O{var2}"
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> Int64Source.compareSigned var1 var2 < 0
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 < var2
         | EvalStackValue.NullObjectRef, _
@@ -78,6 +83,11 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _), _
         | _, EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _) ->
             failwith $"Cgt instruction invalid for ordering a truncated managed pointer, %O{var1} vs %O{var2}"
+        // Likewise a byte of a native int PawPrint models as an identity: it names a position in
+        // that identity rather than holding a number, so there is nothing to order.
+        | EvalStackValue.Int32 (Int32Source.NativeIntByte _), _
+        | _, EvalStackValue.Int32 (Int32Source.NativeIntByte _) ->
+            failwith $"Cgt instruction invalid for ordering a byte of an unmodelled native int, %O{var1} vs %O{var2}"
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> Int64Source.compareSigned var1 var2 > 0
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 > var2
         | EvalStackValue.NullObjectRef, _

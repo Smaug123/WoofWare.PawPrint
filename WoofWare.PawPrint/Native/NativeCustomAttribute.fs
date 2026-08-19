@@ -43,7 +43,8 @@ module NativeCustomAttribute =
 
         for i in startIdx .. endIdx - 1 do
             match ManagedHeap.getArrayValue arr i state.ManagedHeap with
-            | CliType.Numeric (CliNumericType.UInt8 b) -> builder.Add b
+            | CliType.Numeric (CliNumericType.UInt8 b) ->
+                builder.Add (UInt8Source.value $"%s{operation}: byte offset %d{i} of array %O{arr}" b)
             | other ->
                 failwith $"%s{operation}: expected UInt8 cell at byte offset %d{i} of array %O{arr}, got %O{other}"
 
@@ -71,29 +72,53 @@ module NativeCustomAttribute =
                 $"TODO: %s{operation} %s{label} pointer must be a plain ArrayElement byref (no projections); other shapes (e.g. raw native pointers, byte-view projections) are not yet supported, got %O{other}"
 
     /// <summary>
-    /// Resolve one constructor parameter type to the shape the blob decoder needs.
+    /// Resolve one constructor parameter type to the plan by which its argument is decoded and
+    /// then lowered.
     /// </summary>
     /// <remarks>
     /// The fixed-args section of a <c>CustomAttrib</c> blob is not self-describing (ECMA-335
-    /// II.23.3): an enum argument is written as a bare value of its underlying type. So the
-    /// width has to come from the metadata, which is why this lives here — beside the machine
-    /// state — rather than in the parser.
+    /// II.23.3): an enum argument is written as a bare value of its underlying type, and an
+    /// SZARRAY's elements carry no type at all. Both come from the metadata, which is why this
+    /// lives here — beside the machine state — rather than in the parser.
     ///
-    /// Only parameter types that <c>tryShapeWithoutResolution</c> cannot handle reach the
-    /// resolution path, so an attribute whose ctor takes only primitives costs no type loads.
+    /// A primitive parameter costs no type load; only enums and arrays concretise anything.
     /// </remarks>
-    let private resolveArgShape
+    let rec private resolveArgPlan
         (operation : string)
         (ctx : NativeCallContext)
         (ctorAssembly : DumpedAssembly)
         (declaringTypeGenerics : ConcreteTypeHandle ImmutableArray)
         (state : IlMachineState)
         (paramType : TypeDefn)
-        : IlMachineState * CustomAttribArgShape
+        : IlMachineState * CustomAttribArgPlan
         =
-        match CustomAttribute.tryShapeWithoutResolution paramType with
-        | Some shape -> state, shape
-        | None ->
+        // An attribute ctor cannot be a generic method: ECMA-335 II.22.10 names it by a
+        // MethodDef/MemberRef with no generic arguments, and the BCL's
+        // `FilterCustomAttributeRecord` never surfaces one.
+        let methodGenerics : ConcreteTypeHandle ImmutableArray = ImmutableArray.Empty
+
+        match paramType with
+        | TypeDefn.PrimitiveType pt -> state, CustomAttribArgPlan.Primitive pt
+        | TypeDefn.OneDimensionalArrayLowerBoundZero elt ->
+            // CoreCLR's fixed-arg loop hands `GetDataFromBlob` the *element* type handle
+            // (`customattribute.cpp:961`), and `ReadArray` allocates an array of exactly that
+            // element type. So the element is what has to be concretised, and the element plan is
+            // the same question one level down.
+            let state, elementHandle =
+                IlMachineTypeResolution.concretizeType
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    state
+                    ctorAssembly.Name
+                    declaringTypeGenerics
+                    methodGenerics
+                    elt
+
+            let state, elementPlan =
+                resolveArgPlan operation ctx ctorAssembly declaringTypeGenerics state elt
+
+            state, CustomAttribArgPlan.SzArray (elementHandle, elementPlan)
+        | _ ->
 
         let state, handle =
             IlMachineTypeResolution.concretizeType
@@ -102,18 +127,20 @@ module NativeCustomAttribute =
                 state
                 ctorAssembly.Name
                 declaringTypeGenerics
-                // An attribute ctor cannot be a generic method: ECMA-335 II.22.10 names it by a
-                // MethodDef/MemberRef with no generic arguments, and the BCL's
-                // `FilterCustomAttributeRecord` never surfaces one.
-                ImmutableArray.Empty
+                methodGenerics
                 paramType
 
         let state, isEnum =
             IlMachineRuntimeMetadata.isEnumValueType ctx.LoggerFactory ctx.BaseClassTypes state handle
 
         if not isEnum then
+            // What is left here is every parameter type the fixed-args grammar has no encoding
+            // for. `System.Type` (TYPE, 0x50) and `object` (TAGGED_OBJECT, 0x51) are the two that
+            // real metadata carries and that PawPrint does not yet decode; a multidimensional or
+            // non-SZ array parameter also lands here, and CoreCLR refuses that one too, since
+            // `GetDataFromBlob` has no `ELEMENT_TYPE_ARRAY` case and falls through to `badBlob`.
             failwith
-                $"TODO: %s{operation}: ctor parameter of type %O{paramType} is neither a primitive, an SZARRAY of primitives, nor an enum; TYPE (0x50) and TAGGED_OBJECT (0x51) fixed args are not yet decoded"
+                $"TODO: %s{operation}: ctor parameter of type %O{paramType} is neither a primitive, an SZARRAY, nor an enum, so the fixed-args grammar cannot decode it; TYPE (0x50) and TAGGED_OBJECT (0x51) fixed args in particular are not yet supported"
 
         let state, underlyingHandle =
             IlMachineRuntimeMetadata.enumUnderlyingHandle ctx.LoggerFactory ctx.BaseClassTypes state handle
@@ -125,7 +152,7 @@ module NativeCustomAttribute =
         match underlyingHandle with
         | ConcretePrimitive state.ConcreteTypes underlying ->
             match EnumUnderlyingType.ofPrimitive underlying with
-            | Some underlying -> state, CustomAttribArgShape.Enum underlying
+            | Some underlying -> state, CustomAttribArgPlan.Enum underlying
             | None ->
                 // ECMA-335 II.14.3 requires a built-in integer type here, and the CLR type loader
                 // enforces it, so only hand-crafted metadata can get us here.
@@ -136,26 +163,27 @@ module NativeCustomAttribute =
                 $"%s{operation}: ctor parameter of type %O{paramType} is an enum whose `value__` did not concretize to a primitive, got %O{other}"
 
     /// <summary>
-    /// Resolve a named argument's blob-declared <c>FieldOrPropType</c> to the shape the value
-    /// decoder needs. Throws for every serialization type outside the supported set (<c>SzArray</c>,
-    /// <c>Enum</c>, <c>Type</c>, <c>TaggedObject</c>), with a message naming the construct and the
-    /// capability it needs.
+    /// Resolve a named argument's blob-declared <c>FieldOrPropType</c> to the primitive its value
+    /// is read and boxed as. Throws for every serialization type outside the supported set
+    /// (<c>SzArray</c>, <c>Enum</c>, <c>Type</c>, <c>TaggedObject</c>), with a message naming the
+    /// construct and the capability it needs.
     /// </summary>
     /// <remarks>
-    /// <c>resolveArgShape</c> above is the fixed-arg counterpart, resolving a ctor parameter's
+    /// <c>resolveArgPlan</c> above is the fixed-arg counterpart, resolving a ctor parameter's
     /// <c>TypeDefn</c>. Both exist because an enum's value width lives in the enum's metadata
     /// rather than in the blob.
     /// </remarks>
-    let private resolveNamedArgShape
-        (operation : string)
-        (elemType : CustomAttribFieldOrPropType)
-        : CustomAttribArgShape
-        =
+    let private resolveNamedArgPrimitive (operation : string) (elemType : CustomAttribFieldOrPropType) : PrimitiveType =
         match elemType with
-        | CustomAttribFieldOrPropType.Primitive pt -> CustomAttribArgShape.Primitive pt
+        | CustomAttribFieldOrPropType.Primitive pt -> pt
         | CustomAttribFieldOrPropType.SzArray elt ->
+            // The fixed-arg path serves SZARRAY, but a named arg needs two things it does not:
+            // the element type comes from the blob's serialization-type byte rather than from a
+            // signature (`customattribute.cpp:1128`), and when the value is null CoreCLR writes
+            // the *array* type into `pType` so the managed caller picks the type-filtered
+            // `GetProperty` overload (`customattribute.cpp:1136`).
             failwith
-                $"TODO: %s{operation}: named argument has SZARRAY type (element %O{elt}); lowering a decoded array to a managed array is not implemented in CustomAttribValueLowering, which blocks the fixed-arg path identically, so both should be fixed together"
+                $"TODO: %s{operation}: named argument has SZARRAY type (element %O{elt}); resolving a named arg's element type from the blob, and reporting the array type for a null value, are not implemented"
         | CustomAttribFieldOrPropType.Enum typeName ->
             let described =
                 match typeName with
@@ -193,25 +221,19 @@ module NativeCustomAttribute =
           "System.Private.CoreLib",
           "System.Reflection",
           "CustomAttribute",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallModule",
-                                              moduleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              typeHandleGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              ctorHandleGenerics)
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             typeHandleGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             ctorHandleGenerics)
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              instanceHandleGenerics) ],
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             instanceHandleGenerics) ],
           MethodReturnType.Void when
             moduleGenerics.IsEmpty
             && typeHandleGenerics.IsEmpty
@@ -421,18 +443,20 @@ module NativeCustomAttribute =
                 // Resolving the ctor's parameter types can load assemblies, so it threads state;
                 // it cannot suspend, and it happens before the cursor write-back below, so a
                 // re-entered handler simply redoes it.
-                let state, paramShapes =
+                let state, paramPlans =
                     ((state, []), ctorMetadata.Signature.ParameterTypes)
                     ||> List.fold (fun (state, acc) paramType ->
-                        let state, shape =
-                            resolveArgShape operation ctx ctorAssembly concreteType.Generics state paramType
+                        let state, plan =
+                            resolveArgPlan operation ctx ctorAssembly concreteType.Generics state paramType
 
-                        state, shape :: acc
+                        state, plan :: acc
                     )
                     |> fun (state, acc) -> state, List.rev acc
 
                 let fixedArgs, fixedArgsConsumed =
-                    match CustomAttribute.readFixedArgs paramShapes blobBytes with
+                    match
+                        CustomAttribute.readFixedArgs (paramPlans |> List.map CustomAttribArgPlan.shape) blobBytes
+                    with
                     | Ok (args, next) -> args, next
                     | Error msg -> failwith $"%s{operation}: failed to parse fixed args from CustomAttrib blob: %s{msg}"
 
@@ -534,10 +558,10 @@ module NativeCustomAttribute =
                     IlMachineState.pushToEvalStack (CliType.ObjectRef (Some instanceAddr)) ctx.Thread state
 
                 let state =
-                    (state, fixedArgs)
-                    ||> List.fold (fun state arg ->
+                    (state, List.zip paramPlans fixedArgs)
+                    ||> List.fold (fun state (plan, arg) ->
                         let cliValue, state =
-                            CustomAttribValueLowering.toCliType ctx.LoggerFactory ctx.BaseClassTypes arg state
+                            CustomAttribValueLowering.toCliType ctx.LoggerFactory ctx.BaseClassTypes plan arg state
 
                         IlMachineState.pushToEvalStack cliValue ctx.Thread state
                     )
@@ -574,25 +598,13 @@ module NativeCustomAttribute =
           "System.Private.CoreLib",
           "System.Reflection",
           "CustomAttribute",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "QCallModule",
-                                              moduleGenerics)
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "StringHandleOnStack",
-                                              nameGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "StringHandleOnStack", nameGenerics)
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              typeGenerics)
-            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Runtime.CompilerServices",
-                                              "ObjectHandleOnStack",
-                                              valueGenerics) ],
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", typeGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", valueGenerics) ],
           MethodReturnType.Void when
             moduleGenerics.IsEmpty
             && nameGenerics.IsEmpty
@@ -668,10 +680,12 @@ module NativeCustomAttribute =
                 | Ok (header, next) -> header, next
                 | Error msg -> failwith $"%s{operation}: failed to parse named arg from CustomAttrib blob: %s{msg}"
 
-            let shape = resolveNamedArgShape operation header.ElemType
+            let valuePrimitive = resolveNamedArgPrimitive operation header.ElemType
 
             let decoded, consumed =
-                match CustomAttribute.readElem shape blobBytes valueOffset with
+                match
+                    CustomAttribute.readElem (CustomAttribArgShape.Primitive valuePrimitive) blobBytes valueOffset
+                with
                 | Ok (value, next) -> value, next
                 | Error msg ->
                     failwith $"%s{operation}: failed to parse named arg value from CustomAttrib blob: %s{msg}"
@@ -739,7 +753,12 @@ module NativeCustomAttribute =
                     state, CliType.ObjectRef None, CliType.ObjectRef (Some typeAddr)
                 | CustomAttribFixedArg.String (Some _) ->
                     let value, state =
-                        CustomAttribValueLowering.toCliType ctx.LoggerFactory ctx.BaseClassTypes decoded state
+                        CustomAttribValueLowering.toCliType
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            (CustomAttribArgPlan.Primitive valuePrimitive)
+                            decoded
+                            state
 
                     state, value, CliType.ObjectRef None
                 | _ ->
@@ -748,13 +767,6 @@ module NativeCustomAttribute =
                 // decoded value's F# shape: `U4` boxes as System.UInt32 even though CLI eval-stack
                 // rules normalise its value to Int32. Mirrors CoreCLR's
                 // `CoreLibBinder::GetElementType((CorElementType)fieldType)`.
-                let boxPrimitive =
-                    match shape with
-                    | CustomAttribArgShape.Primitive pt -> pt
-                    | other ->
-                        failwith
-                            $"%s{operation}: logic error: decoded value %O{decoded} came from non-primitive shape %O{other}, which resolveNamedArgShape should have refused"
-
                 let state, boxHandle =
                     IlMachineTypeResolution.concretizeType
                         ctx.LoggerFactory
@@ -763,10 +775,15 @@ module NativeCustomAttribute =
                         ctx.BaseClassTypes.Corelib.Name
                         ImmutableArray.Empty
                         ImmutableArray.Empty
-                        (TypeDefn.PrimitiveType boxPrimitive)
+                        (TypeDefn.PrimitiveType valuePrimitive)
 
                 let payload, state =
-                    CustomAttribValueLowering.toCliType ctx.LoggerFactory ctx.BaseClassTypes decoded state
+                    CustomAttribValueLowering.toCliType
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        (CustomAttribArgPlan.Primitive valuePrimitive)
+                        decoded
+                        state
 
                 let boxAddr, state =
                     UnaryMetadataObjectOps.boxValueType

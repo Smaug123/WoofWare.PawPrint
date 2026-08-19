@@ -64,6 +64,7 @@
     <Compile Include="TestEmptyArrayByrefWalks.fs" />
     <Compile Include="TestBinaryArithmetic.fs" />
     <Compile Include="TestNarrowByrefAccess.fs" />
+    <Compile Include="TestNamedByteView.fs" />
     <Compile Include="TestByrefComparison.fs" />
     <Compile Include="TestContextSwitchPrior.fs" />
     <Compile Include="TestNullaryIlOp.fs" />

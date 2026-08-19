@@ -31,7 +31,8 @@ type internal CellAwareCopyPolicy =
 /// starts or ends *inside* a reference-containing element make progress at all.
 [<RequireQualifiedAccess>]
 module internal CellAwareMemOps =
-    let private byteTemplate : CliType = CliType.Numeric (CliNumericType.UInt8 0uy)
+    let private byteTemplate : CliType =
+        CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))
 
     let private byteType
         (operation : string)
@@ -54,7 +55,13 @@ module internal CellAwareMemOps =
         : byte
         =
         match IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr byteTemplate with
-        | CliType.Numeric (CliNumericType.UInt8 b) -> b
+        // A byte naming a native int rather than holding a number is refused here rather than
+        // moved. A bulk copy could carry one across intact, and reconstructing the native int
+        // from the eight bytes at the far end would make `memcpy` of a pointer-containing struct
+        // exact rather than a crash -- but that is a widening of what these primitives can do,
+        // wanted on its own terms and with its own coverage, not a side effect of a byte
+        // acquiring provenance.
+        | CliType.Numeric (CliNumericType.UInt8 b) -> UInt8Source.value $"%s{operation}: byte-view read" b
         | other -> failwith $"%s{operation}: byte-view read returned non-byte value %O{other}"
 
     let private writeByte
@@ -68,7 +75,7 @@ module internal CellAwareMemOps =
             baseClassTypes
             state
             ptr
-            (CliType.Numeric (CliNumericType.UInt8 value))
+            (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim value)))
 
     let private shouldCopyBackwards
         (operation : string)

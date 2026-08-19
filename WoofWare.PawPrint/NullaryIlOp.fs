@@ -1239,7 +1239,7 @@ module NullaryIlOp =
         | LdindI2 -> CliType.Numeric (CliNumericType.Int16 0s)
         | LdindI4 -> CliType.Numeric (CliNumericType.Int32 0)
         | LdindI8 -> CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
-        | LdindU1 -> CliType.Numeric (CliNumericType.UInt8 0uy)
+        | LdindU1 -> CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))
         | LdindU2 -> CliType.Numeric (CliNumericType.UInt16 0us)
         | LdindU4 ->
             // This doesn't actually exist as a CLI type
@@ -3259,7 +3259,7 @@ module NullaryIlOp =
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            ldElem (CliType.Numeric (CliNumericType.UInt8 0uy)) index arr currentThread state
+            ldElem (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) index arr currentThread state
         | Ldelem_i2 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state

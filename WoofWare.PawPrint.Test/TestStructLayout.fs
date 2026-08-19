@@ -278,13 +278,13 @@ module TestStructLayout =
             ofFields
                 Layout.Default
                 [
-                    cliField "p" (CliType.Numeric (CliNumericType.UInt8 (byte marker))) None
-                    cliField "q" (CliType.Numeric (CliNumericType.UInt8 0uy)) None
-                    cliField "r" (CliType.Numeric (CliNumericType.UInt8 0uy)) None
+                    cliField "p" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim (byte marker)))) None
+                    cliField "q" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) None
+                    cliField "r" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) None
                 ]
 
         [
-            primitive (CliType.Numeric (CliNumericType.UInt8 (byte marker))) 1 false
+            primitive (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim (byte marker)))) 1 false
             primitive (CliType.Bool (byte marker)) 1 false
             primitive (CliType.Numeric (CliNumericType.Int16 (int16 marker))) 2 false
             primitive (CliType.Char (byte marker, 0uy)) 2 false
@@ -503,7 +503,11 @@ module TestStructLayout =
         // Guards the guard above: "inert" is only a claim about auto layout, and would be
         // vacuous if `Pack`/`Size` were inert everywhere. A `Size` floor over a single byte field
         // is honoured under `Sequential` and discarded under `Auto`.
-        let field = [ cliField "b" (CliType.Numeric (CliNumericType.UInt8 7uy)) None ]
+        let field =
+            [
+                cliField "b" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 7uy))) None
+            ]
+
         let layout = Layout.Custom (size = 24, packingSize = 0)
 
         (CliValueType.SizeOf (ofFieldsWithKind TypeLayoutKind.Sequential layout field)).Size
@@ -633,7 +637,7 @@ module TestStructLayout =
             ofFields
                 (Layout.Custom (size = 0, packingSize = 1))
                 [
-                    cliField "b" (CliType.Numeric (CliNumericType.UInt8 3uy)) None
+                    cliField "b" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 3uy))) None
                     cliField "l" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 7L))) None
                 ]
 

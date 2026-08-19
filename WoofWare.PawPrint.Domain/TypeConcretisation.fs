@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Collections.Generic
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
@@ -388,13 +389,27 @@ module ConcreteActivePatterns =
             | _ -> None
         | _ -> None
 
-    /// Active pattern to match any concrete type by assembly/namespace/name and generics
-    let (|ConcreteType|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) =
+    /// Matches a concrete type by namespace, name and generic arguments, in whatever assembly
+    /// declares it. Prefer `CorelibType` where the declaring assembly is known: a namespace and
+    /// name alone do not identify a type, and two assemblies may spell the same one.
+    let (|NamedType|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) =
         match handle with
         | ConcreteTypeHandle.Concrete id ->
             match concreteTypes.Mapping |> Map.tryFind id with
-            | Some ct -> Some (ct.Assembly.Name, ct.Namespace, ct.Name, ct.Generics)
+            | Some ct -> Some (ct.Namespace, ct.Name, ct.Generics)
             | None -> None
+        | _ -> None
+
+    /// Matches a concrete type declared by CoreLib, by namespace, name and generic arguments.
+    ///
+    /// Yields no assembly name: every caller of the general form spelled CoreLib, so the name
+    /// went straight back into a comparison against the literal below.
+    let (|CorelibType|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct when ct.Assembly.Name = "System.Private.CoreLib" -> Some (ct.Namespace, ct.Name, ct.Generics)
+            | _ -> None
         | _ -> None
 
     let (|ConcreteChar|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
@@ -1049,6 +1064,25 @@ module TypeConcretization =
                     ImmutableArray.Empty // Void has no generic parameters
 
         | TypeDefn.FunctionPointer signature ->
+            // A GENERIC calling convention on a *function pointer* is refused here, the one place a
+            // function-pointer handle is minted, so that no such handle can exist further in. Comparing
+            // two of them is a question CoreCLR answers by reading `argCnt` where the blob holds the
+            // generic-parameter count and then comparing `GenParamCount + 1` elements of the resulting
+            // misaligned stream (siginfo.cpp:4135-4168), which cannot be reproduced from a decoded
+            // signature — see the FNPTR arm of `compareElements`, which refuses the spelled form.
+            //
+            // No compiler emits this and no reflection API can name it, so this is an assertion of that
+            // belief rather than a case to handle: if something does produce one, it should say so here,
+            // at the point of construction and with the assembly in hand, rather than be discovered
+            // later by whatever consumes the handle.
+            //
+            // Note this is a function-pointer *type*, not a generic method: `concretizeMethodSignature`
+            // serves ordinary generic methods, whose GENERIC calling convention is entirely normal.
+            if signature.Header.Get.IsGeneric then
+                failwithf
+                    "TODO: concretising a function pointer type whose signature carries the GENERIC calling convention, in %s. No compiler emits such a type and no reflection API can name one, so this indicates either hand-authored metadata or a decoder fault; signature comparison could not answer for it in any case."
+                    assembly.FullName
+
             // Function pointer types are structural: the signature is the type identity.
             // Concretize each parameter and the return type under the current generic context.
             let concretized, ctx =
@@ -1201,28 +1235,144 @@ module TypeConcretization =
                 ConcreteTypes = newConcreteTypes
             }
 
+    /// What one ECMA-335 `!i` denotes in a signature under comparison.
+    ///
+    /// `Spelled` is a substitution that stays in blob form, carrying the token space and context its
+    /// own `!i` are read in. That is CoreCLR's `Substitution` — a module, a signature pointer, and a
+    /// `pNext` for the context the pointer's own variables belong to (methodtablebuilder.cpp:1330-1337)
+    /// — and it is what lets a base class's signatures be read in a derived type's vocabulary while
+    /// neither is closed.
+    ///
+    /// Build these through `SubstitutionContext`, never directly: its functions are exactly the shapes
+    /// that arise, and a hand-built chain is how a signature comes to be read against the wrong image.
+    [<RequireQualifiedAccess>]
+    type SubstitutionArgument =
+        /// A runtime type, which a closed instantiation supplied.
+        | Closed of ConcreteTypeHandle
+        /// The `index`th type variable of `owner` itself, denoting no particular type. Equal only to
+        /// the same variable of the same owner: this is the positional comparison
+        /// `MetaSig::CompareElementType` falls back on for an `ELEMENT_TYPE_VAR` that no substitution
+        /// replaced (`varNum1 == varNum2`, siginfo.cpp:4067-4076).
+        | Formal of owner : ResolvedTypeIdentity * index : int
+        /// A type as `assembly` spells it, whose own `!i` are resolved by `context`.
+        | Spelled of assembly : AssemblyName * spelling : TypeDefn * context : ImmutableArray<SubstitutionArgument>
+
+    /// The instantiation of a declaring type that a signature's `!i` are read against: one argument
+    /// per generic parameter the declaring type has.
+    ///
+    /// A comparison is read in one world throughout. Either every argument reachable from it is
+    /// `Closed`, which is what any question about a live object needs, or the whole comparison is
+    /// rooted at a generic *definition* and unsubstituted variables survive to be compared
+    /// positionally, which is how a method table is laid out. Mixing the two is a bug rather than a
+    /// third case, and the comparison says so rather than answering.
+    type SubstitutionContext =
+        {
+            Arguments : ImmutableArray<SubstitutionArgument>
+        }
+
+    [<RequireQualifiedAccess>]
+    module SubstitutionContext =
+        /// The declaring type is closed, so each `!i` denotes a runtime type.
+        let ofClosed (generics : ImmutableArray<ConcreteTypeHandle>) : SubstitutionContext =
+            {
+                Arguments = generics |> ImmutableArray.map SubstitutionArgument.Closed
+            }
+
+        /// The declaring type is the generic definition itself — CoreCLR's typical instantiation, which
+        /// the class loader represents as the definition rather than as an instantiation of it
+        /// (`ClassLoader::LoadGenericInstantiationThrowing`, clsload.cpp:1426). Each `!i` denotes the
+        /// definition's own `i`th type variable.
+        let forDefinition (definition : ResolvedTypeIdentity) (parameterCount : int) : SubstitutionContext =
+            {
+                Arguments =
+                    Seq.init parameterCount (fun i -> SubstitutionArgument.Formal (definition, i))
+                    |> ImmutableArray.CreateRange
+            }
+
+        /// The context an ancestor's signatures are read in, given the type arguments its `extends`
+        /// clause supplies and the context of the type that wrote that clause.
+        ///
+        /// `spellingAssembly` is the assembly of the type that *names* the ancestor, not the ancestor's
+        /// own: an extends clause lives in the token space of the type that writes it, and CoreCLR
+        /// chains substitutions the same way (`MethodTableBuilder::GetSubstitutionForParent`,
+        /// methodtablebuilder.cpp:788). Passing the ancestor's assembly instead resolves the clause's
+        /// TypeRefs against the wrong image — which corelib cannot detect, having no TypeRefs at all.
+        let forBase
+            (spellingAssembly : AssemblyName)
+            (arguments : ImmutableArray<TypeDefn>)
+            (spellingContext : SubstitutionContext)
+            : SubstitutionContext
+            =
+            {
+                Arguments =
+                    arguments
+                    |> ImmutableArray.map (fun ty ->
+                        SubstitutionArgument.Spelled (spellingAssembly, ty, spellingContext.Arguments)
+                    )
+            }
+
     /// One side of a method-signature comparison: a signature as its own blob spells it, the
-    /// assembly whose token space those spellings live in, and the closed instantiation of the type
+    /// assembly whose token space those spellings live in, and the instantiation of the type
     /// that declared it — which is what ECMA-335 `!0` denotes in this signature.
     type SignatureComparand =
         {
             Signature : TypeMethodSignature<TypeDefn>
             Assembly : AssemblyName
-            DeclaringTypeGenerics : ImmutableArray<ConcreteTypeHandle>
+            DeclaringTypeGenerics : SubstitutionContext
         }
 
     /// The token space and generic context one signature element is spelled in.
     type private ElementContext =
         {
             Assembly : AssemblyName
-            TypeGenerics : ImmutableArray<ConcreteTypeHandle>
+            TypeGenerics : ImmutableArray<SubstitutionArgument>
         }
 
-    /// A signature element under comparison: either still spelled in a blob, or a closed runtime
-    /// type that a substitution supplied in place of a generic type parameter.
+    /// A signature element under comparison: still spelled in a blob, a closed runtime type that a
+    /// substitution supplied in place of a generic type parameter, or a type variable that no
+    /// substitution replaced.
     type private Element =
         | Spelled of ElementContext * TypeDefn
         | Substituted of ConcreteTypeHandle
+        | Formal of owner : ResolvedTypeIdentity * index : int
+
+    /// What a substitution supplied for one `!i`, as an element of a comparison.
+    let private elementOfArgument (argument : SubstitutionArgument) : Element =
+        match argument with
+        | SubstitutionArgument.Closed handle -> Element.Substituted handle
+        | SubstitutionArgument.Formal (owner, index) -> Element.Formal (owner, index)
+        | SubstitutionArgument.Spelled (assembly, spelling, context) ->
+            Element.Spelled (
+                {
+                    ElementContext.Assembly = assembly
+                    ElementContext.TypeGenerics = context
+                },
+                spelling
+            )
+
+    /// The runtime types a context supplies, for the one comparison step that has to concretise a
+    /// spelled element rather than compare it structurally.
+    ///
+    /// Fails rather than approximating: reaching it with an unsubstituted variable in the context means
+    /// a closed element and a definition-rooted one met, and the two describe different worlds. A
+    /// `false` here would silently lay out a method table wrongly, which is the failure this
+    /// representation exists to prevent.
+    let private requireClosedArguments
+        (assembly : AssemblyName)
+        (arguments : ImmutableArray<SubstitutionArgument>)
+        : ImmutableArray<ConcreteTypeHandle>
+        =
+        arguments
+        |> ImmutableArray.map (fun argument ->
+            match argument with
+            | SubstitutionArgument.Closed handle -> handle
+            | SubstitutionArgument.Formal (owner, index) ->
+                failwith
+                    $"Signature comparison in %s{assembly.FullName} met a closed runtime type on one side and type variable !%d{index} of %s{owner.AssemblyFullName}/%O{owner.TypeDefinition.Get} on the other; a comparison is rooted either at closed instantiations or at a generic definition, so the two comparands were built against different declaring contexts"
+            | SubstitutionArgument.Spelled (spelledAssembly, spelling, _) ->
+                failwith
+                    $"Signature comparison in %s{assembly.FullName} needs the runtime type of a substituted argument, but the substitution supplied %O{spelling} still spelled in %s{spelledAssembly.FullName}; only a definition-rooted comparison carries those, and it never concretises"
+        )
 
     /// Does this element mention a method generic parameter, so that it does not denote a single
     /// closed runtime type? Substitution never reaches an `ELEMENT_TYPE_MVAR`, so such an element
@@ -1301,7 +1451,7 @@ module TypeConcretization =
                     index
                     leftCtx.TypeGenerics.Length
 
-            compareElements ctx loadAssembly (Element.Substituted leftCtx.TypeGenerics.[index]) right
+            compareElements ctx loadAssembly (elementOfArgument leftCtx.TypeGenerics.[index]) right
         | _, Element.Spelled (rightCtx, TypeDefn.GenericTypeParameter index) ->
             if index >= rightCtx.TypeGenerics.Length then
                 failwithf
@@ -1310,9 +1460,37 @@ module TypeConcretization =
                     index
                     rightCtx.TypeGenerics.Length
 
-            compareElements ctx loadAssembly left (Element.Substituted rightCtx.TypeGenerics.[index])
+            compareElements ctx loadAssembly left (elementOfArgument rightCtx.TypeGenerics.[index])
 
         | Element.Substituted leftHandle, Element.Substituted rightHandle -> leftHandle = rightHandle, ctx
+
+        // Two variables no substitution replaced. CoreCLR compares such a pair positionally
+        // (`varNum1 == varNum2`, siginfo.cpp:4067-4076) and needs no owner, because the chain it builds
+        // guarantees every surviving variable belongs to the type being laid out. The owner is carried
+        // and checked here instead of trusted: a mismatch means two chains rooted at different
+        // definitions met, and comparing their indices would silently equate unrelated variables.
+        | Element.Formal (leftOwner, leftIndex), Element.Formal (rightOwner, rightIndex) ->
+            if leftOwner <> rightOwner then
+                failwith
+                    $"Signature comparison compared type variable !%d{leftIndex} of %s{leftOwner.AssemblyFullName}/%O{leftOwner.TypeDefinition.Get} against !%d{rightIndex} of %s{rightOwner.AssemblyFullName}/%O{rightOwner.TypeDefinition.Get}; a definition-rooted comparison resolves every ancestor's variables into the vocabulary of the one definition it is laid out on, so two owners meeting means the substitution chain was built wrong"
+
+            leftIndex = rightIndex, ctx
+
+        // A variable that stands for no particular type cannot equal one that does. This is the
+        // mixed-world case `requireClosedArguments` describes, reached when the variable is the whole
+        // element rather than inside a spelled one.
+        | Element.Formal (owner, index), Element.Substituted handle
+        | Element.Substituted handle, Element.Formal (owner, index) ->
+            failwith
+                $"Signature comparison compared runtime type %O{handle} against type variable !%d{index} of %s{owner.AssemblyFullName}/%O{owner.TypeDefinition.Get}; a comparison is rooted either at closed instantiations or at a generic definition, so the two comparands were built against different declaring contexts"
+
+        // The spelled side is not a bare `ELEMENT_TYPE_VAR`: the arms above resolve those through the
+        // substitution before anything else, exactly as `CompareElementType` consumes VAR ahead of the
+        // modifiers (:3820-3866). So whatever it names -- a nominal type, a primitive, an array, a
+        // method variable -- is a different element type from an unsubstituted type variable, and
+        // CoreCLR's comparison of the two element types fails.
+        | Element.Formal _, Element.Spelled _
+        | Element.Spelled _, Element.Formal _ -> false, ctx
 
         | Element.Substituted handle, Element.Spelled (spelledCtx, ty)
         | Element.Spelled (spelledCtx, ty), Element.Substituted handle ->
@@ -1333,7 +1511,13 @@ module TypeConcretization =
             else
 
             let spelledHandle, ctx =
-                concretizeType ctx loadAssembly spelledCtx.Assembly spelledCtx.TypeGenerics ImmutableArray.Empty ty
+                concretizeType
+                    ctx
+                    loadAssembly
+                    spelledCtx.Assembly
+                    (requireClosedArguments spelledCtx.Assembly spelledCtx.TypeGenerics)
+                    ImmutableArray.Empty
+                    ty
 
             spelledHandle = handle, ctx
 
@@ -1420,6 +1604,36 @@ module TypeConcretization =
             // matching a call site against a callee, which is not a question one can ask of a type,
             // so applying it here would let `void(int32, ..., string)` and `void(int32)` name the
             // same type.
+            //
+            // Two function pointers spelling the same GENERIC calling convention and the same
+            // generic-parameter count are refused rather than compared.
+            //
+            // The line is where CoreCLR starts reinterpreting bytes. Its FNPTR arm compares the two
+            // calling-convention bytes, then reads one compressed *integer* from each blob with
+            // `CorSigUncompressData_EndPtr` and compares it as `argCnt` (siginfo.cpp:4157-4163). For a
+            // GENERIC signature that integer is the generic-parameter count, since the blob spells
+            // CallConv | GenParamCount | ParamCount | RetType | Params. Both of those comparisons are
+            // over data read as what it is, so both are reproducible here, and differing counts fall
+            // through to `compareSignatureTypes`' header and `GenericParameterCount` comparisons.
+            //
+            // Past that point nothing is. `argCnt1++` (:4168) and CoreCLR compares `GenParamCount + 1`
+            // elements of a stream misaligned by one integer, so the *parameter count* byte is handed to
+            // `CompareElementType` as a `CorElementType`: 0x01 is read as ELEMENT_TYPE_VOID and compared
+            // as such, other values can fail the signature outright, and the walk then answers from the
+            // real return type as though it were a parameter, ignoring the rest. Which answer comes back
+            // depends on the numeric values of counts reinterpreted as element types — not on anything a
+            // correctly decoded signature still knows. So the refusal covers every pair that reaches
+            // there, rather than trying to predict it.
+            if
+                leftSignature.Header = rightSignature.Header
+                && leftSignature.Header.Get.IsGeneric
+                && leftSignature.GenericParameterCount = rightSignature.GenericParameterCount
+            then
+                failwithf
+                    "TODO: comparing two function pointer signatures that spell the same GENERIC calling convention and the same generic-parameter count (in %s against %s); from here CoreCLR compares elements read at a one-integer offset into each blob, reinterpreting the parameter-count byte as an element type, which cannot be reproduced from a decoded signature"
+                    leftCtx.Assembly.FullName
+                    rightCtx.Assembly.FullName
+
             compareSignatureTypes ctx loadAssembly leftCtx rightCtx false false leftSignature rightSignature
 
         | (TypeDefn.FromDefinition _ | TypeDefn.FromReference _), (TypeDefn.FromDefinition _ | TypeDefn.FromReference _) ->
@@ -1563,7 +1777,7 @@ module TypeConcretization =
         {
             Parameters : GenericParamMetadata list
             Assembly : AssemblyName
-            DeclaringTypeGenerics : ImmutableArray<ConcreteTypeHandle>
+            DeclaringTypeGenerics : SubstitutionContext
         }
 
     /// `MetaSig::CompareMethodConstraints` (siginfo.cpp:5108) and the per-parameter rule it
@@ -1591,13 +1805,13 @@ module TypeConcretization =
         let implCtx : ElementContext =
             {
                 Assembly = impl.Assembly
-                TypeGenerics = impl.DeclaringTypeGenerics
+                TypeGenerics = impl.DeclaringTypeGenerics.Arguments
             }
 
         let declCtx : ElementContext =
             {
                 Assembly = decl.Assembly
-                TypeGenerics = decl.DeclaringTypeGenerics
+                TypeGenerics = decl.DeclaringTypeGenerics.Arguments
             }
 
         // A constraint naming `System.Object` says nothing, and neither does one naming
@@ -1710,7 +1924,7 @@ module TypeConcretization =
         let toElementContext (comparand : SignatureComparand) : ElementContext =
             {
                 Assembly = comparand.Assembly
-                TypeGenerics = comparand.DeclaringTypeGenerics
+                TypeGenerics = comparand.DeclaringTypeGenerics.Arguments
             }
 
         compareSignatureTypes

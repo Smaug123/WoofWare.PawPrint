@@ -257,9 +257,13 @@ public static class Entry
             |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteOffset)
 
         match
-            IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.Numeric (CliNumericType.UInt8 0uy))
+            IlMachineState.readManagedByrefBytesAs
+                baseClassTypes
+                state
+                ptr
+                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
         with
-        | CliType.Numeric (CliNumericType.UInt8 value) -> value
+        | CliType.Numeric (CliNumericType.UInt8 value) -> UInt8Source.value "manifest resource byte" value
         | other -> failwith $"expected byte read, got %O{other}"
 
     /// A zero-length payload has no readable byte at all, and that — not "a read of nothing
@@ -283,7 +287,7 @@ public static class Entry
                     baseClassTypes
                     state
                     ptr
-                    (CliType.Numeric (CliNumericType.UInt8 0uy))
+                    (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
                 |> ignore
             )
 
@@ -791,10 +795,10 @@ public static class Entry
         ManagedPointerSource.tryStableAddressBits ptr
         |> shouldEqual (Some (int64 peByteRange.RelativeVirtualAddress))
 
-        let byteTemplate = CliType.Numeric (CliNumericType.UInt8 0uy)
+        let byteTemplate = CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))
 
         IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr byteTemplate
-        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 resourceBytes.[0]))
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim resourceBytes.[0])))
 
         let offsetPtr =
             ptr |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 3)
@@ -803,7 +807,7 @@ public static class Entry
         |> shouldEqual (Some (int64 peByteRange.RelativeVirtualAddress + 3L))
 
         IlMachineState.readManagedByrefBytesAs baseClassTypes state offsetPtr byteTemplate
-        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 resourceBytes.[3]))
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim resourceBytes.[3])))
 
         let emptyPeByteRange =
             IlMachineState.peByteRangeForEmbeddedManifestResource emptyResource
