@@ -169,9 +169,12 @@ measurement.
 Three small DUs restricted to values that can actually appear on a live socket
 (`SocketDomain = InterNetwork | InterNetworkV6 | Unix`, `SocketKind = Stream |
 Datagram | Raw | SeqPacket`, `SocketProtocol = Unspecified | Tcp | Udp`), with
-the *set of creatable triples* expressed once, as the classifier that
-`SystemNative_Socket` consults. The product type over-approximates; the
-classifier is the truth, and it is flavour-dependent (D1's Linux-only rows).
+the *set of creatable triples* expressed once, as the classifier
+`SystemNative_Socket` consults: `SimulatedUnixPlatform.socketCreation`, which
+lives there rather than beside the descriptor types because it needs the flavour
+and `EmulatedKernel.fs` compiles after `FileDescriptorRegistry.fs`. The product
+type over-approximates; the classifier is the truth, and it returns the narrow
+triple, so no illegal combination can reach a description.
 
 The triple is stored even though nothing in this PR reads it back. It is not
 speculative generality: it is the information the guest supplied, and

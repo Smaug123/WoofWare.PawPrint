@@ -1537,7 +1537,13 @@ module TestFileDescriptorRegistry =
                 // Biased towards allocation so the table grows on average and
                 // several sockets are live at once, which is what makes the
                 // duplicate-identity clause reachable at all.
-                match rng.Next 10 with
+                //
+                // `close` and `dup` need something to name, and an unlucky run
+                // of closes really can empty the table — the standard streams
+                // are ordinary descriptors here, with nothing pinning them — so
+                // an empty table falls through to the allocating arms rather
+                // than indexing an empty list.
+                match (if List.isEmpty live then 9 else rng.Next 10) with
                 | 0
                 | 1 ->
                     match FileDescriptorRegistry.close live.[rng.Next live.Length] registry with
