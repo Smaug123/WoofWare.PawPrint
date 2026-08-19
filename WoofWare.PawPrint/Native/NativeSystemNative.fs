@@ -555,30 +555,16 @@ module NativeSystemNative =
     /// before every `Stat`/`LStat`, so the path arriving here is normally
     /// already absolute and the current directory is not consulted at all.
     ///
-    /// **Known limitation: no length re-check when a symlink is spliced.**
-    /// Darwin re-checks the total length each time it expands a symbolic link
-    /// (XNU `namei`: `linklen + ni_pathlen > MAXPATHLEN`), so a *short* argument
-    /// can still be ENAMETOOLONG through a long target — measured, a 206-byte
-    /// argument through an 885-byte target. Linux does not: measured, a
-    /// 3842-byte target with an 806-byte remainder resolves, 4648 spliced.
-    /// PawPrint implements neither, so it answers as Linux does on both.
-    ///
-    /// Reproducing Darwin's rule needs the byte length of the *unconsumed*
-    /// remainder, which this walk does not have: it holds a `PathComponent
-    /// list`. Threading a length through it is its own change, and the trigger
-    /// has to be designed against measurement rather than arithmetic: probing
-    /// showed XNU consumes `//` runs before splicing, contradicting a
-    /// plausible-looking argument about how the kernel counts.
-    ///
-    /// Only a hand-written seed reaches it: symlinks enter the filesystem only
-    /// through seeds, and the differential oracle's validator permits only
-    /// single-component targets.
-    let private resolveGuestPath
+    /// `trailingSeparatorPolicy` is the caller's, not the path's: a *creating*
+    /// open refuses a trailing separator on Linux where every lookup merely
+    /// records the demand. See `TrailingSeparatorPolicy`.
+    let private resolveGuestPathFull
         (operation : string)
         (policy : SymlinkPolicy)
+        (trailingSeparatorPolicy : TrailingSeparatorPolicy)
         (kernel : EmulatedKernel)
         (path : UnixPath)
-        : Result<InodeNumber, UnixError>
+        : Result<Resolution, UnixError>
         =
         let vfs = kernel.FileSystem
         let root = VirtualFileSystem.root vfs
@@ -603,7 +589,21 @@ module NativeSystemNative =
                 failwith
                     $"%s{operation}: the guest passed the relative path \"%s{UnixPath.toString path}\", but the configured current directory \"%s{AbsoluteUnixPath.toString kernel.CurrentDirectory}\" does not resolve in the seeded filesystem (%O{error}). A process cannot be started in a directory that does not exist; make KernelConfig.FileSystem contain KernelConfig.CurrentDirectory."
 
-        VirtualFileSystem.resolveExisting limits startDirectory policy path vfs
+        VirtualFileSystem.resolveFull limits startDirectory policy trailingSeparatorPolicy path vfs
+
+    /// The inode a path names, or the errno the lookup owes the guest — what
+    /// every non-creating caller wants. Shares `resolveGuestPathFull`'s walk and
+    /// `VirtualFileSystem.existingOf`'s free-name-is-ENOENT rule, rather than
+    /// re-deciding either here.
+    let private resolveGuestPath
+        (operation : string)
+        (policy : SymlinkPolicy)
+        (kernel : EmulatedKernel)
+        (path : UnixPath)
+        : Result<InodeNumber, UnixError>
+        =
+        resolveGuestPathFull operation policy TrailingSeparatorPolicy.Demand kernel path
+        |> Result.bind (fun resolution -> VirtualFileSystem.existingOf resolution.Target)
 
     /// `sizeof(FileStatus)`: four 32-bit fields, then twelve 64-bit ones, then
     /// a trailing `uint32_t`, rounded up to the struct's 8-byte alignment.
@@ -1514,30 +1514,27 @@ module NativeSystemNative =
 
             if accessMode <> palRdOnly && accessMode <> palWrOnly && accessMode <> palRdWr then
                 fail UnixError.EINVAL
-            else
+            else if
 
-            // The flags that would *create or destroy* content are refused loudly
-            // rather than answered: nothing in the emulated filesystem can yet
-            // bind a new name or shorten a file, so an `O_TRUNC` honoured as a
-            // no-op, or an `O_CREAT` that quietly reported ENOENT, would hand a
-            // guest a descriptor whose contract PawPrint cannot keep. The crash
-            // names the flag, which is more use than a generic "unimplemented
-            // native".
-            //
-            // Known over-refusal, recorded because a green suite cannot show it:
-            // `FileMode.OpenOrCreate` sets `O_CREAT` even for a file that
-            // *exists*, which is a case this handler could answer correctly.
-            let refuse (flag : string) : NativeHandlerResult option =
+                // `O_TRUNC` alone is still refused loudly: nothing in the emulated
+                // filesystem can shorten a file, so honouring it as a no-op would
+                // hand the guest a descriptor whose contract PawPrint cannot keep,
+                // and the crash names the flag rather than falling through to a
+                // generic "unimplemented native".
+                flags &&& palTrunc <> 0
+            then
                 failwith
-                    $"%s{operation}: the guest asked for %s{flag}, but PawPrint cannot yet create or truncate a file — nothing binds a new name in the emulated filesystem or shortens an existing one, so a descriptor opened this way could not honour its contract. Implement creation and truncation (issue #956) before opening one."
-
-            if flags &&& palCreat <> 0 then
-                refuse "O_CREAT"
-            elif flags &&& palExcl <> 0 then
-                refuse "O_EXCL"
-            elif flags &&& palTrunc <> 0 then
-                refuse "O_TRUNC"
+                    $"%s{operation}: the guest asked for O_TRUNC, but PawPrint cannot yet shorten a file — nothing in the emulated filesystem truncates one, so a descriptor opened this way could not honour its contract. Implement truncation, together with SystemNative_FTruncate (issue #956), before opening one."
             else
+
+            let creating = flags &&& palCreat <> 0
+
+            // `O_EXCL` without `O_CREAT` is not an error and not a refusal: the
+            // shim passes it through and both kernels ignore it entirely
+            // (measured: `open(existing, O_WRONLY|O_EXCL)` succeeds and
+            // `open(missing, O_WRONLY|O_EXCL)` is ENOENT, exactly as without it).
+            // So it is read only when `creating` is set.
+            let exclusive = creating && flags &&& palExcl <> 0
 
             let requestedAccess =
                 if accessMode = palWrOnly then FileAccessMode.WriteOnly
@@ -1551,16 +1548,34 @@ module NativeSystemNative =
             // visible, and this filesystem holds its bytes in memory, so every
             // write is already as durable as the model gets.
             //
-            // The `mode` argument is ignored rather than validated, and must
-            // be: `SafeFileHandle.OpenReadOnly` passes `DefaultCreateMode`
-            // (0666) even for a read-only open of an existing file
+            // The `mode` argument is *not* validated, and must not be:
+            // `SafeFileHandle.OpenReadOnly` passes `DefaultCreateMode` (0666)
+            // even for a read-only open of an existing file
             // (SafeFileHandle.Unix.cs:168), so a handler that refused a nonzero
-            // mode without `O_CREAT` would refuse the BCL's own read path.
+            // mode without `O_CREAT` would refuse the BCL's own read path. It is
+            // read only when a file is actually created, and then masked rather
+            // than rejected: measured, `mode` 0o10777 creates 0o0755 on both
+            // kernels, so a bit above the permission word is dropped exactly as
+            // the platform's own mask drops it.
+            let rules = SimulatedUnixPlatform.creatingOpenRules state.Kernel.UnixPlatform
+
+            // `O_CREAT|O_EXCL` does not follow a final symlink -- measured
+            // unanimously: an existing link is EEXIST whether it dangles, points
+            // at a file, or points at itself, and nothing is created. Selecting
+            // `Follow` here would create the *target* of a dangling link, and
+            // would answer ELOOP for a cyclic one, where both kernels answer
+            // EEXIST.
             let policy =
-                if flags &&& palNoFollow <> 0 then
+                if flags &&& palNoFollow <> 0 || exclusive then
                     SymlinkPolicy.NoFollowFinal
                 else
                     SymlinkPolicy.Follow
+
+            let trailingSeparatorPolicy =
+                if creating then
+                    rules.TrailingSeparator
+                else
+                    TrailingSeparatorPolicy.Demand
 
             match
                 bufferPointerArgument operation "path" instruction.Arguments.[0]
@@ -1583,9 +1598,62 @@ module NativeSystemNative =
             | Error error -> fail error
             | Ok path ->
 
-            match resolveGuestPath operation policy state.Kernel path with
+            match resolveGuestPathFull operation policy trailingSeparatorPolicy state.Kernel path with
             | Error error -> fail error
-            | Ok inode ->
+            | Ok resolution ->
+
+            // The whole creating decision is `CreatingOpenRules.verdict`, which is
+            // pure and so is compared against a real kernel in
+            // TestVirtualFileSystemAgainstHost. What is left here is only what
+            // cannot be pure: allocating the inode and registering a descriptor.
+            match
+                CreatingOpenRules.verdict
+                    rules
+                    (EmulatedKernel.isPrivileged state.Kernel)
+                    creating
+                    exclusive
+                    resolution
+                    state.Kernel.FileSystem
+            with
+            | CreatingOpenVerdict.Refuse error -> fail error
+            | CreatingOpenVerdict.Create (directory, name) ->
+                let mode = NativeCall.int32Argument operation instruction.Arguments.[2]
+                let permissions = CreatingOpenRules.createdPermissions rules state.Kernel.Umask mode
+                let now = EmulatedKernel.fileTimestamp state.Kernel
+
+                match
+                    VirtualFileSystem.createFile
+                        directory
+                        name
+                        permissions
+                        now
+                        ImmutableArray<byte>.Empty
+                        state.Kernel.FileSystem
+                with
+                | Error error ->
+                    // `createFile` refuses a name the directory already holds,
+                    // and a parent that is not a directory. The walk has just
+                    // established neither is the case, so either is a broken
+                    // graph rather than something the guest did.
+                    failwith
+                        $"%s{operation}: creating \"%s{FileName.toString name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is an interpreter bug)."
+                | Ok (inode, filesystem) ->
+
+                let fd, registry =
+                    FileDescriptorRegistry.openFile inode requestedAccess state.Kernel.FileDescriptors
+
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        FileSystem = filesystem
+                        FileDescriptors = registry
+                    }
+                )
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64 fd)))
+                    ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | CreatingOpenVerdict.OpenExisting inode ->
 
             let entry =
                 match VirtualFileSystem.tryGet inode state.Kernel.FileSystem with
@@ -1665,11 +1733,20 @@ module NativeSystemNative =
                 fail UnixError.EACCES
             else
 
-            // The *search* half of the permission rule is still missing, and
-            // belongs in the resolver rather than here: every component of every
-            // path needs it, so `Stat`, `LStat` and `ReadLink` all owe the same
-            // answer. Until it lands, a seed can describe a directory whose
-            // owner-search bit is clear and PawPrint will walk through it anyway.
+            // The *search* half of the permission rule is still missing from the
+            // walk, and belongs in the resolver rather than here: every component
+            // of every path needs it, so `Stat`, `LStat` and `ReadLink` all owe
+            // the same answer. Until it lands, a seed can describe a directory
+            // whose owner-search bit is clear and PawPrint will walk through it
+            // anyway.
+            //
+            // The creation arm above does check search on the one directory it
+            // binds into, so the two halves are deliberately asymmetric today:
+            // `open("nosearch/existing", O_RDONLY)` succeeds under PawPrint where
+            // a kernel answers EACCES, while `open("nosearch/new", O_CREAT)`
+            // correctly fails. That is a complete rule about the binding
+            // directory rather than half of the walk's rule, which is why it does
+            // not wait for the resolver's.
             let fd, registry =
                 FileDescriptorRegistry.openFile inode requestedAccess state.Kernel.FileDescriptors
 
@@ -1683,6 +1760,24 @@ module NativeSystemNative =
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_FTruncate",
+          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64 ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_FTruncate(intptr_t fd, int64_t length)`
+            // (pal_io.c:1094). Refused loudly rather than answered, because
+            // nothing in the emulated filesystem can shorten or extend a file
+            // yet, and this is the entry point through which the BCL's most
+            // common creation APIs truncate: with file locking enabled
+            // `FileMode.Create` and `FileMode.Truncate` emit no `O_TRUNC` at all
+            // and call this from `SafeFileHandle.Init` instead
+            // (SafeFileHandle.Unix.cs:416), *after* the open has succeeded.
+            //
+            // A curated arm rather than the generic unimplemented-native failure:
+            // now that `O_CREAT` works, `File.Create`/`File.WriteAllText` get
+            // through their open and land here, so this is the message that
+            // names what is missing for the commonest way to reach it.
+            failwith
+                $"SystemNative_FTruncate: PawPrint cannot yet change a file's length. The guest reached this through a FileMode.Create or FileMode.Truncate open, which truncates from SafeFileHandle.Init rather than with O_TRUNC. Implement truncation (issue #956)."
         | Some "SystemNative_FStat",
           [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer fileStatusHandle ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->

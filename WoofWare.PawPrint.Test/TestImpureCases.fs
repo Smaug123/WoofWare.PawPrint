@@ -692,6 +692,37 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // Pins the *wiring* of the creating open: that the handler reads
+                // `Kernel.Umask` and `Kernel.UnixPlatform` rather than
+                // hardcoding the defaults. The unit tests pass
+                // `CreatingOpenRules` in by hand, so only a guest can see this.
+                //
+                // Both knobs are set away from their defaults on purpose: macOS
+                // because Linux gives the opposite answer for every directory
+                // row, and umask 0o077 because 0o022 is what
+                // `PermissionBits.defaultForRegularFile` already bakes in.
+                FileName = "CreateWiringSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        Umask = PermissionBits.parseOrFail "test seed" 0o077
+                        FileSystem =
+                            [
+                                FileName.parseOrFail "test seed" "f",
+                                SeedEntry.file (
+                                    Text.Encoding.UTF8.GetBytes "hello"
+                                    |> System.Collections.Immutable.ImmutableArray.CreateRange
+                                )
+                                FileName.parseOrFail "test seed" "d", SeedEntry.directory Map.empty
+                            ]
+                            |> Map.ofList
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // Pins Darwin's symlink-splice length re-check end to end. The
                 // unit tests call the resolver directly, so a `resolveGuestPath`
                 // passing hardcoded limits would satisfy all of them; only a
