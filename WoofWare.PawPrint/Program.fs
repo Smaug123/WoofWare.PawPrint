@@ -441,28 +441,27 @@ module Program =
         let state =
             SyncBlockMonitor.applySpuriousWakeups state.Kernel.SyncBlockSpuriousWakeup state.Kernel.StepCounter state
 
-        let prepared =
-            { prepared with
-                State =
-                    state.MapKernel (fun kernel ->
-                        // `EmulatedKernel.InstructionCostTicks` of virtual time per scheduler
-                        // tick — see that constant for the rate and why it is what it is.
-                        // Bumping in lock-step with `StepCounter` keeps both clocks pure
-                        // functions of "how many scheduler ticks have elapsed", which is what
-                        // tests rely on when driving the strategies without a real driver.
-                        //
-                        // Through `withVirtualClockTicks` so that the horizon is enforced at
-                        // the writer; this path cannot realistically reach it (it would take
-                        // ~9.2e12 retired instructions) but going around the validating setter
-                        // would leave the invariant true only by coincidence.
-                        { kernel with
-                            StepCounter = kernel.StepCounter + 1L
-                        }
-                        |> EmulatedKernel.withVirtualClockTicks (
-                            kernel.VirtualClockTicks + kernel.InstructionCostTicks
-                        )
-                    )
-            }
+        // Threaded as a state rather than rebuilding `prepared` at each stage below: every stage
+        // from here to the return touches only `State`, so each rebuilt `PreparedProgram` existed
+        // only for the next stage to read `.State` straight back out of it. This function runs
+        // once per interpreted instruction, which is what made those wrappers worth removing.
+        let state =
+            state.MapKernel (fun kernel ->
+                // `EmulatedKernel.InstructionCostTicks` of virtual time per scheduler
+                // tick — see that constant for the rate and why it is what it is.
+                // Bumping in lock-step with `StepCounter` keeps both clocks pure
+                // functions of "how many scheduler ticks have elapsed", which is what
+                // tests rely on when driving the strategies without a real driver.
+                //
+                // Through `withVirtualClockTicks` so that the horizon is enforced at
+                // the writer; this path cannot realistically reach it (it would take
+                // ~9.2e12 retired instructions) but going around the validating setter
+                // would leave the invariant true only by coincidence.
+                { kernel with
+                    StepCounter = kernel.StepCounter + 1L
+                }
+                |> EmulatedKernel.withVirtualClockTicks (kernel.VirtualClockTicks + kernel.InstructionCostTicks)
+            )
 
         // After advancing `VirtualClockTicks`, fire any wait deadlines that
         // are now in the past. This runs every tick (not just on
@@ -472,10 +471,7 @@ module Program =
         // thread B is busy computing something else — A's deadline still
         // fires when the clock reaches it, even though B keeps the
         // scheduler from ever stalling.
-        let prepared =
-            { prepared with
-                State = fireExpiredDeadlines prepared.State
-            }
+        let state = fireExpiredDeadlines state
 
         // Drive the signal-dispatcher state machine before the scheduler
         // picks its next thread. If a pending signal is deliverable and
@@ -483,10 +479,7 @@ module Program =
         // and installs a handler-invocation bottom frame; the scheduler
         // then picks the dispatcher up on the same tick. If nothing is
         // deliverable, this is a no-op and the next tick re-polls.
-        let prepared =
-            { prepared with
-                State = SignalDispatch.trySpawnHandler prepared.BaseClassTypes prepared.State
-            }
+        let state = SignalDispatch.trySpawnHandler prepared.BaseClassTypes state
 
         // Jump-to-deadline fallback: if no thread is Runnable but at
         // least one is parked with a finite-timeout wait outstanding,
@@ -540,7 +533,7 @@ module Program =
                     advanceUntilRunnableOrQuiescent (fireExpiredDeadlines state)
 
         { prepared with
-            State = advanceUntilRunnableOrQuiescent prepared.State
+            State = advanceUntilRunnableOrQuiescent state
         }
 
     /// The second half of a scheduler tick: ask the policy which thread runs next, run it, and
