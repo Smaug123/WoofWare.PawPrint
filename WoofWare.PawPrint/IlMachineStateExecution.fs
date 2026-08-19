@@ -2470,7 +2470,9 @@ module IlMachineStateExecution =
             ExceptionDispatching.allocateRuntimeException loggerFactory baseClassTypes exceptionTypeInfo state
 
         // 2. Find the parameterless .ctor on the exception type.
-        let assy = state._LoadedAssemblies.[exceptionTypeInfo.Assembly]
+        let assy =
+            state._LoadedAssemblies.ByDefinitionName exceptionTypeInfo.AssemblyFullName
+
         let typeDef = assy.TypeDefs.[exceptionTypeInfo.Identity.TypeDefinition.Get]
 
         if not typeDef.Generics.IsEmpty then

@@ -1359,7 +1359,7 @@ module ExceptionDispatching =
                 loggerFactory
                 baseClassTypes
                 state
-                exceptionTypeInfo.Assembly.FullName
+                exceptionTypeInfo.AssemblyFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (exceptionTypeInfo.Identity, stk))

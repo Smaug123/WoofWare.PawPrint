@@ -80,7 +80,7 @@ module TestNominalAlignment =
 
         let foreign : TypeInfo<GenericParamFromMetadata, TypeDefn> =
             { int128 with
-                Assembly = AssemblyName "SomeGuestAssembly"
+                AssemblyFullName = "SomeGuestAssembly"
             }
 
         DeclaredTypeFacts.nominalAlignment bct foreign |> shouldEqual None

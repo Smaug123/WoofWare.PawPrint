@@ -38,25 +38,22 @@ module TestTypeResolution =
         |> shouldEqual [| typeof<ResolvedTypeIdentity> ; typeof<SignatureTypeKind> |]
 
     [<Test>]
-    let ``NominallyEqual sees through distinct AssemblyName instances`` () : unit =
-        // `NominallyEqual` compares assemblies by display name, but takes a reference-equality
-        // fast path first because the two sides are almost always the same `AssemblyName`
-        // object. They are not *always*: `MethodInfo.read` mints a fresh `AssemblyName` for
-        // every method it reads, so two `TypeInfo`s denoting the same type can carry different
-        // instances. This pins that the fast path falls through rather than reporting a
-        // spurious mismatch — the failure mode if the `||` were ever dropped.
+    let ``NominallyEqual compares assembly identities by value`` () : unit =
+        // `NominallyEqual` compares the two types' assemblies, and must do so by what the identity
+        // says rather than by which object holds it: two `TypeInfo`s denoting the same type need not
+        // carry the same string instance.
         let corelib = baseClassTypes ()
         let stringType = corelib.String
 
         let rehomed =
             { stringType with
-                Assembly = System.Reflection.AssemblyName (stringType.Assembly.FullName)
+                AssemblyFullName = System.String (stringType.AssemblyFullName.ToCharArray ())
             }
 
-        System.Object.ReferenceEquals (stringType.Assembly, rehomed.Assembly)
+        System.Object.ReferenceEquals (stringType.AssemblyFullName, rehomed.AssemblyFullName)
         |> shouldEqual false
 
-        rehomed.Assembly.FullName |> shouldEqual stringType.Assembly.FullName
+        rehomed.AssemblyFullName |> shouldEqual stringType.AssemblyFullName
 
         TypeInfo.NominallyEqual stringType rehomed |> shouldEqual true
         TypeInfo.NominallyEqual rehomed stringType |> shouldEqual true
@@ -64,14 +61,13 @@ module TestTypeResolution =
     [<Test>]
     let ``NominallyEqual still separates identical rows in different assemblies`` () : unit =
         // The mirror of the above: the same TypeDef row number in a different assembly must not
-        // compare equal. Without the display-name comparison behind it, the reference-equality
-        // fast path would be a silent identity collapse across assemblies.
+        // compare equal, or two assemblies' type graphs collapse into one.
         let corelib = baseClassTypes ()
         let stringType = corelib.String
 
         let elsewhere =
             { stringType with
-                Assembly = System.Reflection.AssemblyName "Some.Other.Assembly"
+                AssemblyFullName = "Some.Other.Assembly"
             }
 
         TypeInfo.NominallyEqual stringType elsewhere |> shouldEqual false

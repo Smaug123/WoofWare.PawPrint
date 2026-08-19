@@ -13,39 +13,6 @@ open System.Reflection.PortableExecutable
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 
-/// <summary>
-/// Represents a .NET assembly definition.
-/// This is a strongly-typed representation of AssemblyDefinition from System.Reflection.Metadata.
-/// </summary>
-type AssemblyDefinition =
-    {
-        /// <summary>
-        /// The fully specified name of the assembly, including name, version, culture, and public key token.
-        /// </summary>
-        Name : AssemblyName
-        /// <summary>
-        /// <c>Name</c> serialised to a display name: this assembly's <em>definition identity</em>, which
-        /// <c>LoadedAssemblies</c> keys on.
-        /// </summary>
-        /// <remarks>
-        /// Stored rather than recomputed from <c>Name</c>. A metadata-derived <c>AssemblyName</c> carries the
-        /// assembly's public <em>key</em> rather than its token, and <c>AssemblyName.FullName</c> derives the
-        /// token from the key on every call — a SHA-1 over the key, and 613 bytes, each time, over a value
-        /// that cannot change.
-        /// </remarks>
-        FullName : string
-    }
-
-[<RequireQualifiedAccess>]
-module AssemblyDefinition =
-    let make (assy : System.Reflection.Metadata.AssemblyDefinition) : AssemblyDefinition =
-        let name = assy.GetAssemblyName ()
-
-        {
-            Name = name
-            FullName = name.FullName
-        }
-
 /// Metadata for a manifest resource whose payload is embedded in this assembly image.
 type EmbeddedManifestResource =
     {
@@ -206,7 +173,7 @@ type DumpedAssembly =
         /// <summary>
         /// Information about this assembly.
         /// </summary>
-        ThisAssemblyDefinition : AssemblyDefinition
+        ThisAssemblyDefinition : WoofWare.PawPrint.AssemblyDefinition
 
         /// <summary>
         /// The root namespace of this assembly.
@@ -1047,7 +1014,9 @@ module Assembly =
             System.Security.Cryptography.SHA256.HashData (image.GetContent().AsSpan ())
             |> ImmutableArray.Create<byte>
 
-        let assy = metadataReader.GetAssemblyDefinition () |> AssemblyDefinition.make
+        let assy =
+            metadataReader.GetAssemblyDefinition ()
+            |> WoofWare.PawPrint.AssemblyDefinition.make
 
         let entryPoint =
             peReader.PEHeaders.CorHeader.EntryPointTokenOrRelativeVirtualAddress
@@ -1076,7 +1045,7 @@ module Assembly =
             let builder = ImmutableDictionary.CreateBuilder ()
 
             for ty in metadataReader.TypeDefinitions do
-                builder.Add (ty, TypeInfo.read peReader assy.Name metadataReader ty)
+                builder.Add (ty, TypeInfo.read peReader assy metadataReader ty)
 
             builder.ToImmutable ()
 
@@ -1778,7 +1747,7 @@ module Assembly =
 
 [<RequireQualifiedAccess>]
 module DumpedAssembly =
-    let private getName (a : DumpedAssembly) : AssemblyName = a.Name
+    let private getName (a : DumpedAssembly) : string = a.DefinitionFullName
 
     let private getTypeDef (a : DumpedAssembly) (h : TypeDefinitionHandle) : TypeInfo<TypeDefn, TypeDefn> =
         a.TypeDefs.[h]
@@ -1832,8 +1801,8 @@ module DumpedAssembly =
 
         go a signature
 
-    let private assemblies (loadedAssemblies : LoadedAssemblies) (n : AssemblyName) : DumpedAssembly =
-        loadedAssemblies.[n]
+    let private assemblies (loadedAssemblies : LoadedAssemblies) (identity : string) : DumpedAssembly =
+        loadedAssemblies.ByDefinitionName identity
 
     /// ECMA "value type": transitively inherits from System.ValueType (possibly via System.Enum),
     /// but is NOT exactly System.ValueType or System.Enum themselves.

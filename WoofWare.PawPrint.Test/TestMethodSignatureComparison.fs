@@ -265,8 +265,8 @@ public class OpenGeneric<T>
 
         let modifier =
             TypeDefn.FromDefinition (
-                ResolvedTypeIdentity.ofTypeDefinition
-                    fixture.BaseClassTypes.Object.Assembly
+                ResolvedTypeIdentity.ofDefinitionInAssembly
+                    fixture.BaseClassTypes.Object.AssemblyFullName
                     fixture.BaseClassTypes.Object.TypeDefHandle,
                 SignatureTypeKind.Class
             )
@@ -291,8 +291,8 @@ public class OpenGeneric<T>
 
         let modifier =
             TypeDefn.FromDefinition (
-                ResolvedTypeIdentity.ofTypeDefinition
-                    fixture.BaseClassTypes.Object.Assembly
+                ResolvedTypeIdentity.ofDefinitionInAssembly
+                    fixture.BaseClassTypes.Object.AssemblyFullName
                     fixture.BaseClassTypes.Object.TypeDefHandle,
                 SignatureTypeKind.Class
             )
@@ -318,14 +318,17 @@ public class OpenGeneric<T>
     let ``modifiers applied in opposite orders are not equivalent`` () =
         let fixture = fixture ()
 
-        let nominal (assembly : System.Reflection.AssemblyName) (handle : TypeDefinitionHandle) =
-            TypeDefn.FromDefinition (ResolvedTypeIdentity.ofTypeDefinition assembly handle, SignatureTypeKind.Class)
+        let nominal (assembly : string) (handle : TypeDefinitionHandle) =
+            TypeDefn.FromDefinition (
+                ResolvedTypeIdentity.ofDefinitionInAssembly assembly handle,
+                SignatureTypeKind.Class
+            )
 
         let outerFirst =
-            nominal fixture.BaseClassTypes.Object.Assembly fixture.BaseClassTypes.Object.TypeDefHandle
+            nominal fixture.BaseClassTypes.Object.AssemblyFullName fixture.BaseClassTypes.Object.TypeDefHandle
 
         let innerFirst =
-            nominal fixture.BaseClassTypes.String.Assembly fixture.BaseClassTypes.String.TypeDefHandle
+            nominal fixture.BaseClassTypes.String.AssemblyFullName fixture.BaseClassTypes.String.TypeDefHandle
 
         let doublyModified (outer : TypeDefn) (inner : TypeDefn) =
             staticSignature
@@ -365,8 +368,8 @@ public class OpenGeneric<T>
             staticSignature
                 [
                     TypeDefn.FromDefinition (
-                        ResolvedTypeIdentity.ofTypeDefinition
-                            fixture.BaseClassTypes.Object.Assembly
+                        ResolvedTypeIdentity.ofDefinitionInAssembly
+                            fixture.BaseClassTypes.Object.AssemblyFullName
                             fixture.BaseClassTypes.Object.TypeDefHandle,
                         SignatureTypeKind.Class
                     )
@@ -538,8 +541,8 @@ public class OpenGeneric<T>
 
         let modifier =
             TypeDefn.FromDefinition (
-                ResolvedTypeIdentity.ofTypeDefinition
-                    fixture.BaseClassTypes.Object.Assembly
+                ResolvedTypeIdentity.ofDefinitionInAssembly
+                    fixture.BaseClassTypes.Object.AssemblyFullName
                     fixture.BaseClassTypes.Object.TypeDefHandle,
                 SignatureTypeKind.Class
             )
@@ -865,7 +868,7 @@ public class OpenGeneric<T>
 
     let private nominalOf (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>) : TypeDefn =
         TypeDefn.FromDefinition (
-            ResolvedTypeIdentity.ofTypeDefinition ty.Assembly ty.TypeDefHandle,
+            ResolvedTypeIdentity.ofDefinitionInAssembly ty.AssemblyFullName ty.TypeDefHandle,
             SignatureTypeKind.Class
         )
 

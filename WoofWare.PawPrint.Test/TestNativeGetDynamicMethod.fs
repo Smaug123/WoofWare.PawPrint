@@ -2593,7 +2593,7 @@ public static class Entry
                 loggerFactory
                 baseClassTypes
                 state
-                moduleTypeInfo.Assembly.FullName
+                moduleTypeInfo.AssemblyFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (moduleTypeInfo.Identity, stk))

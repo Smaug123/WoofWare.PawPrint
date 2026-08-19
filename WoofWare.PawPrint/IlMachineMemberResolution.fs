@@ -64,7 +64,7 @@ module IlMachineMemberResolution =
                         loggerFactory
                         baseClassTypes
                         state
-                        targetType.Assembly.FullName
+                        targetType.AssemblyFullName
                         ImmutableArray.Empty
                         ImmutableArray.Empty
                         ty

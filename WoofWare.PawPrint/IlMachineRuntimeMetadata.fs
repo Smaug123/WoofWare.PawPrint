@@ -1332,7 +1332,7 @@ module IlMachineRuntimeMetadata =
                 loggerFactory
                 baseClassTypes
                 state
-                tieTypeInfo.Assembly.FullName
+                tieTypeInfo.AssemblyFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (tieTypeInfo.Identity, stk))
@@ -1405,7 +1405,7 @@ module IlMachineRuntimeMetadata =
                 loggerFactory
                 baseClassTypes
                 state
-                tieTypeInfo.Assembly.FullName
+                tieTypeInfo.AssemblyFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (tieTypeInfo.Identity, stk))

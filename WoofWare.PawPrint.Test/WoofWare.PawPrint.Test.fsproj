@@ -38,6 +38,7 @@
     <Compile Include="TestTypeResolution.fs" />
     <Compile Include="TestTypeRefHandle.fs" />
     <Compile Include="TestTypeIdentityProperties.fs" />
+    <Compile Include="TestTypeInfoAssemblyIdentity.fs" />
     <Compile Include="TestEnumClassification.fs" />
     <Compile Include="TestEvalStack.fs" />
     <Compile Include="TestIntrinsicValueArguments.fs" />

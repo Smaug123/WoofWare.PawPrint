@@ -1393,7 +1393,7 @@ public sealed class Box<T>
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Int32.Assembly.FullName
+                baseClassTypes.Int32.AssemblyFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.PrimitiveType PrimitiveType.Int32)

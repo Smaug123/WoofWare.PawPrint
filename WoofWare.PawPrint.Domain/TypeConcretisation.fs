@@ -868,7 +868,7 @@ module TypeConcretization =
 
         // Check if we've already concretized this primitive type
         let identity =
-            ResolvedTypeIdentity.ofTypeDefinition typeInfo.Assembly typeInfo.TypeDefHandle
+            ResolvedTypeIdentity.ofDefinitionInAssembly typeInfo.AssemblyFullName typeInfo.TypeDefHandle
 
         match findExistingPrimitiveType ctx.ConcreteTypes identity with
         | Some handle -> handle, ctx
@@ -1046,7 +1046,9 @@ module TypeConcretization =
             match
                 findExistingType
                     ctx.ConcreteTypes
-                    (ResolvedTypeIdentity.ofTypeDefinition voidTypeInfo.Assembly voidTypeInfo.TypeDefHandle)
+                    (ResolvedTypeIdentity.ofDefinitionInAssembly
+                        voidTypeInfo.AssemblyFullName
+                        voidTypeInfo.TypeDefHandle)
                     ImmutableArray.Empty
             with
             | Some handle -> handle, ctx
@@ -1054,7 +1056,9 @@ module TypeConcretization =
                 // Create and add the concrete Void type
                 createAndAddConcreteType
                     ctx
-                    (ResolvedTypeIdentity.ofTypeDefinition voidTypeInfo.Assembly voidTypeInfo.TypeDefHandle)
+                    (ResolvedTypeIdentity.ofDefinitionInAssembly
+                        voidTypeInfo.AssemblyFullName
+                        voidTypeInfo.TypeDefHandle)
                     voidTypeInfo.Namespace
                     voidTypeInfo.Name
                     ImmutableArray.Empty // Void has no generic parameters
@@ -1880,7 +1884,7 @@ module TypeConcretization =
             | Some identity ->
 
             let isBaseType (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>) =
-                identity = ResolvedTypeIdentity.ofTypeDefinition ty.Assembly ty.TypeDefHandle
+                identity = ResolvedTypeIdentity.ofDefinitionInAssembly ty.AssemblyFullName ty.TypeDefHandle
 
             isBaseType ctx.BaseTypes.Object
             || (isNotNullableValueType && isBaseType ctx.BaseTypes.ValueType),

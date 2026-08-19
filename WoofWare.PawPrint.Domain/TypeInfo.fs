@@ -138,9 +138,10 @@ type TypeInfo<'generic, 'fieldGeneric> =
         DeclaringType : TypeDefinitionHandle
 
         /// <summary>
-        /// The assembly in which this type is defined.
+        /// The definition identity of the assembly in which this type is defined: the display name
+        /// that assembly's <c>AssemblyDefinition</c> serialises to.
         /// </summary>
-        Assembly : AssemblyName
+        AssemblyFullName : string
 
         Generics : 'generic ImmutableArray
 
@@ -204,10 +205,13 @@ type TypeInfo<'generic, 'fieldGeneric> =
         |> List.exists this.TypeAttributes.HasFlag
 
     member this.Identity : ResolvedTypeIdentity =
-        ResolvedTypeIdentity.ofTypeDefinition this.Assembly this.TypeDefHandle
+        ResolvedTypeIdentity.ofDefinitionInAssembly this.AssemblyFullName this.TypeDefHandle
 
     override this.ToString () =
-        $"%s{this.Assembly.Name}.%s{this.Namespace}.%s{this.Name}"
+        // Parses the identity, which a lookup must never do, but this is for a human reading a
+        // diagnostic: the version and public key token of the declaring assembly would bury the
+        // name of the type.
+        $"%s{AssemblyDefinitionName.simpleName this.AssemblyFullName}.%s{this.Namespace}.%s{this.Name}"
 
     static member NominallyEqual
         (a : TypeInfo<'generic, 'fieldGeneric>)
@@ -216,20 +220,14 @@ type TypeInfo<'generic, 'fieldGeneric> =
         =
         // Ordered cheapest-discriminator-first, because this sits on the interpreter's hot path:
         // every `CliType.zeroOf` probe asking "is this System.String / DateTime / Decimal?"
-        // reaches it, and `AssemblyName.FullName` is by far the most expensive operand — it
-        // rebuilds the display name and SHA-1s the public key on *every* read. Measured over
-        // 1.2M calls in one guest, the `TypeDefHandle` comparison alone rejects ~86% of pairs.
+        // reaches it, and the generic arguments are much the dearest of the three to compare.
+        // Measured over 1.2M calls in one guest, the `TypeDefHandle` comparison alone rejects ~86%
+        // of pairs.
         //
         // `&&` short-circuits and all three operands are pure reads, so the value computed is
         // unchanged; only the evaluation order is.
-        //
-        // The reference check is strictly a fast path, not a substitute for the comparison:
-        // distinct `AssemblyName` instances can denote the same assembly (`MethodInfo.read`
-        // mints a fresh one per method it reads), so a miss must still fall through to the
-        // display-name comparison. `TestTypeResolution` pins that.
         a.TypeDefHandle = b.TypeDefHandle
-        && (System.Object.ReferenceEquals (a.Assembly, b.Assembly)
-            || a.Assembly.FullName = b.Assembly.FullName)
+        && a.AssemblyFullName = b.AssemblyFullName
         && a.Generics = b.Generics
 
 type TypeInfoEval<'ret> =
@@ -239,7 +237,7 @@ type TypeInfoCrate =
     abstract Apply<'ret> : TypeInfoEval<'ret> -> 'ret
     abstract ToString : unit -> string
     abstract BaseType : BaseTypeInfo option
-    abstract Assembly : AssemblyName
+    abstract AssemblyFullName : string
     abstract Namespace : string
     abstract Name : string
 
@@ -257,7 +255,7 @@ module TypeInfoCrate =
 
             member this.BaseType = t.BaseType
 
-            member this.Assembly = t.Assembly
+            member this.AssemblyFullName = t.AssemblyFullName
 
             member this.Namespace = t.Namespace
 
@@ -461,7 +459,7 @@ module TypeInfo =
             Attributes = t.Attributes
             TypeDefHandle = t.TypeDefHandle
             DeclaringType = t.DeclaringType
-            Assembly = t.Assembly
+            AssemblyFullName = t.AssemblyFullName
             Generics = gen
             Events = t.Events
             ImplementedInterfaces = t.ImplementedInterfaces
@@ -473,9 +471,13 @@ module TypeInfo =
     let mapGeneric<'a, 'b, 'field> (f : 'a -> 'b) (t : TypeInfo<'a, 'field>) : TypeInfo<'b, 'field> =
         withGenerics (t.Generics |> ImmutableArray.map f) t
 
+    // Takes the whole assembly definition rather than its name: the readers below want an
+    // `AssemblyName`, this type's own identity wants the display name, and passing the pair keeps
+    // them from disagreeing. Qualified because `System.Reflection.Metadata` has a type of the same
+    // name in scope here.
     let internal read
         (peReader : PEReader)
-        (thisAssembly : AssemblyName)
+        (thisAssembly : WoofWare.PawPrint.AssemblyDefinition)
         (metadataReader : MetadataReader)
         (typeHandle : TypeDefinitionHandle)
         : TypeInfo<GenericParamFromMetadata, TypeDefn>
@@ -501,7 +503,9 @@ module TypeInfo =
 
         let fields =
             typeDef.GetFields ()
-            |> Seq.map (fun h -> FieldInfo.make metadataReader thisAssembly h (metadataReader.GetFieldDefinition h))
+            |> Seq.map (fun h ->
+                FieldInfo.make metadataReader thisAssembly.Name h (metadataReader.GetFieldDefinition h)
+            )
             |> Seq.toList
 
         let name = metadataReader.GetString typeDef.Name
@@ -514,7 +518,7 @@ module TypeInfo =
             |> Seq.toList
 
         let genericParams =
-            GenericParameter.readAll thisAssembly metadataReader (typeDef.GetGenericParameters ())
+            GenericParameter.readAll thisAssembly.Name metadataReader (typeDef.GetGenericParameters ())
 
         let methods =
             methods
@@ -549,7 +553,7 @@ module TypeInfo =
 
                 {
                     InterfaceHandle = MetadataToken.ofEntityHandle impl.Interface
-                    RelativeToAssembly = thisAssembly
+                    RelativeToAssembly = thisAssembly.Name
                 }
                 |> result.Add
 
@@ -627,7 +631,7 @@ module TypeInfo =
             TypeAttributes = typeAttrs
             Attributes = attrs
             TypeDefHandle = typeHandle
-            Assembly = thisAssembly
+            AssemblyFullName = thisAssembly.FullName
             Generics = genericParams
             Events = events
             ImplementedInterfaces = interfaces
@@ -639,8 +643,8 @@ module TypeInfo =
 
     let isBaseType<'corelib>
         (baseClassTypes : BaseClassTypes<'corelib>)
-        (getName : 'corelib -> AssemblyName)
-        (typeAssy : AssemblyName)
+        (getName : 'corelib -> string)
+        (typeAssy : string)
         (typeDefinitionHandle : TypeDefinitionHandle)
         : ResolvedBaseType option
         =
@@ -660,7 +664,7 @@ module TypeInfo =
 
     let rec private resolveBaseType<'corelib, 'generic, 'field>
         (baseClassTypes : BaseClassTypes<'corelib>)
-        (getName : 'corelib -> AssemblyName)
+        (getName : 'corelib -> string)
         (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
         (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
         (getTypeSpec : 'corelib -> TypeSpecificationHandle -> 'corelib * TypeDefinitionHandle)
@@ -704,15 +708,15 @@ module TypeInfo =
     /// but is NOT exactly System.ValueType or System.Enum themselves.
     let isValueType
         (baseClassTypes : BaseClassTypes<'corelib>)
-        (assemblies : AssemblyName -> 'corelib)
-        (getName : 'corelib -> AssemblyName)
+        (assemblies : string -> 'corelib)
+        (getName : 'corelib -> string)
         (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
         (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
         (getTypeSpec : 'corelib -> TypeSpecificationHandle -> 'corelib * TypeDefinitionHandle)
         (ty : TypeInfo<'g, 'f>)
         : bool
         =
-        match isBaseType baseClassTypes getName ty.Assembly ty.TypeDefHandle with
+        match isBaseType baseClassTypes getName ty.AssemblyFullName ty.TypeDefHandle with
         | Some ResolvedBaseType.Enum
         | Some ResolvedBaseType.ValueType -> false
         | Some ResolvedBaseType.Object
@@ -725,7 +729,7 @@ module TypeInfo =
                     getTypeDef
                     getTypeRef
                     getTypeSpec
-                    (assemblies ty.Assembly)
+                    (assemblies ty.AssemblyFullName)
                     ty.BaseType
             with
             | ResolvedBaseType.Enum
@@ -744,15 +748,15 @@ module TypeInfo =
     /// cannot come apart in loadable metadata; this walks, as <see cref="isValueType"/> does.
     let isEnum
         (baseClassTypes : BaseClassTypes<'corelib>)
-        (assemblies : AssemblyName -> 'corelib)
-        (getName : 'corelib -> AssemblyName)
+        (assemblies : string -> 'corelib)
+        (getName : 'corelib -> string)
         (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
         (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
         (getTypeSpec : 'corelib -> TypeSpecificationHandle -> 'corelib * TypeDefinitionHandle)
         (ty : TypeInfo<'g, 'f>)
         : bool
         =
-        match isBaseType baseClassTypes getName ty.Assembly ty.TypeDefHandle with
+        match isBaseType baseClassTypes getName ty.AssemblyFullName ty.TypeDefHandle with
         // System.Enum is not itself an enum — it is an abstract reference-shaped type deriving from
         // System.ValueType — and neither is System.ValueType.
         | Some ResolvedBaseType.Enum
@@ -767,7 +771,7 @@ module TypeInfo =
                     getTypeDef
                     getTypeRef
                     getTypeSpec
-                    (assemblies ty.Assembly)
+                    (assemblies ty.AssemblyFullName)
                     ty.BaseType
             with
             | ResolvedBaseType.Enum -> true
@@ -778,8 +782,8 @@ module TypeInfo =
     /// Convenience: not a value type.
     let isReferenceType
         (baseClassTypes : BaseClassTypes<'corelib>)
-        (assemblies : AssemblyName -> 'corelib)
-        (getName : 'corelib -> AssemblyName)
+        (assemblies : string -> 'corelib)
+        (getName : 'corelib -> string)
         (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
         (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
         (getTypeSpec : 'corelib -> TypeSpecificationHandle -> 'corelib * TypeDefinitionHandle)
@@ -792,8 +796,8 @@ module TypeInfo =
     /// System.ValueType themselves encode as Class, matching real CLR signature encoding.
     let signatureTypeKind
         (baseClassTypes : BaseClassTypes<'corelib>)
-        (assemblies : AssemblyName -> 'corelib)
-        (getName : 'corelib -> AssemblyName)
+        (assemblies : string -> 'corelib)
+        (getName : 'corelib -> string)
         (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
         (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
         (getTypeSpec : 'corelib -> TypeSpecificationHandle -> 'corelib * TypeDefinitionHandle)
@@ -807,8 +811,8 @@ module TypeInfo =
 
     let toTypeDefn
         (baseClassTypes : BaseClassTypes<'corelib>)
-        (assemblies : AssemblyName -> 'corelib)
-        (getName : 'corelib -> AssemblyName)
+        (assemblies : string -> 'corelib)
+        (getName : 'corelib -> string)
         (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
         (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
         (getTypeSpec : 'corelib -> TypeSpecificationHandle -> 'corelib * TypeDefinitionHandle)
