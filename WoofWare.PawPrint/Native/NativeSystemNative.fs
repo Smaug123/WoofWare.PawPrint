@@ -3198,29 +3198,23 @@ module NativeSystemNative =
                     palProtocolType
             with
             | Error refusal ->
-                match refusal with
-                | SocketCreationRefusal.Unmodelled ->
-                    // Past every screen the shim applies, so a real run would
-                    // call `socket(2)` here. What it would answer is either
-                    // configuration PawPrint does not model (`CAP_NET_RAW` for
-                    // any raw or packet socket, `net.ipv4.ping_group_range` for
-                    // Linux's ICMP datagram sockets) or a deterministic kernel
-                    // refusal PawPrint has simply not modelled. Either way the
-                    // creatable set is this emulated kernel's declared protocol
-                    // table, and a row outside it wants a decision.
-                    failwith
-                        $"%s{operation}: PawPrint does not model a socket with PAL address family %d{palAddressFamily}, type %d{palSocketType} and protocol %d{palProtocolType} under %O{state.Kernel.UnixPlatform}. Every screen the native shim applies passed, so a real run would reach socket(2); what that answers is privilege-dependent for a raw or packet socket, sysctl-dependent for a Linux ICMP datagram socket, and otherwise a deterministic kernel refusal nobody has modelled. Extend SimulatedUnixPlatform.socketCreation with a measured row rather than guessing an errno."
-                | SocketCreationRefusal.AddressFamily
-                | SocketCreationRefusal.SocketType
-                | SocketCreationRefusal.Protocol ->
-
                 let error =
                     match refusal with
                     | SocketCreationRefusal.AddressFamily -> UnixError.EAFNOSUPPORT
                     | SocketCreationRefusal.SocketType -> UnixError.EPROTOTYPE
                     | SocketCreationRefusal.Protocol -> UnixError.EPROTONOSUPPORT
                     | SocketCreationRefusal.Unmodelled ->
-                        failwith $"%s{operation}: Unmodelled was already handled above (this is an interpreter bug)."
+                        // Past every screen the shim applies, so a real run
+                        // would call `socket(2)` here. What it would answer is
+                        // either configuration PawPrint does not model
+                        // (`CAP_NET_RAW` for any raw or packet socket,
+                        // `net.ipv4.ping_group_range` for Linux's ICMP datagram
+                        // sockets) or a deterministic kernel refusal PawPrint
+                        // has simply not modelled. Either way the creatable set
+                        // is this emulated kernel's declared protocol table, and
+                        // a row outside it wants a decision rather than a guess.
+                        failwith
+                            $"%s{operation}: PawPrint does not model a socket with PAL address family %d{palAddressFamily}, type %d{palSocketType} and protocol %d{palProtocolType} under %O{state.Kernel.UnixPlatform}. Every screen the native shim applies passed, so a real run would reach socket(2); what that answers is privilege-dependent for a raw or packet socket, sysctl-dependent for a Linux ICMP datagram socket, and otherwise a deterministic kernel refusal nobody has modelled. Extend SimulatedUnixPlatform.socketCreation with a measured row rather than guessing an errno."
 
                 // Each of the three conversion failures stores -1 before
                 // returning, so a caller that ignores the return code sees an

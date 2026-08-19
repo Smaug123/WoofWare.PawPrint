@@ -20,8 +20,10 @@ are separate entry points and separate PRs.
 
 All rows below were measured, not read off source. Linux is 6.18.5 aarch64
 (Apple `container`, `docker.io/library/gcc:13`), euid 1000 and euid 0; Darwin is
-25.6.0 arm64, euid 501. Probes are in this session's scratchpad
-(`sockmatrix.c`, `sockops.c`, `waitsock.c`).
+25.6.0 arm64, euid 501. The full sweep is checked into the repository as
+`WoofWare.PawPrint.Test/socketMatrix/{linux,darwin}.tsv` and is the oracle
+`TestSocketCreation.fs` asserts against; the descriptor-operation probes below
+were run from this session's scratchpad (`sockops.c`, `waitsock.c`, `errnos.c`).
 
 ### 1. Which triples create a socket
 
@@ -287,35 +289,59 @@ Answers:
 
 ## Tests
 
-1. **`TestFileDescriptorRegistry.fs`** — two `createSocket` calls yield distinct
-   `SocketId`s; `flock(LOCK_EX)` on one does not block the other (the row that
-   separates a socket from `AnonymousInode`); `dup` of a socket fd shares the
-   description and so *does* convert rather than contend; the description's
-   access mode is `ReadWrite`; the domain/kind/protocol triple round-trips **per
-   field**, so a transposed or dropped field fails here rather than surviving
-   until `GetSocketType` reads it; the existing invariant property test extended
-   with the new clause and shown to fail without it.
-2. **Handler unit tests** — the PAL screens: `(AddressFamily)12345` ->
-   `EAFNOSUPPORT`; `(SocketType)99` -> `EPROTOTYPE`; `AF_INET`/`SOCK_STREAM`/
-   `PT_ICMPV6` -> `EPROTONOSUPPORT`; `AF_PACKET` creatable-screen differing
-   between the Linux and Darwin flavours. Also that a failing screen stores `-1`
-   through the out-parameter and a null out-parameter stores nothing.
-3. **Guest test in `sourcesImpure`** — construct and dispose a
-   `Socket(InterNetwork, Stream, Tcp)`, return 0, with `RealRuntime` as the
-   differential oracle on the exit code. **Contingency:** whether this completes
-   depends on what `SafeSocketHandle.ReleaseHandle` reaches next; the dispose
-   path runs `TryOwnClose` -> `DoCloseHandle` -> `Interop.Sys.Close`, which is
-   already implemented, but the branches ahead of it touch
-   `DangerousSetIsNonBlocking` and `SetLingerOption`. Those claims come from
-   dumping the *shipped* `System.Net.Sockets.dll` with `WoofWare.PawPrint.IlDump`,
-   not from `$DOTNET_RUNTIME_SRC` — `src/libraries` is sparse-checked-out to
-   `Common` and `System.Private.CoreLib` only, so that assembly's source is not
-   pinned. If the test does get parked, its comment must be verified the same
-   way at the commit that writes it, or `src/libraries/System.Net.Sockets` added
-   to `sparseCheckout` (with the hash bump AGENTS.md warns about).
-   [[parking-comments-can-be-wrong-when-written]], [[park-a-test-to-validate-its-oracle]]
-4. **Mutation-test** each new classifier arm: an input that provokes each screen
-   *alone*, so a reordering mutant dies. [[ordered-guards-need-a-disagreeing-input]]
+*(Written after implementation, recording what the tests turned out to be.)*
+
+1. **`TestSocketCreation.fs` — the classifier against the measurement.** All 330
+   PAL triples, as swept on real Linux and real Darwin, checked in as
+   `socketMatrix/{linux,darwin}.tsv` and asserted row by row against
+   `SimulatedUnixPlatform.socketCreation`. The correspondence is total: each
+   measured row maps onto exactly one classifier answer, so a slip anywhere in
+   the per-family protocol tables surfaces as a row whose screen fires on one
+   side and not the other. The Linux flavour agrees on all 330; Darwin agrees on
+   327, and the three it does not — the ICMP datagram sockets Darwin hands to any
+   user — are asserted as a *closed set* with the reason recorded, so a fourth
+   divergence fails rather than passing quietly. A separate case asserts that
+   Linux really does refuse those same three, so the exception is about Darwin
+   rather than about ICMP sockets being unmodelled everywhere. Also the
+   per-field round-trip of the created triple.
+
+2. **`sourcesPure/SocketCreateScreens.cs` — differential, 21 checks.** The three
+   screens, their order (each pinned by a pair supplying two bad arguments at
+   once), the `-1` stored through the out-parameter, the null-out-parameter
+   EFAULT, the six sockets both platforms make for an ordinary user, and
+   `lseek`/`pread`/`pwrite` unseekability. Only rows both kernels agree on.
+
+   Reached by hand-rolled P/Invoke rather than through
+   `System.Net.Sockets.Socket`: the managed path turns the returned
+   `Interop.Error` into a `SocketError` through an `EnumEqualityComparer`, which
+   needs the `RuntimeHelpers.EnumEquals` JIT intrinsic PawPrint does not
+   implement. That is the next rung and is not this entry point's contract, so
+   no test is parked for it.
+
+3. **`sourcesImpure/SocketCreate{Linux,Darwin}.cs` — the flavour-split rows.**
+   Linux: the Unix-domain `SOCK_SEQPACKET` and `SOCK_RAW` sockets Darwin refuses,
+   an IPv6 socket (kept out of the differential test because IPv6 is a property
+   of the host kernel), `lseek`'s Linux screen order, and — the guest observer
+   for the identity decision in D1 — two sockets each taking an exclusive
+   `flock`, which a payload-free `OpenFileObject.Socket` would refuse. Darwin:
+   `AF_PACKET` and `AF_CAN` refused by the address-family screen, each with a
+   protocol its Linux arm would accept, so it is the family screen being
+   observed; plus Darwin's opposite `lseek` screen order.
+
+4. **`TestFileDescriptorRegistry.fs`** — two sockets are two descriptions *and*
+   two `flock` objects (the row that separates a socket from `AnonymousInode`);
+   `dup` names the same socket; a fresh description is `ReadWrite` with no lock
+   and carries its triple per field; closing the last descriptor destroys the
+   socket; and the two new `checkInvariants` defects, each with a negative
+   control.
+
+**Mutation-tested.** Three mutants, all killed, and the kills are informative:
+disabling the address-family screen is caught by both the matrix oracle and the
+guest; *swapping* the family and type screens is caught **only** by the guest's
+ordering pair (no measured row has two bad arguments, so the matrix cannot see
+order); and dropping the `*createdSocket = -1` store is caught only by the
+guest's out-parameter assertion. Each test is therefore doing work the others
+are not.
 
 ## Explicitly out of scope
 
@@ -327,4 +353,10 @@ address, a peer, or a receive queue.
 Note `SocketPal.CreateSocket` calls `Interop.Sys.SetSockOpt(fd, IPPROTO_IPV6,
 IPV6_V6ONLY, ...)` immediately after creating an `AF_INET6` socket that is not
 `SOCK_RAW`. So an IPv6 guest will stop at `SystemNative_SetSockOpt` rather than
-completing — expected, and the next rung.
+completing — expected, and one of the next rungs.
+
+Measured after implementing: a guest doing `new Socket(InterNetwork, Stream,
+Tcp)` now gets past `SystemNative_Socket` and stops in
+`EnumEqualityComparer<Interop.Error>.Equals`, on the `RuntimeHelpers.EnumEquals`
+JIT intrinsic — `SocketPal.GetSocketErrorForErrorCode`'s lookup table. That is
+the immediate next blocker on the managed path, and it is not socket work.

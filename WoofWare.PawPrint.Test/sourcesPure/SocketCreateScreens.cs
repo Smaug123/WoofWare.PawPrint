@@ -35,6 +35,15 @@ class Program
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_Close")]
     static extern int Close(IntPtr fd);
 
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_LSeek", SetLastError = true)]
+    static extern long LSeek(IntPtr fd, long offset, int whence);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_PRead", SetLastError = true)]
+    static extern unsafe int PRead(IntPtr fd, byte* buffer, int bufferSize, long fileOffset);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_PWrite", SetLastError = true)]
+    static extern unsafe int PWrite(IntPtr fd, byte* buffer, int bufferSize, long fileOffset);
+
     // Interop.Error values, not raw errnos: this entry point returns the PAL enum
     // directly rather than -1-and-errno. The raw numbers for these three differ
     // between the platforms (97/91/93 against 47/41/43), which is exactly why a
@@ -63,6 +72,14 @@ class Program
     // answers rather than a case that happens to be compiled out.
     const int BadFamily = 12345;
     const int BadType = 99;
+
+    // ESPIPE is 29 on both Linux and macOS, so a differential guest may read the
+    // raw errno for it. Most errnos are not like that -- EAGAIN is 11 and 35 --
+    // which is why only this one appears here.
+    const int ESPIPE = 29;
+
+    const int SEEK_SET = 0;
+    const int SEEK_CUR = 1;
 
     // Something no `socket(2)` would return, so that "the wrapper stored -1" is
     // distinguishable from "the wrapper stored nothing".
@@ -94,6 +111,12 @@ class Program
         // make more, and the close is itself a check that the thing handed back
         // is a live descriptor.
         return Close(created) == 0;
+    }
+
+    static bool SeekRefused(IntPtr fd, long offset, int whence)
+    {
+        Marshal.SetLastSystemError(0);
+        return LSeek(fd, offset, whence) == -1 && Marshal.GetLastSystemError() == ESPIPE;
     }
 
     static unsafe int Main()
@@ -154,6 +177,43 @@ class Program
 
         if (!Creates(AF_UNIX, SOCK_DGRAM, PT_UNSPECIFIED))
             return 13;
+
+        // A socket is not seekable, on either kernel. Held open across the whole
+        // group so that every row is asked of the same descriptor.
+        IntPtr sock = Untouched;
+        if (Socket(AF_INET, SOCK_STREAM, PT_TCP, &sock) != PAL_SUCCESS)
+            return 14;
+
+        // Every whence the syscall accepts, and offsets on both sides of zero:
+        // unseekability is decided before any of that is looked at.
+        if (!SeekRefused(sock, 0, SEEK_SET))
+            return 15;
+
+        if (!SeekRefused(sock, 0, SEEK_CUR))
+            return 16;
+
+        if (!SeekRefused(sock, -1, SEEK_SET))
+            return 17;
+
+        if (!SeekRefused(sock, long.MaxValue, SEEK_SET))
+            return 18;
+
+        // Whence 9 is deliberately *not* here: the platforms disagree about
+        // whether unseekability or an invalid whence is reported first, so that
+        // row belongs to the flavour-specific guests.
+
+        byte* buffer = stackalloc byte[8];
+
+        Marshal.SetLastSystemError(0);
+        if (PRead(sock, buffer, 8, 0) != -1 || Marshal.GetLastSystemError() != ESPIPE)
+            return 19;
+
+        Marshal.SetLastSystemError(0);
+        if (PWrite(sock, buffer, 8, 0) != -1 || Marshal.GetLastSystemError() != ESPIPE)
+            return 20;
+
+        if (Close(sock) != 0)
+            return 21;
 
         return 0;
     }

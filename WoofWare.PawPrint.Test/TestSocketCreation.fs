@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open System
 open System.IO
 open System.Reflection
+open System.Runtime.InteropServices
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -29,6 +30,12 @@ open WoofWare.PawPrint
 module TestSocketCreation =
 
     let private assy = Assembly.GetExecutingAssembly ()
+
+    [<DllImport("libSystem.Native", EntryPoint = "SystemNative_Socket")>]
+    extern int private hostSocket(int addressFamily, int socketType, int protocolType, nativeint& createdSocket)
+
+    [<DllImport("libSystem.Native", EntryPoint = "SystemNative_Close")>]
+    extern int private hostClose(nativeint fd)
 
     /// PAL numbering, from `pal_networking.h`. Spelled out here rather than
     /// reached through the implementation, so that a slip in the implementation's
@@ -257,3 +264,91 @@ module TestSocketCreation =
             sprintf "%O" domain |> shouldEqual expectedDomain
             sprintf "%O" socketKind |> shouldEqual expectedKind
             sprintf "%O" socketProtocol |> shouldEqual expectedProtocol
+
+    /// The checked-in matrices came from a C program that *mirrors* the shim's
+    /// three conversion functions rather than calling them, so a transcription
+    /// slip could in principle sit in both that mirror and `socketCreation` and
+    /// cancel out. This closes that hole by asking the host's own
+    /// `libSystem.Native`.
+    ///
+    /// The claim checked is the one that matters: **wherever PawPrint answers
+    /// with a PAL error rather than refusing, the real entry point answers the
+    /// same PAL error.** Rows PawPrint refuses have no answer to compare, and
+    /// rows it creates depend on the host's configuration — `CAP_NET_RAW`,
+    /// `net.ipv4.ping_group_range`, whether the kernel was built with IPv6 — so
+    /// asserting those here would make the suite depend on the machine it runs
+    /// on. The six portable creating rows have a differential guest of their own
+    /// (`sourcesPure/SocketCreateScreens.cs`).
+    ///
+    /// Runs against whichever matrix matches the host, so a macOS dev box pins
+    /// the Darwin column and CI pins the Linux one — the same split
+    /// `TestUnixError` makes for the raw errno numbers.
+    [<Test>]
+    let ``the host's own libSystem.Native answers every error row as PawPrint does`` () : unit =
+        let platform, flavourFile =
+            if OperatingSystem.IsLinux () then
+                SimulatedUnixPlatform.linuxX64, "linux.tsv"
+            elif OperatingSystem.IsMacOS () then
+                SimulatedUnixPlatform.macOsArm64, "darwin.tsv"
+            else
+                Assert.Ignore "this test needs a Unix host whose libSystem.Native PawPrint models"
+                failwith "unreachable: Assert.Ignore did not throw"
+
+        // `Interop.Error`, as `socketCreation`'s refusals map onto it.
+        let palOf (refusal : SocketCreationRefusal) : int option =
+            match refusal with
+            | SocketCreationRefusal.AddressFamily -> Some (UnixError.toPal UnixError.EAFNOSUPPORT)
+            | SocketCreationRefusal.SocketType -> Some (UnixError.toPal UnixError.EPROTOTYPE)
+            | SocketCreationRefusal.Protocol -> Some (UnixError.toPal UnixError.EPROTONOSUPPORT)
+            | SocketCreationRefusal.Unmodelled -> None
+
+        let checkedRows, disagreements =
+            rows flavourFile
+            |> List.fold
+                (fun (count, disagreements) row ->
+                    let expected =
+                        SimulatedUnixPlatform.socketCreation
+                            platform
+                            palAddressFamily.[row.Family]
+                            palSocketType.[row.Kind]
+                            palProtocolType.[row.Protocol]
+                        |> function
+                            | Ok _ -> None
+                            | Error refusal -> palOf refusal
+
+                    match expected with
+                    | None -> count, disagreements
+                    | Some expected ->
+
+                    let mutable created = nativeint 0
+
+                    let actual =
+                        hostSocket (
+                            palAddressFamily.[row.Family],
+                            palSocketType.[row.Kind],
+                            palProtocolType.[row.Protocol],
+                            &created
+                        )
+
+                    // Only reachable if PawPrint reported an error for a triple
+                    // the host really makes a socket for, which is the failure
+                    // this test exists to catch — but close it rather than leak
+                    // the descriptor out of the assertion.
+                    if actual = 0 then
+                        hostClose created |> ignore<int>
+
+                    if actual = expected then
+                        count + 1, disagreements
+                    else
+                        count + 1,
+                        $"%s{row.Family}/%s{row.Kind}/%s{row.Protocol}: PawPrint 0x%X{expected}, host 0x%X{actual}"
+                        :: disagreements
+                )
+                (0, [])
+
+        disagreements |> List.rev |> shouldEqual []
+
+        // The rows PawPrint answers rather than refuses are a large majority of
+        // the matrix, so a `socketCreation` that had quietly started refusing
+        // everything would fail here rather than passing vacuously.
+        checkedRows |> shouldBeGreaterThan 200
