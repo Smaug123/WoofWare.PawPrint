@@ -792,7 +792,7 @@ module NativeCall =
                 | ConcreteTypeHandle.Array (inner, _) -> assemblyFullNameOfHandle inner
                 | ConcreteTypeHandle.FunctionPointer signature ->
                     match signature.ReturnType with
-                    | MethodReturnType.Void -> baseClassTypes.Void.Assembly.FullName
+                    | MethodReturnType.Void -> baseClassTypes.Void.AssemblyFullName
                     | MethodReturnType.Returns ret -> assemblyFullNameOfHandle ret
 
             assemblyFullNameOfHandle concreteTypeHandle

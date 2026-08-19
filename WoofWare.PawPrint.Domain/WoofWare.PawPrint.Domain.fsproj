@@ -26,6 +26,7 @@
         <Compile Include="IlOp.fs" />
         <Compile Include="IlDecoding.fs" />
         <Compile Include="ContextSwitchPrior.fs" />
+        <Compile Include="AssemblyDefinition.fs" />
         <Compile Include="AssemblyReference.fs" />
         <Compile Include="EventDefn.fs" />
         <Compile Include="ComparableTypeDefinitionHandle.fs" />

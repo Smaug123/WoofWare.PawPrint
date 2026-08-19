@@ -77,7 +77,7 @@ public sealed class CctorAttribute : System.Attribute
             loggerFactory
             baseClassTypes
             state
-            typeInfo.Assembly.FullName
+            typeInfo.AssemblyFullName
             ImmutableArray.Empty
             ImmutableArray.Empty
             typeDefn

@@ -643,7 +643,7 @@ module TestVirtualMethodSlots =
             | Some typeInfo -> typeInfo
 
         let identity =
-            ResolvedTypeIdentity.ofTypeDefinition typeInfo.Assembly typeInfo.TypeDefHandle
+            ResolvedTypeIdentity.ofDefinitionInAssembly typeInfo.AssemblyFullName typeInfo.TypeDefHandle
 
         let _, slots =
             NativeRuntimeTypeHelpers.vtableOfDefinition loggerFactory bct "test" (state ()) identity
@@ -677,7 +677,7 @@ module TestVirtualMethodSlots =
             | Some typeInfo -> typeInfo
 
         let identity =
-            ResolvedTypeIdentity.ofTypeDefinition typeInfo.Assembly typeInfo.TypeDefHandle
+            ResolvedTypeIdentity.ofDefinitionInAssembly typeInfo.AssemblyFullName typeInfo.TypeDefHandle
 
         let _, table =
             NativeRuntimeTypeHelpers.slotTableOfDefinition loggerFactory bct "test" (state ()) identity
@@ -734,7 +734,7 @@ module TestVirtualMethodSlots =
                 | Some typeInfo -> typeInfo
 
             let identity =
-                ResolvedTypeIdentity.ofTypeDefinition typeInfo.Assembly typeInfo.TypeDefHandle
+                ResolvedTypeIdentity.ofDefinitionInAssembly typeInfo.AssemblyFullName typeInfo.TypeDefHandle
 
             let state, slots =
                 NativeRuntimeTypeHelpers.vtableOfDefinition loggerFactory bct "test" (state ()) identity

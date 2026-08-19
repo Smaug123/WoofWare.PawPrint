@@ -301,7 +301,7 @@ module Corelib =
                 TypeConcretization.concretizeType
                     ctx
                     loader
-                    ty.Assembly.FullName
+                    ty.AssemblyFullName
                     ImmutableArray.Empty
                     ImmutableArray.Empty
                     (TypeDefn.FromDefinition (ty.Identity, stk))

@@ -84,7 +84,7 @@ module DeclaredTypeFacts =
     /// every 64-bit target, so they need no such decision. Adding a row is pure data once that
     /// question is settled (issue #992).
     let nominalAlignment (bct : BaseClassTypes<DumpedAssembly>) (ti : TypeInfo<'generic, 'field>) : int option =
-        if ti.Assembly.FullName <> bct.Corelib.DefinitionFullName then
+        if ti.AssemblyFullName <> bct.Corelib.DefinitionFullName then
             None
         else
 
@@ -123,8 +123,8 @@ module DeclaredTypeFacts =
     /// keeps that reasoning true: pass a non-corelib type and this fails loudly rather than
     /// silently walking a base chain it cannot resolve.
     let ofCorelibType (bct : BaseClassTypes<DumpedAssembly>) (ti : TypeInfo<'generic, 'field>) : DeclaredTypeFacts =
-        if ti.Assembly.FullName <> bct.Corelib.DefinitionFullName then
+        if ti.AssemblyFullName <> bct.Corelib.DefinitionFullName then
             failwith
-                $"DeclaredTypeFacts.ofCorelibType: %s{ti.Namespace}.%s{ti.Name} is defined in %s{ti.Assembly.FullName}, not in corelib (%s{bct.Corelib.DefinitionFullName}); its base chain may leave corelib, so it needs a full load context via ofTypeInfo"
+                $"DeclaredTypeFacts.ofCorelibType: %s{ti.Namespace}.%s{ti.Name} is defined in %s{ti.AssemblyFullName}, not in corelib (%s{bct.Corelib.DefinitionFullName}); its base chain may leave corelib, so it needs a full load context via ofTypeInfo"
 
         ofTypeInfo bct (LoadedAssemblies.ofAssemblies [ bct.Corelib ]) ti
