@@ -150,7 +150,7 @@ module NativeRuntimeAssembly =
     /// the manifest's single <c>Assembly</c> row.
     /// </summary>
     /// <remarks>
-    /// Built from the raw columns rather than from <c>DumpedAssembly.Name.FullName</c>, which
+    /// Built from the raw columns rather than from <c>DumpedAssembly.DefinitionFullName</c>, which
     /// would be both the obvious answer and the wrong one: that is the BCL's formatting of a
     /// *parsed* <c>AssemblyName</c>, and it is also the key PawPrint registers assemblies
     /// under. It diverges three ways, each confirmed against the real runtime — it normalises
@@ -320,11 +320,15 @@ module NativeRuntimeAssembly =
                 assemblyHandleOfRuntimeAssemblyRef operation state runtimeAssemblyRef
 
             let assembly =
-                state.LoadedAssembly' assemblyFullName
+                state.LoadedAssembly assemblyFullName
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
             let runtimeModuleAddr, state =
-                NativeRuntimeType.getOrAllocateRuntimeModule ctx.LoggerFactory ctx.BaseClassTypes assembly.Name state
+                NativeRuntimeType.getOrAllocateRuntimeModule
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    assembly.DefinitionFullName
+                    state
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some runtimeModuleAddr)) ctx.Thread state
@@ -376,7 +380,7 @@ module NativeRuntimeAssembly =
                 failwith $"TODO: %s{operation} with empty resource name should throw ArgumentException"
 
             let assembly =
-                state.LoadedAssembly' assemblyFullName
+                state.LoadedAssembly assemblyFullName
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
             let state =
@@ -437,7 +441,7 @@ module NativeRuntimeAssembly =
 
             // Decoded and checked to keep the handler honest about its input, even though
             // the answer below does not depend on which assembly this is.
-            state.LoadedAssembly' assemblyFullName
+            state.LoadedAssembly assemblyFullName
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
             |> ignore<DumpedAssembly>
 
@@ -504,13 +508,17 @@ module NativeRuntimeAssembly =
             // ever entered through an entry assembly (`IlMachineState.initial` demands one), so
             // that branch does not arise here and the write below is unconditional.
             let assembly =
-                state.LoadedAssembly state.EntryAssembly
+                state.LoadedAssembly state.EntryAssembly.FullName
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: entry assembly %s{state.EntryAssembly.FullName} is not loaded"
                 )
 
             let runtimeAssemblyAddr, state =
-                NativeRuntimeType.getOrAllocateRuntimeAssembly ctx.LoggerFactory ctx.BaseClassTypes assembly.Name state
+                NativeRuntimeType.getOrAllocateRuntimeAssembly
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    assembly.DefinitionFullName
+                    state
 
             let state =
                 IlMachineState.writeManagedByrefWithBase
@@ -542,7 +550,7 @@ module NativeRuntimeAssembly =
             // input: a caller handing us an assembly we have not loaded is a
             // bug worth hearing about, even though the answer below does not
             // depend on which assembly this is.
-            state.LoadedAssembly' assemblyFullName
+            state.LoadedAssembly assemblyFullName
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
             |> ignore<DumpedAssembly>
 
@@ -593,7 +601,7 @@ module NativeRuntimeAssembly =
                 |> NativeCall.qCallAssemblyToAssemblyFullName operation state
 
             let assembly =
-                state.LoadedAssembly' assemblyFullName
+                state.LoadedAssembly assemblyFullName
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
             // CoreCLR returns `pAssembly->GetPEAssembly()->GetFlags()`, the whole `DWORD` of
@@ -649,7 +657,7 @@ module NativeRuntimeAssembly =
                 |> NativeCall.qCallAssemblyToAssemblyFullName operation state
 
             let assembly =
-                state.LoadedAssembly' assemblyFullName
+                state.LoadedAssembly assemblyFullName
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
             // CoreCLR returns `pAssembly->GetPEAssembly()->GetHashAlgId()`, which is the
@@ -689,7 +697,7 @@ module NativeRuntimeAssembly =
                 |> NativeCall.qCallAssemblyToAssemblyFullName operation state
 
             let assembly =
-                state.LoadedAssembly' assemblyFullName
+                state.LoadedAssembly assemblyFullName
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
             let retString =
@@ -747,7 +755,7 @@ module NativeRuntimeAssembly =
                 |> NativeCall.qCallAssemblyToAssemblyFullName operation state
 
             let assembly =
-                state.LoadedAssembly' assemblyFullName
+                state.LoadedAssembly assemblyFullName
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
             let retPublicKey =
@@ -795,7 +803,7 @@ module NativeRuntimeAssembly =
                 |> NativeCall.qCallAssemblyToAssemblyFullName operation state
 
             let assembly =
-                state.LoadedAssembly' assemblyFullName
+                state.LoadedAssembly assemblyFullName
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
             let retSimpleName =
@@ -856,7 +864,7 @@ module NativeRuntimeAssembly =
                 |> NativeCall.qCallAssemblyToAssemblyFullName operation state
 
             let assembly =
-                state.LoadedAssembly' assemblyFullName
+                state.LoadedAssembly assemblyFullName
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
             let retString =
@@ -866,7 +874,7 @@ module NativeRuntimeAssembly =
             // `PEAssembly::GetDisplayName` seeds an `AssemblySpec` from the row
             // (`BaseAssemblySpec::Init` over `GetAssemblyProps`) and renders it with
             // `ASM_DISPLAYF_FULL`. So the same five raw columns the rest of this family
-            // reads one at a time, assembled — deliberately not `assembly.Name.FullName`,
+            // reads one at a time, assembled — deliberately not `assembly.DefinitionFullName`,
             // which is the BCL's rendering of a parsed `AssemblyName` and diverges from this
             // in three ways; see `displayName`.
             //
@@ -926,7 +934,7 @@ module NativeRuntimeAssembly =
                 |> NativeCall.qCallAssemblyToAssemblyFullName operation state
 
             let assembly =
-                state.LoadedAssembly' assemblyFullName
+                state.LoadedAssembly assemblyFullName
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
             // CoreCLR reads the four `USHORT` columns of the manifest's single
@@ -1041,7 +1049,7 @@ module NativeRuntimeAssembly =
                 NativeCall.readNullTerminatedUtf8 operation ctx.BaseClassTypes state typeNamePtr
 
             let assembly =
-                state.LoadedAssembly' assemblyFullName
+                state.LoadedAssembly assemblyFullName
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
             let nestedNames =

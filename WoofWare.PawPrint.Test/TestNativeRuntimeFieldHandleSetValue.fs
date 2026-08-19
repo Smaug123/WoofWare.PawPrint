@@ -84,7 +84,7 @@ public sealed class RvaHolder
             loggerFactory
             baseClassTypes
             state
-            typeInfo.Assembly
+            typeInfo.Assembly.FullName
             ImmutableArray.Empty
             ImmutableArray.Empty
             typeDefn
@@ -150,7 +150,7 @@ public sealed class RvaHolder
                 ImmutableArray.Empty
                 (findQCallStub "RuntimeFieldHandle_SetValue" runtimeFieldHandleType)
                 None
-                corelib.Name
+                corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
 
@@ -192,7 +192,7 @@ public sealed class RvaHolder
             IlMachineState.getOrAllocateField
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
-                fixture.GuestAssembly.Name
+                fixture.GuestAssembly.DefinitionFullName
                 (RuntimeTypeHandleTarget.Closed fixture.HolderTypeHandle)
                 field.Handle
                 state
@@ -464,7 +464,7 @@ public sealed class RvaHolder
             IlMachineState.getOrAllocateField
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
-                fixture.GuestAssembly.Name
+                fixture.GuestAssembly.DefinitionFullName
                 (RuntimeTypeHandleTarget.Closed lazyHolderHandle)
                 field.Handle
                 state
@@ -551,7 +551,7 @@ public sealed class RvaHolder
             IlMachineState.getOrAllocateField
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
-                fixture.GuestAssembly.Name
+                fixture.GuestAssembly.DefinitionFullName
                 (RuntimeTypeHandleTarget.Closed rvaTypeHandle)
                 rvaField.Handle
                 state

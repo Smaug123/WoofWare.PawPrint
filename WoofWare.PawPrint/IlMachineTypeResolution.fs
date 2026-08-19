@@ -47,7 +47,7 @@ module IlMachineTypeResolution =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (declaringAssembly : AssemblyName)
+        (declaringAssemblyFullName : string)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (ty : TypeDefn)
@@ -64,7 +64,7 @@ module IlMachineTypeResolution =
             TypeConcretization.concretizeType
                 ctx
                 (loader loggerFactory state)
-                declaringAssembly
+                declaringAssemblyFullName
                 typeGenerics
                 methodGenerics
                 ty
@@ -89,7 +89,7 @@ module IlMachineTypeResolution =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (declaringAssembly : AssemblyName)
+        (declaringAssemblyFullName : string)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (signature : TypeMethodSignature<TypeDefn>)
@@ -106,7 +106,7 @@ module IlMachineTypeResolution =
             TypeConcretization.concretizeMethodSignature
                 ctx
                 (loader loggerFactory state)
-                declaringAssembly
+                declaringAssemblyFullName
                 typeGenerics
                 methodGenerics
                 signature
@@ -126,7 +126,7 @@ module IlMachineTypeResolution =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (declaringAssembly : AssemblyName)
+        (declaringAssemblyFullName : string)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (returnType : MethodReturnType<TypeDefn>)
@@ -143,7 +143,7 @@ module IlMachineTypeResolution =
             TypeConcretization.concretizeReturnColumn
                 ctx
                 (loader loggerFactory state)
-                declaringAssembly
+                declaringAssemblyFullName
                 typeGenerics
                 methodGenerics
                 returnType
@@ -523,7 +523,7 @@ module IlMachineTypeResolution =
                 match genericDef with
                 | TypeDefn.FromDefinition (identity, _) ->
                     let assembly =
-                        match state.LoadedAssembly identity.Assembly with
+                        match state.LoadedAssembly identity.AssemblyFullName with
                         | Some assembly -> assembly
                         | None ->
                             failwithf
@@ -620,7 +620,14 @@ module IlMachineTypeResolution =
                     $"TODO: ldtoken for type token with unbound generic parameters is not implemented. Type token was %O{ty}"
         | state, None ->
             let state, handle =
-                concretizeType loggerFactory baseClassTypes state declaringAssembly.Name typeGenerics methodGenerics ty
+                concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    declaringAssembly.DefinitionFullName
+                    typeGenerics
+                    methodGenerics
+                    ty
 
             state, RuntimeTypeHandleTarget.Closed handle
 
@@ -676,7 +683,7 @@ module IlMachineTypeResolution =
                 TypeConcretization.concretizeType
                     currentCtx
                     (loader loggerFactory state)
-                    declaringType.Assembly
+                    declaringType.AssemblyFullName
                     ImmutableArray.Empty // No type generics in this context
                     ImmutableArray.Empty // No method generics in this context
                     genericArg
@@ -747,7 +754,7 @@ module IlMachineTypeResolution =
         let state = state.WithLoadedAssembly assy
 
         let state, handle =
-            concretizeType loggerFactory baseClassTypes state assy.Name typeGenerics methodGenerics ty
+            concretizeType loggerFactory baseClassTypes state assy.DefinitionFullName typeGenerics methodGenerics ty
 
         // Now get the zero value
         let zero, state = cliTypeZeroOfHandle state baseClassTypes handle
@@ -767,7 +774,7 @@ module IlMachineTypeResolution =
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 byteTypeDefn
@@ -792,7 +799,7 @@ module IlMachineTypeResolution =
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 charTypeDefn
@@ -842,7 +849,7 @@ module IlMachineTypeResolution =
 
             let data =
                 {
-                    AssemblyFullName = assembly.Name.FullName
+                    AssemblyFullName = assembly.DefinitionFullName
                     Source = PeByteRangePointerSource.FieldRva (ComparableFieldDefinitionHandle.Make field.Handle)
                     RelativeVirtualAddress = fieldRva
                     Size = size
@@ -875,7 +882,7 @@ module IlMachineTypeResolution =
         let blobReader = mdReader.GetBlobReader fieldDef.Signature
 
         {
-            AssemblyFullName = assembly.Name.FullName
+            AssemblyFullName = assembly.DefinitionFullName
             Source = PeByteRangePointerSource.FieldSignatureBlob (ComparableFieldDefinitionHandle.Make fieldHandle)
             RelativeVirtualAddress = 0
             Size = blobReader.Length
@@ -894,7 +901,7 @@ module IlMachineTypeResolution =
         let blobReader = mdReader.GetBlobReader methodDef.Signature
 
         {
-            AssemblyFullName = assembly.Name.FullName
+            AssemblyFullName = assembly.DefinitionFullName
             Source = PeByteRangePointerSource.MethodSignatureBlob (ComparableMethodDefinitionHandle.Make methodHandle)
             RelativeVirtualAddress = 0
             Size = blobReader.Length
@@ -913,7 +920,7 @@ module IlMachineTypeResolution =
         let blobReader = mdReader.GetBlobReader propertyDef.Signature
 
         {
-            AssemblyFullName = assembly.Name.FullName
+            AssemblyFullName = assembly.DefinitionFullName
             Source =
                 PeByteRangePointerSource.PropertySignatureBlob (ComparablePropertyDefinitionHandle.Make propertyHandle)
             RelativeVirtualAddress = 0
@@ -938,7 +945,7 @@ module IlMachineTypeResolution =
         let blobReader = mdReader.GetBlobReader (mdReader.GetConstant constantHandle).Value
 
         {
-            AssemblyFullName = assembly.Name.FullName
+            AssemblyFullName = assembly.DefinitionFullName
             Source = PeByteRangePointerSource.ConstantBlob (ComparableConstantHandle.Make constantHandle)
             RelativeVirtualAddress = 0
             Size = blobReader.Length

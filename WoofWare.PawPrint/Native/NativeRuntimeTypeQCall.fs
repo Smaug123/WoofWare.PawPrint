@@ -306,7 +306,7 @@ module NativeRuntimeTypeQCall =
                     // type parameter. We surface each parameter as a RuntimeType backed by a
                     // GenericParameter target.
                     let assembly =
-                        state.LoadedAssembly identity.Assembly
+                        state.LoadedAssembly identity.AssemblyFullName
                         |> Option.defaultWith (fun () ->
                             failwith
                                 $"%s{operation}: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
@@ -584,9 +584,9 @@ module NativeRuntimeTypeQCall =
                     )
 
                 let assembly =
-                    state.LoadedAssembly concreteType.Assembly
+                    state.LoadedAssembly concreteType.AssemblyFullName
                     |> Option.defaultWith (fun () ->
-                        failwith $"%s{operation}: assembly is not loaded: %s{concreteType.Assembly.FullName}"
+                        failwith $"%s{operation}: assembly is not loaded: %s{concreteType.AssemblyFullName}"
                     )
 
                 let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
@@ -694,7 +694,7 @@ module NativeRuntimeTypeQCall =
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
                 | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
                     let assembly =
-                        state.LoadedAssembly identity.Assembly
+                        state.LoadedAssembly identity.AssemblyFullName
                         |> Option.defaultWith (fun () ->
                             failwith
                                 $"%s{operation}: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
@@ -711,10 +711,10 @@ module NativeRuntimeTypeQCall =
                             )
 
                         let assembly =
-                            state.LoadedAssembly concreteType.Assembly
+                            state.LoadedAssembly concreteType.AssemblyFullName
                             |> Option.defaultWith (fun () ->
                                 failwith
-                                    $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                                    $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.AssemblyFullName}"
                             )
 
                         Some assembly.TypeDefs.[concreteType.Definition.Get]
@@ -792,7 +792,7 @@ module NativeRuntimeTypeQCall =
                     // OpenGenericTypeDefinition target would incorrectly report
                     // IsGenericType=true. This mirrors `declaringRuntimeType` above.
                     let assembly =
-                        state.LoadedAssembly declaringType.Assembly
+                        state.LoadedAssembly declaringType.AssemblyFullName
                         |> Option.defaultWith (fun () ->
                             failwith
                                 $"%s{operation}: assembly for method-generic-parameter declaring type is not loaded: %s{declaringType.AssemblyFullName}"
@@ -809,7 +809,7 @@ module NativeRuntimeTypeQCall =
                                 ctx.LoggerFactory
                                 ctx.BaseClassTypes
                                 state
-                                typeInfo.Assembly
+                                typeInfo.Assembly.FullName
                                 ImmutableArray.Empty
                                 ImmutableArray.Empty
                                 (TypeDefn.FromDefinition (typeInfo.Identity, stk))
@@ -925,7 +925,7 @@ module NativeRuntimeTypeQCall =
                 NativeCall.objectHandleOnStackTarget operation state "type" instruction.Arguments.[6]
 
             let assembly =
-                state.LoadedAssembly' assemblyFullName
+                state.LoadedAssembly assemblyFullName
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: module's assembly %s{assemblyFullName} is not loaded"
                 )
@@ -1073,7 +1073,7 @@ module NativeRuntimeTypeQCall =
                 failwith $"%s{operation}: methodInstCount must be non-negative, got %d{methodInstCount}"
 
             let assembly =
-                state.LoadedAssembly' assemblyFullName
+                state.LoadedAssembly assemblyFullName
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: module's assembly %s{assemblyFullName} is not loaded"
                 )
@@ -1200,7 +1200,7 @@ module NativeRuntimeTypeQCall =
                                     ctx.LoggerFactory
                                     ctx.BaseClassTypes
                                     state
-                                    method.DeclaringAssembly
+                                    method.DeclaringAssemblyFullName
                                     ImmutableArray.Empty
                                     ImmutableArray.Empty
                                     ty
@@ -1316,7 +1316,7 @@ module NativeRuntimeTypeQCall =
                         ctx.LoggerFactory
                         ctx.BaseClassTypes
                         operation
-                        identity.Assembly
+                        identity.AssemblyFullName
                         identity.TypeDefinition.Get
                         (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)
                         state
@@ -1476,7 +1476,7 @@ module NativeRuntimeTypeQCall =
                         | None -> failwith $"%s{operation}: concrete type handle was not registered: %O{currentHandle}"
                         | Some (currentCt, currentTypeInfo) ->
                             let currentAssy =
-                                state.LoadedAssembly' currentCt.Identity.AssemblyFullName
+                                state.LoadedAssembly currentCt.Identity.AssemblyFullName
                                 |> Option.defaultWith (fun () ->
                                     failwith
                                         $"%s{operation}: owning assembly %s{currentCt.Identity.AssemblyFullName} not loaded"
@@ -1485,7 +1485,8 @@ module NativeRuntimeTypeQCall =
                             ((state, seen, ordered), currentTypeInfo.ImplementedInterfaces)
                             ||> Seq.fold (fun (state, seen, ordered) impl ->
                                 let implAssy =
-                                    state.LoadedAssembly impl.RelativeToAssembly |> Option.defaultValue currentAssy
+                                    state.LoadedAssembly impl.RelativeToAssembly.FullName
+                                    |> Option.defaultValue currentAssy
 
                                 let state, implTypeDefn, implResolvedAssy =
                                     IlMachineState.resolveTypeMetadataToken
@@ -1501,7 +1502,7 @@ module NativeRuntimeTypeQCall =
                                         ctx.LoggerFactory
                                         ctx.BaseClassTypes
                                         state
-                                        implResolvedAssy.Name
+                                        implResolvedAssy.DefinitionFullName
                                         currentCt.Generics
                                         ImmutableArray.Empty
                                         implTypeDefn
@@ -1518,7 +1519,7 @@ module NativeRuntimeTypeQCall =
                             )
                     | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                         let currentAssy =
-                            state.LoadedAssembly identity.Assembly
+                            state.LoadedAssembly identity.AssemblyFullName
                             |> Option.defaultWith (fun () ->
                                 failwith
                                     $"%s{operation}: assembly %s{identity.AssemblyFullName} not loaded for open generic typedef %O{identity.TypeDefinition.Get}"
@@ -1529,7 +1530,8 @@ module NativeRuntimeTypeQCall =
                         ((state, seen, ordered), currentTypeInfo.ImplementedInterfaces)
                         ||> Seq.fold (fun (state, seen, ordered) impl ->
                             let implAssy =
-                                state.LoadedAssembly impl.RelativeToAssembly |> Option.defaultValue currentAssy
+                                state.LoadedAssembly impl.RelativeToAssembly.FullName
+                                |> Option.defaultValue currentAssy
 
                             let state, implTypeDefn, implResolvedAssy =
                                 IlMachineState.resolveTypeMetadataToken
@@ -1549,7 +1551,7 @@ module NativeRuntimeTypeQCall =
                                         ctx.LoggerFactory
                                         ctx.BaseClassTypes
                                         state
-                                        implResolvedAssy.Name
+                                        implResolvedAssy.DefinitionFullName
                                         ImmutableArray.Empty
                                         ImmutableArray.Empty
                                         implTypeDefn
@@ -1748,9 +1750,9 @@ module NativeRuntimeTypeQCall =
                 )
 
             let assembly =
-                state.LoadedAssembly concreteType.Assembly
+                state.LoadedAssembly concreteType.AssemblyFullName
                 |> Option.defaultWith (fun () ->
-                    failwith $"%s{operation}: assembly is not loaded: %s{concreteType.Assembly.FullName}"
+                    failwith $"%s{operation}: assembly is not loaded: %s{concreteType.AssemblyFullName}"
                 )
 
             let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]

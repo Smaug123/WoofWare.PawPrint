@@ -42,10 +42,10 @@ module TestMethodOwner =
     [<Test>]
     let ``two dynamic owners of the same assembly are equal, though their AssemblyNames are not`` () : unit =
         let left : MethodOwner<GenericParamFromMetadata> =
-            MethodOwner.DynamicMethodsClass (assemblyName "Guest, Version=1.0.0.0")
+            MethodOwner.DynamicMethodsClass ((assemblyName "Guest, Version=1.0.0.0").FullName)
 
         let right : MethodOwner<GenericParamFromMetadata> =
-            MethodOwner.DynamicMethodsClass (assemblyName "Guest, Version=1.0.0.0")
+            MethodOwner.DynamicMethodsClass ((assemblyName "Guest, Version=1.0.0.0").FullName)
 
         // The premise: without this, the test would pass for the wrong reason.
         match left, right with
@@ -59,10 +59,10 @@ module TestMethodOwner =
     [<Test>]
     let ``dynamic owners of different assemblies are unequal`` () : unit =
         let left : MethodOwner<GenericParamFromMetadata> =
-            MethodOwner.DynamicMethodsClass (assemblyName "Guest, Version=1.0.0.0")
+            MethodOwner.DynamicMethodsClass ((assemblyName "Guest, Version=1.0.0.0").FullName)
 
         let right : MethodOwner<GenericParamFromMetadata> =
-            MethodOwner.DynamicMethodsClass (assemblyName "Other, Version=1.0.0.0")
+            MethodOwner.DynamicMethodsClass ((assemblyName "Other, Version=1.0.0.0").FullName)
 
         left |> shouldNotEqual right
 
@@ -74,7 +74,7 @@ module TestMethodOwner =
         let declared = declaredOn "Guest, Version=1.0.0.0" 1
 
         let dynamic : MethodOwner<GenericParamFromMetadata> =
-            MethodOwner.DynamicMethodsClass (assemblyName "Guest, Version=1.0.0.0")
+            MethodOwner.DynamicMethodsClass ((assemblyName "Guest, Version=1.0.0.0").FullName)
 
         declared |> shouldNotEqual dynamic
         dynamic |> shouldNotEqual declared
@@ -134,10 +134,10 @@ module TestMethodOwner =
     [<Test>]
     let ``the total projections answer for a dynamic owner`` () : unit =
         let owner =
-            MethodOwner.DynamicMethodsClass (assemblyName "Guest, Version=1.0.0.0")
+            MethodOwner.DynamicMethodsClass ((assemblyName "Guest, Version=1.0.0.0").FullName)
             : MethodOwner<GenericParamFromMetadata>
 
-        owner.Assembly.FullName
+        owner.AssemblyFullName
         |> shouldEqual (assemblyName "Guest, Version=1.0.0.0").FullName
 
         owner.Generics |> shouldEqual ImmutableArray.Empty
@@ -155,7 +155,7 @@ module TestMethodOwner =
 
         let owner = MethodOwner.DeclaredOn declaringType
 
-        owner.Assembly.FullName |> shouldEqual declaringType.Assembly.FullName
+        owner.AssemblyFullName |> shouldEqual declaringType.AssemblyFullName
         owner.Generics |> shouldEqual declaringType.Generics
         owner.TryDeclaringType |> shouldEqual (Some declaringType)
 
@@ -170,7 +170,7 @@ module TestMethodOwner =
 
         let dynamic =
             MethodOwner.describe (
-                MethodOwner.DynamicMethodsClass (assemblyName "Guest, Version=1.0.0.0")
+                MethodOwner.DynamicMethodsClass ((assemblyName "Guest, Version=1.0.0.0").FullName)
                 : MethodOwner<GenericParamFromMetadata>
             )
 
@@ -185,7 +185,7 @@ module TestMethodOwner =
     [<Test>]
     let ``requireDeclaringType fails for a dynamic owner, naming the assembly`` () : unit =
         let owner =
-            MethodOwner.DynamicMethodsClass (assemblyName "Guest, Version=1.0.0.0")
+            MethodOwner.DynamicMethodsClass ((assemblyName "Guest, Version=1.0.0.0").FullName)
             : MethodOwner<GenericParamFromMetadata>
 
         let exn =

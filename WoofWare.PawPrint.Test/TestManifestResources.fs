@@ -127,7 +127,7 @@ public static class Entry
                 ImmutableArray.Empty
                 rawMethod
                 None
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
 
@@ -147,7 +147,7 @@ public static class Entry
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (qCallAssemblyType.Identity, SignatureTypeKind.ValueType))

@@ -248,10 +248,10 @@ module internal NativeReflectionInvocation =
         : bool
         =
         let declaringAssembly =
-            state.LoadedAssembly method.DeclaringAssembly
+            state.LoadedAssembly method.DeclaringAssemblyFullName
             |> Option.defaultWith (fun () ->
                 failwith
-                    $"RuntimeMethodHandle.InvokeMethod: declaring assembly for %O{method} is not loaded: %O{method.DeclaringAssembly}"
+                    $"RuntimeMethodHandle.InvokeMethod: declaring assembly for %O{method} is not loaded: %O{method.DeclaringAssemblyFullName}"
             )
 
         let getMemberRefParentType (handle : MemberReferenceHandle) : TypeRef =

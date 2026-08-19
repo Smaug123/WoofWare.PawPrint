@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+open System
+open System.Diagnostics
 open System.Reflection
 open System.Reflection.Metadata
 
@@ -46,7 +48,6 @@ type ResolvedTypeIdentity =
         }
 
     member this.AssemblyFullName = this.DefiningAssemblyFullName
-    member this.Assembly = AssemblyName this.DefiningAssemblyFullName
     member this.TypeDefinition = this.Definition
 
     override this.Equals (other : obj) : bool =
@@ -68,6 +69,57 @@ type ResolvedTypeIdentity =
             match other with
             | :? ResolvedTypeIdentity as other -> (this :> System.IComparable<ResolvedTypeIdentity>).CompareTo other
             | _ -> failwith "invalid comparison"
+
+/// Helpers over an assembly's <em>definition identity</em>: the display name its
+/// <c>AssemblyDefinition</c> serialises to, which is what <c>LoadedAssemblies</c> keys on and what
+/// <c>ResolvedTypeIdentity</c> carries.
+[<RequireQualifiedAccess>]
+module AssemblyDefinitionName =
+    /// Does <paramref name="identity"/> name an assembly whose simple name is
+    /// <paramref name="simpleName"/>?
+    ///
+    /// Allocation-free, and so the spelling to reach for on a hot path: a display name puts the simple
+    /// name first, so this is a prefix test rather than a parse. Ordinal and case-sensitive, which is
+    /// stricter than the CLR binder's own simple-name comparison.
+    ///
+    /// <paramref name="simpleName"/> must need no escaping when a display name is built from it;
+    /// otherwise the prefix looked for here is not the one the display name carries.
+    let isNamed (simpleName : string) (identity : string) : bool =
+        Debug.Assert (
+            simpleName.Length > 0
+            && simpleName = simpleName.Trim ()
+            && simpleName.IndexOfAny [| ',' ; '=' ; '"' ; '\'' ; '\\' |] < 0,
+            $"assembly simple name %s{simpleName} would be escaped in a display name, so it cannot be matched as a prefix of one"
+        )
+
+        identity.StartsWith (simpleName, StringComparison.Ordinal)
+        && (identity.Length = simpleName.Length || identity.[simpleName.Length] = ',')
+
+    /// The simple name inside a definition identity: <c>System.Runtime</c> out of
+    /// <c>System.Runtime, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</c>.
+    ///
+    /// Parses, and so costs an <c>AssemblyName</c> with its <c>CultureInfo</c> and <c>Version</c>: this is
+    /// for rendering a name to a human, and never for looking an assembly up. What a lookup wants is the
+    /// whole display name, which every caller here already holds.
+    let simpleName (identity : string) : string =
+        match AssemblyName(identity).Name with
+        | null ->
+            failwith
+                $"assembly definition identity %s{identity} carries no simple name, so it cannot have been serialised from an AssemblyDefinition"
+        | name -> name
+
+/// Matches a definition identity naming CoreLib, so that a classifier keyed on "is this CoreLib's
+/// X" can read the identity a `ConcreteType` or a `MethodInfo` already carries rather than
+/// reconstituting an `AssemblyName` to ask for its simple name.
+[<AutoOpen>]
+module AssemblyDefinitionNamePatterns =
+    // Bool-returning rather than `unit option`: a match applies a partial active pattern once per
+    // arm, and `Intrinsics.handle` keys 66 arms on this one, so an option allocates once per
+    // successful application -- 214k of them on a regex-construction guest. That is only ~5 MB of
+    // that guest's 8.4 GB, but a bool-returning pattern has nothing to allocate and reads the same
+    // at every use site.
+    let (|CorelibAssembly|_|) (identity : string) : bool =
+        AssemblyDefinitionName.isNamed "System.Private.CoreLib" identity
 
 [<RequireQualifiedAccess>]
 module ResolvedTypeIdentity =

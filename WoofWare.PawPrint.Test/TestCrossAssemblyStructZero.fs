@@ -198,7 +198,7 @@ class Program
                 loggerFactory
                 bct
                 state
-                lib.Name
+                lib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (sTypeDef.Identity, SignatureTypeKind.ValueType))

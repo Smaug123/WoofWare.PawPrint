@@ -43,7 +43,7 @@ module TestFaultHandlers =
                 loggerFactory
                 bct
                 state
-                corelib.Name
+                corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 objectConstructor.Signature

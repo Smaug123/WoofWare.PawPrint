@@ -560,7 +560,7 @@ public unsafe struct PointerWrapper
                 loggerFactory
                 bct
                 state
-                reinterpretWriteAssembly.Name
+                reinterpretWriteAssembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
 
@@ -751,7 +751,13 @@ public unsafe struct PointerWrapper
         =
         typeInfo
         |> DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies
-        |> IlMachineState.concretizeType loggerFactory bct state corelib.Name ImmutableArray.Empty ImmutableArray.Empty
+        |> IlMachineState.concretizeType
+            loggerFactory
+            bct
+            state
+            corelib.DefinitionFullName
+            ImmutableArray.Empty
+            ImmutableArray.Empty
 
     let private projectAuxiliaryData (fieldName : string) (target : ConcreteTypeHandle) : CliType =
         match
@@ -780,7 +786,7 @@ public unsafe struct PointerWrapper
                 loggerFactory
                 bct
                 state
-                corelib.Name
+                corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 objectToString.Signature
@@ -1335,7 +1341,7 @@ public unsafe struct PointerWrapper
             loggerFactory
             bct
             state
-            corelib.Name
+            corelib.DefinitionFullName
             (ImmutableArray.Create argHandle)
             ImmutableArray.Empty
 
@@ -1387,7 +1393,7 @@ public unsafe struct PointerWrapper
                 loggerFactory
                 bct
                 (stateWithLogger loggerFactory)
-                corelib.Name
+                corelib.DefinitionFullName
                 (ImmutableArray.Create intHandle)
                 ImmutableArray.Empty
 

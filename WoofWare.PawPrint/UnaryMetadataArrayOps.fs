@@ -57,7 +57,7 @@ module internal UnaryMetadataArrayOps =
                     loggerFactory
                     baseClassTypes
                     state
-                    assy.Name
+                    assy.DefinitionFullName
                     typeGenerics
                     methodState.Generics
                     elementType
@@ -275,7 +275,7 @@ module internal UnaryMetadataArrayOps =
                         loggerFactory
                         baseClassTypes
                         state
-                        elementAssy.Name
+                        elementAssy.DefinitionFullName
                         typeGenerics
                         methodGenerics
                         elementType

@@ -83,7 +83,7 @@ module TestSignalDispatch =
                 ImmutableArray.Empty
                 rawMethod
                 None
-                corelib.Name
+                corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
 

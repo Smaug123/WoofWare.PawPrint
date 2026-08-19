@@ -68,7 +68,7 @@ module TestMethodHandleRegistry =
         MethodHandleRegistry.getOrAllocateInternalHandle
             baseClassTypes
             concreteTypes
-            declaringConcrete.Assembly.FullName
+            declaringConcrete.AssemblyFullName
             target
             method
             reg
@@ -556,7 +556,7 @@ public static class GenericMethodHolder
                 loggerFactory
                 baseClassTypes
                 state
-                assembly.Name
+                assembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (targetMethod.RequiredDeclaringType.Identity, stk))
@@ -638,7 +638,7 @@ public static class GenericMethodHolder
                 ImmutableArray.Empty
                 rawMethod
                 None
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
 
@@ -718,7 +718,7 @@ public static class GenericMethodHolder
                 loggerFactory
                 baseClassTypes
                 state
-                assembly.Name
+                assembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (method.RequiredDeclaringType.Identity, stk))
@@ -896,7 +896,7 @@ public class GenericHolder<T>
                 loggerFactory
                 baseClassTypes
                 state
-                assembly.Name
+                assembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 closedDefn
@@ -951,7 +951,7 @@ public static class GenericMethodHolder
                     ImmutableArray.Empty
                     targetMethod
                     (Some (ImmutableArray.Create methodGeneric))
-                    assembly.Name
+                    assembly.DefinitionFullName
                     ImmutableArray.Empty
                     state
 
@@ -1107,7 +1107,7 @@ public static class InstantiationHolder
                 ImmutableArray.Empty
                 targetMethod
                 (Some (ImmutableArray.Create (TypeDefn.PrimitiveType PrimitiveType.Int32)))
-                assembly.Name
+                assembly.DefinitionFullName
                 ImmutableArray.Empty
                 state
 
@@ -1393,7 +1393,7 @@ public sealed class Box<T>
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Int32.Assembly
+                baseClassTypes.Int32.Assembly.FullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.PrimitiveType PrimitiveType.Int32)
@@ -1406,7 +1406,7 @@ public sealed class Box<T>
                 loggerFactory
                 baseClassTypes
                 state
-                assembly.Name
+                assembly.DefinitionFullName
                 (ImmutableArray.Create intHandle)
                 ImmutableArray.Empty
                 (TypeDefn.GenericInstantiation (

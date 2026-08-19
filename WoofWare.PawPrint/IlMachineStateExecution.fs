@@ -23,7 +23,7 @@ module IlMachineStateExecution =
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
         | EvalStackValue.Int64 _ ->
@@ -32,7 +32,7 @@ module IlMachineStateExecution =
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
         | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
@@ -42,7 +42,7 @@ module IlMachineStateExecution =
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
         | EvalStackValue.ManagedPointer _ -> failwith "cannot get type of managed pointer target"
@@ -197,7 +197,7 @@ module IlMachineStateExecution =
                     loggerFactory
                     baseClassTypes
                     state
-                    baseClassTypes.Corelib.Name
+                    baseClassTypes.Corelib.DefinitionFullName
                     ImmutableArray.Empty
                     ImmutableArray.Empty
 
@@ -235,7 +235,7 @@ module IlMachineStateExecution =
             state._LoadedAssemblies.ByDefinitionName ownerTy.Identity.AssemblyFullName
 
         let implAssy =
-            match state.LoadedAssembly impl.RelativeToAssembly with
+            match state.LoadedAssembly impl.RelativeToAssembly.FullName with
             | Some assy -> assy
             | None -> ownerAssy
 
@@ -253,7 +253,7 @@ module IlMachineStateExecution =
                 loggerFactory
                 baseClassTypes
                 state
-                implResolvedAssy.Name
+                implResolvedAssy.DefinitionFullName
                 ownerTy.Generics
                 ImmutableArray.Empty
                 implTypeDefn
@@ -319,7 +319,8 @@ module IlMachineStateExecution =
             state, Some impl
         | None ->
 
-        let declaringAssy = state.LoadedAssembly(methodToCall.DeclaringAssembly).Value
+        let declaringAssy =
+            state.LoadedAssembly(methodToCall.DeclaringAssemblyFullName).Value
 
         let methodDeclaringType =
             declaringAssy.TypeDefs.[methodToCall.RequiredDeclaringType.Definition.Get]
@@ -332,7 +333,7 @@ module IlMachineStateExecution =
                 None
 
         let signatureMatchesTarget
-            (candidateAssembly : AssemblyName)
+            (candidateAssemblyFullName : string)
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
             (candidateSignature : TypeMethodSignature<TypeDefn>)
             (state : IlMachineState)
@@ -354,14 +355,14 @@ module IlMachineStateExecution =
             let candidateComparand : TypeConcretization.SignatureComparand =
                 {
                     Signature = candidateSignature
-                    Assembly = candidateAssembly
+                    AssemblyFullName = candidateAssemblyFullName
                     DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed candidateTypeGenerics
                 }
 
             let targetComparand : TypeConcretization.SignatureComparand =
                 {
                     Signature = targetSignature
-                    Assembly = methodToCall.DeclaringAssembly
+                    AssemblyFullName = methodToCall.DeclaringAssemblyFullName
                     DeclaringTypeGenerics =
                         TypeConcretization.SubstitutionContext.ofClosed methodToCall.DeclaringTypeGenerics
                 }
@@ -391,7 +392,7 @@ module IlMachineStateExecution =
                     loggerFactory
                     baseClassTypes
                     state
-                    candidateAssembly
+                    candidateAssemblyFullName
                     candidateTypeGenerics
                     methodToCall.Generics
 
@@ -427,7 +428,7 @@ module IlMachineStateExecution =
             elif varianceInPlay then
                 state, MethodInfo.sameDeclaredMethod meth methodToCall
             else
-                signatureMatchesTarget meth.DeclaringAssembly candidateTypeGenerics meth.Signature state
+                signatureMatchesTarget meth.DeclaringAssemblyFullName candidateTypeGenerics meth.Signature state
 
         let methodMatches
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
@@ -479,7 +480,7 @@ module IlMachineStateExecution =
             else
 
             let state, matches =
-                signatureMatchesTarget meth.DeclaringAssembly candidateTypeGenerics meth.Signature state
+                signatureMatchesTarget meth.DeclaringAssemblyFullName candidateTypeGenerics meth.Signature state
 
             if matches then
                 Some (meth, Some meth.Name = interfaceExplicitNamedMethod), state
@@ -487,7 +488,7 @@ module IlMachineStateExecution =
                 None, state
 
         let concretizeTypeArgs
-            (declaringAssembly : AssemblyName)
+            (declaringAssemblyFullName : string)
             (contextTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
             (args : TypeDefn ImmutableArray)
             (state : IlMachineState)
@@ -500,7 +501,7 @@ module IlMachineStateExecution =
                         loggerFactory
                         baseClassTypes
                         state
-                        declaringAssembly
+                        declaringAssemblyFullName
                         contextTypeGenerics
                         methodGenerics
                         ty
@@ -604,7 +605,7 @@ module IlMachineStateExecution =
                     let state, declarationTypeGenerics =
                         match declarationTypeArgs with
                         | Some typeArgs ->
-                            concretizeTypeArgs declaration.DeclaringAssembly currentTy.Generics typeArgs state
+                            concretizeTypeArgs declaration.DeclaringAssemblyFullName currentTy.Generics typeArgs state
                         | None when declaration.DeclaringTypeGenerics.IsEmpty -> state, ImmutableArray.Empty
                         | None when declaration.RequiredDeclaringType.Identity = currentTy.Identity ->
                             state, currentTy.Generics
@@ -1270,7 +1271,8 @@ module IlMachineStateExecution =
 
         // The caller has already resolved this assembly on the path that led here, so a miss is
         // a broken invariant rather than a reason to decline.
-        let declaringAssy = state.LoadedAssembly(methodToCall.DeclaringAssembly).Value
+        let declaringAssy =
+            state.LoadedAssembly(methodToCall.DeclaringAssemblyFullName).Value
 
         let declaringTypeIsInterface =
             declaringAssy.TypeDefs.[methodToCall.RequiredDeclaringType.Definition.Get].IsInterface
@@ -1395,7 +1397,7 @@ module IlMachineStateExecution =
             : bool
             =
             state
-                .LoadedAssembly(meth.DeclaringAssembly)
+                .LoadedAssembly(meth.DeclaringAssemblyFullName)
                 .Value.TypeDefs.[meth.RequiredDeclaringType.Definition.Get].IsInterface
 
         match primary with
@@ -1589,11 +1591,11 @@ module IlMachineStateExecution =
                 state, methodToCall
 
         let declaringAssy =
-            match state.LoadedAssembly methodToCall.DeclaringAssembly with
+            match state.LoadedAssembly methodToCall.DeclaringAssemblyFullName with
             | Some assy -> assy
             | None ->
                 failwith
-                    $"CallMethod: declaring assembly for %O{methodToCall} is not loaded: %O{methodToCall.DeclaringAssembly}"
+                    $"CallMethod: declaring assembly for %O{methodToCall} is not loaded: %O{methodToCall.DeclaringAssemblyFullName}"
 
         let getMemberRefParentType (handle : MemberReferenceHandle) : TypeRef =
             match declaringAssy.Members.[handle].Parent with
@@ -1618,11 +1620,11 @@ module IlMachineStateExecution =
         //
         // When no resolution happened the two coincide, so this only diverges for `callvirt`.
         let callSiteDeclaringAssy =
-            match state.LoadedAssembly callSiteMethod.DeclaringAssembly with
+            match state.LoadedAssembly callSiteMethod.DeclaringAssemblyFullName with
             | Some assy -> assy
             | None ->
                 failwith
-                    $"CallMethod: declaring assembly for call-site method %O{callSiteMethod} is not loaded: %O{callSiteMethod.DeclaringAssembly}"
+                    $"CallMethod: declaring assembly for call-site method %O{callSiteMethod} is not loaded: %O{callSiteMethod.DeclaringAssemblyFullName}"
 
         let callSiteGetMemberRefParentType (handle : MemberReferenceHandle) : TypeRef =
             match callSiteDeclaringAssy.Members.[handle].Parent with
@@ -1726,7 +1728,7 @@ module IlMachineStateExecution =
             | Some intrinsicKey ->
 
             if
-                intrinsicKey.AssemblyName = "System.Private.CoreLib"
+                AssemblyDefinitionName.isNamed "System.Private.CoreLib" intrinsicKey.DeclaringAssemblyFullName
                 && intrinsicKey.DeclaringTypeFullName = "System.Activator"
                 && intrinsicKey.MethodName = "CreateInstance"
                 && List.isEmpty intrinsicKey.ParameterShapes
@@ -1955,7 +1957,7 @@ module IlMachineStateExecution =
             : CliType
             =
             let declaringAssembly =
-                state.LoadedAssembly (methodToCall.DeclaringAssembly) |> Option.get
+                state.LoadedAssembly (methodToCall.DeclaringAssemblyFullName) |> Option.get
 
             let declaringType =
                 declaringAssembly.TypeDefs.[methodToCall.RequiredDeclaringType.Definition.Get]
@@ -2074,7 +2076,7 @@ module IlMachineStateExecution =
                         let s, _, _ =
                             IlMachineState.loadAssembly
                                 loggerFactory
-                                (state.LoadedAssembly methodToCall.DeclaringAssembly |> Option.get)
+                                (state.LoadedAssembly methodToCall.DeclaringAssemblyFullName |> Option.get)
                                 (fst asmRef.Handle)
                                 s
 
@@ -2268,13 +2270,14 @@ module IlMachineStateExecution =
                 | Some ct -> ct
                 | None -> failwith $"ConcreteTypeHandle {ty} not found in ConcreteTypes mapping"
 
-            let sourceAssembly = state.LoadedAssembly concreteType.Assembly |> Option.get
+            let sourceAssembly =
+                state.LoadedAssembly concreteType.AssemblyFullName |> Option.get
 
             let typeDef =
                 match sourceAssembly.TypeDefs.TryGetValue concreteType.Definition.Get with
                 | false, _ ->
                     failwith
-                        $"Failed to find type definition {concreteType.Definition.Get} in {concreteType.Assembly.FullName}"
+                        $"Failed to find type definition {concreteType.Definition.Get} in {concreteType.AssemblyFullName}"
                 | true, v -> v
 
             logger.LogDebug ("Resolving type {TypeDefNamespace}.{TypeDefName}", typeDef.Namespace, typeDef.Name)
@@ -2314,7 +2317,7 @@ module IlMachineStateExecution =
                         loggerFactory
                         baseClassTypes
                         state
-                        concreteType.Assembly
+                        concreteType.AssemblyFullName
                         concreteType.Generics
                         // no method generics for cctor
                         ImmutableArray.Empty
@@ -2338,7 +2341,7 @@ module IlMachineStateExecution =
                                                 loggerFactory
                                                 baseClassTypes
                                                 state
-                                                concreteType.Assembly
+                                                concreteType.AssemblyFullName
                                                 concreteType.Generics
                                                 ImmutableArray.Empty // no method generics for cctor
                                                 typeDefn

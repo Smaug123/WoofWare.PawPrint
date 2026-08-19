@@ -136,7 +136,7 @@ module IlFormatting =
             | true, typeInfo -> qualifyTypeName assembly.TypeDefs typeInfo
             | false, _ -> $"TypeDef(0x%08X{token})"
         else
-            $"[%s{identity.Assembly.Name}]TypeDef(0x%08X{token})"
+            $"[%s{AssemblyDefinitionName.simpleName identity.AssemblyFullName}]TypeDef(0x%08X{token})"
 
     /// <summary>
     /// How a type reached through a TypeRef is spelled.

@@ -12,7 +12,7 @@ module internal RawArrayDataProjection =
         (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
         : bool
         =
-        field.DeclaringType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+        field.DeclaringType.AssemblyFullName = baseClassTypes.Corelib.DefinitionFullName
         && field.DeclaringType.Namespace = "System.Runtime.CompilerServices"
         && field.DeclaringType.Name = "RawArrayData"
         && field.DeclaringType.Generics.IsEmpty

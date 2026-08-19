@@ -149,7 +149,7 @@ public class OpenGeneric<T>
         let comparand (signature : TypeMethodSignature<TypeDefn>) : TypeConcretization.SignatureComparand =
             {
                 Signature = signature
-                Assembly = fixture.Assembly.Name
+                AssemblyFullName = fixture.Assembly.DefinitionFullName
                 DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed generics
             }
 
@@ -178,7 +178,7 @@ public class OpenGeneric<T>
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
                 fixture.State
-                fixture.Assembly.Name
+                fixture.Assembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.PrimitiveType PrimitiveType.Int32)
@@ -192,7 +192,7 @@ public class OpenGeneric<T>
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
                 fixture.State
-                fixture.Assembly.Name
+                fixture.Assembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.PrimitiveType PrimitiveType.String)
@@ -782,7 +782,7 @@ public class OpenGeneric<T>
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
                 fixture.State
-                fixture.Assembly.Name
+                fixture.Assembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 ty
@@ -896,7 +896,7 @@ public class OpenGeneric<T>
         let comparand (parameters : GenericParamMetadata list) : TypeConcretization.ConstraintComparand =
             {
                 Parameters = parameters
-                Assembly = fixture.Assembly.Name
+                AssemblyFullName = fixture.Assembly.DefinitionFullName
                 DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed ImmutableArray.Empty
             }
 
@@ -1091,7 +1091,7 @@ public class OpenGeneric<T>
             let comparand (signature : TypeMethodSignature<TypeDefn>) : TypeConcretization.SignatureComparand =
                 {
                     Signature = signature
-                    Assembly = fixture.Assembly.Name
+                    AssemblyFullName = fixture.Assembly.DefinitionFullName
                     DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed ImmutableArray.Empty
                 }
 
@@ -1131,7 +1131,7 @@ public class OpenGeneric<T>
             =
             {
                 Signature = signature
-                Assembly = fixture.Assembly.Name
+                AssemblyFullName = fixture.Assembly.DefinitionFullName
                 DeclaringTypeGenerics = context
             }
 
@@ -1221,7 +1221,7 @@ public class OpenGeneric<T>
 
         let baseContext =
             TypeConcretization.SubstitutionContext.forBase
-                fixture.Assembly.Name
+                fixture.Assembly.DefinitionFullName
                 (ImmutableArray.Create (TypeDefn.PrimitiveType PrimitiveType.String))
                 derived
 
@@ -1246,7 +1246,7 @@ public class OpenGeneric<T>
 
         let baseContext =
             TypeConcretization.SubstitutionContext.forBase
-                fixture.Assembly.Name
+                fixture.Assembly.DefinitionFullName
                 (ImmutableArray.Create arrayOfFormal)
                 derived
 

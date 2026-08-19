@@ -232,7 +232,7 @@ module NativeRuntimeTypeFCall =
                     // `RuntimeTypeHandle_GetInterfaces` refuses. Handling it is still right:
                     // the alternative is failing loudly on input CoreCLR accepts.
                     let assembly =
-                        state.LoadedAssembly identity.Assembly
+                        state.LoadedAssembly identity.AssemblyFullName
                         |> Option.defaultWith (fun () ->
                             failwith
                                 $"%s{operation}: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
@@ -509,11 +509,11 @@ module NativeRuntimeTypeFCall =
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            let assemblyName =
-                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
+            let assemblyFullName =
+                NativeCall.typeAssemblyFullName operation ctx.BaseClassTypes state typeHandleTarget
 
             let addr, state =
-                getOrAllocateRuntimeAssembly ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
+                getOrAllocateRuntimeAssembly ctx.LoggerFactory ctx.BaseClassTypes assemblyFullName state
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
@@ -536,11 +536,11 @@ module NativeRuntimeTypeFCall =
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            let assemblyName =
-                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
+            let assemblyFullName =
+                NativeCall.typeAssemblyFullName operation ctx.BaseClassTypes state typeHandleTarget
 
             let addr, state =
-                getOrAllocateRuntimeModule ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
+                getOrAllocateRuntimeModule ctx.LoggerFactory ctx.BaseClassTypes assemblyFullName state
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
@@ -566,11 +566,11 @@ module NativeRuntimeTypeFCall =
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            let assemblyName =
-                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
+            let assemblyFullName =
+                NativeCall.typeAssemblyFullName operation ctx.BaseClassTypes state typeHandleTarget
 
             let addr, state =
-                getOrAllocateRuntimeAssembly ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
+                getOrAllocateRuntimeAssembly ctx.LoggerFactory ctx.BaseClassTypes assemblyFullName state
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
@@ -594,11 +594,11 @@ module NativeRuntimeTypeFCall =
             let typeHandleTarget =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            let assemblyName =
-                NativeCall.typeAssemblyName operation ctx.BaseClassTypes state typeHandleTarget
+            let assemblyFullName =
+                NativeCall.typeAssemblyFullName operation ctx.BaseClassTypes state typeHandleTarget
 
             let addr, state =
-                getOrAllocateRuntimeModule ctx.LoggerFactory ctx.BaseClassTypes assemblyName state
+                getOrAllocateRuntimeModule ctx.LoggerFactory ctx.BaseClassTypes assemblyFullName state
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
@@ -764,7 +764,7 @@ module NativeRuntimeTypeFCall =
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
                 | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
                     let assembly =
-                        state.LoadedAssembly identity.Assembly
+                        state.LoadedAssembly identity.AssemblyFullName
                         |> Option.defaultWith (fun () ->
                             failwith
                                 $"%s{operation}: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
@@ -795,10 +795,10 @@ module NativeRuntimeTypeFCall =
                             )
 
                         let assembly =
-                            state.LoadedAssembly concreteType.Assembly
+                            state.LoadedAssembly concreteType.AssemblyFullName
                             |> Option.defaultWith (fun () ->
                                 failwith
-                                    $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                                    $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.AssemblyFullName}"
                             )
 
                         let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]

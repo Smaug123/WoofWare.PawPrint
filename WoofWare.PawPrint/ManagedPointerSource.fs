@@ -123,15 +123,15 @@ type RuntimeTypeHandleTarget =
         match this with
         | RuntimeTypeHandleTarget.Closed handle -> string handle
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
-            $"open generic definition %s{identity.Assembly.Name}/%O{identity.TypeDefinition.Get}"
+            $"open generic definition %s{AssemblyDefinitionName.simpleName identity.AssemblyFullName}/%O{identity.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
-            $"generic parameter #%i{position} of %s{declaringType.Assembly.Name}/%O{declaringType.TypeDefinition.Get}"
+            $"generic parameter #%i{position} of %s{AssemblyDefinitionName.simpleName declaringType.AssemblyFullName}/%O{declaringType.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
-            $"method generic parameter #%i{position} of method %O{declaringMethod.Get} on %s{declaringType.Assembly.Name}/%O{declaringType.TypeDefinition.Get}"
+            $"method generic parameter #%i{position} of method %O{declaringMethod.Get} on %s{AssemblyDefinitionName.simpleName declaringType.AssemblyFullName}/%O{declaringType.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.OpenConstructed (definition, arguments) ->
             let args = arguments |> List.map string |> String.concat ", "
 
-            $"open constructed %s{definition.Assembly.Name}/%O{definition.TypeDefinition.Get}[%s{args}]"
+            $"open constructed %s{AssemblyDefinitionName.simpleName definition.AssemblyFullName}/%O{definition.TypeDefinition.Get}[%s{args}]"
         | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssemblyFullName ->
             $"dynamic methods class of %s{scopeAssemblyFullName}"
 

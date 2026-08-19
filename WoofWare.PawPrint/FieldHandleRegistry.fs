@@ -79,7 +79,7 @@ module FieldHandleRegistry =
         (allConcreteTypes : AllConcreteTypes)
         (allocState : 'allocState)
         (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
-        (declaringAssy : AssemblyName)
+        (declaringAssyFullName : string)
         (declaringType : RuntimeTypeHandleTarget)
         (handle : FieldDefinitionHandle)
         (reg : FieldHandleRegistry)
@@ -126,7 +126,7 @@ module FieldHandleRegistry =
 
         let handle =
             {
-                AssemblyFullName = declaringAssy.FullName
+                AssemblyFullName = declaringAssyFullName
                 FieldHandle = ComparableFieldDefinitionHandle.Make handle
                 DeclaringType = declaringType
             }

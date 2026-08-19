@@ -207,7 +207,7 @@ module TestEnumClassification =
                 TypeConcretization.concretizeType
                     ctx
                     IAssemblyLoad.alreadyLoadedOnly
-                    corelib.Name
+                    corelib.DefinitionFullName
                     ImmutableArray.Empty
                     ImmutableArray.Empty
                     (TypeDefn.PrimitiveType prim)

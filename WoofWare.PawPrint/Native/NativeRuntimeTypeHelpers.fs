@@ -146,17 +146,16 @@ module NativeRuntimeTypeHelpers =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
-        (declaringAssemblyName : AssemblyName)
+        (declaringAssemblyFullName : string)
         (declaringTypeDefinition : System.Reflection.Metadata.TypeDefinitionHandle)
         (declaringTarget : RuntimeTypeHandleTarget)
         (state : IlMachineState)
         : IlMachineState * int64 list
         =
         let assembly =
-            state.LoadedAssembly declaringAssemblyName
+            state.LoadedAssembly declaringAssemblyFullName
             |> Option.defaultWith (fun () ->
-                failwith
-                    $"%s{operation}: assembly for declaring type is not loaded: %s{declaringAssemblyName.FullName}"
+                failwith $"%s{operation}: assembly for declaring type is not loaded: %s{declaringAssemblyFullName}"
             )
 
         let typeInfo = assembly.TypeDefs.[declaringTypeDefinition]
@@ -176,7 +175,7 @@ module NativeRuntimeTypeHelpers =
                 IlMachineState.getOrAllocateField
                     loggerFactory
                     baseClassTypes
-                    declaringAssemblyName
+                    declaringAssemblyFullName
                     declaringTarget
                     field.Handle
                     state
@@ -225,7 +224,7 @@ module NativeRuntimeTypeHelpers =
                 loggerFactory
                 baseClassTypes
                 operation
-                concreteType.Assembly
+                concreteType.AssemblyFullName
                 concreteType.Definition.Get
                 (RuntimeTypeHandleTarget.Closed typeHandle)
                 state
@@ -259,7 +258,7 @@ module NativeRuntimeTypeHelpers =
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
         | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
             let assembly =
-                state.LoadedAssembly identity.Assembly
+                state.LoadedAssembly identity.AssemblyFullName
                 |> Option.defaultWith (fun () ->
                     failwith
                         $"%s{operation}: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
@@ -292,10 +291,10 @@ module NativeRuntimeTypeHelpers =
                     )
 
                 let assembly =
-                    state.LoadedAssembly concreteType.Assembly
+                    state.LoadedAssembly concreteType.AssemblyFullName
                     |> Option.defaultWith (fun () ->
                         failwith
-                            $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                            $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.AssemblyFullName}"
                     )
 
                 let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
@@ -329,10 +328,10 @@ module NativeRuntimeTypeHelpers =
                 )
 
             let assembly =
-                state.LoadedAssembly concreteType.Assembly
+                state.LoadedAssembly concreteType.AssemblyFullName
                 |> Option.defaultWith (fun () ->
                     failwith
-                        $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                        $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.AssemblyFullName}"
                 )
 
             let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
@@ -592,7 +591,7 @@ module NativeRuntimeTypeHelpers =
             // GenericParameterHandle is owned by the declaring type's metadata
             // reader, which we reach via the declaring type's loaded assembly.
             let assembly =
-                state.LoadedAssembly declaringType.Assembly
+                state.LoadedAssembly declaringType.AssemblyFullName
                 |> Option.defaultWith (fun () ->
                     failwith
                         $"%s{operation}: assembly for generic parameter declaring type is not loaded: %s{declaringType.AssemblyFullName}"
@@ -610,7 +609,7 @@ module NativeRuntimeTypeHelpers =
             // ECMA-335 §II.22.20: GenericParam table tag 0x2A. For method-level
             // generic parameters the owner is the declaring method rather than a type.
             let assembly =
-                state.LoadedAssembly declaringType.Assembly
+                state.LoadedAssembly declaringType.AssemblyFullName
                 |> Option.defaultWith (fun () ->
                     failwith
                         $"%s{operation}: assembly for method generic parameter declaring type is not loaded: %s{declaringType.AssemblyFullName}"
@@ -655,7 +654,7 @@ module NativeRuntimeTypeHelpers =
     /// against the slot it fills.
     type SlotOwner =
         {
-            Assembly : AssemblyName
+            AssemblyFullName : string
             Identity : ResolvedTypeIdentity
             Substitution : TypeConcretization.SubstitutionContext
             /// How to name this type in a diagnostic. Held rather than derived, because the walk that
@@ -667,7 +666,7 @@ module NativeRuntimeTypeHelpers =
     /// The owner of a slot read from a closed type.
     let private slotOwnerOfClosed (concreteType : ConcreteType<ConcreteTypeHandle>) : SlotOwner =
         {
-            SlotOwner.Assembly = concreteType.Assembly
+            SlotOwner.AssemblyFullName = concreteType.AssemblyFullName
             SlotOwner.Identity = concreteType.Identity
             SlotOwner.Substitution = TypeConcretization.SubstitutionContext.ofClosed concreteType.Generics
             SlotOwner.Description = string concreteType
@@ -797,7 +796,7 @@ module NativeRuntimeTypeHelpers =
         let comparand (slot : VtableSlot) : TypeConcretization.SignatureComparand =
             {
                 Signature = slot.Method.Signature
-                Assembly = slot.DeclaredBy.Assembly
+                AssemblyFullName = slot.DeclaredBy.AssemblyFullName
                 // A slot's occupant is read through the type it was found on, and the base chain's
                 // entries carry a different substitution from the derived type's. That is the
                 // substitution the comparison needs.
@@ -817,7 +816,7 @@ module NativeRuntimeTypeHelpers =
     let private constraintComparand (slot : VtableSlot) : TypeConcretization.ConstraintComparand =
         {
             Parameters = slot.Method.Generics |> Seq.map snd |> List.ofSeq
-            Assembly = slot.DeclaredBy.Assembly
+            AssemblyFullName = slot.DeclaredBy.AssemblyFullName
             DeclaringTypeGenerics = slot.DeclaredBy.Substitution
         }
 
@@ -1490,7 +1489,7 @@ module NativeRuntimeTypeHelpers =
         (slot : VtableSlot)
         : string * (System.Reflection.Metadata.MethodDefinitionHandle option * SynthesisedMethod option)
         =
-        slot.DeclaredBy.Assembly.FullName, slot.Method.IdentityKey
+        slot.DeclaredBy.AssemblyFullName, slot.Method.IdentityKey
 
     /// The index of the slot occupied by the method with the given identity, or `None`.
     let slotIndexOfIdentity
@@ -1595,7 +1594,7 @@ module NativeRuntimeTypeHelpers =
                     failwith $"%s{operation}: concrete type handle was not registered: %O{handle}"
                 )
 
-            Some (concreteType.Assembly.FullName, target, typeInfo.Methods)
+            Some (concreteType.AssemblyFullName, target, typeInfo.Methods)
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
             // CoreCLR's typical instantiation of `G<>` is a MethodTable carrying the definition's
             // own TypeDef token, and its MethodDescChunks hold the definition's MethodDefs. So the
@@ -1603,7 +1602,7 @@ module NativeRuntimeTypeHelpers =
             // needed, which is what makes this answerable where `numVirtuals` is not — that needs
             // to *match* signatures across the base chain, and this only needs to list them.
             let assembly =
-                state.LoadedAssembly identity.Assembly
+                state.LoadedAssembly identity.AssemblyFullName
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: assembly %s{identity.AssemblyFullName} is not loaded"
                 )
@@ -1656,7 +1655,7 @@ module NativeRuntimeTypeHelpers =
                 loggerFactory
                 baseClassTypes
                 state
-                typeInfo.Assembly
+                typeInfo.Assembly.FullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (typeInfo.Identity, stk))
@@ -1673,7 +1672,7 @@ module NativeRuntimeTypeHelpers =
             None
         else
             let assembly =
-                state.LoadedAssembly typeInfo.Assembly
+                state.LoadedAssembly typeInfo.Assembly.FullName
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: declaring assembly is not loaded: %s{typeInfo.Assembly.FullName}"
                 )
@@ -1705,7 +1704,7 @@ module NativeRuntimeTypeHelpers =
                     loggerFactory
                     baseClassTypes
                     state
-                    declaringTypeInfo.Assembly
+                    declaringTypeInfo.Assembly.FullName
                     ImmutableArray.Empty
                     ImmutableArray.Empty
                     (TypeDefn.FromDefinition (declaringTypeInfo.Identity, stk))
@@ -1744,7 +1743,7 @@ module NativeRuntimeTypeHelpers =
                 $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
             let assembly =
-                state.LoadedAssembly identity.Assembly
+                state.LoadedAssembly identity.AssemblyFullName
                 |> Option.defaultWith (fun () ->
                     failwith
                         $"RuntimeTypeHandle.GetDeclaringType: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
@@ -1774,7 +1773,7 @@ module NativeRuntimeTypeHelpers =
             // closed RuntimeType rather than OpenGenericTypeDefinition, because
             // OpenGenericTypeDefinition would incorrectly report IsGenericType=true.
             let assembly =
-                state.LoadedAssembly declaringType.Assembly
+                state.LoadedAssembly declaringType.AssemblyFullName
                 |> Option.defaultWith (fun () ->
                     failwith
                         $"RuntimeTypeHandle.GetDeclaringType: assembly for method generic parameter declaring type is not loaded: %s{declaringType.AssemblyFullName}"
@@ -1812,10 +1811,10 @@ module NativeRuntimeTypeHelpers =
                     )
 
                 let assembly =
-                    state.LoadedAssembly concreteType.Assembly
+                    state.LoadedAssembly concreteType.AssemblyFullName
                     |> Option.defaultWith (fun () ->
                         failwith
-                            $"RuntimeTypeHandle.GetDeclaringType: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                            $"RuntimeTypeHandle.GetDeclaringType: assembly for concrete type is not loaded: %s{concreteType.AssemblyFullName}"
                     )
 
                 let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
@@ -1837,7 +1836,7 @@ module NativeRuntimeTypeHelpers =
                     $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                 let assembly =
-                    state.LoadedAssembly identity.Assembly
+                    state.LoadedAssembly identity.AssemblyFullName
                     |> Option.defaultWith (fun () ->
                         failwith
                             $"RuntimeTypeHandle.GetBaseType: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
@@ -1856,7 +1855,7 @@ module NativeRuntimeTypeHelpers =
                             loggerFactory
                             baseClassTypes
                             state
-                            baseAssembly.Name
+                            baseAssembly.DefinitionFullName
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             baseTypeDefn
@@ -1975,7 +1974,7 @@ module NativeRuntimeTypeHelpers =
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (typeInfo.Identity, stk))
@@ -2033,7 +2032,7 @@ module NativeRuntimeTypeHelpers =
                     $"%s{operation}: genericParameterConstraintTargets requires a generic-parameter target, got %O{target}"
 
         let assembly =
-            state.LoadedAssembly declaringType.Assembly
+            state.LoadedAssembly declaringType.AssemblyFullName
             |> Option.defaultWith (fun () ->
                 failwith
                     $"%s{operation}: assembly for the declaring type of %O{target} is not loaded: %s{declaringType.AssemblyFullName}"
@@ -2198,7 +2197,7 @@ module NativeRuntimeTypeHelpers =
                         loggerFactory
                         baseClassTypes
                         state
-                        assembly.Name
+                        assembly.DefinitionFullName
                         ImmutableArray.Empty
                         ImmutableArray.Empty
                         ty
@@ -2232,7 +2231,7 @@ module NativeRuntimeTypeHelpers =
                             loggerFactory
                             baseClassTypes
                             state
-                            assembly.Name
+                            assembly.DefinitionFullName
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             ty
@@ -2343,7 +2342,7 @@ module NativeRuntimeTypeHelpers =
         : ConcreteTypeHandle * IlMachineState
         =
         let assembly =
-            state.LoadedAssembly genericDefinition.Assembly
+            state.LoadedAssembly genericDefinition.AssemblyFullName
             |> Option.defaultWith (fun () ->
                 failwith
                     $"%s{operation}: assembly for open generic type definition is not loaded: %s{genericDefinition.AssemblyFullName}"
@@ -2376,7 +2375,7 @@ module NativeRuntimeTypeHelpers =
                 loggerFactory
                 baseClassTypes
                 state
-                genericDefinition.Assembly
+                genericDefinition.AssemblyFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.GenericInstantiation (genericDefn, genericArgDefns))
@@ -2446,7 +2445,7 @@ module NativeRuntimeTypeHelpers =
         : TypeInfo<GenericParamFromMetadata, TypeDefn> option
         =
         let lookupFromIdentity (identity : ResolvedTypeIdentity) =
-            match state.LoadedAssembly identity.Assembly with
+            match state.LoadedAssembly identity.AssemblyFullName with
             | None -> None
             | Some assembly -> Some assembly.TypeDefs.[identity.TypeDefinition.Get]
 
@@ -2491,7 +2490,7 @@ module NativeRuntimeTypeHelpers =
             match AllConcreteTypes.lookup arg state.ConcreteTypes with
             | None -> None
             | Some concreteType ->
-                match state.LoadedAssembly concreteType.Assembly with
+                match state.LoadedAssembly concreteType.AssemblyFullName with
                 | None -> None
                 | Some assembly -> Some assembly.TypeDefs.[concreteType.Definition.Get]
         | ConcreteTypeHandle.Byref _
@@ -2584,7 +2583,7 @@ module NativeRuntimeTypeHelpers =
     ///    (ECMA-335 §II.22.21), i.e. base-class and interface requirements.
     ///
     /// Each general constraint is concretized in the *caller's* substitution context —
-    /// `declaringAssembly` / `typeGenerics` / `methodGenerics` — before the assignability check,
+    /// `declaringAssemblyFullName` / `typeGenerics` / `methodGenerics` — before the assignability check,
     /// exactly as CoreCLR loads it under `pTypeContextOfConstraintDeclarer` rather than deferring
     /// to `CanCastTo` on a typical instantiation. The comment at typedesc.cpp:1565-1580 gives the
     /// motivating example: verifying `S : A&lt;R&gt;` against `U : A&lt;T&gt;` requires substituting
@@ -2621,7 +2620,7 @@ module NativeRuntimeTypeHelpers =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ownerDisplayName : string)
-        (declaringAssembly : System.Reflection.AssemblyName)
+        (declaringAssemblyFullName : string)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (generics : GenericParamFromMetadata ImmutableArray)
@@ -2702,7 +2701,7 @@ module NativeRuntimeTypeHelpers =
                         loggerFactory
                         baseClassTypes
                         state
-                        declaringAssembly
+                        declaringAssemblyFullName
                         typeGenerics
                         methodGenerics
                         constraintTypeDefn
@@ -2755,7 +2754,7 @@ module NativeRuntimeTypeHelpers =
             baseClassTypes
             state
             $"%s{typeInfo.Namespace}.%s{typeInfo.Name}"
-            typeInfo.Assembly
+            typeInfo.Assembly.FullName
             (ImmutableArray.CreateRange genericArguments)
             ImmutableArray.Empty
             typeInfo.Generics
@@ -2764,11 +2763,10 @@ module NativeRuntimeTypeHelpers =
     let getOrAllocateRuntimeAssembly
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (assemblyName : System.Reflection.AssemblyName)
+        (assemblyFullName : string)
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
         =
-        let assemblyFullName = assemblyName.FullName
 
         match state.RuntimeAssemblyObjects.TryGetValue assemblyFullName with
         | true, cachedAddr -> cachedAddr, state
@@ -2807,22 +2805,21 @@ module NativeRuntimeTypeHelpers =
     let getOrAllocateModuleRuntimeType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (assemblyName : System.Reflection.AssemblyName)
+        (assemblyFullName : string)
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
         =
         let assembly =
-            state.LoadedAssembly assemblyName
+            state.LoadedAssembly assemblyFullName
             |> Option.defaultWith (fun () ->
-                failwith
-                    $"RuntimeTypeHandle.GetModule: assembly %s{assemblyName.FullName} for module type is not loaded"
+                failwith $"RuntimeTypeHandle.GetModule: assembly %s{assemblyFullName} for module type is not loaded"
             )
 
         let moduleTypeInfo =
             assembly.TypeDefs.Values
             |> Seq.tryFind (fun typeInfo -> typeInfo.Namespace = "" && typeInfo.Name = "<Module>")
             |> Option.defaultWith (fun () ->
-                failwith $"RuntimeTypeHandle.GetModule: assembly %s{assemblyName.FullName} has no <Module> type"
+                failwith $"RuntimeTypeHandle.GetModule: assembly %s{assemblyFullName} has no <Module> type"
             )
 
         let stk =
@@ -2833,7 +2830,7 @@ module NativeRuntimeTypeHelpers =
                 loggerFactory
                 baseClassTypes
                 state
-                moduleTypeInfo.Assembly
+                moduleTypeInfo.Assembly.FullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (moduleTypeInfo.Identity, stk))
@@ -2847,20 +2844,19 @@ module NativeRuntimeTypeHelpers =
     let getOrAllocateRuntimeModule
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (assemblyName : System.Reflection.AssemblyName)
+        (assemblyFullName : string)
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
         =
-        let assemblyFullName = assemblyName.FullName
 
         match state.RuntimeModuleObjects.TryGetValue assemblyFullName with
         | true, cachedAddr -> cachedAddr, state
         | false, _ ->
             let runtimeAssemblyAddr, state =
-                getOrAllocateRuntimeAssembly loggerFactory baseClassTypes assemblyName state
+                getOrAllocateRuntimeAssembly loggerFactory baseClassTypes assemblyFullName state
 
             let moduleRuntimeTypeAddr, state =
-                getOrAllocateModuleRuntimeType loggerFactory baseClassTypes assemblyName state
+                getOrAllocateModuleRuntimeType loggerFactory baseClassTypes assemblyFullName state
 
             let state, runtimeModuleTypeInfo, runtimeModuleTypeHandle =
                 concretizeNonGenericCorelibType loggerFactory baseClassTypes state "System.Reflection" "RuntimeModule"
@@ -2923,11 +2919,13 @@ module NativeRuntimeTypeHelpers =
         else
             typeInfo.Name
 
-    let assemblyDisplayName (noVersion : bool) (assemblyName : System.Reflection.AssemblyName) : string =
+    /// How CoreCLR's `TypeString` spells the assembly half of a type name: the simple name under
+    /// `FormatNoVersion`, and the whole definition identity otherwise.
+    let assemblyDisplayName (noVersion : bool) (definitionFullName : string) : string =
         if noVersion then
-            assemblyName.Name
+            AssemblyDefinitionName.simpleName definitionFullName
         else
-            assemblyName.FullName
+            definitionFullName
 
     let runtimeTypeHandleName
         (operation : string)
@@ -2977,10 +2975,10 @@ module NativeRuntimeTypeHelpers =
                     )
 
                 let assembly =
-                    state.LoadedAssembly concreteType.Assembly
+                    state.LoadedAssembly concreteType.AssemblyFullName
                     |> Option.defaultWith (fun () ->
                         failwith
-                            $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                            $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.AssemblyFullName}"
                     )
 
                 let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
@@ -3003,7 +3001,7 @@ module NativeRuntimeTypeHelpers =
                         name
 
                 if includeAssembly then
-                    $"%s{name}, %s{assemblyDisplayName noVersion concreteType.Assembly}"
+                    $"%s{name}, %s{assemblyDisplayName noVersion concreteType.AssemblyFullName}"
                 else
                     name
 
@@ -3017,7 +3015,7 @@ module NativeRuntimeTypeHelpers =
                 // instantiation in brackets, exactly as for a closed one; the arguments simply
                 // happen to include type variables, which print as their bare parameter names.
                 let assembly =
-                    state.LoadedAssembly definition.Assembly
+                    state.LoadedAssembly definition.AssemblyFullName
                     |> Option.defaultWith (fun () ->
                         failwith
                             $"%s{operation}: assembly for open constructed type is not loaded: %s{definition.AssemblyFullName}"
@@ -3041,7 +3039,7 @@ module NativeRuntimeTypeHelpers =
                         name
 
                 if includeAssembly then
-                    $"%s{name}, %s{assemblyDisplayName noVersion definition.Assembly}"
+                    $"%s{name}, %s{assemblyDisplayName noVersion definition.AssemblyFullName}"
                 else
                     name
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
@@ -3056,7 +3054,7 @@ module NativeRuntimeTypeHelpers =
             | RuntimeTypeHandleTarget.OpenConstructed _ -> targetName typeHandleTarget
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                 let assembly =
-                    state.LoadedAssembly identity.Assembly
+                    state.LoadedAssembly identity.AssemblyFullName
                     |> Option.defaultWith (fun () ->
                         failwith
                             $"%s{operation}: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
@@ -3090,7 +3088,7 @@ module NativeRuntimeTypeHelpers =
                         name
 
                 if includeAssembly then
-                    $"%s{name}, %s{assemblyDisplayName noVersion identity.Assembly}"
+                    $"%s{name}, %s{assemblyDisplayName noVersion identity.AssemblyFullName}"
                 else
                     name
             | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
@@ -3099,7 +3097,7 @@ module NativeRuntimeTypeHelpers =
                 // FormatGenericParameters bits: parameters have no namespace, no owning
                 // assembly suffix, and no instantiation of their own.
                 let assembly =
-                    state.LoadedAssembly declaringType.Assembly
+                    state.LoadedAssembly declaringType.AssemblyFullName
                     |> Option.defaultWith (fun () ->
                         failwith
                             $"%s{operation}: assembly for declaring type of generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
@@ -3116,7 +3114,7 @@ module NativeRuntimeTypeHelpers =
             | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
                 // Same as type-generic parameters: CoreCLR emits only the parameter name.
                 let assembly =
-                    state.LoadedAssembly declaringType.Assembly
+                    state.LoadedAssembly declaringType.AssemblyFullName
                     |> Option.defaultWith (fun () ->
                         failwith
                             $"%s{operation}: assembly for declaring type of method generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
@@ -3198,10 +3196,10 @@ module NativeRuntimeTypeHelpers =
                     )
 
                 let assembly =
-                    state.LoadedAssembly concreteType.Assembly
+                    state.LoadedAssembly concreteType.AssemblyFullName
                     |> Option.defaultWith (fun () ->
                         failwith
-                            $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                            $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.AssemblyFullName}"
                     )
 
                 let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]

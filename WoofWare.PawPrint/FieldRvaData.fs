@@ -25,7 +25,7 @@ module internal FieldRvaData =
         let assemblyFullName = fieldHandle.GetAssemblyFullName ()
 
         let assembly =
-            state.LoadedAssembly' assemblyFullName
+            state.LoadedAssembly assemblyFullName
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
         let fieldDefinitionHandle = fieldHandle.GetFieldDefinitionHandle().Get

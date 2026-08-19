@@ -77,7 +77,7 @@ public sealed class CctorAttribute : System.Attribute
             loggerFactory
             baseClassTypes
             state
-            typeInfo.Assembly
+            typeInfo.Assembly.FullName
             ImmutableArray.Empty
             ImmutableArray.Empty
             typeDefn
@@ -333,7 +333,7 @@ public sealed class CctorAttribute : System.Attribute
                 ImmutableArray.Empty
                 rawQCallStub
                 None
-                corelib.Name
+                corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
 
@@ -344,7 +344,7 @@ public sealed class CctorAttribute : System.Attribute
                 ImmutableArray.Empty
                 (findQCallStub "CustomAttribute_CreatePropertyOrFieldData" customAttributeType)
                 None
-                corelib.Name
+                corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
 
@@ -848,7 +848,7 @@ public sealed class CctorAttribute : System.Attribute
             AllConcreteTypes.lookup obj.ConcreteType state.ConcreteTypes
             |> Option.defaultWith (fun () -> failwithf "object at %O had an unregistered concrete type" addr)
 
-        let assembly = state._LoadedAssemblies.[concrete.Assembly]
+        let assembly = state._LoadedAssemblies.ByDefinitionName concrete.AssemblyFullName
         let defn = assembly.TypeDefs.[concrete.Definition.Get]
         $"%s{defn.Namespace}.%s{defn.Name}"
 

@@ -150,7 +150,7 @@ public static class Program
                 loggerFactory
                 baseClassTypes
                 state
-                guestAssembly.Name
+                guestAssembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (typeInfo.Identity, SignatureTypeKind.Class))
@@ -218,7 +218,7 @@ public static class Program
                 ImmutableArray.Empty
                 rawMethod
                 None
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
 
@@ -300,7 +300,7 @@ public static class Program
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (handleType.Identity, SignatureTypeKind.ValueType))
@@ -376,7 +376,7 @@ public static class Program
                 loggerFactory
                 baseClassTypes
                 state
-                guestAssembly.Name
+                guestAssembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (typeInfo.Identity, SignatureTypeKind.ValueType))
@@ -595,7 +595,7 @@ public static class Program
                 loggerFactory
                 baseClassTypes
                 prepared.State
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 nullableDefn

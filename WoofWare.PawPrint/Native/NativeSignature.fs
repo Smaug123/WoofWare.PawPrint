@@ -57,7 +57,7 @@ module NativeSignature =
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: COR signature pointer was null")
 
         let assembly () : DumpedAssembly =
-            state.LoadedAssembly' peByteRange.AssemblyFullName
+            state.LoadedAssembly peByteRange.AssemblyFullName
             |> Option.defaultWith (fun () ->
                 failwith $"%s{operation}: signature blob references unloaded assembly %s{peByteRange.AssemblyFullName}"
             )
@@ -155,7 +155,7 @@ module NativeSignature =
                 ctx.LoggerFactory
                 ctx.BaseClassTypes
                 state
-                assembly.Name
+                assembly.DefinitionFullName
                 typeGenerics
                 ImmutableArray.Empty
                 fieldInfo.Signature
@@ -355,7 +355,7 @@ module NativeSignature =
                 $"%s{operation}: cCorSig %d{cCorSig} does not match the %d{peByteRange.Size}-byte signature blob it points at (%O{peByteRange})"
 
         let assembly =
-            state.LoadedAssembly' peByteRange.AssemblyFullName
+            state.LoadedAssembly peByteRange.AssemblyFullName
             |> Option.defaultWith (fun () ->
                 failwith $"%s{operation}: signature blob references unloaded assembly %s{peByteRange.AssemblyFullName}"
             )
@@ -480,7 +480,7 @@ module NativeSignature =
         let assemblyFullName = identity.GetAssemblyFullName ()
 
         let assembly =
-            state.LoadedAssembly' assemblyFullName
+            state.LoadedAssembly assemblyFullName
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
         let declaringTypeHandle =
@@ -549,7 +549,7 @@ module NativeSignature =
                 ctx.LoggerFactory
                 ctx.BaseClassTypes
                 state
-                assembly.Name
+                assembly.DefinitionFullName
                 typeGenerics
                 methodGenerics
                 defn
@@ -673,7 +673,7 @@ module NativeSignature =
         : IlMachineState
         =
         let assembly =
-            state.LoadedAssembly' peByteRange.AssemblyFullName
+            state.LoadedAssembly peByteRange.AssemblyFullName
             |> Option.defaultWith (fun () ->
                 failwith $"%s{operation}: signature blob references unloaded assembly %s{peByteRange.AssemblyFullName}"
             )
@@ -715,7 +715,7 @@ module NativeSignature =
                 ctx.LoggerFactory
                 ctx.BaseClassTypes
                 state
-                assembly.Name
+                assembly.DefinitionFullName
                 typeGenerics
                 ImmutableArray.Empty
                 // Custom modifiers need no stripping here: concretization drops them, because
@@ -1092,7 +1092,7 @@ module NativeSignature =
                             ctx.LoggerFactory
                             ctx.BaseClassTypes
                             state
-                            resolvedAssy.Name
+                            resolvedAssy.DefinitionFullName
                             typeGenerics
                             methodGenerics
                             typeDefn

@@ -230,7 +230,7 @@ public class Outer<A>
                 loggerFactory
                 bct
                 state
-                typeInfo.Assembly
+                typeInfo.Assembly.FullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 ty

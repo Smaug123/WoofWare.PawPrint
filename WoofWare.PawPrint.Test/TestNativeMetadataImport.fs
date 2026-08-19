@@ -383,7 +383,7 @@ public class MarshalShapes
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 typeDefn
@@ -472,7 +472,7 @@ public class MarshalShapes
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (constArrayType.Identity, SignatureTypeKind.ValueType))
@@ -541,7 +541,7 @@ public class MarshalShapes
                 ImmutableArray.Empty
                 rawMethod
                 None
-                fixture.BaseClassTypes.Corelib.Name
+                fixture.BaseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
 
@@ -584,7 +584,7 @@ public class MarshalShapes
                 ImmutableArray.Empty
                 rawMethod
                 None
-                fixture.BaseClassTypes.Corelib.Name
+                fixture.BaseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
 
@@ -683,7 +683,7 @@ public class MarshalShapes
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
                 state
-                fixture.BaseClassTypes.Corelib.Name
+                fixture.BaseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (objectHandleOnStackType.Identity, SignatureTypeKind.ValueType))

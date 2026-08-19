@@ -117,7 +117,7 @@ public static class Entry
                 ImmutableArray.Empty
                 rawMethod
                 None
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
 
@@ -165,7 +165,7 @@ public static class Entry
                 ImmutableArray.Empty
                 rawMethod
                 None
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
 
@@ -183,7 +183,7 @@ public static class Entry
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (typeInfo.Identity, SignatureTypeKind.ValueType))
@@ -647,7 +647,7 @@ public static class Entry
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 typeDefn
@@ -697,7 +697,7 @@ public static class Entry
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.PrimitiveType PrimitiveType.Object)
@@ -912,7 +912,7 @@ public static class Entry
                         loggerFactory
                         baseClassTypes
                         state
-                        baseClassTypes.Corelib.Name
+                        baseClassTypes.Corelib.DefinitionFullName
                         ImmutableArray.Empty
                         ImmutableArray.Empty
                         (TypeDefn.FromDefinition (exceptionInfo.Identity, SignatureTypeKind.Class))
@@ -922,7 +922,7 @@ public static class Entry
                         loggerFactory
                         baseClassTypes
                         state
-                        baseClassTypes.Corelib.Name
+                        baseClassTypes.Corelib.DefinitionFullName
                         ImmutableArray.Empty
                         ImmutableArray.Empty
                         (TypeDefn.PrimitiveType PrimitiveType.Int32)
@@ -1632,7 +1632,7 @@ public static class Entry
                 loggerFactory
                 prepared.BaseClassTypes
                 state
-                prepared.BaseClassTypes.Corelib.Name
+                prepared.BaseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.PrimitiveType PrimitiveType.Int32)
@@ -2575,7 +2575,7 @@ public static class Entry
         let baseClassTypes = prepared.BaseClassTypes
 
         let assembly =
-            state.LoadedAssembly state.EntryAssembly
+            state.LoadedAssembly state.EntryAssembly.FullName
             |> Option.defaultWith (fun () -> failwith "entry assembly is not loaded")
 
         let moduleTypeInfo =
@@ -2593,7 +2593,7 @@ public static class Entry
                 loggerFactory
                 baseClassTypes
                 state
-                moduleTypeInfo.Assembly
+                moduleTypeInfo.Assembly.FullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (moduleTypeInfo.Identity, stk))

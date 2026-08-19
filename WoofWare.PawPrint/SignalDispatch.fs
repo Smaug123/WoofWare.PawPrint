@@ -206,10 +206,10 @@ module SignalDispatch =
         validateHandlerSignature state.ConcreteTypes mi
 
         let containingAssembly =
-            state.LoadedAssembly mi.DeclaringAssembly
+            state.LoadedAssembly mi.DeclaringAssemblyFullName
             |> Option.defaultWith (fun () ->
                 failwith
-                    $"SignalDispatch.trySpawnHandler: assembly %s{mi.DeclaringAssembly.Name} for handler %s{mi.Name} is not loaded; the SetPosixSignalHandler QCall should have loaded it."
+                    $"SignalDispatch.trySpawnHandler: assembly %s{AssemblyDefinitionName.simpleName mi.DeclaringAssemblyFullName} for handler %s{mi.Name} is not loaded; the SetPosixSignalHandler QCall should have loaded it."
             )
 
         let args = buildArgs entry.Signal

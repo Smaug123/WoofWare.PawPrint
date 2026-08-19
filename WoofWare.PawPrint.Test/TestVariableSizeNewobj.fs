@@ -34,7 +34,7 @@ module TestVariableSizeNewobj =
         match AllConcreteTypes.lookup handle state.ConcreteTypes with
         | None -> false
         | Some ct ->
-            ct.Assembly.Name = "System.Private.CoreLib"
+            AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
             && ct.Namespace = "System"
             && ct.Name = "String"
             && ct.Generics.IsEmpty

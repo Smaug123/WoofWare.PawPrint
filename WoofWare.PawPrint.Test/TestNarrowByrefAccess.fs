@@ -63,7 +63,7 @@ module TestNarrowByrefAccess =
             TypeConcretization.concretizeType
                 ctx
                 IAssemblyLoad.alreadyLoadedOnly
-                byReference.Assembly
+                byReference.Assembly.FullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (byReference.Identity, signatureTypeKind))

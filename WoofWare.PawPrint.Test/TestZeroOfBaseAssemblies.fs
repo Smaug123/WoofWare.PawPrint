@@ -100,7 +100,7 @@ module TestZeroOfBaseAssemblies =
             TypeConcretization.concretizeType
                 concretizeCtx
                 loadAssembly
-                fsharpCore.Name
+                fsharpCore.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 valueOptionInt
@@ -181,7 +181,7 @@ module TestZeroOfBaseAssemblies =
             TypeConcretization.concretizeType
                 concretizeCtx
                 loadAssembly
-                fsharpCore.Name
+                fsharpCore.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 valueOptionInt
@@ -273,7 +273,7 @@ public struct Outer
             TypeConcretization.concretizeType
                 concretizeCtx
                 loadAssembly
-                outerAssembly.Name
+                outerAssembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (outerTypeDef.Identity, SignatureTypeKind.ValueType))
@@ -374,7 +374,7 @@ public struct S<T>
             TypeConcretization.concretizeType
                 concretizeCtx
                 loadAssembly
-                asm.Name
+                asm.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 sIntDefn
@@ -436,7 +436,7 @@ public struct S<T>
             TypeConcretization.concretizeType
                 concretizeCtx
                 loadAssembly
-                asm.Name
+                asm.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 sIntDefn
@@ -514,7 +514,7 @@ public static class C
             TypeConcretization.concretizeType
                 concretizeCtx
                 loadAssembly
-                fsharpCore.Name
+                fsharpCore.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 valueOptionInt

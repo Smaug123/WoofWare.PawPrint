@@ -255,7 +255,7 @@ module DebuggerServer =
             writer.WriteNull "activeFrame"
             writer.WriteNull "activeFrameSummary"
         else
-            writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
+            writer.WriteString ("activeAssembly", threadState.ActiveAssemblyFullName)
             writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
             writer.WritePropertyName "activeFrameSummary"
 
@@ -597,7 +597,7 @@ module DebuggerServer =
                 writer.WriteNull "activeAssembly"
                 writer.WriteNull "activeFrame"
             else
-                writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
+                writer.WriteString ("activeAssembly", threadState.ActiveAssemblyFullName)
                 writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
 
             let offsets = GuestLocation.attributionOffsets threadState
@@ -696,7 +696,7 @@ module DebuggerServer =
                 writer.WriteNumber ("frameCount", frames.Length)
                 writer.WriteNull "activeFrameSummary"
             else
-                writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
+                writer.WriteString ("activeAssembly", threadState.ActiveAssemblyFullName)
                 writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
                 writer.WriteNumber ("frameCount", frames.Length)
                 writer.WritePropertyName "activeFrameSummary"
@@ -810,7 +810,8 @@ module DebuggerServer =
             let frameId = threadState.ActiveMethodState
             let frame = threadState.MethodState
 
-            let assembly = state._LoadedAssemblies.[frame.ExecutingMethod.DeclaringAssembly]
+            let assembly =
+                state._LoadedAssemblies.ByDefinitionName frame.ExecutingMethod.DeclaringAssemblyFullName
 
             let qualifiedTypeName = qualifiedTypeNameForMethod assembly frame.ExecutingMethod
 

@@ -14,7 +14,7 @@ module internal RuntimeFieldProjection =
         (typeName : string)
         : bool
         =
-        field.DeclaringType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+        field.DeclaringType.AssemblyFullName = baseClassTypes.Corelib.DefinitionFullName
         && field.DeclaringType.Namespace = namespaceName
         && field.DeclaringType.Name = typeName
         && field.DeclaringType.Generics.IsEmpty

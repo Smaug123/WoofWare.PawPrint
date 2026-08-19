@@ -142,7 +142,7 @@ module NativeModuleHandle =
                     (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
 
             let assembly =
-                state.LoadedAssembly' assemblyFullName
+                state.LoadedAssembly assemblyFullName
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
             // CoreCLR returns `pModule->GetMDImport()->GetMetadataStreamVersion()`, which both
@@ -186,7 +186,7 @@ module NativeModuleHandle =
                     (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
 
             let assembly =
-                state.LoadedAssembly' assemblyFullName
+                state.LoadedAssembly assemblyFullName
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
             // CoreCLR reaches `PEDecoder::GetPEKindAndMachine` through
@@ -321,7 +321,7 @@ module NativeModuleHandle =
                 )
 
             let scopeAssembly =
-                state.LoadedAssembly' scopeAssemblyFullName
+                state.LoadedAssembly scopeAssemblyFullName
                 |> Option.defaultWith (fun () ->
                     let available = state._LoadedAssemblies.DefinitionNames |> String.concat " ; "
 

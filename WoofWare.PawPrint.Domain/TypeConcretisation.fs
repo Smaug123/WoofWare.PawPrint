@@ -91,11 +91,6 @@ module AllConcreteTypes =
         (handle : ConcreteTypeHandle)
         : (ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>) option
         =
-        // Look the assembly up by the identity's own string rather than through
-        // `assemblies.[ct.Assembly]`, which reconstitutes an `AssemblyName` from that string and
-        // asks for `.FullName` back. Both spellings are in use across the call sites this
-        // replaces; this is the one that cannot be perturbed by `AssemblyName` normalising what
-        // it round-trips.
         lookup handle concreteTypes
         |> Option.map (fun ct ->
             ct, assemblies.ByDefinitionName(ct.Identity.AssemblyFullName).TypeDefs.[ct.Identity.TypeDefinition.Get]
@@ -286,7 +281,7 @@ module AllConcreteTypes =
                             |> sprintf "<%s>"
 
                     match assemblies.TryByDefinitionName concrete.Identity.AssemblyFullName with
-                    | None -> $"<unloaded assembly %O{concrete.Assembly} for concrete type #%d{id}>"
+                    | None -> $"<unloaded assembly %s{concrete.AssemblyFullName} for concrete type #%d{id}>"
                     | Some assembly ->
 
                     match assembly.TypeDefs.TryGetValue concrete.Definition.Get with
@@ -380,7 +375,7 @@ module ConcreteActivePatterns =
         | ConcreteTypeHandle.Concrete id ->
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct when
-                ct.Assembly.Name = "System.Private.CoreLib"
+                AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
                 && ct.Namespace = "System"
                 && ct.Name = "Void"
                 && ct.Generics.IsEmpty
@@ -408,7 +403,8 @@ module ConcreteActivePatterns =
         match handle with
         | ConcreteTypeHandle.Concrete id ->
             match concreteTypes.Mapping |> Map.tryFind id with
-            | Some ct when ct.Assembly.Name = "System.Private.CoreLib" -> Some (ct.Namespace, ct.Name, ct.Generics)
+            | Some ct when AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName ->
+                Some (ct.Namespace, ct.Name, ct.Generics)
             | _ -> None
         | _ -> None
 
@@ -418,7 +414,7 @@ module ConcreteActivePatterns =
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct ->
                 if
-                    ct.Assembly.Name = "System.Private.CoreLib"
+                    AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
                     && ct.Namespace = "System"
                     && ct.Name = "Char"
                     && ct.Generics.IsEmpty
@@ -434,7 +430,7 @@ module ConcreteActivePatterns =
         | ConcreteTypeHandle.Concrete id ->
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct when
-                ct.Assembly.Name = "System.Private.CoreLib"
+                AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
                 && ct.Namespace = "System"
                 && ct.Name = "RuntimeFieldHandle"
                 && ct.Generics.IsEmpty
@@ -449,7 +445,7 @@ module ConcreteActivePatterns =
         | ConcreteTypeHandle.Concrete id ->
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct when
-                ct.Assembly.Name = "System.Private.CoreLib"
+                AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
                 && ct.Namespace = "System"
                 && ct.Name = "Array"
                 && ct.Generics.IsEmpty
@@ -479,7 +475,7 @@ module ConcreteActivePatterns =
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct ->
                 if
-                    ct.Assembly.Name = "System.Private.CoreLib"
+                    AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
                     && ct.Namespace = "System"
                     && ct.Name = "Object"
                     && ct.Generics.IsEmpty
@@ -496,7 +492,7 @@ module ConcreteActivePatterns =
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct ->
                 if
-                    ct.Assembly.Name = "System.Private.CoreLib"
+                    AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
                     && ct.Namespace = "System"
                     && ct.Name = "ValueType"
                     && ct.Generics.IsEmpty
@@ -513,7 +509,7 @@ module ConcreteActivePatterns =
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct ->
                 if
-                    ct.Assembly.Name = "System.Private.CoreLib"
+                    AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
                     && ct.Namespace = "System"
                     && ct.Name = "Boolean"
                     && ct.Generics.IsEmpty
@@ -530,7 +526,7 @@ module ConcreteActivePatterns =
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct ->
                 if
-                    ct.Assembly.Name = "System.Private.CoreLib"
+                    AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
                     && ct.Namespace = "System"
                     && ct.Name = "String"
                     && ct.Generics.IsEmpty
@@ -547,7 +543,7 @@ module ConcreteActivePatterns =
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct ->
                 if
-                    ct.Assembly.Name = "System.Private.CoreLib"
+                    AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
                     && ct.Namespace = "System"
                     && ct.Name = "Double"
                     && ct.Generics.IsEmpty
@@ -564,7 +560,7 @@ module ConcreteActivePatterns =
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct ->
                 if
-                    ct.Assembly.Name = "System.Private.CoreLib"
+                    AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
                     && ct.Namespace = "System"
                     && ct.Name = "Int64"
                     && ct.Generics.IsEmpty
@@ -581,7 +577,7 @@ module ConcreteActivePatterns =
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct ->
                 if
-                    ct.Assembly.Name = "System.Private.CoreLib"
+                    AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
                     && ct.Namespace = "System"
                     && ct.Name = "Int32"
                     && ct.Generics.IsEmpty
@@ -598,7 +594,7 @@ module ConcreteActivePatterns =
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct ->
                 if
-                    ct.Assembly.Name = "System.Private.CoreLib"
+                    AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
                     && ct.Namespace = "System"
                     && ct.Name = "UInt32"
                     && ct.Generics.IsEmpty
@@ -615,7 +611,7 @@ module ConcreteActivePatterns =
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct ->
                 if
-                    ct.Assembly.Name = "System.Private.CoreLib"
+                    AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
                     && ct.Namespace = "System"
                     && ct.Name = "UInt64"
                     && ct.Generics.IsEmpty
@@ -632,7 +628,7 @@ module ConcreteActivePatterns =
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct ->
                 if
-                    ct.Assembly.Name = "System.Private.CoreLib"
+                    AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
                     && ct.Namespace = "System"
                     && ct.Name = "Single"
                     && ct.Generics.IsEmpty
@@ -649,7 +645,7 @@ module ConcreteActivePatterns =
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct ->
                 if
-                    ct.Assembly.Name = "System.Private.CoreLib"
+                    AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
                     && ct.Namespace = "System"
                     && ct.Name = "IntPtr"
                     && ct.Generics.IsEmpty
@@ -666,7 +662,7 @@ module ConcreteActivePatterns =
             match concreteTypes.Mapping |> Map.tryFind id with
             | Some ct ->
                 if
-                    ct.Assembly.Name = "System.Private.CoreLib"
+                    AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
                     && ct.Namespace = "System"
                     && ct.Name = "UIntPtr"
                     && ct.Generics.IsEmpty
@@ -811,7 +807,7 @@ module TypeConcretization =
     let private loadAssemblyAndResolveTypeRef
         (loadAssembly : IAssemblyLoad)
         (ctx : ConcretizationContext<'corelib>)
-        (currentAssembly : AssemblyName)
+        (currentAssemblyFullName : string)
         (typeRef : TypeRef)
         : (DumpedAssembly * ResolvedTypeIdentity * WoofWare.PawPrint.TypeInfo<_, _>) * ConcretizationContext<'corelib>
         =
@@ -820,7 +816,7 @@ module TypeConcretization =
             : (DumpedAssembly * ResolvedTypeIdentity * WoofWare.PawPrint.TypeInfo<_, _>) *
               ConcretizationContext<'corelib>
             =
-            let currentAssy = ctx.LoadedAssemblies.[currentAssembly]
+            let currentAssy = ctx.LoadedAssemblies.ByDefinitionName currentAssemblyFullName
 
             match Assembly.resolveTypeRef ctx.LoadedAssemblies currentAssy ImmutableArray.Empty typeRef with
             | TypeResolutionResult.Resolved (targetAssy, identity, typeInfo) -> (targetAssy, identity, typeInfo), ctx
@@ -921,13 +917,13 @@ module TypeConcretization =
     let private concretizeTypeReference
         (loadAssembly : IAssemblyLoad)
         (ctx : ConcretizationContext<'corelib>)
-        (currentAssembly : AssemblyName)
+        (currentAssemblyFullName : string)
         (typeRef : TypeRef)
         : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
         // Use the helper to load assembly and resolve the type reference
         let (targetAssy, identity, typeInfo), ctx =
-            loadAssemblyAndResolveTypeRef loadAssembly ctx currentAssembly typeRef
+            loadAssemblyAndResolveTypeRef loadAssembly ctx currentAssemblyFullName typeRef
 
         // Check if this type has generic parameters
         if not typeInfo.Generics.IsEmpty then
@@ -971,7 +967,7 @@ module TypeConcretization =
     let rec concretizeType
         (ctx : ConcretizationContext<DumpedAssembly>)
         (loadAssembly : IAssemblyLoad)
-        (assembly : AssemblyName)
+        (assemblyFullName : string)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (typeDefn : TypeDefn)
@@ -982,13 +978,13 @@ module TypeConcretization =
 
         | TypeDefn.Array (elementType, rank) ->
             let elementHandle, ctx =
-                concretizeType ctx loadAssembly assembly typeGenerics methodGenerics elementType
+                concretizeType ctx loadAssembly assemblyFullName typeGenerics methodGenerics elementType
 
             concretizeArray ctx elementHandle rank
 
         | TypeDefn.OneDimensionalArrayLowerBoundZero elementType ->
             let elementHandle, ctx =
-                concretizeType ctx loadAssembly assembly typeGenerics methodGenerics elementType
+                concretizeType ctx loadAssembly assemblyFullName typeGenerics methodGenerics elementType
 
             concretizeOneDimArray ctx elementHandle
 
@@ -1005,17 +1001,17 @@ module TypeConcretization =
                 raise (IndexOutOfRangeException $"Generic method parameter %i{index}")
 
         | TypeDefn.GenericInstantiation (genericDef, args) ->
-            concretizeGenericInstantiation ctx loadAssembly assembly typeGenerics methodGenerics genericDef args
+            concretizeGenericInstantiation ctx loadAssembly assemblyFullName typeGenerics methodGenerics genericDef args
 
         | TypeDefn.FromDefinition (identity, _) -> concretizeTypeDefinition ctx identity
 
-        | TypeDefn.FromReference (typeRef, _) -> concretizeTypeReference loadAssembly ctx assembly typeRef
+        | TypeDefn.FromReference (typeRef, _) -> concretizeTypeReference loadAssembly ctx assemblyFullName typeRef
 
         | TypeDefn.Byref elementType ->
             // Byref types are managed references to other types
             // First concretize the element type
             let elementHandle, ctx =
-                concretizeType ctx loadAssembly assembly typeGenerics methodGenerics elementType
+                concretizeType ctx loadAssembly assemblyFullName typeGenerics methodGenerics elementType
 
             // Return a Byref constructor wrapping the element type
             ConcreteTypeHandle.Byref elementHandle, ctx
@@ -1024,7 +1020,7 @@ module TypeConcretization =
             // Pointer types are unmanaged pointers to other types
             // First concretize the element type
             let elementHandle, ctx =
-                concretizeType ctx loadAssembly assembly typeGenerics methodGenerics elementType
+                concretizeType ctx loadAssembly assemblyFullName typeGenerics methodGenerics elementType
 
             // Return a Pointer constructor wrapping the element type
             ConcreteTypeHandle.Pointer elementHandle, ctx
@@ -1034,12 +1030,12 @@ module TypeConcretization =
             // by the C# `fixed` statement. In the real CLR it tells the GC not to relocate the
             // referent; we have no moving GC, so pinning is semantically a no-op and the element
             // type's own concretization handle is the right representation.
-            concretizeType ctx loadAssembly assembly typeGenerics methodGenerics elementType
+            concretizeType ctx loadAssembly assemblyFullName typeGenerics methodGenerics elementType
 
         | TypeDefn.Modified m ->
             // Custom modifiers are metadata annotations on the signature. Runtime type
             // identity and storage shape follow the unmodified type.
-            concretizeType ctx loadAssembly assembly typeGenerics methodGenerics m.Unmodified
+            concretizeType ctx loadAssembly assemblyFullName typeGenerics methodGenerics m.Unmodified
 
         | TypeDefn.Void ->
             // Method return signatures represent `void` separately from runtime types.
@@ -1081,33 +1077,33 @@ module TypeConcretization =
             if signature.Header.Get.IsGeneric then
                 failwithf
                     "TODO: concretising a function pointer type whose signature carries the GENERIC calling convention, in %s. No compiler emits such a type and no reflection API can name one, so this indicates either hand-authored metadata or a decoder fault; signature comparison could not answer for it in any case."
-                    assembly.FullName
+                    assemblyFullName
 
             // Function pointer types are structural: the signature is the type identity.
             // Concretize each parameter and the return type under the current generic context.
             let concretized, ctx =
-                concretizeMethodSignature ctx loadAssembly assembly typeGenerics methodGenerics signature
+                concretizeMethodSignature ctx loadAssembly assemblyFullName typeGenerics methodGenerics signature
 
             ConcreteTypeHandle.FunctionPointer concretized, ctx
 
     and concretizeMethodSignature
         (ctx : ConcretizationContext<DumpedAssembly>)
         (loadAssembly : IAssemblyLoad)
-        (assembly : AssemblyName)
+        (assemblyFullName : string)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (signature : TypeMethodSignature<TypeDefn>)
         : TypeMethodSignature<ConcreteTypeHandle> * ConcretizationContext<DumpedAssembly>
         =
         let ctx, returnType =
-            concretizeReturnColumn ctx loadAssembly assembly typeGenerics methodGenerics signature.ReturnType
+            concretizeReturnColumn ctx loadAssembly assemblyFullName typeGenerics methodGenerics signature.ReturnType
 
         let paramHandles = ResizeArray<ConcreteTypeHandle> signature.ParameterTypes.Length
         let mutable ctx = ctx
 
         for paramType in signature.ParameterTypes do
             let handle, newCtx =
-                concretizeType ctx loadAssembly assembly typeGenerics methodGenerics paramType
+                concretizeType ctx loadAssembly assemblyFullName typeGenerics methodGenerics paramType
 
             paramHandles.Add handle
             ctx <- newCtx
@@ -1129,7 +1125,7 @@ module TypeConcretization =
     and concretizeReturnColumn
         (ctx : ConcretizationContext<DumpedAssembly>)
         (loadAssembly : IAssemblyLoad)
-        (assembly : AssemblyName)
+        (assemblyFullName : string)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (returnType : MethodReturnType<TypeDefn>)
@@ -1152,14 +1148,14 @@ module TypeConcretization =
             | TypeDefn.Void -> ctx, MethodReturnType.Void
             | _ ->
                 let handle, ctx =
-                    concretizeType ctx loadAssembly assembly typeGenerics methodGenerics ty
+                    concretizeType ctx loadAssembly assemblyFullName typeGenerics methodGenerics ty
 
                 ctx, MethodReturnType.Returns handle
 
     and private concretizeGenericInstantiation
         (ctx : ConcretizationContext<DumpedAssembly>)
         (loadAssembly : IAssemblyLoad)
-        (assembly : AssemblyName)
+        (assemblyFullName : string)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (genericDef : TypeDefn)
@@ -1184,7 +1180,7 @@ module TypeConcretization =
             if carriesCustomModifier arg then
                 failwithf
                     "TODO: generic instantiation in %s has a type argument carrying a custom modifier (%O); ConcreteTypeHandle cannot represent it, and unlike a modifier written directly in a signature it cannot be recovered by walking the unsubstituted signature either, so accepting it would make this instantiation compare equal to the unmodified one"
-                    assembly.FullName
+                    assemblyFullName
                     arg
         )
 
@@ -1194,7 +1190,7 @@ module TypeConcretization =
             |> Seq.fold
                 (fun (handles, ctx) arg ->
                     let handle, ctx =
-                        concretizeType ctx loadAssembly assembly typeGenerics methodGenerics arg
+                        concretizeType ctx loadAssembly assemblyFullName typeGenerics methodGenerics arg
 
                     handle :: handles, ctx
                 )
@@ -1213,7 +1209,7 @@ module TypeConcretization =
                 identity, typeDef.Namespace, typeDef.Name, ctxAfterArgs
             | FromReference (typeRef, _) ->
                 let (_, identity, typeInfo), ctxWithResolvedType =
-                    loadAssemblyAndResolveTypeRef loadAssembly ctxAfterArgs assembly typeRef
+                    loadAssemblyAndResolveTypeRef loadAssembly ctxAfterArgs assemblyFullName typeRef
 
                 identity, typeInfo.Namespace, typeInfo.Name, ctxWithResolvedType
             | _ -> failwithf "Generic instantiation of %A not supported" genericDef
@@ -1255,7 +1251,7 @@ module TypeConcretization =
         /// replaced (`varNum1 == varNum2`, siginfo.cpp:4067-4076).
         | Formal of owner : ResolvedTypeIdentity * index : int
         /// A type as `assembly` spells it, whose own `!i` are resolved by `context`.
-        | Spelled of assembly : AssemblyName * spelling : TypeDefn * context : ImmutableArray<SubstitutionArgument>
+        | Spelled of assembly : string * spelling : TypeDefn * context : ImmutableArray<SubstitutionArgument>
 
     /// The instantiation of a declaring type that a signature's `!i` are read against: one argument
     /// per generic parameter the declaring type has.
@@ -1298,7 +1294,7 @@ module TypeConcretization =
         /// methodtablebuilder.cpp:788). Passing the ancestor's assembly instead resolves the clause's
         /// TypeRefs against the wrong image — which corelib cannot detect, having no TypeRefs at all.
         let forBase
-            (spellingAssembly : AssemblyName)
+            (spellingAssembly : string)
             (arguments : ImmutableArray<TypeDefn>)
             (spellingContext : SubstitutionContext)
             : SubstitutionContext
@@ -1317,14 +1313,14 @@ module TypeConcretization =
     type SignatureComparand =
         {
             Signature : TypeMethodSignature<TypeDefn>
-            Assembly : AssemblyName
+            AssemblyFullName : string
             DeclaringTypeGenerics : SubstitutionContext
         }
 
     /// The token space and generic context one signature element is spelled in.
     type private ElementContext =
         {
-            Assembly : AssemblyName
+            AssemblyFullName : string
             TypeGenerics : ImmutableArray<SubstitutionArgument>
         }
 
@@ -1344,7 +1340,7 @@ module TypeConcretization =
         | SubstitutionArgument.Spelled (assembly, spelling, context) ->
             Element.Spelled (
                 {
-                    ElementContext.Assembly = assembly
+                    ElementContext.AssemblyFullName = assembly
                     ElementContext.TypeGenerics = context
                 },
                 spelling
@@ -1358,7 +1354,7 @@ module TypeConcretization =
     /// `false` here would silently lay out a method table wrongly, which is the failure this
     /// representation exists to prevent.
     let private requireClosedArguments
-        (assembly : AssemblyName)
+        (assembly : string)
         (arguments : ImmutableArray<SubstitutionArgument>)
         : ImmutableArray<ConcreteTypeHandle>
         =
@@ -1368,10 +1364,10 @@ module TypeConcretization =
             | SubstitutionArgument.Closed handle -> handle
             | SubstitutionArgument.Formal (owner, index) ->
                 failwith
-                    $"Signature comparison in %s{assembly.FullName} met a closed runtime type on one side and type variable !%d{index} of %s{owner.AssemblyFullName}/%O{owner.TypeDefinition.Get} on the other; a comparison is rooted either at closed instantiations or at a generic definition, so the two comparands were built against different declaring contexts"
+                    $"Signature comparison in %s{assembly} met a closed runtime type on one side and type variable !%d{index} of %s{owner.AssemblyFullName}/%O{owner.TypeDefinition.Get} on the other; a comparison is rooted either at closed instantiations or at a generic definition, so the two comparands were built against different declaring contexts"
             | SubstitutionArgument.Spelled (spelledAssembly, spelling, _) ->
                 failwith
-                    $"Signature comparison in %s{assembly.FullName} needs the runtime type of a substituted argument, but the substitution supplied %O{spelling} still spelled in %s{spelledAssembly.FullName}; only a definition-rooted comparison carries those, and it never concretises"
+                    $"Signature comparison in %s{assembly} needs the runtime type of a substituted argument, but the substitution supplied %O{spelling} still spelled in %s{spelledAssembly}; only a definition-rooted comparison carries those, and it never concretises"
         )
 
     /// Does this element mention a method generic parameter, so that it does not denote a single
@@ -1408,7 +1404,7 @@ module TypeConcretization =
     let private nominalIdentity
         (ctx : ConcretizationContext<DumpedAssembly>)
         (loadAssembly : IAssemblyLoad)
-        (assembly : AssemblyName)
+        (assemblyFullName : string)
         (ty : TypeDefn)
         : ResolvedTypeIdentity option * ConcretizationContext<DumpedAssembly>
         =
@@ -1416,7 +1412,7 @@ module TypeConcretization =
         | TypeDefn.FromDefinition (identity, _) -> Some identity, ctx
         | TypeDefn.FromReference (typeRef, _) ->
             let (_, identity, _), ctx =
-                loadAssemblyAndResolveTypeRef loadAssembly ctx assembly typeRef
+                loadAssemblyAndResolveTypeRef loadAssembly ctx assemblyFullName typeRef
 
             Some identity, ctx
         | _ -> None, ctx
@@ -1447,7 +1443,7 @@ module TypeConcretization =
             if index >= leftCtx.TypeGenerics.Length then
                 failwithf
                     "Signature comparison in %s reached generic type parameter !%d, but the declaring type's instantiation supplies only %d argument(s); the comparand was built with the wrong instantiation"
-                    leftCtx.Assembly.FullName
+                    leftCtx.AssemblyFullName
                     index
                     leftCtx.TypeGenerics.Length
 
@@ -1456,7 +1452,7 @@ module TypeConcretization =
             if index >= rightCtx.TypeGenerics.Length then
                 failwithf
                     "Signature comparison in %s reached generic type parameter !%d, but the declaring type's instantiation supplies only %d argument(s); the comparand was built with the wrong instantiation"
-                    rightCtx.Assembly.FullName
+                    rightCtx.AssemblyFullName
                     index
                     rightCtx.TypeGenerics.Length
 
@@ -1514,8 +1510,8 @@ module TypeConcretization =
                 concretizeType
                     ctx
                     loadAssembly
-                    spelledCtx.Assembly
-                    (requireClosedArguments spelledCtx.Assembly spelledCtx.TypeGenerics)
+                    spelledCtx.AssemblyFullName
+                    (requireClosedArguments spelledCtx.AssemblyFullName spelledCtx.TypeGenerics)
                     ImmutableArray.Empty
                     ty
 
@@ -1631,8 +1627,8 @@ module TypeConcretization =
             then
                 failwithf
                     "TODO: comparing two function pointer signatures that spell the same GENERIC calling convention and the same generic-parameter count (in %s against %s); from here CoreCLR compares elements read at a one-integer offset into each blob, reinterpreting the parameter-count byte as an element type, which cannot be reproduced from a decoded signature"
-                    leftCtx.Assembly.FullName
-                    rightCtx.Assembly.FullName
+                    leftCtx.AssemblyFullName
+                    rightCtx.AssemblyFullName
 
             compareSignatureTypes ctx loadAssembly leftCtx rightCtx false false leftSignature rightSignature
 
@@ -1645,8 +1641,12 @@ module TypeConcretization =
             // distinguish two references that resolve to one TypeDef; and PawPrint synthesises
             // nominal `TypeDefn`s in places (`SignatureTypeKind.Unknown` among them) where the
             // kind is not recovered from a blob at all.
-            let leftIdentity, ctx = nominalIdentity ctx loadAssembly leftCtx.Assembly leftTy
-            let rightIdentity, ctx = nominalIdentity ctx loadAssembly rightCtx.Assembly rightTy
+            let leftIdentity, ctx =
+                nominalIdentity ctx loadAssembly leftCtx.AssemblyFullName leftTy
+
+            let rightIdentity, ctx =
+                nominalIdentity ctx loadAssembly rightCtx.AssemblyFullName rightTy
+
             leftIdentity = rightIdentity, ctx
 
         // Unreachable rather than merely unequal: the enclosing match on `Element` resolves a
@@ -1776,7 +1776,7 @@ module TypeConcretization =
     type ConstraintComparand =
         {
             Parameters : GenericParamMetadata list
-            Assembly : AssemblyName
+            AssemblyFullName : string
             DeclaringTypeGenerics : SubstitutionContext
         }
 
@@ -1804,13 +1804,13 @@ module TypeConcretization =
 
         let implCtx : ElementContext =
             {
-                Assembly = impl.Assembly
+                AssemblyFullName = impl.AssemblyFullName
                 TypeGenerics = impl.DeclaringTypeGenerics.Arguments
             }
 
         let declCtx : ElementContext =
             {
-                Assembly = decl.Assembly
+                AssemblyFullName = decl.AssemblyFullName
                 TypeGenerics = decl.DeclaringTypeGenerics.Arguments
             }
 
@@ -1833,7 +1833,8 @@ module TypeConcretization =
             | TypeDefn.PrimitiveType PrimitiveType.Object -> true, ctx
             | _ ->
 
-            let identity, ctx = nominalIdentity ctx loadAssembly impl.Assembly constraintType
+            let identity, ctx =
+                nominalIdentity ctx loadAssembly impl.AssemblyFullName constraintType
 
             match identity with
             | None -> false, ctx
@@ -1923,7 +1924,7 @@ module TypeConcretization =
         =
         let toElementContext (comparand : SignatureComparand) : ElementContext =
             {
-                Assembly = comparand.Assembly
+                AssemblyFullName = comparand.AssemblyFullName
                 TypeGenerics = comparand.DeclaringTypeGenerics.Arguments
             }
 
@@ -1945,7 +1946,7 @@ module Concretization =
     let private concretizeTypeArray
         (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
         (loadAssembly : IAssemblyLoad)
-        (assembly : AssemblyName)
+        (assemblyFullName : string)
         (typeArgs : ImmutableArray<ConcreteTypeHandle>)
         (methodArgs : ImmutableArray<ConcreteTypeHandle>)
         (types : ImmutableArray<TypeDefn>)
@@ -1957,7 +1958,7 @@ module Concretization =
 
         for i = 0 to types.Length - 1 do
             let handle, newCtx =
-                TypeConcretization.concretizeType ctx loadAssembly assembly typeArgs methodArgs types.[i]
+                TypeConcretization.concretizeType ctx loadAssembly assemblyFullName typeArgs methodArgs types.[i]
 
             handles.Add handle
             ctx <- newCtx
@@ -1968,13 +1969,13 @@ module Concretization =
     let private concretizeMethodSignature
         (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
         (loadAssembly : IAssemblyLoad)
-        (assembly : AssemblyName)
+        (assemblyFullName : string)
         (typeArgs : ImmutableArray<ConcreteTypeHandle>)
         (methodArgs : ImmutableArray<ConcreteTypeHandle>)
         (signature : TypeMethodSignature<TypeDefn>)
         : TypeMethodSignature<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext<DumpedAssembly>
         =
-        TypeConcretization.concretizeMethodSignature ctx loadAssembly assembly typeArgs methodArgs signature
+        TypeConcretization.concretizeMethodSignature ctx loadAssembly assemblyFullName typeArgs methodArgs signature
 
     let rec private ensureTypeRefResolved
         (loadAssembly : IAssemblyLoad)
@@ -2127,10 +2128,10 @@ module Concretization =
                         ensureTypeDefinitionBaseAssembliesLoaded
                             loadAssembly
                             assemblies
-                            assemblies.[concreteType.Assembly]
+                            (assemblies.ByDefinitionName concreteType.AssemblyFullName)
                             concreteType.Definition.Get
 
-                    let outerAssembly = assemblies.[concreteType.Assembly]
+                    let outerAssembly = assemblies.ByDefinitionName concreteType.AssemblyFullName
                     let outerTypeDef = outerAssembly.TypeDefs.[concreteType.Definition.Get]
 
                     // Reference types terminate in zeroOf as null; fields (and,
@@ -2166,7 +2167,7 @@ module Concretization =
                                     TypeConcretization.concretizeType
                                         ctx
                                         loadAssembly
-                                        concreteType.Assembly
+                                        concreteType.AssemblyFullName
                                         concreteType.Generics
                                         ImmutableArray.Empty
                                         field.Signature
@@ -2207,7 +2208,7 @@ module Concretization =
             ensureTypeDefinitionBaseAssembliesLoaded
                 loadAssembly
                 assemblies
-                assemblies.[declaringType.Assembly]
+                (assemblies.ByDefinitionName declaringType.AssemblyFullName)
                 declaringType.Definition.Get
 
         let concCtx =
@@ -2221,7 +2222,7 @@ module Concretization =
         let declaringTypeDefn =
             if declaringType._Generics.IsEmpty then
                 // Non-generic type - determine the SignatureTypeKind
-                let assy = concCtx.LoadedAssemblies.[declaringType.Assembly]
+                let assy = concCtx.LoadedAssemblies.ByDefinitionName declaringType.AssemblyFullName
                 let arg = assy.TypeDefs.[declaringType.Definition.Get]
 
                 let signatureTypeKind =
@@ -2230,7 +2231,7 @@ module Concretization =
                 TypeDefn.FromDefinition (declaringType.Identity, signatureTypeKind)
             else
                 // Generic type - create a GenericInstantiation
-                let assy = concCtx.LoadedAssemblies.[declaringType.Assembly]
+                let assy = concCtx.LoadedAssemblies.ByDefinitionName declaringType.AssemblyFullName
                 let arg = assy.TypeDefs.[declaringType.Definition.Get]
 
                 let signatureTypeKind =
@@ -2258,7 +2259,7 @@ module Concretization =
             TypeConcretization.concretizeType
                 concCtx
                 loadAssembly
-                declaringType.Assembly
+                declaringType.AssemblyFullName
                 typeArgs
                 methodArgs
                 declaringTypeDefn
@@ -2269,7 +2270,13 @@ module Concretization =
 
         // Concretize signature
         let signature, concCtx =
-            concretizeMethodSignature concCtx loadAssembly declaringType.Assembly typeArgs methodArgs method.Signature
+            concretizeMethodSignature
+                concCtx
+                loadAssembly
+                declaringType.AssemblyFullName
+                typeArgs
+                methodArgs
+                method.Signature
 
         // Concretize local variables (only IL bodies carry them).
         let body, concCtx2 =
@@ -2280,7 +2287,13 @@ module Concretization =
                     | None -> None, concCtx
                     | Some vars ->
                         let handles, ctx =
-                            concretizeTypeArray concCtx loadAssembly declaringType.Assembly typeArgs methodArgs vars
+                            concretizeTypeArray
+                                concCtx
+                                loadAssembly
+                                declaringType.AssemblyFullName
+                                typeArgs
+                                methodArgs
+                                vars
 
                         Some handles, ctx
 
