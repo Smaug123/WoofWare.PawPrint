@@ -16,10 +16,10 @@ class Program
         // Exercises the `RuntimeMethodHandle_GetMethodInstantiation` QCall, which materialises a
         // method's instantiation as a managed array handed back through an ObjectHandleOnStack.
         //
-        // The declaring type is deliberately non-generic, for the same reason as in
-        // MethodIsGenericMethodDefinition.cs: reflecting any method off a generic type currently
-        // hits unrelated pre-existing gaps (`RuntimeMethodHandle_GetStubIfNeededSlow` for a closed
-        // instantiation, `RuntimeTypeHandle.GetNumVirtuals` for an open generic type definition).
+        // The declaring type is deliberately non-generic, so that the instantiation this reports is
+        // unambiguously the *method's* own. A generic declaring type is reachable now (see
+        // MethodIsGenericMethodDefinition.cs) and adds the question of which instantiation a handle
+        // carries, which belongs with that file rather than here.
         MethodInfo genericDef = typeof (Program).GetMethod (
             "Generic",
             BindingFlags.Static | BindingFlags.NonPublic

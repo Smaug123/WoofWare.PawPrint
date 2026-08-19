@@ -457,8 +457,9 @@ module NativeRuntimeMethodHandle =
     /// For consumers that can only work under a concrete instantiation. An open generic type
     /// definition is refused rather than approximated: resolving a signature or binding an
     /// invocation under `G&lt;&gt;` needs a formal type context — the definition's own type
-    /// variables — and `ConcreteTypeHandle` cannot express one, which is the same missing
-    /// capability as `RuntimeTypeHandle.GetNumVirtuals` for an open definition.
+    /// variables — and `ConcreteTypeHandle` cannot express one. Consumers that need only the
+    /// *layout* of a definition should ask `NativeRuntimeTypeHelpers.slotTableOfDefinition`, which
+    /// carries a formal context of its own.
     let requireClosedDeclaringType (operation : string) (identity : MetadataMethodIdentity) : ConcreteTypeHandle =
         match identity.GetDeclaringType () with
         | RuntimeTypeHandleTarget.Closed handle -> handle
@@ -1061,9 +1062,9 @@ module NativeRuntimeMethodHandle =
                     // `ConcreteTypeHandle`, which is closed by construction. Serving the shape
                     // without the check would hand back a usable handle where real .NET throws.
                     //
-                    // No guest reaches it today in any case: populating the methods of an open
-                    // definition needs `RuntimeTypeHandle.GetNumVirtuals`, which is refused for one,
-                    // so `typeof(G<>).GetMethod` fails before this QCall runs.
+                    // A guest reaches it by the plain idiom, now that `RuntimeTypeHandle.GetNumVirtuals`
+                    // answers for an open definition and so `typeof(G<>).GetMethod` succeeds;
+                    // `sourcesPure/MakeGenericMethodOnOpenDefinition.cs` is parked on it.
                     failwith
                         $"TODO: %s{operation}: rebinding onto %O{other} is not supported; a closed nominal declaring type carries the generic arguments needed as a substitution context, and constraint validation under an open declaring context is unimplemented"
 
@@ -1238,15 +1239,34 @@ module NativeRuntimeMethodHandle =
 
             let methodInfo = methodInfoOfMetadataIdentity operation state identity
 
-            let declaringType = requireClosedDeclaringType operation identity
+            let declaringType = identity.GetDeclaringType ()
 
+            // Both spellings of a metadata declaring type carry a method table, and they carry the
+            // *same* one: CoreCLR places virtuals once, on the definition, and every instantiation
+            // inherits that layout. Which one the guest named is therefore a question about the
+            // handle it holds, not about the answer.
             let state, slotTable =
-                NativeRuntimeTypeHelpers.slotTableOfClosed
-                    ctx.LoggerFactory
-                    ctx.BaseClassTypes
-                    operation
-                    state
-                    declaringType
+                match declaringType with
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    NativeRuntimeTypeHelpers.slotTableOfClosed
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        operation
+                        state
+                        handle
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition ->
+                    NativeRuntimeTypeHelpers.slotTableOfDefinition
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        operation
+                        state
+                        definition
+                | other ->
+                    // `MethodHandleRegistry` admits only `Closed` and `OpenGenericTypeDefinition`
+                    // when minting, so any other shape here means a handle was built outside that
+                    // chokepoint.
+                    failwith
+                        $"%s{operation}: declaring type %O{other} cannot declare a metadata-backed method; MethodHandleRegistry refuses to mint such a handle, so this identity did not come from it"
 
             let slot =
                 slotTable
@@ -1256,8 +1276,16 @@ module NativeRuntimeMethodHandle =
                     // so reaching here means the method is not the declaring type's to place: a
                     // synthesised method, which has no MethodDef row for `DeclaredMethodIterator` to
                     // find, or an identity naming a type that does not declare it.
+                    // A `RuntimeTypeHandleTarget` renders as its metadata handles, which name no
+                    // type; the definition walk can name one, so ask it.
+                    let declaringDescription =
+                        match declaringType with
+                        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition ->
+                            (NativeRuntimeTypeHelpers.ownerOfDefinition operation state definition).Description
+                        | other -> string other
+
                     failwith
-                        $"%s{operation}: method %s{methodInfo.Name} occupies no slot in the method table of its declaring type %O{declaringType}; every metadata-declared method is placed either in the vtable or in the region beyond it, so this is a method the declaring type does not declare (a runtime-synthesised method has no MethodDef row and is never placed)"
+                        $"%s{operation}: method %s{methodInfo.Name} occupies no slot in the method table of its declaring type %s{declaringDescription}; every metadata-declared method is placed either in the vtable or in the region beyond it, so this is a method the declaring type does not declare (a runtime-synthesised method has no MethodDef row and is never placed)"
                 )
 
             let state =

@@ -24,9 +24,9 @@ public static class Program
     // that is the definition rather than an instantiation.
     //
     // GetConstructors is deliberately the query: PopulateConstructors never asks for
-    // GetNumVirtuals, because constructors are never virtual, so this isolates the
-    // introduced-method walk from the vtable of an open definition (which PawPrint still
-    // refuses, and which sourcesPure/ReflectionGenericVirtualMethodOverrideSlots.cs parks).
+    // GetNumVirtuals, because constructors are never virtual, so this isolates the introduced-method
+    // walk from the definition's vtable, which
+    // sourcesPure/ReflectionOpenGenericDefinitionMethods.cs covers separately.
     //
     // Exit code is the index of the first failing check, so a failure names itself.
     public static int Main()

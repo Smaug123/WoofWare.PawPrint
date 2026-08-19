@@ -1651,6 +1651,21 @@ module NativeRuntimeTypeHelpers =
 
         state, List.length slots
 
+    /// The size of the instance vtable of a generic definition, which is the size every
+    /// instantiation of it inherits: slot layout is a property of the definition.
+    let numVirtualsOfDefinition
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (identity : ResolvedTypeIdentity)
+        : IlMachineState * int
+        =
+        let state, slots =
+            vtableOfDefinition loggerFactory baseClassTypes operation state identity
+
+        state, List.length slots
+
     let numVirtuals
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1675,8 +1690,15 @@ module NativeRuntimeTypeHelpers =
             failwith
                 $"%s{operation}: invoked on method-generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}; the BCL is expected to strip generic variables via GetBaseType before calling"
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
-            failwith
-                $"TODO: %s{operation} for open generic type definition %O{identity}; need to walk the metadata-level method list and base-type chain without concretising"
+            // Slot layout is a property of the generic definition: `MethodTableBuilder` places
+            // virtuals from the definition's own metadata, so every instantiation ends up with the
+            // same numbering -- and for a reference type CoreCLR does not even recompute it, taking
+            // `SetNumVirtuals` from the canonical instantiation and sharing its vtable chunks
+            // (`Generics::CreateTypeHandleForNonCanonicalGenericInstantiation`, generics.cpp:205 and
+            // :327-334). So this is the same number `numVirtualsOfClosed` answers for any `G<...>`,
+            // and asking the definition is the only way to get it when the guest named no
+            // instantiation.
+            numVirtualsOfDefinition loggerFactory baseClassTypes operation state identity
         | RuntimeTypeHandleTarget.Closed handle ->
             numVirtualsOfClosed loggerFactory baseClassTypes operation state handle
 
