@@ -836,10 +836,13 @@ module IntrinsicMethodKeys =
             // Same divergence as above, in the same conservative direction: two boxes per comparison
             // that the swapped-in body does not allocate.
             //
-            // Where the swap does *not* fire this is live code, as above, though no C# guest can get
-            // there: C# admits only those eight as an enum's underlying type. Such an enum takes the
-            // switch's default arm, whose `Debug.Fail` is compiled out of the shipped CoreLib, leaving
-            // `return false` — and real .NET, running that same body, answers false too.
+            // Where the swap does *not* fire the shipped body is what real .NET runs too, so admitting
+            // it is faithful by construction rather than by any argument about what it computes. That
+            // switch does answer for bool, char, float, double, nint and nuint, under the `RARE_ENUMS`
+            // its own file defines (Enum.cs:5-7); only genuinely unknown metadata reaches the default
+            // arm. None of it is reachable from C#, which admits only those eight as an underlying
+            // type, and a precompiled assembly carrying such an enum does not get this far under
+            // PawPrint anyway — measured, it stops earlier, when one is passed as a call argument.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Enum.cs#L1190-L1248
             pattern
                 "System.Private.CoreLib"
