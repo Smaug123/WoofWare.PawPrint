@@ -16,8 +16,16 @@ module AbstractMachine =
     /// Keyed weakly so that disposing a factory still lets it be collected.
     let private loggerCache = ConditionalWeakTable<ILoggerFactory, ILogger> ()
 
+    /// Held rather than written inline at the `GetValue` call below: the conversion from an F#
+    /// lambda to this delegate type allocates, so inline it would be a fresh delegate on every
+    /// interpreted instruction to serve a table that answers from cache after the first.
+    let private createLogger =
+        ConditionalWeakTable<ILoggerFactory, ILogger>.CreateValueCallback (fun f ->
+            f.CreateLogger typeof<Dummy>.DeclaringType
+        )
+
     let private logger (loggerFactory : ILoggerFactory) : ILogger =
-        loggerCache.GetValue (loggerFactory, fun f -> f.CreateLogger typeof<Dummy>.DeclaringType)
+        loggerCache.GetValue (loggerFactory, createLogger)
 
     /// Run the active frame's prologue, if it still has one: the type-initialisation check the
     /// CLR performs on entry to a method, before any of its instructions.

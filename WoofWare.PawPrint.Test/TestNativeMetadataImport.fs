@@ -262,6 +262,62 @@ public class ParameterShapes
     {
     }
 }
+
+// One field per FieldMarshal shape (ECMA-335 II.22.17), whose NativeType blob is a MarshalSpec
+// (II.23.4). `Plain` is the control with no FieldMarshal row at all, which is a different answer
+// from an empty blob and from an error. `BigByValArray` is the only shape whose `SizeConst` needs
+// two bytes of ECMA-335 II.23.2 compressed integer, so without it the blob's compressed-integer
+// encoding would only ever be exercised on its one-byte branch. `Custom` is the shape carrying
+// length-prefixed UTF-8 strings, which is what separates handing back the row's bytes from
+// reconstructing them.
+//
+// No `SafeArray` shape: CoreCLR's `MetaDataImport::GetMarshalAs` reports `SafeArraySubType` only
+// under FEATURE_COMINTEROP (managedmdimport.cpp:48-60), so the host CLR's decoded view of one
+// differs between a Windows host and a Unix host — and this fixture uses the host as an oracle.
+public class MarshalShapes
+{
+    public int Plain;
+
+    [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    public bool Simple;
+
+    [System.Runtime.InteropServices.MarshalAs(
+        System.Runtime.InteropServices.UnmanagedType.ByValArray,
+        SizeConst = 4,
+        ArraySubType = System.Runtime.InteropServices.UnmanagedType.I4)]
+    public int[] ByValArray;
+
+    [System.Runtime.InteropServices.MarshalAs(
+        System.Runtime.InteropServices.UnmanagedType.ByValArray,
+        SizeConst = 200,
+        ArraySubType = System.Runtime.InteropServices.UnmanagedType.I4)]
+    public int[] BigByValArray;
+
+    [System.Runtime.InteropServices.MarshalAs(
+        System.Runtime.InteropServices.UnmanagedType.LPArray,
+        ArraySubType = System.Runtime.InteropServices.UnmanagedType.U1,
+        SizeParamIndex = 2)]
+    public byte[] LpArray;
+
+    [System.Runtime.InteropServices.MarshalAs(
+        System.Runtime.InteropServices.UnmanagedType.CustomMarshaler,
+        MarshalType = "Some.Marshaller",
+        MarshalCookie = "ck")]
+    public object Custom;
+
+    [System.Runtime.InteropServices.MarshalAs(
+        System.Runtime.InteropServices.UnmanagedType.ByValTStr,
+        SizeConst = 8)]
+    public string ByValTStr;
+
+    // A ParamDef parent, which is the other half of the HasFieldMarshal coded index (II.24.2.6) and
+    // the half a real guest reaches: `RuntimeParameterInfo`'s pseudo-attribute path is served,
+    // `RuntimeFieldInfo`'s is not yet.
+    public static void Params(int plain,
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string marshalled)
+    {
+    }
+}
 """
 
     type private MetadataImportFixture =
@@ -288,6 +344,7 @@ public class ParameterShapes
             GenericPropertyType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             MembersType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             ParameterShapesType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            MarshalShapesType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             InstanceField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             StaticField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             LiteralField : FieldInfo<GenericParamFromMetadata, TypeDefn>
@@ -386,6 +443,8 @@ public class ParameterShapes
 
         let parameterShapesType = requiredTopLevelType assembly "" "ParameterShapes"
 
+        let marshalShapesType = requiredTopLevelType assembly "" "MarshalShapes"
+
         let constArrayType = requiredTopLevelType corelib "System.Reflection" "ConstArray"
 
         let fieldByName (name : string) : FieldInfo<GenericParamFromMetadata, TypeDefn> =
@@ -442,6 +501,7 @@ public class ParameterShapes
             GenericPropertyType = genericPropertyType
             MembersType = membersType
             ParameterShapesType = parameterShapesType
+            MarshalShapesType = marshalShapesType
             InstanceField = fieldByName "InstanceField"
             StaticField = fieldByName "StaticField"
             LiteralField = fieldByName "LiteralField"
@@ -1897,6 +1957,437 @@ public class ParameterShapes
         // Row 0xFFFFFF of the Field table; the fixture assembly has nothing like that many fields.
         let ex =
             Assert.Throws (fun () -> invokeGetSigOfFieldDef fixture 0x04FFFFFF fixture.State |> ignore)
+
+        ex.Message |> shouldContainText "was not present in"
+
+    let private invokeGetFieldMarshal
+        (fixture : MetadataImportFixture)
+        (mdToken : int32)
+        (state : IlMachineState)
+        : EvalStackValue * (int32 * byte array * ManagedPointerSource) * IlMachineState
+        =
+        let state, metadataImportType, getFieldMarshalMethod =
+            metadataImportMethod fixture state "GetFieldMarshal" 3
+
+        let fieldMarshalOut, state = allocateConstArrayOut fixture state
+
+        let state =
+            invokeMetadataImportNative
+                fixture
+                metadataImportType
+                getFieldMarshalMethod
+                [
+                    metadataImportHandle fixture
+                    CliType.Numeric (CliNumericType.Int32 mdToken)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed fieldMarshalOut)
+                ]
+                state
+
+        let returnValue, state = IlMachineState.popEvalStack (ThreadId 0) state
+        returnValue, readConstArrayOut fixture state fieldMarshalOut, state
+
+    /// One Param row of a `MarshalShapes` method, by its Sequence column (0 being the return value).
+    let private marshalShapeParameter
+        (fixture : MetadataImportFixture)
+        (methodName : string)
+        (sequenceNumber : int)
+        : ParameterHandle
+        =
+        let mr = fixture.Assembly.PeReader.GetMetadataReader ()
+        let methodHandle = methodHandleByName fixture.MarshalShapesType methodName
+
+        (mr.GetMethodDefinition methodHandle).GetParameters ()
+        |> Seq.filter (fun handle -> (mr.GetParameter handle).SequenceNumber = sequenceNumber)
+        |> Seq.toList
+        |> function
+            | [ handle ] -> handle
+            | [] -> failwith $"MarshalShapes.%s{methodName} has no Param row with sequence %d{sequenceNumber}"
+            | handles ->
+                failwith
+                    $"MarshalShapes.%s{methodName} has %d{handles.Length} Param rows with sequence %d{sequenceNumber}"
+
+    [<Test>]
+    let ``MetadataImport GetFieldMarshal returns the MarshalSpec blob of each field`` () : unit =
+        let fixture = makeFixture ()
+
+        // Expectations derived from ECMA-335 II.23.4 rather than read back out of the image, so they
+        // pin the blob's width as well as its content. The leading byte is a NATIVE_TYPE_* code,
+        // which is *not* the ELEMENT_TYPE_* table: NATIVE_TYPE_I4 is 0x07 (corhdr.h), where
+        // ELEMENT_TYPE_I4 is 0x08, and the two disagree exactly there.
+        let cases =
+            [
+                // NATIVE_TYPE_BOOLEAN. The whole spec, with no trailing data at all.
+                "Simple", [| 0x02uy |]
+                // NATIVE_TYPE_FIXEDARRAY, count 4, then NATIVE_TYPE_I4.
+                "ByValArray", [| 0x1Euy ; 0x04uy ; 0x07uy |]
+                // The same, with a count of 200 — the one case whose II.23.2 compressed integer
+                // needs two bytes, so a decoder that read one byte per integer would stop here.
+                "BigByValArray", [| 0x1Euy ; 0x80uy ; 0xC8uy ; 0x07uy |]
+                // NATIVE_TYPE_ARRAY, NATIVE_TYPE_U1, then the "sizeis" param index 2. No additive
+                // and no flags byte follow, because the attribute set no SizeConst.
+                "LpArray", [| 0x2Auy ; 0x04uy ; 0x02uy |]
+                // NATIVE_TYPE_CUSTOMMARSHALER: an empty typelib GUID string, an empty native type
+                // name, then the length-prefixed UTF-8 marshaller type name and cookie.
+                "Custom",
+                Array.concat
+                    [
+                        [| 0x2Cuy ; 0x00uy ; 0x00uy ; 0x0Fuy |]
+                        System.Text.Encoding.UTF8.GetBytes "Some.Marshaller"
+                        [| 0x02uy |]
+                        System.Text.Encoding.UTF8.GetBytes "ck"
+                    ]
+                // NATIVE_TYPE_FIXEDSYSSTRING, size 8.
+                "ByValTStr", [| 0x17uy ; 0x08uy |]
+            ]
+
+        let mutable state = fixture.State
+
+        for fieldName, expected in cases do
+            let field = fieldNamed fixture.MarshalShapesType fieldName
+
+            let returnValue, (length, bytes, _), nextState =
+                invokeGetFieldMarshal fixture (fieldDefToken field.Handle) state
+
+            state <- nextState
+
+            returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+            bytes |> shouldEqual expected
+            length |> shouldEqual expected.Length
+
+    [<Test>]
+    let ``MetadataImport GetFieldMarshal reports no row as an empty ConstArray`` () : unit =
+        let fixture = makeFixture ()
+        let field = fieldNamed fixture.MarshalShapesType "Plain"
+
+        let returnValue, (length, bytes, pointer), _ =
+            invokeGetFieldMarshal fixture (fieldDefToken field.Handle) fixture.State
+
+        // "No FieldMarshal row" is a *successful* call, not an error HRESULT: the FCall turns
+        // `CLDB_E_RECORD_NOTFOUND` into S_OK with a null, zero-length ConstArray
+        // (managedmdimport.cpp:344-350), and `GetMarshalAsCustomAttribute` distinguishes the two
+        // answers by `nativeType.Length == 0` alone. A handler that reported failure here would
+        // make every unattributed field throw BadImageFormatException.
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+        length |> shouldEqual 0
+        bytes |> shouldEqual [||]
+        pointer |> shouldEqual ManagedPointerSource.Null
+
+    [<Test>]
+    let ``MetadataImport GetFieldMarshal returns the MarshalSpec blob of a parameter`` () : unit =
+        let fixture = makeFixture ()
+
+        // The other half of the HasFieldMarshal coded index (ECMA-335 II.24.2.6), and the half a
+        // real guest reaches today: `RuntimeParameterInfo`'s pseudo-attribute path is served.
+        let plain = marshalShapeParameter fixture "Params" 1
+        let marshalled = marshalShapeParameter fixture "Params" 2
+
+        let returnValue, (plainLength, _, plainPointer), state =
+            invokeGetFieldMarshal fixture (parameterToken plain) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+        plainLength |> shouldEqual 0
+        plainPointer |> shouldEqual ManagedPointerSource.Null
+
+        let returnValue, (length, bytes, _), state =
+            invokeGetFieldMarshal fixture (parameterToken marshalled) state
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+        // NATIVE_TYPE_LPWSTR.
+        bytes |> shouldEqual [| 0x15uy |]
+        length |> shouldEqual 1
+
+        // `ParameterShapes.ReturnRow` carries `[return: MarshalAs(UnmanagedType.Bool)]`, so its
+        // sequence-0 Param row is a FieldMarshal parent too — the shape that separates "walks the
+        // Param run" from "indexes the parameter list".
+        let mr = fixture.Assembly.PeReader.GetMetadataReader ()
+
+        let returnRow =
+            (mr.GetMethodDefinition (methodHandleByName fixture.ParameterShapesType "ReturnRow")).GetParameters ()
+            |> Seq.filter (fun handle -> (mr.GetParameter handle).SequenceNumber = 0)
+            |> Seq.exactlyOne
+
+        let returnValue, (length, bytes, _), _ =
+            invokeGetFieldMarshal fixture (parameterToken returnRow) state
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+        bytes |> shouldEqual [| 0x02uy |]
+        length |> shouldEqual 1
+
+    [<Test>]
+    let ``MetadataImport GetFieldMarshal reports no row for a nil ParamDef token`` () : unit =
+        let fixture = makeFixture ()
+
+        // `mdParamDefNil`: the ParamDef table code with row 0. `RuntimeParameterInfo` manufactures
+        // exactly this whenever the parameter has no Param row (RuntimeParameterInfo.cs:175, 190,
+        // 208) — the usual case for an unattributed return value — and
+        // `PseudoCustomAttribute.GetCustomAttributes` asks about it unconditionally, so this is a
+        // token real guests pass rather than a malformed one. CoreCLR's binary search simply
+        // matches no row.
+        let returnValue, (length, bytes, pointer), _ =
+            invokeGetFieldMarshal fixture 0x08000000 fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+        length |> shouldEqual 0
+        bytes |> shouldEqual [||]
+        pointer |> shouldEqual ManagedPointerSource.Null
+
+    /// The fields of a `MarshalAsAttribute` that CoreCLR's `MetaDataImport::GetMarshalAs` fills from
+    /// a MarshalSpec on every platform. Deliberately not `MarshalType`/`MarshalCookie`: the FCall
+    /// hands back raw pointers into the blob (managedmdimport.cpp:62-64) and the managed wrapper
+    /// reads them with `CreateReadOnlySpanFromNullTerminated` (MdImport.cs:265-270), but MarshalSpec
+    /// strings are length-prefixed rather than NUL-terminated, so the real runtime over-reads into
+    /// whatever `#Blob` bytes follow — measured as `MarshalType = "Some.MarshallerckM"` for this
+    /// fixture's `Custom` field. Those two are pinned byte-exactly by the spec-derived test above
+    /// instead. `SafeArraySubType` and `IidParameterIndex` are omitted for a different reason: the
+    /// FCall fills them only under FEATURE_COMINTEROP, so they differ between host platforms.
+    type private DecodedMarshalAs =
+        {
+            Value : System.Runtime.InteropServices.UnmanagedType
+            ArraySubType : System.Runtime.InteropServices.UnmanagedType
+            SizeConst : int
+            SizeParamIndex : int16
+        }
+
+    /// Decode a MarshalSpec (ECMA-335 II.23.4) the way CoreCLR's `ParseNativeTypeInfo`
+    /// (mlinfo.cpp:135) does, so that the bytes the handler returns can be compared against the
+    /// host CLR's own decoding of the same row. Every trailing item is optional: the parser stops
+    /// as soon as the blob runs out, which is how `LpArray` gets a size-param index but no additive.
+    let private decodeMarshalSpec (blob : byte array) : DecodedMarshalAs =
+        let mutable offset = 0
+
+        // ECMA-335 II.23.2 compressed unsigned integer.
+        let uncompress () : int =
+            let first = int blob.[offset]
+
+            if first &&& 0x80 = 0 then
+                offset <- offset + 1
+                first
+            elif first &&& 0xC0 = 0x80 then
+                let value = ((first &&& 0x3F) <<< 8) ||| int blob.[offset + 1]
+                offset <- offset + 2
+                value
+            else
+                let value =
+                    ((first &&& 0x1F) <<< 24)
+                    ||| (int blob.[offset + 1] <<< 16)
+                    ||| (int blob.[offset + 2] <<< 8)
+                    ||| int blob.[offset + 3]
+
+                offset <- offset + 4
+                value
+
+        let more () : bool = offset < blob.Length
+
+        let nativeType = int blob.[0]
+        offset <- 1
+
+        let mutable arraySubType = 0
+        let mutable sizeConst = 0
+        let mutable sizeParamIndex = 0
+
+        match nativeType with
+        // NATIVE_TYPE_FIXEDARRAY: count, then element type.
+        | 0x1E ->
+            if more () then
+                sizeConst <- uncompress ()
+
+                if more () then
+                    arraySubType <- uncompress ()
+        // NATIVE_TYPE_FIXEDSYSSTRING: size only.
+        | 0x17 ->
+            if more () then
+                sizeConst <- uncompress ()
+        // NATIVE_TYPE_ARRAY: element type, "sizeis" param index, additive, flags. The flags byte
+        // can clear the *multiplier* but never the param index, which is what the host reports as
+        // `SizeParamIndex`.
+        | 0x2A ->
+            if more () then
+                arraySubType <- uncompress ()
+
+                if more () then
+                    sizeParamIndex <- uncompress ()
+
+                    if more () then
+                        sizeConst <- uncompress ()
+
+                        if more () then
+                            uncompress () |> ignore
+        // Everything else this fixture produces — NATIVE_TYPE_BOOLEAN, NATIVE_TYPE_LPWSTR — carries
+        // nothing further, and NATIVE_TYPE_CUSTOMMARSHALER's trailing strings are the two fields
+        // this type deliberately omits.
+        | _ -> ()
+
+        {
+            Value = enum<System.Runtime.InteropServices.UnmanagedType> nativeType
+            ArraySubType = enum<System.Runtime.InteropServices.UnmanagedType> arraySubType
+            SizeConst = sizeConst
+            SizeParamIndex = int16 sizeParamIndex
+        }
+
+    let private decodeHostMarshalAs (attribute : System.Runtime.InteropServices.MarshalAsAttribute) : DecodedMarshalAs =
+        {
+            Value = attribute.Value
+            ArraySubType = attribute.ArraySubType
+            SizeConst = attribute.SizeConst
+            SizeParamIndex = attribute.SizeParamIndex
+        }
+
+    [<Test>]
+    let ``MetadataImport GetFieldMarshal agrees with the host runtime for every field and parameter`` () : unit =
+        let fixture = makeFixture ()
+
+        // Outside oracle: hand the same image to the host CLR and let its own native MarshalSpec
+        // parser answer. This covers the whole image rather than the `MarshalShapes` type alone, so
+        // every field and parameter without a FieldMarshal row is a check that the handler does not
+        // invent one.
+        let hostAssembly = System.Reflection.Assembly.Load fixture.Image
+        let mr = fixture.Assembly.PeReader.GetMetadataReader ()
+
+        let flags =
+            System.Reflection.BindingFlags.DeclaredOnly
+            ||| System.Reflection.BindingFlags.Public
+            ||| System.Reflection.BindingFlags.NonPublic
+            ||| System.Reflection.BindingFlags.Instance
+            ||| System.Reflection.BindingFlags.Static
+
+        // Token, and the host's own answer for that token. Built from the host's reflection surface
+        // rather than from the image's tables, so the expectation does not come from the same
+        // `MetadataReader` the handler reads.
+        let hostFields =
+            hostAssembly.GetTypes ()
+            |> Seq.collect (fun ty -> ty.GetFields flags)
+            |> Seq.map (fun field ->
+                field.MetadataToken,
+                System.Reflection.CustomAttributeExtensions.GetCustomAttribute<
+                    System.Runtime.InteropServices.MarshalAsAttribute
+                 >
+                    field
+                |> Option.ofObj
+            )
+            |> Seq.toList
+
+        let hostParameters =
+            hostAssembly.GetTypes ()
+            |> Seq.collect (fun ty ->
+                Seq.append
+                    (ty.GetMethods flags |> Seq.cast<System.Reflection.MethodBase>)
+                    (ty.GetConstructors flags |> Seq.cast<System.Reflection.MethodBase>)
+            )
+            |> Seq.collect (fun method ->
+                // The return value is a Param row like any other (Sequence 0), and it is the only
+                // route to `ParameterShapes.ReturnRow`'s marshalled row, which `GetParameters` does
+                // not report.
+                match method with
+                | :? System.Reflection.MethodInfo as method ->
+                    Seq.append (method.GetParameters ()) (Seq.singleton method.ReturnParameter)
+                | _ -> method.GetParameters () :> seq<_>
+            )
+            // A parameter with no Param row reports the nil ParamDef token, which the dedicated test
+            // above covers; including it here would compare a token that names no row against a host
+            // answer for the same non-row, which is true but says nothing about a token that does.
+            |> Seq.filter (fun parameter -> parameter.MetadataToken <> 0x08000000)
+            |> Seq.map (fun parameter ->
+                parameter.MetadataToken,
+                System.Reflection.CustomAttributeExtensions.GetCustomAttribute<
+                    System.Runtime.InteropServices.MarshalAsAttribute
+                 >
+                    parameter
+                |> Option.ofObj
+            )
+            |> Seq.toList
+
+        // Both lists must contain marshalled and unmarshalled members, or the comparison below is
+        // vacuous on one side.
+        hostFields |> List.filter (snd >> Option.isSome) |> List.length |> shouldEqual 6
+        hostFields |> List.exists (snd >> Option.isNone) |> shouldEqual true
+
+        hostParameters
+        |> List.filter (snd >> Option.isSome)
+        |> List.length
+        |> shouldEqual 2
+
+        hostParameters |> List.exists (snd >> Option.isNone) |> shouldEqual true
+
+        let mutable state = fixture.State
+
+        for token, hostAttribute in List.append hostFields hostParameters do
+            let returnValue, (length, bytes, _), nextState =
+                invokeGetFieldMarshal fixture token state
+
+            state <- nextState
+
+            returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+            length |> shouldEqual bytes.Length
+
+            match hostAttribute with
+            | None ->
+                // The host reports no pseudo-attribute exactly when the blob is empty.
+                bytes |> shouldEqual [||]
+            | Some attribute ->
+                bytes |> shouldNotEqual [||]
+                decodeMarshalSpec bytes |> shouldEqual (decodeHostMarshalAs attribute)
+
+        // The blob's *bytes* are checked once more against the image, so that a handler which
+        // returned a correctly-decodable but truncated blob would still fail: the host decoder stops
+        // early on a short blob for several of these shapes.
+        for field in fixture.MarshalShapesType.Fields do
+            let descriptor = (mr.GetFieldDefinition field.Handle).GetMarshallingDescriptor ()
+
+            let expected =
+                if descriptor.IsNil then
+                    [||]
+                else
+                    mr.GetBlobBytes descriptor
+
+            let _, (_, bytes, _), nextState =
+                invokeGetFieldMarshal fixture (fieldDefToken field.Handle) state
+
+            state <- nextState
+            bytes |> shouldEqual expected
+
+    [<Test>]
+    let ``MetadataImport GetFieldMarshal rejects a token that is not a HasFieldMarshal parent`` () : unit =
+        let fixture = makeFixture ()
+
+        let ex =
+            Assert.Throws (fun () ->
+                invokeGetFieldMarshal fixture (typeDefToken fixture.TargetType.TypeDefHandle) fixture.State
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "expected FieldDef or ParamDef token"
+
+    [<Test>]
+    let ``MetadataImport GetFieldMarshal rejects a nil FieldDef token`` () : unit =
+        let fixture = makeFixture ()
+
+        // `mdFieldDefNil`. Unlike its ParamDef counterpart this is not a shape the runtime produces:
+        // every `RuntimeFieldInfo` carries a real token, so a nil one means PawPrint minted it.
+        let ex =
+            Assert.Throws (fun () -> invokeGetFieldMarshal fixture 0x04000000 fixture.State |> ignore)
+
+        ex.Message |> shouldContainText "nil FieldDef token"
+
+    [<Test>]
+    let ``MetadataImport GetFieldMarshal rejects a FieldDef absent from the assembly`` () : unit =
+        let fixture = makeFixture ()
+
+        // Row 0xFFFFFF of the Field table; the fixture assembly has nothing like that many fields.
+        // A deliberate divergence: CoreCLR never reads the parent row here, so its binary search
+        // would just report "no FieldMarshal row" and hand back an empty ConstArray. No managed
+        // caller can mint such a token, so answering "no attribute" would hide a PawPrint bug.
+        let ex =
+            Assert.Throws (fun () -> invokeGetFieldMarshal fixture 0x04FFFFFF fixture.State |> ignore)
+
+        ex.Message |> shouldContainText "was not present in"
+
+    [<Test>]
+    let ``MetadataImport GetFieldMarshal rejects a ParamDef absent from the assembly`` () : unit =
+        let fixture = makeFixture ()
+
+        // The ParamDef half of the rejection above, which goes through a different bounds check.
+        let ex =
+            Assert.Throws (fun () -> invokeGetFieldMarshal fixture 0x08FFFFFF fixture.State |> ignore)
 
         ex.Message |> shouldContainText "was not present in"
 

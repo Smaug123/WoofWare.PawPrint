@@ -171,6 +171,7 @@
     <Compile Include="TestLinuxEpollLimits.fs" />
     <Compile Include="TestSocketEventsWaitReason.fs" />
     <Compile Include="TestSocketEventsWait.fs" />
+    <Compile Include="TestSocketEventBuffer.fs" />
     <Compile Include="TestEffectiveProcessorCount.fs" />
     <Compile Include="TestEnvironmentEntryInvariant.fs" />
     <Compile Include="TestSystemTimeAsTicks.fs" />

@@ -519,6 +519,31 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The event-buffer stride under the epoll backend, seen through the
+                // count at which PawPrint can no longer address the block. Not
+                // differential: a real libc succeeds at every count here.
+                FileName = "SocketEventBufferLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The same rows under kqueue, whose 32-byte stride halves the
+                // largest representable count. The last row of each file is the pair
+                // that disagrees.
+                FileName = "SocketEventBufferDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The `SystemNative_LSeek` rows on which Linux and Darwin
                 // disagree: the order `whence` validity and seekability are
                 // checked in, and the errno for an offset that leaves `int64`.
@@ -1036,6 +1061,26 @@ module TestImpureCases =
                 // the case above because nothing there compares two delegates, so nothing there
                 // can observe `_methodPtr` at all.
                 FileName = "DynamicMethodDelegateIdentity.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `Delegate.Method` on a delegate bound to a dynamic method. It is the one route
+                // to `Delegate_FindMethodHandle` that does *not* reach that QCall: the MethodInfo
+                // is cached in `_methodBase` by `DynamicMethod.CreateDelegate`, so
+                // `Delegate.GetMethodImpl` answers from there. Registered so that the handler's
+                // `FunctionPointerTarget.Dynamic` refusal stays unreachable — the short-circuit
+                // lives in interpreted CoreLib IL, which nothing in PawPrint enforces.
+                FileName = "DelegateMethodOnDynamicMethod.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext =

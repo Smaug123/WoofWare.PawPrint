@@ -3179,6 +3179,181 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim error)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_CreateSocketEventBuffer",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            // `int32_t SystemNative_CreateSocketEventBuffer(int32_t count,
+            // SocketEvent** buffer)` (pal_networking.c:3447):
+            //
+            //     if (buffer == NULL || count < 0) return Error_EFAULT;
+            //     size_t bufferSize;
+            //     if (!multiply_s(SocketEventBufferElementSize, (size_t)count, &bufferSize) ||
+            //         (*buffer = (SocketEvent*)malloc(bufferSize)) == NULL)
+            //         return Error_ENOMEM;
+            //     return Error_SUCCESS;
+            //
+            // The two EFAULT conditions answer identically, so no input can
+            // distinguish the order they are tested in and there is nothing here to
+            // order. The element type of `buffer` is matched with a wildcard for the
+            // same reason `SystemNative_WaitForSocketEvents` does it: CoreLib says
+            // `SocketEvent**`, a hand-rolled P/Invoke says `byte**` or `void**`, and
+            // what is stored through it is a pointer either way.
+            let operation = "SystemNative_CreateSocketEventBuffer"
+
+            let requestedCount = NativeCall.int32Argument operation instruction.Arguments.[0]
+
+            let bufferArgument =
+                bufferPointerArgument operation "buffer" instruction.Arguments.[1]
+
+            // EFAULT is the wrapper's only answer, and it answers before the
+            // allocation, so neither of the two arms below can leak a block.
+            let refuseBeforeAllocating () : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal UnixError.EFAULT)))
+                    ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match bufferArgument with
+            | BufferPointer.RawAddress 0UL -> refuseBeforeAllocating ()
+            | _ ->
+
+            if requestedCount < 0 then
+                refuseBeforeAllocating ()
+            else
+
+            match BufferPointer.dereferenceable bufferArgument with
+            | None ->
+                // Deliberately not EFAULT, for the reason `CreateSocketEventPort`
+                // records of its own out-parameter: the wrapper screens only
+                // `buffer == NULL`, so a non-null address naming no storage reaches
+                // the unconditional store and faults there. That is a SIGSEGV, not an
+                // error code the guest can catch.
+                failwith
+                    $"%s{operation}: `buffer` is %O{bufferArgument}, which is not null but names no storage. The C wrapper screens only `buffer == NULL`, so a real run would allocate and then fault storing through this address; PawPrint does not model that fault. Pass a real out-parameter."
+            | Some destination ->
+
+            // `*buffer = ptr`, routed the way the guest's own `stind.i` would route it
+            // rather than as eight synthesised bytes: a pointer has no byte image here,
+            // and the guest reads the slot back with `ldind.i`, which wants a native-int
+            // cell carrying the pointer's provenance. `AppContextSeed.allocatePointerArray`
+            // records the same value shape for the same reason.
+            //
+            // Room for the eight bytes the C stores is required first, so a guest that
+            // passed the address of a single byte is told so rather than having a pointer
+            // cell dropped over a one-byte location.
+            let storePointer (pointer : ManagedPointerSource) (state : IlMachineState) : IlMachineState =
+                requireBufferRoom ctx operation BufferTransfer.Into destination 8 state
+
+                IlMachineState.writeIndirectPrimitiveStore
+                    ctx.BaseClassTypes
+                    state
+                    destination
+                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer pointer)))
+
+            let stride =
+                SimulatedUnixPlatform.socketEventBufferElementSize state.Kernel.UnixPlatform
+
+            // In `int64`, because the point is to decide whether the product fits the
+            // interpreter's `int32` byte-offset model before anything truncates it.
+            let extent = int64 requestedCount * int64 stride
+
+            if extent > int64 System.Int32.MaxValue then
+                // A native block is addressed by an `int32` byte offset, so this
+                // request has no block to hand back. Reported as the allocation
+                // failure it is, which is what `SystemNative_Malloc` and
+                // `SystemNative_Calloc` already do with a size the interpreter cannot
+                // represent, and ENOMEM is one of this entry point's own two answers.
+                //
+                // Note this is a divergence rather than a limit the real thing shares:
+                // `multiply_s` cannot overflow a 64-bit `size_t` for any `int32` count,
+                // and a `malloc` of tens of gigabytes succeeds by overcommit (measured:
+                // `malloc(16 * INT_MAX)` returns a block on this host). So every count
+                // above `Int32.MaxValue / stride` succeeds on a real runtime and fails
+                // here.
+                //
+                // Which of the C's two ENOMEM routes this is decides two things. Whether
+                // `*buffer` is written: the `multiply_s` route short-circuits before the
+                // store and leaves the caller's value alone, while the
+                // `malloc`-returned-NULL route has already stored. And whether `errno`
+                // moves: `multiply_s` is arithmetic and touches nothing, while a failed
+                // `malloc` sets `errno` to ENOMEM on both platforms modelled here
+                // (measured: `malloc(SIZE_MAX)` leaves errno 12 where it was 7 before).
+                //
+                // This is the `malloc` route — the product is representable, it is the
+                // block that is not — so the out-parameter is nulled and `errno` is set.
+                // The PAL code is the return value, as for
+                // `SystemNative_CloseSocketEventPort`, but a guest that declared this
+                // entry point `SetLastError = true`, or that reads
+                // `Marshal.GetLastSystemError` after a raw P/Invoke, still sees what libc
+                // would have left behind. ENOMEM's raw number is 12 under both
+                // numberings, so no flavour decision arises.
+                let state = storePointer ManagedPointerSource.Null state
+
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        LastSystemError = UnixError.toRawErrno UnixError.ENOMEM
+                    }
+                )
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal UnixError.ENOMEM)))
+                    ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            else
+
+            // Uninitialised, as `malloc` hands it over: a guest that reads an element
+            // before `WaitForSocketEvents` has filled it is caught by the
+            // use-of-uninitialised detector rather than silently reading zeros.
+            //
+            // `count == 0` allocates a zero-byte block, which is a distinct non-null
+            // pointer that cannot be dereferenced. C permits `malloc(0)` to answer
+            // NULL instead, but both libcs PawPrint is ever compared against hand back
+            // a unique pointer (measured on Darwin, documented for glibc).
+            let allocated, state =
+                IlMachineState.allocateNativeMemory MemoryBlockInitialization.Uninitialized (int extent) state
+
+            storePointer allocated state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int32 (Int32Source.Verbatim UnixError.palSuccess))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        | Some "SystemNative_FreeSocketEventBuffer",
+          [ ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            // `int32_t SystemNative_FreeSocketEventBuffer(SocketEvent* buffer)`
+            // (pal_networking.c:3464), which is `free(buffer)` and then
+            // `return Error_SUCCESS` — no screen of any kind, so `free(NULL)`'s
+            // documented no-op is the only reason a null argument is safe.
+            //
+            // Implemented alongside the create half rather than after it: the sole
+            // managed caller's own failure path (`SocketAsyncEngine.FreeNativeResources`,
+            // reached from the constructor's catch) releases the buffer, so a guest
+            // that got as far as allocating one can already reach this.
+            //
+            // A pointer naming no live native block is a `failwith` rather than the
+            // C's unconditional SUCCESS, which is the same choice `SystemNative_Free`
+            // makes: the real `free` would corrupt its heap and report success, and
+            // PawPrint reports the corruption instead.
+            let operation = "SystemNative_FreeSocketEventBuffer"
+
+            let ptr =
+                NativeCall.managedPointerOfPointerArgument operation "buffer" instruction.Arguments.[0]
+
+            let state =
+                match NativeCall.tryResolveNativeHeapFreeTarget ptr with
+                | Ok None -> state
+                | Ok (Some block) -> IlMachineState.freeNativeMemory block state
+                | Error reason -> failwith $"%s{operation}: %s{reason}"
+
+            state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int32 (Int32Source.Verbatim UnixError.palSuccess))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_WaitForSocketEvents",
           [ ConcreteIntPtr state.ConcreteTypes
             ConcretePointer _
