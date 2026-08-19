@@ -42,7 +42,7 @@ module internal MethodTableProjection =
         (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
         : bool
         =
-        field.DeclaringType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+        field.DeclaringType.AssemblyFullName = baseClassTypes.Corelib.DefinitionFullName
         && field.DeclaringType.Namespace = "System.Runtime.CompilerServices"
         && field.DeclaringType.Name = "MethodTable"
         && field.DeclaringType.Generics.IsEmpty
@@ -52,7 +52,7 @@ module internal MethodTableProjection =
         (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
         : bool
         =
-        field.DeclaringType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+        field.DeclaringType.AssemblyFullName = baseClassTypes.Corelib.DefinitionFullName
         && field.DeclaringType.Namespace = "System.Runtime.CompilerServices"
         && field.DeclaringType.Name = "MethodTableAuxiliaryData"
         && field.DeclaringType.Generics.IsEmpty
@@ -62,7 +62,7 @@ module internal MethodTableProjection =
         (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
         : bool
         =
-        field.DeclaringType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+        field.DeclaringType.AssemblyFullName = baseClassTypes.Corelib.DefinitionFullName
         && field.DeclaringType.Namespace = "System.Runtime.CompilerServices"
         && field.DeclaringType.Name = "TypeDesc"
         && field.DeclaringType.Generics.IsEmpty
@@ -143,7 +143,7 @@ module internal MethodTableProjection =
         (identity : ResolvedTypeIdentity)
         : DumpedAssembly * TypeInfo<GenericParamFromMetadata, TypeDefn>
         =
-        match state.LoadedAssembly identity.Assembly with
+        match state.LoadedAssembly identity.AssemblyFullName with
         | Some assembly -> assembly, assembly.TypeDefs.[identity.TypeDefinition.Get]
         | None -> failwith $"Open generic MethodTable target assembly was not loaded: %s{identity.AssemblyFullName}"
 

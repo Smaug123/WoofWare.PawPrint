@@ -88,7 +88,7 @@ module internal UnaryMetadataObjectOps =
                     loggerFactory
                     baseClassTypes
                     state
-                    activeAssy.Name
+                    activeAssy.DefinitionFullName
                     currentMethod.DeclaringTypeGenerics
                     currentMethod.Generics
                     targetType
@@ -261,7 +261,7 @@ module internal UnaryMetadataObjectOps =
         // An allocation whose `.cctor` then throws is therefore garbage, exactly as on the real
         // runtime: the `newobj` never completes and nothing can reach the object.
 
-        let ctorAssembly = state.LoadedAssembly ctor.DeclaringAssembly |> Option.get
+        let ctorAssembly = state.LoadedAssembly ctor.DeclaringAssemblyFullName |> Option.get
         let ctorType = ctorAssembly.TypeDefs.[ctor.RequiredDeclaringType.Definition.Get]
 
         do
@@ -339,7 +339,7 @@ module internal UnaryMetadataObjectOps =
                     ImmutableArray.Empty
                     ctorImplementation
                     None
-                    ctorAssembly.Name
+                    ctorAssembly.DefinitionFullName
                     ImmutableArray.Empty
                     state
 
@@ -447,7 +447,8 @@ module internal UnaryMetadataObjectOps =
             | _ ->
                 // Primitive value on the eval stack (Int32, Int64, Float, etc.)
                 // Construct a CliValueType from the type definition's instance fields
-                let targetAssembly = state._LoadedAssemblies.[targetType.Assembly]
+                let targetAssembly =
+                    state._LoadedAssemblies.ByDefinitionName targetType.AssemblyFullName
 
                 let instanceFields =
                     defn.Fields
@@ -533,7 +534,7 @@ module internal UnaryMetadataObjectOps =
                     loggerFactory
                     baseClassTypes
                     state
-                    assy.Name
+                    assy.DefinitionFullName
                     currentMethod.DeclaringTypeGenerics
                     currentMethod.Generics
                     ty
@@ -588,7 +589,7 @@ module internal UnaryMetadataObjectOps =
             AllConcreteTypes.lookup typeHandle state.ConcreteTypes |> Option.get
 
         let defn =
-            state._LoadedAssemblies.[targetType.Assembly].TypeDefs.[targetType.Definition.Get]
+            (state._LoadedAssemblies.ByDefinitionName targetType.AssemblyFullName).TypeDefs.[targetType.Definition.Get]
 
         let isNullable =
             InternalTypeKind.kind baseClassTypes targetType = InternalTypeKind.Nullable
@@ -627,14 +628,15 @@ module internal UnaryMetadataObjectOps =
                                     AllConcreteTypes.lookup underlyingTypeHandle state.ConcreteTypes |> Option.get
 
                                 let underlyingDefn =
-                                    state._LoadedAssemblies.[underlyingConcreteType.Assembly].TypeDefs
-                                        .[underlyingConcreteType.Definition.Get]
+                                    (state._LoadedAssemblies.ByDefinitionName underlyingConcreteType.AssemblyFullName)
+                                        .TypeDefs.[underlyingConcreteType.Definition.Get]
 
                                 let underlyingInstanceFields =
                                     underlyingDefn.Fields
                                     |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
 
-                                let underlyingAssembly = state._LoadedAssemblies.[underlyingConcreteType.Assembly]
+                                let underlyingAssembly =
+                                    state._LoadedAssemblies.ByDefinitionName underlyingConcreteType.AssemblyFullName
 
                                 let valueAsEval = EvalStackValue.ofCliType value
 
@@ -733,7 +735,7 @@ module internal UnaryMetadataObjectOps =
                     loggerFactory
                     baseClassTypes
                     state
-                    activeAssy.Name
+                    activeAssy.DefinitionFullName
                     currentMethod.DeclaringTypeGenerics
                     currentMethod.Generics
                     targetType
@@ -868,7 +870,7 @@ module internal UnaryMetadataObjectOps =
                     loggerFactory
                     baseClassTypes
                     state
-                    activeAssy.Name
+                    activeAssy.DefinitionFullName
                     currentMethod.DeclaringTypeGenerics
                     currentMethod.Generics
                     targetType
@@ -1083,7 +1085,7 @@ module internal UnaryMetadataObjectOps =
                     loggerFactory
                     baseClassTypes
                     state
-                    activeAssy.Name
+                    activeAssy.DefinitionFullName
                     currentMethod.DeclaringTypeGenerics
                     currentMethod.Generics
                     targetType
@@ -1110,7 +1112,8 @@ module internal UnaryMetadataObjectOps =
             |> Option.get
 
         let targetDefn =
-            state._LoadedAssemblies.[targetConcreteType.Assembly].TypeDefs.[targetConcreteType.Definition.Get]
+            (state._LoadedAssemblies.ByDefinitionName targetConcreteType.AssemblyFullName)
+                .TypeDefs.[targetConcreteType.Definition.Get]
 
         // `Nullable<T>` is a value type, so test for it before the general value-type check.
         if InternalTypeKind.kind baseClassTypes targetConcreteType = InternalTypeKind.Nullable then

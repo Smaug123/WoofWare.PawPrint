@@ -64,7 +64,7 @@ module TestCustomAttribValueLowering =
                 loggerFactory
                 bct
                 state
-                typeInfo.Assembly
+                corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (typeInfo.Identity, System.Reflection.Metadata.SignatureTypeKind.ValueType))

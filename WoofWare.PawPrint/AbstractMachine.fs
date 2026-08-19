@@ -87,7 +87,8 @@ module AbstractMachine =
 
         let dispatchNative () =
             let targetAssy =
-                state.LoadedAssembly instruction.ExecutingMethod.DeclaringAssembly |> Option.get
+                state.LoadedAssembly instruction.ExecutingMethod.DeclaringAssemblyFullName
+                |> Option.get
 
             let targetType =
                 targetAssy.TypeDefs.[instruction.ExecutingMethod.RequiredDeclaringType.Definition.Get]
@@ -413,7 +414,7 @@ module AbstractMachine =
             // resolved from the executing method's *declaring type*, which is what makes it the
             // assembly whose metadata handles that method's `TryResolveMethodSource` indexes.
             let declaringAssembly =
-                state.LoadedAssembly instruction.ExecutingMethod.DeclaringAssembly
+                state.LoadedAssembly instruction.ExecutingMethod.DeclaringAssemblyFullName
 
             let executingInType =
                 match declaringAssembly, instruction.ExecutingMethod.TryDeclaringType with

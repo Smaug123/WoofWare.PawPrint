@@ -57,7 +57,13 @@ module TestVirtualMethodSlots =
             | Some typeInfo -> typeInfo
 
         DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
-        |> IlMachineState.concretizeType loggerFactory bct state corelib.Name ImmutableArray.Empty ImmutableArray.Empty
+        |> IlMachineState.concretizeType
+            loggerFactory
+            bct
+            state
+            corelib.DefinitionFullName
+            ImmutableArray.Empty
+            ImmutableArray.Empty
 
     let private vtable
         (state : IlMachineState)
@@ -97,7 +103,7 @@ module TestVirtualMethodSlots =
             loggerFactory
             bct
             state
-            corelib.Name
+            corelib.DefinitionFullName
             (ImmutableArray.CreateRange (List.rev argHandles))
             ImmutableArray.Empty
 
@@ -351,7 +357,7 @@ module TestVirtualMethodSlots =
                 loggerFactory
                 bct
                 state
-                corelib.Name
+                corelib.DefinitionFullName
                 (ImmutableArray.Create int32Handle)
                 ImmutableArray.Empty
 

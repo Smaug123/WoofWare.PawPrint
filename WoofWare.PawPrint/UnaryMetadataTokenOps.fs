@@ -106,7 +106,7 @@ module internal UnaryMetadataTokenOps =
                                     loggerFactory
                                     baseClassTypes
                                     state
-                                    activeAssy.Name
+                                    activeAssy.DefinitionFullName
                                     currentMethod.DeclaringTypeGenerics
                                     currentMethod.Generics
                                     typeDefn
@@ -209,7 +209,7 @@ module internal UnaryMetadataTokenOps =
 
         logger.LogDebug (
             "Pushed pointer to function {LdFtnAssembly}.{LdFtnType}.{LdFtnMethodName}",
-            method.DeclaringAssembly.Name,
+            method.DeclaringAssemblyFullName,
             method.RequiredDeclaringType.Name,
             method.Name
         )
@@ -253,7 +253,7 @@ module internal UnaryMetadataTokenOps =
 
             logger.LogDebug (
                 "Pushed pointer to non-virtual function {LdVirtFtnAssembly}.{LdVirtFtnType}.{LdVirtFtnMethodName}",
-                method.DeclaringAssembly.Name,
+                method.DeclaringAssemblyFullName,
                 method.RequiredDeclaringType.Name,
                 method.Name
             )
@@ -275,10 +275,10 @@ module internal UnaryMetadataTokenOps =
         // never have raised. `callvirt` needs no such guard: it null-checks unconditionally, so the
         // omission is unobservable there.
         let declaringTypeIsSealed =
-            match state.LoadedAssembly callSiteMethod.DeclaringAssembly with
+            match state.LoadedAssembly callSiteMethod.DeclaringAssemblyFullName with
             | None ->
                 failwith
-                    $"Ldvirtftn: declaring assembly for %O{callSiteMethod} is not loaded: %O{callSiteMethod.DeclaringAssembly}"
+                    $"Ldvirtftn: declaring assembly for %O{callSiteMethod} is not loaded: %O{callSiteMethod.DeclaringAssemblyFullName}"
             | Some declaringAssy ->
                 declaringAssy.TypeDefs.[callSiteMethod.RequiredDeclaringType.Definition.Get].TypeAttributes.HasFlag
                     TypeAttributes.Sealed
@@ -352,7 +352,7 @@ module internal UnaryMetadataTokenOps =
             // both consumers close together when `FunctionPointerTarget` can name one.
             logger.LogDebug (
                 "Pushed pointer to virtual function {LdVirtFtnAssembly}.{LdVirtFtnType}.{LdVirtFtnMethodName}, dispatched from {LdVirtFtnCallSite}",
-                target.DeclaringAssembly.Name,
+                target.DeclaringAssemblyFullName,
                 target.RequiredDeclaringType.Name,
                 target.Name,
                 method.Name
@@ -394,7 +394,7 @@ module internal UnaryMetadataTokenOps =
                     loggerFactory
                     baseClassTypes
                     state
-                    baseClassTypes.Corelib.Name
+                    baseClassTypes.Corelib.DefinitionFullName
                     ImmutableArray.Empty
                     ImmutableArray.Empty
 
@@ -489,7 +489,7 @@ module internal UnaryMetadataTokenOps =
                     IlMachineState.getOrAllocateField
                         loggerFactory
                         baseClassTypes
-                        activeAssy.Name
+                        activeAssy.DefinitionFullName
                         (RuntimeTypeHandleTarget.Closed closedDeclaringHandle)
                         h
                         state

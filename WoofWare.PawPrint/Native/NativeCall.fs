@@ -748,12 +748,13 @@ module NativeCall =
 
         DynamicScopeOperand.runtimeTypeHandleTargetOfRuntimeType operation state runtimeTypeAddr
 
-    let typeAssemblyName
+    /// The definition identity of the assembly that declares the type this handle names.
+    let typeAssemblyFullName
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (typeHandleTarget : RuntimeTypeHandleTarget)
-        : System.Reflection.AssemblyName
+        : string
         =
         match typeHandleTarget with
         // An instantiation lives in the assembly that declares its definition, exactly as a
@@ -761,20 +762,20 @@ module NativeCall =
         // `CreateMinimalMethodTable` calls `SetModule(pContainingModule)` (methodtable.cpp:687), so
         // the containing module -- and hence the assembly -- is one of the few facts the synthetic
         // type carries, rather than one it would need a metadata row to answer.
-        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly -> System.Reflection.AssemblyName scopeAssembly
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly -> scopeAssembly
         | RuntimeTypeHandleTarget.OpenConstructed (identity, _)
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> identity.Assembly
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> identity.AssemblyFullName
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, _)
         | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, _, _) ->
             // A generic parameter belongs to the same assembly as its declaring type.
-            declaringType.Assembly
+            declaringType.AssemblyFullName
         | RuntimeTypeHandleTarget.Closed concreteTypeHandle ->
             // Unwrap Byref/Pointer/Array to reach the element type's assembly.
             // In .NET, typeof(T[]).Assembly == typeof(T).Assembly, so arrays follow
             // the element rule. Function pointers anchor to their return type's
             // assembly (CoreCLR `MethodTable::GetAssembly` for FnPtr); for `void`
             // returns, that assembly is corelib (where System.Void lives).
-            let rec assemblyNameOfHandle (h : ConcreteTypeHandle) : System.Reflection.AssemblyName =
+            let rec assemblyFullNameOfHandle (h : ConcreteTypeHandle) : string =
                 match h with
                 | ConcreteTypeHandle.Concrete _ ->
                     let concreteType =
@@ -784,17 +785,17 @@ module NativeCall =
                                 $"%s{operation}: could not find concrete type for handle %O{concreteTypeHandle} (unwrapped to %O{h})"
                         )
 
-                    concreteType.Assembly
-                | ConcreteTypeHandle.Byref inner -> assemblyNameOfHandle inner
-                | ConcreteTypeHandle.Pointer inner -> assemblyNameOfHandle inner
-                | ConcreteTypeHandle.OneDimArrayZero inner -> assemblyNameOfHandle inner
-                | ConcreteTypeHandle.Array (inner, _) -> assemblyNameOfHandle inner
+                    concreteType.AssemblyFullName
+                | ConcreteTypeHandle.Byref inner -> assemblyFullNameOfHandle inner
+                | ConcreteTypeHandle.Pointer inner -> assemblyFullNameOfHandle inner
+                | ConcreteTypeHandle.OneDimArrayZero inner -> assemblyFullNameOfHandle inner
+                | ConcreteTypeHandle.Array (inner, _) -> assemblyFullNameOfHandle inner
                 | ConcreteTypeHandle.FunctionPointer signature ->
                     match signature.ReturnType with
-                    | MethodReturnType.Void -> baseClassTypes.Void.Assembly
-                    | MethodReturnType.Returns ret -> assemblyNameOfHandle ret
+                    | MethodReturnType.Void -> baseClassTypes.Void.Assembly.FullName
+                    | MethodReturnType.Returns ret -> assemblyFullNameOfHandle ret
 
-            assemblyNameOfHandle concreteTypeHandle
+            assemblyFullNameOfHandle concreteTypeHandle
 
     let failUnimplemented (ctx : NativeCallContext) : NativeHandlerResult =
         let instruction = ctx.Instruction

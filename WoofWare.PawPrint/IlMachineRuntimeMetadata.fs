@@ -73,7 +73,7 @@ module IlMachineRuntimeMetadata =
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
 
@@ -103,7 +103,7 @@ module IlMachineRuntimeMetadata =
     let getOrAllocateField
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (declaringAssy : AssemblyName)
+        (declaringAssyFullName : string)
         (declaringType : RuntimeTypeHandleTarget)
         (fieldHandle : FieldDefinitionHandle)
         (state : IlMachineState)
@@ -120,7 +120,7 @@ module IlMachineRuntimeMetadata =
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
 
@@ -130,7 +130,7 @@ module IlMachineRuntimeMetadata =
                 state.ConcreteTypes
                 state
                 (fun fields state -> IlMachineThreadState.allocateManagedObject runtimeFieldInfoStub fields state)
-                declaringAssy
+                declaringAssyFullName
                 declaringType
                 fieldHandle
                 state.FieldHandles
@@ -161,7 +161,7 @@ module IlMachineRuntimeMetadata =
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
 
@@ -287,7 +287,7 @@ module IlMachineRuntimeMetadata =
                     loggerFactory
                     baseClassTypes
                     state
-                    baseClassTypes.Corelib.Name
+                    baseClassTypes.Corelib.DefinitionFullName
                     ImmutableArray.Empty
                     ImmutableArray.Empty
 
@@ -316,7 +316,7 @@ module IlMachineRuntimeMetadata =
                             loggerFactory
                             baseClassTypes
                             state
-                            baseAssy.Name
+                            baseAssy.DefinitionFullName
                             ct.Generics
                             ImmutableArray.Empty
                             baseTypeDefn
@@ -401,7 +401,7 @@ module IlMachineRuntimeMetadata =
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
         | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
             let assy =
-                match state.LoadedAssembly identity.Assembly with
+                match state.LoadedAssembly identity.AssemblyFullName with
                 | Some assembly -> assembly
                 | None ->
                     failwith
@@ -424,7 +424,7 @@ module IlMachineRuntimeMetadata =
                             loggerFactory
                             baseClassTypes
                             state
-                            baseAssy.Name
+                            baseAssy.DefinitionFullName
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             baseTypeDefn
@@ -630,7 +630,7 @@ module IlMachineRuntimeMetadata =
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
 
@@ -710,7 +710,7 @@ module IlMachineRuntimeMetadata =
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
 
@@ -746,7 +746,7 @@ module IlMachineRuntimeMetadata =
         addr, state
 
     let private concreteTypeFullName (state : IlMachineState) (ty : ConcreteType<ConcreteTypeHandle>) : string =
-        match state.LoadedAssembly ty.Assembly with
+        match state.LoadedAssembly ty.AssemblyFullName with
         | Some assy -> Assembly.fullName assy ty.Identity
         | None when String.IsNullOrEmpty ty.Namespace -> ty.Name
         | None -> $"{ty.Namespace}.{ty.Name}"
@@ -825,7 +825,7 @@ module IlMachineRuntimeMetadata =
                 $"!!{index}"
         | TypeDefn.FromReference (typeRef, _) -> typeRef.Name
         | TypeDefn.FromDefinition (identity, _) ->
-            match state.LoadedAssembly identity.Assembly with
+            match state.LoadedAssembly identity.AssemblyFullName with
             | None -> "<unresolved>"
             | Some assy ->
                 match assy.TypeDefs.TryGetValue identity.TypeDefinition.Get with
@@ -851,7 +851,7 @@ module IlMachineRuntimeMetadata =
 
         // The method's defining assembly is the assembly that contains its declaring type;
         // both the type-level and the method-level generic-parameter names live in there.
-        let declaringAssembly = state.LoadedAssembly frame.Method.DeclaringAssembly
+        let declaringAssembly = state.LoadedAssembly frame.Method.DeclaringAssemblyFullName
 
         let typeGenericNames : string array =
             match declaringAssembly, frame.Method.TryDeclaringType with
@@ -1147,7 +1147,7 @@ module IlMachineRuntimeMetadata =
                     loggerFactory
                     baseClassTypes
                     state
-                    baseClassTypes.Corelib.Name
+                    baseClassTypes.Corelib.DefinitionFullName
                     ImmutableArray.Empty
                     ImmutableArray.Empty
 
@@ -1212,7 +1212,7 @@ module IlMachineRuntimeMetadata =
                 loggerFactory
                 baseClassTypes
                 state
-                baseClassTypes.Corelib.Name
+                baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
 
@@ -1332,7 +1332,7 @@ module IlMachineRuntimeMetadata =
                 loggerFactory
                 baseClassTypes
                 state
-                tieTypeInfo.Assembly
+                tieTypeInfo.Assembly.FullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (tieTypeInfo.Identity, stk))
@@ -1405,7 +1405,7 @@ module IlMachineRuntimeMetadata =
                 loggerFactory
                 baseClassTypes
                 state
-                tieTypeInfo.Assembly
+                tieTypeInfo.Assembly.FullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (tieTypeInfo.Identity, stk))
@@ -1559,7 +1559,7 @@ module IlMachineRuntimeMetadata =
                         loggerFactory
                         baseClassTypes
                         state
-                        assy.Name
+                        assy.DefinitionFullName
                         ct.Generics
                         ImmutableArray.Empty
                         valueField.Signature
@@ -1900,7 +1900,7 @@ module IlMachineRuntimeMetadata =
                         state, true
                     else
                         let implAssy =
-                            match state.LoadedAssembly impl.RelativeToAssembly with
+                            match state.LoadedAssembly impl.RelativeToAssembly.FullName with
                             | Some a -> a
                             | None ->
                                 // Assembly not yet loaded; use the assembly we already have since
@@ -1921,7 +1921,7 @@ module IlMachineRuntimeMetadata =
                                 loggerFactory
                                 baseClassTypes
                                 state
-                                implResolvedAssy.Name
+                                implResolvedAssy.DefinitionFullName
                                 ct.Generics
                                 ImmutableArray.Empty
                                 implTypeDefn
@@ -2281,7 +2281,7 @@ module IlMachineRuntimeMetadata =
             | Some (assy, typeInfo, _) -> state, Some (assy, typeInfo, args)
             | None -> state, None
         | TypeDefn.FromDefinition (identity, _) ->
-            match state.LoadedAssembly identity.Assembly with
+            match state.LoadedAssembly identity.AssemblyFullName with
             | Some assy -> state, Some (assy, assy.TypeDefs.[identity.TypeDefinition.Get], ImmutableArray.Empty)
             | None ->
                 failwithf "stripToTypeInfo: assembly for type definition %s was not loaded" identity.AssemblyFullName
@@ -2301,7 +2301,7 @@ module IlMachineRuntimeMetadata =
 
             let identity = resolved.Identity
 
-            match state.LoadedAssembly identity.Assembly with
+            match state.LoadedAssembly identity.AssemblyFullName with
             | Some assy -> state, Some (assy, assy.TypeDefs.[identity.TypeDefinition.Get], ImmutableArray.Empty)
             | None ->
                 failwithf
@@ -2469,7 +2469,7 @@ module IlMachineRuntimeMetadata =
             state, s = t
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition s, RuntimeTypeHandleTarget.Closed t ->
             let sAssy =
-                match state.LoadedAssembly s.Assembly with
+                match state.LoadedAssembly s.AssemblyFullName with
                 | Some assy -> assy
                 | None ->
                     failwithf "isRuntimeTypeHandleTargetAssignableTo: source assembly %s not loaded" s.AssemblyFullName
@@ -2553,7 +2553,7 @@ module IlMachineRuntimeMetadata =
                                 loggerFactory
                                 baseClassTypes
                                 state
-                                edgeAssy.Name
+                                edgeAssy.DefinitionFullName
                                 ImmutableArray.Empty
                                 ImmutableArray.Empty
                                 substituted
@@ -2600,7 +2600,7 @@ module IlMachineRuntimeMetadata =
                             state, true
                         else
                             let implAssy =
-                                match state.LoadedAssembly impl.RelativeToAssembly with
+                                match state.LoadedAssembly impl.RelativeToAssembly.FullName with
                                 | Some a -> a
                                 | None -> currentAssy
 

@@ -153,10 +153,8 @@ module NativeGcFrameRegistration =
                         $"%s{operation}: reached with no caller frame, so it is the thread's entry point; it is only ever called from the CoreLib invoker frames."
                 | Some returnState -> (IlMachineState.getFrame ctx.Thread returnState.JumpTo state).ExecutingMethod
 
-            let callerAssembly : AssemblyName = caller.DeclaringAssembly
-
             let callerIsPermitted =
-                callerAssembly.Name = "System.Private.CoreLib"
+                AssemblyDefinitionName.isNamed "System.Private.CoreLib" caller.DeclaringAssemblyFullName
                 && caller.RequiredDeclaringType.Namespace = "System.Reflection"
                 && permittedCallers
                    |> List.contains (caller.RequiredDeclaringType.Name, caller.Name)
@@ -166,7 +164,7 @@ module NativeGcFrameRegistration =
             // a bit pattern for.
             if not callerIsPermitted then
                 failwith
-                    $"%s{operation}: called from %s{callerAssembly.Name} %s{MethodOwner.describe caller.Owner}::%s{caller.Name}, which is not one of the CoreLib invoker frames PawPrint implements this for. Those frames never read the registration back, which is what makes doing nothing an exact match; a caller that can see `_reserved1`/`_reserved2` would see them stay zero where CoreCLR writes the frame link and the thread pointer. Modelling those two words means modelling the GC frame chain itself. Note that the caller being CoreLib is not enough on its own: a guest that reaches this through `RuntimeMethodHandle.InvokeMethod` presents a CoreLib frame too, and can inspect the registration afterwards."
+                    $"%s{operation}: called from %s{AssemblyDefinitionName.simpleName caller.DeclaringAssemblyFullName} %s{MethodOwner.describe caller.Owner}::%s{caller.Name}, which is not one of the CoreLib invoker frames PawPrint implements this for. Those frames never read the registration back, which is what makes doing nothing an exact match; a caller that can see `_reserved1`/`_reserved2` would see them stay zero where CoreCLR writes the frame link and the thread pointer. Modelling those two words means modelling the GC frame chain itself. Note that the caller being CoreLib is not enough on its own: a guest that reaches this through `RuntimeMethodHandle.InvokeMethod` presents a CoreLib frame too, and can inspect the registration afterwards."
 
             // `ManagedPointerSource.Null` is the only spelling of null the refusal has to
             // catch: `ofBitPattern` normalises a zero `NativeIntPlaceholder` into it, so the

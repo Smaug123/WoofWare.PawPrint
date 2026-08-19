@@ -8,9 +8,10 @@ open WoofWare.PawPrint
 
 /// An assembly has two identities and they are not interchangeable: the *definition* identity it
 /// declares for itself, and the *reference* identity by which some other assembly names it.
-/// Everything downstream of type resolution — `DumpedAssembly.Name`, `ConcreteType.Assembly`,
-/// `ResolvedTypeIdentity.AssemblyFullName` — carries a definition identity, so an assembly must be
-/// findable by that identity no matter which reference caused it to be loaded.
+/// Everything downstream of type resolution — `DumpedAssembly.DefinitionFullName`,
+/// `ConcreteType.AssemblyFullName`, `ResolvedTypeIdentity.AssemblyFullName` — carries a definition
+/// identity, so an assembly must be findable by that identity no matter which reference caused it to
+/// be loaded.
 ///
 /// In the .NET shared framework the .NET Framework compatibility facades reference their
 /// implementation assemblies with `Version=0.0.0.0`, and six assemblies there — including

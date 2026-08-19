@@ -629,7 +629,7 @@ module TestFabricatedVtableLayout =
                         loggerFactory
                         bct
                         state
-                        corelib.Name
+                        corelib.DefinitionFullName
                         ImmutableArray.Empty
                         ImmutableArray.Empty
 
@@ -645,7 +645,7 @@ module TestFabricatedVtableLayout =
                 loggerFactory
                 bct
                 state
-                fabricated.Name
+                fabricated.DefinitionFullName
                 (ImmutableArray.CreateRange (List.rev argumentHandles))
                 ImmutableArray.Empty
 
@@ -669,7 +669,7 @@ module TestFabricatedVtableLayout =
                 loggerFactory
                 bct
                 state
-                fabricated.Name
+                fabricated.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
 
@@ -1068,7 +1068,7 @@ module TestFabricatedVtableLayout =
 
             // Everything past the inherited prefix is declared by the fabricated type itself.
             for slot in List.skip (List.length objectLayout) slots do
-                slot.DeclaredBy.Assembly.FullName |> shouldEqual fabricated.Name.FullName
+                slot.DeclaredBy.AssemblyFullName |> shouldEqual fabricated.DefinitionFullName
 
     /// Why the override search is capped at the parent's slot count rather than ranging over the
     /// list as it grows.

@@ -64,7 +64,7 @@ module IlMachineMemberResolution =
                         loggerFactory
                         baseClassTypes
                         state
-                        targetType.Assembly
+                        targetType.Assembly.FullName
                         ImmutableArray.Empty
                         ImmutableArray.Empty
                         ty
@@ -82,7 +82,7 @@ module IlMachineMemberResolution =
                     loggerFactory
                     baseClassTypes
                     state
-                    sourceAssembly.Name
+                    sourceAssembly.DefinitionFullName
                     concreteExtractedTypeArgs
                     ImmutableArray.Empty
                     fieldSig
@@ -100,7 +100,7 @@ module IlMachineMemberResolution =
                                 loggerFactory
                                 baseClassTypes
                                 state
-                                assy.Name
+                                assy.DefinitionFullName
                                 concreteExtractedTypeArgs
                                 ImmutableArray.Empty
                                 fi.Signature
@@ -140,7 +140,7 @@ module IlMachineMemberResolution =
             let referenceComparand : TypeConcretization.SignatureComparand =
                 {
                     Signature = memberSig
-                    Assembly = sourceAssembly.Name
+                    AssemblyFullName = sourceAssembly.DefinitionFullName
                     DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed concreteExtractedTypeArgs
                 }
 
@@ -150,7 +150,7 @@ module IlMachineMemberResolution =
                     let candidateComparand : TypeConcretization.SignatureComparand =
                         {
                             Signature = meth.Signature
-                            Assembly = assy.Name
+                            AssemblyFullName = assy.DefinitionFullName
                             DeclaringTypeGenerics =
                                 TypeConcretization.SubstitutionContext.ofClosed concreteExtractedTypeArgs
                         }

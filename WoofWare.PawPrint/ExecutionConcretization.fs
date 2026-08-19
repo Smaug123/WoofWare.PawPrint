@@ -54,7 +54,7 @@ module ExecutionConcretization =
         let scopeAssemblyFullName = definition.GetScopeAssemblyFullName ()
 
         let scopeAssembly =
-            state.LoadedAssembly' scopeAssemblyFullName
+            state.LoadedAssembly scopeAssemblyFullName
             |> Option.defaultWith (fun () ->
                 failwith $"%s{operation}: the scope assembly %s{scopeAssemblyFullName} is not loaded"
             )
@@ -64,7 +64,7 @@ module ExecutionConcretization =
                 loggerFactory
                 baseClassTypes
                 state
-                scopeAssembly.Name
+                scopeAssembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 typeDefn
@@ -79,7 +79,7 @@ module ExecutionConcretization =
                 loggerFactory
                 baseClassTypes
                 state
-                scopeAssembly.Name
+                scopeAssembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
 
@@ -106,7 +106,7 @@ module ExecutionConcretization =
 
         let core =
             {
-                Owner = MethodOwner.DynamicMethodsClass scopeAssembly.Name
+                Owner = MethodOwner.DynamicMethodsClass scopeAssembly.DefinitionFullName
                 Name = definition.GetName ()
                 Body = MethodBody.Il (MethodInstructions.setLocalVars localVars body)
                 Generics = ImmutableArray.Empty
@@ -163,7 +163,7 @@ module ExecutionConcretization =
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodToCall : WoofWare.PawPrint.MethodInfo<'ty, GenericParamFromMetadata, TypeDefn>)
         (methodGenerics : TypeDefn ImmutableArray option)
-        (callingAssembly : AssemblyName)
+        (callingAssemblyFullName : string)
         (currentExecutingMethodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (state : IlMachineState)
         : IlMachineState *
@@ -185,7 +185,7 @@ module ExecutionConcretization =
                             loggerFactory
                             baseClassTypes
                             state
-                            callingAssembly
+                            callingAssemblyFullName
                             typeGenerics
                             currentExecutingMethodGenerics
                             generics.[i]
@@ -233,7 +233,7 @@ module ExecutionConcretization =
                     TypeConcretization.concretizeType
                         ctx
                         (IlMachineState.loader loggerFactory state)
-                        (state.ActiveAssembly thread).Name
+                        (state.ActiveAssembly thread).DefinitionFullName
                         ImmutableArray.Empty // No type generics for the concretization context
                         ImmutableArray.Empty // No method generics for the concretization context
                         args.[i]
@@ -268,7 +268,10 @@ module ExecutionConcretization =
         let typeGenerics, state =
             resolveTargetTypeGenerics loggerFactory baseClassTypes thread typeArgsFromMetadata state
 
-        let callingAssembly = (state.ActiveAssembly thread).Name
+        // `DefinitionFullName` rather than `Name.FullName`: this runs on every dispatch, and the
+        // argument is evaluated whether or not `methodGenerics` turns out to need it, so it has to
+        // be a field read rather than a re-serialisation of a metadata-derived `AssemblyName`.
+        let callingAssemblyFullName = (state.ActiveAssembly thread).DefinitionFullName
         let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
 
         concretizeMethodWithTypeGenerics
@@ -277,7 +280,7 @@ module ExecutionConcretization =
             typeGenerics
             methodToCall
             methodGenerics
-            callingAssembly
+            callingAssemblyFullName
             currentMethod.Generics
             state
 
@@ -327,7 +330,7 @@ module ExecutionConcretization =
             Concretization.ensureTypeDefinitionBaseAssembliesLoaded
                 (IlMachineState.loader loggerFactory state)
                 state._LoadedAssemblies
-                state._LoadedAssemblies.[field.DeclaringType.Assembly]
+                (state._LoadedAssemblies.ByDefinitionName field.DeclaringType.AssemblyFullName)
                 field.DeclaringType.Definition.Get
 
         let state =
@@ -347,7 +350,9 @@ module ExecutionConcretization =
         let declaringTypeDefn =
             if field.DeclaringType.Generics.IsEmpty then
                 // Non-generic type - determine the SignatureTypeKind
-                let assy = state._LoadedAssemblies.[field.DeclaringType.Assembly]
+                let assy =
+                    state._LoadedAssemblies.ByDefinitionName field.DeclaringType.AssemblyFullName
+
                 let typeDef = assy.TypeDefs.[field.DeclaringType.Definition.Get]
 
                 let signatureTypeKind =
@@ -356,7 +361,9 @@ module ExecutionConcretization =
                 TypeDefn.FromDefinition (field.DeclaringType.Identity, signatureTypeKind)
             else
                 // Generic type - the field's declaring type already has the generic arguments
-                let assy = state._LoadedAssemblies.[field.DeclaringType.Assembly]
+                let assy =
+                    state._LoadedAssemblies.ByDefinitionName field.DeclaringType.AssemblyFullName
+
                 let typeDef = assy.TypeDefs.[field.DeclaringType.Definition.Get]
 
                 let signatureTypeKind =
@@ -376,7 +383,7 @@ module ExecutionConcretization =
             TypeConcretization.concretizeType
                 ctx
                 (IlMachineState.loader loggerFactory state)
-                field.DeclaringType.Assembly
+                field.DeclaringType.AssemblyFullName
                 contextTypeGenerics
                 contextMethodGenerics
                 declaringTypeDefn

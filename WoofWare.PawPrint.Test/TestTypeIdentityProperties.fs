@@ -606,7 +606,7 @@ namespace {scenario.Namespace}
             TypeConcretization.concretizeType
                 ctx
                 (NoAssemblyLoad ())
-                compiled.Assembly.Name
+                compiled.Assembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (asClassTypeDefn compiled.Assembly compiled.FirstArgument)
@@ -627,7 +627,7 @@ namespace {scenario.Namespace}
             TypeConcretization.concretizeType
                 ctx
                 (NoAssemblyLoad ())
-                compiled.Assembly.Name
+                compiled.Assembly.DefinitionFullName
                 typeGenerics
                 ImmutableArray.Empty
                 modified
@@ -873,7 +873,7 @@ namespace {scenario.Namespace}
                         TypeConcretization.concretizeType
                             ctx
                             (NoAssemblyLoad ())
-                            compiled.Assembly.Name
+                            compiled.Assembly.DefinitionFullName
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             instantiated
@@ -882,7 +882,7 @@ namespace {scenario.Namespace}
                         TypeConcretization.concretizeType
                             ctx
                             (NoAssemblyLoad ())
-                            compiled.Assembly.Name
+                            compiled.Assembly.DefinitionFullName
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             instantiated
@@ -911,7 +911,7 @@ namespace {scenario.Namespace}
                         TypeConcretization.concretizeType
                             ctx
                             (NoAssemblyLoad ())
-                            compiled.Assembly.Name
+                            compiled.Assembly.DefinitionFullName
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             firstInstantiated
@@ -920,7 +920,7 @@ namespace {scenario.Namespace}
                         TypeConcretization.concretizeType
                             ctx
                             (NoAssemblyLoad ())
-                            compiled.Assembly.Name
+                            compiled.Assembly.DefinitionFullName
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             secondInstantiated
@@ -949,7 +949,7 @@ namespace {scenario.Namespace}
                         TypeConcretization.concretizeType
                             ctx
                             (NoAssemblyLoad ())
-                            compiled.Assembly.Name
+                            compiled.Assembly.DefinitionFullName
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             leftInstantiated
@@ -958,7 +958,7 @@ namespace {scenario.Namespace}
                         TypeConcretization.concretizeType
                             ctx
                             (NoAssemblyLoad ())
-                            compiled.Assembly.Name
+                            compiled.Assembly.DefinitionFullName
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             rightInstantiated
@@ -1000,7 +1000,7 @@ namespace {scenario.Namespace}
                         TypeConcretization.concretizeType
                             ctx
                             (NoAssemblyLoad ())
-                            compiled.Assembly.Name
+                            compiled.Assembly.DefinitionFullName
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             firstInstantiated
@@ -1009,7 +1009,7 @@ namespace {scenario.Namespace}
                         TypeConcretization.concretizeType
                             ctx
                             (NoAssemblyLoad ())
-                            compiled.Assembly.Name
+                            compiled.Assembly.DefinitionFullName
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             firstInstantiated
@@ -1018,7 +1018,7 @@ namespace {scenario.Namespace}
                         TypeConcretization.concretizeType
                             ctx
                             (NoAssemblyLoad ())
-                            compiled.Assembly.Name
+                            compiled.Assembly.DefinitionFullName
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             secondInstantiated
@@ -1055,7 +1055,7 @@ namespace {scenario.Namespace}
                         TypeConcretization.concretizeType
                             ctx
                             (NoAssemblyLoad ())
-                            compiled.Assembly.Name
+                            compiled.Assembly.DefinitionFullName
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             (asClassTypeDefn compiled.Assembly compiled.FirstArgument)
@@ -1085,7 +1085,7 @@ namespace {scenario.Namespace}
                             TypeConcretization.concretizeType
                                 ctx
                                 (NoAssemblyLoad ())
-                                compiled.Assembly.Name
+                                compiled.Assembly.DefinitionFullName
                                 typeGenerics
                                 ImmutableArray.Empty
                                 unmodified
@@ -1104,7 +1104,7 @@ namespace {scenario.Namespace}
                                     TypeConcretization.concretizeType
                                         ctx
                                         (NoAssemblyLoad ())
-                                        compiled.Assembly.Name
+                                        compiled.Assembly.DefinitionFullName
                                         typeGenerics
                                         ImmutableArray.Empty
                                         modified

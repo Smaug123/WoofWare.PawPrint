@@ -53,7 +53,7 @@ module internal UnaryStringTokenIlOp =
                 match operand with
                 | StringOperand.FromMetadata sh ->
                     let value =
-                        match state.LoadedAssembly sh.SourceAssembly with
+                        match state.LoadedAssembly sh.SourceAssembly.FullName with
                         | Some assy -> assy.Strings sh.Token
                         | None ->
                             let available = state._LoadedAssemblies.DefinitionNames |> String.concat " ; "

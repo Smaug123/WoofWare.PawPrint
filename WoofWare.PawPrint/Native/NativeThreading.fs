@@ -882,9 +882,10 @@ module NativeThreading =
                     failwith $"Thread.StartInternal: expected FunctionPointer in delegate _methodPtr, got %O{other}"
 
             let containingAssembly =
-                state.LoadedAssembly targetMethod.DeclaringAssembly
+                state.LoadedAssembly targetMethod.DeclaringAssemblyFullName
                 |> Option.defaultWith (fun () ->
-                    failwith $"Thread.StartInternal: assembly {targetMethod.DeclaringAssembly.Name} not loaded"
+                    failwith
+                        $"Thread.StartInternal: assembly {AssemblyDefinitionName.simpleName targetMethod.DeclaringAssemblyFullName} not loaded"
                 )
 
             let thisArgs =

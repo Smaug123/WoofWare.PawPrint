@@ -51,7 +51,7 @@ module TestMarshalLayout =
             TypeConcretization.concretizeType
                 ctx
                 IAssemblyLoad.alreadyLoadedOnly
-                bct.DateTime.Assembly
+                bct.DateTime.Assembly.FullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (bct.DateTime.Identity, stk))

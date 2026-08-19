@@ -383,7 +383,7 @@ module NativeRuntimeMethodHandle =
 
         let typeInfoOf (identity : ResolvedTypeIdentity) : TypeInfo<GenericParamFromMetadata, TypeDefn> =
             let assembly =
-                state.LoadedAssembly identity.Assembly
+                state.LoadedAssembly identity.AssemblyFullName
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: assembly %s{identity.AssemblyFullName} is not loaded"
                 )
@@ -481,7 +481,7 @@ module NativeRuntimeMethodHandle =
         let assemblyFullName = identity.GetAssemblyFullName ()
 
         let assembly =
-            state.LoadedAssembly' assemblyFullName
+            state.LoadedAssembly assemblyFullName
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
         let methodDefHandle = identity.GetMethodDefinitionHandle().Get
@@ -550,7 +550,7 @@ module NativeRuntimeMethodHandle =
         =
         let fromIdentity (identity : ResolvedTypeIdentity) =
             let assembly =
-                state.LoadedAssembly identity.Assembly
+                state.LoadedAssembly identity.AssemblyFullName
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: assembly %s{identity.AssemblyFullName} for %s{label} is not loaded"
                 )
@@ -571,10 +571,10 @@ module NativeRuntimeMethodHandle =
                 | None -> failwith $"%s{operation}: %s{label} concrete handle %O{handle} not found in AllConcreteTypes"
                 | Some concreteType ->
                     let assembly =
-                        state.LoadedAssembly concreteType.Assembly
+                        state.LoadedAssembly concreteType.AssemblyFullName
                         |> Option.defaultWith (fun () ->
                             failwith
-                                $"%s{operation}: assembly %s{concreteType.Assembly.FullName} for %s{label} is not loaded"
+                                $"%s{operation}: assembly %s{concreteType.AssemblyFullName} for %s{label} is not loaded"
                         )
 
                     let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
@@ -744,7 +744,7 @@ module NativeRuntimeMethodHandle =
                 NativeCall.qCallModuleToAssemblyFullName operation state sourceModuleArg
 
             let sourceAssembly =
-                state.LoadedAssembly' sourceModuleAssemblyFullName
+                state.LoadedAssembly sourceModuleAssemblyFullName
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: source module's assembly %s{sourceModuleAssemblyFullName} is not loaded"
                 )
@@ -1090,7 +1090,7 @@ module NativeRuntimeMethodHandle =
                     ctx.BaseClassTypes
                     state
                     $"%s{MethodOwner.describe methodInfo.Owner}.%s{methodInfo.Name}"
-                    methodInfo.DeclaringAssembly
+                    methodInfo.DeclaringAssemblyFullName
                     declaringTypeGenerics
                     (ImmutableArray.CreateRange methodInstantiation)
                     methodInfo.Generics

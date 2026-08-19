@@ -222,23 +222,6 @@ module NativeDelegate =
     /// universe is the scope assembly's (see `MethodSignatureDecoding`), and neither a type nor a
     /// method instantiation can be in scope: a dynamic method is never generic, and it is declared
     /// on the synthetic per-module class rather than on any generic type.
-    let private concretiseSignatureType
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (scopeAssemblyName : System.Reflection.AssemblyName)
-        (state : IlMachineState)
-        (typeDefn : TypeDefn)
-        : IlMachineState * ConcreteTypeHandle
-        =
-        IlMachineState.concretizeType
-            loggerFactory
-            baseClassTypes
-            state
-            scopeAssemblyName
-            ImmutableArray.Empty
-            ImmutableArray.Empty
-            typeDefn
-
     /// The `Invoke` method of a delegate type, fully concretised. CoreCLR reaches it through
     /// `COMDelegate::FindDelegateInvokeMethod` (comdelegate.cpp:2516), which reads the slot the
     /// `DelegateEEClass` caches; PawPrint has no such cache and looks the method up by name, which
@@ -602,7 +585,7 @@ module NativeDelegate =
                     $"%s{operation}: %O{dynamicHandle} is scoped to %s{scopeAssemblyFullName}, but the methodType argument names %O{other}; these come from the same handle and must agree"
 
             let scopeAssembly =
-                state.LoadedAssembly' scopeAssemblyFullName
+                state.LoadedAssembly scopeAssemblyFullName
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: the scope assembly %s{scopeAssemblyFullName} is not loaded"
                 )
@@ -625,7 +608,7 @@ module NativeDelegate =
                     ctx.LoggerFactory
                     ctx.BaseClassTypes
                     state
-                    scopeAssembly.Name
+                    scopeAssembly.DefinitionFullName
                     ImmutableArray.Empty
                     ImmutableArray.Empty
 

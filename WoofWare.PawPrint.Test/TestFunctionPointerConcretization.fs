@@ -57,7 +57,7 @@ module TestFunctionPointerConcretization =
             loggerFactory
             baseClassTypes
             state
-            corelib.Name
+            corelib.DefinitionFullName
             ImmutableArray.Empty
             ImmutableArray.Empty
             ty

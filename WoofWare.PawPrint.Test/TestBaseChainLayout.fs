@@ -257,7 +257,7 @@ public static class LayoutProbe
                 loggerFactory
                 bct
                 state
-                typeInfo.Assembly
+                typeInfo.Assembly.FullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (typeInfo.Identity, System.Reflection.Metadata.SignatureTypeKind.Class))

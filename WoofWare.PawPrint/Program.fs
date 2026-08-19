@@ -22,7 +22,7 @@ module Program =
                 loggerFactory
                 corelib
                 state
-                corelib.Corelib.Name
+                corelib.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
 
@@ -926,7 +926,7 @@ module Program =
                         SynthesisedMethod.EntryPointPlaceholder
                     ))
                     None
-                    dumped.Name
+                    dumped.DefinitionFullName
                     ImmutableArray.Empty
                     state
 
@@ -988,7 +988,7 @@ module Program =
                 ImmutableArray.Empty // No type generics for main method's declaring type
                 rawMainMethod
                 None
-                dumped.Name
+                dumped.DefinitionFullName
                 ImmutableArray.Empty
                 state
 

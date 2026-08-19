@@ -116,7 +116,7 @@ public class GenericHolder<T>
                         loggerFactory
                         baseClassTypes
                         state
-                        baseClassTypes.Corelib.Name
+                        baseClassTypes.Corelib.DefinitionFullName
                         ImmutableArray.Empty
                         ImmutableArray.Empty
                         typeDefn
@@ -169,7 +169,7 @@ public class GenericHolder<T>
         IlMachineState.getOrAllocateField
             fixture.LoggerFactory
             fixture.BaseClassTypes
-            fixture.Assembly.Name
+            fixture.Assembly.DefinitionFullName
             declaringTarget
             field.Handle
             state
@@ -406,7 +406,7 @@ public class GenericHolder<T>
             IlMachineState.getOrAllocateField
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
-                fixture.Assembly.Name
+                fixture.Assembly.DefinitionFullName
                 openTarget
                 genericField.Handle
                 fixture.State
@@ -433,7 +433,7 @@ public class GenericHolder<T>
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
                 state
-                fixture.Assembly.Name
+                fixture.Assembly.DefinitionFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 closedHolderDefn
@@ -444,7 +444,7 @@ public class GenericHolder<T>
             IlMachineState.getOrAllocateField
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
-                fixture.Assembly.Name
+                fixture.Assembly.DefinitionFullName
                 closedTarget
                 genericField.Handle
                 state
@@ -545,7 +545,7 @@ public class GenericHolder<T>
                 ImmutableArray.Empty
                 rawMethod
                 None
-                fixture.BaseClassTypes.Corelib.Name
+                fixture.BaseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
 
@@ -577,7 +577,7 @@ public class GenericHolder<T>
                 ImmutableArray.Empty
                 rawMethod
                 None
-                fixture.BaseClassTypes.Corelib.Name
+                fixture.BaseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
 

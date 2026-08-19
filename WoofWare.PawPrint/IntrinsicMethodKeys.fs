@@ -8,7 +8,11 @@ open Microsoft.Extensions.Logging
 module IntrinsicMethodKeys =
     type IntrinsicMethodKey =
         {
-            AssemblyName : string
+            /// The definition identity of the declaring assembly. A pattern below names an assembly by
+            /// its simple name instead, and `methodPatternMatches` bridges the two: keying on the
+            /// identity is what keeps building a key off the interpreter's hot path, since the identity
+            /// is what a `MethodInfo` already carries.
+            DeclaringAssemblyFullName : string
             DeclaringTypeFullName : string
             MethodName : string
             ParameterShapes : string list
@@ -64,7 +68,7 @@ module IntrinsicMethodKeys =
         : IntrinsicMethodKey
         =
         let declaringAssy =
-            match state.LoadedAssembly methodToCall.DeclaringAssembly with
+            match state.LoadedAssembly methodToCall.DeclaringAssemblyFullName with
             | Some assy -> assy
             | None ->
                 failwith
@@ -90,7 +94,7 @@ module IntrinsicMethodKeys =
             | ConcreteTypeHandle.Array (_, rank) -> $"[%i{rank}]"
 
         {
-            AssemblyName = methodToCall.DeclaringAssembly.Name
+            DeclaringAssemblyFullName = methodToCall.DeclaringAssemblyFullName
             DeclaringTypeFullName = TypeInfo.fullName (fun h -> declaringAssy.TypeDefs.[h]) declaringType
             MethodName = methodToCall.Name
             ParameterShapes = methodToCall.Signature.ParameterTypes |> List.map concreteTypeShape
@@ -98,7 +102,7 @@ module IntrinsicMethodKeys =
 
     let formatMethodKey (key : IntrinsicMethodKey) : string =
         let parameters = key.ParameterShapes |> String.concat ", "
-        $"%s{key.AssemblyName} %s{key.DeclaringTypeFullName}.%s{key.MethodName}(%s{parameters})"
+        $"%s{AssemblyDefinitionName.simpleName key.DeclaringAssemblyFullName} %s{key.DeclaringTypeFullName}.%s{key.MethodName}(%s{parameters})"
 
     let private parameterPatternMatches (pattern : IntrinsicParameterPattern) (actual : string) : bool =
         match pattern with
@@ -110,7 +114,7 @@ module IntrinsicMethodKeys =
         | IntrinsicParameterPattern.Array -> actual.StartsWith ("[", StringComparison.Ordinal)
 
     let private methodPatternMatches (pattern : IntrinsicMethodPattern) (key : IntrinsicMethodKey) : bool =
-        pattern.AssemblyName = key.AssemblyName
+        AssemblyDefinitionName.isNamed pattern.AssemblyName key.DeclaringAssemblyFullName
         && pattern.DeclaringTypeFullName = key.DeclaringTypeFullName
         && pattern.MethodName = key.MethodName
         && match pattern.ParameterPatterns with

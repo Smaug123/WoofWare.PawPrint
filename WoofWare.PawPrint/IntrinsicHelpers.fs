@@ -103,7 +103,7 @@ module internal IntrinsicHelpers =
                 |> Option.defaultWith (fun () -> failwith $"type was not registered: %O{handle}")
 
             if
-                concrete.Assembly.Name = "System.Private.CoreLib"
+                AssemblyDefinitionName.isNamed "System.Private.CoreLib" concrete.AssemblyFullName
                 && concrete.Namespace = "System"
                 && primitiveValueTypeNames.Contains concrete.Name
             then
@@ -111,9 +111,9 @@ module internal IntrinsicHelpers =
             else
 
             let assy =
-                state.LoadedAssembly concrete.Assembly
+                state.LoadedAssembly concrete.AssemblyFullName
                 |> Option.defaultWith (fun () ->
-                    failwith $"assembly %O{concrete.Assembly} of concrete type %O{handle} is not loaded"
+                    failwith $"assembly %O{concrete.AssemblyFullName} of concrete type %O{handle} is not loaded"
                 )
 
             let td = assy.TypeDefs.[concrete.Definition.Get]
@@ -142,7 +142,7 @@ module internal IntrinsicHelpers =
                                 loggerFactory
                                 baseClassTypes
                                 currentState
-                                concrete.Assembly
+                                concrete.AssemblyFullName
                                 concrete.Generics
                                 ImmutableArray.Empty
                                 field.Signature
@@ -961,7 +961,7 @@ module internal IntrinsicHelpers =
         =
         match AllConcreteTypes.lookup handle state.ConcreteTypes with
         | Some ty ->
-            ty.Assembly.Name = "System.Private.CoreLib"
+            AssemblyDefinitionName.isNamed "System.Private.CoreLib" ty.AssemblyFullName
             && ty.Namespace = ns
             && ty.Name = name
         | None -> false
@@ -969,7 +969,7 @@ module internal IntrinsicHelpers =
     let isReadOnlySpanOfChar (state : IlMachineState) (handle : ConcreteTypeHandle) : bool =
         match AllConcreteTypes.lookup handle state.ConcreteTypes with
         | Some ty ->
-            ty.Assembly.Name = "System.Private.CoreLib"
+            AssemblyDefinitionName.isNamed "System.Private.CoreLib" ty.AssemblyFullName
             && ty.Namespace = "System"
             && ty.Name = "ReadOnlySpan`1"
             && ty.Generics.Length = 1
@@ -1035,7 +1035,7 @@ module internal IntrinsicHelpers =
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: span type %O{span.Declared} was not registered")
 
         if
-            spanType.Assembly.Name <> "System.Private.CoreLib"
+            not (AssemblyDefinitionName.isNamed "System.Private.CoreLib" spanType.AssemblyFullName)
             || spanType.Namespace <> "System"
             || (spanType.Name <> "ReadOnlySpan`1" && spanType.Name <> "Span`1")
             || spanType.Generics.Length <> 1
@@ -1098,7 +1098,7 @@ module internal IntrinsicHelpers =
 
         let contents, state =
             if
-                elementTypeInfo.Assembly.Name = "System.Private.CoreLib"
+                AssemblyDefinitionName.isNamed "System.Private.CoreLib" elementTypeInfo.AssemblyFullName
                 && elementTypeInfo.Namespace = "System"
                 && elementTypeInfo.Name = "Char"
             then
