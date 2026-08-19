@@ -173,6 +173,126 @@ module TestFabricatedVtableLayout =
         defineOverload typeof<string> false
         conflation.CreateType () |> ignore
 
+        let defineParameterised
+            (typeBuilder : TypeBuilder)
+            (name : string)
+            (parameterType : Type)
+            (isNewSlot : bool)
+            : unit
+            =
+            let attributes =
+                if isNewSlot then
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Virtual
+                    ||| MethodAttributes.NewSlot
+                else
+                    MethodAttributes.Public ||| MethodAttributes.Virtual
+
+            let method =
+                typeBuilder.DefineMethod (name, attributes, typeof<int>, [| parameterType |])
+
+            let il = method.GetILGenerator ()
+            il.Emit (OpCodes.Ldc_I4, 0)
+            il.Emit OpCodes.Ret
+
+        // Two slots of one type that a single override matches at once. `TieBase`1` declares
+        // `Tied(!0)` and `Tied(string)`, each asking for its own slot, and `TieDerived :
+        // TieBase<string>` declares a reuse-slot `Tied(string)`. Pinning the base's parameter makes
+        // the two inherited slots read identically *at the definition level*, so the tie is genuine
+        // rather than an artifact of closing anything, and the most-derived rule cannot order it by
+        // declaring type -- both slots belong to `TieBase`. C# refuses to compile this (CS0462); the
+        // CLR loads it and answers with the higher of the two matching slots, which is what
+        // `CreateMethodChainHash`'s head-insertion into a name bucket amounts to.
+        let tieBase =
+            moduleBuilder.DefineType ("TieBase`1", TypeAttributes.Public ||| TypeAttributes.Class, typeof<obj>)
+
+        let tieParameter = (tieBase.DefineGenericParameters [| "T" |]).[0]
+
+        defineParameterised tieBase "Tied" (tieParameter :> Type) true
+        defineParameterised tieBase "Tied" typeof<string> true
+        let tieBaseCreated = tieBase.CreateType ()
+
+        let tieDerived =
+            moduleBuilder.DefineType (
+                "TieDerived",
+                TypeAttributes.Public ||| TypeAttributes.Class,
+                tieBaseCreated.MakeGenericType typeof<string>
+            )
+
+        defineParameterised tieDerived "Tied" typeof<string> false
+        tieDerived.CreateType () |> ignore
+
+        // A non-newslot `Artifact(!0)` over a non-generic base's `Artifact(string)`. At the definition
+        // level `!0` is not `string`, so it overrides nothing and takes a slot of its own. Closing the
+        // derived type at `T = string` first makes the two signatures coincide, and a walk that
+        // compares concretised signatures replaces the base's slot instead -- one slot short, and a
+        // silently wrong answer rather than a refusal, which is why this shape needs its own test.
+        // Roslyn cannot emit it: a bare `virtual` is NewSlot, and an `override` must name a real base
+        // method.
+        let artifactBase =
+            moduleBuilder.DefineType ("ArtifactBase", TypeAttributes.Public ||| TypeAttributes.Class, typeof<obj>)
+
+        defineParameterised artifactBase "Artifact" typeof<string> true
+        let artifactBaseCreated = artifactBase.CreateType ()
+
+        let artifactDerived =
+            moduleBuilder.DefineType (
+                "ArtifactDerived`1",
+                TypeAttributes.Public ||| TypeAttributes.Class,
+                artifactBaseCreated
+            )
+
+        let artifactParameter = (artifactDerived.DefineGenericParameters [| "T" |]).[0]
+
+        defineParameterised artifactDerived "Artifact" (artifactParameter :> Type) false
+        artifactDerived.CreateType () |> ignore
+
+        // A grandchild of the shape above, closing it. Placement is a property of each definition, so
+        // `ArtifactDerived<T>`'s own slots were decided before `T` was ever supplied and this type
+        // inherits them as they are. A walk that recomputed the parent's placement under this type's
+        // substitution would read `Artifact(!0)` as `Artifact(string)`, match it against
+        // `ArtifactBase.Artifact(string)`, and fold two slots into one.
+        let artifactLeaf =
+            moduleBuilder.DefineType (
+                "ArtifactLeaf",
+                TypeAttributes.Public ||| TypeAttributes.Class,
+                (artifactDerived.CreateType ()).MakeGenericType typeof<string>
+            )
+
+        artifactLeaf.CreateType () |> ignore
+
+        // A base in *another* assembly, applied to an argument this assembly spells as a TypeRef.
+        // `Comparer<T>` is corelib's and declares `abstract int Compare(T, T)`; this type extends
+        // `Comparer<Version>` and implements it with a reuse-slot `Compare(Version, Version)`, which
+        // must land on that inherited slot. The argument is nominal on purpose -- `string` would be
+        // spelled `ELEMENT_TYPE_STRING`, which no assembly has to resolve.
+        //
+        // What it pins is *which* assembly the extends clause's arguments are read in. They are
+        // spelled in the token space of the type that writes the clause -- this assembly -- and
+        // `Version` here is a TypeRef row of *this* image. Resolving it against the base's assembly
+        // instead would index corelib's TypeRef table with this image's row number, so `!0` would come
+        // out as some other type and the override would take a slot of its own. Corelib alone cannot
+        // catch that, having no TypeRefs at all.
+        let crossAssembly =
+            moduleBuilder.DefineType (
+                "CrossAssemblyOverride",
+                TypeAttributes.Public ||| TypeAttributes.Class,
+                typeof<System.Collections.Generic.Comparer<Version>>
+            )
+
+        let compare =
+            crossAssembly.DefineMethod (
+                "Compare",
+                MethodAttributes.Public ||| MethodAttributes.Virtual,
+                typeof<int>,
+                [| typeof<Version> ; typeof<Version> |]
+            )
+
+        let compareIl = compare.GetILGenerator ()
+        compareIl.Emit (OpCodes.Ldc_I4, 0)
+        compareIl.Emit OpCodes.Ret
+        crossAssembly.CreateType () |> ignore
+
         // `MethodTableBuilder::PlaceNonVirtualMethods` gives the class constructor and the
         // parameterless instance constructor the first two slots past the vtable, ahead of every
         // other method whatever the MethodDef rows say -- and it recognises them by the
@@ -989,3 +1109,128 @@ module TestFabricatedVtableLayout =
         if actual <> expected then
             failwith
                 $"GenericConflation`1[String]: PawPrint layout %A{actual} disagrees with the host CLR's %A{expected}"
+
+    /// The host CLR's slot layout for a fabricated generic type closed at `System.String`.
+    let private hostLayoutClosedAtString (name : string) : int list =
+        let closed =
+            match hostAssembly.GetType (name, false) with
+            | null -> failwith $"host CLR could not load fabricated type %s{name}"
+            | t -> t.MakeGenericType typeof<string>
+
+        closed.GetMethods (BindingFlags.Instance ||| BindingFlags.Public ||| BindingFlags.NonPublic)
+        |> Array.filter _.IsVirtual
+        |> Array.map (fun method -> hostSlotOf method, method.MetadataToken)
+        |> Array.sortBy fst
+        |> Array.map snd
+        |> List.ofArray
+
+    /// A tie between two slots of the *same* type is not illegal metadata, and highest-matching-slot
+    /// is its answer.
+    ///
+    /// `TieBase`1` declares `Tied(!0)` and `Tied(string)`; `TieDerived : TieBase<string>` declares a
+    /// reuse-slot `Tied(string)` that matches both. The most-derived tie-break cannot order them by
+    /// declaring type, both being `TieBase`'s, and the answer is the higher slot -- what
+    /// `CreateMethodChainHash` produces by inserting each parent slot at the head of its name bucket
+    /// in ascending slot order and returning the bucket's first entry.
+    ///
+    /// This shape is why a same-owner tie cannot be refused as "signatures the normalisation cannot
+    /// distinguish": the two signatures are genuinely distinct, and it is the *extends clause* that
+    /// makes them coincide by pinning `T`.
+    [<Test>]
+    let ``an override matching two slots of one type takes the higher`` () : unit =
+        let expected = hostLayout "TieDerived"
+
+        // Object's four, plus one slot for each of TieBase's two overloads. A walk that folded them
+        // together would give five, and the test would be measuring nothing.
+        expected |> List.length |> shouldEqual 6
+
+        let derivedToken =
+            match hostAssembly.GetType ("TieDerived", false) with
+            | null -> failwith "host CLR could not load fabricated type TieDerived"
+            | t ->
+                t.GetMethods (BindingFlags.Instance ||| BindingFlags.Public ||| BindingFlags.NonPublic)
+                |> Array.filter (fun method -> method.DeclaringType.Name = "TieDerived")
+                |> Array.exactlyOne
+                |> _.MetadataToken
+
+        // The point of the shape: the override took the second of the two matching slots, not the
+        // first. Asserted separately so that a layout agreeing with the host for the wrong reason --
+        // both walks picking the lower slot -- could not pass.
+        List.findIndex (fun token -> token = derivedToken) expected |> shouldEqual 5
+
+        let actual = pawPrintLayout (vtableOf "TieDerived")
+
+        if actual <> expected then
+            failwith $"TieDerived: PawPrint layout %A{actual} disagrees with the host CLR's %A{expected}"
+
+    /// A method whose parameter is the type's own variable does not override a base method taking the
+    /// type that variable happens to be closed at.
+    ///
+    /// `ArtifactDerived<T>` declares a non-newslot `Artifact(!0)` over `ArtifactBase.Artifact(string)`.
+    /// At the definition level `!0` is not `string`, so it overrides nothing and CoreCLR gives it a
+    /// slot of its own. Comparing signatures closed at `T = string` instead makes the two coincide and
+    /// silently replaces the base's slot, leaving the vtable a slot short -- and unlike the several-
+    /// matches case there is only one match, so nothing about the shape of the match reveals it.
+    [<Test>]
+    let ``a type variable does not override a base method taking the type it is closed at`` () : unit =
+        let expected = hostLayoutClosedAtString "ArtifactDerived`1"
+
+        // Object's four, plus the base's `Artifact(string)`, plus a fresh slot for `Artifact(!0)`.
+        // Five would mean the override was folded onto the base's slot.
+        expected |> List.length |> shouldEqual 6
+
+        let actual =
+            pawPrintLayout (vtableOfClosedAt "ArtifactDerived`1" [ "System", "String" ])
+
+        if actual <> expected then
+            failwith $"ArtifactDerived`1[String]: PawPrint layout %A{actual} disagrees with the host CLR's %A{expected}"
+
+    /// The extends clause's type arguments are read in the token space of the type that *writes* the
+    /// clause, not the base's.
+    ///
+    /// `CrossAssemblyOverride : Comparer<Version>` implements corelib's `abstract int Compare(T, T)`
+    /// with a reuse-slot `Compare(Version, Version)`, so the override must land on the inherited slot.
+    /// `Version` in that clause is a TypeRef row of the fabricated image, whose resolution scope is
+    /// this image's AssemblyRef to corelib; read against corelib instead it names something else, so
+    /// `!0` would not be `Version` and the override would be given a slot of its own. The argument is
+    /// deliberately nominal: `string` would be spelled `ELEMENT_TYPE_STRING` and need no resolving,
+    /// which makes the whole question disappear. Nothing in the corelib corpus can catch this either,
+    /// because corelib has no TypeRefs.
+    [<Test>]
+    let ``an extends clause's arguments are read in the deriving assembly`` () : unit =
+        let expected = hostLayout "CrossAssemblyOverride"
+        let actual = pawPrintLayout (vtableOf "CrossAssemblyOverride")
+
+        if actual <> expected then
+            failwith $"CrossAssemblyOverride: PawPrint layout %A{actual} disagrees with the host CLR's %A{expected}"
+
+        // Not vacuous: the override really does replace an inherited slot rather than appending one,
+        // so a walk that resolved the clause wrongly would come out one slot longer.
+        let baseLength =
+            typeof<System.Collections.Generic.Comparer<Version>>
+                .GetMethods (BindingFlags.Instance ||| BindingFlags.Public ||| BindingFlags.NonPublic)
+            |> Array.filter _.IsVirtual
+            |> Array.length
+
+        expected |> List.length |> shouldEqual baseLength
+
+    /// A parent's slots are placed in the parent's own context, once, and inherited as they are.
+    ///
+    /// `ArtifactLeaf : ArtifactDerived<string>` inherits a table whose two `Artifact` slots were
+    /// decided while `T` was still `T` -- `ArtifactDerived<T>.Artifact(!0)` did not override
+    /// `ArtifactBase.Artifact(string)`, so both hold slots. Supplying `T = string` afterwards cannot
+    /// merge them: CoreCLR builds each definition's table once and `CopyParentVtable` copies it
+    /// (methodtablebuilder.cpp:1143). A walk that re-ran the parent's placement under this type's
+    /// substitution would return five virtuals where every instantiation of the parent has six, and
+    /// `PopulateMethods` would then size its `overrides` map one slot short.
+    [<Test>]
+    let ``a parent's placement is not recomputed under a child's substitution`` () : unit =
+        let expected = hostLayout "ArtifactLeaf"
+
+        // The parent's two Artifact slots, on top of Object's four.
+        expected |> List.length |> shouldEqual 6
+
+        let actual = pawPrintLayout (vtableOf "ArtifactLeaf")
+
+        if actual <> expected then
+            failwith $"ArtifactLeaf: PawPrint layout %A{actual} disagrees with the host CLR's %A{expected}"
