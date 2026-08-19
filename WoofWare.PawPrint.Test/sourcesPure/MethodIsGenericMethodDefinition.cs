@@ -11,6 +11,17 @@ class Program
     {
     }
 
+    class Container<T>
+    {
+        public void NonGeneric()
+        {
+        }
+
+        public void OwnGeneric<U>()
+        {
+        }
+    }
+
     static int Main(string[] args)
     {
         // (a) A generic method definition: reflection always yields the open/uninstantiated
@@ -27,21 +38,6 @@ class Program
             return 2;
 
         // An ordinary non-generic method: must not be reported as a generic method definition.
-        //
-        // The third arm of the predicate -- a non-generic method declared on a *generic* type
-        // (e.g. `class Container<T> { void NonGeneric() {} }`) -- is deliberately not exercised
-        // here. Reflecting any method off a generic type currently fails for unrelated reasons
-        // regardless of whether the type is open or closed: `Container<int>.GetMethod(...)`
-        // reaches the unimplemented `RuntimeMethodHandle_GetStubIfNeededSlow` QCall (every method
-        // lookup on a closed reference-type instantiation routes through
-        // `RuntimeMethodHandle.GetStubIfNeeded`, whose fast path only short-circuits for
-        // non-generic declaring types or the type's own open definition), while
-        // `Container<>.GetMethod(...)` hits `TODO: RuntimeTypeHandle.GetNumVirtuals for open
-        // generic type definition` inside `RuntimeType`'s candidate-gathering walk
-        // (NativeRuntimeTypeQCall.fs). Both are pre-existing, unrelated gaps. The
-        // "generic-declaring-type does not imply generic-method" arm of the predicate is instead
-        // pinned directly against `NativeRuntimeMethodHandle.isGenericMethodDefinition` in
-        // TestNativeRuntimeMethodHandle.fs.
         MethodInfo plain = typeof (Program).GetMethod ("NotGeneric", BindingFlags.Static | BindingFlags.NonPublic);
 
         if (plain == null)
@@ -49,6 +45,46 @@ class Program
 
         if (plain.IsGenericMethodDefinition)
             return 4;
+
+        // (c) The third arm: a non-generic method declared on a *generic* type. Its declaring type
+        // has generic parameters and the method has none, so the predicate has to ask about the
+        // method rather than about where it lives. Both spellings of the declaring type are asked,
+        // because they reach the predicate by different routes -- a closed instantiation through
+        // `RuntimeMethodHandle.GetStubIfNeeded`'s rebind, the definition through the method table
+        // laid out on the definition itself.
+        MethodInfo onOpen = typeof (Container<>).GetMethod ("NonGeneric");
+
+        if (onOpen == null)
+            return 5;
+
+        if (onOpen.IsGenericMethodDefinition)
+            return 6;
+
+        MethodInfo onClosed = typeof (Container<int>).GetMethod ("NonGeneric");
+
+        if (onClosed == null)
+            return 7;
+
+        if (onClosed.IsGenericMethodDefinition)
+            return 8;
+
+        // Vacuity guard: the declaring types really are generic, so checks 6 and 8 are not passing
+        // merely because nothing generic is in play.
+        if (!typeof (Container<>).IsGenericTypeDefinition)
+            return 9;
+
+        if (!typeof (Container<int>).IsConstructedGenericType)
+            return 10;
+
+        // And the same declaring types do host a generic method definition, so the predicate is
+        // discriminating between the method's own parameters and its declaring type's.
+        MethodInfo ownGeneric = typeof (Container<>).GetMethod ("OwnGeneric");
+
+        if (ownGeneric == null)
+            return 11;
+
+        if (!ownGeneric.IsGenericMethodDefinition)
+            return 12;
 
         return 0;
     }

@@ -16,15 +16,11 @@ open WoofWare.PawPrint
 /// fail-loud behaviour a passing one would not distinguish. Each section below cites its CoreCLR
 /// source and says what it is for; there is deliberately no index here to fall out of date.
 ///
-/// The end-to-end coverage lives in `sourcesPure/MethodIsGenericMethodDefinition.cs`, which pins
-/// two of the predicate's three arms: a generic method definition, and a plain non-generic
-/// method. Its third arm -- a non-generic method declared on a *generic* type, which must not be
-/// reported as a generic method definition even though its declaring type is generic -- can't yet
-/// be reached end-to-end: reflecting any method off a generic type (open or closed) currently
-/// hits unrelated pre-existing gaps (`RuntimeMethodHandle_GetStubIfNeededSlow` for closed
-/// instantiations, `RuntimeTypeHandle.GetNumVirtuals` for open generic type definitions -- see the
-/// comment in that C# source file). These tests exercise the predicate directly so all three arms
-/// are pinned regardless.
+/// The end-to-end coverage lives in `sourcesPure/MethodIsGenericMethodDefinition.cs`, which pins all
+/// three arms of the predicate: a generic method definition, a plain non-generic method, and a
+/// non-generic method declared on a *generic* type -- the arm that must answer about the method
+/// rather than about where it lives. These tests exercise the predicate directly as well, over
+/// generated inputs and including handles no guest can currently name.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestNativeRuntimeMethodHandle =

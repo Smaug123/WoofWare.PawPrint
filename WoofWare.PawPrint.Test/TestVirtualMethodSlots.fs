@@ -655,3 +655,91 @@ module TestVirtualMethodSlots =
         expected |> shouldNotEqual []
 
         pawPrintSlotLayout slots |> shouldEqual expected
+
+    /// The same comparison for the whole method table rather than its vtable prefix, which is what
+    /// `RuntimeMethodHandle.GetSlot` answers from when a guest reflects over `typeof(G<>)`: a
+    /// non-virtual method of a definition holds a slot too, past the end of the vtable.
+    ///
+    /// The outside oracle is the only check on that region for a definition. `PopulateMethods` asks
+    /// `GetSlot` only about methods carrying `MethodAttributes.Virtual`, and `PopulateProperties`,
+    /// which asks without that guard, cannot reach an open definition yet (a property of one stops in
+    /// `ModuleHandle.ResolveMethod`) -- so no guest test can currently distinguish a definition's
+    /// beyond-vtable numbering from an empty one.
+    [<TestCaseSource(nameof definitionCorpusNames)>]
+    let ``a definition's declared method slots agree with the host's`` (fullName : string) : unit =
+        let ``namespace``, name =
+            let index = fullName.LastIndexOf '.'
+            fullName.Substring (0, index), fullName.Substring (index + 1)
+
+        let typeInfo =
+            match corelib.TryGetTopLevelTypeDef ``namespace`` name with
+            | None -> failwith $"%s{fullName} not found in corelib"
+            | Some typeInfo -> typeInfo
+
+        let identity =
+            ResolvedTypeIdentity.ofTypeDefinition typeInfo.Assembly typeInfo.TypeDefHandle
+
+        let _, table =
+            NativeRuntimeTypeHelpers.slotTableOfDefinition loggerFactory bct "test" (state ()) identity
+
+        let numVirtuals = List.length table.Vtable
+        let host = hostType ``namespace`` name
+
+        let mutable failures = []
+        let mutable virtualsChecked = 0
+        let mutable beyondChecked = 0
+
+        for method in hostDeclaredMethods host do
+            let expected = hostSlotOf method
+
+            match NativeRuntimeTypeHelpers.slotIndexInTable (identityOf method) table with
+            | None ->
+                failures <-
+                    $"%s{method.Name} (row %i{method.MetadataToken &&& 0xFFFFFF}) has no slot in PawPrint's table, host says %i{expected}"
+                    :: failures
+            | Some actual ->
+                if actual <> expected then
+                    failures <-
+                        $"%s{method.Name} (row %i{method.MetadataToken &&& 0xFFFFFF}) PawPrint slot %i{actual}, host %i{expected}"
+                        :: failures
+
+            if expected < numVirtuals then
+                virtualsChecked <- virtualsChecked + 1
+            else
+                beyondChecked <- beyondChecked + 1
+
+        if not (List.isEmpty failures) then
+            let shown = failures |> List.rev |> List.truncate 40
+
+            failwith (
+                $"%s{fullName}: %i{List.length failures} method slots disagree with the host CLR (first %i{List.length shown}):\n"
+                + String.Join ("\n", shown)
+            )
+
+        // Neither half of the check goes vacuous for any single case: measured over this corpus, the
+        // scarcest are 1 method in the vtable (`Lazy`1`, which overrides only `ToString`, and
+        // `Task`1`, which overrides only `InnerInvoke`) and 2 beyond it (`NullableComparer`1`, whose
+        // only non-virtual declarations are its two constructors).
+        virtualsChecked |> shouldBeGreaterThan 0
+        beyondChecked |> shouldBeGreaterThan 1
+
+    [<Test>]
+    let ``numVirtualsOfDefinition is exactly the definition's vtable length`` () : unit =
+        // As for the closed case: the BCL *compares* the two, so an independently-computed count is
+        // the regression this rules out.
+        for ``namespace``, name in definitionCorpus do
+            let typeInfo =
+                match corelib.TryGetTopLevelTypeDef ``namespace`` name with
+                | None -> failwith $"%s{``namespace``}.%s{name} not found in corelib"
+                | Some typeInfo -> typeInfo
+
+            let identity =
+                ResolvedTypeIdentity.ofTypeDefinition typeInfo.Assembly typeInfo.TypeDefHandle
+
+            let state, slots =
+                NativeRuntimeTypeHelpers.vtableOfDefinition loggerFactory bct "test" (state ()) identity
+
+            let _, count =
+                NativeRuntimeTypeHelpers.numVirtualsOfDefinition loggerFactory bct "test" state identity
+
+            count |> shouldEqual (List.length slots)
