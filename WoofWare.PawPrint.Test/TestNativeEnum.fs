@@ -394,8 +394,8 @@ public static class Entry
             signedByte.ValuesArray
             baseClassTypes.Byte
             [
-                CliType.Numeric (CliNumericType.UInt8 255uy)
-                CliType.Numeric (CliNumericType.UInt8 7uy)
+                CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 255uy))
+                CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 7uy))
             ]
 
         assertNames signedByte.State signedByte.NamesArray [ "MinusOne" ; "Positive" ]
@@ -409,8 +409,8 @@ public static class Entry
             unsignedByte.ValuesArray
             baseClassTypes.Byte
             [
-                CliType.Numeric (CliNumericType.UInt8 255uy)
-                CliType.Numeric (CliNumericType.UInt8 7uy)
+                CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 255uy))
+                CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 7uy))
             ]
 
         assertNames unsignedByte.State unsignedByte.NamesArray [ "Max" ; "Positive" ]

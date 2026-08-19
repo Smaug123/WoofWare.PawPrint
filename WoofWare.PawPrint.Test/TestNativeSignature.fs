@@ -1213,7 +1213,7 @@ public sealed class MethodSignatureHost
         let arrayAddr, state =
             IlMachineState.allocateArray
                 (ConcreteTypeHandle.OneDimArrayZero byteHandle)
-                (fun () -> CliType.Numeric (CliNumericType.UInt8 0uy))
+                (fun () -> CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
                 2
                 state
 

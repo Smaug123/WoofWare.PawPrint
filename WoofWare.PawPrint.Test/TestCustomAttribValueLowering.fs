@@ -67,7 +67,7 @@ module TestCustomAttribValueLowering =
     [<Test>]
     let ``primitive: U1 max`` () : unit =
         CustomAttribValueLowering.tryToPureCliType (CustomAttribFixedArg.U1 255uy)
-        |> shouldEqual (Ok (CliType.Numeric (CliNumericType.UInt8 255uy)))
+        |> shouldEqual (Ok (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 255uy))))
 
     [<Test>]
     let ``primitive: I4 round-trips negative`` () : unit =

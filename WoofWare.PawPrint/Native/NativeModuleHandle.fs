@@ -286,7 +286,28 @@ module NativeModuleHandle =
             // terminator would truncate almost every signature at its first `void`.
             let signature =
                 NativeCall.managedPointerOfPointerArgument operation "sig" instruction.Arguments.[2]
-                |> fun ptr -> NativeCall.readCountedUtf8Bytes operation ctx.BaseClassTypes state ptr signatureLength
+                |> fun ptr -> NativeCall.readCountedNamedBytes operation ctx.BaseClassTypes state ptr signatureLength
+                |> fun bytes ->
+                    match UInt8Source.tryValues bytes with
+                    | ValueSome plain -> plain
+                    | ValueNone ->
+                        // A blob byte naming a type handle rather than holding a number is
+                        // `SignatureHelper`'s `ELEMENT_TYPE_INTERNAL` encoding: with no module to
+                        // spell a type as a token it writes 0x21 followed by the eight bytes of
+                        // `type.TypeHandle.Value` (SignatureHelper.cs:541-559). PawPrint carries
+                        // those faithfully -- each byte names the handle and its position within
+                        // it -- but has nowhere to put the answer here: this result is a
+                        // `byte[]`, and `MethodSignatureDecoding` drives a `SignatureDecoder`
+                        // with no ELEMENT_TYPE_INTERNAL case anywhere in its type tree.
+                        let named =
+                            bytes
+                            |> Array.indexed
+                            |> Array.filter (fun (_, b) -> (UInt8Source.tryValue b).IsNone)
+                            |> Array.map (fun (i, b) -> $"[%d{i}] = %O{b}")
+                            |> String.concat ", "
+
+                        failwith
+                            $"%s{operation}: the signature blob names type handles at %s{named}, which is SignatureHelper's ELEMENT_TYPE_INTERNAL encoding for a type it had no module to spell as a token. PawPrint records those bytes faithfully but cannot yet decode them back into a type, so a DynamicMethod whose signature or locals mention anything other than a primitive, object or string is not yet supported."
                 |> ImmutableArray.CreateRange
 
             let resolver =

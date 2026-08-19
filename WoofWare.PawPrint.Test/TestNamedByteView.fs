@@ -1,0 +1,325 @@
+namespace WoofWare.PawPrint.Test
+
+open System.Collections.Immutable
+open System.Runtime.InteropServices
+open FsUnitTyped
+open NUnit.Framework
+open WoofWare.PawPrint
+
+/// A native int PawPrint models as an *identity* — a type handle, a method table pointer — has no
+/// address, so it has never had a byte image either. `SignatureHelper.InternalAddRuntimeType` asks
+/// for one anyway: with no module to spell a type as a metadata token it writes
+/// `ELEMENT_TYPE_INTERNAL` and then copies the eight bytes of `type.TypeHandle.Value` into a
+/// `Reflection.Emit` signature blob a byte at a time (SignatureHelper.cs:541-559), and hands the
+/// blob straight back to the runtime.
+///
+/// So the bytes are only ever *moved*, never inspected — which is what makes naming them, rather
+/// than inventing bits for them, an exact answer rather than an approximation. This file pins the
+/// route those bytes travel: out of the handle through a byte cursor, across the evaluation stack
+/// (which has no byte slot, so they widen to an int32 and back), and into a `byte[]` cell.
+[<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
+module TestNamedByteView =
+
+    let private corelib : DumpedAssembly =
+        let corelibPath = typeof<obj>.Assembly.Location
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        Assembly.readFile loggerFactory corelibPath
+
+    let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
+        Corelib.getBaseTypes corelib
+
+    let private loadedAssemblies : LoadedAssemblies =
+        LoadedAssemblies.ofAssemblies [ corelib ]
+
+    let private concreteTypes : AllConcreteTypes =
+        Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty
+
+    let private handleOf (ty : TypeInfo<_, _>) : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes ty
+
+    let private int32Handle : ConcreteTypeHandle = handleOf baseClassTypes.Int32
+    let private byteHandle : ConcreteTypeHandle = handleOf baseClassTypes.Byte
+    let private intPtrHandle : ConcreteTypeHandle = handleOf baseClassTypes.IntPtr
+
+    let private byteConcreteType : ConcreteType<ConcreteTypeHandle> =
+        AllConcreteTypes.lookup byteHandle concreteTypes |> Option.get
+
+    let private state () : IlMachineState =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
+            ConcreteTypes = concreteTypes
+        }
+
+    /// The handle whose bytes every test below follows.
+    let private handleSource : NativeIntSource =
+        NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed int32Handle)
+
+    /// A second, distinct handle, so a test can tell "byte i of *this* handle" from "byte i of
+    /// some handle".
+    let private otherHandleSource : NativeIntSource =
+        NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed byteHandle)
+
+    let private byteTemplate : CliType =
+        CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))
+
+    /// The shape the guest's `IntPtr handle = type.TypeHandle.Value` local has: a single-field
+    /// struct whose field is the handle.
+    let private intPtrHolding (source : NativeIntSource) : CliValueType =
+        [
+            {
+                Id = FieldId.named "_value"
+                Name = "_value"
+                Contents = CliType.Numeric (CliNumericType.NativeInt source)
+                Offset = None
+                Type = intPtrHandle
+                MarshallingDescriptor = None
+            }
+        ]
+        |> SynthesisedLayoutKind.ofFields baseClassTypes concreteTypes intPtrHandle Layout.Default CharSet.Ansi
+
+    /// `(byte*)&handle` — a byte cursor `offset` bytes into the value at `addr`.
+    let private byteCursor (addr : ManagedHeapAddress) (offset : int) : ManagedPointerSource =
+        ManagedPointerSource.Byref (
+            ByrefRoot.HeapValue addr,
+            [
+                ByrefProjection.ReinterpretAs byteConcreteType
+                ByrefProjection.ByteOffset offset
+            ]
+        )
+
+    [<Test>]
+    let ``a byte cursor into a handle reads back that byte of that handle`` () : unit =
+        let addr, st =
+            IlMachineState.allocateManagedObject intPtrHandle (intPtrHolding handleSource) (state ())
+
+        for offset in 0..7 do
+            IlMachineState.readManagedByrefBytesAs baseClassTypes st (byteCursor addr offset) byteTemplate
+            |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.NativeIntByte (handleSource, offset))))
+
+    [<Test>]
+    let ``the named byte identifies which handle it came from`` () : unit =
+        // The discriminating check: an implementation that named the position but lost the source
+        // would decode two different types to the same one, and `SignatureHelper` puts several
+        // handles in one blob whenever a method has more than one non-primitive parameter.
+        let addrA, st =
+            IlMachineState.allocateManagedObject intPtrHandle (intPtrHolding handleSource) (state ())
+
+        let addrB, st =
+            IlMachineState.allocateManagedObject intPtrHandle (intPtrHolding otherHandleSource) st
+
+        let readAt (addr : ManagedHeapAddress) (offset : int) : CliType =
+            IlMachineState.readManagedByrefBytesAs baseClassTypes st (byteCursor addr offset) byteTemplate
+
+        readAt addrA 3
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.NativeIntByte (handleSource, 3))))
+
+        readAt addrB 3
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.NativeIntByte (otherHandleSource, 3))))
+
+        readAt addrA 3 |> shouldNotEqual (readAt addrB 3)
+
+    [<Test>]
+    let ``reading the whole handle still yields the handle, not eight named bytes`` () : unit =
+        // The control that keeps the byte route to sub-width accesses. A read whose width matches
+        // the cell has always been served structurally, and must stay that way: coming back as
+        // eight named bytes would lose the ability to use the value as a handle at all.
+        let addr, st =
+            IlMachineState.allocateManagedObject intPtrHandle (intPtrHolding handleSource) (state ())
+
+        let wholeCell =
+            ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [ ByrefProjection.Field (FieldId.named "_value") ])
+
+        IlMachineState.readManagedByref baseClassTypes st wholeCell
+        |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt handleSource))
+
+    [<Test>]
+    let ``a named byte survives the evaluation stack round trip`` () : unit =
+        // `ldind.u1` pushes an int32 and `stelem.i1` narrows it back, so a byte that has no number
+        // has to cross a slot that only holds numbers. This is the pair that carries it.
+        let stored =
+            CliType.Numeric (CliNumericType.UInt8 (UInt8Source.NativeIntByte (handleSource, 5)))
+
+        let pushed = EvalStackValue.ofCliType stored
+
+        pushed
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.NativeIntByte (handleSource, 5)))
+
+        EvalStackValue.toCliTypeCoerced byteTemplate pushed |> shouldEqual stored
+
+    [<Test>]
+    let ``a named byte on the stack has no number for anything that wants one`` () : unit =
+        let pushed = EvalStackValue.Int32 (Int32Source.NativeIntByte (handleSource, 5))
+
+        (fun () -> Int32Source.value "test" (Int32Source.NativeIntByte (handleSource, 5)) |> ignore)
+        |> shouldFail<exn>
+
+        // Storing it anywhere wider is refused: the widening would need the seven bytes either
+        // side, which belong to the same handle but are not this value.
+        (fun () ->
+            EvalStackValue.toCliTypeCoerced (CliType.Numeric (CliNumericType.Int16 0s)) pushed
+            |> ignore
+        )
+        |> shouldFail<exn>
+
+        (fun () ->
+            EvalStackValue.toCliTypeCoerced (CliType.Numeric (CliNumericType.Int32 0)) pushed
+            |> ignore
+        )
+        |> shouldFail<exn>
+
+    [<Test>]
+    let ``conversions carry a named byte exactly as far as their return type allows`` () : unit =
+        let pushed = EvalStackValue.Int32 (Int32Source.NativeIntByte (handleSource, 5))
+
+        // `conv.i4`/`conv.u4` return an `EvalStackValue`, and the value is already a zero-extended
+        // byte in a 32-bit slot, so both are the identity on it.
+        EvalStackValue.convToUInt32 pushed PointerHashState.empty
+        |> fst
+        |> shouldEqual pushed
+
+        EvalStackValue.convToInt32 pushed PointerHashState.empty
+        |> fst
+        |> shouldEqual pushed
+
+        // The narrow conversions return a bare `int32`, so they can carry no provenance at all and
+        // refuse. That is the shape of the conversion layer rather than anything about this case:
+        // `Int32Source.NarrowedManagedPointer` is refused by the same call for the same reason,
+        // which is what the second half of each iteration below pins. Widening those signatures
+        // would make `conv.u1`/`conv.u2`/`conv.i2` identities on a named byte -- but never
+        // `conv.i1`, whose sign extension changes the value of a byte at or above 128, and PawPrint
+        // does not know which byte this is.
+        let narrowedByref =
+            EvalStackValue.Int32 (
+                Int32Source.NarrowedManagedPointer (
+                    ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 1), [])
+                )
+            )
+
+        for convert in
+            [
+                EvalStackValue.convToUInt8
+                EvalStackValue.convToUInt16
+                EvalStackValue.convToInt8
+                EvalStackValue.convToInt16
+            ] do
+            (fun () -> convert pushed PointerHashState.empty |> ignore) |> shouldFail<exn>
+
+            (fun () -> convert narrowedByref PointerHashState.empty |> ignore)
+            |> shouldFail<exn>
+
+    [<Test>]
+    let ``a named byte stored in a byte array reads back through the array byte view`` () : unit =
+        // `m_signature[m_currSig++] = phandle[i]` puts the byte here, and PawPrint's QCall
+        // boundary reads the blob back out through exactly this route.
+        let st = state ()
+
+        let arrayAddr, st =
+            IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero byteHandle) (fun () -> byteTemplate) 4 st
+
+        let named =
+            CliType.Numeric (CliNumericType.UInt8 (UInt8Source.NativeIntByte (handleSource, 6)))
+
+        let st = IlMachineState.setArrayValue arrayAddr named 2 st
+
+        let cursor =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (arrayAddr, 2),
+                [
+                    ByrefProjection.ReinterpretAs byteConcreteType
+                    ByrefProjection.ByteOffset 0
+                ]
+            )
+
+        IlMachineState.readManagedByrefBytesAs baseClassTypes st cursor byteTemplate
+        |> shouldEqual named
+
+        // The cells either side are untouched ordinary zero bytes, so the array is not wholly
+        // poisoned by one named cell.
+        let plainCursor (index : int) : ManagedPointerSource =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (arrayAddr, index),
+                [
+                    ByrefProjection.ReinterpretAs byteConcreteType
+                    ByrefProjection.ByteOffset 0
+                ]
+            )
+
+        IlMachineState.readManagedByrefBytesAs baseClassTypes st (plainCursor 1) byteTemplate
+        |> shouldEqual byteTemplate
+
+        IlMachineState.readManagedByrefBytesAs baseClassTypes st (plainCursor 3) byteTemplate
+        |> shouldEqual byteTemplate
+
+    [<Test>]
+    let ``a whole-cell read of a handle out of an array still yields the handle`` () : unit =
+        // A cell holding a bare handle, read at its own width. This has always been served by the
+        // array whole-cell shortcut, whose stated reason is that the byte-scatter path cannot
+        // serve such a cell without losing provenance -- which is exactly as true of a cell whose
+        // bytes are only nameable, so the shortcut has to recognise that case too.
+        let st = state ()
+
+        let cell = CliType.Numeric (CliNumericType.NativeInt handleSource)
+
+        let arrayAddr, st =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero intPtrHandle)
+                (fun () -> CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+                2
+                st
+
+        let st = IlMachineState.setArrayValue arrayAddr cell 1 st
+
+        let wholeCellCursor =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (arrayAddr, 1),
+                [
+                    ByrefProjection.ReinterpretAs byteConcreteType
+                    ByrefProjection.ByteOffset 0
+                ]
+            )
+
+        IlMachineState.readManagedByrefBytesAs
+            baseClassTypes
+            st
+            wholeCellCursor
+            (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+        |> shouldEqual cell
+
+    [<Test>]
+    let ``a wrapper-shaped template over an array cell holding a handle still yields the handle`` () : unit =
+        // The array whole-cell shortcut's shape gate is `haveSameCliShape`, which bridges a
+        // primitive-like wrapper and the thing it wraps, so an `IntPtr[]` cell holding a bare
+        // handle answers an `IntPtr`-struct template. Nothing else in the read path will: the
+        // `tryNameCellForByrefAccess` fallback gates on `isCellIdentityCompatible`, which refuses
+        // a `Numeric` cell against a `ValueType` template, and the byte walk would hand back eight
+        // named bytes with nowhere to put them. Measured against this branch's parent, where the
+        // shortcut fired because the cell was refused outright.
+        let st = state ()
+
+        let arrayAddr, st =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero intPtrHandle)
+                (fun () -> CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+                2
+                st
+
+        let st =
+            IlMachineState.setArrayValue arrayAddr (CliType.Numeric (CliNumericType.NativeInt handleSource)) 1 st
+
+        let cursor =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (arrayAddr, 1),
+                [
+                    ByrefProjection.ReinterpretAs byteConcreteType
+                    ByrefProjection.ByteOffset 0
+                ]
+            )
+
+        IlMachineState.readManagedByrefBytesAs
+            baseClassTypes
+            st
+            cursor
+            (CliType.ValueType (intPtrHolding (NativeIntSource.Verbatim 0L)))
+        |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt handleSource))

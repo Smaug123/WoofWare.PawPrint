@@ -43,7 +43,8 @@ module NativeCustomAttribute =
 
         for i in startIdx .. endIdx - 1 do
             match ManagedHeap.getArrayValue arr i state.ManagedHeap with
-            | CliType.Numeric (CliNumericType.UInt8 b) -> builder.Add b
+            | CliType.Numeric (CliNumericType.UInt8 b) ->
+                builder.Add (UInt8Source.value $"%s{operation}: byte offset %d{i} of array %O{arr}" b)
             | other ->
                 failwith $"%s{operation}: expected UInt8 cell at byte offset %d{i} of array %O{arr}, got %O{other}"
 

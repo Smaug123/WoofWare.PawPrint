@@ -273,7 +273,7 @@ module TestNominalAlignment =
                 declaredHandle
                 facts
                 [
-                    field "Pre" (CliType.Numeric (CliNumericType.UInt8 0uy)) (handleFor bct.Byte)
+                    field "Pre" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) (handleFor bct.Byte)
                     field "Value" contents ty
                 ]
 

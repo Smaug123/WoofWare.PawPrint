@@ -79,7 +79,8 @@ module NativeGc =
 
     let private zeroInt32 : CliType = CliType.Numeric (CliNumericType.Int32 0)
 
-    let private zeroByte : CliType = CliType.Numeric (CliNumericType.UInt8 0uy)
+    let private zeroByte : CliType =
+        CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))
 
     /// `System.GC.GetMemoryInfo(GCMemoryInfoData data, int kind)`: the InternalCall behind
     /// the public `GC.GetGCMemoryInfo(GCKind)`. CoreCLR (comutilnative.cpp:585,

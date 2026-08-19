@@ -36,7 +36,7 @@ module CustomAttribValueLowering =
             let v = uint16 c
             CliType.Char (byte (v >>> 8), byte (v &&& 0xFFus)) |> Ok
         | CustomAttribFixedArg.I1 v -> CliType.Numeric (CliNumericType.Int8 v) |> Ok
-        | CustomAttribFixedArg.U1 v -> CliType.Numeric (CliNumericType.UInt8 v) |> Ok
+        | CustomAttribFixedArg.U1 v -> CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim v)) |> Ok
         | CustomAttribFixedArg.I2 v -> CliType.Numeric (CliNumericType.Int16 v) |> Ok
         | CustomAttribFixedArg.U2 v -> CliType.Numeric (CliNumericType.UInt16 v) |> Ok
         | CustomAttribFixedArg.I4 v -> CliType.Numeric (CliNumericType.Int32 v) |> Ok

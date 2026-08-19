@@ -974,7 +974,7 @@ public class MarshalShapes
                             ManagedHeap.getArrayValue arrayAddr (baseIndex + i) state.ManagedHeap
                             |> CliType.unwrapPrimitiveLikeDeep
                         with
-                        | CliType.Numeric (CliNumericType.UInt8 b) -> b
+                        | CliType.Numeric (CliNumericType.UInt8 b) -> UInt8Source.value "ConstArray byte" b
                         | other -> failwith $"expected UInt8 in ConstArray storage, got %O{other}"
                     )
             | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, _) ->
@@ -991,7 +991,7 @@ public class MarshalShapes
                             IlMachineState.readPeByteRangeBytesAs state peByteRange i byteTemplate
                             |> CliType.unwrapPrimitiveLikeDeep
                         with
-                        | CliType.Numeric (CliNumericType.UInt8 b) -> b
+                        | CliType.Numeric (CliNumericType.UInt8 b) -> UInt8Source.value "ConstArray byte" b
                         | other -> failwith $"expected UInt8 in PE byte-range ConstArray storage, got %O{other}"
                     )
             | other -> failwith $"unexpected ConstArray.m_constArray pointer %O{other}"
@@ -2736,8 +2736,9 @@ public class MarshalShapes
                     IlMachineState.getArrayValue arrayAddr index state
                     |> CliType.unwrapPrimitiveLikeDeep
                 with
-                | CliType.Numeric (CliNumericType.UInt8 0uy) -> List.rev (0uy :: acc)
-                | CliType.Numeric (CliNumericType.UInt8 b) -> loop (index + 1) (b :: acc)
+                | CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)) -> List.rev (0uy :: acc)
+                | CliType.Numeric (CliNumericType.UInt8 b) ->
+                    loop (index + 1) (UInt8Source.value "constant blob byte" b :: acc)
                 | other -> failwith $"expected a byte in the name buffer at index %d{index}, got %O{other}"
 
             loop 0 [] |> Array.ofList

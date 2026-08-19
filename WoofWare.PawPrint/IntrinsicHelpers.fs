@@ -585,7 +585,8 @@ module internal IntrinsicHelpers =
                 "System.Runtime.Intrinsics.X86.X86Serialize+X64"
             ]
 
-    let byteTemplate : CliType = CliType.Numeric (CliNumericType.UInt8 0uy)
+    let byteTemplate : CliType =
+        CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))
 
     let byteConcreteType
         (operation : string)
@@ -669,7 +670,7 @@ module internal IntrinsicHelpers =
         =
         let readPrimitiveByteView () : byte =
             match IlMachineState.readManagedByrefBytesAs baseClassTypes state src byteTemplate with
-            | CliType.Numeric (CliNumericType.UInt8 b) -> b
+            | CliType.Numeric (CliNumericType.UInt8 b) -> UInt8Source.value $"%s{operation}: byte-view read" b
             | other -> failwith $"%s{operation}: byte-view read returned non-byte value %O{other}"
 
         match src with

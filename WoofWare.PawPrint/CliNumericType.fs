@@ -3,6 +3,72 @@ namespace WoofWare.PawPrint
 open System
 open Checked
 
+/// The provenance of one byte of a value's materialised byte image.
+///
+/// Almost every byte is an ordinary number. The exception is a byte of a native int whose bits
+/// PawPrint does not model — a type handle, a method table pointer, a byref — which has no
+/// numeric value to give. `SignatureHelper.InternalAddRuntimeType` is what makes that reachable:
+/// with no module to spell a type against, it copies the eight bytes of `type.TypeHandle.Value`
+/// into a `Reflection.Emit` signature blob one at a time and hands the blob straight back to the
+/// runtime, so the bytes are only ever moved, never inspected.
+///
+/// Naming the byte rather than materialising one is what lets that round trip be exact: the
+/// decoder recovers the type from eight consecutive bytes of one source in ascending index
+/// order, and a guest that scrambles or partially overwrites them is refused rather than
+/// decoded to a plausible wrong type. Making it a case *here*, rather than filling the byte
+/// with synthesised address bits, is what makes the compiler visit every consumer of a byte:
+/// none of them can treat one of these as a number by accident, because none of them can get at
+/// a number without saying what to do when there isn't one.
+[<RequireQualifiedAccess>]
+type UInt8Source =
+    | Verbatim of uint8
+    /// Byte `index` (0-based, little-endian) of the eight-byte image of a native int PawPrint
+    /// models as an identity rather than as an address.
+    | NativeIntByte of source : NativeIntSource * index : int
+
+    override this.ToString () : string =
+        match this with
+        | UInt8Source.Verbatim b -> $"%i{b}"
+        | UInt8Source.NativeIntByte (source, index) -> $"<byte %i{index} of %O{source}>"
+
+[<RequireQualifiedAccess>]
+module UInt8Source =
+
+    /// The numeric value of a byte.
+    ///
+    /// A byte of an unmodelled native int has none: it names a position in an identity PawPrint
+    /// carries instead of an address. `operation` names the consumer, so a guest that reaches one
+    /// fails precisely rather than somewhere downstream.
+    /// `ValueSome` for a byte that has a numeric value, `ValueNone` for one that names a native
+    /// int instead.
+    let tryValue (src : UInt8Source) : uint8 voption =
+        match src with
+        | UInt8Source.Verbatim b -> ValueSome b
+        | UInt8Source.NativeIntByte _ -> ValueNone
+
+    /// `ValueSome` iff every byte in the image has a numeric value, so the image is an ordinary
+    /// `byte[]`.
+    let tryValues (bytes : UInt8Source[]) : byte[] voption =
+        let result = Array.zeroCreate<byte> bytes.Length
+        let mutable i = 0
+        let mutable ok = true
+
+        while ok && i < bytes.Length do
+            match tryValue bytes.[i] with
+            | ValueSome b ->
+                result.[i] <- b
+                i <- i + 1
+            | ValueNone -> ok <- false
+
+        if ok then ValueSome result else ValueNone
+
+    let value (operation : string) (src : UInt8Source) : uint8 =
+        match src with
+        | UInt8Source.Verbatim b -> b
+        | UInt8Source.NativeIntByte (source, index) ->
+            failwith
+                $"%s{operation}: refusing to use byte %i{index} of %O{source} as a number; PawPrint models that native int as an identity rather than as an address, so it has no byte value"
+
 [<RequireQualifiedAccess>]
 type Int64Source =
     | Verbatim of int64
@@ -285,7 +351,7 @@ type CliNumericType =
     | NativeFloat of float
     | Int8 of int8
     | Int16 of int16
-    | UInt8 of uint8
+    | UInt8 of UInt8Source
     | UInt16 of uint16
     | Float32 of float32
     | Float64 of float
@@ -379,7 +445,7 @@ type CliNumericType =
         // pattern without hitting the checked-conversion throw.
         | CliNumericType.Int8 i -> [| byte (int i &&& 0xFF) |]
         | CliNumericType.Int16 i -> BitConverter.GetBytes i
-        | CliNumericType.UInt8 i -> [| i |]
+        | CliNumericType.UInt8 i -> [| UInt8Source.value "CliNumericType.ToBytes" i |]
         | CliNumericType.UInt16 i -> BitConverter.GetBytes i
         | CliNumericType.Float32 i -> BitConverter.GetBytes i
         | CliNumericType.Float64 i -> BitConverter.GetBytes i

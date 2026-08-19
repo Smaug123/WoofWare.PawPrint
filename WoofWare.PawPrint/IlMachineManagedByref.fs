@@ -199,6 +199,7 @@ module IlMachineManagedByref =
         =
         match CliType.ByteAddressability storage with
         | CliByteAddressability.ByteAddressable -> None
+        | CliByteAddressability.SymbolicallyAddressable _
         | CliByteAddressability.Rejected _ ->
 
         let targetSize = CliType.sizeOf targetTemplate
@@ -275,6 +276,7 @@ module IlMachineManagedByref =
     /// it; otherwise the classifier is wrong and should fail here.
     let private tryToBytesForNoopCheck (value : CliType) : byte[] voption =
         match CliType.ByteAddressability value with
+        | CliByteAddressability.SymbolicallyAddressable _
         | CliByteAddressability.Rejected _ -> ValueNone
         | CliByteAddressability.ByteAddressable -> ValueSome (CliType.ToBytes value)
 
@@ -664,9 +666,24 @@ module IlMachineManagedByref =
         // callers of the byte helpers.
         match CliType.ByteAddressability value with
         | CliByteAddressability.ByteAddressable -> ()
+        | CliByteAddressability.SymbolicallyAddressable rejection
         | CliByteAddressability.Rejected rejection ->
             failwith
                 $"refusing byte view over %s{rejection.Description} in %s{context}. Value layout:\n%s{CliType.DescribeByteLayout None value}"
+
+    /// A cell's width, for a byte view that can serve *named* bytes: a cell whose bytes only name
+    /// a native int still has a width, and only a cell with no byte image at all is refused.
+    let private namedByteCellSize (context : string) (value : CliType) : int =
+        match CliType.ByteAddressability value with
+        | CliByteAddressability.ByteAddressable
+        | CliByteAddressability.SymbolicallyAddressable _ -> CliType.sizeOf value
+        | CliByteAddressability.Rejected rejection ->
+            failwith
+                $"refusing byte view over %s{rejection.Description} in %s{context}. Value layout:\n%s{CliType.DescribeByteLayout None value}"
+
+    let private namedCellBytesAt (context : string) (offset : int) (count : int) (value : CliType) : UInt8Source[] =
+        namedByteCellSize context value |> ignore
+        CliType.SymbolicBytesAt offset count value
 
     let private byteAddressableCellSize (context : string) (value : CliType) : int =
         validateByteAddressableCell context value
@@ -756,6 +773,13 @@ module IlMachineManagedByref =
                 // non-byte-renderable cell rather than silently returning a
                 // wrongly-shaped value.
                 match CliType.ByteAddressability cellValue with
+                // A cell whose bytes only *name* a native int belongs here for exactly the reason
+                // in (a): the byte-scatter path cannot serve it without losing the identity those
+                // names carry. This arm is wider than `tryNameCellForByrefAccess` below, which
+                // gates on `isCellIdentityCompatible` and so refuses the wrapper layer
+                // `haveSameCliShape` bridges -- reading an `IntPtr[]` cell holding a type handle
+                // through an `IntPtr` template is that pair, and it is served here or nowhere.
+                | CliByteAddressability.SymbolicallyAddressable _
                 | CliByteAddressability.Rejected _ when haveSameCliShape cellValue targetTemplate -> ValueSome cellValue
                 | _ -> ValueNone
             else
@@ -789,7 +813,10 @@ module IlMachineManagedByref =
         | ValueSome cellValue, _
         | _, ValueSome cellValue -> cellValue
         | ValueNone, ValueNone ->
-            let buf = Array.zeroCreate<byte> targetSize
+            // A `UInt8Source[]` rather than a `byte[]`: an array cell can hold a byte that names a
+            // native int rather than holding a number, which is how a `Reflection.Emit` signature
+            // blob carries a type its `SignatureHelper` had no module to spell as a token.
+            let buf = Array.create<UInt8Source> targetSize (UInt8Source.Verbatim 0uy)
             let mutable filled = 0
             let mutable cell = index + cellAdvance
             let mutable inCellOffset = inCellStart
@@ -800,20 +827,20 @@ module IlMachineManagedByref =
                         $"TODO: byte-view read past array bounds at cell %d{cell} of length %d{shape.Length} while gathering %d{targetSize} bytes"
 
                 let cellValue = ManagedHeap.getArrayValue arr cell state.ManagedHeap
-                let cellSize = byteAddressableCellSize $"array %O{arr} element %d{cell}" cellValue
+                let cellSize = namedByteCellSize $"array %O{arr} element %d{cell}" cellValue
 
                 let canTake = cellSize - inCellOffset
                 let take = min canTake (targetSize - filled)
 
                 let bytes =
-                    byteAddressableCellBytesAt $"array %O{arr} element %d{cell}" inCellOffset take cellValue
+                    namedCellBytesAt $"array %O{arr} element %d{cell}" inCellOffset take cellValue
 
                 Array.blit bytes 0 buf filled take
                 filled <- filled + take
                 cell <- cell + 1
                 inCellOffset <- 0
 
-            CliType.ofBytesLike targetTemplate buf
+            CliType.ofSymbolicBytesLike targetTemplate buf
 
     /// Read `byteOffset ..` out of a PE byte range and rebuild a value of `targetTemplate`'s
     /// shape from those bytes. The read is bounds-checked against the range's own declared
@@ -923,7 +950,11 @@ module IlMachineManagedByref =
         let obj = ManagedHeap.get addr state.ManagedHeap
 
         match CliValueType.ByteAddressability obj.Contents with
-        | CliByteAddressability.ByteAddressable -> obj
+        // A boxed value whose bytes only *name* a native int is served the same way a stack local
+        // or an array cell holding one is: the read comes back naming the handle and the position
+        // within it, and only a payload with no byte image at all is refused.
+        | CliByteAddressability.ByteAddressable
+        | CliByteAddressability.SymbolicallyAddressable _ -> obj
         | CliByteAddressability.Rejected rejection ->
             let typeDescription = describeConcreteType state obj.ConcreteType
 
@@ -965,6 +996,7 @@ module IlMachineManagedByref =
         match candidates with
         | [ f ] ->
             match CliType.ByteAddressability f.Contents with
+            | CliByteAddressability.SymbolicallyAddressable _
             | CliByteAddressability.Rejected _ -> Some f.Contents
             | CliByteAddressability.ByteAddressable -> None
         | _ -> None
@@ -1005,8 +1037,8 @@ module IlMachineManagedByref =
             failwith
                 $"boxed value byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside %d{payloadSize}-byte boxed payload at %O{addr}"
 
-        CliValueType.BytesAt byteOffset targetSize existing.Contents
-        |> CliType.ofBytesLike targetTemplate
+        CliValueType.SymbolicBytesAt byteOffset targetSize existing.Contents
+        |> CliType.ofSymbolicBytesLike targetTemplate
 
     let private readStackMemoryBytesAs
         (state : IlMachineState)
@@ -1053,6 +1085,7 @@ module IlMachineManagedByref =
             match StackMemoryPool.tryReadCell block byteOffset pool with
             | Some cell when CliType.sizeOf cell = targetSize && haveSameCliShape cell targetTemplate ->
                 match CliType.ByteAddressability cell with
+                | CliByteAddressability.SymbolicallyAddressable _
                 | CliByteAddressability.Rejected _ -> Some cell
                 | CliByteAddressability.ByteAddressable -> None
             | _ -> None
@@ -1061,8 +1094,8 @@ module IlMachineManagedByref =
         | Some cell -> cell
         | None ->
 
-        let buf = StackMemoryPool.readBytes block byteOffset targetSize pool
-        CliType.ofBytesLike targetTemplate buf
+        let buf = StackMemoryPool.readNamedBytes block byteOffset targetSize pool
+        CliType.ofSymbolicBytesLike targetTemplate buf
 
     /// Mirror of `readStackMemoryBytesAs` for native-heap blocks. Use-after-free is
     /// reported if the block was freed.
@@ -1093,6 +1126,7 @@ module IlMachineManagedByref =
             match NativeMemoryPool.tryReadCell block byteOffset pool with
             | Some cell when CliType.sizeOf cell = targetSize && haveSameCliShape cell targetTemplate ->
                 match CliType.ByteAddressability cell with
+                | CliByteAddressability.SymbolicallyAddressable _
                 | CliByteAddressability.Rejected _ -> Some cell
                 | CliByteAddressability.ByteAddressable -> None
             | _ -> None
@@ -1101,8 +1135,8 @@ module IlMachineManagedByref =
         | Some cell -> cell
         | None ->
 
-        let buf = NativeMemoryPool.readBytes block byteOffset targetSize pool
-        CliType.ofBytesLike targetTemplate buf
+        let buf = NativeMemoryPool.readNamedBytes block byteOffset targetSize pool
+        CliType.ofSymbolicBytesLike targetTemplate buf
 
     let internal zeroForConcreteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1479,7 +1513,7 @@ module IlMachineManagedByref =
                         : Result<CliType * int, int * int>
                         =
                         let cell = readProjectedValue rootValue projs
-                        let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
+                        let cellSize = namedByteCellSize $"single-cell byref %O{src}" cell
 
                         if offset >= 0 && targetSize <= cellSize - offset then
                             Ok (cell, offset)
@@ -1513,9 +1547,9 @@ module IlMachineManagedByref =
                     match resolveCell prefixProjs byteOffset with
                     | Ok (cell, finalOffset) ->
                         let bytes =
-                            byteAddressableCellBytesAt $"single-cell byref %O{src}" finalOffset targetSize cell
+                            namedCellBytesAt $"single-cell byref %O{src}" finalOffset targetSize cell
 
-                        CliType.ofBytesLike targetTemplate bytes
+                        CliType.ofSymbolicBytesLike targetTemplate bytes
                     | Error (rootRelativeOffset, rootCellSize) ->
 
                     match tryReadThroughContainer state outerProjs outerRoot rootRelativeOffset targetTemplate with
@@ -1525,15 +1559,15 @@ module IlMachineManagedByref =
                             $"TODO: byte-view read at offset %d{rootRelativeOffset} for %d{targetSize} bytes does not fit in single primitive cell of size %d{rootCellSize}, and the root is its own storage container so there is nothing larger to read it from: %O{src}"
             | ValueNone ->
                 let raw = readProjectedValue (readRootValue state outerRoot) outerProjs
-                let rawSize = byteAddressableCellSize $"plain byref %O{src}" raw
+                let rawSize = namedByteCellSize $"plain byref %O{src}" raw
                 let targetSize = CliType.sizeOf targetTemplate
 
                 if targetSize > rawSize then
                     failwith
                         $"TODO: byte-view read of %d{targetSize} bytes does not fit in plain primitive cell of size %d{rawSize}: %O{src}"
 
-                byteAddressableCellBytesAt $"plain byref %O{src}" 0 targetSize raw
-                |> CliType.ofBytesLike targetTemplate
+                namedCellBytesAt $"plain byref %O{src}" 0 targetSize raw
+                |> CliType.ofSymbolicBytesLike targetTemplate
 
     /// The storage cell a byref names, for reads the bytewise path cannot serve.
     ///
@@ -1589,6 +1623,7 @@ module IlMachineManagedByref =
             // something this code does not have to rely on — the same gate
             // `tryNameCellForByrefAccessCoercible` applies to composites.
             None
+        | CliByteAddressability.SymbolicallyAddressable _
         | CliByteAddressability.Rejected _ ->
 
         match cell with
@@ -2148,6 +2183,7 @@ module IlMachineManagedByref =
             && wholeCellReplacementPreservesShape cell newValue
             && (
                 match CliType.ByteAddressability cell with
+                | CliByteAddressability.SymbolicallyAddressable _
                 | CliByteAddressability.Rejected _ -> true
                 | CliByteAddressability.ByteAddressable -> false
             )
@@ -2244,6 +2280,7 @@ module IlMachineManagedByref =
         | [ f ] ->
             match CliType.ByteAddressability f.Contents with
             | CliByteAddressability.ByteAddressable -> None
+            | CliByteAddressability.SymbolicallyAddressable _
             | CliByteAddressability.Rejected _ ->
                 let updatedContents = CliValueType.WithFieldSetById f.Id newValue obj.Contents
 
@@ -2296,6 +2333,7 @@ module IlMachineManagedByref =
 
         match CliType.ByteAddressability existing with
         | CliByteAddressability.ByteAddressable -> None
+        | CliByteAddressability.SymbolicallyAddressable _
         | CliByteAddressability.Rejected _ -> IlMachineThreadState.setArrayValue arr newValue index state |> Some
 
     /// The write mirror of `tryReadThroughContainer`: serve a byte write to the container that
@@ -2391,6 +2429,7 @@ module IlMachineManagedByref =
                     let byteOffset = rootRelativeByteOffset projs rootByteOffset viewByteOffset
 
                     match CliType.ByteAddressability newValue with
+                    | CliByteAddressability.SymbolicallyAddressable _
                     | CliByteAddressability.Rejected _ -> ValueSome (thread, frame, block, byteOffset)
                     | CliByteAddressability.ByteAddressable ->
                         // Byte-addressable byte-view writes normally follow the
@@ -2443,6 +2482,7 @@ module IlMachineManagedByref =
                     let byteOffset = rootRelativeByteOffset projs rootByteOffset viewByteOffset
 
                     match CliType.ByteAddressability newValue with
+                    | CliByteAddressability.SymbolicallyAddressable _
                     | CliByteAddressability.Rejected _ -> ValueSome (block, byteOffset)
                     | CliByteAddressability.ByteAddressable ->
                         // Exactly the StackMemoryByte reasoning above: byte
@@ -2816,6 +2856,7 @@ module IlMachineManagedByref =
         =
         match CliType.ByteAddressability storageValue with
         | CliByteAddressability.ByteAddressable -> CliType.ToBytes storageValue
+        | CliByteAddressability.SymbolicallyAddressable rejection
         | CliByteAddressability.Rejected rejection ->
             failwith
                 $"TODO: %s{operation}: write through `ReinterpretAs` over byte-unaddressable storage (%s{rejection.Description}) is not modelled; storage layout:\n%s{describeCliStorage state storageValue}"
@@ -3184,6 +3225,7 @@ module IlMachineManagedByref =
             let valueIsByteRenderable =
                 match CliType.ByteAddressability newValue with
                 | CliByteAddressability.ByteAddressable -> true
+                | CliByteAddressability.SymbolicallyAddressable _
                 | CliByteAddressability.Rejected _ -> false
 
             // The forward-walk peel guarantees the structural prefix never
@@ -3320,7 +3362,10 @@ module IlMachineManagedByref =
     let private isNumericProvenanceRejection (rejection : CliByteAddressabilityRejection) : bool =
         match rejection with
         | CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable _
-        | CliByteAddressabilityRejection.Int64SourceNotByteAddressable _ -> true
+        | CliByteAddressabilityRejection.Int64SourceNotByteAddressable _
+        // A byte naming a native int is provenance of exactly this kind: flattening it would
+        // need the number it does not have.
+        | CliByteAddressabilityRejection.UInt8SourceNotByteAddressable _ -> true
         | CliByteAddressabilityRejection.ObjectReference
         | CliByteAddressabilityRejection.RuntimePointer
         | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _
@@ -3366,7 +3411,10 @@ module IlMachineManagedByref =
         =
         match rejection with
         | CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable _
-        | CliByteAddressabilityRejection.Int64SourceNotByteAddressable _ -> true
+        | CliByteAddressabilityRejection.Int64SourceNotByteAddressable _
+        // The destination cell is one byte wide and holds a named byte, so a byte-wide payload
+        // covers it exactly and replacing the cell is the same range as scattering into it.
+        | CliByteAddressabilityRejection.UInt8SourceNotByteAddressable _ -> true
         | CliByteAddressabilityRejection.RuntimePointer ->
             match CliType.unwrapPrimitiveLike newValue with
             | CliType.RuntimePointer _
@@ -3380,6 +3428,7 @@ module IlMachineManagedByref =
     let private byteAddressabilityRejection (value : CliType) : CliByteAddressabilityRejection option =
         match CliType.ByteAddressability value with
         | CliByteAddressability.ByteAddressable -> None
+        | CliByteAddressability.SymbolicallyAddressable rejection
         | CliByteAddressability.Rejected rejection -> Some rejection
 
     let private writeExactWidthPrimitiveTypedStore

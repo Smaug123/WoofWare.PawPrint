@@ -341,6 +341,27 @@ module NativeCall =
         AllConcreteTypes.lookup handle state.ConcreteTypes
         |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Byte handle %O{handle} not found")
 
+    let private readNamedByte
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (byteConcreteType : ConcreteType<ConcreteTypeHandle>)
+        (ptr : ManagedPointerSource)
+        (byteIndex : int)
+        : UInt8Source
+        =
+        let ptr = ManagedPointerByteView.addByteOffset state byteConcreteType byteIndex ptr
+
+        match
+            IlMachineState.readManagedByrefBytesAs
+                baseClassTypes
+                state
+                ptr
+                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
+        with
+        | CliType.Numeric (CliNumericType.UInt8 b) -> b
+        | other -> failwith $"%s{operation}: byte read returned non-byte value %O{other}"
+
     let private readUtf8Byte
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -350,13 +371,8 @@ module NativeCall =
         (byteIndex : int)
         : byte
         =
-        let ptr = ManagedPointerByteView.addByteOffset state byteConcreteType byteIndex ptr
-
-        match
-            IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.Numeric (CliNumericType.UInt8 0uy))
-        with
-        | CliType.Numeric (CliNumericType.UInt8 b) -> b
-        | other -> failwith $"%s{operation}: UTF-8 byte read returned non-byte value %O{other}"
+        readNamedByte operation baseClassTypes state byteConcreteType ptr byteIndex
+        |> UInt8Source.value $"%s{operation}: UTF-8 byte read"
 
     /// The bytes of a NUL-terminated C string, without the terminator and
     /// without interpreting them.
@@ -487,6 +503,39 @@ module NativeCall =
                 byteCount
                 (fun byteIndex -> readUtf8Byte operation baseClassTypes state byteConcreteType ptr byteIndex)
 
+    /// Read exactly <paramref name="byteCount"/> bytes from the guest without demanding that
+    /// every one of them be a number.
+    ///
+    /// A byte that names a native int rather than holding a number is how a `Reflection.Emit`
+    /// signature blob carries a type its `SignatureHelper` had no module to spell as a token
+    /// (`ELEMENT_TYPE_INTERNAL`). Callers that can say something useful about such a byte take
+    /// this; everything else takes <c>readCountedUtf8Bytes</c>, which refuses one by name.
+    let readCountedNamedBytes
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        (byteCount : int)
+        : UInt8Source[]
+        =
+        if byteCount = 0 then
+            [||]
+        else
+
+        match ptr with
+        | ManagedPointerSource.Null ->
+            failwith
+                $"%s{operation}: cannot read %d{byteCount} bytes from a null pointer; callers must pass byteCount=0 when the pointer is null"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"%s{operation}: cannot read bytes from fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
+        | ManagedPointerSource.Byref _ ->
+            let byteConcreteType = requiredByteConcreteType operation baseClassTypes state
+
+            Array.init
+                byteCount
+                (fun byteIndex -> readNamedByte operation baseClassTypes state byteConcreteType ptr byteIndex)
+
     /// Allocate a managed <c>byte[]</c> holding <paramref name="storage"/> and return the array
     /// object itself. Use this when the guest receives the array as an object — e.g. a QCall
     /// writing through an <c>ObjectHandleOnStack</c>; use <c>allocateBlobByteArray</c> when it
@@ -503,14 +552,18 @@ module NativeCall =
         let arrayAddr, state =
             IlMachineState.allocateArray
                 (ConcreteTypeHandle.OneDimArrayZero byteHandle)
-                (fun () -> CliType.Numeric (CliNumericType.UInt8 0uy))
+                (fun () -> CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
                 storage.Length
                 state
 
         let state =
             ((state, 0), storage)
             ||> Array.fold (fun (state, index) b ->
-                IlMachineState.setArrayValue arrayAddr (CliType.Numeric (CliNumericType.UInt8 b)) index state,
+                IlMachineState.setArrayValue
+                    arrayAddr
+                    (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim b)))
+                    index
+                    state,
                 index + 1
             )
             |> fst

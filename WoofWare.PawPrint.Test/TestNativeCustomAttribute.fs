@@ -203,14 +203,18 @@ public sealed class CctorAttribute : System.Attribute
         let blobArr, state =
             IlMachineState.allocateArray
                 (ConcreteTypeHandle.OneDimArrayZero byteHandle)
-                (fun () -> CliType.Numeric (CliNumericType.UInt8 0uy))
+                (fun () -> CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
                 bytes.Length
                 state
 
         let state =
             (state, [ 0 .. bytes.Length - 1 ])
             ||> List.fold (fun state i ->
-                IlMachineState.setArrayValue blobArr (CliType.Numeric (CliNumericType.UInt8 bytes.[i])) i state
+                IlMachineState.setArrayValue
+                    blobArr
+                    (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim bytes.[i])))
+                    i
+                    state
             )
 
         let intPtrHandle =

@@ -77,7 +77,7 @@ module TestProjectionByteOffset =
         ofFields
             [
                 cliField "Payload" (CliType.ObjectRef None) objectHandle
-                cliField "Tag" (CliType.Numeric (CliNumericType.UInt8 0uy)) byteHandle
+                cliField "Tag" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) byteHandle
             ]
 
     /// `struct Nested { Elem I; byte Outer }` — one level deeper, so a chain can navigate two
@@ -86,7 +86,7 @@ module TestProjectionByteOffset =
         ofFields
             [
                 cliField "I" (elem ()) declaredHandle
-                cliField "Outer" (CliType.Numeric (CliNumericType.UInt8 0uy)) byteHandle
+                cliField "Outer" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) byteHandle
             ]
 
     let private tagField : FieldId = FieldId.named "Tag"
@@ -248,8 +248,8 @@ module TestProjectionByteOffset =
         let twoBytes =
             ofFields
                 [
-                    cliField "A" (CliType.Numeric (CliNumericType.UInt8 0uy)) byteHandle
-                    cliField "B" (CliType.Numeric (CliNumericType.UInt8 0uy)) byteHandle
+                    cliField "A" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) byteHandle
+                    cliField "B" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) byteHandle
                 ]
 
         let fieldA = FieldId.named "A"
@@ -263,7 +263,7 @@ module TestProjectionByteOffset =
 
         let atB =
             walk
-                (fun _ -> CliType.Numeric (CliNumericType.UInt8 0uy))
+                (fun _ -> CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
                 twoBytes
                 [
                     ByrefProjection.Field fieldB
@@ -273,7 +273,7 @@ module TestProjectionByteOffset =
 
         let atA =
             walk
-                (fun _ -> CliType.Numeric (CliNumericType.UInt8 0uy))
+                (fun _ -> CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
                 twoBytes
                 [
                     ByrefProjection.Field fieldA

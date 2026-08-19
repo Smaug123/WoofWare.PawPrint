@@ -73,7 +73,12 @@ module internal DynamicMethodBody =
                     ManagedHeap.getArrayValue addr i state.ManagedHeap
                     |> CliType.unwrapPrimitiveLikeDeep
                 with
-                | CliType.Numeric (CliNumericType.UInt8 b) -> b
+                // A signature blob really can hold a byte that names a type handle rather than
+                // holding a number: `SignatureHelper.InternalAddRuntimeType` writes eight of them
+                // for any type it cannot spell as a token. Reading the blob out as plain `byte[]`
+                // cannot express that, so it is refused here; teaching the decoders to read those
+                // eight bytes back as the type they name is what unblocks it.
+                | CliType.Numeric (CliNumericType.UInt8 b) -> UInt8Source.value $"%s{operation}: %s{what}[%d{i}]" b
                 | CliType.Numeric (CliNumericType.Int8 b) -> byte b
                 | other -> failwith $"%s{operation}: expected %s{what}[%d{i}] to be a byte, got %O{other}"
             )

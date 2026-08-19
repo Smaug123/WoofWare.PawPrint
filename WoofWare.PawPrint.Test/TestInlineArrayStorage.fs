@@ -341,9 +341,9 @@ module TestInlineArrayStorage =
             Layout.Default
             CharSet.Ansi
             [
-                declaredField "A" (CliType.Numeric (CliNumericType.UInt8 0uy)) int32Handle
-                declaredField "B" (CliType.Numeric (CliNumericType.UInt8 0uy)) int32Handle
-                declaredField "C" (CliType.Numeric (CliNumericType.UInt8 0uy)) int32Handle
+                declaredField "A" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) int32Handle
+                declaredField "B" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) int32Handle
+                declaredField "C" (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) int32Handle
             ]
 
     let private narrowField : CliField =

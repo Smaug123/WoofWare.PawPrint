@@ -141,7 +141,7 @@ module TestEnumClassification =
         let cases : CliType list =
             [
                 CliType.Numeric (CliNumericType.Int8 0y)
-                CliType.Numeric (CliNumericType.UInt8 0uy)
+                CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))
                 CliType.Numeric (CliNumericType.Int16 0s)
                 CliType.Numeric (CliNumericType.UInt16 0us)
                 CliType.Numeric (CliNumericType.Int32 0)

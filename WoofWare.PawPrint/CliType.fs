@@ -51,6 +51,8 @@ type CliByteAddressabilityRejection =
     | ObjectReference
     | RuntimePointer
     | NativeIntSourceNotByteAddressable of NativeIntSource
+    /// A byte that names a position in a native int rather than holding a number.
+    | UInt8SourceNotByteAddressable of UInt8Source
     | Int64SourceNotByteAddressable of Int64Source
     /// The handle is the value type supplied to the classifier, not necessarily
     /// the innermost offending field's declaring type.
@@ -66,6 +68,7 @@ type CliByteAddressabilityRejection =
         | CliByteAddressabilityRejection.RuntimePointer -> "runtime pointer"
         | CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable source ->
             $"native int with non-byte-addressable provenance %O{source}"
+        | CliByteAddressabilityRejection.UInt8SourceNotByteAddressable source -> $"byte naming a native int %O{source}"
         | CliByteAddressabilityRejection.Int64SourceNotByteAddressable source ->
             $"int64 with non-byte-addressable provenance %O{source}"
         | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _ ->
@@ -76,11 +79,23 @@ type CliByteAddressabilityRejection =
 
 type CliByteAddressability =
     | ByteAddressable
+    /// Every byte of this value can be *named*, but at least one of them is a byte of a native
+    /// int PawPrint models as an identity rather than as an address, so it is not a number. The
+    /// payload says which — it is the same obstruction `Rejected` would have reported.
+    ///
+    /// The distinction is what a caller can do about it. A byte image is still exact here: it is
+    /// a `UInt8Source[]` rather than a `byte[]`, and `CliType.SymbolicBytesAt` produces one.
+    /// Callers whose currency is `byte[]` — which is all of them but the byref byte-view reader —
+    /// must refuse this as they refuse `Rejected`, since there is no number to hand back.
+    | SymbolicallyAddressable of CliByteAddressabilityRejection
     | Rejected of CliByteAddressabilityRejection
 
     member this.Description : string =
         match this with
         | CliByteAddressability.ByteAddressable -> "byte-addressable"
+        | CliByteAddressability.SymbolicallyAddressable obstruction ->
+            $"addressable only as named bytes: %s{obstruction.Description}"
+        | CliByteAddressability.SymbolicallyAddressable rejection
         | CliByteAddressability.Rejected rejection -> $"rejected: %s{rejection.Description}"
 
 [<RequireQualifiedAccess>]
@@ -89,7 +104,6 @@ module private ByteAddressabilityClassifier =
         match source with
         | NativeIntSource.Verbatim _
         | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> CliByteAddressability.ByteAddressable
-        | NativeIntSource.ManagedPointer _
         | NativeIntSource.FunctionPointer _
         | NativeIntSource.TypeHandlePtr _
         | NativeIntSource.TypeDescPtr _
@@ -106,7 +120,28 @@ module private ByteAddressabilityClassifier =
         | NativeIntSource.EventPipeProviderPtr _
         | NativeIntSource.EventPipeEventPtr _
         | NativeIntSource.LowLevelMonitorPtr _
-        | NativeIntSource.WaitHandlePtr _
+        | NativeIntSource.WaitHandlePtr _ ->
+            // Named, not refused: each of these is a *handle*, an identity PawPrint carries in
+            // place of an address, so byte i of it is a position within that identity.
+            // `SignatureHelper.InternalAddRuntimeType` copies exactly that, one byte at a time,
+            // into a `Reflection.Emit` signature blob for a type it has no module to spell as a
+            // token.
+            CliByteAddressability.SymbolicallyAddressable (
+                CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable source
+            )
+        // The three below stay refused, and the line is not "how much provenance is there" but
+        // "is there an identity for a byte to be a position in".
+        //
+        // A byref is a storage location, and PawPrint already carries it through a narrowing
+        // intact (`Int32Source.NarrowedManagedPointer`) so that the alignment masks managed code
+        // applies stay answerable. Giving it a second route into a byte would widen that model
+        // with nothing asking for it.
+        //
+        // The other two are numbers rather than identities: a cross-storage offset is a
+        // deterministic sentinel standing in for a distance that does not exist, and
+        // `OpaqueHashBits` is synthesised. Naming byte i of either would imply the whole has a
+        // value worth taking a byte of.
+        | NativeIntSource.ManagedPointer _
         | NativeIntSource.SyntheticCrossArrayOffset _
         | NativeIntSource.OpaqueHashBits _ ->
             CliByteAddressability.Rejected (CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable source)
@@ -130,10 +165,16 @@ module private ByteAddressabilityClassifier =
         | CliNumericType.NativeFloat _
         | CliNumericType.Int8 _
         | CliNumericType.Int16 _
-        | CliNumericType.UInt8 _
+        | CliNumericType.UInt8 (UInt8Source.Verbatim _)
         | CliNumericType.UInt16 _
         | CliNumericType.Float32 _
         | CliNumericType.Float64 _ -> CliByteAddressability.ByteAddressable
+        // A cell already holding a named byte is exactly as unrenderable as the native int it
+        // names, and for the same reason; storing one does not turn it into a number.
+        | CliNumericType.UInt8 (UInt8Source.NativeIntByte _ as source) ->
+            CliByteAddressability.SymbolicallyAddressable (
+                CliByteAddressabilityRejection.UInt8SourceNotByteAddressable source
+            )
         | CliNumericType.Int64 source -> int64Source source
         | CliNumericType.NativeInt source -> nativeIntSource source
 
@@ -277,6 +318,28 @@ type CliType =
 
     static member OfBytesAsType (targetType : ConcreteTypeHandle) (bytes : byte[]) : CliType = failwith "TODO"
 
+    /// Reconstruct a `CliType` from a byte image in which some bytes may name a native int rather
+    /// than holding a number (see <see cref="UInt8Source" />).
+    ///
+    /// An image whose bytes all have values is <see cref="OfBytesLike" />, unchanged. Otherwise
+    /// the only template this can serve is a single byte, which is what a `ldind.u1` through a
+    /// byte cursor asks for and what `SignatureHelper.InternalAddRuntimeType` then stores.
+    /// Reassembling several named bytes back into the native int they came from is a different
+    /// question — it has to check that they are consecutive, in order, and all from one source —
+    /// and belongs with the consumer that knows it is looking at one.
+    static member OfSymbolicBytesLike (template : CliType) (bytes : UInt8Source[]) : CliType =
+        match UInt8Source.tryValues bytes with
+        | ValueSome plain -> CliType.OfBytesLike template plain
+        | ValueNone ->
+
+        match template, bytes with
+        | CliType.Numeric (CliNumericType.UInt8 _), [| single |] -> CliType.Numeric (CliNumericType.UInt8 single)
+        | _ ->
+            let described = bytes |> Array.map (sprintf "%O") |> String.concat ", "
+
+            failwith
+                $"CliType.OfSymbolicBytesLike: cannot read [%s{described}] as %O{template}; a byte naming a native int can only be read back as a single byte, because PawPrint has no numeric value to widen or combine"
+
     /// Reconstruct a primitive `CliType` from its byte encoding, using
     /// `template` only for its shape (which primitive flavour to produce).
     /// Inverse of `CliType.ToBytes` for the primitive cases it handles.
@@ -302,7 +365,8 @@ type CliType =
             // Direct `sbyte 0xBE` throws under checked conversion; preserve
             // the bit pattern by routing through an in-range int16 cast.
             CliType.Numeric (CliNumericType.Int8 (sbyte (int16 bytes.[0] - (if bytes.[0] >= 128uy then 256s else 0s))))
-        | CliType.Numeric (CliNumericType.UInt8 _) -> CliType.Numeric (CliNumericType.UInt8 bytes.[0])
+        | CliType.Numeric (CliNumericType.UInt8 _) ->
+            CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim bytes.[0]))
         | CliType.Numeric (CliNumericType.Int16 _) ->
             CliType.Numeric (CliNumericType.Int16 (BitConverter.ToInt16 (bytes, 0)))
         | CliType.Numeric (CliNumericType.UInt16 _) ->
@@ -352,7 +416,7 @@ type CliType =
             let zeroed =
                 match numeric with
                 | CliNumericType.Int8 _ -> CliNumericType.Int8 0y
-                | CliNumericType.UInt8 _ -> CliNumericType.UInt8 0uy
+                | CliNumericType.UInt8 _ -> CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)
                 | CliNumericType.Int16 _ -> CliNumericType.Int16 0s
                 | CliNumericType.UInt16 _ -> CliNumericType.UInt16 0us
                 | CliNumericType.Int32 _ -> CliNumericType.Int32 0
@@ -388,6 +452,7 @@ type CliType =
 
     static member BytesAt (offset : int) (count : int) (value : CliType) : byte[] =
         match CliType.ByteAddressability value with
+        | CliByteAddressability.SymbolicallyAddressable rejection
         | CliByteAddressability.Rejected rejection ->
             failwith
                 $"CliType.BytesAt: refusing byte slice over %s{rejection.Description}. Value layout:\n%s{CliType.DescribeByteLayout None value}"
@@ -401,6 +466,37 @@ type CliType =
                 let result = Array.zeroCreate<byte> count
                 Array.blit bytes offset result 0 count
                 result
+
+    /// The bytes of `[offset, offset + count)`, where a byte covered by a native int PawPrint
+    /// models as an identity rather than as an address is *named* rather than materialised.
+    ///
+    /// Agrees with <see cref="BytesAt" /> wherever that succeeds — same bytes, spelled
+    /// `UInt8Source.Verbatim`. It differs in accepting a value `BytesAt` refuses, and in being
+    /// slice-precise: a range that misses every such native int comes back entirely verbatim.
+    /// A value with no byte image at all (an object reference, a runtime pointer, an int64
+    /// carrying provenance) is still refused.
+    static member SymbolicBytesAt (offset : int) (count : int) (value : CliType) : UInt8Source[] =
+        match CliType.ByteAddressability value with
+        | CliByteAddressability.Rejected rejection ->
+            failwith
+                $"CliType.SymbolicBytesAt: refusing byte slice over %s{rejection.Description}. Value layout:\n%s{CliType.DescribeByteLayout None value}"
+        | CliByteAddressability.ByteAddressable -> CliType.BytesAt offset count value |> Array.map UInt8Source.Verbatim
+        | CliByteAddressability.SymbolicallyAddressable _ ->
+
+        match value with
+        | CliType.ValueType vt -> CliValueType.SymbolicBytesAt offset count vt
+        | CliType.Numeric (CliNumericType.UInt8 source) ->
+            CliType.CheckByteRange "CliType.SymbolicBytesAt" offset count 1 $"CLI value %O{value}"
+            Array.create count source
+        | CliType.Numeric (CliNumericType.NativeInt source) ->
+            CliType.CheckByteRange "CliType.SymbolicBytesAt" offset count NATIVE_INT_SIZE $"CLI value %O{value}"
+            Array.init count (fun i -> UInt8Source.NativeIntByte (source, offset + i))
+        | _ ->
+            // `ByteAddressability` says this value is nameable, so every arm it can reach must be
+            // handled above; a value that is neither a struct nor a native int has no route to
+            // that answer.
+            failwith
+                $"CliType.SymbolicBytesAt: %O{value} reports nameable bytes but is neither a value type nor a native int (this is an interpreter bug)"
 
     /// Did zeroing actually change anything? Zeroing a cell holding `-0.0` really does change
     /// memory, and reporting "unchanged" would leave the sign bit set, so `-0.0` versus `0.0`
@@ -700,6 +796,7 @@ type CliType =
     /// provenance stay within the value-layout model.
     static member WithBytesAtIfChanged (offset : int) (bytes : byte[]) (value : CliType) : CliType option =
         match CliType.ByteAddressability value with
+        | CliByteAddressability.SymbolicallyAddressable rejection
         | CliByteAddressability.Rejected rejection ->
             failwith
                 $"CliType.WithBytesAtIfChanged: refusing byte write over %s{rejection.Description}. Value layout:\n%s{CliType.DescribeByteLayout None value}"
@@ -2039,6 +2136,50 @@ and CliValueType =
 
             result
 
+    /// The counterpart of <see cref="BytesAt" /> for a value whose bytes are only nameable: a
+    /// byte covered by a native int PawPrint models as an identity comes back naming that native
+    /// int and the byte's position within it, and every other byte comes back verbatim.
+    ///
+    /// Agrees with `BytesAt` byte for byte wherever `BytesAt` succeeds.
+    static member SymbolicBytesAt (offset : int) (count : int) (cvt : CliValueType) : UInt8Source[] =
+        match cvt._Storage with
+        | CliValueTypeStorage.RawBytes _ -> CliValueType.BytesAt offset count cvt |> Array.map UInt8Source.Verbatim
+        | CliValueTypeStorage.Fields storage ->
+            let expectedSize = CliValueType.SizeOf(cvt).Size
+
+            if storage.PreservedBytes.Length <> expectedSize then
+                failwith
+                    $"CliValueType.SymbolicBytesAt: preserved byte image length %i{storage.PreservedBytes.Length} does not match value type size %i{expectedSize} for %O{cvt._Declared}"
+
+            CliValueType.CheckByteRange "CliValueType.SymbolicBytesAt" offset count expectedSize cvt._Declared
+
+            let endExclusive = offset + count
+
+            // Start from the preserved image, exactly as `BytesAt` does: bytes no field covers
+            // are ordinary padding and have numbers.
+            let result : UInt8Source[] =
+                Array.init count (fun i -> UInt8Source.Verbatim storage.PreservedBytes.[offset + i])
+
+            // Same filter and same `EditedAtTime` replay order as `BytesAt`, so the two agree
+            // wherever both answer. The only difference is per-field: a field with no byte image
+            // of its own contributes named bytes instead of failing the whole slice.
+            storage.Fields
+            |> List.filter (fun f -> f.Offset < endExclusive && offset < f.Offset + f.Size)
+            |> List.sortBy _.EditedAtTime
+            |> List.iter (fun candidateField ->
+                let fieldBytes : UInt8Source[] =
+                    CliType.SymbolicBytesAt 0 candidateField.Size candidateField.Contents
+
+                // A field may straddle either end of the slice; copy only the part inside it.
+                for i = max candidateField.Offset offset to (min
+                                                                (candidateField.Offset + candidateField.Size)
+                                                                endExclusive)
+                                                            - 1 do
+                    result.[i - offset] <- fieldBytes.[i - candidateField.Offset]
+            )
+
+            result
+
     /// Field-wise counterpart of `CliType.ZeroingChangedAnything`, for aggregates that have no
     /// byte rendering of their own. Any structural difference other than in the field values
     /// (different declared type, different storage form, different field set) counts as a
@@ -2825,16 +2966,39 @@ and CliValueType =
         match vt._Storage with
         | CliValueTypeStorage.RawBytes _ -> CliByteAddressability.ByteAddressable
         | CliValueTypeStorage.Fields storage ->
-            let firstRejectedField =
+            let classified =
                 storage.Fields
-                |> List.tryPick (fun field ->
+                |> List.choose (fun field ->
                     match CliType.ByteAddressability field.Contents with
                     | CliByteAddressability.ByteAddressable -> None
-                    | CliByteAddressability.Rejected rejection -> Some (field, rejection)
+                    | CliByteAddressability.SymbolicallyAddressable obstruction -> Some (field, obstruction, false)
+                    | CliByteAddressability.SymbolicallyAddressable rejection
+                    | CliByteAddressability.Rejected rejection -> Some (field, rejection, true)
                 )
 
+            // A field with no byte image at all decides the whole value: naming the struct
+            // symbolically would promise a `UInt8Source` for every byte, and an object reference
+            // has none. Only when every obstruction is a nameable one does the struct become
+            // nameable too.
+            let firstRejectedField =
+                classified
+                |> List.tryPick (fun (field, reason, isRejection) -> if isRejection then Some (field, reason) else None)
+
+            let wrapSymbolic (obstruction : CliByteAddressabilityRejection) : CliByteAddressability =
+                CliByteAddressability.SymbolicallyAddressable obstruction
+
             match firstRejectedField with
-            | None -> CliByteAddressability.ByteAddressable
+            | None ->
+                match classified with
+                | [] -> CliByteAddressability.ByteAddressable
+                | (field, obstruction, _) :: _ ->
+                    wrapSymbolic (
+                        CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (
+                            vt._Declared,
+                            field.Id,
+                            obstruction
+                        )
+                    )
             | Some (_, CliByteAddressabilityRejection.ObjectReference)
             | Some (_, CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _) ->
                 CliByteAddressability.Rejected (
@@ -3821,6 +3985,9 @@ module CliType =
     /// Delegates to `CliType.OfBytesLike`; see the static member for details.
     let ofBytesLike (template : CliType) (bytes : byte[]) : CliType = CliType.OfBytesLike template bytes
 
+    let ofSymbolicBytesLike (template : CliType) (bytes : UInt8Source[]) : CliType =
+        CliType.OfSymbolicBytesLike template bytes
+
     let zeroOfPrimitive
         (concreteTypes : AllConcreteTypes)
         (corelib : BaseClassTypes<DumpedAssembly>)
@@ -3831,7 +3998,7 @@ module CliType =
         | PrimitiveType.Boolean -> CliType.Bool 0uy
         | PrimitiveType.Char -> CliType.Char (0uy, 0uy)
         | PrimitiveType.SByte -> CliType.Numeric (CliNumericType.Int8 0y)
-        | PrimitiveType.Byte -> CliType.Numeric (CliNumericType.UInt8 0uy)
+        | PrimitiveType.Byte -> CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))
         | PrimitiveType.Int16 -> CliType.Numeric (CliNumericType.Int16 0s)
         | PrimitiveType.UInt16 -> CliType.Numeric (CliNumericType.UInt16 0us)
         | PrimitiveType.Int32 -> CliType.Numeric (CliNumericType.Int32 0)
