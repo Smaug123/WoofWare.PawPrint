@@ -68,8 +68,10 @@ type DelegateBindingShape =
     | Closed
 
 /// <summary>
-/// The QCalls behind <c>Delegate.CreateDelegate</c>. Only <c>Delegate_BindToMethodInfo</c> is
-/// implemented, and only for a target minted by <c>Reflection.Emit</c>.
+/// The QCalls behind <c>Delegate.CreateDelegate</c> and <c>Delegate.Method</c>. Two are
+/// implemented: <c>Delegate_BindToMethodInfo</c>, and only for a target minted by
+/// <c>Reflection.Emit</c>; and <c>Delegate_FindMethodHandle</c>, for a delegate over an ordinary
+/// metadata method.
 /// </summary>
 [<RequireQualifiedAccess>]
 module NativeDelegate =
@@ -726,4 +728,211 @@ module NativeDelegate =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 result)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
+
+        | "Delegate_FindMethodHandle",
+          "System.Private.CoreLib",
+          "System",
+          "Delegate",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              delegateHandleGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              resultHandleGenerics) ],
+          MethodReturnType.Void when delegateHandleGenerics.IsEmpty && resultHandleGenerics.IsEmpty ->
+            // `Delegate_FindMethodHandle` (comdelegate.cpp:2122): which method does this delegate
+            // point at? `Delegate.GetMethodImpl` asks whenever its `_methodBase` cache is empty,
+            // and turns the `IRuntimeMethodInfo` written back here into the `MethodInfo` that
+            // `Delegate.Method` hands the guest (Delegate.CoreCLR.cs:159-219).
+            let operation = "Delegate_FindMethodHandle"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let delegateAddr =
+                NativeCall.objectHandleOnStackTarget operation state "d" instruction.Arguments.[0]
+                |> IlMachineState.readManagedByref ctx.BaseClassTypes state
+                |> CliType.unwrapPrimitiveLikeDeep
+                |> function
+                    | CliType.ObjectRef (Some target) -> target
+                    | other ->
+                        // `Delegate.FindMethodHandle` hands its own `this` to the QCall
+                        // (Delegate.CoreCLR.cs:516-521), so the null receiver was already rejected
+                        // by the call that reached it.
+                        failwith $"%s{operation}: expected the delegate to be an object reference, got %O{other}"
+
+            let result =
+                NativeCall.objectHandleOnStackTarget operation state "retMethodInfo" instruction.Arguments.[1]
+
+            let delegateObject = ManagedHeap.get delegateAddr state.ManagedHeap
+
+            let nativeIntField
+                (declaringType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+                (fieldName : string)
+                : NativeIntSource
+                =
+                let declaringHandle =
+                    AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes declaringType
+
+                let value =
+                    FieldIdentity.requiredOwnInstanceField declaringType fieldName
+                    |> FieldIdentity.fieldId declaringHandle
+                    |> fun fieldId -> AllocatedNonArrayObject.DereferenceFieldById fieldId delegateObject
+                    // These fields are typed `IntPtr` (primitive-like); unwrap to the inner NativeInt.
+                    |> CliType.unwrapPrimitiveLikeDeep
+
+                match value with
+                | CliType.Numeric (CliNumericType.NativeInt src) -> src
+                | other -> failwith $"%s{operation}: expected %s{fieldName} to be a native int, got %O{other}"
+
+            // `COMDelegate::GetMethodDesc` (comdelegate.cpp:1815) dispatches on four fields, of
+            // which PawPrint populates one. The two guards below are what let the remaining arm
+            // read `_methodPtr` honestly: each names a shape whose target method is somewhere
+            // else, so falling through to `_methodPtr` would answer a different method rather
+            // than fail.
+            //
+            // `_invocationCount` is declared on `MulticastDelegate`, not on `Delegate`. Every
+            // delegate type's immediate base is `MulticastDelegate` -- that is exactly what makes
+            // a type a delegate, and `ActivationInfo.classify` spells the same rule -- so the
+            // field is present on anything that can reach here. A type deriving straight from
+            // `System.Delegate` is legal IL but rejected at type load by CoreCLR; here it would
+            // fail loudly in the field lookup rather than answer wrongly.
+            let invocationCount =
+                nativeIntField ctx.BaseClassTypes.MulticastDelegateType "_invocationCount"
+
+            // Nonzero means an unmanaged function pointer delegate (`_invocationCount == -1`) or
+            // an open *virtual* delegate, whose target `MethodDesc` CoreCLR reads out of
+            // `_invocationCount` itself (`GetMethodDescForOpenVirtualDelegate`,
+            // comdelegate.cpp:1802). Those are the only two shapes that reach this QCall with a
+            // count: an ordinary multicast delegate is answered in managed code from the last
+            // invocation-list entry, and a wrapper delegate is unwrapped there too
+            // (MulticastDelegate.CoreCLR.cs:499-513), so neither gets this far.
+            if not (NativeIntSource.isZero invocationCount) then
+                failwith
+                    $"TODO: %s{operation} was handed a delegate whose _invocationCount is %O{invocationCount}; PawPrint builds no unmanaged-function-pointer or open-virtual delegate, and the target of such a delegate is not the method named in _methodPtr (issue #959)"
+
+            // `_methodPtrAux` is CoreCLR's open-delegate slot: it holds the target's real code
+            // address while `_methodPtr` holds a shuffle thunk. PawPrint writes no shuffle thunks
+            // and leaves it zero, naming the target in `_methodPtr` for open and closed alike --
+            // see docs/divergences.md, "An open delegate stores no shuffle thunk". Zero today
+            // because nothing writes it; the managed writer in `MulticastDelegate` does exist
+            // (`NewMulticastDelegate`, MulticastDelegate.CoreCLR.cs:168-190, sets it from
+            // `GetInvokeMethod`), and is blocked only on that InternalCall, so this guard is what
+            // stops #959 turning `Delegate.Method` into a silently wrong answer.
+            let methodPtrAux = nativeIntField ctx.BaseClassTypes.DelegateType "_methodPtrAux"
+
+            if not (NativeIntSource.isZero methodPtrAux) then
+                failwith
+                    $"TODO: %s{operation} was handed a delegate whose _methodPtrAux is %O{methodPtrAux}; PawPrint leaves that field zero and names the target in _methodPtr for open and closed delegates alike (issue #959)"
+
+            let methodPtr =
+                match nativeIntField ctx.BaseClassTypes.DelegateType "_methodPtr" with
+                | NativeIntSource.FunctionPointer target -> target
+                | other -> failwith $"%s{operation}: expected _methodPtr to hold a function pointer, got %O{other}"
+
+            let method =
+                match methodPtr with
+                | FunctionPointerTarget.Managed method -> method
+                | FunctionPointerTarget.Dynamic handle ->
+                    // Not reachable, and measured rather than argued:
+                    // `DynamicMethod.CreateDelegate` calls `d.StoreDynamicMethod(this)` right
+                    // after binding (DynamicMethod.CoreCLR.cs:60), which fills `_methodBase`, and
+                    // `Delegate.GetMethodImpl` returns that without consulting the runtime.
+                    // `sourcesImpure/DelegateMethodOnDynamicMethod.cs` is what keeps it that way.
+                    // Serving it would need a stub over a method with no MethodDef row, which
+                    // `MethodHandleRegistry.allocateFreshStub` cannot mint.
+                    failwith
+                        $"TODO: %s{operation} was handed a delegate bound to %O{handle}, a method minted by Reflection.Emit; DynamicMethod.CreateDelegate caches that MethodInfo in _methodBase, so Delegate.Method answers from there and never reaches this QCall"
+                | FunctionPointerTarget.RuntimeAllocator ->
+                    // The JIT's `newobj` helper: it lives in `ActivatorCache._pfnAllocator` and is
+                    // reached by `calli`, and nothing stores it in a delegate.
+                    failwith
+                        $"TODO: %s{operation} was handed a delegate whose _methodPtr is the runtime's newobj allocation helper, which has no MethodInfo to report"
+
+            // A null `_target` on an *instance* target arises two ways here, and PawPrint's
+            // representation cannot tell them apart: a legal open instance delegate, where
+            // `Invoke` supplies the receiver and CoreCLR records the target in `_methodPtrAux`
+            // (which PawPrint does not write -- docs/divergences.md, "An open delegate stores no
+            // shuffle thunk"); and an illegal delegate closed over a null receiver, which
+            // CoreCLR's `CtorClosed` refuses with `ArgumentException(Arg_DlgtNullInst)`
+            // (MulticastDelegate.CoreCLR.cs:552-556) and `executeDelegateConstructor` does not.
+            //
+            // Neither is refused for its own sake -- the method this handler resolves is right in
+            // both cases. What is refused is handing it back when CoreLib will then fault on it:
+            // `Delegate.GetMethodImpl` dereferences `_target` to walk the base chain whenever the
+            // target is an instance method on a *generic* declaring type
+            // (Delegate.CoreCLR.cs:189), because a zero `_methodPtrAux` sends it down the closed
+            // branch. Measured: the guest gets a NullReferenceException where real .NET returns a
+            // MethodInfo. Off a non-generic declaring type that branch is never entered and the
+            // answer is correct, so those are served.
+            //
+            // No test reaches this: the illegal shape is parked as
+            // `sourcesPure/DelegateOverNullInstanceReceiver.cs`, and the legal open one needs
+            // either raw `ldnull; ldftn; newobj` IL, which the C# harness cannot emit, or
+            // `Delegate.CreateDelegate(Type, MethodInfo)`, which `Delegate_BindToMethodInfo`
+            // refuses first.
+            let targetIsNull =
+                let delegateTypeHandle =
+                    AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes ctx.BaseClassTypes.DelegateType
+
+                FieldIdentity.requiredOwnInstanceField ctx.BaseClassTypes.DelegateType "_target"
+                |> FieldIdentity.fieldId delegateTypeHandle
+                |> fun fieldId -> AllocatedNonArrayObject.DereferenceFieldById fieldId delegateObject
+                |> CliType.unwrapPrimitiveLikeDeep
+                |> function
+                    | CliType.ObjectRef target -> target.IsNone
+                    | other -> failwith $"%s{operation}: expected _target to be an object reference, got %O{other}"
+
+            // A concretised declaring type is closed, so a non-empty instantiation is exactly
+            // what `RuntimeType.IsGenericType` answers true to.
+            let declaringTypeIsGeneric = not method.DeclaringTypeGenerics.IsEmpty
+
+            if not method.IsStatic && targetIsNull && declaringTypeIsGeneric then
+                failwith
+                    $"TODO: %s{operation} was handed a delegate over the instance method %s{method.Name} on a generic declaring type, with a null _target; Delegate.GetMethodImpl would dereference _target to walk its base chain, because PawPrint leaves the _methodPtrAux that would send it down the open-delegate branch at zero"
+
+            // CoreCLR follows `GetMethodDesc` with
+            // `FindOrCreateAssociatedMethodDescForReflection`, whose whole job is to replace a
+            // *shared* (`__Canon`) `MethodDesc` -- or an unboxing or instantiating stub -- with
+            // the exact one reflection is allowed to expose. Nothing to do here:
+            // `FunctionPointerTarget.Managed` carries a fully concretised method, and PawPrint has
+            // no shared method representation for it to have been one of.
+            //
+            // A *fresh* stub, matching CoreCLR's unconditional `AllocateStubMethodInfo`, and not
+            // the `ldtoken` path's deduplicated one. The difference is guest-visible: measured,
+            // real .NET hands back two distinct objects for two reflective calls to
+            // `Delegate.FindMethodHandle` on one delegate, where sharing gave one. Only the
+            // *object* differs — the registry id inside it is reused, so
+            // `RuntimeType.GetMethodBase`'s cache still returns one `MethodInfo`, which is what
+            // makes `someDelegate.Method` and `GetMethod(...)` agree.
+            let runtimeMethodInfoStubType =
+                AllConcreteTypes.getRequiredNonGenericHandle
+                    state.ConcreteTypes
+                    ctx.BaseClassTypes.RuntimeMethodInfoStub
+
+            let stubAddress, registry, state =
+                MethodHandleRegistry.allocateFreshStub
+                    ctx.BaseClassTypes
+                    state.ConcreteTypes
+                    state
+                    (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
+                    method
+                    state.MethodHandles
+
+            let state =
+                { state with
+                    MethodHandles = registry
+                }
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    result
+                    (CliType.ObjectRef (Some stubAddress))
+
+            NativeHandlerResult.completed state |> Some
+
         | _ -> None
