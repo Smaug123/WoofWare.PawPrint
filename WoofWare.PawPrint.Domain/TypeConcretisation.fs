@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Collections.Generic
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
@@ -1049,6 +1050,25 @@ module TypeConcretization =
                     ImmutableArray.Empty // Void has no generic parameters
 
         | TypeDefn.FunctionPointer signature ->
+            // A GENERIC calling convention on a *function pointer* is refused here, the one place a
+            // function-pointer handle is minted, so that no such handle can exist further in. Comparing
+            // two of them is a question CoreCLR answers by reading `argCnt` where the blob holds the
+            // generic-parameter count and then comparing `GenParamCount + 1` elements of the resulting
+            // misaligned stream (siginfo.cpp:4135-4168), which cannot be reproduced from a decoded
+            // signature — see the FNPTR arm of `compareElements`, which refuses the spelled form.
+            //
+            // No compiler emits this and no reflection API can name it, so this is an assertion of that
+            // belief rather than a case to handle: if something does produce one, it should say so here,
+            // at the point of construction and with the assembly in hand, rather than be discovered
+            // later by whatever consumes the handle.
+            //
+            // Note this is a function-pointer *type*, not a generic method: `concretizeMethodSignature`
+            // serves ordinary generic methods, whose GENERIC calling convention is entirely normal.
+            if signature.Header.Get.IsGeneric then
+                failwithf
+                    "TODO: concretising a function pointer type whose signature carries the GENERIC calling convention, in %s. No compiler emits such a type and no reflection API can name one, so this indicates either hand-authored metadata or a decoder fault; signature comparison could not answer for it in any case."
+                    assembly.FullName
+
             // Function pointer types are structural: the signature is the type identity.
             // Concretize each parameter and the return type under the current generic context.
             let concretized, ctx =
@@ -1420,6 +1440,36 @@ module TypeConcretization =
             // matching a call site against a callee, which is not a question one can ask of a type,
             // so applying it here would let `void(int32, ..., string)` and `void(int32)` name the
             // same type.
+            //
+            // Two function pointers spelling the same GENERIC calling convention and the same
+            // generic-parameter count are refused rather than compared.
+            //
+            // The line is where CoreCLR starts reinterpreting bytes. Its FNPTR arm compares the two
+            // calling-convention bytes, then reads one compressed *integer* from each blob with
+            // `CorSigUncompressData_EndPtr` and compares it as `argCnt` (siginfo.cpp:4157-4163). For a
+            // GENERIC signature that integer is the generic-parameter count, since the blob spells
+            // CallConv | GenParamCount | ParamCount | RetType | Params. Both of those comparisons are
+            // over data read as what it is, so both are reproducible here, and differing counts fall
+            // through to `compareSignatureTypes`' header and `GenericParameterCount` comparisons.
+            //
+            // Past that point nothing is. `argCnt1++` (:4168) and CoreCLR compares `GenParamCount + 1`
+            // elements of a stream misaligned by one integer, so the *parameter count* byte is handed to
+            // `CompareElementType` as a `CorElementType`: 0x01 is read as ELEMENT_TYPE_VOID and compared
+            // as such, other values can fail the signature outright, and the walk then answers from the
+            // real return type as though it were a parameter, ignoring the rest. Which answer comes back
+            // depends on the numeric values of counts reinterpreted as element types — not on anything a
+            // correctly decoded signature still knows. So the refusal covers every pair that reaches
+            // there, rather than trying to predict it.
+            if
+                leftSignature.Header = rightSignature.Header
+                && leftSignature.Header.Get.IsGeneric
+                && leftSignature.GenericParameterCount = rightSignature.GenericParameterCount
+            then
+                failwithf
+                    "TODO: comparing two function pointer signatures that spell the same GENERIC calling convention and the same generic-parameter count (in %s against %s); from here CoreCLR compares elements read at a one-integer offset into each blob, reinterpreting the parameter-count byte as an element type, which cannot be reproduced from a decoded signature"
+                    leftCtx.Assembly.FullName
+                    rightCtx.Assembly.FullName
+
             compareSignatureTypes ctx loadAssembly leftCtx rightCtx false false leftSignature rightSignature
 
         | (TypeDefn.FromDefinition _ | TypeDefn.FromReference _), (TypeDefn.FromDefinition _ | TypeDefn.FromReference _) ->
