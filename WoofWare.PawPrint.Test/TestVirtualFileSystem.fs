@@ -1523,6 +1523,179 @@ module TestVirtualFileSystem =
         modeAfter WritePrivilege.Unprivileged |> shouldEqual 0o755
         modeAfter WritePrivilege.Privileged |> shouldEqual 0o4755
 
+    /// Where truncation parts company with `writeFile`: a write of no bytes is not
+    /// a write and the caller short-circuits it, but a truncation to the length the
+    /// file already has *is* a truncation and stamps the inode. Measured on both
+    /// platforms.
+    [<Test>]
+    let ``truncating to the length a file already has still moves its mtime and ctime`` () : unit =
+        let later = UnixTimestamp.createOrFail "test" 1_700_000_700L 42
+
+        let vfs =
+            let vfs = build [ mkfile (rootOf emptyFs) "f" ]
+
+            let file =
+                VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+                |> ok
+
+            match
+                VirtualFileSystem.writeFile
+                    file
+                    0L
+                    (ImmutableArray.CreateRange [| 1uy ; 2uy ; 3uy |])
+                    WritePrivilege.Unprivileged
+                    buildTime
+                    vfs
+            with
+            | Ok vfs -> vfs
+            | Error refusal -> failwith $"expected success, got %O{refusal}"
+
+        let file =
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+            |> ok
+
+        let truncated =
+            match
+                VirtualFileSystem.truncateFile
+                    file
+                    3L
+                    SetIdBitsOnTruncation.Preserve
+                    WritePrivilege.Unprivileged
+                    later
+                    vfs
+            with
+            | Ok vfs -> vfs
+            | Error refusal -> failwith $"expected success, got %O{refusal}"
+
+        let after = timesOf file truncated
+
+        after.Modification |> shouldEqual later
+        after.StatusChange |> shouldEqual later
+
+        // Neither of the two a truncation never moves.
+        after.Access |> shouldEqual buildTime
+        after.Birth |> shouldEqual buildTime
+
+        // ...and the bytes are all still there, which is what makes this a no-op
+        // truncation rather than a truncation that happened to leave three bytes.
+        match VirtualFileSystem.tryGetContent file truncated with
+        | Some (InodeContent.RegularFile (contents, _)) -> Seq.toList contents |> shouldEqual [ 1uy ; 2uy ; 3uy ]
+        | other -> failwith $"expected a regular file, got %O{other}"
+
+    /// `truncateFile` applies the rule rather than merely having it in scope: a
+    /// version that took the rule and ignored it would pass every other assertion
+    /// in this fixture.
+    [<Test>]
+    let ``truncateFile applies the set-ID rule it is given`` () : unit =
+        let setuid = PermissionBits.parseOrFail "test" 0o4755
+
+        let vfs =
+            VirtualFileSystem.createFile (rootOf emptyFs) (name "s") setuid buildTime noBytes emptyFs
+            |> ok
+            |> snd
+
+        let file =
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/s") vfs
+            |> ok
+
+        let modeAfter (rule : SetIdBitsOnTruncation) (privilege : WritePrivilege) : int =
+            let truncated =
+                match VirtualFileSystem.truncateFile file 0L rule privilege buildTime vfs with
+                | Ok vfs -> vfs
+                | Error refusal -> failwith $"expected success, got %O{refusal}"
+
+            match VirtualFileSystem.tryGetContent file truncated with
+            | Some (InodeContent.RegularFile (_, permissions)) -> PermissionBits.toInt permissions
+            | other -> failwith $"expected a regular file, got %O{other}"
+
+        modeAfter SetIdBitsOnTruncation.Strip WritePrivilege.Unprivileged
+        |> shouldEqual 0o755
+
+        modeAfter SetIdBitsOnTruncation.Preserve WritePrivilege.Unprivileged
+        |> shouldEqual 0o4755
+
+        modeAfter SetIdBitsOnTruncation.Strip WritePrivilege.Privileged
+        |> shouldEqual 0o4755
+
+        modeAfter SetIdBitsOnTruncation.Preserve WritePrivilege.Privileged
+        |> shouldEqual 0o4755
+
+    /// The three shapes `truncateFile` refuses to answer for, each of which means
+    /// a descriptor open for writing named something `open(2)` could not have
+    /// given one for.
+    [<Test>]
+    let ``truncateFile fails loudly on anything but a regular file it contains`` () : unit =
+        let vfs = build [ mkdir (rootOf emptyFs) "d" ; mklink (rootOf emptyFs) "l" "d" ]
+
+        let directory =
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/d") vfs
+            |> ok
+
+        let link =
+            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.NoFollowFinal (path "/l") vfs
+            |> ok
+
+        // Each arm is asserted by its message as well as by throwing, so a test
+        // cannot pass because some *earlier* arm fired for a different reason.
+        let shouldFailWith (substring : string) (inode : InodeNumber) : unit =
+            let exn =
+                Assert.Throws<exn> (fun () ->
+                    VirtualFileSystem.truncateFile
+                        inode
+                        0L
+                        SetIdBitsOnTruncation.Strip
+                        WritePrivilege.Unprivileged
+                        buildTime
+                        vfs
+                    |> ignore<Result<VirtualFileSystem, FileTruncationRefusal>>
+                )
+
+            exn.Message |> shouldContainText substring
+
+        shouldFailWith "is a directory" directory
+        shouldFailWith "is a symbolic link" link
+        shouldFailWith "is not in this filesystem" (InodeNumber 9999L)
+
+    /// The measured table, as unit assertions, with every expectation written as
+    /// an octal literal rather than computed — a version that asked
+    /// `afterTruncation` for its own expectations would agree with any rule at
+    /// all.
+    ///
+    /// Non-root on macOS 26.6 and Linux 6.18.5, and root on both.
+    [<Test>]
+    let ``truncation strips the set-ID bits only on Linux, and only for a non-root caller`` () : unit =
+        let after (rule : SetIdBitsOnTruncation) (privilege : WritePrivilege) (mode : int) : int =
+            PermissionBits.parseOrFail "test" mode
+            |> PermissionBits.afterTruncation rule privilege
+            |> PermissionBits.toInt
+
+        let linux = after SetIdBitsOnTruncation.Strip WritePrivilege.Unprivileged
+        let darwin = after SetIdBitsOnTruncation.Preserve WritePrivilege.Unprivileged
+
+        // Linux, unprivileged: setuid goes whatever the execute bits say; setgid
+        // goes only alongside group-execute, because without it the bit means
+        // mandatory locking rather than privilege; the sticky bit never moves.
+        linux 0o4755 |> shouldEqual 0o0755
+        linux 0o4644 |> shouldEqual 0o0644
+        linux 0o2755 |> shouldEqual 0o0755
+        linux 0o2644 |> shouldEqual 0o2644
+        linux 0o6755 |> shouldEqual 0o0755
+        linux 0o1755 |> shouldEqual 0o1755
+        linux 0o0644 |> shouldEqual 0o0644
+
+        // Darwin strips nothing at all, on any of them.
+        darwin 0o4755 |> shouldEqual 0o4755
+        darwin 0o4644 |> shouldEqual 0o4644
+        darwin 0o2755 |> shouldEqual 0o2755
+        darwin 0o2644 |> shouldEqual 0o2644
+        darwin 0o6755 |> shouldEqual 0o6755
+        darwin 0o1755 |> shouldEqual 0o1755
+
+        // Root keeps everything, on either kernel.
+        for rule in [ SetIdBitsOnTruncation.Strip ; SetIdBitsOnTruncation.Preserve ] do
+            for mode in [ 0o4755 ; 0o4644 ; 0o2755 ; 0o2644 ; 0o6755 ; 0o1755 ] do
+                after rule WritePrivilege.Privileged mode |> shouldEqual mode
+
     /// The measured table, as unit assertions. Non-root on macOS 26.6 and Linux
     /// 6.18.5, and root on Linux.
     [<Test>]
@@ -2203,6 +2376,75 @@ module TestWrittenContents =
 /// can be, where the same arithmetic inlined in a handler is reachable only through a guest — and
 /// the two faults it distinguishes are *indistinguishable* through a Linux-flavoured guest, both
 /// being EINVAL.
+[<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
+module TestTruncatedContents =
+
+    let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 2000
+
+    /// Lengths drawn from a small range around the file's own, so that the three
+    /// interesting boundaries — shorter, exactly equal, longer — come up
+    /// constantly. `Gen.choose` rather than the default `int` generator, which is
+    /// size-bounded in a way that makes "exactly equal" rare.
+    let private smallCase : Gen<byte[] * int64> =
+        gen {
+            let! length = Gen.choose (0, 12)
+            let! contents = Gen.arrayOfLength length (Gen.choose (0, 255) |> Gen.map byte)
+            let! target = Gen.choose (0, 14)
+            return contents, int64 target
+        }
+
+    /// The oracle: take what fits, pad the rest with zeroes.
+    let private naive (contents : byte[]) (length : int64) : byte[] =
+        Array.init (int length) (fun i -> if i < contents.Length then contents.[i] else 0uy)
+
+    [<Test>]
+    let ``agrees with naive take-and-pad`` () : unit =
+        let property (contents : byte[], length : int64) : bool =
+            match VirtualFileSystem.truncatedContents (ImmutableArray.CreateRange contents) length with
+            | Ok result -> result |> Seq.toArray = naive contents length
+            | Error refusal -> failwith $"expected success, got %O{refusal}"
+
+        Check.One (config, Prop.forAll (Arb.fromGen smallCase) property)
+
+    /// Stated directly rather than inferred from the oracle, because it is the
+    /// property a caller relies on when it hands the result back to `stat`.
+    [<Test>]
+    let ``the result is exactly as long as it was asked to be`` () : unit =
+        let property (contents : byte[], length : int64) : bool =
+            match VirtualFileSystem.truncatedContents (ImmutableArray.CreateRange contents) length with
+            | Ok result -> int64 result.Length = length
+            | Error refusal -> failwith $"expected success, got %O{refusal}"
+
+        Check.One (config, Prop.forAll (Arb.fromGen smallCase) property)
+
+    [<Test>]
+    let ``a length the file already has returns it unchanged`` () : unit =
+        let contents = ImmutableArray.CreateRange [| 1uy ; 2uy ; 3uy |]
+
+        VirtualFileSystem.truncatedContents contents 3L |> shouldEqual (Ok contents)
+
+    [<Test>]
+    let ``a length beyond what the model can hold is refused rather than allocated`` () : unit =
+        let contents = ImmutableArray.CreateRange [| 1uy ; 2uy ; 3uy |]
+        let tooLong = VirtualFileSystem.maxFileLength + 1L
+
+        VirtualFileSystem.truncatedContents contents tooLong
+        |> shouldEqual (Error (FileTruncationRefusal.WouldExceedMaxLength tooLong))
+
+    /// Both sides of the ceiling, which only `truncatedLength` can state:
+    /// answering for the largest permitted length through `truncatedContents`
+    /// would allocate two gigabytes to do it.
+    [<Test>]
+    let ``the ceiling is inclusive, and refuses exactly one byte above it`` () : unit =
+        VirtualFileSystem.truncatedLength VirtualFileSystem.maxFileLength
+        |> shouldEqual (Ok System.Array.MaxLength)
+
+        let tooLong = VirtualFileSystem.maxFileLength + 1L
+
+        VirtualFileSystem.truncatedLength tooLong
+        |> shouldEqual (Error (FileTruncationRefusal.WouldExceedMaxLength tooLong))
+
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestSeekTarget =

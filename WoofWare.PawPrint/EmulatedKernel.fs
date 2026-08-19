@@ -794,6 +794,26 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Darwin ->
             PermissionBits.parseOrFail "SimulatedUnixPlatform.symlinkPermissions" (0o777 &&& ~~~0o022)
 
+    /// Whether this platform clears a truncated file's set-user-ID and
+    /// set-group-ID bits.
+    ///
+    /// The only thing about truncation the two Unixes disagree about — every
+    /// other row measured (the errno order, which descriptors refuse, the
+    /// zero-fill, the timestamps, and `O_TRUNC`'s extra write-permission
+    /// requirement) is unanimous, which is why this is a lone value rather than a
+    /// `CreatingOpenRules`-shaped record.
+    ///
+    /// Measured non-root on macOS 26.6 and Linux 6.18.5, for `ftruncate(2)`,
+    /// `O_TRUNC` and a no-op `ftruncate` alike; `PermissionBits.afterTruncation`
+    /// carries the table. Linux applies the same rule it applies to a write.
+    /// **Darwin strips nothing at all**, and that is isolated rather than
+    /// inferred: in one process, on one file, a one-byte `write` takes `04755` to
+    /// `00755` there while `ftruncate` leaves it `04755`.
+    let setIdBitsOnTruncation (platform : SimulatedUnixPlatform) : SetIdBitsOnTruncation =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> SetIdBitsOnTruncation.Strip
+        | SimulatedUnixFlavour.Darwin -> SetIdBitsOnTruncation.Preserve
+
     /// How this platform's `open(2)` behaves when asked to create; see
     /// `CreatingOpenRules` for what each field means and how it was measured.
     let creatingOpenRules (platform : SimulatedUnixPlatform) : CreatingOpenRules =

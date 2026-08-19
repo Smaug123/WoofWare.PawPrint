@@ -322,8 +322,9 @@ class Program
 
         // `FileStream` with `FileAccess.Write` on an existing file is the whole
         // write path: `open(O_WRONLY)`, `flock`, then `RandomAccess.WriteAtOffset`,
-        // which prefers `pwrite` for any handle supporting random access. Nothing
-        // here needs `O_CREAT` or `O_TRUNC`, which PawPrint does not yet honour.
+        // which prefers `pwrite` for any handle supporting random access.
+        // `FileMode.Open` on its own, so nothing here creates or truncates; those
+        // paths are exercised by `CreateSeeded.cs` and `TruncateSeeded.cs`.
         //
         // `FileShare.None` rather than the default `FileShare.Read`, and not
         // arbitrarily: `SafeFileHandle.CanLockTheFile` returns immediately for
