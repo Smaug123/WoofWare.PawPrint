@@ -286,6 +286,7 @@ module internal NativeReflectionInvocation =
         (ctx : NativeCallContext)
         (operation : string)
         (state : IlMachineState)
+        (isConstructor : bool)
         (target : InvokeTarget)
         : unit
         =
@@ -310,16 +311,74 @@ module internal NativeReflectionInvocation =
             failwith
                 $"TODO: %s{operation} on %s{describe ()}, which PawPrint services as a JIT intrinsic; the intrinsic dispatcher advances the caller's program counter, and this QCall's frame has no IL to advance"
 
-        // A value-type receiver needs no handling here: CoreCLR forms `this` as `gc.target->UnBox()`
-        // (reflectioninvocation.cpp:502), a pointer into the payload of the box the caller passed,
-        // and `callMethodWithCommitment` already converts an `ObjectRef` receiver for a value-type
-        // method into exactly that — `Byref (ByrefRoot.HeapValue addr, [])`
+        match target.Method.Body with
+        | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateCtor ->
+            // On CoreCLR a delegate constructor is not runtime-provided at all: the compiler-emitted
+            // ctor calls managed `Delegate.DelegateConstruct` (Delegate.CoreCLR.cs:469), whose own
+            // comment says "via reflection you can pass in just about any value for the method", and
+            // which therefore screens `IntPtr.Zero` into an `ArgumentNullException` before QCalling
+            // `Delegate_Construct` — which in turn decides open versus closed binding by comparing
+            // the target method's argument count against `Invoke`'s, builds a shuffle thunk for the
+            // open case, and throws `Arg_DlgtNullInst` for a null instance on a closed one
+            // (comdelegate.cpp:1712-1756). PawPrint models the ctor as `RuntimeBehaviour.DelegateCtor`
+            // and writes `_target`/`_methodPtr` verbatim, which is exact for a `newobj` whose
+            // arguments the compiler produced with `ldftn`, and wrong for arguments a guest chose.
+            // Measured: `ConstructorInfo.Invoke(new object[] { null, IntPtr.Zero })` on a delegate
+            // type gives `TargetInvocationException(ArgumentNullException)` on .NET 10 and a
+            // successfully constructed delegate here.
+            failwith
+                $"TODO: %s{operation} on %s{describe ()}, a delegate constructor; PawPrint services it by writing the target and method pointer straight into the instance, which skips the validation CoreCLR's managed Delegate.DelegateConstruct and its Delegate_Construct QCall perform on arguments reflection let the guest choose"
+        | _ -> ()
+
+        if isConstructor then
+            // `MethodBaseInvoker` passes `isConstructor: obj is null`
+            // (`MethodBaseInvoker.CoreCLR.cs`, `InterpretedInvoke_Constructor`), so the flag means
+            // "allocate the instance yourself", not "the target is a constructor". Managed code
+            // never asks for an allocation on behalf of a `.cctor`: the allocating overload of
+            // `ConstructorInfo.Invoke` throws `MemberAccessException` through `ThrowNoInvokeException`
+            // (RuntimeConstructorInfo.cs:88-92, reached via the `NoConstructorInvoke` flag it sets at
+            // :29), and the overload taking an instance diverts to `InvokeClassConstructor`
+            // (:120-126). A static target under this flag is therefore a guest that bypassed the
+            // managed layer.
+            if target.Method.IsStatic then
+                failwith
+                    $"%s{operation}: isConstructor=true for the static method %s{describe ()}; the managed layer routes a class constructor to RuntimeType.InvokeClassConstructor rather than asking this QCall to allocate an instance for it"
+
+            match NativeRuntimeTypeHelpers.nominalTypeInfoOfArgument state target.DeclaringType with
+            | Some declaringTypeInfo when TypeInfo.NominallyEqual declaringTypeInfo ctx.BaseClassTypes.String ->
+                // CoreCLR's `fCtorOfVariableSizedObject` (reflectioninvocation.cpp:370): a
+                // MethodTable with a component size allocates itself, so the QCall allocates
+                // nothing, passes no `this`, and takes the *ctor's return value* as the object
+                // (:616). Arrays are the CLI's only other variable-sized shape and `resolveTarget`
+                // already refuses their structural declaring type, so this is String and nothing
+                // else. `executeNewobj` models it by redirecting to the same-signature static
+                // `String.Ctor` sibling; wiring that in here means a different result shape from
+                // every other constructor, so it is its own change.
+                failwith
+                    $"TODO: %s{operation} with isConstructor=true on %s{describe ()}, a constructor of System.String; a variable-sized object allocates itself, so the QCall must take the constructor's return value as the result rather than pre-allocating a `this`"
+            | _ -> ()
+
+            if NativeRuntimeTypeHelpers.argumentIsNullable ctx.BaseClassTypes state target.DeclaringType then
+                // CoreCLR constructs into a *true* boxed `Nullable<T>` and then
+                // `Nullable::NormalizeBox`es the result down to a boxed `T` or to null
+                // (reflectioninvocation.cpp:620). PawPrint's boxing deliberately never produces a
+                // box whose type is `Nullable<T>`, so there is no such buffer to construct into.
+                failwith
+                    $"TODO: %s{operation} with isConstructor=true on %s{describe ()}, a constructor of Nullable<T>; CoreCLR constructs into a true boxed Nullable and then normalises it to a boxed T or null, and PawPrint has no true boxed Nullable to construct into"
+
+        // A value-type receiver the *caller* supplied needs no handling here: CoreCLR forms `this`
+        // as `gc.target->UnBox()` (reflectioninvocation.cpp:502), a pointer into the payload of the
+        // box the caller passed, and `callMethodWithCommitment` already converts an `ObjectRef`
+        // receiver for a value-type method into exactly that — `Byref (ByrefRoot.HeapValue addr, [])`
         // (IlMachineStateExecution.fs:2074). So a mutating struct method writes through to the
         // caller's box, as it does on CoreCLR.
         //
-        // Its two sibling branches do need rejecting, because both form a *different* `this`:
+        // Its two sibling branches do need rejecting, because both form a *different* `this`.
+        // None of this applies under `isConstructor`, where the receiver is the QCall's own fresh
+        // allocation rather than the caller's box; that case is guarded above.
         if
-            not target.Method.IsStatic
+            not isConstructor
+            && not target.Method.IsStatic
             && NativeRuntimeTypeHelpers.argumentIsValueType ctx.BaseClassTypes state target.DeclaringType
         then
             if NativeRuntimeTypeHelpers.argumentIsNullable ctx.BaseClassTypes state target.DeclaringType then
@@ -449,16 +508,13 @@ module internal NativeReflectionInvocation =
             if instruction.Arguments.Length <> 5 then
                 failwith $"%s{operation}: expected five native arguments, got %d{instruction.Arguments.Length}"
 
+            // "Allocate the instance yourself", rather than "the target is a constructor":
+            // `MethodBaseInvoker.CoreCLR.cs` passes `isConstructor: obj is null`, so running a
+            // constructor against an instance the guest already has
+            // (`RuntimeConstructorInfo.Invoke(obj, ...)`) arrives here as `false` and is served by
+            // the ordinary instance-method path below.
             let isConstructor =
                 NativeCall.int32Argument operation instruction.Arguments.[3] <> 0
-
-            if isConstructor then
-                // The constructor path allocates the instance itself (with separate branches for
-                // array constructors and for variable-sized objects like String) and then calls the
-                // ctor against it. `Activator.CreateInstance` reaches PawPrint through
-                // `RuntimeTypeHandle_GetActivationInfo` instead, so nothing needs this yet.
-                failwith
-                    $"TODO: %s{operation} with isConstructor=true; ConstructorInfo.Invoke allocates its own instance and is not implemented"
 
             let resultPtr =
                 NativeCall.objectHandleOnStackTarget operation state "result" instruction.Arguments.[4]
@@ -473,6 +529,16 @@ module internal NativeReflectionInvocation =
                 // take that path. Re-entry therefore arrives with the snapshot marker on the stack
                 // and resolves from the id it carries, so nothing the `.cctor` does can change which
                 // method this goes on to invoke.
+                //
+                // Under `isConstructor` CoreCLR gets its class initialisation from somewhere else —
+                // the JIT puts it in the instance constructor's prologue, which is why the QCall
+                // does not ask for one (RuntimeConstructorInfo.cs:140). Running it here instead
+                // makes it happen one frame earlier, and the difference does not reach the guest:
+                // measured on .NET 10, reflectively constructing a type whose `.cctor` throws gives
+                // a `TargetInvocationException` wrapping a `TypeInitializationException` wrapping the
+                // original on both runtimes, and neither `TypeInitializationException`'s stack trace
+                // names the instance constructor. `sourcesPure/ReflectionInvokeConstructor.cs` pins
+                // that shape.
                 let state, typeInit =
                     IlMachineStateExecution.ensureTypeInitialised
                         ctx.LoggerFactory
@@ -494,7 +560,41 @@ module internal NativeReflectionInvocation =
                     failwith $"logic error: %s{operation}: ensureTypeInitialised cannot produce a VoluntaryYield"
                 | WhatWeDid.Executed ->
 
+                // CoreCLR's `gc.retVal = pMT->Allocate()` (reflectioninvocation.cpp:373).
+                // `allocateUninitialisedInstance` is that allocation, including for a value type,
+                // where it produces the boxed representation `box` itself writes — which is what
+                // lets the same address serve both as the receiver and as the QCall's result.
+                //
+                // Deliberately *after* `ensureTypeInitialised` rather than before it as CoreCLR
+                // allocates: a `.cctor` suspension re-enters this handler, and allocating first
+                // would allocate a fresh instance on every re-entry. Nothing can observe the
+                // difference, because an object allocated before a `.cctor` that then throws is
+                // unreachable on either runtime.
+                let constructedInstance, state =
+                    if isConstructor then
+                        let addr, state =
+                            IlMachineState.allocateUninitialisedInstance
+                                ctx.LoggerFactory
+                                ctx.BaseClassTypes
+                                target.DeclaringType
+                                state
+
+                        Some addr, state
+                    else
+                        None, state
+
                 let thisValue =
+                    match constructedInstance with
+                    | Some addr ->
+                        // Both of CoreCLR's constructor receiver branches
+                        // (reflectioninvocation.cpp:466-475) come out of this one push:
+                        // `callMethodWithCommitment`'s `NotConstructing` receiver path converts an
+                        // `ObjectRef` into `Byref (ByrefRoot.HeapValue addr, [])` exactly when the
+                        // declaring type is a value type (IlMachineStateExecution.fs:2074), which
+                        // is `gc.retVal->GetData()`, and leaves it alone otherwise.
+                        Some (CliType.ObjectRef (Some addr))
+                    | None ->
+
                     if target.Method.IsStatic then
                         None
                     else
@@ -552,8 +652,12 @@ module internal NativeReflectionInvocation =
                 // the resumption branch below to find beneath any return value.
                 //
                 // Its *presence* distinguishes resumption from first entry, and its *shape* carries
-                // how the return value must be classified: a null reference for a void return, and
-                // otherwise a handle to the return type. That is a snapshot taken before the call —
+                // what the QCall must answer with: under `isConstructor` the instance just
+                // allocated, which is the one thing in this branch that the handler created rather
+                // than derived from the QCall's arguments and so cannot be recovered later;
+                // otherwise how the return value must be classified — a null reference for a void
+                // return, and a handle to the return type for a value one. That is a snapshot taken
+                // before the call —
                 // CoreCLR reads `retTH` once, before `CallDescrWorkerWithHandler`
                 // (reflectioninvocation.cpp:439), and re-deriving it on resumption would instead make
                 // the classification a function of the `Signature` object as the *callee left it*.
@@ -572,6 +676,10 @@ module internal NativeReflectionInvocation =
                     let _idMarker, state = IlMachineState.popEvalStack ctx.Thread state
 
                     let marker =
+                        match constructedInstance with
+                        | Some addr -> CliType.ObjectRef (Some addr)
+                        | None ->
+
                         match target.Method.Signature.ReturnType with
                         | MethodReturnType.Void -> CliType.ObjectRef None
                         | MethodReturnType.Returns returnType ->
@@ -631,23 +739,26 @@ module internal NativeReflectionInvocation =
                         $"TODO: %s{operation} on %s{MethodOwner.describe target.Method.Owner}::%s{target.Method.Name}: the call raised instead of committing, which the re-entry protocol cannot represent"
 
             // The re-entry protocol. This native frame's eval stack *is* the state machine, and its
-            // four shapes are told apart by depth, plus — where two shapes share a depth — by the
-            // marker's `NativeIntSource` case:
+            // five shapes are told apart by depth, plus — where several shapes share a depth — by
+            // the marker's `EvalStackValue` case:
             //
             //   []                                     first entry
             //   [MethodHandlePtr id]                   target snapshotted; a `.cctor` is running
             //   [NullObjectRef]                        called; the target returned void
+            //   [ObjectRef addr]                       called; `addr` is the constructed instance
             //   [ret; TypeHandlePtr returnType]        called; the target returned a value
             //
             // The marker occupies one slot throughout and is swapped as the phase advances, which is
-            // what keeps the middle two apart.
+            // what keeps the one-slot shapes apart. A constructor cannot add a return value of its
+            // own on top of its marker: its signature returns void, so the frame it left behind
+            // pushed nothing.
             match state.ThreadState.[ctx.Thread].MethodState.EvaluationStack.Values with
             | [] ->
                 // First entry: read `Signature._pMethod` exactly once, and snapshot the id it names
                 // before anything that could run guest code.
                 let methodHandleId = readMethodHandleId ctx operation state
                 let state, target = resolveTarget ctx operation methodHandleId state
-                rejectUnsupportedShapes ctx operation state target
+                rejectUnsupportedShapes ctx operation state isConstructor target
 
                 let state =
                     IlMachineState.pushToEvalStack
@@ -675,6 +786,13 @@ module internal NativeReflectionInvocation =
                         // null.
                         let _marker, state = IlMachineState.popEvalStack ctx.Thread state
                         CliType.ObjectRef None, state
+                    | [ EvalStackValue.ObjectRef constructed ] ->
+                        // Constructor marker: the instance this handler allocated, now constructed
+                        // in place. CoreCLR hands back the same `gc.retVal` it allocated before the
+                        // call (reflectioninvocation.cpp:687), and for a value type that object is
+                        // the box.
+                        let _marker, state = IlMachineState.popEvalStack ctx.Thread state
+                        CliType.ObjectRef (Some constructed), state
                     | [ returnValue
                         EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed returnType)) ] ->
                         let _returnValue, state = IlMachineState.popEvalStack ctx.Thread state
