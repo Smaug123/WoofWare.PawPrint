@@ -348,7 +348,21 @@ module TestSocketCreation =
 
         disagreements |> List.rev |> shouldEqual []
 
-        // The rows PawPrint answers rather than refuses are a large majority of
-        // the matrix, so a `socketCreation` that had quietly started refusing
-        // everything would fail here rather than passing vacuously.
-        checkedRows |> shouldBeGreaterThan 200
+        // Not vacuous, and pinned against the matrix rather than a constant: the
+        // rows PawPrint answers with a PAL error are exactly the rows the
+        // measurement recorded as screens, so a `socketCreation` that had
+        // quietly started refusing everything would compare nothing and fail
+        // here.
+        //
+        // Deliberately not a fixed number. The two flavours have different
+        // counts — 170 on Linux against 235 on Darwin, the difference being the
+        // `AF_PACKET` and `AF_CAN` rows that Darwin screens and Linux passes
+        // through to the kernel — so a constant would be right on whichever
+        // platform it was written on and wrong in CI.
+        let screenRows =
+            rows flavourFile
+            |> List.filter (fun row -> row.Outcome = "SCREEN")
+            |> List.length
+
+        checkedRows |> shouldEqual screenRows
+        screenRows |> shouldBeGreaterThan 100
