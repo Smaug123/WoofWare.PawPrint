@@ -194,6 +194,78 @@ public static class Program
 
         template.Replace ("__ITERATIONS__", string guestIterations)
 
+    /// A guest whose inner loop is virtual dispatch: one call site, four receiver types, so what is
+    /// measured is resolving a `callvirt` rather than executing the body it lands on. `stackHeavy` and
+    /// `referenceArgHeavy` call only non-virtual methods, so neither shows this cost at all.
+    ///
+    /// The receivers rotate deliberately. A resolver that memoised its answer per call site would
+    /// look fast on a monomorphic loop and slow here, which is the distinction worth being able to
+    /// see, and the depth means a whole-chain walk costs more than a one-level one.
+    ///
+    /// The checksum is multiplicative and reduced mod 251 because `Harness.setUp` compares it against
+    /// the real runtime, so it is this guest's only guard against benchmarking a *wrong* dispatch.
+    /// A plain sum masked to a byte cannot be that guard: over an iteration count that is a multiple
+    /// of four the receiver contributions sum to a multiple of 256, so answering every call with
+    /// `Base.M` -- or with `D3.M`, or with the rotation offset by one -- produces the identical
+    /// checksum. Computed over those five wrong dispatch models plus the correct one, this form
+    /// gives six distinct values.
+    let virtualDispatchHeavy (guestIterations : int) : string =
+        let template =
+            """
+public class Base
+{
+    public virtual int M (int x)
+    {
+        return x + 1;
+    }
+}
+
+public class D1 : Base
+{
+    public override int M (int x)
+    {
+        return x + 2;
+    }
+}
+
+public class D2 : D1
+{
+    public override int M (int x)
+    {
+        return x + 3;
+    }
+}
+
+public class D3 : D2
+{
+    public override int M (int x)
+    {
+        return x + 4;
+    }
+}
+
+public static class Program
+{
+    const int Iterations = __ITERATIONS__;
+
+    public static int Main (string[] args)
+    {
+        Base[] receivers = new Base[] { new Base (), new D1 (), new D2 (), new D3 () };
+        int acc = 0;
+
+        for (int i = 0; i < Iterations; i++)
+        {
+            Base r = receivers[i & 3];
+            acc = (acc * 31 + r.M (i)) & 0xFFFFFF;
+        }
+
+        return acc % 251;
+    }
+}
+"""
+
+        template.Replace ("__ITERATIONS__", string guestIterations)
+
 [<RequireQualifiedAccess>]
 module private Harness =
     /// Names this assembly, whose location `DotnetRuntime.SelectForDll` needs to pick the shared
@@ -301,6 +373,38 @@ type ReferenceArgProgramBenchmarks () =
 
     [<Benchmark(Description = "Run reference-argument-heavy guest program")>]
     member _.RunReferenceArgGuestProgram () : int =
+        let actualExitCode = Harness.runPawPrint sourceName image dotnetRuntimeDirs
+
+        if actualExitCode <> expectedExitCode then
+            failwith $"PawPrint returned %d{actualExitCode}, but real runtime returned %d{expectedExitCode}"
+
+        actualExitCode
+
+
+/// Companion to the two above, whose guests call only non-virtual methods. Every `callvirt` is
+/// resolved from scratch today, so the cost of resolution is invisible in their timings.
+[<MemoryDiagnoser>]
+type VirtualDispatchProgramBenchmarks () =
+    let sourceName = "PerformanceBaseline.VirtualDispatchHeavy.cs"
+
+    let mutable image : byte array = Array.empty
+    let mutable expectedExitCode : int = 0
+    let mutable dotnetRuntimeDirs : ImmutableArray<string> = ImmutableArray.Empty
+
+    [<Params(4096)>]
+    member val GuestIterations : int = 4096 with get, set
+
+    [<GlobalSetup>]
+    member this.GlobalSetup () : unit =
+        let img, expected, dirs =
+            Harness.setUp sourceName (GuestPrograms.virtualDispatchHeavy this.GuestIterations)
+
+        image <- img
+        expectedExitCode <- expected
+        dotnetRuntimeDirs <- dirs
+
+    [<Benchmark(Description = "Run virtual-dispatch-heavy guest program")>]
+    member _.RunVirtualDispatchGuestProgram () : int =
         let actualExitCode = Harness.runPawPrint sourceName image dotnetRuntimeDirs
 
         if actualExitCode <> expectedExitCode then
