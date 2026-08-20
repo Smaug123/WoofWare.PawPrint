@@ -142,6 +142,14 @@ module TestVirtualMethodSlots =
             "System.Text", "StringBuilder"
             "System.IO", "Stream"
             "System.IO", "MemoryStream"
+            // Carry a MethodImpl whose *declaration* is a class method rather than an interface one, so
+            // that the content walk's declaration resolution runs against real metadata. Measured over
+            // corelib: 36 of its 4120 MethodImpl rows are class-declaration ones, every one of them
+            // `.override System.Object::Finalize`, and every such body is a non-NewSlot override that
+            // placement had already put in that very slot -- which is why no corelib type can
+            // distinguish slot content from slot identity.
+            "System", "WeakReference"
+            "System.Threading", "Thread"
         ]
 
     let private hostType (``namespace`` : string) (name : string) : Type =
@@ -721,6 +729,188 @@ module TestVirtualMethodSlots =
         // only non-virtual declarations are its two constructors).
         virtualsChecked |> shouldBeGreaterThan 0
         beyondChecked |> shouldBeGreaterThan 1
+
+    /// Every corpus type by full name, generic definitions included, for the placement oracle below.
+    let private allCorpusNames : string list =
+        (corpus @ definitionCorpus)
+        |> List.map (fun (ns, name) -> if ns = "" then name else $"%s{ns}.%s{name}")
+
+    /// `placedSlotsOfDefinition` answers `MethodDesc::GetSlot()` for every declaration in a chain,
+    /// including the ones the vtable can no longer see, and the host CLR answers the same question
+    /// for any `MethodBase` whatever type declared it. So this compares them directly.
+    ///
+    /// The interesting rows are exactly the ones the two tests above cannot reach. Those ask only
+    /// about methods the corpus type *declares*, and compare against `slotIndexInTable`, which scans
+    /// each slot's current occupant -- so a declaration that a derived type overrode by placement is
+    /// absent from what they check, because `A.M` and `B.M` share a slot and only `B.M` occupies it.
+    /// That vanished declaration is the whole reason this list exists: a MethodImpl spelled
+    /// `.override A::M` writes the slot `A.M` owns, and nothing else can say which slot that is.
+    ///
+    /// The corpus reaches the shape on purpose: `System.ArgumentNullException` carries three
+    /// generations of `Message` and `ToString` above it, so two of each are overridden declarations
+    /// that only this list can still name.
+    [<TestCaseSource(nameof allCorpusNames)>]
+    let ``every declaration's slot agrees with the host's, overridden ones included`` (fullName : string) : unit =
+        let ``namespace``, name =
+            match fullName.LastIndexOf '.' with
+            | -1 -> "", fullName
+            | index -> fullName.Substring (0, index), fullName.Substring (index + 1)
+
+        let typeInfo =
+            match corelib.TryGetTopLevelTypeDef ``namespace`` name with
+            | None -> failwith $"%s{fullName} not found in corelib"
+            | Some typeInfo -> typeInfo
+
+        let identity =
+            ResolvedTypeIdentity.ofDefinitionInAssembly typeInfo.AssemblyFullName typeInfo.TypeDefHandle
+
+        let _, placed =
+            VirtualSlotLayout.placedSlotsOfDefinition loggerFactory bct "test" (state ()) identity
+
+        // Keyed on the declaring assembly and the MethodDef *row*, which is what makes the key
+        // injective. `MethodDefinitionHandle` is a struct whose `ToString` does not name the row, so
+        // keying on a rendering of the identity tuple silently collapses every method of a type onto
+        // one entry -- which reads as "the walk gave every declaration the same slot" and cost a
+        // debugging round to spot.
+        let keyOf
+            (assembly : string)
+            (handle : System.Reflection.Metadata.MethodDefinitionHandle option)
+            : string * int
+            =
+            match handle with
+            | Some handle ->
+                assembly,
+                MetadataTokens.GetRowNumber (
+                    System.Reflection.Metadata.MethodDefinitionHandle.op_Implicit handle
+                    : System.Reflection.Metadata.EntityHandle
+                )
+            // A synthesised method has no row. None is placed in any corpus type here, and a
+            // negative row makes it a loud mismatch rather than a silent match if one ever is.
+            | None -> assembly, -1
+
+        // Two entries for one declaration would mean the walk placed a method twice.
+        let byIdentity =
+            placed
+            |> List.map (fun (slot, index) ->
+                keyOf slot.DeclaredBy.AssemblyFullName (fst slot.Method.IdentityKey), index
+            )
+
+        byIdentity
+        |> List.countBy fst
+        |> List.filter (fun (_, count) -> count > 1)
+        |> shouldEqual []
+
+        let byIdentity = Map.ofList byIdentity
+
+        // The host's chain, most-derived first. An instance virtual declared anywhere on it owns a
+        // vtable slot, and every one of them should be in `placed`.
+        let hostChain =
+            let rec chain (t : Type) =
+                match t with
+                | null -> []
+                | t -> t :: chain t.BaseType
+
+            chain (hostType ``namespace`` name)
+
+        let mutable failures = []
+        let mutable checked' = 0
+
+        for ancestor in hostChain do
+            for method in hostDeclaredMethods ancestor do
+                if method.IsVirtual && not method.IsStatic then
+                    checked' <- checked' + 1
+                    let expected = hostSlotOf method
+
+                    let key =
+                        keyOf
+                            corelib.Name.FullName
+                            (Some (MetadataTokens.MethodDefinitionHandle (method.MetadataToken &&& 0xFFFFFF)))
+
+                    match Map.tryFind key byIdentity with
+                    | None ->
+                        failures <-
+                            $"%s{ancestor.Name}::%s{method.Name} (row %i{method.MetadataToken &&& 0xFFFFFF}) is absent from the placement list, host slot %i{expected}"
+                            :: failures
+                    | Some actual ->
+                        if actual <> expected then
+                            failures <-
+                                $"%s{ancestor.Name}::%s{method.Name} (row %i{method.MetadataToken &&& 0xFFFFFF}) PawPrint slot %i{actual}, host %i{expected}"
+                                :: failures
+
+        if not (List.isEmpty failures) then
+            let shown = failures |> List.rev |> List.truncate 40
+
+            failwith (
+                $"%s{fullName}: %i{List.length failures} of %i{checked'} declaration slots disagree with the host CLR (first %i{List.length shown}):\n"
+                + String.Join ("\n", shown)
+            )
+
+        // Not vacuous: the scarcest case in this corpus is `System.Object` itself, whose chain is one
+        // type declaring four instance virtuals -- `Finalize`, `ToString`, `Equals` and `GetHashCode`.
+        checked' |> shouldBeGreaterThan 3
+
+    /// Slot *content* -- what a `callvirt` through slot `i` runs -- against slot *identity*, which is
+    /// what declaration owns slot `i`. The two are the same list except where a MethodImpl whose
+    /// declaration names a class method has moved a slot away from its owner, so this pins both the
+    /// agreement and the disagreement over real metadata.
+    ///
+    /// It is not the differential oracle for content, and it cannot become one: **corelib has no type
+    /// whose content differs from its identity.** Measured -- of its 4120 MethodImpl rows, 4084 declare
+    /// an interface method, which writes the dispatch map and not the vtable, and all 36 that declare a
+    /// class method are `.override System.Object::Finalize` whose body is `Family, Virtual, HideBySig`
+    /// with *no* NewSlot. Placement therefore already gave that body Object's `Finalize` slot, and the
+    /// MethodImpl writes the same body to the same slot. So the two tables agree throughout corelib,
+    /// and this asserts that agreement rather than pretending to check the content rule.
+    ///
+    /// What it does rule out is the failure a fabricated differential cannot see: the content walk
+    /// crashing, or losing a slot, on the 2000-odd corelib types nobody fabricates. `System.WeakReference`
+    /// and `System.Threading.Thread` are in the corpus so that `declarationSlot`'s MethodDef arm runs
+    /// against real metadata and has to find Object's slot -- but because the answer coincides with
+    /// placement, only the fabricated differential can tell whether it found the *right* one.
+    [<TestCaseSource(nameof allCorpusNames)>]
+    let ``slot content agrees with slot identity except where a class MethodImpl moved it`` (fullName : string) : unit =
+        let ``namespace``, name =
+            match fullName.LastIndexOf '.' with
+            | -1 -> "", fullName
+            | index -> fullName.Substring (0, index), fullName.Substring (index + 1)
+
+        let typeInfo =
+            match corelib.TryGetTopLevelTypeDef ``namespace`` name with
+            | None -> failwith $"%s{fullName} not found in corelib"
+            | Some typeInfo -> typeInfo
+
+        let identity =
+            ResolvedTypeIdentity.ofDefinitionInAssembly typeInfo.AssemblyFullName typeInfo.TypeDefHandle
+
+        let _, identityTable =
+            VirtualSlotLayout.vtableOfDefinition loggerFactory bct "test" (state ()) identity
+
+        let _, contentTable =
+            VirtualSlotLayout.contentVtableOfDefinition loggerFactory bct "test" (state ()) identity
+
+        // Same shape: content never adds or removes a slot, it only changes occupants.
+        List.length contentTable |> shouldEqual (List.length identityTable)
+
+        let differing =
+            List.zip identityTable contentTable
+            |> List.indexed
+            |> List.filter (fun (_, (a, b)) ->
+                (a.DeclaredBy.AssemblyFullName, a.Method.IdentityKey)
+                <> (b.DeclaredBy.AssemblyFullName, b.Method.IdentityKey)
+            )
+
+        // A difference means the content came from somewhere else in the chain, so the two occupants
+        // must be declared by *different types*. Two methods of one type swapping slots would be the
+        // walk scrambling placement rather than a MethodImpl moving a slot.
+        //
+        // Deliberately not "the occupant is the body of some MethodImpl in the chain": stating that
+        // here would re-derive what the implementation computes, and the corelib shape would make it
+        // circular rather than independent. The fabricated differential is what checks *which* body a
+        // slot ends up with; this checks only that the walk has not lost one.
+        for index, (owner, occupant) in differing do
+            if owner.DeclaredBy.Identity = occupant.DeclaredBy.Identity then
+                failwith
+                    $"%s{fullName}: slot %i{index} is owned by %s{owner.Method.Name} and holds %s{occupant.Method.Name}, both declared by %s{owner.DeclaredBy.Description}; a MethodImpl moves a slot to another type's body, so this is placement being scrambled"
 
     [<Test>]
     let ``numVirtualsOfDefinition is exactly the definition's vtable length`` () : unit =

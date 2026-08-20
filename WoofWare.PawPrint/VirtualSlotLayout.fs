@@ -368,6 +368,45 @@ module VirtualSlotLayout =
 
         state, Some (baseIdentity, arguments)
 
+    /// The result of `MethodTableBuilder::PlaceVirtualMethods` for one definition, plus the two
+    /// things a later pass needs that the vtable alone does not record.
+    ///
+    /// `Placed` is what `MethodDesc::GetSlot()` returns for every declaration in the chain: the slot
+    /// its own type assigned it, which for a non-newslot override is the parent slot it took
+    /// (`SetVirtualMethodOverride`, methodtablebuilder.h:1512-1517) and otherwise its append
+    /// position. Slot *content* needs it and cannot recover it from `Vtable`: when `B.M` overrides
+    /// `A.M` by placement the two share a slot but only `B.M` is its occupant, so a table built
+    /// further down the chain has no way left to ask where `A.M` lived. It is memoisation rather
+    /// than a second source of truth -- the same question `slotIndexInTable` answers, recorded as
+    /// the walk that already decides it goes past.
+    ///
+    /// A method this definition declares can be absent from `Placed`: two non-newslot virtuals whose
+    /// signatures differ in metadata can coincide once the base's arguments are substituted, and the
+    /// second then displaces the first from the slot it had just taken. Consumers must treat a
+    /// missing entry as "no slot", not as zero.
+    type private PlacedVtable =
+        {
+            /// Slot identity: index `i` holds the declaration that owns slot `i`.
+            Vtable : VtableSlot list
+            /// Every declaration in this definition's chain that owns a vtable slot, paired with the
+            /// slot it owns, base-first and in declaration order within each type. Read in *this*
+            /// definition's vocabulary: an ancestor's entries are rebased exactly as its vtable
+            /// entries are, so a MethodImpl declaration spelled here can be compared against them.
+            Placed : (VtableSlot * int) list
+            /// `MethodTable::GetNumParentVirtuals()`: where this definition's fresh slots begin, and
+            /// the bound `CopyExactParentSlots` and the covariant-return pass iterate to.
+            NumParentVirtuals : int
+            /// The parent's own table, already built. `None` for a type with no base -- `System.Object`
+            /// and every interface.
+            Parent : PlacedVtable option
+            /// The definition this table belongs to. A MethodImpl declaration names a slot only when
+            /// its parent is this class or an ancestor of it (`AddMethodImplDispatchMapping` writes the
+            /// vtable only for `typeID == ThisClassID()`, methodtablebuilder.cpp:6363-6366), so
+            /// deciding that needs the chain's identities and not only its slots.
+            Owner : SlotOwner
+        }
+
+
     /// The instance vtable of a type *definition*, base-first: index `i` is the method that occupies
     /// slot `i`. A type inherits its base's layout, replaces the entries its own non-newslot virtuals
     /// override, and appends a slot for each `newslot` virtual it introduces.
@@ -382,7 +421,6 @@ module VirtualSlotLayout =
     /// occupying distinct slots, and closing them at `T = string` first would make an override of one
     /// appear to fill the other. Signatures are therefore compared with the type's variables left
     /// standing, each ancestor's read through the substitution its extends clause supplies.
-    ///
     /// Note that MethodImpls are deliberately not consulted. A MethodImpl overwrites a slot's
     /// implementation but not the slot number its body was declared at
     /// (`MethodTableBuilder::SetVirtualMethodImpl` changes the Impl and not the Decl), so it
@@ -393,50 +431,64 @@ module VirtualSlotLayout =
     /// one query per virtual method: the walk is not memoised, so populating a type is quadratic in
     /// its virtual count. A cache would be keyed on the definition, every instantiation of which
     /// shares this answer.
-    let rec private vtableOfDefinitionOwner
+    let rec private placeVirtualMethodsOfDefinitionOwner
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (state : IlMachineState)
         (owner : SlotOwner)
-        : IlMachineState * VtableSlot list
+        : IlMachineState * PlacedVtable
         =
         let _, typeInfo = definitionMetadata operation state owner.Identity
 
         let state, baseType =
             baseOfDefinition loggerFactory baseClassTypes operation state owner typeInfo
 
-        let state, baseSlots =
+        let state, parentAndBaseSlots =
             match baseType with
-            | None -> state, []
+            | None -> state, None
             | Some (baseIdentity, arguments) ->
                 // The parent's table is built once, in the parent's own context: which slot each of its
                 // methods occupies was decided before any argument was supplied, and `CopyParentVtable`
                 // copies the result rather than rebuilding it (methodtablebuilder.cpp:1143). Re-running
                 // that placement here would fold two of the parent's slots together whenever this
                 // type's arguments make two of its distinct declarations coincide.
-                let state, inherited =
+                let state, parent =
                     ownerOfDefinition operation state baseIdentity
-                    |> vtableOfDefinitionOwner loggerFactory baseClassTypes operation state
+                    |> placeVirtualMethodsOfDefinitionOwner loggerFactory baseClassTypes operation state
 
                 // Matching this type's own methods against those slots is the separate question, and it
                 // does need them read in this type's vocabulary.
-                let inherited =
-                    inherited
-                    |> List.map (fun slot ->
-                        { slot with
-                            VtableSlot.DeclaredBy =
-                                { slot.DeclaredBy with
-                                    SlotOwner.Substitution =
-                                        TypeConcretization.SubstitutionContext.rebase
-                                            baseIdentity
-                                            arguments
-                                            slot.DeclaredBy.Substitution
-                                }
-                        }
-                    )
+                let rebase (slot : VtableSlot) : VtableSlot =
+                    { slot with
+                        VtableSlot.DeclaredBy =
+                            { slot.DeclaredBy with
+                                SlotOwner.Substitution =
+                                    TypeConcretization.SubstitutionContext.rebase
+                                        baseIdentity
+                                        arguments
+                                        slot.DeclaredBy.Substitution
+                            }
+                    }
 
-                state, inherited
+                state,
+                Some (
+                    parent,
+                    List.map rebase parent.Vtable,
+                    parent.Placed |> List.map (fun (slot, i) -> rebase slot, i)
+                )
+
+        let baseSlots =
+            match parentAndBaseSlots with
+            | None -> []
+            | Some (_, baseSlots, _) -> baseSlots
+
+        // The chain's placements, rebased into this type's vocabulary, so that a MethodImpl
+        // declaration spelled here can be compared against an ancestor's declaration.
+        let inheritedPlacements =
+            match parentAndBaseSlots with
+            | None -> []
+            | Some (_, _, placements) -> placements
 
         // Shared with the walk past the vtable, so that the two cannot disagree about what the
         // type declares -- see `declaredMethodsOf` for what it drops and why. Upstream's
@@ -484,9 +536,9 @@ module VirtualSlotLayout =
         // lays slots out on the generic definition, where the two are distinct, and gives each
         // its own; a search that could see fresh slots would have the second replace the first
         // and the vtable would come out a slot short.
-        let state, inherited, freshReversed =
-            ((state, baseSlots, []), instanceVirtuals)
-            ||> List.fold (fun (state, slots, fresh) method ->
+        let state, inherited, freshReversed, placedReversed =
+            ((state, baseSlots, [], []), instanceVirtuals)
+            ||> List.fold (fun (state, slots, fresh, placed) method ->
                 let candidate =
                     {
                         VtableSlot.Method = method
@@ -595,7 +647,10 @@ module VirtualSlotLayout =
                         failwith
                             $"%s{operation}: generic method %s{method.Name} on %s{owner.Description} fills vtable slot %i{mostDerived}, held by %s{occupant.Method.Name} declared by %s{occupant.DeclaredBy.Description}, but its type parameters' constraints do not permit it to override that slot; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
 
-                    state, (slots |> List.mapi (fun j slot -> if j = mostDerived then candidate else slot)), fresh
+                    state,
+                    (slots |> List.mapi (fun j slot -> if j = mostDerived then candidate else slot)),
+                    fresh,
+                    (candidate, mostDerived) :: placed
                 | [] ->
                     // "Else, place the method in the next available empty vtable slot"
                     // (methodtablebuilder.cpp:5401). Both kinds of method arrive here: one
@@ -616,14 +671,23 @@ module VirtualSlotLayout =
                     // the host CLR's own `GetSlot` in TestVirtualMethodSlots -- a check on the
                     // layout rather than merely on its length, because a walk that appends one
                     // slot too many while dropping a real one has the right length.
-                    state, slots, candidate :: fresh
+                    // `inherited` only ever has entries replaced, so its length is the index of
+                    // the first fresh slot however many have been appended so far.
+                    state, slots, candidate :: fresh, (candidate, List.length slots + List.length fresh) :: placed
             )
 
         // The fresh slots were accumulated head-first, so undo that once here rather than
         // copying the accumulated vtable on every append.
         let slots = inherited @ List.rev freshReversed
 
-        state, slots
+        state,
+        {
+            PlacedVtable.Vtable = slots
+            PlacedVtable.Placed = inheritedPlacements @ List.rev placedReversed
+            PlacedVtable.NumParentVirtuals = List.length baseSlots
+            PlacedVtable.Parent = parentAndBaseSlots |> Option.map (fun (parent, _, _) -> parent)
+            PlacedVtable.Owner = owner
+        }
 
     /// The instance vtable of the generic definition `identity` -- the layout every instantiation of
     /// it shares.
@@ -635,8 +699,451 @@ module VirtualSlotLayout =
         (identity : ResolvedTypeIdentity)
         : IlMachineState * VtableSlot list
         =
-        ownerOfDefinition operation state identity
-        |> vtableOfDefinitionOwner loggerFactory baseClassTypes operation state
+        let state, placed =
+            ownerOfDefinition operation state identity
+            |> placeVirtualMethodsOfDefinitionOwner loggerFactory baseClassTypes operation state
+
+        state, placed.Vtable
+
+    /// One entry of a type's *content* table: the method a call through this slot actually runs,
+    /// together with the slot that method's own type placed it at.
+    ///
+    /// Content is a different question from identity, and `VtableSlot` answers identity. A MethodImpl
+    /// changes what a slot holds without changing the slot its body was declared at
+    /// (`SetVirtualMethodImpl` writes the Impl and not the Decl, methodtablebuilder.h:1522-1527), so
+    /// the two tables have the same shape and different occupants and must not be the same type.
+    ///
+    /// `HomeSlot` travels with the occupant rather than being looked up, because that is what the
+    /// unification pass needs and looking it up is what makes the pass expensive: it is
+    /// `MethodDesc::GetSlot()` of `Occupant`, which for a non-newslot override is the parent slot it
+    /// took and otherwise its append position.
+    type private SlotContent =
+        {
+            Occupant : VtableSlot
+            HomeSlot : int
+        }
+
+    /// Does this MethodImpl declaration name a slot of the class chain, and if so which?
+    ///
+    /// `None` means "not a vtable write", which is the common case rather than a failure: a type
+    /// carries one MethodImpl row per explicit interface implementation, and those name interface
+    /// methods. Upstream draws the same line -- `AddMethodImplDispatchMapping` writes the vtable only
+    /// when the declaration's type is this class or an ancestor (`typeID == ThisClassID()`,
+    /// methodtablebuilder.cpp:6363-6366) and otherwise fills in the dispatch map alone -- and here the
+    /// test is the same one, because `Placed` holds exactly the class chain's declarations.
+    ///
+    /// A declaration whose parent *is* a class ancestor but which matches no declaration on it is a
+    /// different matter, and this refuses rather than answering. CoreCLR refuses too
+    /// (`MI_DECLARATIONNOTFOUND`), and the shape that provokes it is reachable: a TypeSpec parent
+    /// spelled with an argument the extends clause does not supply, `.override B&lt;int32&gt;::M` from a
+    /// `C&lt;T&gt; : B&lt;T&gt;`. Measured on the host, *every* instantiation of such a `C` throws
+    /// TypeLoadException -- `C&lt;int&gt;` included, whose own arguments would have matched -- because each
+    /// one is gated on the canonical definition's build, and that build resolves the declaration
+    /// against `B&lt;!0&gt;` and misses. So there is no instantiation for which unifying `!0` with `int32`
+    /// here would be right, and guessing would invent a type the runtime cannot load.
+    let private declarationSlot
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (table : PlacedVtable)
+        (assembly : DumpedAssembly)
+        (declaration : MetadataToken)
+        : IlMachineState * int option
+        =
+        // The class chain's identities, so that "names an ancestor" can be distinguished from "names
+        // an interface" even for an ancestor that declares no virtual of its own and so contributes
+        // nothing to `Placed`.
+        let chainIdentities =
+            let rec walk (table : PlacedVtable) =
+                table.Owner.Identity
+                :: (
+                    match table.Parent with
+                    | None -> []
+                    | Some parent -> walk parent
+                )
+
+            walk table
+
+        match declaration with
+        | MetadataToken.MethodDef handle ->
+            // A MethodDef declaration names a method of this module directly, so no signature
+            // comparison is needed or wanted: the row *is* the identity, and `Placed` is keyed on it.
+            // `slotIdentity` is the same pairing, but it is defined further down the file.
+            let target = assembly.Name.FullName, (Some handle, None)
+
+            state,
+            table.Placed
+            |> List.tryFind (fun (slot, _) -> (slot.DeclaredBy.AssemblyFullName, slot.Method.IdentityKey) = target)
+            |> Option.map snd
+        | MetadataToken.MemberReference handle ->
+            let memberRef = assembly.Members.[handle]
+
+            match memberRef.Signature with
+            | MemberSignature.Field _ ->
+                failwith $"%s{operation}: MethodImpl on %s{table.Owner.Description} names a field as its declaration"
+            | MemberSignature.Method signature ->
+
+            // Only a TypeSpec can carry an instantiation, exactly as in `baseOfDefinition`; a TypeDef
+            // or TypeRef parent names a type without one.
+            let state, parentIdentity, arguments =
+                match memberRef.Parent with
+                | MetadataToken.TypeDefinition handle ->
+                    state,
+                    Some (ResolvedTypeIdentity.ofDefinitionInAssembly assembly.Name.FullName handle),
+                    ImmutableArray.Empty
+                | MetadataToken.TypeReference handle ->
+                    let state, _, resolved =
+                        IlMachineTypeResolution.resolveTypeFromRef
+                            loggerFactory
+                            assembly
+                            assembly.TypeRefs.[handle]
+                            ImmutableArray.Empty
+                            state
+
+                    state,
+                    Some (ResolvedTypeIdentity.ofDefinitionInAssembly resolved.AssemblyFullName resolved.TypeDefHandle),
+                    ImmutableArray.Empty
+                | MetadataToken.TypeSpecification handle ->
+                    match assembly.TypeSpecs.[handle].Signature with
+                    | TypeDefn.GenericInstantiation (generic, arguments) ->
+                        let state, identity =
+                            nominalIdentityOfSpelling loggerFactory baseClassTypes operation state assembly generic
+
+                        state, Some identity, ImmutableArray.CreateRange arguments
+                    | nominal ->
+                        let state, identity =
+                            nominalIdentityOfSpelling loggerFactory baseClassTypes operation state assembly nominal
+
+                        state, Some identity, ImmutableArray.Empty
+                | _ ->
+                    // A MemberRef parent may also be a ModuleRef or a MethodDef (the vararg case),
+                    // neither of which can name a class ancestor's method.
+                    state, None, ImmutableArray.Empty
+
+            match parentIdentity with
+            | None -> state, None
+            | Some parentIdentity ->
+
+            if not (chainIdentities |> List.contains parentIdentity) then
+                // An interface, or a type unrelated to this one: not a vtable write.
+                state, None
+            else
+
+            // The declaration's signature is spelled in *this* type's token space, and its `!i` are
+            // the parent's variables as the TypeSpec instantiates them -- the same reading the extends
+            // clause gets in `baseOfDefinition`.
+            let declarationComparand : TypeConcretization.SignatureComparand =
+                {
+                    Signature = signature
+                    AssemblyFullName = table.Owner.AssemblyFullName
+                    DeclaringTypeGenerics =
+                        TypeConcretization.SubstitutionContext.forBase
+                            table.Owner.AssemblyFullName
+                            arguments
+                            table.Owner.Substitution
+                }
+
+            let candidates =
+                table.Placed
+                |> List.filter (fun (slot, _) ->
+                    slot.DeclaredBy.Identity = parentIdentity
+                    && slot.Method.Name = memberRef.PrettyName
+                )
+
+            let state, matches =
+                ((state, []), candidates)
+                ||> List.fold (fun (state, acc) (slot, index) ->
+                    let occupantComparand : TypeConcretization.SignatureComparand =
+                        {
+                            Signature = slot.Method.Signature
+                            AssemblyFullName = slot.DeclaredBy.AssemblyFullName
+                            DeclaringTypeGenerics = slot.DeclaredBy.Substitution
+                        }
+
+                    let state, equivalent =
+                        IlMachineState.signaturesEquivalent
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            false
+                            declarationComparand
+                            occupantComparand
+
+                    state, (if equivalent then index :: acc else acc)
+                )
+
+            match matches with
+            // The same tie-break placement uses: the most-derived matching slot, which is the one
+            // with the largest index. Reachable without illegal metadata, by the `newslot` shadow --
+            // `A` declares `virtual M()`, `B : A` declares `new virtual M()`, and a MethodImpl naming
+            // `B::M` must reach B's slot and not A's.
+            | _ :: _ -> state, Some (List.max matches)
+            | [] ->
+                failwith
+                    $"%s{operation}: MethodImpl on %s{table.Owner.Description} declares an override of %s{memberRef.PrettyName} on ancestor %O{parentIdentity.TypeDefinition.Get}, but no declaration on that ancestor has a matching signature; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a method table for it"
+        | other ->
+            failwith
+                $"%s{operation}: MethodImpl on %s{table.Owner.Description} names its declaration with the token %O{other}, which is neither a MethodDef nor a MemberRef; ECMA-335 II.22.27 permits only those two"
+
+    /// What each vtable slot of a definition actually holds after `BuildMethodTable`: the placement
+    /// result, overwritten by this type's MethodImpls, then unified to a fixed point.
+    ///
+    /// This is `MethodTableBuilder`'s own order and not a rearrangement of it. `PlaceMethodImpls`
+    /// (methodtablebuilder.cpp:6409-6544) runs *after* `PlaceVirtualMethods`, so a MethodImpl beats an
+    /// ordinary override of the same slot on the same type; and the unification loop
+    /// (`SetupMethodTable2`, :11334-11385) runs after both.
+    ///
+    /// Two things about the loop are easy to get wrong, and both were measured rather than reasoned:
+    ///
+    /// It is **not** "follow each home chain to its root". The passes mutate in place and ascending,
+    /// so the answer depends on the order, and on a cycle the chase does not terminate at all. With
+    /// three slots holding `[M2; M3; M1]` and homes `M1 -&gt; 1`, `M2 -&gt; 2`, `M3 -&gt; 0`: ascending gives
+    /// all-`M1`, descending all-`M3`, and chase-to-root `[M3; M1; M2]`. So the shape below mirrors
+    /// upstream's rather than tidying it.
+    ///
+    /// It also **needs** to iterate. Upstream's own worked example (:11337) is `C1::M1` overridden by
+    /// `C2::M2`, `C1::M2` methodImpl'd by `C1::M3`, `C1::M3` overridden by `C2::M3`: one pass leaves
+    /// `C1::M1` short, because the body that reaches slot 1 only arrives after slot 2 has been read.
+    ///
+    /// Upstream bounds the iteration by nothing, trusting metadata it validated elsewhere. PawPrint
+    /// interprets IL no loader would accept, so the pass count is capped. Searched for a
+    /// configuration that does not converge: every `(content, home)` assignment for four slots or
+    /// fewer -- 66282 of them, most unreachable through any loader -- and 300000 random ones for each
+    /// size from five to nine. None diverged, and the worst case took exactly as many passes as there
+    /// are slots, so the cap below cannot fire on metadata that converges at all.
+    let private contentAfterBuildMethodTable
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (table : PlacedVtable)
+        (parentContent : SlotContent list)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : IlMachineState * SlotContent list
+        =
+        let assembly, _ = definitionMetadata operation state table.Owner.Identity
+
+        let homeOf (slot : VtableSlot) : int option =
+            table.Placed
+            |> List.tryFind (fun (candidate, _) ->
+                (candidate.DeclaredBy.AssemblyFullName, candidate.Method.IdentityKey) = (slot.DeclaredBy.AssemblyFullName,
+                                                                                         slot.Method.IdentityKey)
+            )
+            |> Option.map snd
+
+        // `CopyParentVtable` (:1144) copies the parent's finished slots and this type's placement
+        // then replaces the ones its own non-newslot virtuals took. So a slot whose identity-table
+        // occupant this type declared holds that occupant; every other slot below the parent's count
+        // holds whatever the parent's *content* table ended up with, which a MethodImpl on the parent
+        // may have moved away from the declaration the identity table names. Slots at or above the
+        // parent's count are this type's own fresh ones and have no inherited content.
+        let content =
+            table.Vtable
+            |> List.mapi (fun i slot ->
+                let occupant =
+                    if slot.DeclaredBy.Identity = table.Owner.Identity then
+                        slot
+                    else
+                        match List.tryItem i parentContent with
+                        | Some inherited -> inherited.Occupant
+                        | None -> slot
+
+                {
+                    SlotContent.Occupant = occupant
+                    SlotContent.HomeSlot =
+                        match homeOf occupant with
+                        | Some home -> home
+                        | None ->
+                            failwith
+                                $"%s{operation}: slot %i{i} of %s{table.Owner.Description} holds %s{occupant.Method.Name}, declared by %s{occupant.DeclaredBy.Description}, which the chain never placed"
+                }
+            )
+
+        // `PlaceMethodImpls`. A row whose declaration names an interface method writes the dispatch
+        // map and not the vtable, and `declarationSlot` returns `None` for those.
+        let state, content, _ =
+            ((state, content, Map.empty), typeInfo.MethodImpls.Values |> List.ofSeq)
+            ||> List.fold (fun (state, content, writtenHere) impl ->
+                let state, declaredSlot =
+                    declarationSlot loggerFactory baseClassTypes operation state table assembly impl.Declaration
+
+                match declaredSlot with
+                | None -> state, content, writtenHere
+                | Some declaredSlot ->
+
+                // "The body shall be a MethodDef of this type" -- upstream throws
+                // `IDS_CLASSLOAD_MI_ILLEGAL_BODY` (methodtablebuilder.cpp:2415-2421) otherwise, so a
+                // MemberRef body is an invalid image rather than a shape to resolve.
+                let bodyHandle =
+                    match impl.Body with
+                    | MetadataToken.MethodDef handle -> handle
+                    | other ->
+                        failwith
+                            $"%s{operation}: MethodImpl on %s{table.Owner.Description} names its body with the token %O{other}; ECMA-335 requires a MethodDef of the type carrying the row, and CoreCLR rejects anything else at load time"
+
+                let body =
+                    table.Placed
+                    |> List.tryFind (fun (slot, _) ->
+                        (slot.DeclaredBy.AssemblyFullName, slot.Method.IdentityKey) = (assembly.Name.FullName,
+                                                                                       (Some bodyHandle, None))
+                    )
+
+                match body with
+                | None ->
+                    // A static body is diverted before `PlaceMethodImpls` (:6445-6446) and never
+                    // reaches a vtable slot; a non-virtual instance body is the load error
+                    // `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL` (:4880-4884). Either way this row does not
+                    // write the vtable, and refusing distinguishes the two badly, so skip the
+                    // static case by construction: `Placed` holds only instance virtuals.
+                    let bodyMethod = assembly.Methods.[bodyHandle]
+
+                    if bodyMethod.IsStatic then
+                        state, content, writtenHere
+                    else
+                        failwith
+                            $"%s{operation}: MethodImpl on %s{table.Owner.Description} names the non-static, non-virtual method %s{bodyMethod.Name} as its body; CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_MUSTBEVIRTUAL) rather than laying out a method table for it"
+                | Some (bodySlot, bodyHome) ->
+
+                // Two rows of *this* type writing one slot is a load error unless they name the same
+                // body: `IDS_CLASSLOAD_MI_MULTIPLEOVERRIDES` (:6335-6345), which is the same-body
+                // tolerance and the different-body refusal. Last-write-wins would quietly lay out a
+                // type the runtime refuses. The record is per-type on purpose -- a derived type
+                // re-MethodImpling a slot its parent already did is ordinary and legal.
+                let bodyIdentity = bodySlot.DeclaredBy.AssemblyFullName, bodySlot.Method.IdentityKey
+
+                match Map.tryFind declaredSlot writtenHere with
+                | Some previous when previous <> bodyIdentity ->
+                    failwith
+                        $"%s{operation}: %s{table.Owner.Description} carries two MethodImpls that both write vtable slot %i{declaredSlot} with different bodies; CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_MULTIPLEOVERRIDES)"
+                | _ ->
+
+                state,
+                (content
+                 |> List.mapi (fun i entry ->
+                     if i = declaredSlot then
+                         {
+                             SlotContent.Occupant = bodySlot
+                             SlotContent.HomeSlot = bodyHome
+                         }
+                     else
+                         entry
+                 )),
+                Map.add declaredSlot bodyIdentity writtenHere
+            )
+
+        // `SetupMethodTable2`'s loop, skipped for interfaces exactly as upstream skips it (:11318).
+        if typeInfo.IsInterface then
+            state, content
+        else
+
+        let content = Array.ofList content
+        let slotCount = content.Length
+        let mutable passes = 0
+        let mutable changed = true
+
+        while changed do
+            changed <- false
+            passes <- passes + 1
+
+            if passes > slotCount + 1 then
+                failwith
+                    $"%s{operation}: unifying the vtable slots of %s{table.Owner.Description} did not converge in %i{slotCount + 1} passes over %i{slotCount} slots; its MethodImpls describe a cycle of slots that copy from one another, which CoreCLR would loop on rather than reject"
+
+            for i in 0 .. slotCount - 1 do
+                let entry = content.[i]
+
+                if entry.HomeSlot <> i then
+                    let atHome = content.[entry.HomeSlot]
+
+                    if
+                        (atHome.Occupant.DeclaredBy.AssemblyFullName, atHome.Occupant.Method.IdentityKey)
+                        <> (entry.Occupant.DeclaredBy.AssemblyFullName, entry.Occupant.Method.IdentityKey)
+                    then
+                        content.[i] <- atHome
+                        changed <- true
+
+        state, List.ofArray content
+
+    /// The content of every vtable slot of a definition: for each slot, the method a `callvirt`
+    /// through it actually runs.
+    ///
+    /// Built base-first, each level from its parent's finished content, because that is what
+    /// `CopyParentVtable` copies and the difference is observable: a MethodImpl on the parent has
+    /// already moved a slot away from the declaration the identity table names, and rebuilding
+    /// placement here would put the declaration back.
+    let rec private contentOfDefinitionOwner
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (table : PlacedVtable)
+        : IlMachineState * SlotContent list
+        =
+        let _, typeInfo = definitionMetadata operation state table.Owner.Identity
+
+        let state, parentContent =
+            match table.Parent with
+            | None -> state, []
+            | Some parent -> contentOfDefinitionOwner loggerFactory baseClassTypes operation state parent
+
+        // The parent's content is read in the parent's own vocabulary; this type's vtable entries have
+        // already been rebased into this type's. Only the *occupant* is taken from the parent's
+        // content, and what it is used for -- naming a method and, in stage 3, concretising it against
+        // the receiver's chain -- reads the substitution off the occupant rather than off the slot, so
+        // rebasing the parent's content list would rebase the same owners twice.
+        contentAfterBuildMethodTable loggerFactory baseClassTypes operation state table parentContent typeInfo
+
+    /// What each vtable slot of a definition holds, in slot order: the method a `callvirt` through
+    /// slot `i` runs, as against `vtableOfDefinition`, which names the declaration that *owns* slot
+    /// `i`.
+    ///
+    /// The two differ exactly where a MethodImpl is involved. `.override A::M` on a method named
+    /// something else entirely leaves `A.M` owning its slot while the slot runs the other body, and
+    /// that is the whole reason virtual dispatch cannot be answered from the identity table.
+    ///
+    /// This is `BuildMethodTable`'s answer. `CLASS_LOAD_EXACTPARENTS` runs two further passes over it
+    /// -- `CopyExactParentSlots` and `PropagateCovariantReturnMethodImplSlots` -- which are not
+    /// modelled yet; both are no-ops unless the chain contains a class MethodImpl, and covariant-return
+    /// chains as Roslyn emits them are already answered here by the unification pass, because their
+    /// `.override` names the immediately-overridden method rather than skipping a live slot.
+    let contentVtableOfDefinition
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (identity : ResolvedTypeIdentity)
+        : IlMachineState * VtableSlot list
+        =
+        let state, table =
+            ownerOfDefinition operation state identity
+            |> placeVirtualMethodsOfDefinitionOwner loggerFactory baseClassTypes operation state
+
+        let state, content =
+            contentOfDefinitionOwner loggerFactory baseClassTypes operation state table
+
+        state, content |> List.map _.Occupant
+
+    /// The slot each declaration in a definition's chain owns, base-first: `MethodDesc::GetSlot()`
+    /// for every method the chain *places*, which is more than the vtable records.
+    ///
+    /// `vtableOfDefinition` reports only each slot's current occupant, so a declaration that a
+    /// derived type overrode by placement has disappeared from it -- `A.M` and `B.M` share a slot and
+    /// only `B.M` is in the list. Slot content needs the ones that vanished: deciding what a
+    /// MethodImpl naming `A::M` writes means knowing which slot `A.M` owns.
+    let placedSlotsOfDefinition
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (identity : ResolvedTypeIdentity)
+        : IlMachineState * (VtableSlot * int) list
+        =
+        let state, placed =
+            ownerOfDefinition operation state identity
+            |> placeVirtualMethodsOfDefinitionOwner loggerFactory baseClassTypes operation state
+
+        state, placed.Placed
 
     /// The instance vtable of a runtime type, base-first: index `i` is the method that occupies slot
     /// `i`.
