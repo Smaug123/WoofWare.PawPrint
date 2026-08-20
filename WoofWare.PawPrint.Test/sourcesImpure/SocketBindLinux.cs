@@ -77,6 +77,7 @@ class SocketBindLinux
     // The raw errno for EADDRNOTAVAIL on this flavour; the PAL value is shared.
     const int RAW_EADDRNOTAVAIL = 99;
 
+    const int PAL_EFAULT = 0x10015;
     const int PAL_EBADF = 0x10008;
     const int PAL_EOPNOTSUPP = 0x1003D;
     const int SOCK_DGRAM = 2;
@@ -313,6 +314,33 @@ class SocketBindLinux
             if (ListenReportingErrno(d, 8) != PAL_EOPNOTSUPP) return 71;
             if (Marshal.GetLastSystemError() != RAW_EOPNOTSUPP) return 72;
             Close(d);
+        }
+
+
+        // 13. The flag survives a bind that failed in the *kernel* too, not only
+        //     one refused by an address rule: the setsockopt precedes bind(2) and
+        //     nothing undoes it. Measured — the option reads back set after an
+        //     EFAULT bind.
+        {
+            IntPtr s = Make();
+            if (s == (IntPtr) (-1)) return 73;
+            if (Bind(s, PT_TCP, (byte*) 1, V4Size) != PAL_EFAULT) return 74;
+
+            if (!Address(blob, Loopback, 0)) return 75;
+            if (Bind(s, PT_UNSPECIFIED, blob, V4Size) != PAL_SUCCESS) return 76;
+
+            int len = V4Size;
+            if (GetSockName(s, readBack, &len) != PAL_SUCCESS) return 77;
+            ushort port = 0;
+            if (GetPort(readBack, V4Size, &port) != PAL_SUCCESS) return 78;
+
+            IntPtr rival = Make();
+            if (rival == (IntPtr) (-1)) return 79;
+            if (!Address(blob, Loopback, port)) return 80;
+            // Both carry the flag and neither listens, so Linux permits it.
+            if (Bind(rival, PT_TCP, blob, V4Size) != PAL_SUCCESS) return 81;
+            Close(s);
+            Close(rival);
         }
 
         return 0;

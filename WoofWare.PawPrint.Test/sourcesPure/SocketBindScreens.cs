@@ -142,6 +142,18 @@ class SocketBindScreens
         int strayLen = V4Size;
         if (GetSockName(s, (byte*) 1, &strayLen) != PAL_EFAULT) return 64;
 
+        // ...but only when bytes actually move. `bind(2)` copies the caller's
+        // `len` bytes *before* judging whether `len` is a legal sockaddr length,
+        // so a zero-length call never reads the pointer and falls through to the
+        // length fault; and `getsockname` with a declared length of zero copies
+        // nothing, succeeds, and still reports the real length. Both measured on
+        // macOS and Linux.
+        if (Bind(s, PT_TCP, (byte*) 1, 0) != PAL_EINVAL) return 65;
+
+        int zeroStray = 0;
+        if (GetSockName(s, (byte*) 1, &zeroStray) != PAL_SUCCESS) return 66;
+        if (zeroStray != V4Size) return 67;
+
         // --- a length the struct does not fit in ---
         if (Bind(s, PT_TCP, blob, 8) != PAL_EINVAL) return 10;
 

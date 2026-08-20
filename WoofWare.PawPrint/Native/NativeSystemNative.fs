@@ -4333,35 +4333,68 @@ module NativeSystemNative =
                 |> complete (UnixError.toPal error)
             | Ok (socketId, socket) ->
 
+            // The `setsockopt` runs before `bind(2)` and no failure of it undoes
+            // the option, so the flag is recorded here — above every answer below,
+            // the address fault included. Measured: after a bind that answered
+            // EFAULT, the option still reads back set.
+            let socket =
+                if SimulatedUnixPlatform.isTcpProtocolType palProtocolType then
+                    { socket with
+                        ReuseAddress = true
+                    }
+                else
+                    socket
+
+            let state =
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        Sockets = Map.add socketId socket kernel.Sockets
+                    }
+                )
+
             // `bind(2)`'s buffer, not the wrapper's: the C never dereferences it
             // itself, so an address naming no storage faults in the *kernel* and
-            // comes back as EFAULT rather than killing the process. Measured with
-            // `(struct sockaddr *) 1` on both. That is the opposite of
-            // `SystemNative_CreateSocketEventPort`'s out-parameter, which the
-            // wrapper does dereference, and which `requireStorage` refuses for.
-            match BufferPointer.dereferenceable addressArgument with
-            | None ->
+            // comes back as EFAULT rather than killing the process — but only
+            // when there are bytes to copy. Measured on both: an unmapped pointer
+            // is EFAULT at a declared length of 8 and EINVAL at 0, because the
+            // kernel copies the caller's `len` bytes *before* judging whether
+            // `len` is a legal sockaddr length. A zero-length call therefore
+            // never reads the pointer, and falls through to the length fault.
+            //
+            // This is the opposite of `SystemNative_CreateSocketEventPort`'s
+            // out-parameter, which the wrapper itself dereferences, and which
+            // `requireStorage` refuses for.
+            let resolvedBlob = BufferPointer.dereferenceable addressArgument
+
+            match resolvedBlob with
+            | None when declaredLength > 0 ->
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EFAULT))
                 |> complete (UnixError.toPal UnixError.EFAULT)
-            | Some blob ->
+            | _ ->
+
 
             // Every fault this bind could report, computed together; which one is
             // *reported* is the platform's own order (`bindFaultOrder`), because
             // the two disagree about it.
             let internetFamily = SimulatedUnixPlatform.internetAddressFamily
 
+            // Both of these read through the pointer, and both are `None` when
+            // the declared length does not reach the field — which is the only
+            // way `resolvedBlob` can be `None` here, the positive-length case
+            // having answered EFAULT above.
             let blobFamily =
-                if sockaddrFamilyIsInBounds platform declaredLength then
+                match resolvedBlob with
+                | Some blob when sockaddrFamilyIsInBounds platform declaredLength ->
                     Some (readSockaddrFamily ctx operation platform blob state)
-                else
-                    None
+                | _ -> None
 
             // Reading the address and port needs the declared length to cover
             // them. It cannot change the answer when it does not: every flavour
             // reports `Length` ahead of any address-derived fault, so a blob too
             // short to read is a blob whose length is already wrong.
             let endpoint =
-                if declaredLength >= SockaddrOffsets.InternetAddress + 4 then
+                match resolvedBlob with
+                | Some blob when declaredLength >= SockaddrOffsets.InternetAddress + 4 ->
                     let portBytes =
                         readBytesThrough
                             ctx
@@ -4383,8 +4416,7 @@ module NativeSystemNative =
                             (BinaryPrimitives.ReadUInt32BigEndian (addressBytes.AsSpan ()))
                             (BinaryPrimitives.ReadUInt16BigEndian (portBytes.AsSpan ()))
                     )
-                else
-                    None
+                | _ -> None
 
             let familyFault =
                 match blobFamily with
@@ -4421,18 +4453,6 @@ module NativeSystemNative =
                         (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
                         declaredLength
                 )
-
-            // The `setsockopt` precedes `bind(2)` in the C and is not undone when
-            // the bind fails, so this is recorded before any fault is weighed and
-            // survives every refusal below. Measured: reading the option back
-            // after a bind that answered EADDRNOTAVAIL still reports it set.
-            let socket =
-                if SimulatedUnixPlatform.isTcpProtocolType palProtocolType then
-                    { socket with
-                        ReuseAddress = true
-                    }
-                else
-                    socket
 
             let candidate =
                 endpoint
@@ -4520,15 +4540,6 @@ module NativeSystemNative =
 
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
                 |> complete (UnixError.toPal error)
-
-            // The socket carries its reuse flag from here on, whether or not the
-            // bind succeeds.
-            let state =
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        Sockets = Map.add socketId socket kernel.Sockets
-                    }
-                )
 
             match SimulatedUnixPlatform.firstBindFault platform faults with
             | Some fault ->
@@ -4748,12 +4759,17 @@ module NativeSystemNative =
 
             // `getsockname(2)`'s buffer, like `bind(2)`'s: the wrapper passes it
             // through untouched, so an address naming no storage is the kernel's
-            // EFAULT rather than a fault in the wrapper. Measured with
-            // `(struct sockaddr *) 1`. The *length* pointer is different — the C
-            // reads `*socketAddressLen` itself — so that one stays a refusal.
-            match BufferPointer.dereferenceable addressArgument with
-            | None -> failFromSyscall UnixError.EFAULT state
-            | Some addressStorage ->
+            // EFAULT rather than a fault in the wrapper — and, as there, only when
+            // bytes actually move. Measured on both: with `*socketAddressLen` of 8
+            // an unmapped pointer is EFAULT, while with 0 the call *succeeds* and
+            // still reports 16, having copied nothing. The *length* pointer is
+            // different — the C reads `*socketAddressLen` itself — so that one
+            // stays a refusal.
+            let addressStorage = BufferPointer.dereferenceable addressArgument
+
+            match addressStorage with
+            | None when declaredLength > 0 -> failFromSyscall UnixError.EFAULT state
+            | _ ->
 
             let platform = state.Kernel.UnixPlatform
             let realLength = (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
@@ -4803,10 +4819,12 @@ module NativeSystemNative =
                 if written = 0 then
                     state
                 else
+                    // `written` is positive here, so the storage resolved above;
+                    // a zero-length call never reaches this branch.
                     writeBytesThrough
                         ctx
                         operation
-                        addressStorage
+                        (Option.get addressStorage)
                         (ImmutableArray.CreateRange (Array.sub blob 0 written))
                         state
 
