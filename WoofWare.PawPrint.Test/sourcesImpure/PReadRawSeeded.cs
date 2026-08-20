@@ -24,9 +24,10 @@ using System.Runtime.InteropServices;
 //      space** — fd 1 being a pipe, an unmapped buffer — which a real kernel
 //      need not be asked about.
 //
-// errno is read via Marshal.GetLastSystemError rather than
-// GetLastPInvokeError: with a raw DllImport there is no generated stub to copy
-// one to the other.
+// errno is read via Marshal.GetLastSystemError, the slot the syscall itself
+// writes, rather than the P/Invoke slot the SetLastError stub copies it into.
+// The imports below declare that flag, so the two agree; what makes them agree
+// is pinned by sourcesPure/PInvokeSetLastError.cs.
 //
 // The exit code is the index of the first check that failed; 0 means all
 // passed. Kept below 128, since an exit code is eight bits.

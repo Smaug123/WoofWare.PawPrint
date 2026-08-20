@@ -15,8 +15,9 @@ using System.Runtime.InteropServices;
 // on macOS. SystemNative_ConvertErrorPlatformToPal is the shim's own
 // normaliser, so routing through it makes the comparison portable -- and it is
 // what CoreLib does with every errno it reads. (Marshal.GetLastSystemError
-// rather than GetLastPInvokeError: a hand-rolled DllImport gets no generated
-// stub to copy one to the other, as SystemNativeGetCwd.cs explains.)
+// rather than GetLastPInvokeError: the imports below declare SetLastError, so
+// the two hold the same number, and the system slot is the one the syscall
+// itself writes. sourcesPure/PInvokeSetLastError.cs pins that agreement.)
 //
 // **File descriptor numbers are deliberately not asserted.** PawPrint's first
 // open is fd 3; the oracle's process already holds stdin/out/err plus whatever

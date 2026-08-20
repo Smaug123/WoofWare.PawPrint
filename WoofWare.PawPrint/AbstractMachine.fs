@@ -86,6 +86,14 @@ module AbstractMachine =
         let instruction = state.ThreadState.[thread].MethodState
 
         let dispatchNative () =
+            let nativeImport = instruction.ExecutingMethod.TryNativeImport
+
+            // The P/Invoke stub's pre-call clear. Runs on every entry, including a re-entry after
+            // the handler parked or pushed a managed callee: errno is per-thread, so the only
+            // thread that could have written this slot in between is the one that was parked, and
+            // clearing again is therefore exactly equivalent to having cleared once.
+            let state = NativeDispatch.clearLastError nativeImport thread state
+
             let targetAssy =
                 state.LoadedAssembly instruction.ExecutingMethod.DeclaringAssemblyFullName
                 |> Option.get
@@ -111,6 +119,8 @@ module AbstractMachine =
 
             match outcome with
             | NativeHandlerResult.Completed (state, effect) ->
+                let state = NativeDispatch.captureLastError nativeImport thread state
+
                 match IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state with
                 | ReturnFrameResult.NormalReturn state -> ExecutionResult.Stepped (state, WhatWeDid.Executed, effect)
                 | result -> failwith $"unexpected ReturnFrameResult from extern method return: %A{result}"
@@ -122,6 +132,8 @@ module AbstractMachine =
                 // *before* the Scheduler sees the outcome, which is what puts any optimistic
                 // return value the handler pushed onto the caller's eval stack in time for
                 // `Scheduler.onStepOutcome` to rewrite it.
+                let state = NativeDispatch.captureLastError nativeImport thread state
+
                 match IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state with
                 | ReturnFrameResult.NormalReturn state ->
                     ExecutionResult.Stepped (state, WhatWeDid.VoluntaryYield reportsSwitch, effect)
