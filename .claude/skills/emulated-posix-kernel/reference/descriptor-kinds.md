@@ -1,7 +1,10 @@
 # What each descriptor kind answers
 
-Measured on Linux 6.18.5 aarch64 and Darwin 25.6.0 arm64. Re-derive rather than
-trust if the pinned kernel moves.
+Measured on Linux 6.18.5 aarch64 and Darwin 25.6.0 arm64 — the machines that ran
+the probes, which are not pinned by this repository and are not the release
+strings `SimulatedUnixPlatform` reports. Re-measure when a host-oracle test
+disagrees with a row, or when you deliberately target a different kernel; there
+is no version to watch.
 
 Each table states the descriptor's blocking mode where that changes the answer;
 a row measured under `O_NONBLOCK` says nothing about the same call on a blocking
@@ -12,7 +15,8 @@ And a row here is about *the creator named*, not about its filesystem as a class
 
 ## Socket event port (`epoll_create1` / `kqueue`)
 
-Only `pread`/`pwrite` agree.
+Of the rows below, only `pread`/`pwrite` agree; other operations do agree — see
+`flavour-divergence.md` for `ftruncate`, which is `EINVAL` on both.
 
 | op | Linux | Darwin |
 | --- | --- | --- |

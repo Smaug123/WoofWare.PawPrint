@@ -63,11 +63,14 @@ for `open`; that debt belongs to `mkdir`/`rmdir`/`unlink`.
 
 **Unanimous, `ftruncate(2)`:** a negative length is `EINVAL` and is checked
 **before the descriptor**, so a bad fd with a negative length is `EINVAL`, not
-`EBADF`. A read-only, directory, pipe (either end), socket, epoll/kqueue or
-standard-stream descriptor is `EINVAL` — *not* `EBADF`, which is where it differs
-from `write(2)`, and not `EISDIR`, which is path-based `truncate(2)`'s answer for
-a directory. Extension zero-fills. The description's offset never moves, even when
-truncated below it. `INT64_MAX` is `EFBIG`, but the real threshold is
+`EBADF`. A read-only, directory, pipe (either end), socket or epoll/kqueue
+descriptor is `EINVAL` — *not* `EBADF`, which is where it differs from `write(2)`,
+and not `EISDIR`, which is path-based `truncate(2)`'s answer for a directory.
+Standard streams answer `EINVAL` too, but that is a fact about what backs them
+(both launchers hand the guest a pipe) rather than about the fd number: redirect
+one to a writable regular file and `ftruncate` succeeds. Extension zero-fills.
+The description's offset never moves, even when truncated below it.
+`INT64_MAX` is `EFBIG`, but the real threshold is
 per-filesystem (ext4 between 2^43 and 2^44, APFS between 2^46 and 2^62), so
 PawPrint refuses loudly above `Array.MaxLength` rather than picking one.
 

@@ -130,10 +130,15 @@ Summarised here; `reference/testing.md` has the detail.
 - **`sourcesPure`** — differential against real .NET on the *host*, so only claims
   that hold on both flavours. `ELOOP` agrees as an errno but not as a number
   (40 against 62).
-- **`sourcesImpure`** — PawPrint only, and the only tier that sees the *wiring*:
-  unit tests pass rules in by hand, so a handler hardcoding `Kernel.Umask` or
-  `Kernel.UnixPlatform` survives every one of them. Set both away from their
-  defaults.
+- **`sourcesImpure`** — PawPrint only. Its value is that it sees the *wiring*: a
+  unit test passes the rules in by hand, so a handler that hardcodes
+  `Kernel.Umask` or `Kernel.UnixPlatform` instead of reading them survives every
+  such test. Set both away from their defaults in the registration. Any fixture
+  that runs a guest under a chosen `KernelConfig` catches this too —
+  `TestPlatformSocketSupport` drives a raw-`DllImport` guest through
+  `BoundedRun.run` under both platforms for exactly that reason — so the choice
+  is between hand-fed unit tests and *some* guest-running fixture, not between
+  unit tests and this directory.
 
 ## Reference
 
