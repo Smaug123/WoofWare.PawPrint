@@ -810,14 +810,44 @@ module IntrinsicMethodKeys =
             // comparison that the swapped-in body does not. No guest PawPrint supports today can see
             // that; a guest reading `GC.GetTotalAllocatedBytes` could in principle.
             //
-            // The sibling `RuntimeHelpers.EnumEquals` is deliberately *not* listed here: its swapped-in
-            // body is a different one (`ceq`), so it needs its own review against `Enum.Equals(object)`,
-            // and no guest covers it. A guest reaching it still fails loudly at the intrinsic TODO.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L371-L377
             pattern
                 "System.Private.CoreLib"
                 "System.Runtime.CompilerServices.RuntimeHelpers"
                 "EnumCompareTo"
+                [ IntrinsicParameterPattern.Any ; IntrinsicParameterPattern.Any ]
+            // Sibling of `EnumCompareTo` above, and the EE swaps its body on the same terms: the same
+            // eight underlying types, from the same function, in the branch immediately before it
+            // (jitinterface.cpp:7342-7382). The two differ only in what the swapped-in body is and in
+            // which `Enum` member the shipped one reaches.
+            //
+            // Here the swap emits `ldarg.0; ldarg.1; ceq; ret`, and the shipped body is
+            // `ldarga.s 0; ldarg.1; box T; constrained. T; callvirt Object::Equals(object); ret`.
+            // (C# emitted the base-most declaration, but `constrained.` on an enum resolves it to
+            // `Enum::Equals(object)`, which overrides it; the enum itself declares no `Equals`, so the
+            // receiver is boxed and dispatched normally.) `Enum.Equals(object)` has three preambles,
+            // all unreachable for this call shape: `obj is null` cannot hold, since boxing a struct
+            // never yields null; `this == obj` is reference equality between two boxes `box` has just
+            // allocated separately; and `GetType() != obj.GetType()` is foreclosed by the `(T, T)`
+            // signature. So control always reaches the switch, which compares the two boxes' raw bytes
+            // at the underlying type's width — the same answer `ceq` gives, since the widening `ldarg`
+            // applies to a 1- or 2-byte enum is injective on those bytes whichever way it signs them.
+            //
+            // Same divergence as above, in the same conservative direction: two boxes per comparison
+            // that the swapped-in body does not allocate.
+            //
+            // Where the swap does *not* fire the shipped body is what real .NET runs too, so admitting
+            // it is faithful by construction rather than by any argument about what it computes. That
+            // switch does answer for bool, char, float, double, nint and nuint, under the `RARE_ENUMS`
+            // its own file defines (Enum.cs:5-7); only genuinely unknown metadata reaches the default
+            // arm. None of it is reachable from C#, which admits only those eight as an underlying
+            // type, and a precompiled assembly carrying such an enum does not get this far under
+            // PawPrint anyway — measured, it stops earlier, when one is passed as a call argument.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Enum.cs#L1190-L1248
+            pattern
+                "System.Private.CoreLib"
+                "System.Runtime.CompilerServices.RuntimeHelpers"
+                "EnumEquals"
                 [ IntrinsicParameterPattern.Any ; IntrinsicParameterPattern.Any ]
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L127
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L137
