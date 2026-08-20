@@ -326,13 +326,12 @@ class Program
         // `FileMode.Open` on its own, so nothing here creates or truncates; those
         // paths are exercised by `CreateSeeded.cs` and `TruncateSeeded.cs`.
         //
-        // `FileShare.None` rather than the default `FileShare.Read`, and not
-        // arbitrarily: `SafeFileHandle.CanLockTheFile` returns immediately for
-        // `LOCK_EX`, while for a `LOCK_SH` taken with write access it asks
-        // `SystemNative_GetFileSystemType` first (locking is unsafe on NFS, CIFS
-        // and SMB). PawPrint has no handler for that native yet, so the default
-        // share mode reaches an unimplemented one. The write path itself is
-        // identical either way — only which lock is taken differs.
+        // `FileShare.None` rather than the default `FileShare.Read`, which takes
+        // `LOCK_EX` and so returns from `SafeFileHandle.CanLockTheFile` without
+        // consulting `SystemNative_GetFileSystemType`. The default share mode
+        // is exercised by the `File.WriteAllBytes` rows at the end of this file;
+        // the write path itself is identical either way, and only which lock is
+        // taken differs.
         using (FileStream stream = new FileStream("h", FileMode.Open, FileAccess.Write, FileShare.None))
         {
             stream.Write(new byte[] { (byte)'X', (byte)'Y' }, 0, 2);
@@ -379,6 +378,41 @@ class Program
         // open for writing, whoever is asking.
         check = 53;
         if (OpenPath("f", O_WRONLY) == new IntPtr(-1)) return check;
+
+        // `File.WriteAllBytes`, which is the BCL's commonest write API and the
+        // one combination that needs `SystemNative_GetFileSystemType`: it opens
+        // `(FileMode.Create, FileAccess.Write, FileShare.Read)`, and a shared
+        // lock taken under write access is exactly what `CanLockTheFile`
+        // consults the filesystem type for.
+        //
+        // Nothing here asserts *which* filesystem either runtime reports —
+        // that number is a property of whichever mount the oracle's scratch
+        // directory is on, so it lives in the impure half. What is portable is
+        // that both runtimes are willing to lock it, and hence that the write
+        // goes through at all.
+        check = 54;
+        File.WriteAllBytes("g", new byte[] { (byte)'a', (byte)'b', (byte)'c' });
+        read = File.ReadAllBytes("g");
+        if (read.Length != 3 || read[0] != (byte)'a' || read[2] != (byte)'c') return check;
+
+        // `FileMode.Create` truncates, so the shorter payload must leave no
+        // tail of the five seeded bytes behind. Without this, a runtime that
+        // wrote three bytes over "hello" and left "lo" would pass check 54.
+        check = 55;
+        File.WriteAllBytes("g", new byte[] { (byte)'z' });
+        read = File.ReadAllBytes("g");
+        if (read.Length != 1 || read[0] != (byte)'z') return check;
+
+        // The same path with the default share mode spelled out on a
+        // `FileStream`, so that a `File.WriteAllBytes` that stopped using
+        // `FileShare.Read` internally could not silently stop covering it.
+        check = 56;
+        using (FileStream stream = new FileStream("g", FileMode.Open, FileAccess.Write, FileShare.Read))
+        {
+            stream.Write(new byte[] { (byte)'q' }, 0, 1);
+        }
+        read = File.ReadAllBytes("g");
+        if (read.Length != 1 || read[0] != (byte)'q') return check;
 
         return 0;
     }
