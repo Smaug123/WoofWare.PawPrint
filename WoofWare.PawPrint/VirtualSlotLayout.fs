@@ -404,6 +404,18 @@ module VirtualSlotLayout =
             /// vtable only for `typeID == ThisClassID()`, methodtablebuilder.cpp:6363-6366), so
             /// deciding that needs the chain's identities and not only its slots.
             Owner : SlotOwner
+            /// This type and each of its ancestors in turn, most-derived first, each paired with the
+            /// substitution its signatures are read through *as seen from this type*.
+            ///
+            /// A MethodImpl declaration names an ancestor by instantiation, not by definition:
+            /// `FindDeclMethodOnClassInHierarchy` finds it by comparing MethodTables
+            /// (`pCur->GetMethodTable() == pDeclMT`), and `B&lt;int32&gt;` and `B&lt;string&gt;` are different
+            /// MethodTables sharing one `ResolvedTypeIdentity`. The substitution is what tells them
+            /// apart, and it is comparable: an argument is kept as a `Spelled` TypeDefn rather than
+            /// concretised, so composing `rebase` down a chain yields the same value `forBase` yields
+            /// for the same spelling -- measured on a grandparent, where `CG`'s `.override
+            /// AG&lt;int32&gt;::M` and the chain's twice-rebased `AG`1` entry compare equal.
+            Chain : (ResolvedTypeIdentity * TypeConcretization.SubstitutionContext) list
         }
 
 
@@ -471,24 +483,29 @@ module VirtualSlotLayout =
                             }
                     }
 
+                let rebaseSubstitution (substitution : TypeConcretization.SubstitutionContext) =
+                    TypeConcretization.SubstitutionContext.rebase baseIdentity arguments substitution
+
                 state,
                 Some (
                     parent,
                     List.map rebase parent.Vtable,
-                    parent.Placed |> List.map (fun (slot, i) -> rebase slot, i)
+                    parent.Placed |> List.map (fun (slot, i) -> rebase slot, i),
+                    parent.Chain
+                    |> List.map (fun (identity, substitution) -> identity, rebaseSubstitution substitution)
                 )
 
         let baseSlots =
             match parentAndBaseSlots with
             | None -> []
-            | Some (_, baseSlots, _) -> baseSlots
+            | Some (_, baseSlots, _, _) -> baseSlots
 
         // The chain's placements, rebased into this type's vocabulary, so that a MethodImpl
         // declaration spelled here can be compared against an ancestor's declaration.
         let inheritedPlacements =
             match parentAndBaseSlots with
             | None -> []
-            | Some (_, _, placements) -> placements
+            | Some (_, _, placements, _) -> placements
 
         // Shared with the walk past the vtable, so that the two cannot disagree about what the
         // type declares -- see `declaredMethodsOf` for what it drops and why. Upstream's
@@ -685,8 +702,15 @@ module VirtualSlotLayout =
             PlacedVtable.Vtable = slots
             PlacedVtable.Placed = inheritedPlacements @ List.rev placedReversed
             PlacedVtable.NumParentVirtuals = List.length baseSlots
-            PlacedVtable.Parent = parentAndBaseSlots |> Option.map (fun (parent, _, _) -> parent)
+            PlacedVtable.Parent = parentAndBaseSlots |> Option.map (fun (parent, _, _, _) -> parent)
             PlacedVtable.Owner = owner
+            PlacedVtable.Chain =
+                (owner.Identity, owner.Substitution)
+                :: (
+                    match parentAndBaseSlots with
+                    | None -> []
+                    | Some (_, _, _, chain) -> chain
+                )
         }
 
     /// The instance vtable of the generic definition `identity` -- the layout every instantiation of
@@ -774,14 +798,18 @@ module VirtualSlotLayout =
             match memberRef.Signature with
             | MemberSignature.Field _ ->
                 failwith $"%s{operation}: MethodImpl on %s{table.Owner.Description} names a field as its declaration"
-            | MemberSignature.Method _ ->
+            | MemberSignature.Method signature ->
 
             // Only the *identity* of the parent is needed to decide whether this row can write the
             // vtable at all; the instantiation matters only once it does, which is the refusal below.
             let state, parentIdentity =
                 match memberRef.Parent with
                 | MetadataToken.TypeDefinition handle ->
-                    state, Some (ResolvedTypeIdentity.ofDefinitionInAssembly assembly.Name.FullName handle)
+                    state,
+                    Some (
+                        ResolvedTypeIdentity.ofDefinitionInAssembly assembly.Name.FullName handle,
+                        ImmutableArray.Empty
+                    )
                 | MetadataToken.TypeReference handle ->
                     let state, _, resolved =
                         IlMachineTypeResolution.resolveTypeFromRef
@@ -792,43 +820,109 @@ module VirtualSlotLayout =
                             state
 
                     state,
-                    Some (ResolvedTypeIdentity.ofDefinitionInAssembly resolved.AssemblyFullName resolved.TypeDefHandle)
+                    Some (
+                        ResolvedTypeIdentity.ofDefinitionInAssembly resolved.AssemblyFullName resolved.TypeDefHandle,
+                        ImmutableArray.Empty
+                    )
                 | MetadataToken.TypeSpecification handle ->
-                    let spelling =
+                    let spelling, arguments =
                         match assembly.TypeSpecs.[handle].Signature with
-                        | TypeDefn.GenericInstantiation (generic, _) -> generic
-                        | nominal -> nominal
+                        | TypeDefn.GenericInstantiation (generic, arguments) ->
+                            generic, ImmutableArray.CreateRange arguments
+                        | nominal -> nominal, ImmutableArray.Empty
 
                     let state, identity =
                         nominalIdentityOfSpelling loggerFactory baseClassTypes operation state assembly spelling
 
-                    state, Some identity
+                    state, Some (identity, arguments)
                 | _ ->
                     // A MemberRef parent may also be a ModuleRef or a MethodDef (the vararg case),
                     // neither of which can name a class ancestor's method.
                     state, None
 
-            // The class chain's identities. An ancestor that declares no virtual of its own
-            // contributes nothing to `Placed`, so membership has to be decided from the chain rather
-            // than from the slots.
-            let chainIdentities =
-                let rec walk (table : PlacedVtable) =
-                    table.Owner.Identity
-                    :: (
-                        match table.Parent with
-                        | None -> []
-                        | Some parent -> walk parent
-                    )
-
-                walk table
-
             match parentIdentity with
-            | Some parentIdentity when chainIdentities |> List.contains parentIdentity ->
-                failwith
-                    $"TODO: %s{operation} for %s{table.Owner.Description}, which carries a MethodImpl whose declaration is a MemberRef naming the class ancestor %O{parentIdentity.TypeDefinition.Get}; resolving one needs the ancestor identified by instantiation rather than by definition, searched together with its own bases, and matched exact-signature-first, as MethodTableBuilder::FindDeclMethodOnClassInHierarchy does"
-            | _ ->
-                // An interface, or a type unrelated to this one: not a vtable write.
+            | None ->
+                // A ModuleRef or MethodDef parent: neither can name a class ancestor's method.
                 state, None
+            | Some (parentIdentity, parentArguments) ->
+
+            // The declaration names its ancestor *by instantiation*: upstream matches MethodTables
+            // (`pCur->GetMethodTable() == pDeclMT`), and `B<int32>` and `B<string>` are different
+            // MethodTables sharing one `ResolvedTypeIdentity`. Comparing the substitution is what
+            // separates them. Comparing only the identity would accept `.override B<int32>::M` from a
+            // `C : B<string>` -- and whenever the declaration's signature mentions no type variable
+            // the signature comparison agrees too, so the row would write a slot for a type CoreCLR
+            // rejects with `MI_DECLARATIONNOTFOUND`.
+            let declarationSubstitution =
+                TypeConcretization.SubstitutionContext.forBase
+                    table.Owner.AssemblyFullName
+                    parentArguments
+                    table.Owner.Substitution
+
+            // Is the named type an ancestor at all, and if so at the instantiation the declaration
+            // spells? The two questions are kept apart because their answers mean opposite things: not
+            // an ancestor is the ordinary interface-declaration case, which writes the dispatch map
+            // and not the vtable; an ancestor at a *different* instantiation is metadata CoreCLR
+            // refuses (`MI_DECLARATIONNOTFOUND`), and answering "no vtable write" for it would lay out
+            // a type the runtime cannot load.
+            let namedLevel =
+                table.Chain
+                |> List.tryFind (fun (identity, substitution) ->
+                    identity = parentIdentity && substitution = declarationSubstitution
+                )
+
+            match namedLevel with
+            | None ->
+                if table.Chain |> List.exists (fun (identity, _) -> identity = parentIdentity) then
+                    failwith
+                        $"%s{operation}: MethodImpl on %s{table.Owner.Description} declares an override of %s{memberRef.PrettyName} on an ancestor it names at an instantiation this type does not derive from; CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_DECLARATIONNOTFOUND) rather than laying out a method table for it"
+                else
+                    // An interface, or a type unrelated to this one: not a vtable write. This is 4084
+                    // of corelib's 4120 MethodImpl rows.
+                    state, None
+            | Some (namedIdentity, _) ->
+
+            // Only the named ancestor is searched, and only for an *exact* signature match.
+            //
+            // Upstream does more: `FindDeclMethodOnClassInHierarchy` searches the named type together
+            // with its own bases, and does so in two passes, exact matches before
+            // equivalent-under-substitution ones. Neither is implemented, because neither is reachable
+            // by any test here and shipping an untested rule is worse than refusing.
+            //
+            // Measured, on the fabricated generic chain: with exact matching alone every case still
+            // passes, so a MemberRef declaration to a method on a generic base is spelled with the
+            // *definition's* variables -- `M(!0)`, structurally equal to the declaration -- and the
+            // equivalent pass never fires. And the hierarchy walk cannot be provoked at all through
+            // `PersistedAssemblyBuilder`: `DefineMethodOverride` resolves the `MethodInfo` it is given
+            // to the type that declares it, so a declaration naming a type which merely *inherits* the
+            // method needs a hand-assembled image.
+            let exactMatches =
+                table.Placed
+                |> List.filter (fun (slot, _) ->
+                    slot.DeclaredBy.Identity = namedIdentity
+                    && slot.Method.Name = memberRef.PrettyName
+                    && slot.Method.Signature = signature
+                )
+
+            match exactMatches with
+            | [ single ] -> state, Some single
+            | [] ->
+                let named =
+                    table.Placed
+                    |> List.filter (fun (slot, _) ->
+                        slot.DeclaredBy.Identity = namedIdentity
+                        && slot.Method.Name = memberRef.PrettyName
+                    )
+                    |> List.length
+
+                failwith
+                    $"TODO: %s{operation} for %s{table.Owner.Description}, whose MethodImpl declares an override of %s{memberRef.PrettyName} on an ancestor that declares %i{named} method(s) of that name, none with an identical signature; resolving it needs the ancestor's own bases searched too, and signatures compared under substitution rather than structurally, as MethodTableBuilder::FindDeclMethodOnClassInHierarchy does in its second pass"
+            | several ->
+                // Two declarations on one type with the same name and the *same* signature blob is
+                // metadata ECMA-335 II.22.26 forbids, so this is unreachable through a valid image;
+                // refusing beats picking one and writing a slot on a guess.
+                failwith
+                    $"%s{operation}: MethodImpl on %s{table.Owner.Description} declares an override of %s{memberRef.PrettyName}, which the named ancestor declares %i{List.length several} times with an identical signature; ECMA-335 II.22.26 forbids a type repeating a method signature"
         | other ->
             failwith
                 $"%s{operation}: MethodImpl on %s{table.Owner.Description} names its declaration with the token %O{other}, which is neither a MethodDef nor a MemberRef; ECMA-335 II.22.27 permits only those two"

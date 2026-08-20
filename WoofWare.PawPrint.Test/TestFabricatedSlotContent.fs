@@ -108,6 +108,14 @@ module TestFabricatedSlotContent =
         let agMethod = agBuilder.DefineMethod ("M", newSlot, typeof<int>, [| tParameter |])
 
         body agMethod (tagOf "AG")
+
+        // A second `M` of a different arity, which nothing ever calls. It is here so that resolving
+        // `CG`'s declaration has to compare *signatures* and not merely names: with a single `M` on the
+        // ancestor, matching on the name alone gives the same answer and the signature comparison goes
+        // untested. Measured -- with this overload present the mutant that drops that comparison is
+        // killed; without it, that mutant survives the entire suite.
+        body (agBuilder.DefineMethod ("M", newSlot, typeof<int>, [| tParameter ; typeof<int> |])) 99
+
         let agType = agBuilder.CreateType ()
 
         let agClosed = agType.MakeGenericType [| typeof<int> |]
@@ -244,20 +252,12 @@ public static class Driver
             | :? UnauthorizedAccessException -> ()
 
     /// `(declaration spelling, most-derived receiver)` pairs, as the driver spells them.
-    let private spellings : string list = [ "A" ; "B" ; "C" ; "D" ]
-
-    /// The generic chain's spellings, parked. `CG`'s MethodImpl declaration is a MemberRef whose parent
-    /// is a TypeSpec naming a class ancestor, and `declarationSlot` refuses those rather than resolving
-    /// them: doing it faithfully needs the ancestor identified by instantiation rather than by
-    /// definition, searched together with its own bases, and matched exact-signature-first, which is
-    /// `FindDeclMethodOnClassInHierarchy` and the substitution-chain composition it does.
-    ///
-    /// The fabrication and the driver stay, because they are what will check that change. Un-park all
-    /// four together: `AG` and `BG` are the two that move, and `CG`/`DG` would pass even with the
-    /// MethodImpl ignored entirely, so un-parking only those would look like progress without being
-    /// any.
-
-    let private genericSpellings : string list = [ "AG" ; "BG" ; "CG" ; "DG" ]
+    /// Every spelling the driver knows, non-generic chain and generic chain alike. The generic ones
+    /// exercise a MethodImpl declaration that is a MemberRef whose parent is a TypeSpec -- `CG`'s
+    /// `.override AG<int32>::M` -- which is resolved by finding the ancestor at that instantiation and
+    /// then searching it and its own bases, exact signature matches before equivalent ones.
+    let private spellings : string list =
+        [ "A" ; "B" ; "C" ; "D" ; "AG" ; "BG" ; "CG" ; "DG" ]
 
     let private checkSpelling (spelling : string) : unit =
         let receiver =
@@ -289,6 +289,8 @@ public static class Driver
             |> List.filter (fun (candidate, _) ->
                 candidate.DeclaredBy.Identity = declarationIdentity
                 && candidate.Method.Name = "M"
+                // `AG`1` declares two `M`s; the two-parameter one is the overload nothing calls.
+                && candidate.Method.Signature.RequiredParameterCount <> 2
             )
             |> function
                 | [ (_, index) ] -> index
@@ -312,57 +314,48 @@ public static class Driver
     let ``the slot a declaration owns holds the body the real runtime dispatches to`` (spelling : string) : unit =
         checkSpelling spelling
 
-    [<TestCaseSource(nameof genericSpellings)>]
-    [<Explicit "declarationSlot refuses a MemberRef declaration naming a class ancestor; see genericSpellings">]
-    let ``the slot a generic declaration owns holds the body the real runtime dispatches to``
-        (spelling : string)
-        : unit
-        =
-        checkSpelling spelling
-
-    [<Test>]
-    let ``a MemberRef declaration naming a class ancestor is refused, not guessed`` () : unit =
-        // The parked cases must fail *for the documented reason*. Without this, the refusal could be
-        // replaced by a wrong answer and the only signal would be four tests that nobody runs.
-        let exn = Assert.Throws<Exception> (fun () -> checkSpelling "AG")
-
-        exn.Message |> shouldContainText "FindDeclMethodOnClassInHierarchy"
-
     [<Test>]
     let ``the fabrication really does move a slot away from placement`` () : unit =
         // The fixture would agree with any content rule whatever if placement alone already gave the
-        // right answer everywhere. It does not: `C` claims `A`'s slot with a MethodImpl, so slot 0 is
-        // owned by `B.M` and holds `D.M`.
+        // right answer everywhere. It does not: in each chain the third type claims the first's slot
+        // with a MethodImpl, so that slot is *owned* by the second type's method and *holds* the
+        // fourth's.
         //
-        // Note that every spelling *does* reach `D` here, so "different spellings reach different
-        // bodies" would be the wrong check -- it is vacuously false and says nothing. What matters is
-        // that the content table disagrees with the identity table at a slot some spelling names.
-        let receiverIdentity = identityOfFabricated "D"
-        let state = state ()
+        // Note that every spelling reaches the most-derived body here, so "different spellings reach
+        // different bodies" would be the wrong check: it is vacuously false and says nothing. What
+        // matters is that the content table disagrees with the identity table at a slot some spelling
+        // names.
+        let movedIn (receiver : string) (spellingsOfChain : string list) : string list =
+            let receiverIdentity = identityOfFabricated receiver
+            let state = state ()
 
-        let state, identityTable =
-            VirtualSlotLayout.vtableOfDefinition loggerFactory bct "test" state receiverIdentity
+            let state, identityTable =
+                VirtualSlotLayout.vtableOfDefinition loggerFactory bct "test" state receiverIdentity
 
-        let state, contentTable =
-            VirtualSlotLayout.contentVtableOfDefinition loggerFactory bct "test" state receiverIdentity
+            let state, contentTable =
+                VirtualSlotLayout.contentVtableOfDefinition loggerFactory bct "test" state receiverIdentity
 
-        let state, placed =
-            VirtualSlotLayout.placedSlotsOfDefinition loggerFactory bct "test" state receiverIdentity
+            let state, placed =
+                VirtualSlotLayout.placedSlotsOfDefinition loggerFactory bct "test" state receiverIdentity
 
-        ignore<IlMachineState> state
+            ignore<IlMachineState> state
 
-        let slotOf (spelling : string) : int =
-            let declaration = identityOfFabricated spelling
+            // `AG`1` declares two `M`s; the two-parameter one is the overload nothing calls. The
+            // non-generic chain's `M` takes no parameters and the generic chain's takes one, so
+            // "not the two-parameter one" is what names the called method in both.
+            let slotOf (spelling : string) : int =
+                let declaration = identityOfFabricated spelling
 
-            placed
-            |> List.filter (fun (candidate, _) ->
-                candidate.DeclaredBy.Identity = declaration && candidate.Method.Name = "M"
-            )
-            |> List.exactlyOne
-            |> snd
+                placed
+                |> List.filter (fun (candidate, _) ->
+                    candidate.DeclaredBy.Identity = declaration
+                    && candidate.Method.Name = "M"
+                    && candidate.Method.Signature.RequiredParameterCount <> 2
+                )
+                |> List.exactlyOne
+                |> snd
 
-        let moved =
-            spellings
+            spellingsOfChain
             |> List.filter (fun spelling ->
                 let slot = slotOf spelling
 
@@ -370,6 +363,7 @@ public static class Driver
                 <> tagOfDeclaringType (List.item slot contentTable).DeclaredBy.Description
             )
 
-        // Measured: `A` and `B` both name slot 0, which placement gives to `B.M` and the MethodImpl
-        // plus unification moves to `D.M`.
-        moved |> shouldEqual [ "A" ; "B" ]
+        // Measured: in each chain the two lower spellings name the slot placement gave to the second
+        // type, which the MethodImpl plus unification moves to the fourth type's body.
+        movedIn "D" [ "A" ; "B" ; "C" ; "D" ] |> shouldEqual [ "A" ; "B" ]
+        movedIn "DG" [ "AG" ; "BG" ; "CG" ; "DG" ] |> shouldEqual [ "AG" ; "BG" ]
