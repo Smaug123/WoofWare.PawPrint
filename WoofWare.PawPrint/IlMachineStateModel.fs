@@ -52,6 +52,30 @@ type IlMachineState =
         /// compatibility facades reference implementation assemblies as `Version=0.0.0.0`), so the
         /// two must not be conflated; see `LoadedAssemblies`.
         _LoadedAssemblies : LoadedAssemblies
+        /// Memo of `VirtualSlotLayout.dispatchTableOfClosed`, keyed on the *definition* whose method
+        /// table it is, because every instantiation of a definition shares one table.
+        ///
+        /// A memo rather than state: the walk is a pure function of metadata that never changes once
+        /// loaded, so a hit and a miss agree by construction. The walk does mutate `IlMachineState` on
+        /// the way -- registering concrete types, binding assembly references -- but those are
+        /// idempotent and persist from the miss that performed them, so skipping them on a hit changes
+        /// nothing. PawPrint supports neither assembly unloading nor EnC, so nothing invalidates an
+        /// entry.
+        ///
+        /// It exists because dispatch reads it per `callvirt`. Measured on the dispatch-saturated
+        /// benchmark guest: rebuilding every time cost 255.2ms and 735.2MB where the signature-matching
+        /// walk this replaced cost 184.7ms and 552.7MB, and memoising recovers nearly all of it. Run
+        /// back to back against that walk, memoised is 188.5ms (StdDev 4.7, median 185.6) and 565.6MB
+        /// against 180.1ms (StdDev 3.1) and 552.7MB -- +4.7% and +2.3%, the time within noise.
+        ///
+        /// That the memo tells the truth is checked by forcing every lookup to miss: the suite's 4019
+        /// tests then recompute each table and agree exactly. Worth checking rather than arguing,
+        /// because a wrong entry is invisible -- nothing downstream has a second opinion to disagree
+        /// with.
+        ///
+        /// Add through `WithVirtualSlotTable`, never by assignment: an entry that disagreed with the
+        /// walk would be undetectable, every later read taking the memo's word for it.
+        _VirtualSlotTables : Map<ResolvedTypeIdentity, DispatchTable>
         /// The definition identity of the assembly whose entry point this run was started from:
         /// CoreCLR's "root assembly" for the AppDomain, which is what `Assembly.GetEntryAssembly`
         /// reports. Recorded at `IlMachineState.initial` rather than derived, because neither
@@ -199,6 +223,11 @@ type IlMachineState =
 
     /// Register an assembly under its own definition identity. Idempotent: if an assembly with
     /// that identity is already loaded, the existing instance is kept.
+    member this.WithVirtualSlotTable (definition : ResolvedTypeIdentity) (table : DispatchTable) =
+        { this with
+            _VirtualSlotTables = this._VirtualSlotTables |> Map.add definition table
+        }
+
     member this.WithLoadedAssembly (value : DumpedAssembly) =
         { this with
             _LoadedAssemblies = this._LoadedAssemblies.WithLoadedAssembly value

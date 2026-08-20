@@ -137,7 +137,7 @@ module TestUnresolvableDeclaration =
             Image : byte[]
             Fabricated : DumpedAssembly
             /// The dispatch table of the named fabricated type, as a closed runtime type.
-            Table : string -> ((VirtualSlotLayout.VtableSlot * int) list * VirtualSlotLayout.VtableSlot list) option
+            Table : string -> DispatchTable option
         }
 
     let private fixtureFor (description : string) (withOverloads : bool) : Fixture =
@@ -284,4 +284,13 @@ module TestUnresolvableDeclaration =
         for fixture in fixtures do
             match fixture.Table "Plain" with
             | None -> failwith $"expected Plain's dispatch table to be built in the %s{fixture.Description} image"
-            | Some (_, content) -> content |> List.length |> shouldBeGreaterThan 0
+            | Some table -> table.Occupants.Length |> shouldBeGreaterThan 0
+
+    /// Source compatibility for the two types that moved to the namespace. Both were public API of a
+    /// shipped package and nested in `VirtualSlotLayout`; these are the qualified names an existing
+    /// consumer wrote, and this file failing to compile is the regression.
+    ///
+    /// It cannot check *binary* compatibility: an abbreviation is not a distinct CLR type, so a
+    /// consumer compiled against the previous package must be recompiled.
+    let private _sourceCompatibility (slot : VirtualSlotLayout.VtableSlot) (owner : VirtualSlotLayout.SlotOwner) =
+        slot.Method.Name, owner.Identity

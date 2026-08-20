@@ -790,22 +790,28 @@ module IlMachineStateExecution =
             | None ->
                 // A receiver with no method table: a byref, pointer or function pointer.
                 state, None
-            | Some (placed, content) ->
+            | Some table ->
 
             let target = methodToCall.DeclaringAssemblyFullName, methodToCall.IdentityKey
 
             match
-                placed
-                |> List.tryFind (fun (slot, _) -> (slot.DeclaredBy.AssemblyFullName, slot.Method.IdentityKey) = target)
+                (match table.SlotOfDeclaration.TryGetValue target with
+                 | true, slot -> Some slot
+                 | false, _ -> None)
             with
             | None ->
                 // The target owns no vtable slot anywhere on the receiver's chain -- either it holds
                 // none of its own declaring type's slots, or the receiver does not derive from that
                 // type at all. Valid IL gives neither, so hand the question back rather than guess.
                 state, None
-            | Some (_, slot) ->
+            | Some slot ->
 
-            match List.tryItem slot content with
+            match
+                (if slot >= 0 && slot < table.Occupants.Length then
+                     Some table.Occupants.[slot]
+                 else
+                     None)
+            with
             | None ->
                 // Prefix stability means a slot named by an ancestor is always within the receiver's
                 // table, so this is unreachable for a chain the walk built consistently. Falling back
