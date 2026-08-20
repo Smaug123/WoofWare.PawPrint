@@ -451,7 +451,7 @@ module TypeDefn =
                 // `TypeDefn.Array` records only the rank, so a shape carrying explicit sizes or a
                 // non-zero lower bound would decode to the same `TypeDefn` -- and thence to the same
                 // `ConcreteTypeHandle` -- as the unadorned array of that rank. Handle equality
-                // decides more than type identity: `NativeRuntimeTypeHelpers` matches vtable
+                // decides more than type identity: `VirtualSlotLayout` matches vtable
                 // slots by comparing concretised signatures, and CoreCLR's `CompareElementType` does
                 // compare sizes and bounds, so silently conflating the two would bind an override to
                 // the wrong slot. Refuse at the point of loss rather than answer wrongly downstream.

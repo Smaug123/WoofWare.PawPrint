@@ -370,7 +370,7 @@ module IlMachineStateExecution =
             // The return column is compared separately, because PawPrint's *dispatch* rule is
             // deliberately looser than CoreCLR's *layout* rule: it accepts an assignable return so
             // that a covariant-return override can be found, where
-            // `NativeRuntimeTypeHelpers.candidateFillsSlot` requires the exact signature CoreCLR
+            // `VirtualSlotLayout.candidateFillsSlot` requires the exact signature CoreCLR
             // requires. `skipReturnType` is how `MethodSignature::SignaturesEquivalent` expresses
             // the same latitude.
             let state, signatureMatches =
@@ -886,8 +886,9 @@ module IlMachineStateExecution =
         /// the ones `VirtualDispatchGenericDefinitionSlots.cs` parks wrongly. Serving them here needs
         /// each ancestor's signature read in *its own* type variables -- two declarations that differ
         /// in those variables can coincide once substituted, as `A&lt;T&gt;.M(T)` and `B&lt;T&gt;.M(string)` do at
-        /// `T = string` -- which is the definition-level base walk in the layout code, and that
-        /// compiles after this file.
+        /// `T = string` -- which is the definition-level base walk in `VirtualSlotLayout`. That
+        /// module now compiles before this file, so the obstacle is no longer compilation order but
+        /// that this rule reconstructs the slot from declarations instead of reading the table.
         ///
         /// The exclusion is not the only thing standing between a generic chain and a wrong answer:
         /// `declarationsMatch` builds its comparands with an *empty* substitution context, so a
@@ -933,8 +934,10 @@ module IlMachineStateExecution =
         /// the ones `VirtualDispatchGenericDefinitionSlots.cs` parks wrongly. Serving them here needs
         /// each ancestor's signature read in *its own* type variables -- two declarations that differ
         /// in those variables can coincide once substituted, as `A&lt;T&gt;.M(T)` and `B&lt;T&gt;.M(string)` do at
-        /// `T = string` -- which is the definition-level base walk in the layout code, and that
-        /// compiles after this file. The exclusion is not the only guard: `declarationsMatch` builds
+        /// `T = string` -- which is the definition-level base walk in `VirtualSlotLayout`. That
+        /// module now compiles before this file, so the obstacle is no longer compilation order but
+        /// that this rule reconstructs the slot from declarations instead of reading the table.
+        /// The exclusion is not the only guard: `declarationsMatch` builds
         /// its comparands with an *empty* substitution context, so a signature mentioning a type
         /// variable is a detected misuse there rather than a silent mismatch, which is how removing
         /// the exclusion is tested.
