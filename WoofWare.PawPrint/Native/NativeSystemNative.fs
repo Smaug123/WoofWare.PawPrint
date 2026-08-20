@@ -650,14 +650,17 @@ module NativeSystemNative =
         let now = EmulatedKernel.fileTimestamp state.Kernel
 
         // A content-changing write strips a file's set-user-ID and set-group-ID
-        // bits unless the writer is root; measured on both platforms.
+        // bits unless the writer is root; measured on both platforms, which
+        // disagree only about `S_ISGID` on a file that is not group-executable.
+        let rule = SimulatedUnixPlatform.setGroupIdOnWrite state.Kernel.UnixPlatform
+
         let privilege =
             if EmulatedKernel.isPrivileged state.Kernel then
                 WritePrivilege.Privileged
             else
                 WritePrivilege.Unprivileged
 
-        match VirtualFileSystem.writeFile inode offset bytes privilege now state.Kernel.FileSystem with
+        match VirtualFileSystem.writeFile inode offset bytes rule privilege now state.Kernel.FileSystem with
         | Ok filesystem ->
             state.MapKernel (fun kernel ->
                 { kernel with
@@ -3151,14 +3154,12 @@ module NativeSystemNative =
             // already run.
             if not readable then
                 fail UnixError.EBADF
-            else if
 
-                // Darwin's turn to validate the offset: it has now resolved the
-                // descriptor, its seekability and its access mode, which is exactly
-                // the window in which it differs from Linux. On Linux this cannot
-                // fire, because the check above already did.
-                not offsetCheckedBeforeDescriptor && offsetInvalid
-            then
+            // Darwin's turn to validate the offset: it has now resolved the
+            // descriptor, its seekability and its access mode, which is exactly
+            // the window in which it differs from Linux. On Linux this cannot
+            // fire, because the check above already did.
+            else if not offsetCheckedBeforeDescriptor && offsetInvalid then
                 fail UnixError.EINVAL
             else
 
@@ -3284,22 +3285,20 @@ module NativeSystemNative =
             if bufferSize < 0 then
                 failwith
                     $"%s{operation}: fd %d{fd} was given bufferSize %d{bufferSize}, which is negative. The C shim casts that to an unsigned ~4 GB count rather than rejecting it (unlike SystemNative_Write, which goes through Common_Write and answers ERANGE), and what a kernel then does is not a fact PawPrint can state. Pass a non-negative size."
-            else if
 
-                // **Ahead of the descriptor, on both platforms** — which is where
-                // `pwrite` differs from `pread`, and it is measured rather than
-                // assumed. Every two-fault row is EINVAL on Linux *and* Darwin:
-                //
-                //   input                          Linux    Darwin
-                //   negative offset + bad fd       EINVAL   EINVAL
-                //   negative offset + pipe         EINVAL   EINVAL
-                //   negative offset + O_RDONLY fd  EINVAL   EINVAL
-                //
-                // For `pread`, Darwin resolves the descriptor first and answers EBADF
-                // or ESPIPE for the same shapes, so `SystemNative_PRead` needs a
-                // platform flag here and this does not. Do not copy that flag over.
-                fileOffset < 0L
-            then
+            // **Ahead of the descriptor, on both platforms** — which is where
+            // `pwrite` differs from `pread`, and it is measured rather than
+            // assumed. Every two-fault row is EINVAL on Linux *and* Darwin:
+            //
+            //   input                          Linux    Darwin
+            //   negative offset + bad fd       EINVAL   EINVAL
+            //   negative offset + pipe         EINVAL   EINVAL
+            //   negative offset + O_RDONLY fd  EINVAL   EINVAL
+            //
+            // For `pread`, Darwin resolves the descriptor first and answers EBADF
+            // or ESPIPE for the same shapes, so `SystemNative_PRead` needs a
+            // platform flag here and this does not. Do not copy that flag over.
+            else if fileOffset < 0L then
                 fail UnixError.EINVAL
             else
 
@@ -3366,16 +3365,14 @@ module NativeSystemNative =
             // screens nothing and discovers a bad address at the copy.
             if faultsBeforeOperation state.Kernel buffer bufferSize then
                 fail UnixError.EFAULT
-            else if
 
-                // A no-op on both platforms, and specifically one that leaves the
-                // inode alone: measured, a zero-length write moves neither `mtime` nor
-                // `ctime` and does not extend the file, even at an offset far past its
-                // end. The buffer is not resolved to storage, because nothing is read
-                // through it — `NULL` is an ordinary user address, so it reaches here
-                // rather than being screened above.
-                bufferSize = 0
-            then
+            // A no-op on both platforms, and specifically one that leaves the
+            // inode alone: measured, a zero-length write moves neither `mtime` nor
+            // `ctime` and does not extend the file, even at an offset far past its
+            // end. The buffer is not resolved to storage, because nothing is read
+            // through it — `NULL` is an ordinary user address, so it reaches here
+            // rather than being screened above.
+            else if bufferSize = 0 then
                 succeed 0 state
             else
 

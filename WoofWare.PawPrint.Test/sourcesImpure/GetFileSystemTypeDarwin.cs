@@ -32,11 +32,11 @@ using System.Runtime.InteropServices;
 // differential case; the other is that the file row reports whatever mount the
 // oracle's scratch directory is on.
 //
-// errno is read via `Marshal.GetLastSystemError`: with a raw `DllImport` there
-// is no generated stub to copy it to `GetLastPInvokeError`. CoreLib's own
-// declaration of this native has no `SetLastError` at all, so nothing in the
-// BCL ever reads these numbers — but a guest that asks for them sees what the
-// kernel left behind, and that is what these rows pin.
+// errno is read via `Marshal.GetLastSystemError`, the slot the syscall itself
+// writes, rather than the `GetLastPInvokeError` the `SetLastError` stub copies
+// it into. CoreLib's own declaration of this native has no `SetLastError` at
+// all, so nothing in the BCL ever reads these numbers — but a guest that asks
+// for them sees what the kernel left behind, and that is what these rows pin.
 //
 // The exit code is the index of the first check that failed; 0 means all passed.
 // Kept below 128, since an exit code is eight bits.
@@ -48,17 +48,13 @@ class Program
     static extern uint GetFileSystemType(IntPtr fd);
 
     // The same entry point without `SetLastError`, used by the last row alone.
-    // CoreCLR's `SetLastError` stub **zeroes errno before the call**, so through
-    // the import above a successful call reports 0 on real .NET whatever the
-    // kernel left behind — measured against the pinned runtime, which makes the
-    // final row's question unanswerable by that route.
-    //
-    // PawPrint does not model that pre-call clear: `Marshal.GetLastSystemError`
-    // reads the emulated kernel's errno directly rather than a per-call cache.
-    // Every row above zeroes errno itself before calling, so none of them can
-    // tell the two apart; only the last one could, which is why it takes this
-    // route instead. Modelling the stub's clear is a P/Invoke-wide change and
-    // belongs to its own slice.
+    // The stub for a flagged import **zeroes errno before the call**, on real
+    // .NET and now under PawPrint alike (sourcesPure/PInvokeSetLastError.cs), so
+    // through the import above a successful call reports 0 whatever the kernel
+    // left behind — which makes the final row's question unanswerable by that
+    // route. Every row above zeroes errno itself before calling, so none of them
+    // can tell the clear from its absence; only the last one could, which is why
+    // it takes this route instead.
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetFileSystemType")]
     static extern uint GetFileSystemTypeNoLastError(IntPtr fd);
 
@@ -177,11 +173,10 @@ class Program
         // above, since each of those zeroes errno itself first.
         //
         // Through the no-`SetLastError` import, for the reason given on its
-        // declaration. Note this is a PawPrint contract rather than a
-        // cross-runtime one: on real .NET no managed caller can observe whether
-        // a successful `fstatfs` disturbed errno at all — the `SetLastError`
-        // stub has already zeroed it, and without the stub the thread's cached
-        // value is simply never updated.
+        // declaration: the flagged import's stub zeroes errno on the way in, so
+        // through that one "left alone" and "cleared" would be the same
+        // observation. This row is not PawPrint-only — real .NET preserves the
+        // sentinel here too, which is how the whole file was validated.
         check = 14;
         IntPtr g = OpenPath("f", O_RDONLY);
         if (g == new IntPtr(-1)) return check;

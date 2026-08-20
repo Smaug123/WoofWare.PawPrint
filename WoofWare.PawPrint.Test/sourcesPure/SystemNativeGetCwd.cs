@@ -15,13 +15,12 @@ using System.Runtime.InteropServices;
 // growth loop depends on.
 class Program
 {
-    // Errno is read back through Marshal.GetLastSystemError rather than
-    // Marshal.GetLastPInvokeError, which is what CoreLib's own Interop.Sys.GetCwd
-    // reads immediately after this call. PawPrint does not yet act on a P/Invoke's
-    // SetLastError flag -- nothing copies the system error into the separate
-    // last-P/Invoke-error slot -- so the two runtimes do not currently agree on
-    // GetLastPInvokeError. SetLastError is still declared, because on the
-    // real runtime it is what makes the CLR preserve errno across the transition.
+    // The failing rows read the errno back twice over. Marshal.GetLastSystemError
+    // is errno itself, the slot the syscall writes; Marshal.GetLastPInvokeError is
+    // the separate thread-local that the SetLastError stub copies it into, and is
+    // what CoreLib's own Interop.Sys.GetCwd reads immediately after this call.
+    // Declaring the flag is what puts the same number in both, so both are
+    // asserted here rather than the second being taken on trust.
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetCwd", SetLastError = true)]
     static extern unsafe byte* GetCwd(byte* buffer, int bufferSize);
 
@@ -85,12 +84,14 @@ class Program
         byte* tooSmall = stackalloc byte[Big];
         if (GetCwd(tooSmall, length) != null) return 11;
         if (Marshal.GetLastSystemError() != ERANGE) return 12;
+        if (Marshal.GetLastPInvokeError() != ERANGE) return 13;
 
         // A zero-length buffer is EINVAL, not ERANGE: POSIX distinguishes
         // "you asked for nothing" from "your buffer is too small", and a guest
         // that conflated them would grow-and-retry forever.
-        if (GetCwd(tooSmall, 0) != null) return 13;
-        if (Marshal.GetLastSystemError() != EINVAL) return 14;
+        if (GetCwd(tooSmall, 0) != null) return 14;
+        if (Marshal.GetLastSystemError() != EINVAL) return 15;
+        if (Marshal.GetLastPInvokeError() != EINVAL) return 16;
 
         // Deliberately no negative-bufferSize case: the native shim asserts
         // bufferSize >= 0 before returning EINVAL, so a checked build of
