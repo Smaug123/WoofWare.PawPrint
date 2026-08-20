@@ -132,13 +132,15 @@ type SyncBlockSpuriousWakeupStrategy =
 /// elapses between these steps, something bad happens" surface as failing runs
 /// rather than latent races.
 ///
-/// The randomised variant only ever moves the clock onto an *outstanding*
-/// deadline, so each jump corresponds to a wait some thread had really posted:
-/// it changes when a timeout fires relative to other threads' progress. A
-/// strategy that advanced time by a random amount with no deadline pending
-/// would instead attack elapsed-time arithmetic — a related but distinct bug
-/// class — and is left for a future variant; `Scripted` can express individual
-/// jumps of that shape, but nothing generates them.
+/// The randomised variant is anchored to an *outstanding* deadline, so each
+/// jump corresponds to a wait some thread had really posted — but it may land
+/// past that deadline rather than exactly on it, because a real timeout fires
+/// late by however long the thread waited to be rescheduled. Landing exactly on
+/// the deadline models an overshoot of zero, which is the one value a real
+/// timeout essentially never has, and modelling it as always-zero hides every
+/// bug where a guest budgets against a wait: "I wait at most 50 ms against a
+/// 100 ms lease, so the lease survives" is sound if and only if a 50 ms wait
+/// takes 50 ms. See `EagerDeadlines`'s `maxOvershootTicks`.
 ///
 /// The strategy is data, not a closure, so it can be printed, diffed, and
 /// replayed across runs. Like `SpuriousWakeupStrategy`, each variant is
@@ -150,20 +152,39 @@ type ClockJitterStrategy =
     /// Runnable. Timeouts therefore fire on schedule, which masks
     /// elapsed-time-sensitive bugs.
     | Disabled
-    /// On each tick, with the given probability, jump the clock onto one of the
+    /// On each tick, with the given probability, jump the clock to one of the
     /// deadlines currently outstanding — chosen uniformly among *all* of them,
     /// not just the nearest, so a single jump can expire several waits at once
-    /// and the orderings that produces are reachable.
+    /// and the orderings that produces are reachable — plus an overshoot drawn
+    /// uniformly from `[0, maxOvershootTicks]`.
     ///
-    /// The coin and the choice are deterministic functions of
-    /// `(seed, stepCounter)`, so the same seed reproduces the same jump
-    /// sequence across runs. `probability` is rejected if it is NaN or outside
-    /// `[0.0, 1.0]`.
+    /// `maxOvershootTicks = 0` fires every timeout at exactly its deadline. That
+    /// is the cheapest setting and it reaches the "a timeout arm ran that never
+    /// otherwise runs" bug class, but *only* that class: a guest's measured
+    /// elapsed time is then exactly what it asked to wait for, so any bug that
+    /// needs a wait to overrun its nominal duration stays invisible. Give it a
+    /// non-zero bound to reach those; a bound of a few times the guest's
+    /// timeouts is the useful range, since an overshoot far smaller than a
+    /// timeout perturbs nothing a guest can measure.
+    ///
+    /// Uniform rather than the heavy-tailed distribution real scheduling latency
+    /// follows: this is a search, not a simulation, and the large overshoots are
+    /// the ones that find bugs, so they should not be rare.
+    ///
+    /// The coin, the choice and the overshoot are independent deterministic
+    /// functions of `(seed, stepCounter)`, so the same seed reproduces the same
+    /// jump sequence across runs. `probability` is rejected if it is NaN or
+    /// outside `[0.0, 1.0]`; `maxOvershootTicks` if it is negative (the clock is
+    /// monotonic) or above `ClockJitter.maxOvershootBoundTicks`. A bound that is
+    /// legal here but still large enough to run the clock past its representable
+    /// range is not rejected — that fault belongs to
+    /// `EmulatedKernel.withVirtualClockTicks`, which raises it naming the wait
+    /// responsible.
     ///
     /// Keep the probability small. Every jump discards the interval between the
     /// clock and the deadline, so a large one runs the guest's clock off into
     /// the distance and starves the very interleavings it is trying to explore.
-    | EagerDeadlines of seed : uint64 * probability : float
+    | EagerDeadlines of seed : uint64 * probability : float * maxOvershootTicks : int64
     /// Explicit `(stepCounter, targetTicks)` pairs: at the named tick, set the
     /// clock to the named value. Fully replayable, and the shrinking target —
     /// record what an `EagerDeadlines` run jumped and replay it with jumps
@@ -192,6 +213,20 @@ type ClockJitterStrategy =
 [<RequireQualifiedAccess>]
 module ClockJitter =
 
+    /// Largest `maxOvershootTicks` an `EagerDeadlines` strategy may name.
+    ///
+    /// `2^53 - 1`, because the overshoot draw scales a float in `[0, 1)` by the
+    /// inclusive range size: above `2^53` an `int64` is no longer exactly
+    /// representable as a `float`, so that size would round and whole stretches
+    /// of the range would become undrawable — an overshoot dial quietly
+    /// narrower than the number it was given. Rejecting is better than silently
+    /// sampling a different distribution from the documented one.
+    ///
+    /// Far above any useful setting: `2^53` ticks is about 28 years of
+    /// simulated time, against timeouts measured in milliseconds.
+    [<Literal>]
+    let maxOvershootBoundTicks : int64 = 9007199254740991L
+
     /// SplitMix64-style hash over `(seed, stepCounter, salt)`, giving a value in
     /// `[0.0, 1.0)`. Replayability comes from it being a pure hash with no
     /// mutable PRNG state, so distinct ticks never share entropy; `salt`
@@ -218,6 +253,33 @@ module ClockJitter =
         // a fuzz threshold.
         float (h >>> 11) / float (1UL <<< 53)
 
+    /// Reject a strategy whose numbers cannot mean anything. Called both by
+    /// `EmulatedKernel.withClockJitter`, so a misconfigured host finds out
+    /// before any guest code runs, and by `chooseJump`, which a kernel assembled
+    /// by record-copy reaches without having passed through that setter.
+    let validate (strategy : ClockJitterStrategy) : unit =
+        match strategy with
+        | ClockJitterStrategy.Disabled
+        | ClockJitterStrategy.Scripted _ -> ()
+        | ClockJitterStrategy.EagerDeadlines (_, probability, maxOvershootTicks) ->
+            // NaN first: every comparison against it is false, so a NaN
+            // probability would otherwise slip through as "never fires" and
+            // present a run that looked jittered and was not.
+            if System.Double.IsNaN probability || probability < 0.0 || probability > 1.0 then
+                failwith
+                    $"ClockJitterStrategy.EagerDeadlines: probability %f{probability} is outside [0.0, 1.0] (NaN or out of range)."
+
+            if maxOvershootTicks < 0L then
+                failwith
+                    $"ClockJitterStrategy.EagerDeadlines: maxOvershootTicks %d{maxOvershootTicks} is negative. An overshoot moves a timeout later, never earlier; the virtual clock is monotonic."
+
+            // See `maxOvershootBoundTicks`: past it the draw could no longer
+            // cover the range it was given, so the strategy would sample a
+            // narrower distribution than the one it documents.
+            if maxOvershootTicks > maxOvershootBoundTicks then
+                failwith
+                    $"ClockJitterStrategy.EagerDeadlines: maxOvershootTicks %d{maxOvershootTicks} exceeds %d{maxOvershootBoundTicks} (2^53 - 1), beyond which the overshoot draw cannot cover its own range exactly. That is about 28 years of simulated time; a bound anywhere near it is a unit mistake."
+
     /// Where the clock should jump to on this tick, if anywhere. `None` means
     /// the tick's clock advance is the ordinary `InstructionCostTicks` and
     /// nothing more.
@@ -227,6 +289,10 @@ module ClockJitter =
     /// `pendingDeadlines` may contain duplicates and need not be sorted: the
     /// answer depends only on the *set* of deadlines strictly ahead of the
     /// clock, so a caller need not enumerate threads in any particular order.
+    ///
+    /// Under `EagerDeadlines` the target lies in `[d, d + maxOvershootTicks]`
+    /// for some `d` in that set — it need not be a deadline itself, and with a
+    /// non-zero overshoot it usually is not.
     let chooseJump
         (strategy : ClockJitterStrategy)
         (stepCounter : int64)
@@ -237,10 +303,8 @@ module ClockJitter =
         match strategy with
         | ClockJitterStrategy.Disabled -> None
 
-        | ClockJitterStrategy.EagerDeadlines (seed, probability) ->
-            if System.Double.IsNaN probability || probability < 0.0 || probability > 1.0 then
-                failwith
-                    $"ClockJitterStrategy.EagerDeadlines: probability %f{probability} is outside [0.0, 1.0] (NaN or out of range)."
+        | ClockJitterStrategy.EagerDeadlines (seed, probability, maxOvershootTicks) ->
+            validate strategy
 
             // Deadlines at or behind the clock are about to be fired by this
             // tick's ordinary expiry pass, so "jumping" to one would move the
@@ -269,7 +333,31 @@ module ClockJitter =
                 // clamp cannot fire in exact arithmetic. It is here because the
                 // product is a float: a value a hair below 1.0 times a large
                 // length can round up to exactly `Length`.
-                Some candidates.[min index (candidates.Length - 1)]
+                let deadline = candidates.[min index (candidates.Length - 1)]
+
+                // Inclusive of `maxOvershootTicks`, hence the `+ 1L`: a bound
+                // the draw could never actually reach would make
+                // `maxOvershootTicks = 1` mean "always zero". Clamped for the
+                // same float-rounding reason as the index above.
+                let overshoot =
+                    int64 (draw seed stepCounter 2UL * float (maxOvershootTicks + 1L))
+                    |> min maxOvershootTicks
+
+                // The deadlines are whatever the caller passed, so a deadline
+                // close enough to `Int64.MaxValue` to make this sum wrap is
+                // reachable from outside this module. Wrapping would return a
+                // *negative* target, breaking the guarantee this function's
+                // callers rely on — that a `Some` is strictly ahead of the
+                // clock — and would surface downstream as a baffling
+                // "clock cannot be negative" rather than as the arithmetic
+                // problem it is. An over-horizon-but-representable target is
+                // deliberately still returned, for `withVirtualClockTicks` to
+                // diagnose naming the wait responsible.
+                if deadline > System.Int64.MaxValue - overshoot then
+                    failwith
+                        $"ClockJitterStrategy.EagerDeadlines: deadline %d{deadline} plus an overshoot of %d{overshoot} ticks is not representable as an int64. A deadline that large cannot have come from a wait this kernel posted."
+
+                Some (deadline + overshoot)
 
         | ClockJitterStrategy.Scripted jumps ->
             match jumps |> List.filter (fun (tick, _) -> tick = stepCounter) with
@@ -2497,15 +2585,7 @@ module EmulatedKernel =
     /// the first tick that consults it, so a host that misconfigures a run finds
     /// out before any guest code has executed.
     let withClockJitter (strategy : ClockJitterStrategy) (kernel : EmulatedKernel) : EmulatedKernel =
-        match strategy with
-        | ClockJitterStrategy.EagerDeadlines (_, probability) when
-            System.Double.IsNaN probability || probability < 0.0 || probability > 1.0
-            ->
-            failwith
-                $"ClockJitterStrategy.EagerDeadlines: probability %f{probability} is outside [0.0, 1.0] (NaN or out of range)."
-        | ClockJitterStrategy.Disabled
-        | ClockJitterStrategy.EagerDeadlines _
-        | ClockJitterStrategy.Scripted _ -> ()
+        ClockJitter.validate strategy
 
         { kernel with
             ClockJitter = strategy

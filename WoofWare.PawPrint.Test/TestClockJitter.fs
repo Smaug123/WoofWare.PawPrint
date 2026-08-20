@@ -73,7 +73,9 @@ module TestClockJitter =
         let property ((clock, deadlines) : int64 * int64 list) : bool =
             [ 0L .. 30L ]
             |> List.forall (fun tick ->
-                match ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (7UL, 1.0)) tick clock deadlines with
+                match
+                    ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (7UL, 1.0, 0L)) tick clock deadlines
+                with
                 | None -> true
                 | Some target -> target > clock && List.contains target deadlines
             )
@@ -88,7 +90,7 @@ module TestClockJitter =
         let property ((clock, deadlines) : int64 * int64 list) : bool =
             [ 0L .. 20L ]
             |> List.forall (fun tick ->
-                let strategy = ClockJitterStrategy.EagerDeadlines (99UL, 0.5)
+                let strategy = ClockJitterStrategy.EagerDeadlines (99UL, 0.5, 0L)
 
                 ClockJitter.chooseJump strategy tick clock deadlines = ClockJitter.chooseJump
                     strategy
@@ -107,7 +109,7 @@ module TestClockJitter =
         // Neither may reach the answer, or the jitter schedule would silently
         // depend on how many threads happened to share a deadline.
         let property ((clock, deadlines) : int64 * int64 list) : bool =
-            let strategy = ClockJitterStrategy.EagerDeadlines (3UL, 0.75)
+            let strategy = ClockJitterStrategy.EagerDeadlines (3UL, 0.75, 0L)
 
             let permuted = deadlines |> List.rev
             let duplicated = deadlines @ deadlines
@@ -147,10 +149,10 @@ module TestClockJitter =
             [ 0L .. 30L ]
             |> List.forall (fun tick ->
                 let never =
-                    ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (11UL, 0.0)) tick clock deadlines
+                    ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (11UL, 0.0, 0L)) tick clock deadlines
 
                 let always =
-                    ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (11UL, 1.0)) tick clock deadlines
+                    ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (11UL, 1.0, 0L)) tick clock deadlines
 
                 never = None && (Option.isSome always = anyAhead)
             )
@@ -170,7 +172,7 @@ module TestClockJitter =
             |> List.forall (fun deadlines ->
                 [ 0L .. 20L ]
                 |> List.forall (fun tick ->
-                    ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (seed, 1.0)) tick clock deadlines = None
+                    ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (seed, 1.0, 0L)) tick clock deadlines = None
                 )
             )
 
@@ -194,7 +196,7 @@ module TestClockJitter =
         let chosen =
             [ 0L .. 999L ]
             |> List.choose (fun tick ->
-                ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (2024UL, 1.0)) tick 0L candidates
+                ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (2024UL, 1.0, 0L)) tick 0L candidates
             )
             |> Set.ofList
 
@@ -212,7 +214,7 @@ module TestClockJitter =
         let countsFor (deadlines : int64 list) : Map<int64, int> =
             ticks
             |> List.choose (fun tick ->
-                ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (31UL, 1.0)) tick 0L deadlines
+                ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (31UL, 1.0, 0L)) tick 0L deadlines
             )
             |> List.countBy id
             |> Map.ofList
@@ -236,7 +238,7 @@ module TestClockJitter =
                 |> List.sumBy (fun tick ->
                     match
                         ClockJitter.chooseJump
-                            (ClockJitterStrategy.EagerDeadlines (5UL, probability))
+                            (ClockJitterStrategy.EagerDeadlines (5UL, probability, 0L))
                             tick
                             0L
                             candidates
@@ -259,10 +261,256 @@ module TestClockJitter =
         let sequenceFor (seed : uint64) : int64 option list =
             [ 0L .. 199L ]
             |> List.map (fun tick ->
-                ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (seed, 0.5)) tick 0L candidates
+                ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (seed, 0.5, 0L)) tick 0L candidates
             )
 
         sequenceFor 1UL |> shouldNotEqual (sequenceFor 2UL)
+
+    // ------------------------------------------------------------------
+    // EagerDeadlines — how late the timeout fires
+    // ------------------------------------------------------------------
+
+    [<Test>]
+    let ``a jump lands within the overshoot bound of some outstanding deadline`` () : unit =
+        // The generalisation of "lands exactly on a deadline", which holds only
+        // at a zero bound. Checked against the *input* deadlines rather than
+        // against a deadline the implementation reports having picked: an
+        // implementation that chose badly and then told us which bad choice it
+        // made would satisfy the latter.
+        let property ((clock, deadlines) : int64 * int64 list) : bool =
+            let maxOvershoot = 7L
+
+            [ 0L .. 30L ]
+            |> List.forall (fun tick ->
+                match
+                    ClockJitter.chooseJump
+                        (ClockJitterStrategy.EagerDeadlines (5UL, 1.0, maxOvershoot))
+                        tick
+                        clock
+                        deadlines
+                with
+                | None -> true
+                | Some target ->
+                    target > clock
+                    && deadlines
+                       |> List.exists (fun d -> d > clock && d <= target && target <= d + maxOvershoot)
+            )
+
+        Check.One (propertyConfig, Prop.forAll clockAndDeadlines property)
+
+    [<Test>]
+    let ``a zero bound fires every timeout exactly on its deadline`` () : unit =
+        // The setting that reproduces the behaviour before overshoot existed,
+        // and the one the rest of this fixture is written against. Worth its own
+        // assertion because "0 means 0" is an off-by-one away from "0 means 1".
+        let property ((clock, deadlines) : int64 * int64 list) : bool =
+            [ 0L .. 30L ]
+            |> List.forall (fun tick ->
+                match
+                    ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (5UL, 1.0, 0L)) tick clock deadlines
+                with
+                | None -> true
+                | Some target -> List.contains target deadlines
+            )
+
+        Check.One (propertyConfig, Prop.forAll clockAndDeadlines property)
+
+    [<Test>]
+    let ``the overshoot spans its whole bound, endpoints included`` () : unit =
+        // A bound is only useful if the draw reaches it. Both endpoints matter
+        // and for different reasons: never reaching 0 would mean no jitter run
+        // ever fires a timeout punctually, and never reaching the bound would
+        // make the knob quietly weaker than it says — which is exactly the
+        // failure that hides the elapsed-time bugs this parameter exists for.
+        //
+        // One deadline, so the target *is* the overshoot plus a constant.
+        let bound = 4L
+
+        let overshoots =
+            [ 0L .. 999L ]
+            |> List.choose (fun tick ->
+                ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (8UL, 1.0, bound)) tick 0L [ 100L ]
+                |> Option.map (fun target -> target - 100L)
+            )
+            |> Set.ofList
+
+        overshoots |> shouldEqual (Set.ofList [ 0L .. bound ])
+
+    [<Test>]
+    let ``a bound of one is not silently a bound of zero`` () : unit =
+        // The `+ 1L` in the draw is what makes the bound inclusive. Without it,
+        // `draw * 1.0` floors to zero for every tick and the smallest non-zero
+        // bound a caller can ask for does nothing at all.
+        let overshoots =
+            [ 0L .. 99L ]
+            |> List.choose (fun tick ->
+                ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (13UL, 1.0, 1L)) tick 0L [ 100L ]
+                |> Option.map (fun target -> target - 100L)
+            )
+            |> Set.ofList
+
+        overshoots |> shouldEqual (Set.ofList [ 0L ; 1L ])
+
+    [<Test>]
+    let ``the overshoot spans its bound at a low probability too`` () : unit =
+        // The overshoot must be drawn independently of the coin that decides
+        // whether to fire. Sharing entropy between them would bias it: a tick
+        // only fires when its coin draw came in *below* the probability, so at
+        // 0.01 every jump would carry a tiny overshoot and the bound would be
+        // decorative — which is precisely the regime the feature is meant to be
+        // used in. Contrast the 1.0 case above, where every draw fires and the
+        // bias is invisible.
+        let bound = 4L
+
+        let overshoots =
+            [ 0L .. 99_999L ]
+            |> List.choose (fun tick ->
+                ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (8UL, 0.01, bound)) tick 0L [ 100L ]
+                |> Option.map (fun target -> target - 100L)
+            )
+            |> Set.ofList
+
+        overshoots |> shouldEqual (Set.ofList [ 0L .. bound ])
+
+    [<Test>]
+    let ``every deadline is reachable with every overshoot`` () : unit =
+        // The two draws must be independent of *each other*, not merely each
+        // uniform on its own. Sharing entropy between them ties the two
+        // together — the nearest deadline would always come with the smallest
+        // overshoot and the furthest with the largest — so half the
+        // (deadline, lateness) grid becomes unreachable while both marginal
+        // distributions still look perfectly correct.
+        //
+        // The candidates are spaced wider than the bound so the deadline is
+        // recoverable from the target by rounding down.
+        let candidates = [ 100L ; 200L ]
+        let bound = 3L
+
+        let observed =
+            [ 0L .. 999L ]
+            |> List.choose (fun tick ->
+                ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (44UL, 1.0, bound)) tick 0L candidates
+                |> Option.map (fun target ->
+                    let deadline = candidates |> List.filter (fun d -> d <= target) |> List.max
+                    deadline, target - deadline
+                )
+            )
+            |> Set.ofList
+
+        let expected =
+            Set.ofList
+                [
+                    for d in candidates do
+                        for o in 0L .. bound -> d, o
+                ]
+
+        observed |> shouldEqual expected
+
+    [<Test>]
+    let ``a deadline too large to overshoot is refused, not wrapped`` () : unit =
+        // `chooseJump` takes whatever deadlines its caller hands it, so a value
+        // close enough to `Int64.MaxValue` for the overshoot to wrap is
+        // reachable from outside. Wrapping would return a *negative* target,
+        // breaking the guarantee callers rely on — a `Some` is strictly ahead
+        // of the clock — and would then surface as a confusing
+        // "clock cannot be negative" from the setter rather than as the
+        // arithmetic fault it is.
+        let choose () =
+            ClockJitter.chooseJump
+                (ClockJitterStrategy.EagerDeadlines (1UL, 1.0, 1_000L))
+                0L
+                0L
+                [ System.Int64.MaxValue ]
+            |> ignore<int64 option>
+
+        Assert.Throws<Exception> (TestDelegate choose) |> ignore<Exception>
+
+        // A deadline beyond the clock's own horizon but with room to spare for
+        // the overshoot is *not* this function's problem to refuse: it is
+        // returned, so that `withVirtualClockTicks` can fault naming the wait.
+        ClockJitter.chooseJump
+            (ClockJitterStrategy.EagerDeadlines (1UL, 1.0, 0L))
+            0L
+            0L
+            [ EmulatedKernel.maxMonotonicTimestampClockTicks + 1L ]
+        |> shouldEqual (Some (EmulatedKernel.maxMonotonicTimestampClockTicks + 1L))
+
+    [<Test>]
+    let ``the overshoot does not disturb which deadline was chosen`` () : unit =
+        // The two draws are independent, so raising the bound must not resample
+        // the deadline: a shrinker that lowers the bound to find the smallest
+        // overshoot that still reproduces a failure needs the rest of the jump
+        // sequence to hold still while it does.
+        let candidates = [ 10L ; 20L ; 30L ; 40L ]
+
+        let deadlinesChosen (bound : int64) : int64 list =
+            [ 0L .. 199L ]
+            |> List.map (fun tick ->
+                match
+                    ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (21UL, 0.5, bound)) tick 0L candidates
+                with
+                | None -> -1L
+                // Recovering the deadline by rounding down to a candidate is
+                // sound here only because the candidates are further apart than
+                // the bounds under test.
+                | Some target -> candidates |> List.filter (fun d -> d <= target) |> List.max
+            )
+
+        let reference = deadlinesChosen 0L
+
+        for bound in [ 1L ; 3L ; 5L ] do
+            deadlinesChosen bound |> shouldEqual reference
+
+    [<Test>]
+    let ``a malformed overshoot bound is rejected`` () : unit =
+        // Negative would move the clock backwards from the deadline, which the
+        // clock writer would reject anyway — but as a confusing fault at some
+        // later tick rather than as a statement about the configuration. Beyond
+        // the clock's range is the typo case (ticks mistaken for milliseconds,
+        // say), and it is also what keeps the inclusive `+ 1L` from overflowing.
+        for bad in
+            [
+                -1L
+                System.Int64.MinValue
+                ClockJitter.maxOvershootBoundTicks + 1L
+                System.Int64.MaxValue
+            ] do
+            let choose () =
+                ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (1UL, 1.0, bad)) 0L 0L [ 10L ]
+                |> ignore<int64 option>
+
+            Assert.Throws<Exception> (TestDelegate choose) |> ignore<Exception>
+
+            let install () =
+                EmulatedKernel.initial
+                |> EmulatedKernel.withClockJitter (ClockJitterStrategy.EagerDeadlines (1UL, 1.0, bad))
+                |> ignore<EmulatedKernel>
+
+            Assert.Throws<Exception> (TestDelegate install) |> ignore<Exception>
+
+        // The boundary itself is legal, so the check is `>` and not `>=` — and
+        // the draw really does reach it there, which is the whole reason the
+        // limit sits at 2^53 - 1 rather than anywhere rounder.
+        EmulatedKernel.initial
+        |> EmulatedKernel.withClockJitter (
+            ClockJitterStrategy.EagerDeadlines (1UL, 1.0, ClockJitter.maxOvershootBoundTicks)
+        )
+        |> ignore<EmulatedKernel>
+
+        let atBound =
+            [ 0L .. 199L ]
+            |> List.choose (fun tick ->
+                ClockJitter.chooseJump
+                    (ClockJitterStrategy.EagerDeadlines (3UL, 1.0, ClockJitter.maxOvershootBoundTicks))
+                    tick
+                    0L
+                    [ 100L ]
+                |> Option.map (fun target -> target - 100L)
+            )
+
+        atBound
+        |> List.forall (fun o -> 0L <= o && o <= ClockJitter.maxOvershootBoundTicks)
+        |> shouldEqual true
 
     [<Test>]
     let ``a malformed probability is rejected`` () : unit =
@@ -272,7 +520,7 @@ module TestClockJitter =
         // form the type system also cannot catch.
         for bad in [ nan ; -0.000001 ; 1.000001 ; infinity ; -infinity ] do
             let choose () =
-                ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (1UL, bad)) 0L 0L [ 10L ]
+                ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (1UL, bad, 0L)) 0L 0L [ 10L ]
                 |> ignore<int64 option>
 
             Assert.Throws<Exception> (TestDelegate choose) |> ignore<Exception>
@@ -282,7 +530,7 @@ module TestClockJitter =
             // consults the strategy.
             let install () =
                 EmulatedKernel.initial
-                |> EmulatedKernel.withClockJitter (ClockJitterStrategy.EagerDeadlines (1UL, bad))
+                |> EmulatedKernel.withClockJitter (ClockJitterStrategy.EagerDeadlines (1UL, bad, 0L))
                 |> ignore<EmulatedKernel>
 
             Assert.Throws<Exception> (TestDelegate install) |> ignore<Exception>
@@ -361,7 +609,7 @@ module TestClockJitter =
         // makes are exactly a `Scripted` program, so a harness can capture one
         // and then remove entries from it.
         let candidates = [ 100L ; 250L ; 400L ]
-        let strategy = ClockJitterStrategy.EagerDeadlines (77UL, 0.4)
+        let strategy = ClockJitterStrategy.EagerDeadlines (77UL, 0.4, 0L)
         let ticks = [ 0L .. 499L ]
 
         let recorded =
@@ -394,7 +642,7 @@ module TestClockJitter =
         KernelConfig.Default.ClockJitter |> shouldEqual ClockJitterStrategy.Disabled
         EmulatedKernel.initial.ClockJitter |> shouldEqual ClockJitterStrategy.Disabled
 
-        let strategy = ClockJitterStrategy.EagerDeadlines (42UL, 0.25)
+        let strategy = ClockJitterStrategy.EagerDeadlines (42UL, 0.25, 0L)
 
         let configured =
             EmulatedKernel.initial
@@ -480,7 +728,7 @@ public static class Entry
         let disabledCode, disabledState = runWithJitter image ClockJitterStrategy.Disabled
 
         let zeroCode, zeroState =
-            runWithJitter image (ClockJitterStrategy.EagerDeadlines (12345UL, 0.0))
+            runWithJitter image (ClockJitterStrategy.EagerDeadlines (12345UL, 0.0, 0L))
 
         disabledCode |> shouldEqual 0
         zeroCode |> shouldEqual 0
@@ -502,7 +750,7 @@ public static class Entry
         unjittered |> shouldEqual 0
 
         let jittered, jitteredState =
-            runWithJitter image (ClockJitterStrategy.EagerDeadlines (1UL, 1.0))
+            runWithJitter image (ClockJitterStrategy.EagerDeadlines (1UL, 1.0, 0L))
 
         // 17 is the guest's "Join(500) reported failure" sentinel.
         jittered |> shouldEqual 17
@@ -541,7 +789,7 @@ public static class Entry
         // exists to provide, and a fuzzing dial that broke it would be worse
         // than no dial at all.
         let image = Roslyn.compile [ joinTimeoutSource ]
-        let strategy = ClockJitterStrategy.EagerDeadlines (98765UL, 0.5)
+        let strategy = ClockJitterStrategy.EagerDeadlines (98765UL, 0.5, 0L)
 
         let firstCode, firstState = runWithJitter image strategy
         let secondCode, secondState = runWithJitter image strategy

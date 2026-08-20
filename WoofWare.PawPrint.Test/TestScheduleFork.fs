@@ -216,6 +216,7 @@ module TestScheduleFork =
             // schedule reaches its bug — is a claim about the whole schedule space and so rests
             // on the fanout being faithful.
             "JoinTimeoutIgnored.cs"
+            "LeaseOutlivedByWait.cs"
         ]
 
     /// Fixed rather than randomly generated, so a failure is reproducible without a shrink
