@@ -118,6 +118,181 @@ type SyncBlockSpuriousWakeupStrategy =
     /// changes.
     | Scripted of wakeups : (int64 * ManagedHeapAddress * ThreadId) list
 
+/// Deterministic strategy governing *clock jitter*: whether the driver, on a
+/// given scheduler tick, jumps the virtual clock forward onto a deadline some
+/// thread is already waiting on.
+///
+/// Without it the virtual clock is `StepCounter * InstructionCostTicks`, so a
+/// finite wait always expires after the same number of retired instructions and
+/// a guest's timeout path is only ever reached when the guest's *own*
+/// arithmetic sends it there. Real machines are not like that: a thread
+/// descheduled for a few milliseconds makes a `WaitOne(50)` time out in the
+/// middle of a window its author assumed was comfortable. This type is the
+/// deterministic knob for provoking that, so bugs of the form "if too much time
+/// elapses between these steps, something bad happens" surface as failing runs
+/// rather than latent races.
+///
+/// The randomised variant only ever moves the clock onto an *outstanding*
+/// deadline, so each jump corresponds to a wait some thread had really posted:
+/// it changes when a timeout fires relative to other threads' progress. A
+/// strategy that advanced time by a random amount with no deadline pending
+/// would instead attack elapsed-time arithmetic — a related but distinct bug
+/// class — and is left for a future variant; `Scripted` can express individual
+/// jumps of that shape, but nothing generates them.
+///
+/// The strategy is data, not a closure, so it can be printed, diffed, and
+/// replayed across runs. Like `SpuriousWakeupStrategy`, each variant is
+/// independently deterministic given the current `EmulatedKernel.StepCounter`.
+[<RequireQualifiedAccess>]
+type ClockJitterStrategy =
+    /// Default. The clock advances only by `InstructionCostTicks` per retired
+    /// step, plus the driver's jump to the nearest deadline when nothing is
+    /// Runnable. Timeouts therefore fire on schedule, which masks
+    /// elapsed-time-sensitive bugs.
+    | Disabled
+    /// On each tick, with the given probability, jump the clock onto one of the
+    /// deadlines currently outstanding — chosen uniformly among *all* of them,
+    /// not just the nearest, so a single jump can expire several waits at once
+    /// and the orderings that produces are reachable.
+    ///
+    /// The coin and the choice are deterministic functions of
+    /// `(seed, stepCounter)`, so the same seed reproduces the same jump
+    /// sequence across runs. `probability` is rejected if it is NaN or outside
+    /// `[0.0, 1.0]`.
+    ///
+    /// Keep the probability small. Every jump discards the interval between the
+    /// clock and the deadline, so a large one runs the guest's clock off into
+    /// the distance and starves the very interleavings it is trying to explore.
+    | EagerDeadlines of seed : uint64 * probability : float
+    /// Explicit `(stepCounter, targetTicks)` pairs: at the named tick, set the
+    /// clock to the named value. Fully replayable, and the shrinking target —
+    /// record what an `EagerDeadlines` run jumped and replay it with jumps
+    /// removed to find the minimal set that still reproduces a failure.
+    ///
+    /// Unrestricted: a target need not be a deadline any thread is waiting on.
+    /// That is deliberate, and it is what keeps shrinking well-behaved — drop an
+    /// early jump from a script and the later ones must still mean what they
+    /// meant, which they would not if each had to remain a live deadline in a
+    /// run whose earlier history just changed.
+    ///
+    /// Targets are absolute clock readings rather than deltas precisely so that
+    /// removing one jump leaves every other jump landing on the same instant it
+    /// did before; with deltas, dropping an early jump would silently retime
+    /// every later one and a shrink step would change more than it removed.
+    ///
+    /// A pair whose target is behind the clock at the named tick fails loudly
+    /// rather than being skipped, for the same reason a `SpuriousWakeupStrategy`
+    /// script naming an absent waiter does: a script that has drifted out of
+    /// step with the run underneath it should say so.
+    | Scripted of jumps : (int64 * int64) list
+
+/// Interpretation of `ClockJitterStrategy`: given the tick, the clock, and the
+/// deadlines threads are currently parked on, decide where (if anywhere) the
+/// clock jumps before this tick's deadlines are fired.
+[<RequireQualifiedAccess>]
+module ClockJitter =
+
+    /// SplitMix64-style hash over `(seed, stepCounter, salt)`, giving a value in
+    /// `[0.0, 1.0)`. Replayability comes from it being a pure hash with no
+    /// mutable PRNG state, so distinct ticks never share entropy; `salt`
+    /// separates the "does this tick jump" draw from the "which deadline" draw
+    /// so that the two are not perfectly correlated.
+    let private draw (seed : uint64) (stepCounter : int64) (salt : uint64) : float =
+        let mix (h : uint64) (x : uint64) : uint64 =
+            let h = h ^^^ x
+            h * 0x100000001B3UL
+
+        let finalise (h : uint64) : uint64 =
+            let h = h ^^^ (h >>> 33)
+            let h = h * 0xff51afd7ed558ccdUL
+            let h = h ^^^ (h >>> 33)
+            let h = h * 0xc4ceb9fe1a85ec53UL
+            h ^^^ (h >>> 33)
+
+        let h = seed
+        let h = mix h (uint64 stepCounter)
+        let h = mix h salt
+        let h = finalise h
+        // Top 53 bits as a float in [0, 1). Matches the common "uniform double
+        // from uint64" recipe; precision loss in the low bits is irrelevant for
+        // a fuzz threshold.
+        float (h >>> 11) / float (1UL <<< 53)
+
+    /// Where the clock should jump to on this tick, if anywhere. `None` means
+    /// the tick's clock advance is the ordinary `InstructionCostTicks` and
+    /// nothing more.
+    ///
+    /// A returned target is always strictly greater than `currentClock`, so a
+    /// caller can hand it straight to `EmulatedKernel.withVirtualClockTicks`.
+    /// `pendingDeadlines` may contain duplicates and need not be sorted: the
+    /// answer depends only on the *set* of deadlines strictly ahead of the
+    /// clock, so a caller need not enumerate threads in any particular order.
+    let chooseJump
+        (strategy : ClockJitterStrategy)
+        (stepCounter : int64)
+        (currentClock : int64)
+        (pendingDeadlines : int64 list)
+        : int64 option
+        =
+        match strategy with
+        | ClockJitterStrategy.Disabled -> None
+
+        | ClockJitterStrategy.EagerDeadlines (seed, probability) ->
+            if System.Double.IsNaN probability || probability < 0.0 || probability > 1.0 then
+                failwith
+                    $"ClockJitterStrategy.EagerDeadlines: probability %f{probability} is outside [0.0, 1.0] (NaN or out of range)."
+
+            // Deadlines at or behind the clock are about to be fired by this
+            // tick's ordinary expiry pass, so "jumping" to one would move the
+            // clock nowhere. Dropping them here is what lets the caller treat a
+            // `Some` as a genuine advance.
+            //
+            // Sorted and deduplicated so that the draw indexes a canonical
+            // sequence: two threads parked on the same instant must not make
+            // that instant twice as likely as any other, and the selection must
+            // not depend on the order threads happen to be enumerated in.
+            let candidates =
+                pendingDeadlines
+                |> List.filter (fun deadline -> deadline > currentClock)
+                |> List.distinct
+                |> List.sort
+
+            match candidates with
+            | [] -> None
+            | _ ->
+
+            if draw seed stepCounter 0UL >= probability then
+                None
+            else
+                let index = int (draw seed stepCounter 1UL * float candidates.Length)
+                // `draw` is in [0, 1), so the product is below `Length` and this
+                // clamp cannot fire in exact arithmetic. It is here because the
+                // product is a float: a value a hair below 1.0 times a large
+                // length can round up to exactly `Length`.
+                Some candidates.[min index (candidates.Length - 1)]
+
+        | ClockJitterStrategy.Scripted jumps ->
+            match jumps |> List.filter (fun (tick, _) -> tick = stepCounter) with
+            | [] -> None
+            | scheduled ->
+
+            // Every target scheduled for this tick is checked, not only the one
+            // that ends up winning: a script naming both 500 and 700 while the
+            // clock reads 600 has drifted, and validating the maximum alone
+            // would wave that through — which is exactly the silent
+            // "replay that no longer describes the run" this check exists to
+            // prevent.
+            for _, target in scheduled do
+                if target <= currentClock then
+                    failwith
+                        $"ClockJitterStrategy.Scripted: jump at step %d{stepCounter} names target %d{target} ticks, but the clock already reads %d{currentClock}; the clock is monotonic, so this script has drifted out of step with the run underneath it."
+
+            // The furthest wins rather than each being applied in turn: the
+            // clock is monotonic, so applying several jumps at one tick is
+            // observationally identical to applying the largest, and taking the
+            // max means a script listing them in any order behaves the same.
+            Some (scheduled |> List.map snd |> List.max)
+
 /// Deterministic model of a single Win32-shaped semaphore kernel object, as
 /// minted by `CreateSemaphoreExW`. CoreCLR backs this with a real Win32
 /// `CreateSemaphoreEx` on Windows and with a `SemaphoreSlim`-style construct
@@ -1625,6 +1800,12 @@ type EmulatedKernel =
         /// the two condvar primitives separately. Defaults to `Disabled` so
         /// existing runs are bit-for-bit unchanged.
         SyncBlockSpuriousWakeup : SyncBlockSpuriousWakeupStrategy
+        /// Deterministic strategy governing whether the driver jumps the virtual
+        /// clock onto an outstanding deadline as part of a tick. Defaults to
+        /// `Disabled` so existing runs are bit-for-bit unchanged. See
+        /// `ClockJitterStrategy` for what it buys and `ClockJitter.chooseJump`
+        /// for how it is interpreted.
+        ClockJitter : ClockJitterStrategy
         /// Monotonically-advancing scheduler tick consumed by
         /// `SpuriousWakeupStrategy`. The driver loop applies the strategy
         /// against the current value and then increments by 1 before
@@ -2149,6 +2330,7 @@ module EmulatedKernel =
             NextEventPipeId = 1L
             SpuriousWakeup = SpuriousWakeupStrategy.Disabled
             SyncBlockSpuriousWakeup = SyncBlockSpuriousWakeupStrategy.Disabled
+            ClockJitter = ClockJitterStrategy.Disabled
             StepCounter = 0L
             VirtualClockTicks = 0L
             WallClockEpochMs = 0L
@@ -2260,6 +2442,27 @@ module EmulatedKernel =
 
         { kernel with
             InstructionCostTicks = cost
+        }
+
+    /// Install the clock-jitter strategy the driver applies each tick. See
+    /// `ClockJitterStrategy` for what the variants mean.
+    ///
+    /// A malformed `EagerDeadlines` probability is rejected here rather than at
+    /// the first tick that consults it, so a host that misconfigures a run finds
+    /// out before any guest code has executed.
+    let withClockJitter (strategy : ClockJitterStrategy) (kernel : EmulatedKernel) : EmulatedKernel =
+        match strategy with
+        | ClockJitterStrategy.EagerDeadlines (_, probability) when
+            System.Double.IsNaN probability || probability < 0.0 || probability > 1.0
+            ->
+            failwith
+                $"ClockJitterStrategy.EagerDeadlines: probability %f{probability} is outside [0.0, 1.0] (NaN or out of range)."
+        | ClockJitterStrategy.Disabled
+        | ClockJitterStrategy.EagerDeadlines _
+        | ClockJitterStrategy.Scripted _ -> ()
+
+        { kernel with
+            ClockJitter = strategy
         }
 
     /// Set the logical-processor count the simulated process reports. Rejects
@@ -2895,6 +3098,18 @@ type KernelConfig =
         /// and `EmulatedKernel.defaultInstructionCostTicks` for the calibration behind the
         /// default of one tick (a 10 MIPS machine).
         InstructionCostTicks : int64
+        /// Whether, and how, the driver jitters the virtual clock forward onto
+        /// outstanding deadlines. Defaults to `Disabled`; see
+        /// `ClockJitterStrategy` for what turning it on buys.
+        ///
+        /// Configuration rather than something a host installs on
+        /// `PreparedProgram.State` afterwards, because class initialisers run
+        /// during `prepare` and are as entitled to have their waits jittered as
+        /// anything in `Main` — a `.cctor` that starts a thread and waits on it
+        /// with a timeout is exactly the shape this strategy exists to test.
+        ///
+        /// Whatever a host picks becomes part of that run's replay contract.
+        ClockJitter : ClockJitterStrategy
         /// Value the guest observes via the internal
         /// `Thread.OptimalMaxSpinWaitsPerSpinIteration`, consulted by
         /// `SpinWait.SpinOnce()` / `LowLevelSpinWaiter` to size each spin
@@ -2974,6 +3189,7 @@ type KernelConfig =
             ProcessorCount = EmulatedKernel.defaultProcessorCount
             UserAddressLimit = EmulatedKernel.defaultUserAddressLimit
             InstructionCostTicks = EmulatedKernel.defaultInstructionCostTicks
+            ClockJitter = ClockJitterStrategy.Disabled
             OptimalMaxSpinWaitsPerSpinIteration = EmulatedKernel.defaultOptimalMaxSpinWaitsPerSpinIteration
             WallClockEpochMs = 0L
             UnixPlatform = EmulatedKernel.defaultUnixPlatform
@@ -2997,6 +3213,7 @@ module KernelConfig =
         |> EmulatedKernel.withProcessorCount config.ProcessorCount
         |> EmulatedKernel.withUserAddressLimit config.UserAddressLimit
         |> EmulatedKernel.withInstructionCostTicks config.InstructionCostTicks
+        |> EmulatedKernel.withClockJitter config.ClockJitter
         |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
         |> EmulatedKernel.withUnixPlatformAndFileSystemType config.UnixPlatform config.FileSystemType

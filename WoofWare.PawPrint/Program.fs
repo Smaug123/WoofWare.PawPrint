@@ -373,6 +373,16 @@ module Program =
             )
             None
 
+    /// Every finite wait deadline currently outstanding, in no particular order
+    /// and with duplicates where two threads are parked on the same instant.
+    /// The candidate set `ClockJitterStrategy.EagerDeadlines` draws from, which
+    /// is why it is the whole collection and not just the minimum
+    /// `nextDeadline` reports.
+    let private pendingDeadlines (state : IlMachineState) : int64 list =
+        state.ThreadState
+        |> Map.toList
+        |> List.choose (fun (_, ts) -> waitDeadline ts.Status |> Option.map snd)
+
     let private logStepOutcome
         (logger : ILogger)
         (state : IlMachineState)
@@ -441,6 +451,12 @@ module Program =
         let state =
             SyncBlockMonitor.applySpuriousWakeups state.Kernel.SyncBlockSpuriousWakeup state.Kernel.StepCounter state
 
+        // The tick this preamble is running, captured before the counter moves on so that clock
+        // jitter is keyed on the same number the two spurious-wakeup strategies just used. All
+        // three are fuzz dials a caller scripts by tick, and they would be treacherous to script
+        // against each other if "tick N" meant a different moment to each.
+        let tick = state.Kernel.StepCounter
+
         // Threaded as a state rather than rebuilding `prepared` at each stage below: every stage
         // from here to the return touches only `State`, so each rebuilt `PreparedProgram` existed
         // only for the next stage to read `.State` straight back out of it. This function runs
@@ -462,6 +478,41 @@ module Program =
                 }
                 |> EmulatedKernel.withVirtualClockTicks (kernel.VirtualClockTicks + kernel.InstructionCostTicks)
             )
+
+        // Clock jitter: with the configured strategy's blessing, jump the clock
+        // onto a deadline some thread is already parked on, so that the timeout
+        // fires while other threads still had work left in the window rather
+        // than at the instruction count the guest's own arithmetic implies. Off
+        // by default, in which case this is one match on a DU case.
+        //
+        // Applied after the ordinary advance and before the expiry pass below,
+        // so a jitter-reached deadline fires in the very same pass as one that
+        // came due on its own: the rest of the tick cannot tell the two apart,
+        // which is the point.
+        //
+        // `StepCounter` is deliberately not bumped, exactly as the
+        // jump-to-deadline fallback below does not bump it: the jitter schedule
+        // and the spurious-wakeup schedules are both keyed on that counter, and
+        // a jump is the resolution of a timeout rather than a retired step.
+        let state =
+            match state.Kernel.ClockJitter with
+            // Taken before `pendingDeadlines`, which walks every thread and
+            // allocates: F# evaluates arguments eagerly, so passing it to
+            // `chooseJump` unconditionally would charge that walk to every tick
+            // of every run, in exchange for an answer that is `None` by
+            // definition. Only the disabled case is special-cased here — any
+            // future variant falls through to the full decision below rather
+            // than silently inheriting a fast path meant for "switched off".
+            | ClockJitterStrategy.Disabled -> state
+            | strategy ->
+
+            match ClockJitter.chooseJump strategy tick state.Kernel.VirtualClockTicks (pendingDeadlines state) with
+            | None -> state
+            // Through the validating setter, which is what faults if a guest's
+            // own timeout arithmetic has run the clock off the representable
+            // range; `chooseJump` guarantees the target is ahead of the clock,
+            // so the monotonicity half of that check cannot fire here.
+            | Some target -> state.MapKernel (EmulatedKernel.withVirtualClockTicks target)
 
         // After advancing `VirtualClockTicks`, fire any wait deadlines that
         // are now in the past. This runs every tick (not just on
