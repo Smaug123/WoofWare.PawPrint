@@ -1,3 +1,8 @@
+---
+name: type-concretization
+description: Converting TypeDefn to ConcreteTypeHandle, resolving generics, and debugging type resolution. Use when hitting 'Generic type/method parameter X out of range', or when threading a generic context through the emulated CLR type system.
+---
+
 # Type Concretization System
 
 Guidance for working with the type concretization subsystem: converting abstract type definitions (`TypeDefn`) to concrete runtime types (`ConcreteTypeHandle`), resolving generics, and debugging type resolution issues.

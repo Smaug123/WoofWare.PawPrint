@@ -7,7 +7,7 @@ WoofWare.PawPrint is an experimental .NET runtime implementation written in F#. 
 
 This is NOT a high-performance runtime - it's a very slow IL interpreter prioritizing determinism over speed.
 
-If you need to check upstream behaviour, the genuine .NET runtime's source is pinned in `flake.nix` (`dotnet-runtime-src`) and exposed inside the Nix devshell as `$DOTNET_RUNTIME_SRC`. The pin tracks the .NET 10 servicing version the devshell runs (kept honest by the `runtime-version-pin` flake check and the `TestEmulatedRuntime` drift test). To keep the closure small it is sparse-checked-out to the trees we read most; if you need another tree, add it to the `sparseCheckout` list in `flake.nix`. Note that a fixed-output derivation is keyed by its declared `hash`, so Nix will silently reuse the old store path unless you invalidate the hash as well as editing `sparseCheckout`. See the `.claude/commands/sync-dotnet-runtime.md` Claude command for how to bump the pin. (If you see a sibling checkout `../dotnet`, without the `-runtime` suffix, that is the .NET SDK source and is not what you want.)
+If you need to check upstream behaviour, the genuine .NET runtime's source is pinned in `flake.nix` (`dotnet-runtime-src`) and exposed inside the Nix devshell as `$DOTNET_RUNTIME_SRC`. The pin tracks the .NET 10 servicing version the devshell runs (kept honest by the `runtime-version-pin` flake check and the `TestEmulatedRuntime` drift test). To keep the closure small it is sparse-checked-out to the trees we read most; if you need another tree, add it to the `sparseCheckout` list in `flake.nix`. Note that a fixed-output derivation is keyed by its declared `hash`, so Nix will silently reuse the old store path unless you invalidate the hash as well as editing `sparseCheckout`. See the `sync-dotnet-runtime` skill for how to bump the pin. (If you see a sibling checkout `../dotnet`, without the `-runtime` suffix, that is the .NET SDK source and is not what you want.)
 
 ## CoreLib flavour
 
@@ -122,8 +122,18 @@ The right call depends on what downstream code does with the result.
 
 ### Development Workflow
 
-Use the `/implement-il-instruction` skill when adding support for a new IL opcode.
-For guidance on mutation-testing a fix or new test, see `.claude/commands/mutation-testing.md`; for probing runtime behaviour before writing a claim about it, see `.claude/commands/probe-methodology.md`.
+The repository's accumulated guidance lives in `.claude/skills/<name>/SKILL.md`. Claude Code loads one when the task matches its `description`, or on `/<name>`; **any other agent should read the file directly**, because nothing will surface it automatically. Each one exists because the fact in it was expensive to establish and cheap to get wrong:
+
+| skill | read it when |
+| --- | --- |
+| `implement-il-instruction` | adding support for a new IL opcode |
+| `emulated-posix-kernel` | deciding how the emulated kernel should answer a syscall |
+| `type-concretization` | resolving generics, or hitting "generic parameter out of range" |
+| `raise-guest-exception` | the guest's own `try`/`catch` must be able to catch what you throw |
+| `probe-methodology` | before writing any claim about ordering, reachability or "runs once" |
+| `mutation-testing` | before claiming a test covers the failure mode it names |
+| `sync-dotnet-runtime` | bumping the pinned runtime source, or widening its sparse checkout |
+| `appcontext` | touching feature switches or `runtimeconfig.json` seeding |
 
 The project uses deterministic builds and treats warnings as errors to maintain code quality.
 It strongly prefers to avoid special-casing to get around problems, but instead to implement general correct solutions; cases where this has failed to happen are considered to be tech debt and at some point in the future we'll be cleaning them up.
@@ -152,7 +162,7 @@ If you find you really do need to implement a dependency, please consider whethe
 
 ## Hosted Type System
 
-For detailed guidance on type concretization, generic resolution, and common patterns in the emulated CLR type system, see .claude/commands/type-concretization.md .
+For detailed guidance on type concretization, generic resolution, and common patterns in the emulated CLR type system, use the `type-concretization` skill.
 
 ## Instructions for OpenAI Codex agents specifically
 

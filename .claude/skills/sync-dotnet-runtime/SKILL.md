@@ -1,3 +1,8 @@
+---
+name: sync-dotnet-runtime
+description: How to bump the pinned dotnet/runtime source in flake.nix, and how to add a tree to its sparse checkout. Use when $DOTNET_RUNTIME_SRC lacks a tree you need to read, or when the runtime-version-pin check or TestEmulatedRuntime reports drift.
+---
+
 # Sync the pinned dotnet/runtime source to our Nix devshell
 
 The dotnet/runtime source is pinned in `flake.nix` as `dotnet-runtime-src` (a sparse `fetchgit`) and exposed in the devshell as `$DOTNET_RUNTIME_SRC`. We use it as a read-only reference for upstream behaviour (BCL source, QCall stubs, native runtime helpers). The pin must match the .NET 10 runtime the Nix devshell pins, so the source you read matches the assemblies the interpreter actually executes.

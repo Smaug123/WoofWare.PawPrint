@@ -1,3 +1,8 @@
+---
+name: mutation-testing
+description: How to confirm a test or guard is load-bearing rather than vacuously green, by deliberately breaking the implementation and watching the test go red. Use before claiming a new test covers a failure mode, and when a fix adds a guard across several symmetric arms.
+---
+
 # Mutation testing in this codebase
 
 Mutation testing — deliberately breaking an implementation to confirm a test catches it — is how you validate that a new test or guard is load-bearing rather than vacuously green. This describes the operational pitfalls found doing it in this repo.
