@@ -913,13 +913,13 @@ module NativeRuntimeTypeHelpers =
             let state, _, resolved =
                 IlMachineTypeResolution.resolveTypeFromRef loggerFactory assembly typeRef ImmutableArray.Empty state
 
-            state, ResolvedTypeIdentity.ofTypeDefinition resolved.Assembly resolved.TypeDefHandle
+            state, ResolvedTypeIdentity.ofDefinitionInAssembly resolved.AssemblyFullName resolved.TypeDefHandle
         | TypeDefn.PrimitiveType PrimitiveType.Object ->
             // A TypeSpec may spell System.Object as a bare `ELEMENT_TYPE_OBJECT`, which names the same
             // type as the nominal form; CoreCLR resolves the two alike (`CompareElementTypeToToken`,
             // siginfo.cpp:4915).
             let object = baseClassTypes.Object
-            state, ResolvedTypeIdentity.ofTypeDefinition object.Assembly object.TypeDefHandle
+            state, ResolvedTypeIdentity.ofDefinitionInAssembly object.AssemblyFullName object.TypeDefHandle
         | other ->
             failwith
                 $"%s{operation}: a base type is spelled %O{other}, which names no type definition; an extends clause is a TypeDefOrRefOrSpec, so it resolves to a nominal type or to `object`"
@@ -970,7 +970,7 @@ module NativeRuntimeTypeHelpers =
                         state
 
                 state,
-                ResolvedTypeIdentity.ofTypeDefinition resolved.Assembly resolved.TypeDefHandle,
+                ResolvedTypeIdentity.ofDefinitionInAssembly resolved.AssemblyFullName resolved.TypeDefHandle,
                 ImmutableArray.Empty
             | BaseTypeInfo.TypeSpec handle ->
                 match assembly.TypeSpecs.[handle].Signature with
@@ -1791,7 +1791,7 @@ module NativeRuntimeTypeHelpers =
                 loggerFactory
                 baseClassTypes
                 state
-                typeInfo.Assembly.FullName
+                typeInfo.AssemblyFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (typeInfo.Identity, stk))
@@ -1808,9 +1808,9 @@ module NativeRuntimeTypeHelpers =
             None
         else
             let assembly =
-                state.LoadedAssembly typeInfo.Assembly.FullName
+                state.LoadedAssembly typeInfo.AssemblyFullName
                 |> Option.defaultWith (fun () ->
-                    failwith $"%s{operation}: declaring assembly is not loaded: %s{typeInfo.Assembly.FullName}"
+                    failwith $"%s{operation}: declaring assembly is not loaded: %s{typeInfo.AssemblyFullName}"
                 )
 
             Some assembly.TypeDefs.[typeInfo.DeclaringType]
@@ -1840,7 +1840,7 @@ module NativeRuntimeTypeHelpers =
                     loggerFactory
                     baseClassTypes
                     state
-                    declaringTypeInfo.Assembly.FullName
+                    declaringTypeInfo.AssemblyFullName
                     ImmutableArray.Empty
                     ImmutableArray.Empty
                     (TypeDefn.FromDefinition (declaringTypeInfo.Identity, stk))
@@ -2890,7 +2890,7 @@ module NativeRuntimeTypeHelpers =
             baseClassTypes
             state
             $"%s{typeInfo.Namespace}.%s{typeInfo.Name}"
-            typeInfo.Assembly.FullName
+            typeInfo.AssemblyFullName
             (ImmutableArray.CreateRange genericArguments)
             ImmutableArray.Empty
             typeInfo.Generics
@@ -2966,7 +2966,7 @@ module NativeRuntimeTypeHelpers =
                 loggerFactory
                 baseClassTypes
                 state
-                moduleTypeInfo.Assembly.FullName
+                moduleTypeInfo.AssemblyFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (moduleTypeInfo.Identity, stk))

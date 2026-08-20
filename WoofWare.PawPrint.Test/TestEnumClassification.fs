@@ -259,7 +259,7 @@ module TestEnumClassification =
         // single-assembly shortcut would be unsound.
         let foreign : TypeInfo<GenericParamFromMetadata, TypeDefn> =
             { bct.Int32 with
-                Assembly = AssemblyName "SomeOtherAssembly"
+                AssemblyFullName = "SomeOtherAssembly"
             }
 
         let exc =

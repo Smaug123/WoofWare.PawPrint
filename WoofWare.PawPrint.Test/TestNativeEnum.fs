@@ -165,7 +165,7 @@ public static class Entry
                 loggerFactory
                 baseClassTypes
                 state
-                typeInfo.Assembly.FullName
+                typeInfo.AssemblyFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (typeInfo.Identity, SignatureTypeKind.ValueType))

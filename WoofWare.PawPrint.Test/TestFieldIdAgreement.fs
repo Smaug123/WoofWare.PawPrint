@@ -188,7 +188,7 @@ public class Outer<A>
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : IlMachineState
         =
-        let assy = state._LoadedAssemblies.ByDefinitionName typeInfo.Assembly.FullName
+        let assy = state._LoadedAssemblies.ByDefinitionName typeInfo.AssemblyFullName
 
         Concretization.ensureTypeDefinitionBaseAssembliesLoaded
             (IlMachineState.loader loggerFactory state)
@@ -230,7 +230,7 @@ public class Outer<A>
                 loggerFactory
                 bct
                 state
-                typeInfo.Assembly.FullName
+                typeInfo.AssemblyFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 ty

@@ -899,7 +899,10 @@ module internal DynamicScopeOperand =
         // class initialisation, so the re-executed instruction can ask again. A marker would be a
         // second copy of that answer, free to disagree with it.
         let dynamicMethodType = baseClassTypes.DynamicMethod
-        let assy = state._LoadedAssemblies.[dynamicMethodType.Assembly]
+
+        let assy =
+            state._LoadedAssemblies.ByDefinitionName dynamicMethodType.AssemblyFullName
+
         let typeDef = assy.TypeDefs.[dynamicMethodType.Identity.TypeDefinition.Get]
 
         let getMethodDescriptor =

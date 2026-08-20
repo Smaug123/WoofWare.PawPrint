@@ -168,12 +168,22 @@ module PermissionBits =
             failwith
                 $"%s{context}: 0o%s{System.Convert.ToString (candidate, 8)} is not a permission word; it must lie in [0, 0o7777]. If this is a whole st_mode, mask off the S_IFMT band — the file type is derived from InodeContent, never stored."
 
+    /// Re-check a value that crossed an API boundary, so a forged
+    /// `Unchecked.defaultof` or a hand-built out-of-range word is refused where
+    /// it enters rather than where it is next read.
+    ///
+    /// The zero it cannot catch is a real mask (`umask 000`), so this guards the
+    /// range rather than the default.
+    let assertValid (context : string) (bits : PermissionBits) : PermissionBits = parseOrFail context (toInt bits)
+
     /// What a `umask 022` process gets from `open(2)` with the 0o666 that
     /// CoreLib's `FileStream` passes: `0o666 &&& ~~~0o022`.
     ///
-    /// PawPrint models no umask: nothing can read or set one (CoreLib's
-    /// interop surface has no `SystemNative_UMask` at all) and no creating
-    /// native exists.
+    /// A constant, and deliberately *not* derived from `EmulatedKernel.Umask`
+    /// even though that now exists: this is the default mode of a **seed** entry,
+    /// and a seed describes a tree that some other process built, so this run's
+    /// configured mask has no bearing on it. Deriving it would make raising the
+    /// mask silently change what an unannotated seed entry means.
     let defaultForRegularFile : PermissionBits = PermissionBits (0o666 &&& ~~~0o022)
 
     /// What a `umask 022` process gets from `mkdir(2)`'s 0o777:
@@ -516,6 +526,39 @@ type SymlinkPolicy =
     /// Stop at the link itself: what `lstat`, `readlink`, `unlink`, `rename`
     /// and `open` with `O_NOFOLLOW` do.
     | NoFollowFinal
+
+/// What a trailing separator on the *final* component means to this walk.
+///
+/// A second axis from `SymlinkPolicy`, and independent of it: this one is not
+/// about what the walk follows, but about whether "the final component must name
+/// a directory" is a demand to record or a refusal to make.
+///
+/// The two Unixes split here for a *creating* open, and the split is not a
+/// choice PawPrint makes — it is measured. Linux refuses such a path outright,
+/// XNU resolves it as any other lookup would.
+[<RequireQualifiedAccess>]
+type TrailingSeparatorPolicy =
+    /// Record the demand on `Resolution.TrailingSeparatorDemanded` and let the
+    /// caller enforce it. Every lookup (`stat`, `lstat`, `readlink`), every
+    /// non-creating `open`, and a creating `open` on Darwin.
+    | Demand
+    /// Answer EISDIR on *reaching* a final component that carries a trailing
+    /// separator — before that component's length is checked, before it is
+    /// looked up, and before any symlink it names is traversed. What Linux does
+    /// for a creating open.
+    ///
+    /// Measured on Linux, and it is the *position* of the check that these rows
+    /// pin rather than the errno: `<300 a>/` is EISDIR, not ENAMETOOLONG;
+    /// `cyc/` is EISDIR, not ELOOP; `d/` under `O_EXCL` is EISDIR, not EEXIST;
+    /// `dang/` is EISDIR, not ENOENT. It does *not* pre-empt failures on earlier
+    /// components: `nodir/new/` is ENOENT and `f/new/` is ENOTDIR, because the
+    /// walk never reaches the final component in either.
+    ///
+    /// The separator may equally have arrived from a spliced symlink target
+    /// rather than from the guest's own path: `l -> "cyc2/"` opened with
+    /// `O_CREAT` is EISDIR rather than ELOOP, so the check has to sit inside the
+    /// walk rather than at the syscall boundary.
+    | RefuseIsDirectory
 
 /// Which component a resolution last consumed, for the paths that end without
 /// a name to look up.
@@ -1469,11 +1512,14 @@ module VirtualFileSystem =
     /// `rmdir("d/.")` gives EINVAL. Desugaring would also collapse the
     /// `Entry` that `mkdir("d/")` needs into a `Directory`. The demand is
     /// instead recorded on `Resolution` and enforced only where every platform
-    /// agrees.
+    /// agrees — except where `trailingSeparatorPolicy` says the walk must refuse
+    /// it outright, which is a fact about the kernel rather than about the
+    /// caller; see `TrailingSeparatorPolicy`.
     let resolveFull
         (limits : PathLimits)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
+        (trailingSeparatorPolicy : TrailingSeparatorPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
         : Result<Resolution, UnixError>
@@ -1535,6 +1581,13 @@ module VirtualFileSystem =
                 walk (parentOf directory vfs) rest trailing finalSymlinkFollowed FinalNavigation.Parent symlinks
             | Some (PathComponent.Name name, rest) ->
 
+            // Before the length check, before the lookup, and before any symlink
+            // this component names is traversed -- which is the whole content of
+            // `RefuseIsDirectory`; see its docstring for the rows that pin the
+            // position. `isFinal` is computed here rather than below because
+            // this check needs it earlier than the lookup does.
+            let isFinal = PathCursor.isExhausted rest
+
             // Before the lookup, and before anything notices whether the name
             // exists — which is what reproduces the measured precedence on both
             // kernels: "<300 bytes>/x" is ENAMETOOLONG (the over-long component
@@ -1546,6 +1599,11 @@ module VirtualFileSystem =
             //
             // This is also the only place that sees components spliced in from a
             // symlink target, which a check at the syscall boundary could not.
+            match trailingSeparatorPolicy with
+            | TrailingSeparatorPolicy.RefuseIsDirectory when isFinal && trailing -> Error UnixError.EISDIR
+            | TrailingSeparatorPolicy.RefuseIsDirectory
+            | TrailingSeparatorPolicy.Demand ->
+
             if not (PathLimits.nameWithinLimit limits name) then
                 Error UnixError.ENAMETOOLONG
             else
@@ -1556,8 +1614,6 @@ module VirtualFileSystem =
                 | None ->
                     failwith
                         $"VirtualFileSystem: looking up \"%s{FileName.toString name}\" in inode %O{directory}, which the walk had already established was a directory, but it is now absent or not a directory. The inode graph is inconsistent; run VirtualFileSystem.checkInvariants."
-
-            let isFinal = PathCursor.isExhausted rest
 
             let finish (target : ResolvedTarget) : Result<Resolution, UnixError> =
                 Ok
@@ -1711,12 +1767,21 @@ module VirtualFileSystem =
         (vfs : VirtualFileSystem)
         : Result<ResolvedTarget, UnixError>
         =
-        resolveFull limits startDirectory policy path vfs
+        resolveFull limits startDirectory policy TrailingSeparatorPolicy.Demand path vfs
         |> Result.map (fun resolution -> resolution.Target)
 
-    /// The inode a path names, which is what `stat` and `open` want. Turns a
-    /// free final name into ENOENT, which is the one thing `resolve`
-    /// deliberately does not do.
+    /// The inode a resolved target names. Turns a free final name into ENOENT,
+    /// which is the one thing `resolve` deliberately does not do — so this is
+    /// where "the file must already exist" is decided, once, for every caller
+    /// that needs it.
+    let existingOf (target : ResolvedTarget) : Result<InodeNumber, UnixError> =
+        match target with
+        | ResolvedTarget.Directory (inode, _) -> Ok inode
+        | ResolvedTarget.Entry (_, _, Some inode) -> Ok inode
+        | ResolvedTarget.Entry (_, _, None) -> Error UnixError.ENOENT
+
+    /// The inode a path names, which is what `stat` and a non-creating `open`
+    /// want: `resolve` followed by `existingOf`.
     let resolveExisting
         (limits : PathLimits)
         (startDirectory : InodeNumber)
@@ -1725,11 +1790,7 @@ module VirtualFileSystem =
         (vfs : VirtualFileSystem)
         : Result<InodeNumber, UnixError>
         =
-        match resolve limits startDirectory policy path vfs with
-        | Error error -> Error error
-        | Ok (ResolvedTarget.Directory (inode, _)) -> Ok inode
-        | Ok (ResolvedTarget.Entry (_, _, Some inode)) -> Ok inode
-        | Ok (ResolvedTarget.Entry (_, _, None)) -> Error UnixError.ENOENT
+        resolve limits startDirectory policy path vfs |> Result.bind existingOf
 
     // ------------------------------------------------------------ inspection
 

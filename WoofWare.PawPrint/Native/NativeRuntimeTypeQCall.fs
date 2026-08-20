@@ -809,7 +809,7 @@ module NativeRuntimeTypeQCall =
                                 ctx.LoggerFactory
                                 ctx.BaseClassTypes
                                 state
-                                typeInfo.Assembly.FullName
+                                typeInfo.AssemblyFullName
                                 ImmutableArray.Empty
                                 ImmutableArray.Empty
                                 (TypeDefn.FromDefinition (typeInfo.Identity, stk))

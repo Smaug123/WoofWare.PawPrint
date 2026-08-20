@@ -35,6 +35,19 @@ module TestVirtualFileSystemAgainstHost =
     [<DllImport("libc", SetLastError = true)>]
     extern int private symlink(string target, string linkpath)
 
+    /// `open(2)`. Its C prototype is `int open(const char *, int, ...)`, so
+    /// `mode` is a *variadic* argument and a fixed-signature P/Invoke may pass
+    /// it somewhere the callee does not look — on Apple arm64 variadic arguments
+    /// go on the stack while fixed ones go in registers. `path` and `flags` are
+    /// fixed parameters and so are always correct, which is why nothing below
+    /// asserts on the *mode* a created file ends up with: only on whether the
+    /// call created, opened, or failed, none of which `mode` can change.
+    [<DllImport("libc", SetLastError = true)>]
+    extern int private ``open``(string path, int flags, int mode)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int private close(int fd)
+
     [<DllImport("libc", SetLastError = true)>]
     extern nativeint private realpath(string path, nativeint resolved)
 
@@ -700,6 +713,190 @@ module TestVirtualFileSystemAgainstHost =
                 Directory.Delete (root, true)
             with _ ->
                 ()
+
+    // --------------------------------------------------- creating opens
+
+    /// What a creating `open(2)` did, in terms both worlds can express.
+    [<RequireQualifiedAccess>]
+    type private CreatingOutcome =
+        /// The call succeeded and bound a name that was not there before.
+        | Created
+        /// The call succeeded on something that already existed.
+        | Opened
+        /// The call failed with this errno.
+        | Failed of errno : int
+
+    /// This kernel's own `O_CREAT` and `O_EXCL`, which — unlike the PAL values
+    /// the interpreter consumes — are different numbers on the two platforms.
+    let private hostOpenFlags () : int * int =
+        if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
+            0x0200, 0x0800
+        else
+            0o100, 0o200
+
+    let private hostCreatingOutcome (root : string) (relative : string) (exclusive : bool) : CreatingOutcome =
+        let path = hostPath root relative
+        let oCreat, oExcl = hostOpenFlags ()
+        let flags = oCreat ||| (if exclusive then oExcl else 0)
+
+        // Asked *before* the call, so a success can be classified without a
+        // second syscall that would see the file this one may just have made.
+        // `access` follows symlinks, which is the right question here:
+        // `open(dang, O_CREAT)` creates dang's target, and it is that target
+        // which did not exist.
+        let existedBefore = access (path, F_OK) = 0
+
+        let fd = ``open`` (path, flags, 0o666)
+
+        if fd < 0 then
+            CreatingOutcome.Failed (errno ())
+        else
+
+        close fd |> ignore<int>
+
+        if existedBefore then
+            CreatingOutcome.Opened
+        else
+            CreatingOutcome.Created
+
+    let private modelCreatingOutcome
+        (vfs : VirtualFileSystem)
+        (relative : string)
+        (exclusive : bool)
+        : CreatingOutcome
+        =
+        let rules = SimulatedUnixPlatform.creatingOpenRules (hostPlatform ())
+
+        // Exactly the policies `SystemNative_Open` selects for a creating open;
+        // see the handler for why `O_EXCL` implies `NoFollowFinal`.
+        let policy =
+            if exclusive then
+                SymlinkPolicy.NoFollowFinal
+            else
+                SymlinkPolicy.Follow
+
+        match
+            VirtualFileSystem.resolveFull
+                (limits ())
+                (VirtualFileSystem.root vfs)
+                policy
+                rules.TrailingSeparator
+                (UnixPath.parseOrFail "test" relative)
+                vfs
+        with
+        | Error error -> CreatingOutcome.Failed (hostErrno error)
+        | Ok resolution ->
+
+        // `privileged = false`: no directory in the corpus has its owner write
+        // or search bit clear, so the EACCES arm is unreachable here and the two
+        // worlds cannot disagree about it even if this test runs as root.
+        match CreatingOpenRules.verdict rules false true exclusive resolution vfs with
+        | CreatingOpenVerdict.Refuse error -> CreatingOutcome.Failed (hostErrno error)
+        | CreatingOpenVerdict.Create _ -> CreatingOutcome.Created
+        | CreatingOpenVerdict.OpenExisting _ -> CreatingOutcome.Opened
+
+    /// `probePaths`, less the one path this comparison structurally cannot make.
+    ///
+    /// The model resolves "/" to a `FinalNavigation.Root` — a path that consumed
+    /// *no component at all* — and Darwin answers EEXIST for exactly that shape
+    /// even without `O_EXCL`. The host side cannot reproduce it: every path here
+    /// is prefixed with the temporary root, so "/" arrives at the kernel as a
+    /// directory reached by name, and is opened. That is the same reason this
+    /// fixture already forbids paths escaping above its root. The Root rule is
+    /// pinned against its measurement in `TestCreatingOpenRules` instead.
+    let private creatingProbePaths = probePaths |> List.filter (fun path -> path <> "/")
+
+    /// Run one creating open through both worlds, each built fresh — a creating
+    /// open mutates, so no two rows may share a tree.
+    let private compareCreatingOpen (relative : string) (exclusive : bool) : CreatingOutcome * CreatingOutcome =
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-create-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            buildHostTree root
+            let vfs = buildModel ()
+            hostCreatingOutcome root relative exclusive, modelCreatingOutcome vfs relative exclusive
+        finally
+            try
+                Directory.Delete (root, true)
+            with _ ->
+                ()
+
+    [<Test>]
+    let ``a creating open decides exactly as this kernel does`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // The rows this pins are the ones no `sourcesPure` guest can carry. The
+        // two kernels genuinely disagree about a creating open on a directory,
+        // and about one whose final component carries a trailing separator, so
+        // the model is instantiated at *this* host's flavour and macOS locally
+        // and Linux in CI each falsify their own column. It also carries every
+        // EEXIST row, which a managed guest cannot reach at all: building the
+        // exception for EEXIST needs SystemNative_ConvertErrorPalToPlatform and
+        // SystemNative_StrErrorR, neither of which exists.
+        let mismatches =
+            [
+                for exclusive in [ false ; true ] do
+                    for relative in creatingProbePaths do
+                        let expected, actual = compareCreatingOpen relative exclusive
+
+                        if expected <> actual then
+                            let flags = if exclusive then "O_CREAT|O_EXCL" else "O_CREAT"
+
+                            yield $"%s{flags} %s{relative}: kernel said %A{expected}, model said %A{actual}"
+            ]
+
+        if not (List.isEmpty mismatches) then
+            let rendered = String.Join (Environment.NewLine, mismatches)
+
+            failwith $"The model disagrees with this kernel about creating opens:%s{Environment.NewLine}%s{rendered}"
+
+    [<Test>]
+    let ``the creating-open corpus reaches every verdict this kernel can give`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // Without this the comparison above could pass by never creating
+        // anything, or by never provoking a refusal. Stated against the
+        // *kernel's* answers rather than the model's, so it cannot be satisfied
+        // by the model agreeing with itself.
+        let observed =
+            [
+                for exclusive in [ false ; true ] do
+                    for relative in creatingProbePaths do
+                        yield fst (compareCreatingOpen relative exclusive)
+            ]
+            |> List.distinct
+
+        observed |> List.contains CreatingOutcome.Created |> shouldEqual true
+        observed |> List.contains CreatingOutcome.Opened |> shouldEqual true
+
+        // EEXIST is the whole point of `O_EXCL`, and ELOOP proves a creating
+        // open still traverses links on the way in.
+        observed
+        |> List.contains (CreatingOutcome.Failed (hostErrno UnixError.EEXIST))
+        |> shouldEqual true
+
+        observed
+        |> List.contains (CreatingOutcome.Failed (hostErrno UnixError.ELOOP))
+        |> shouldEqual true
+
+        // The divergent verdict, asserted per flavour so that the corpus cannot
+        // quietly lose the rows which separate the two kernels. Linux refuses a
+        // creating open on a directory or on a trailing separator; Darwin opens
+        // the directory instead and reports ENOTDIR only for the paths that run
+        // through a regular file.
+        if RuntimeInformation.IsOSPlatform OSPlatform.Linux then
+            observed
+            |> List.contains (CreatingOutcome.Failed (hostErrno UnixError.EISDIR))
+            |> shouldEqual true
+        else
+            observed
+            |> List.contains (CreatingOutcome.Failed (hostErrno UnixError.ENOTDIR))
+            |> shouldEqual true
 
     // ------------------------------------------------ the S_IFMT band's values
 
