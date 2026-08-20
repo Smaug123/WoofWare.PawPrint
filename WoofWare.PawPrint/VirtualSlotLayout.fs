@@ -940,26 +940,32 @@ module VirtualSlotLayout =
                 failwith
                     $"TODO: %s{operation} for %s{table.Owner.Description}, whose MethodImpl declares an override of %s{memberRef.PrettyName} on an ancestor that declares %i{List.length candidates} method(s) of that name, none with an equivalent signature; resolving it needs that ancestor's own bases searched too, as MethodTableBuilder::FindDeclMethodOnClassInHierarchy does"
             | several ->
-                // Substitution can make two distinct declarations coincide -- `M(!0)` and `M(string)`
-                // on `B<string>` -- and upstream separates them with a first pass over *raw*
-                // signatures before the equivalent one. Structural equality is safe as a tie-break
-                // even though it is not safe as the primary match: what distinguishes the tied
-                // candidates is a type variable, which is spelled the same in every assembly, whereas
-                // what structural equality gets wrong is a nominal token, which cannot be what
-                // separated them or they would not have tied.
-                let exact =
-                    several |> List.filter (fun (slot, _) -> slot.Method.Signature = signature)
+                // Substitution can make two distinct declarations coincide: `B<T>` declaring `M(T)`
+                // and `M(string)` ties at `T = string`. Upstream separates them with a first pass over
+                // *raw* signatures before the equivalent one, and this refuses instead.
+                //
+                // A structural comparison of the raw signatures is not that first pass, and an earlier
+                // revision of this used one on the mistaken grounds that what distinguishes tied
+                // candidates is always a type variable, spelled identically in every assembly.
+                // The distinguishing element is indeed a type variable -- but the comparison is of the
+                // *whole* signature, so a nominal type elsewhere in it decides the outcome too, and
+                // that is exactly what differs across token spaces. `B<T>` declaring `M(T, Arg)` and
+                // `M(string, Arg)` in a library, overridden from another assembly, ties on the
+                // substituted form and then matches neither raw form, because the MemberRef spells
+                // `Arg` as `FromReference` where the MethodDef spells it `FromDefinition`.
+                //
+                // The first pass therefore has to keep the type variables distinct while resolving
+                // nominal tokens per module -- `signaturesEquivalent` against a substitution context
+                // that maps each `!i` to a formal marker rather than to an argument. That is a
+                // separate change, and no test here reaches a tie at all: C# refuses to compile the
+                // shape (CS0462), so provoking one needs a fabricated image.
+                let described =
+                    several
+                    |> List.map (fun (slot, index) -> $"%s{slot.DeclaredBy.Description} slot %i{index}")
+                    |> String.concat ", "
 
-                match exact with
-                | [ single ] -> state, Some single
-                | _ ->
-                    let described =
-                        several
-                        |> List.map (fun (slot, index) -> $"%s{slot.DeclaredBy.Description} slot %i{index}")
-                        |> String.concat ", "
-
-                    failwith
-                        $"TODO: %s{operation} for %s{table.Owner.Description}, whose MethodImpl declaration %s{memberRef.PrettyName} matches more than one declaration on the named ancestor (%s{described}) and no one of them exactly; separating them needs upstream's iteration order rather than a set of matches"
+                failwith
+                    $"TODO: %s{operation} for %s{table.Owner.Description}, whose MethodImpl declaration %s{memberRef.PrettyName} is equivalent to more than one declaration on the named ancestor (%s{described}); separating them needs the raw signatures compared with type variables left standing and nominal tokens resolved per module, which is the first of the two passes MethodTableBuilder::FindDeclMethodOnClassInHierarchy makes"
         | other ->
             failwith
                 $"%s{operation}: MethodImpl on %s{table.Owner.Description} names its declaration with the token %O{other}, which is neither a MethodDef nor a MemberRef; ECMA-335 II.22.27 permits only those two"
