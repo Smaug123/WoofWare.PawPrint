@@ -3495,7 +3495,8 @@ module NativeSystemNative =
                     match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
                     | SimulatedUnixFlavour.Linux -> Error UnixError.EINVAL
                     | SimulatedUnixFlavour.Darwin -> Error UnixError.ENXIO
-                | OpenFileTarget.Socket socket ->
+                | OpenFileTarget.Socket socketId ->
+                    let socket = EmulatedKernel.socket socketId state.Kernel
                     // Refused rather than answered, and the reason is that there
                     // is no single answer to give. Measured on a fresh,
                     // unbound, unconnected socket, `read` is ENOTCONN for a
@@ -3513,7 +3514,7 @@ module NativeSystemNative =
                     // `SystemNative_Read`, `SafeSocketHandle` not being a
                     // `SafeFileHandle` — so this is a hand-rolled P/Invoke.
                     failwith
-                        $"%s{operation}: fd %d{fd} is socket %O{socket.Id} (%O{socket.Domain}, %O{socket.Kind}). PawPrint models no socket connection state, and `read(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is ENOTCONN for a TCP socket, EINVAL on Linux against ENOTCONN on Darwin for a Unix-domain stream socket, and a block with no wake source for a datagram socket. Model the connection state before answering this."
+                        $"%s{operation}: fd %d{fd} is socket %O{socketId} (%O{socket.Domain}, %O{socket.Kind}). PawPrint models no socket connection state, and `read(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is ENOTCONN for a TCP socket, EINVAL on Linux against ENOTCONN on Darwin for a Unix-domain stream socket, and a block with no wake source for a datagram socket. Model the connection state before answering this."
                 | OpenFileTarget.File (inode, offset) -> Ok (ReadTarget.File (inode, offset))
 
             match target with
@@ -4147,14 +4148,8 @@ module NativeSystemNative =
             let fd = fdArgument "SystemNative_Close" instruction.Arguments.[0]
 
             let resultCode, state =
-                match FileDescriptorRegistry.close fd state.Kernel.FileDescriptors with
-                | Ok registry ->
-                    0,
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            FileDescriptors = registry
-                        }
-                    )
+                match EmulatedKernel.closeFd fd state.Kernel with
+                | Ok kernel -> 0, state.MapKernel (fun _ -> kernel)
                 | Error FileDescriptorCloseError.BadFd ->
                     -1,
                     state.MapKernel (
@@ -4259,14 +4254,9 @@ module NativeSystemNative =
                 state |> storeCreatedSocket -1L |> completeWith (UnixError.toPal error)
             | Ok (domain, kind, protocol) ->
 
-            let fd, registry =
-                FileDescriptorRegistry.createSocket domain kind protocol state.Kernel.FileDescriptors
+            let fd, kernel = EmulatedKernel.createSocket domain kind protocol state.Kernel
 
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    FileDescriptors = registry
-                }
-            )
+            state.MapKernel (fun _ -> kernel)
             |> storeCreatedSocket (int64 fd)
             |> completeWith UnixError.palSuccess
         | Some "SystemNative_CreateSocketEventPort",
@@ -4361,14 +4351,8 @@ module NativeSystemNative =
             let fd = fdArgument "SystemNative_CloseSocketEventPort" instruction.Arguments.[0]
 
             let error, state =
-                match FileDescriptorRegistry.close fd state.Kernel.FileDescriptors with
-                | Ok registry ->
-                    UnixError.palSuccess,
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            FileDescriptors = registry
-                        }
-                    )
+                match EmulatedKernel.closeFd fd state.Kernel with
+                | Ok kernel -> UnixError.palSuccess, state.MapKernel (fun _ -> kernel)
                 | Error FileDescriptorCloseError.BadFd ->
                     UnixError.toPal UnixError.EBADF,
                     state.MapKernel (
@@ -4898,7 +4882,8 @@ module NativeSystemNative =
                                 | SimulatedUnixFlavour.Darwin -> UnixError.ENXIO
 
                             -1, StepEffect.NoEffect, setErrno state error
-                        | OpenFileTarget.Socket socket ->
+                        | OpenFileTarget.Socket socketId ->
+                            let socket = EmulatedKernel.socket socketId state.Kernel
                             // Refused for the same reason `SystemNative_Read`
                             // refuses a socket: measured on a fresh, unbound,
                             // unconnected socket, `write` is EPIPE on Linux but
@@ -4916,7 +4901,7 @@ module NativeSystemNative =
                             // signal.cpp:244`). So the guest-visible fact is the
                             // bare errno.
                             failwith
-                                $"%s{operation}: fd %d{fd} is socket %O{socket.Id} (%O{socket.Domain}, %O{socket.Kind}). PawPrint models no socket connection state, and `write(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is EPIPE on Linux against ENOTCONN on Darwin for a TCP socket, ENOTCONN on both for a Unix-domain stream socket, and EDESTADDRREQ for a datagram socket. Model the connection state before answering this."
+                                $"%s{operation}: fd %d{fd} is socket %O{socketId} (%O{socket.Domain}, %O{socket.Kind}). PawPrint models no socket connection state, and `write(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is EPIPE on Linux against ENOTCONN on Darwin for a TCP socket, ENOTCONN on both for a Unix-domain stream socket, and EDESTADDRREQ for a datagram socket. Model the connection state before answering this."
                         | OpenFileTarget.File (inode, offset) ->
                             let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
