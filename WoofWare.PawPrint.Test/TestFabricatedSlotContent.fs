@@ -244,11 +244,22 @@ public static class Driver
             | :? UnauthorizedAccessException -> ()
 
     /// `(declaration spelling, most-derived receiver)` pairs, as the driver spells them.
-    let private spellings : string list =
-        [ "A" ; "B" ; "C" ; "D" ; "AG" ; "BG" ; "CG" ; "DG" ]
+    let private spellings : string list = [ "A" ; "B" ; "C" ; "D" ]
 
-    [<TestCaseSource(nameof spellings)>]
-    let ``the slot a declaration owns holds the body the real runtime dispatches to`` (spelling : string) : unit =
+    /// The generic chain's spellings, parked. `CG`'s MethodImpl declaration is a MemberRef whose parent
+    /// is a TypeSpec naming a class ancestor, and `declarationSlot` refuses those rather than resolving
+    /// them: doing it faithfully needs the ancestor identified by instantiation rather than by
+    /// definition, searched together with its own bases, and matched exact-signature-first, which is
+    /// `FindDeclMethodOnClassInHierarchy` and the substitution-chain composition it does.
+    ///
+    /// The fabrication and the driver stay, because they are what will check that change. Un-park all
+    /// four together: `AG` and `BG` are the two that move, and `CG`/`DG` would pass even with the
+    /// MethodImpl ignored entirely, so un-parking only those would look like progress without being
+    /// any.
+
+    let private genericSpellings : string list = [ "AG" ; "BG" ; "CG" ; "DG" ]
+
+    let private checkSpelling (spelling : string) : unit =
         let receiver =
             if spelling.EndsWith ("G", StringComparison.Ordinal) then
                 "DG"
@@ -297,14 +308,68 @@ public static class Driver
 
         pawPrintTag |> shouldEqual hostTag
 
-    [<Test>]
-    let ``the fabrication really does alias two slots`` () : unit =
-        // Otherwise every spelling would reach the receiver's own body and the fixture would agree with
-        // any content rule whatever. Measured on the host: `B` reaches `D` (one slot, overridden all
-        // the way down) while `A` and `C` reach `D` too but *through C's slot*, and the shape is only
-        // interesting because `A` and `B` name different slots -- which shows up as the receiver's own
-        // body not being the answer for every spelling of the *generic* chain.
-        let distinct = spellings |> List.map (fun s -> hostTags.[s]) |> List.distinct
+    [<TestCaseSource(nameof spellings)>]
+    let ``the slot a declaration owns holds the body the real runtime dispatches to`` (spelling : string) : unit =
+        checkSpelling spelling
 
-        // At least two different bodies are reached across the eight spellings.
-        List.length distinct |> shouldBeGreaterThan 1
+    [<TestCaseSource(nameof genericSpellings)>]
+    [<Explicit "declarationSlot refuses a MemberRef declaration naming a class ancestor; see genericSpellings">]
+    let ``the slot a generic declaration owns holds the body the real runtime dispatches to``
+        (spelling : string)
+        : unit
+        =
+        checkSpelling spelling
+
+    [<Test>]
+    let ``a MemberRef declaration naming a class ancestor is refused, not guessed`` () : unit =
+        // The parked cases must fail *for the documented reason*. Without this, the refusal could be
+        // replaced by a wrong answer and the only signal would be four tests that nobody runs.
+        let exn = Assert.Throws<Exception> (fun () -> checkSpelling "AG")
+
+        exn.Message |> shouldContainText "FindDeclMethodOnClassInHierarchy"
+
+    [<Test>]
+    let ``the fabrication really does move a slot away from placement`` () : unit =
+        // The fixture would agree with any content rule whatever if placement alone already gave the
+        // right answer everywhere. It does not: `C` claims `A`'s slot with a MethodImpl, so slot 0 is
+        // owned by `B.M` and holds `D.M`.
+        //
+        // Note that every spelling *does* reach `D` here, so "different spellings reach different
+        // bodies" would be the wrong check -- it is vacuously false and says nothing. What matters is
+        // that the content table disagrees with the identity table at a slot some spelling names.
+        let receiverIdentity = identityOfFabricated "D"
+        let state = state ()
+
+        let state, identityTable =
+            VirtualSlotLayout.vtableOfDefinition loggerFactory bct "test" state receiverIdentity
+
+        let state, contentTable =
+            VirtualSlotLayout.contentVtableOfDefinition loggerFactory bct "test" state receiverIdentity
+
+        let state, placed =
+            VirtualSlotLayout.placedSlotsOfDefinition loggerFactory bct "test" state receiverIdentity
+
+        ignore<IlMachineState> state
+
+        let slotOf (spelling : string) : int =
+            let declaration = identityOfFabricated spelling
+
+            placed
+            |> List.filter (fun (candidate, _) ->
+                candidate.DeclaredBy.Identity = declaration && candidate.Method.Name = "M"
+            )
+            |> List.exactlyOne
+            |> snd
+
+        let moved =
+            spellings
+            |> List.filter (fun spelling ->
+                let slot = slotOf spelling
+
+                tagOfDeclaringType (List.item slot identityTable).DeclaredBy.Description
+                <> tagOfDeclaringType (List.item slot contentTable).DeclaredBy.Description
+            )
+
+        // Measured: `A` and `B` both name slot 0, which placement gives to `B.M` and the MethodImpl
+        // plus unification moves to `D.M`.
+        moved |> shouldEqual [ "A" ; "B" ]
