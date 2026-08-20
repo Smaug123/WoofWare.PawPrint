@@ -86,43 +86,33 @@ module TestNativeIntSource =
                 (fun (storage, src, tgt) -> property storage src tgt)
         )
 
-    /// Mix small comparands (< 1024) and ones spread across the full allowed range so we
-    /// exercise both regimes. A uniform draw over [0, 2^40) almost never lands below 1024,
-    /// so we explicitly weight the two buckets.
+    /// Comparands drawn from the allowed magnitude band (-2^40, 2^40), in both signs, mixing
+    /// small magnitudes (< 1024) with ones spread across the whole band: a uniform draw over
+    /// the band almost never lands near zero, so we explicitly weight the buckets.
     let private allowedComparandGen : Gen<int64> =
-        Gen.frequency [ 1, Gen.choose64 (0L, 1023L) ; 1, Gen.choose64 (0L, (1L <<< 40) - 1L) ]
+        Gen.frequency
+            [
+                1, Gen.choose64 (-1023L, 1023L)
+                1, Gen.choose64 (0L, (1L <<< 40) - 1L)
+                1, Gen.choose64 (-((1L <<< 40) - 1L), 0L)
+            ]
 
     [<Test>]
-    let ``cltVerbatim returns false for any allowed comparand`` () : unit =
-        // Track buckets to confirm we exercise both small comparands and ones close to the upper bound.
-        let mutable smallComparands = 0
-        let mutable largeComparands = 0
+    let ``cltUnVerbatim places the delta by the comparand's sign`` () : unit =
+        // Track buckets to confirm both signs actually arrive.
+        let mutable nonnegativeComparands = 0
+        let mutable negativeComparands = 0
 
         let property (s : SyntheticCrossArrayOffset) (comparand : int64) : unit =
-            if comparand < 1024L then
-                smallComparands <- smallComparands + 1
+            if comparand >= 0L then
+                nonnegativeComparands <- nonnegativeComparands + 1
             else
-                largeComparands <- largeComparands + 1
+                negativeComparands <- negativeComparands + 1
 
-            SyntheticCrossArrayOffset.cltVerbatim s comparand |> shouldEqual false
-
-        Check.One (
-            propertyConfig,
-            Prop.forAll
-                (Gen.zip genSyntheticCrossArrayOffset allowedComparandGen |> Arb.fromGen)
-                (fun (s, c) -> property s c)
-        )
-
-        // We weight the generator 50/50 between the small and large regimes; with 500 cases the
-        // probability of either bucket being empty is bounded above by 2 * 2^-500. Asserting both
-        // buckets fire guards against a future generator change silently dropping a regime.
-        if smallComparands = 0 || largeComparands = 0 then
-            failwith $"generator missed regime: small=%d{smallComparands}, large=%d{largeComparands}"
-
-    [<Test>]
-    let ``cgtVerbatim returns true for any allowed comparand`` () : unit =
-        let property (s : SyntheticCrossArrayOffset) (comparand : int64) : unit =
-            SyntheticCrossArrayOffset.cgtVerbatim s comparand |> shouldEqual true
+            // A nonnegative comparand's unsigned image is below the delta's band, so the delta
+            // is not unsigned-less than it; a negative comparand's is above the band.
+            SyntheticCrossArrayOffset.cltUnVerbatim s comparand
+            |> shouldEqual (comparand < 0L)
 
         Check.One (
             propertyConfig,
@@ -131,17 +121,60 @@ module TestNativeIntSource =
                 (fun (s, c) -> property s c)
         )
 
+        // Each sign carries at least a third of the generator's weight, so with 500 cases the
+        // probability of either bucket being empty is far below 2^-200. Asserting both buckets
+        // fire guards against a future generator change silently dropping a sign.
+        if nonnegativeComparands = 0 || negativeComparands = 0 then
+            failwith $"generator missed a sign: nonnegative=%d{nonnegativeComparands}, negative=%d{negativeComparands}"
+
     [<Test>]
-    let ``cltVerbatim refuses negative comparands`` () : unit =
+    let ``cgtUnVerbatim places the delta by the comparand's sign`` () : unit =
         let property (s : SyntheticCrossArrayOffset) (comparand : int64) : unit =
-            let negativeComparand = if comparand >= 0L then -1L - comparand else comparand
+            SyntheticCrossArrayOffset.cgtUnVerbatim s comparand
+            |> shouldEqual (comparand >= 0L)
 
-            let ex =
-                Assert.Throws<System.Exception> (fun () ->
-                    SyntheticCrossArrayOffset.cltVerbatim s negativeComparand |> ignore
-                )
+        Check.One (
+            propertyConfig,
+            Prop.forAll
+                (Gen.zip genSyntheticCrossArrayOffset allowedComparandGen |> Arb.fromGen)
+                (fun (s, c) -> property s c)
+        )
 
-            ex.Message |> shouldContainText "nonnegative"
+    [<Test>]
+    let ``unsigned comparisons at the comparand band edges`` () : unit =
+        let s =
+            SyntheticCrossArrayOffset.make storageIdentities.[0] 4L storageIdentities.[1] 8L
+
+        // Zero sits below the delta's band, minus one above it (its unsigned image is
+        // 2^64 - 1); the extreme allowed magnitudes stay answerable on both sides.
+        SyntheticCrossArrayOffset.cgtUnVerbatim s 0L |> shouldEqual true
+        SyntheticCrossArrayOffset.cltUnVerbatim s 0L |> shouldEqual false
+        SyntheticCrossArrayOffset.cgtUnVerbatim s (-1L) |> shouldEqual false
+        SyntheticCrossArrayOffset.cltUnVerbatim s (-1L) |> shouldEqual true
+
+        SyntheticCrossArrayOffset.cgtUnVerbatim s ((1L <<< 40) - 1L) |> shouldEqual true
+
+        SyntheticCrossArrayOffset.cltUnVerbatim s ((1L <<< 40) - 1L)
+        |> shouldEqual false
+
+        SyntheticCrossArrayOffset.cgtUnVerbatim s (-((1L <<< 40) - 1L))
+        |> shouldEqual false
+
+        SyntheticCrossArrayOffset.cltUnVerbatim s (-((1L <<< 40) - 1L))
+        |> shouldEqual true
+
+    [<Test>]
+    let ``cltUnVerbatim refuses comparands at or beyond the synthetic separation`` () : unit =
+        let property (s : SyntheticCrossArrayOffset) (comparand : int64) : unit =
+            let largeMagnitude = (1L <<< 40) + (comparand &&& 0x3F_FFFF_FFFFL)
+
+            for outOfBand in [ largeMagnitude ; -largeMagnitude ] do
+                let ex =
+                    Assert.Throws<System.Exception> (fun () ->
+                        SyntheticCrossArrayOffset.cltUnVerbatim s outOfBand |> ignore
+                    )
+
+                ex.Message |> shouldContainText "magnitude below 2^40"
 
         Check.One (
             propertyConfig,
@@ -152,16 +185,17 @@ module TestNativeIntSource =
         )
 
     [<Test>]
-    let ``cgtVerbatim refuses negative comparands`` () : unit =
+    let ``cgtUnVerbatim refuses comparands at or beyond the synthetic separation`` () : unit =
         let property (s : SyntheticCrossArrayOffset) (comparand : int64) : unit =
-            let negativeComparand = if comparand >= 0L then -1L - comparand else comparand
+            let largeMagnitude = (1L <<< 40) + (comparand &&& 0x3F_FFFF_FFFFL)
 
-            let ex =
-                Assert.Throws<System.Exception> (fun () ->
-                    SyntheticCrossArrayOffset.cgtVerbatim s negativeComparand |> ignore
-                )
+            for outOfBand in [ largeMagnitude ; -largeMagnitude ] do
+                let ex =
+                    Assert.Throws<System.Exception> (fun () ->
+                        SyntheticCrossArrayOffset.cgtUnVerbatim s outOfBand |> ignore
+                    )
 
-            ex.Message |> shouldContainText "nonnegative"
+                ex.Message |> shouldContainText "magnitude below 2^40"
 
         Check.One (
             propertyConfig,
@@ -172,42 +206,33 @@ module TestNativeIntSource =
         )
 
     [<Test>]
-    let ``cltVerbatim refuses comparands at or beyond the synthetic separation`` () : unit =
+    let ``unsigned native-int comparison places a cross-storage offset by the comparand's sign`` () : unit =
         let property (s : SyntheticCrossArrayOffset) (comparand : int64) : unit =
-            let largeComparand = (1L <<< 40) + (comparand &&& 0x3F_FFFF_FFFFL)
+            let synthetic =
+                EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset s)
 
-            let ex =
-                Assert.Throws<System.Exception> (fun () ->
-                    SyntheticCrossArrayOffset.cltVerbatim s largeComparand |> ignore
-                )
+            let verbatim = EvalStackValue.NativeInt (NativeIntSource.Verbatim comparand)
 
-            ex.Message |> shouldContainText "small deltas"
+            // The delta's unsigned image lies inside the band (2^40, 2^64 - 2^40); a small
+            // nonnegative comparand sits below it, a small-magnitude negative one above it.
+            // Equality between the two is impossible, so cgt.un and clt.un with the operands
+            // swapped must agree, and with the operands fixed must be complementary.
+            EvalStackValueComparisons.cgtUn synthetic verbatim
+            |> shouldEqual (comparand >= 0L)
+
+            EvalStackValueComparisons.cltUn synthetic verbatim
+            |> shouldEqual (comparand < 0L)
+
+            EvalStackValueComparisons.cgtUn verbatim synthetic
+            |> shouldEqual (comparand < 0L)
+
+            EvalStackValueComparisons.cltUn verbatim synthetic
+            |> shouldEqual (comparand >= 0L)
 
         Check.One (
             propertyConfig,
             Prop.forAll
-                (Gen.zip genSyntheticCrossArrayOffset (ArbMap.defaults |> ArbMap.generate<int64>)
-                 |> Arb.fromGen)
-                (fun (s, c) -> property s c)
-        )
-
-    [<Test>]
-    let ``cgtVerbatim refuses comparands at or beyond the synthetic separation`` () : unit =
-        let property (s : SyntheticCrossArrayOffset) (comparand : int64) : unit =
-            let largeComparand = (1L <<< 40) + (comparand &&& 0x3F_FFFF_FFFFL)
-
-            let ex =
-                Assert.Throws<System.Exception> (fun () ->
-                    SyntheticCrossArrayOffset.cgtVerbatim s largeComparand |> ignore
-                )
-
-            ex.Message |> shouldContainText "small deltas"
-
-        Check.One (
-            propertyConfig,
-            Prop.forAll
-                (Gen.zip genSyntheticCrossArrayOffset (ArbMap.defaults |> ArbMap.generate<int64>)
-                 |> Arb.fromGen)
+                (Gen.zip genSyntheticCrossArrayOffset allowedComparandGen |> Arb.fromGen)
                 (fun (s, c) -> property s c)
         )
 

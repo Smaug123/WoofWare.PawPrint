@@ -1138,11 +1138,14 @@ module NullaryIlOp =
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset i) ->
             // Cross-array offsets are byte distances between two storage
             // containers whose addresses PawPrint does not model, so there is no
-            // sign bit to read. The model already answers every ordering
-            // question about them as though they were large and positive (see
-            // `SyntheticCrossArrayOffset.cltVerbatim` / `cgtVerbatim`), under
-            // which the unsigned reading is the identity and cannot overflow;
-            // preserving the tag keeps later arithmetic honest.
+            // sign bit to read. The model places every such delta's unsigned
+            // image strictly inside (2^40, 2^64 - 2^40) (see
+            // `SyntheticCrossArrayOffset.cltUnVerbatim` / `cgtUnVerbatim`)
+            // without committing to either side of 2^63, so whether the real
+            // delta would pass this overflow check is exactly the layout
+            // question the model declines to answer. Preserving the tag is the
+            // same charity `Conv_I` / `Conv_ovf_i` extend to byrefs, and keeps
+            // later arithmetic honest.
             NativeIntSource.SyntheticCrossArrayOffset i |> Ok
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             // Inversion of `Conv.I8` / `Conv.U8` followed by `Conv.ovf.i.un`. On
