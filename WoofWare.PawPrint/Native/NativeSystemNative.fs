@@ -4459,15 +4459,7 @@ module NativeSystemNative =
                 // Unreadable: no family to disagree with, and the length fault
                 // fires instead.
                 | None -> false
-                | Some family when family = internetFamily ->
-                    // Darwin refuses a broadcast or multicast address with
-                    // EAFNOSUPPORT, and measured that answer beats a short
-                    // declared length — so it belongs at this position in the
-                    // order rather than at `AddressNotLocal`. Linux binds them.
-                    match SimulatedUnixPlatform.flavour platform, endpoint with
-                    | SimulatedUnixFlavour.Darwin, Some endpoint ->
-                        SimulatedUnixPlatform.isBroadcastOrMulticast endpoint.Address
-                    | _, _ -> false
+                | Some family when family = internetFamily -> false
                 | Some 0 ->
                     // AF_UNSPEC is two different rules. Linux accepts the blob
                     // only when the address is all-zero, and answers
@@ -4574,7 +4566,20 @@ module NativeSystemNative =
             // 99 on Linux and 49 on Darwin after a bind that answered
             // EADDRNOTAVAIL. The null-blob and negative-length screens above are
             // the wrapper's and set nothing, which is why they return earlier.
-            match SimulatedUnixPlatform.firstBindFault platform faults with
+            // A broadcast or multicast address is refused rather than answered,
+            // and refused *here* rather than above: a fault this platform ranks
+            // ahead of the address is one PawPrint does know the answer to, and
+            // reporting it is better than refusing. Only when the address itself
+            // is what the platform would rule on does the gap bite.
+            match SimulatedUnixPlatform.firstBindFault platform faults, endpoint with
+            | Some BindFault.AddressNotLocal, Some endpoint when
+                SimulatedUnixPlatform.isBroadcastOrMulticast endpoint.Address
+                ->
+                failwith
+                    $"%s{operation}: fd %d{fd} asked to bind %s{InternetEndpoint.toString endpoint}, a broadcast or multicast address. PawPrint does not model multicast — there is no group membership and no interface to receive on — and the real rule is not one rule: measured, Linux takes such an address on a stream socket, Darwin answers EAFNOSUPPORT there, and Darwin's answer depends on the socket's kind besides. Model multicast before letting a guest bind one."
+            | fault, _ ->
+
+            match fault with
             | Some fault ->
                 let error =
                     match fault with

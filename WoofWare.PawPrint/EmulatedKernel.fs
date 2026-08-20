@@ -1562,11 +1562,18 @@ module SimulatedUnixPlatform =
     /// Is this the all-ones broadcast address, or a multicast one
     /// (`224.0.0.0/4`)?
     ///
-    /// Measured, `bind(2)` takes either on Linux and answers `EAFNOSUPPORT` on
-    /// Darwin — and on Darwin that answer beats a short declared length, so it
-    /// sits at the *family* position in the fault order rather than the address
-    /// one. Binding such an address is all PawPrint models: it has no interface
-    /// to send from, and every operation that would use one is unimplemented.
+    /// **PawPrint refuses to bind either**, rather than answering. Measured, the
+    /// rule is not one rule: Linux takes both on a stream socket, Darwin answers
+    /// `EAFNOSUPPORT` there, and on Darwin the answer depends on the socket's
+    /// *kind* besides — a datagram socket binds a multicast group where a stream
+    /// socket does not. Modelling that is modelling multicast, which is group
+    /// membership and an interface to receive on, and PawPrint has neither; a
+    /// bind that succeeded here would become a lie the moment `recvfrom` landed.
+    ///
+    /// So this classifier exists to *refuse* precisely, at the point in
+    /// `bindFaultOrder` where the address is judged — a fault the platform ranks
+    /// earlier still wins, which is what keeps the refusal from swallowing
+    /// answers PawPrint does know.
     let isBroadcastOrMulticast (address : uint32) : bool =
         address = System.UInt32.MaxValue || (address >>> 28) = 0xEu
 
@@ -1586,11 +1593,6 @@ module SimulatedUnixPlatform =
             true
         elif List.contains address localAddresses then
             // An address this machine holds binds on either flavour.
-            true
-        elif isBroadcastOrMulticast address then
-            // Linux binds these; Darwin refuses them, but with EAFNOSUPPORT from
-            // the family position rather than EADDRNOTAVAIL from this one, so the
-            // refusal is not expressed here.
             true
         else
 

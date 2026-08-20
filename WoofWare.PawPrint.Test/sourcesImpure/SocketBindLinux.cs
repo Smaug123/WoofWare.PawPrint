@@ -282,24 +282,6 @@ class SocketBindLinux
             Close(second);
         }
 
-        // 11. Multicast and broadcast: Linux binds them, Darwin answers
-        //     EAFNOSUPPORT — and on Darwin that answer beats a short declared
-        //     length, so it sits at the family position in the fault order.
-        {
-            IntPtr s = Make();
-            if (s == (IntPtr) (-1)) return 61;
-            // 224.0.0.1.
-            if (!Address(blob, 0x010000E0u, 0)) return 62;
-            if (Bind(s, PT_TCP, blob, V4Size) != PAL_SUCCESS) return 63;
-            Close(s);
-
-            IntPtr t = Make();
-            if (t == (IntPtr) (-1)) return 64;
-            if (!Address(blob, 0x010000E0u, 0)) return 65;
-            if (Bind(t, PT_TCP, blob, 8) != PAL_EINVAL) return 66;
-            Close(t);
-        }
-
         // 12. `listen(2)`'s own errnos, which a SetLastError caller reads. The
         //     datagram one is the sharp case: the PAL folds EOPNOTSUPP and
         //     ENOTSUP to one value, and the raw numbers differ on Darwin.
