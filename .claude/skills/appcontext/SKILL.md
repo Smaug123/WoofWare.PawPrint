@@ -1,3 +1,8 @@
+---
+name: appcontext
+description: How PawPrint seeds AppContext feature switches from runtimeconfig.json. Use when touching AppContextSeed.fs, RuntimeConfig.parse, or a BCL feature switch a guest reads through AppContext.GetData/TryGetSwitch.
+---
+
 # AppContext and `runtimeconfig.json`
 
 BCL feature switches (`System.Diagnostics.Tracing.EventSource.IsSupported`, `System.Globalization.Invariant`, …) are read through `AppContext.GetData`/`TryGetSwitch`. Nothing in managed code populates that store: on CoreCLR the VM calls `AppContext.Setup(char**, char**, int)` from `CorHost2::CreateAppDomainWithManager`, with arrays `hostpolicy` built from `runtimeOptions.configProperties`.
