@@ -747,30 +747,45 @@ module VirtualSlotLayout =
             HomeSlot : int
         }
 
-    /// Does this MethodImpl declaration name a slot of the class chain, and if so which, and which
-    /// declaration?
+    /// Which slot of the class chain does this MethodImpl declaration name, and which declaration is
+    /// it?
     ///
     /// `None` means "not a vtable write", which is the common case rather than a failure: a type
     /// carries one MethodImpl row per explicit interface implementation, and those name interface
     /// methods. Upstream draws the same line -- `AddMethodImplDispatchMapping` writes the vtable only
     /// when the declaration's type is this class or an ancestor (`typeID == ThisClassID()`,
     /// methodtablebuilder.cpp:6363-6366), and otherwise fills in the dispatch map alone. Here the test
-    /// is the same one, because `Placed` holds exactly the class chain's declarations.
+    /// is the same one, because `Placed` holds exactly the class chain's declarations. Measured over
+    /// corelib, that is 4084 of its 4120 MethodImpl rows.
     ///
-    /// **A MemberRef naming a class ancestor is refused rather than resolved.** Doing it faithfully is
-    /// `FindDeclMethodOnClassInHierarchy` (:9800-9870), which is three rules this does not yet have:
-    /// it identifies the ancestor by *MethodTable*, so `B&lt;int32&gt;` and `B&lt;string&gt;` are different
-    /// ancestors where a `ResolvedTypeIdentity` cannot tell them apart; it then searches that ancestor
-    /// *and its bases*, so a MemberRef on `B` can legally resolve to a method `A` introduced; and it
-    /// does so in two passes, exact signature matches before equivalent-under-substitution ones, which
-    /// is what keeps `M(!0)` and `M(string)` on `B&lt;string&gt;` pointing at different slots. Composing the
-    /// substitution chain that makes those comparisons possible for an ancestor that is not the
-    /// immediate parent is its own change, and guessing instead would write a slot for a type CoreCLR
-    /// refuses to load.
+    /// A MethodDef declaration needs no comparison: the row *is* the identity, and `Placed` is keyed
+    /// on it. All 36 of corelib's class-declaration rows are of this kind.
     ///
-    /// Nothing is lost on real metadata today: measured over corelib, all 36 of its class-declaration
-    /// MethodImpl rows are MethodDef tokens, and it has no class-declaration MemberRef rows at all --
-    /// its other 4084 rows are interface declarations, which return `None` here.
+    /// A MemberRef declaration is resolved against the ancestor it names, its signature compared in
+    /// that ancestor's *own, open* vocabulary with nominal tokens resolved against whichever assembly
+    /// spelled them. That is `CompareMethodSigs` as `FindDeclMethodOnClassInHierarchy` calls it for
+    /// the named type: no substitution for the declaration, and one that is still empty for the
+    /// candidate.
+    ///
+    /// Three departures from upstream, each of which a caller can observe.
+    ///
+    /// It **refuses** when the named ancestor declares nothing that matches. Upstream would go on to
+    /// search that ancestor's own bases -- so a MemberRef naming `B` can legally resolve to a method
+    /// `A` introduced -- and would then retry permitting COM type equivalence. PawPrint models
+    /// neither.
+    ///
+    /// It **refuses** when more than one declaration matches. Comparing in the open vocabulary means
+    /// that can only be one type declaring the same name and signature twice, which ECMA-335 II.22.26
+    /// forbids; upstream would take the first in `IntroducedMethodIterator` order.
+    ///
+    /// It **accepts** an ancestor named at an instantiation this type does not derive from --
+    /// `.override B&lt;int32&gt;::M` from a `C : B&lt;string&gt;` -- where upstream refuses with
+    /// `MI_DECLARATIONNOTFOUND`, identifying the ancestor by MethodTable. Comparing the spelled
+    /// instantiation is not the fix: a spelling is relative to the assembly that writes it, so one
+    /// instantiation compares unequal across an assembly boundary and valid cross-assembly overrides
+    /// get rejected. Identity alone never picks the *wrong* ancestor, a definition appearing at most
+    /// once in a single-inheritance chain; the cost is only that an impossible naming goes
+    /// undetected.
     let private declarationSlot
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -800,16 +815,12 @@ module VirtualSlotLayout =
                 failwith $"%s{operation}: MethodImpl on %s{table.Owner.Description} names a field as its declaration"
             | MemberSignature.Method signature ->
 
-            // Only the *identity* of the parent is needed to decide whether this row can write the
-            // vtable at all; the instantiation matters only once it does, which is the refusal below.
+            // Only the parent's identity is needed: see the contract above for why the spelled
+            // instantiation is deliberately not compared.
             let state, parentIdentity =
                 match memberRef.Parent with
                 | MetadataToken.TypeDefinition handle ->
-                    state,
-                    Some (
-                        ResolvedTypeIdentity.ofDefinitionInAssembly assembly.Name.FullName handle,
-                        ImmutableArray.Empty
-                    )
+                    state, Some (ResolvedTypeIdentity.ofDefinitionInAssembly assembly.Name.FullName handle)
                 | MetadataToken.TypeReference handle ->
                     let state, _, resolved =
                         IlMachineTypeResolution.resolveTypeFromRef
@@ -820,21 +831,19 @@ module VirtualSlotLayout =
                             state
 
                     state,
-                    Some (
-                        ResolvedTypeIdentity.ofDefinitionInAssembly resolved.AssemblyFullName resolved.TypeDefHandle,
-                        ImmutableArray.Empty
-                    )
+                    Some (ResolvedTypeIdentity.ofDefinitionInAssembly resolved.AssemblyFullName resolved.TypeDefHandle)
                 | MetadataToken.TypeSpecification handle ->
-                    let spelling, arguments =
+                    // Only the generic type is wanted, not its arguments: the instantiation is not
+                    // compared. `GenericInstantiation` is the only shape that carries arguments at all.
+                    let spelling =
                         match assembly.TypeSpecs.[handle].Signature with
-                        | TypeDefn.GenericInstantiation (generic, arguments) ->
-                            generic, ImmutableArray.CreateRange arguments
-                        | nominal -> nominal, ImmutableArray.Empty
+                        | TypeDefn.GenericInstantiation (generic, _) -> generic
+                        | nominal -> nominal
 
                     let state, identity =
                         nominalIdentityOfSpelling loggerFactory baseClassTypes operation state assembly spelling
 
-                    state, Some (identity, arguments)
+                    state, Some identity
                 | _ ->
                     // A MemberRef parent may also be a ModuleRef or a MethodDef (the vararg case),
                     // neither of which can name a class ancestor's method.
@@ -844,7 +853,7 @@ module VirtualSlotLayout =
             | None ->
                 // A ModuleRef or MethodDef parent: neither can name a class ancestor's method.
                 state, None
-            | Some (parentIdentity, _parentArguments) ->
+            | Some parentIdentity ->
 
             // Is the named type an ancestor?
             //
