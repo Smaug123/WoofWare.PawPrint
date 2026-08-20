@@ -1,7 +1,46 @@
 # Plan: a socket acquires a local address — `Bind`, `Listen`, `GetSockName`
 
-Revision 2. Revision 1 was reviewed by Fable; every change below is marked
-against a measurement, and the findings that forced them are noted inline.
+Revision 3, written after implementing it. Revision 1 was reviewed by Fable;
+revision 2 folded in that review. This revision records what the implementation
+itself forced, which was more than the plan anticipated.
+
+## What implementing it changed
+
+**The slice is IPv4 only.** No managed guest can create an `AF_INET6` socket
+until `SystemNative_SetSockOpt` exists, so every IPv6 row was raw-P/Invoke-only
+anyway; refusing IPv6 loudly also keeps out the cross-family conflict rows, which
+are facts about `IPV6_V6ONLY = 0` that invert on Linux at 1.
+
+**The order in which `bind(2)` reports its faults is per-flavour**, which the plan
+did not know. Measured pairwise: Linux checks the declared length before it reads
+the family and defers "already bound" until after it has validated the address;
+Darwin reads the family first and rejects an already-bound socket before looking
+at the address at all. So a rebind to a non-local address is `EADDRNOTAVAIL` on
+Linux and `EINVAL` on Darwin, and a short `sockaddr_in6` on an IPv4 socket is
+`EINVAL` on Linux and `EAFNOSUPPORT` on Darwin. Modelled as an ordered
+`BindFault` list per flavour, so the divergence is one list rather than two code
+paths.
+
+**No managed guest can assert a refusal.** Raising a `SocketException` runs
+`SystemNative_ConvertErrorPalToPlatform`, which is unimplemented, so a guest that
+caught one aborts while constructing it — the wall `OpenMissingFile.cs` also
+meets. `SocketBindListen.cs` therefore asserts only rows that succeed, and every
+refusal moved to `SocketBindScreens.cs`, which reads the returned PAL error
+through hand-rolled P/Invoke and never builds an exception. D5's reasoning still
+holds; the tier changed.
+
+**D4's shape was wrong, and a test caught it.** A list of *prefixes* cannot
+express either rule: Darwin binds `127.0.0.1` and refuses `127.9.9.9`, so it needs
+the assigned address, while Linux accepts both, so it needs the prefix. The
+configuration records `Ipv4InterfaceAddress` — an assigned address *with* the
+prefix length it was assigned with, `127.0.0.1/8` as `ifconfig` prints it — and
+each flavour reads the half it uses. The first draft compared against the
+prefix's network address and could not bind loopback under Darwin at all.
+
+**The backlog is not stored** (D8, unchanged) and privileged ports are modelled
+from `KernelConfig.UserId` against a 1024 ceiling (D7, as agreed).
+
+
 
 ## Goal
 

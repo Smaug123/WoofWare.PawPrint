@@ -1524,7 +1524,7 @@ module SimulatedUnixPlatform =
     /// guest that needs one gets a diagnosis instead of a wrong errno.
     let isBindableAddress
         (platform : SimulatedUnixPlatform)
-        (localAddresses : Ipv4Prefix list)
+        (localAddresses : Ipv4InterfaceAddress list)
         (address : uint32)
         : bool
         =
@@ -1533,8 +1533,8 @@ module SimulatedUnixPlatform =
         else
 
         match flavour platform with
-        | SimulatedUnixFlavour.Linux -> localAddresses |> List.exists (Ipv4Prefix.contains address)
-        | SimulatedUnixFlavour.Darwin -> localAddresses |> List.exists (Ipv4Prefix.isExactly address)
+        | SimulatedUnixFlavour.Linux -> localAddresses |> List.exists (Ipv4InterfaceAddress.isWithinPrefix address)
+        | SimulatedUnixFlavour.Darwin -> localAddresses |> List.exists (Ipv4InterfaceAddress.isAssigned address)
 
     /// Does a bind of `candidate` collide with the socket already bound at
     /// `existing`?
@@ -2015,7 +2015,7 @@ type EmulatedKernel =
         EphemeralPortRange : uint16 * uint16
         /// The IPv4 addresses this machine holds. Host configuration; see
         /// `EmulatedKernel.defaultLocalAddresses`.
-        LocalAddresses : Ipv4Prefix list
+        LocalAddresses : Ipv4InterfaceAddress list
         /// The identity the next `SystemNative_Socket` will allocate.
         ///
         /// Monotonic, and never reused: nothing guest-visible reports a
@@ -2608,7 +2608,8 @@ module EmulatedKernel =
     /// `127.0.0.0/8` rather than `127.0.0.1/32` because that is what Linux
     /// assigns to `lo`, and the flavours read the list differently — see
     /// `SimulatedUnixPlatform.isBindableAddress`.
-    let defaultLocalAddresses : Ipv4Prefix list = [ Ipv4Prefix.create 0x7F000000u 8 ]
+    let defaultLocalAddresses : Ipv4InterfaceAddress list =
+        [ Ipv4InterfaceAddress.create InternetEndpoint.LoopbackAddress 8 ]
 
     let defaultUserId : uint32 = 1000u
 
@@ -3373,7 +3374,7 @@ module EmulatedKernel =
             NextEphemeralPort = low
         }
 
-    let withLocalAddresses (addresses : Ipv4Prefix list) (kernel : EmulatedKernel) : EmulatedKernel =
+    let withLocalAddresses (addresses : Ipv4InterfaceAddress list) (kernel : EmulatedKernel) : EmulatedKernel =
         // An empty list is legal and means a machine with no addresses at all,
         // on which only the wildcard binds. That is a strange machine but a
         // representable one, and refusing it here would be inventing a rule.
@@ -3694,7 +3695,7 @@ type KernelConfig =
         /// The IPv4 addresses this machine holds, as prefixes. See
         /// `EmulatedKernel.defaultLocalAddresses`, and note the flavours read one
         /// list differently.
-        LocalAddresses : Ipv4Prefix list
+        LocalAddresses : Ipv4InterfaceAddress list
     }
 
     /// Configuration a host gets if it expresses no preference: no environment

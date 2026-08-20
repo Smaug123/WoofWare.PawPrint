@@ -267,23 +267,25 @@ type UnixError =
     /// Darwin numbers it 49, where Linux reads 49 as "Protocol driver not
     /// attached".
     | EADDRNOTAVAIL
-    /// `EOPNOTSUPP` — Operation not supported on socket.
+    /// `ENOTSUP` — Not supported.
+    ///
+    /// Named for the PAL enum member rather than for the errno, because the PAL
+    /// folds two errnos into one value: `Error_EOPNOTSUPP = Error_ENOTSUP`, and
+    /// CoreLib's managed `Interop.Error` carries `EOPNOTSUPP` only as an alias.
+    /// This is the value CoreLib switches on.
     ///
     /// Reported by `listen(2)` on a socket whose type does not accept
     /// connections — a datagram socket, measured on both.
     ///
-    /// Platform-dependent, and neither number is free on the other platform.
-    /// Measured: Linux numbers this 95, where Darwin reads 95 as "EMULTIHOP
-    /// (Reserved)"; Darwin numbers it 102, where Linux reads 102 as "Network
-    /// dropped connection on reset".
-    ///
-    /// **Do not reuse this case for a general "not supported".** Measured, Linux
-    /// makes `ENOTSUP` and `EOPNOTSUPP` the same number (both 95) while Darwin
-    /// does not: `ENOTSUP` is 45 there, which is what `flock` on a socket
-    /// answers. Both fold to the same PAL value (`Error_EOPNOTSUPP =
-    /// Error_ENOTSUP`), so the raw numbering is the only thing that can tell them
-    /// apart, and a caller meaning `ENOTSUP` wants a case of its own.
-    | EOPNOTSUPP
+    /// The raw numbering here is `ENOTSUP`'s own: Linux 95 (where Darwin reads 95
+    /// as "EMULTIHOP (Reserved)"), Darwin 45. **That is not the errno every
+    /// condition behind this PAL value sets.** Measured, Linux makes `ENOTSUP`
+    /// and `EOPNOTSUPP` the same number, but Darwin does not — `listen(2)` on a
+    /// datagram socket sets 102 there, while `flock` on a socket sets 45 — so an
+    /// entry point that reports a *raw* errno for one of these conditions must
+    /// not take it from here. None does today: every caller returns the PAL value
+    /// and touches no errno.
+    | ENOTSUP
 
 /// The raw and PAL numbering of one `UnixError`.
 type UnixErrorNumbering =
@@ -361,7 +363,7 @@ module UnixError =
             UnixError.EPROTONOSUPPORT
             UnixError.EADDRINUSE
             UnixError.EADDRNOTAVAIL
-            UnixError.EOPNOTSUPP
+            UnixError.ENOTSUP
         ]
 
     let private portable (pal : int) (raw : int) : UnixErrorNumbering =
@@ -439,7 +441,7 @@ module UnixError =
         | UnixError.EPROTONOSUPPORT -> platformDependent 0x10045 93 43
         | UnixError.EADDRINUSE -> platformDependent 0x10003 98 48
         | UnixError.EADDRNOTAVAIL -> platformDependent 0x10004 99 49
-        | UnixError.EOPNOTSUPP -> platformDependent 0x1003D 95 102
+        | UnixError.ENOTSUP -> platformDependent 0x1003D 95 45
 
     /// The `Interop.Error` value CoreLib switches on. Total: the PAL numbering is
     /// platform-independent, so it is always answerable.

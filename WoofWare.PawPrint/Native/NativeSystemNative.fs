@@ -4553,7 +4553,7 @@ module NativeSystemNative =
             | Ok (socketId, socket) ->
 
             match socket.Kind with
-            | SocketKind.Datagram -> complete (UnixError.toPal UnixError.EOPNOTSUPP) state
+            | SocketKind.Datagram -> complete (UnixError.toPal UnixError.ENOTSUP) state
             | SocketKind.Raw
             | SocketKind.SeqPacket ->
                 failwith

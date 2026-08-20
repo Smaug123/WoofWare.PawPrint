@@ -20,19 +20,21 @@ type InternetEndpoint =
         Port : uint16
     }
 
-/// A contiguous run of IPv4 addresses, as `KernelConfig.LocalAddresses` lists
-/// the ones this machine holds.
+/// One IPv4 address this machine holds, with the prefix length it was assigned
+/// with — `127.0.0.1/8`, as `ip addr` and `ifconfig` both print it.
 ///
-/// A prefix rather than a bare address because that is the shape the rule needs:
-/// Linux treats every address inside a local prefix as bindable — the whole of
-/// `127.0.0.0/8` — where Darwin treats only an address a prefix *is*. One list
-/// serves both, read differently.
-type Ipv4Prefix =
+/// Both halves are needed, because the flavours read them differently and each
+/// reads only one. Darwin treats the *address* as the assigned one, so
+/// `127.0.0.1` binds and `127.9.9.9` is `EADDRNOTAVAIL`; Linux treats the whole
+/// *prefix* as local, so both bind. Recording only the address would make the
+/// Linux rule unstateable, and recording only the network address would leave
+/// Darwin unable to bind loopback at all.
+type Ipv4InterfaceAddress =
     {
-        /// The network address, host order, with the host bits already zero.
-        Network : uint32
-        /// How many leading bits the prefix fixes, in `[0, 32]`.
-        Bits : int
+        /// The assigned address, host order: `127.0.0.1` is `0x7F000001`.
+        Address : uint32
+        /// The prefix length assigned with it, in `[0, 32]`.
+        PrefixBits : int
     }
 
 [<RequireQualifiedAccess>]
@@ -79,42 +81,28 @@ module InternetEndpoint =
             endpoint.Port
 
 [<RequireQualifiedAccess>]
-module Ipv4Prefix =
+module Ipv4InterfaceAddress =
 
-    /// Fails rather than truncating when `network` has bits set below the
-    /// prefix length: `127.0.0.1/8` is a typo for either `127.0.0.0/8` or
-    /// `127.0.0.1/32`, and guessing which would silently widen or narrow what a
-    /// guest may bind.
-    let create (network : uint32) (bits : int) : Ipv4Prefix =
-        if bits < 0 || bits > 32 then
-            failwith $"Ipv4Prefix.create: a prefix length of %d{bits} is not in [0, 32]."
-
-        let mask =
-            if bits = 0 then
-                0u
-            else
-                System.UInt32.MaxValue <<< (32 - bits)
-
-        if network &&& ~~~mask <> 0u then
-            failwith
-                $"Ipv4Prefix.create: %s{InternetEndpoint.toString (InternetEndpoint.ofParts network 0us)} has bits set below its /%d{bits} boundary. Write the network address, or widen the prefix."
+    let create (address : uint32) (prefixBits : int) : Ipv4InterfaceAddress =
+        if prefixBits < 0 || prefixBits > 32 then
+            failwith $"Ipv4InterfaceAddress.create: a prefix length of %d{prefixBits} is not in [0, 32]."
 
         {
-            Network = network
-            Bits = bits
+            Address = address
+            PrefixBits = prefixBits
         }
 
-    let private mask (prefix : Ipv4Prefix) : uint32 =
-        if prefix.Bits = 0 then
-            0u
-        else
-            System.UInt32.MaxValue <<< (32 - prefix.Bits)
+    /// Is `address` the one assigned here? Darwin's rule, which is why
+    /// `127.0.0.1` binds there and `127.9.9.9` does not.
+    let isAssigned (address : uint32) (assigned : Ipv4InterfaceAddress) : bool = assigned.Address = address
 
-    /// Is `address` inside this prefix?
-    let contains (address : uint32) (prefix : Ipv4Prefix) : bool =
-        address &&& mask prefix = prefix.Network
+    /// Is `address` inside the prefix this address was assigned with? Linux's
+    /// rule, which is why both of those bind there.
+    let isWithinPrefix (address : uint32) (assigned : Ipv4InterfaceAddress) : bool =
+        let mask =
+            if assigned.PrefixBits = 0 then
+                0u
+            else
+                System.UInt32.MaxValue <<< (32 - assigned.PrefixBits)
 
-    /// Is `address` the *only* address this prefix names? A `/32` names one
-    /// address and is that address; a wider prefix names a range, of which
-    /// Darwin considers only the configured network address itself assigned.
-    let isExactly (address : uint32) (prefix : Ipv4Prefix) : bool = prefix.Network = address
+        (address &&& mask) = (assigned.Address &&& mask)
