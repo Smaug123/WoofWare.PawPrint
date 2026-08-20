@@ -31,7 +31,12 @@ class Program
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_CloseSocketEventPort")]
     static extern int CloseSocketEventPort(IntPtr port);
 
-    [DllImport("libSystem.Native", EntryPoint = "SystemNative_WaitForSocketEvents", SetLastError = true)]
+    // Deliberately *without* `SetLastError`. Several rows below assert that a
+    // call left the previous errno standing, and that is a fact about the
+    // native: through a flagged import the P/Invoke stub zeroes errno before the
+    // call, so "left alone" and "cleared" would be the same observation. See
+    // sourcesPure/PInvokeSetLastError.cs for the stub itself.
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_WaitForSocketEvents")]
     static extern unsafe int WaitForSocketEvents(IntPtr port, byte* buffer, int* count);
 
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_LSeek", SetLastError = true)]

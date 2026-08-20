@@ -33,8 +33,10 @@ using System.Runtime.InteropServices;
 // overflow. It still pins PawPrint against the platform whose errno it claims
 // to report, which is what this file is for.
 //
-// errno is read via Marshal.GetLastSystemError rather than GetLastPInvokeError:
-// with a raw DllImport there is no generated stub to copy one to the other.
+// errno is read via Marshal.GetLastSystemError, the slot the syscall itself
+// writes, rather than the P/Invoke slot the SetLastError stub copies it into.
+// The imports below declare that flag, so the two agree; what makes them agree
+// is pinned by sourcesPure/PInvokeSetLastError.cs.
 //
 // The exit code is the index of the first check that failed; 0 means all
 // passed. Seed: f = "hello" (5 bytes).

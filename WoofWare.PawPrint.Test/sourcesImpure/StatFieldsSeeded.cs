@@ -19,12 +19,11 @@ using System.Text;
 //
 // Errors are read with Marshal.GetLastSystemError rather than the
 // GetLastPInvokeError that CoreLib itself uses (Interop.Errors.cs:163). The two
-// agree on the real runtime, but under PawPrint the P/Invoke error slot is
-// filled by the LibraryImport-generated stub, which copies GetLastSystemError
-// into it — and a classic DllImport like the ones here has no such stub, so
-// nothing performs the copy. That gap is real but belongs to the P/Invoke
-// last-error plumbing rather than to stat; the CoreLib path is exercised by FileExistsSeeded.cs,
-// where a failing LStat is what makes File.Exists answer false.
+// hold the same number here -- the imports declare SetLastError, and the stub
+// that copies one slot into the other is modelled -- but the system slot is the
+// one the syscall itself writes, so it is what these rows are about. The CoreLib
+// path is exercised by FileExistsSeeded.cs, where a failing LStat is what makes
+// File.Exists answer false.
 //
 // The exit code is the index of the first check that failed; 0 means all
 // passed. Kept below 128, since an exit code is eight bits.
