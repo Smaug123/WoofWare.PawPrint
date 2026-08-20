@@ -191,15 +191,10 @@ module EvalStackValueComparisons =
                 bits <> 0L
             | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.OpaqueHashBits _ -> false
             | NativeIntSource.Verbatim var1, NativeIntSource.SyntheticCrossArrayOffset var2 ->
-                if var1 >= 0L then
-                    SyntheticCrossArrayOffset.cltVerbatim var2 var1
-                else
-                    failwith "TODO: didn't want to think about negative ints yet"
+                // var1 >u var2  ⟺  var2 <u var1
+                SyntheticCrossArrayOffset.cltUnVerbatim var2 var1
             | NativeIntSource.SyntheticCrossArrayOffset var1, NativeIntSource.Verbatim var2 ->
-                if var2 >= 0L then
-                    SyntheticCrossArrayOffset.cgtVerbatim var1 var2
-                else
-                    failwith "TODO: didn't want to think about negative ints yet"
+                SyntheticCrossArrayOffset.cgtUnVerbatim var1 var2
             | NativeIntSource.ManagedPointer ManagedPointerSource.Null,
               NativeIntSource.ManagedPointer ManagedPointerSource.Null -> false
             | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.ManagedPointer _ -> false
@@ -301,15 +296,10 @@ module EvalStackValueComparisons =
             | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.OpaqueHashBits bits ->
                 bits <> 0L
             | NativeIntSource.Verbatim var1, NativeIntSource.SyntheticCrossArrayOffset var2 ->
-                if var1 >= 0L then
-                    SyntheticCrossArrayOffset.cgtVerbatim var2 var1
-                else
-                    failwith "TODO: didn't want to think about negative ints yet"
+                // var1 <u var2  ⟺  var2 >u var1
+                SyntheticCrossArrayOffset.cgtUnVerbatim var2 var1
             | NativeIntSource.SyntheticCrossArrayOffset var1, NativeIntSource.Verbatim var2 ->
-                if var2 >= 0L then
-                    SyntheticCrossArrayOffset.cltVerbatim var1 var2
-                else
-                    failwith "TODO: didn't want to think about negative ints yet"
+                SyntheticCrossArrayOffset.cltUnVerbatim var1 var2
             | NativeIntSource.ManagedPointer ManagedPointerSource.Null,
               NativeIntSource.ManagedPointer ManagedPointerSource.Null -> false
             | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.ManagedPointer _ -> true

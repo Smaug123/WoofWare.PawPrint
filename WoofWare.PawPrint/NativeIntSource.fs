@@ -44,35 +44,38 @@ module SyntheticCrossArrayOffset =
     let sourceRoot (s : SyntheticCrossArrayOffset) : ByteStorageIdentity = s._SourceRoot
     let sourceOffset (s : SyntheticCrossArrayOffset) : int64 = s._SourceOffset
 
-    /// A SyntheticCrossArrayOffset is semantically a difference between memory addresses, so it is a native int.
-    /// Various parts of the BCL ask to compare it against integers.
-    /// For example, Memmove asks whether the source and dest overlap, by asking whether dest - source < len.
-    /// PawPrint doesn't really model the address space as an array of bytes at all, but it *can* reply to the question
-    /// "is this delta small", and that's what this function does.
-    let internal cltVerbatim (_ : SyntheticCrossArrayOffset) (positiveComparand : int64) =
-        if positiveComparand < 0L then
-            failwith "cltVerbatim arg must be nonnegative"
+    // PawPrint doesn't model the address space as an array of bytes, so a cross-container
+    // delta has no numeric value; instead every such delta gets the same unsigned image
+    // band, strictly inside (2^40, 2^64 - 2^40), as if distinct storage containers sat
+    // arbitrarily far apart in both directions. A comparand is answerable exactly when its
+    // own unsigned image falls outside that band: small nonnegative values (below 2^40)
+    // sit below the delta, and small-magnitude negative values (unsigned image within
+    // 2^40 of 2^64) sit above it. Anything else would need to know where the containers
+    // really sit. Overlap-shaped questions get the true answer regardless of layout,
+    // because a location inside one container cannot fall within another container's
+    // extent.
+    // TODO: it *is* possible for people to do arithmetic on addresses e.g. a PE image.
+    // I really hope nobody does that.
+    let private comparandLiesBelowDelta (comparand : int64) : bool =
+        if comparand >= (1L <<< 40) || comparand <= -(1L <<< 40) then
+            failwith
+                $"cross-container deltas can only be unsigned-compared against comparands of magnitude below 2^40, got %i{comparand}"
 
-        if positiveComparand >= (1L <<< 40) then
-            failwith $"cltVerbatim can only compare with small deltas, got %i{positiveComparand}"
-        // TODO: it *is* possible for people to do arithmetic on addresses e.g. a PE image.
-        // I really hope nobody does that.
-        false
+        comparand >= 0L
 
-    /// A SyntheticCrossArrayOffset is semantically a difference between memory addresses, so it is a native int.
-    /// Various parts of the BCL ask to compare it against integers.
-    /// For example, Memmove asks whether the source and dest overlap, by asking whether dest - source < len.
-    /// PawPrint doesn't really model the address space as an array of bytes at all, but it *can* reply to the question
-    /// "is this delta small", and that's what this function does.
-    let internal cgtVerbatim (_ : SyntheticCrossArrayOffset) (positiveComparand : int64) =
-        if positiveComparand < 0L then
-            failwith "cgtVerbatim arg must be nonnegative"
+    /// `delta <u comparand`, where `delta` is this cross-container byte delta (as produced by
+    /// `Unsafe.ByteOffset` or managed-pointer subtraction across distinct containers) and
+    /// `comparand` is an ordinary number of magnitude below 2^40, loudly refused otherwise.
+    /// This is how the BCL's overlap checks consume such a delta: e.g.
+    /// `MemoryExtensions.Overlaps` answers "do these spans overlap" as
+    /// `delta <u spanBytes || delta >u -(otherBytes)`, and both disjuncts are false for spans
+    /// in distinct containers.
+    let internal cltUnVerbatim (_ : SyntheticCrossArrayOffset) (comparand : int64) : bool =
+        not (comparandLiesBelowDelta comparand)
 
-        if positiveComparand >= (1L <<< 40) then
-            failwith $"cgtVerbatim can only compare with small deltas, got %i{positiveComparand}"
-        // TODO: it *is* possible for people to do arithmetic on addresses e.g. a PE image.
-        // I really hope nobody does that.
-        true
+    /// `delta >u comparand`; see `cltUnVerbatim`.
+    let internal cgtUnVerbatim (_ : SyntheticCrossArrayOffset) (comparand : int64) : bool =
+        comparandLiesBelowDelta comparand
 
 [<RequireQualifiedAccess>]
 type UnsignedNativeIntSource =
@@ -501,7 +504,7 @@ module NativeIntSource =
     let isZero (n : NativeIntSource) : bool =
         match n with
         | NativeIntSource.Verbatim i -> i = 0L
-        | NativeIntSource.SyntheticCrossArrayOffset s -> SyntheticCrossArrayOffset.cltVerbatim s 1L
+        | NativeIntSource.SyntheticCrossArrayOffset s -> SyntheticCrossArrayOffset.cltUnVerbatim s 1L
         | NativeIntSource.FieldHandlePtr _
         | NativeIntSource.MethodHandlePtr _
         | NativeIntSource.TypeHandlePtr _
