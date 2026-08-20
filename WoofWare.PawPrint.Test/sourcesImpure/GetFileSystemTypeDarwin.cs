@@ -23,6 +23,15 @@ using System.Runtime.InteropServices;
 // The Linux and Darwin files are deliberately the same checks in the same order,
 // so that diffing them shows exactly the flavour column and nothing else.
 //
+// Impure, but not unvalidated: compiled and run against real .NET on a macOS
+// host with fds 0, 1 and 2 all attached to pipes — which is what PawPrint models
+// them as — this guest exits 0, so every row here is a real Darwin kernel's
+// answer and not merely a transcription of one. It does *not* exit 0 when the
+// harness hands it a stream attached to something else (`/dev/null` is devfs, on
+// which `fstatfs` succeeds), which is one of the two reasons it cannot be a
+// differential case; the other is that the file row reports whatever mount the
+// oracle's scratch directory is on.
+//
 // errno is read via `Marshal.GetLastSystemError`: with a raw `DllImport` there
 // is no generated stub to copy it to `GetLastPInvokeError`. CoreLib's own
 // declaration of this native has no `SetLastError` at all, so nothing in the
@@ -37,6 +46,21 @@ class Program
 {
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetFileSystemType", SetLastError = true)]
     static extern uint GetFileSystemType(IntPtr fd);
+
+    // The same entry point without `SetLastError`, used by the last row alone.
+    // CoreCLR's `SetLastError` stub **zeroes errno before the call**, so through
+    // the import above a successful call reports 0 on real .NET whatever the
+    // kernel left behind — measured against the pinned runtime, which makes the
+    // final row's question unanswerable by that route.
+    //
+    // PawPrint does not model that pre-call clear: `Marshal.GetLastSystemError`
+    // reads the emulated kernel's errno directly rather than a per-call cache.
+    // Every row above zeroes errno itself before calling, so none of them can
+    // tell the two apart; only the last one could, which is why it takes this
+    // route instead. Modelling the stub's clear is a P/Invoke-wide change and
+    // belongs to its own slice.
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetFileSystemType")]
+    static extern uint GetFileSystemTypeNoLastError(IntPtr fd);
 
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_Open", SetLastError = true)]
     static extern unsafe IntPtr Open(byte* path, int flags, int mode);
@@ -147,15 +171,23 @@ class Program
         if (!Answers(port, 0, EINVAL)) return check;
         CloseSocketEventPort(port);
 
-        // A successful call leaves errno exactly as it was, as `fstatfs` does:
-        // it is only ever *set* on failure. Without this, a handler that cleared
-        // errno on the way out would pass every row above.
+        // A successful call leaves the emulated kernel's errno exactly as it
+        // was, as `fstatfs` does: errno is only ever *set* on failure. Without
+        // this, a handler that cleared it on the way out would pass every row
+        // above, since each of those zeroes errno itself first.
+        //
+        // Through the no-`SetLastError` import, for the reason given on its
+        // declaration. Note this is a PawPrint contract rather than a
+        // cross-runtime one: on real .NET no managed caller can observe whether
+        // a successful `fstatfs` disturbed errno at all — the `SetLastError`
+        // stub has already zeroed it, and without the stub the thread's cached
+        // value is simply never updated.
         check = 14;
         IntPtr g = OpenPath("f", O_RDONLY);
         if (g == new IntPtr(-1)) return check;
         check = 15;
         Marshal.SetLastSystemError(4242);
-        GetFileSystemType(g);
+        GetFileSystemTypeNoLastError(g);
         if (Marshal.GetLastSystemError() != 4242) return check;
         Close(g);
 
