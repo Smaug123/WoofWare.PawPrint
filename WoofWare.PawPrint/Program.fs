@@ -495,13 +495,18 @@ module Program =
         // and the spurious-wakeup schedules are both keyed on that counter, and
         // a jump is the resolution of a timeout rather than a retired step.
         let state =
-            match
-                ClockJitter.chooseJump
-                    state.Kernel.ClockJitter
-                    tick
-                    state.Kernel.VirtualClockTicks
-                    (pendingDeadlines state)
-            with
+            match state.Kernel.ClockJitter with
+            // Taken before `pendingDeadlines`, which walks every thread and
+            // allocates: F# evaluates arguments eagerly, so passing it to
+            // `chooseJump` unconditionally would charge that walk to every tick
+            // of every run, in exchange for an answer that is `None` by
+            // definition. Only the disabled case is special-cased here — any
+            // future variant falls through to the full decision below rather
+            // than silently inheriting a fast path meant for "switched off".
+            | ClockJitterStrategy.Disabled -> state
+            | strategy ->
+
+            match ClockJitter.chooseJump strategy tick state.Kernel.VirtualClockTicks (pendingDeadlines state) with
             | None -> state
             // Through the validating setter, which is what faults if a guest's
             // own timeout arithmetic has run the clock off the representable

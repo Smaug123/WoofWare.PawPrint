@@ -276,17 +276,22 @@ module ClockJitter =
             | [] -> None
             | scheduled ->
 
-            // The furthest target wins rather than each being applied in turn:
-            // the clock is monotonic, so applying several jumps at one tick is
+            // Every target scheduled for this tick is checked, not only the one
+            // that ends up winning: a script naming both 500 and 700 while the
+            // clock reads 600 has drifted, and validating the maximum alone
+            // would wave that through — which is exactly the silent
+            // "replay that no longer describes the run" this check exists to
+            // prevent.
+            for _, target in scheduled do
+                if target <= currentClock then
+                    failwith
+                        $"ClockJitterStrategy.Scripted: jump at step %d{stepCounter} names target %d{target} ticks, but the clock already reads %d{currentClock}; the clock is monotonic, so this script has drifted out of step with the run underneath it."
+
+            // The furthest wins rather than each being applied in turn: the
+            // clock is monotonic, so applying several jumps at one tick is
             // observationally identical to applying the largest, and taking the
             // max means a script listing them in any order behaves the same.
-            let target = scheduled |> List.map snd |> List.max
-
-            if target <= currentClock then
-                failwith
-                    $"ClockJitterStrategy.Scripted: jump at step %d{stepCounter} names target %d{target} ticks, but the clock already reads %d{currentClock}; the clock is monotonic, so this script has drifted out of step with the run underneath it."
-
-            Some target
+            Some (scheduled |> List.map snd |> List.max)
 
 /// Deterministic model of a single Win32-shaped semaphore kernel object, as
 /// minted by `CreateSemaphoreExW`. CoreCLR backs this with a real Win32

@@ -341,6 +341,21 @@ module TestClockJitter =
         |> shouldEqual (Some 501L)
 
     [<Test>]
+    let ``a stale entry is caught even when a live one shares its tick`` () : unit =
+        // The entries at a tick collapse to the furthest, so checking only the
+        // winner would let a drifted entry ride along beside a valid one --
+        // and a script that has half fallen behind the run is exactly as
+        // untrustworthy as one that has wholly fallen behind it. Asserted in
+        // both orders, since the stale entry is the smaller and a check that
+        // looked at only the first or only the last would pass one of them.
+        for script in [ [ 1L, 500L ; 1L, 700L ] ; [ 1L, 700L ; 1L, 500L ] ] do
+            let choose () =
+                ClockJitter.chooseJump (ClockJitterStrategy.Scripted script) 1L 600L []
+                |> ignore<int64 option>
+
+            Assert.Throws<Exception> (TestDelegate choose) |> ignore<Exception>
+
+    [<Test>]
     let ``an EagerDeadlines run is replayable as a script`` () : unit =
         // The recording half of the shrinking story: the jumps a seeded run
         // makes are exactly a `Scripted` program, so a harness can capture one
