@@ -80,6 +80,10 @@
     <Compile Include="IlMachineManagedByref.fs" />
     <Compile Include="IlMachineRuntimeMetadata.fs" />
     <Compile Include="IlMachineState.fs" />
+    <!-- Before IlMachineStateExecution.fs, not with the QCalls that ask it for `GetSlot` and
+         `GetNumVirtuals`: which method answers a `callvirt` is decided by slot, so virtual dispatch
+         needs this walk too. Needs nothing after IlMachineState.fs. -->
+    <Compile Include="VirtualSlotLayout.fs" />
     <Compile Include="FieldRvaData.fs" />
     <Compile Include="CustomAttribValueLowering.fs" />
     <Compile Include="MethodTableProjection.fs" />

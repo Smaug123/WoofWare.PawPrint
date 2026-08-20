@@ -830,7 +830,7 @@ module NativeRuntimeTypeFCall =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
             let state, count =
-                numVirtuals ctx.LoggerFactory ctx.BaseClassTypes operation state target
+                VirtualSlotLayout.numVirtuals ctx.LoggerFactory ctx.BaseClassTypes operation state target
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 count)) ctx.Thread state
@@ -860,7 +860,7 @@ module NativeRuntimeTypeFCall =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
             let returnValue, state =
-                match introducedMethodsOf operation state target with
+                match VirtualSlotLayout.introducedMethodsOf operation state target with
                 | None
                 | Some (_, _, []) ->
                     let zero =
@@ -935,7 +935,7 @@ module NativeRuntimeTypeFCall =
             // introduces nothing, so `None` here would mean the iterator was resumed against a
             // handle whose declaring type can no longer produce methods.
             let assemblyFullName, declaringType, methods =
-                introducedMethodsOf operation state (identity.GetDeclaringType ())
+                VirtualSlotLayout.introducedMethodsOf operation state (identity.GetDeclaringType ())
                 |> Option.defaultWith (fun () ->
                     failwith
                         $"%s{operation}: registry handle %d{currentId} resolves to declaring type %O{identity.GetDeclaringType ()}, which does not enumerate introduced methods"
