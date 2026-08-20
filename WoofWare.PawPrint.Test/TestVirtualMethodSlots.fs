@@ -722,6 +722,125 @@ module TestVirtualMethodSlots =
         virtualsChecked |> shouldBeGreaterThan 0
         beyondChecked |> shouldBeGreaterThan 1
 
+    /// Every corpus type by full name, generic definitions included, for the placement oracle below.
+    let private allCorpusNames : string list =
+        (corpus @ definitionCorpus)
+        |> List.map (fun (ns, name) -> if ns = "" then name else $"%s{ns}.%s{name}")
+
+    /// `placedSlotsOfDefinition` answers `MethodDesc::GetSlot()` for every declaration in a chain,
+    /// including the ones the vtable can no longer see, and the host CLR answers the same question
+    /// for any `MethodBase` whatever type declared it. So this compares them directly.
+    ///
+    /// The interesting rows are exactly the ones the two tests above cannot reach. Those ask only
+    /// about methods the corpus type *declares*, and compare against `slotIndexInTable`, which scans
+    /// each slot's current occupant -- so a declaration that a derived type overrode by placement is
+    /// absent from what they check, because `A.M` and `B.M` share a slot and only `B.M` occupies it.
+    /// That vanished declaration is the whole reason this list exists: a MethodImpl spelled
+    /// `.override A::M` writes the slot `A.M` owns, and nothing else can say which slot that is.
+    ///
+    /// The corpus reaches the shape on purpose: `System.ArgumentNullException` carries three
+    /// generations of `Message` and `ToString` above it, so two of each are overridden declarations
+    /// that only this list can still name.
+    [<TestCaseSource(nameof allCorpusNames)>]
+    let ``every declaration's slot agrees with the host's, overridden ones included`` (fullName : string) : unit =
+        let ``namespace``, name =
+            match fullName.LastIndexOf '.' with
+            | -1 -> "", fullName
+            | index -> fullName.Substring (0, index), fullName.Substring (index + 1)
+
+        let typeInfo =
+            match corelib.TryGetTopLevelTypeDef ``namespace`` name with
+            | None -> failwith $"%s{fullName} not found in corelib"
+            | Some typeInfo -> typeInfo
+
+        let identity =
+            ResolvedTypeIdentity.ofDefinitionInAssembly typeInfo.AssemblyFullName typeInfo.TypeDefHandle
+
+        let _, placed =
+            VirtualSlotLayout.placedSlotsOfDefinition loggerFactory bct "test" (state ()) identity
+
+        // Keyed on the declaring assembly and the MethodDef *row*, which is what makes the key
+        // injective. `MethodDefinitionHandle` is a struct whose `ToString` does not name the row, so
+        // keying on a rendering of the identity tuple silently collapses every method of a type onto
+        // one entry -- which reads as "the walk gave every declaration the same slot" and cost a
+        // debugging round to spot.
+        let keyOf
+            (assembly : string)
+            (handle : System.Reflection.Metadata.MethodDefinitionHandle option)
+            : string * int
+            =
+            match handle with
+            | Some handle ->
+                assembly,
+                MetadataTokens.GetRowNumber (
+                    System.Reflection.Metadata.MethodDefinitionHandle.op_Implicit handle
+                    : System.Reflection.Metadata.EntityHandle
+                )
+            // A synthesised method has no row. None is placed in any corpus type here, and a
+            // negative row makes it a loud mismatch rather than a silent match if one ever is.
+            | None -> assembly, -1
+
+        // Two entries for one declaration would mean the walk placed a method twice.
+        let byIdentity =
+            placed
+            |> List.map (fun (slot, index) ->
+                keyOf slot.DeclaredBy.AssemblyFullName (fst slot.Method.IdentityKey), index
+            )
+
+        byIdentity
+        |> List.countBy fst
+        |> List.filter (fun (_, count) -> count > 1)
+        |> shouldEqual []
+
+        let byIdentity = Map.ofList byIdentity
+
+        // The host's chain, most-derived first. An instance virtual declared anywhere on it owns a
+        // vtable slot, and every one of them should be in `placed`.
+        let hostChain =
+            let rec chain (t : Type) =
+                match t with
+                | null -> []
+                | t -> t :: chain t.BaseType
+
+            chain (hostType ``namespace`` name)
+
+        let mutable failures = []
+        let mutable checked' = 0
+
+        for ancestor in hostChain do
+            for method in hostDeclaredMethods ancestor do
+                if method.IsVirtual && not method.IsStatic then
+                    checked' <- checked' + 1
+                    let expected = hostSlotOf method
+
+                    let key =
+                        keyOf
+                            corelib.Name.FullName
+                            (Some (MetadataTokens.MethodDefinitionHandle (method.MetadataToken &&& 0xFFFFFF)))
+
+                    match Map.tryFind key byIdentity with
+                    | None ->
+                        failures <-
+                            $"%s{ancestor.Name}::%s{method.Name} (row %i{method.MetadataToken &&& 0xFFFFFF}) is absent from the placement list, host slot %i{expected}"
+                            :: failures
+                    | Some actual ->
+                        if actual <> expected then
+                            failures <-
+                                $"%s{ancestor.Name}::%s{method.Name} (row %i{method.MetadataToken &&& 0xFFFFFF}) PawPrint slot %i{actual}, host %i{expected}"
+                                :: failures
+
+        if not (List.isEmpty failures) then
+            let shown = failures |> List.rev |> List.truncate 40
+
+            failwith (
+                $"%s{fullName}: %i{List.length failures} of %i{checked'} declaration slots disagree with the host CLR (first %i{List.length shown}):\n"
+                + String.Join ("\n", shown)
+            )
+
+        // Not vacuous: the scarcest case in this corpus is `System.Object` itself, whose chain is one
+        // type declaring four instance virtuals -- `Finalize`, `ToString`, `Equals` and `GetHashCode`.
+        checked' |> shouldBeGreaterThan 3
+
     [<Test>]
     let ``numVirtualsOfDefinition is exactly the definition's vtable length`` () : unit =
         // As for the closed case: the BCL *compares* the two, so an independently-computed count is

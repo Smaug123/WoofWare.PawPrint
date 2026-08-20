@@ -368,6 +368,40 @@ module VirtualSlotLayout =
 
         state, Some (baseIdentity, arguments)
 
+    /// The result of `MethodTableBuilder::PlaceVirtualMethods` for one definition, plus the two
+    /// things a later pass needs that the vtable alone does not record.
+    ///
+    /// `Placed` is what `MethodDesc::GetSlot()` returns for every declaration in the chain: the slot
+    /// its own type assigned it, which for a non-newslot override is the parent slot it took
+    /// (`SetVirtualMethodOverride`, methodtablebuilder.h:1512-1517) and otherwise its append
+    /// position. Slot *content* needs it and cannot recover it from `Vtable`: when `B.M` overrides
+    /// `A.M` by placement the two share a slot but only `B.M` is its occupant, so a table built
+    /// further down the chain has no way left to ask where `A.M` lived. It is memoisation rather
+    /// than a second source of truth -- the same question `slotIndexInTable` answers, recorded as
+    /// the walk that already decides it goes past.
+    ///
+    /// A method this definition declares can be absent from `Placed`: two non-newslot virtuals whose
+    /// signatures differ in metadata can coincide once the base's arguments are substituted, and the
+    /// second then displaces the first from the slot it had just taken. Consumers must treat a
+    /// missing entry as "no slot", not as zero.
+    type private PlacedVtable =
+        {
+            /// Slot identity: index `i` holds the declaration that owns slot `i`.
+            Vtable : VtableSlot list
+            /// Every declaration in this definition's chain that owns a vtable slot, paired with the
+            /// slot it owns, base-first and in declaration order within each type. Read in *this*
+            /// definition's vocabulary: an ancestor's entries are rebased exactly as its vtable
+            /// entries are, so a MethodImpl declaration spelled here can be compared against them.
+            Placed : (VtableSlot * int) list
+            /// `MethodTable::GetNumParentVirtuals()`: where this definition's fresh slots begin, and
+            /// the bound `CopyExactParentSlots` and the covariant-return pass iterate to.
+            NumParentVirtuals : int
+            /// The parent's own table, already built. `None` for a type with no base -- `System.Object`
+            /// and every interface.
+            Parent : PlacedVtable option
+        }
+
+
     /// The instance vtable of a type *definition*, base-first: index `i` is the method that occupies
     /// slot `i`. A type inherits its base's layout, replaces the entries its own non-newslot virtuals
     /// override, and appends a slot for each `newslot` virtual it introduces.
@@ -382,7 +416,6 @@ module VirtualSlotLayout =
     /// occupying distinct slots, and closing them at `T = string` first would make an override of one
     /// appear to fill the other. Signatures are therefore compared with the type's variables left
     /// standing, each ancestor's read through the substitution its extends clause supplies.
-    ///
     /// Note that MethodImpls are deliberately not consulted. A MethodImpl overwrites a slot's
     /// implementation but not the slot number its body was declared at
     /// (`MethodTableBuilder::SetVirtualMethodImpl` changes the Impl and not the Decl), so it
@@ -393,50 +426,64 @@ module VirtualSlotLayout =
     /// one query per virtual method: the walk is not memoised, so populating a type is quadratic in
     /// its virtual count. A cache would be keyed on the definition, every instantiation of which
     /// shares this answer.
-    let rec private vtableOfDefinitionOwner
+    let rec private placeVirtualMethodsOfDefinitionOwner
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (state : IlMachineState)
         (owner : SlotOwner)
-        : IlMachineState * VtableSlot list
+        : IlMachineState * PlacedVtable
         =
         let _, typeInfo = definitionMetadata operation state owner.Identity
 
         let state, baseType =
             baseOfDefinition loggerFactory baseClassTypes operation state owner typeInfo
 
-        let state, baseSlots =
+        let state, parentAndBaseSlots =
             match baseType with
-            | None -> state, []
+            | None -> state, None
             | Some (baseIdentity, arguments) ->
                 // The parent's table is built once, in the parent's own context: which slot each of its
                 // methods occupies was decided before any argument was supplied, and `CopyParentVtable`
                 // copies the result rather than rebuilding it (methodtablebuilder.cpp:1143). Re-running
                 // that placement here would fold two of the parent's slots together whenever this
                 // type's arguments make two of its distinct declarations coincide.
-                let state, inherited =
+                let state, parent =
                     ownerOfDefinition operation state baseIdentity
-                    |> vtableOfDefinitionOwner loggerFactory baseClassTypes operation state
+                    |> placeVirtualMethodsOfDefinitionOwner loggerFactory baseClassTypes operation state
 
                 // Matching this type's own methods against those slots is the separate question, and it
                 // does need them read in this type's vocabulary.
-                let inherited =
-                    inherited
-                    |> List.map (fun slot ->
-                        { slot with
-                            VtableSlot.DeclaredBy =
-                                { slot.DeclaredBy with
-                                    SlotOwner.Substitution =
-                                        TypeConcretization.SubstitutionContext.rebase
-                                            baseIdentity
-                                            arguments
-                                            slot.DeclaredBy.Substitution
-                                }
-                        }
-                    )
+                let rebase (slot : VtableSlot) : VtableSlot =
+                    { slot with
+                        VtableSlot.DeclaredBy =
+                            { slot.DeclaredBy with
+                                SlotOwner.Substitution =
+                                    TypeConcretization.SubstitutionContext.rebase
+                                        baseIdentity
+                                        arguments
+                                        slot.DeclaredBy.Substitution
+                            }
+                    }
 
-                state, inherited
+                state,
+                Some (
+                    parent,
+                    List.map rebase parent.Vtable,
+                    parent.Placed |> List.map (fun (slot, i) -> rebase slot, i)
+                )
+
+        let baseSlots =
+            match parentAndBaseSlots with
+            | None -> []
+            | Some (_, baseSlots, _) -> baseSlots
+
+        // The chain's placements, rebased into this type's vocabulary, so that a MethodImpl
+        // declaration spelled here can be compared against an ancestor's declaration.
+        let inheritedPlacements =
+            match parentAndBaseSlots with
+            | None -> []
+            | Some (_, _, placements) -> placements
 
         // Shared with the walk past the vtable, so that the two cannot disagree about what the
         // type declares -- see `declaredMethodsOf` for what it drops and why. Upstream's
@@ -484,9 +531,9 @@ module VirtualSlotLayout =
         // lays slots out on the generic definition, where the two are distinct, and gives each
         // its own; a search that could see fresh slots would have the second replace the first
         // and the vtable would come out a slot short.
-        let state, inherited, freshReversed =
-            ((state, baseSlots, []), instanceVirtuals)
-            ||> List.fold (fun (state, slots, fresh) method ->
+        let state, inherited, freshReversed, placedReversed =
+            ((state, baseSlots, [], []), instanceVirtuals)
+            ||> List.fold (fun (state, slots, fresh, placed) method ->
                 let candidate =
                     {
                         VtableSlot.Method = method
@@ -595,7 +642,10 @@ module VirtualSlotLayout =
                         failwith
                             $"%s{operation}: generic method %s{method.Name} on %s{owner.Description} fills vtable slot %i{mostDerived}, held by %s{occupant.Method.Name} declared by %s{occupant.DeclaredBy.Description}, but its type parameters' constraints do not permit it to override that slot; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
 
-                    state, (slots |> List.mapi (fun j slot -> if j = mostDerived then candidate else slot)), fresh
+                    state,
+                    (slots |> List.mapi (fun j slot -> if j = mostDerived then candidate else slot)),
+                    fresh,
+                    (candidate, mostDerived) :: placed
                 | [] ->
                     // "Else, place the method in the next available empty vtable slot"
                     // (methodtablebuilder.cpp:5401). Both kinds of method arrive here: one
@@ -616,14 +666,22 @@ module VirtualSlotLayout =
                     // the host CLR's own `GetSlot` in TestVirtualMethodSlots -- a check on the
                     // layout rather than merely on its length, because a walk that appends one
                     // slot too many while dropping a real one has the right length.
-                    state, slots, candidate :: fresh
+                    // `inherited` only ever has entries replaced, so its length is the index of
+                    // the first fresh slot however many have been appended so far.
+                    state, slots, candidate :: fresh, (candidate, List.length slots + List.length fresh) :: placed
             )
 
         // The fresh slots were accumulated head-first, so undo that once here rather than
         // copying the accumulated vtable on every append.
         let slots = inherited @ List.rev freshReversed
 
-        state, slots
+        state,
+        {
+            PlacedVtable.Vtable = slots
+            PlacedVtable.Placed = inheritedPlacements @ List.rev placedReversed
+            PlacedVtable.NumParentVirtuals = List.length baseSlots
+            PlacedVtable.Parent = parentAndBaseSlots |> Option.map (fun (parent, _, _) -> parent)
+        }
 
     /// The instance vtable of the generic definition `identity` -- the layout every instantiation of
     /// it shares.
@@ -635,8 +693,32 @@ module VirtualSlotLayout =
         (identity : ResolvedTypeIdentity)
         : IlMachineState * VtableSlot list
         =
-        ownerOfDefinition operation state identity
-        |> vtableOfDefinitionOwner loggerFactory baseClassTypes operation state
+        let state, placed =
+            ownerOfDefinition operation state identity
+            |> placeVirtualMethodsOfDefinitionOwner loggerFactory baseClassTypes operation state
+
+        state, placed.Vtable
+
+    /// The slot each declaration in a definition's chain owns, base-first: `MethodDesc::GetSlot()`
+    /// for every method the chain *places*, which is more than the vtable records.
+    ///
+    /// `vtableOfDefinition` reports only each slot's current occupant, so a declaration that a
+    /// derived type overrode by placement has disappeared from it -- `A.M` and `B.M` share a slot and
+    /// only `B.M` is in the list. Slot content needs the ones that vanished: deciding what a
+    /// MethodImpl naming `A::M` writes means knowing which slot `A.M` owns.
+    let placedSlotsOfDefinition
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (identity : ResolvedTypeIdentity)
+        : IlMachineState * (VtableSlot * int) list
+        =
+        let state, placed =
+            ownerOfDefinition operation state identity
+            |> placeVirtualMethodsOfDefinitionOwner loggerFactory baseClassTypes operation state
+
+        state, placed.Placed
 
     /// The instance vtable of a runtime type, base-first: index `i` is the method that occupies slot
     /// `i`.
