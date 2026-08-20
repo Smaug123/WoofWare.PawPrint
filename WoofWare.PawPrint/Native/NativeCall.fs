@@ -173,6 +173,27 @@ module NativeCall =
         | CliType.Numeric (CliNumericType.Int32 i) -> i
         | other -> failwith $"%s{operation}: expected Int32 argument, got %O{other}"
 
+    /// A `uint16_t` parameter, such as the `port` of `SystemNative_SetPort`.
+    ///
+    /// Distinct from `int32Argument` because PawPrint keeps a CLI `UInt16` in a
+    /// two-byte cell of its own rather than widening it to `Int32` the way it
+    /// does a `UInt32`, so a `ushort` P/Invoke parameter never arrives as an
+    /// `Int32` and that reader rejects it outright.
+    let uint16Argument (operation : string) (arg : CliType) : uint16 =
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.Numeric (CliNumericType.UInt16 i) -> i
+        | other -> failwith $"%s{operation}: expected UInt16 argument, got %O{other}"
+
+    /// A `uint32_t` parameter, such as the `address` of
+    /// `SystemNative_SetIPv4Address`.
+    ///
+    /// A CLI `UInt32` shares the four-byte cell of an `Int32` while preserving the
+    /// low 32 bits (see `cliUInt32` above), so this is that cell reinterpreted
+    /// rather than a case of its own — the inverse of `cliUInt32`, and the reason
+    /// a negative `Int32` here is a `uint32` above `Int32.MaxValue` rather than an
+    /// error.
+    let uint32Argument (operation : string) (arg : CliType) : uint32 = uint32 (int32Argument operation arg)
+
     /// An `int64_t` parameter, such as the `fileOffset` of `SystemNative_PRead`.
     /// Accepts a 32-bit value too, since a guest hand-rolling the P/Invoke may
     /// hand over a widened constant, and every `int64` parameter PawPrint
