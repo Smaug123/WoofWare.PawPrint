@@ -1686,9 +1686,9 @@ type EmulatedKernel =
         ///
         /// Seeded from `KernelConfig.FileSystemType` and fixed for the run: no
         /// syscall in CoreLib's interop surface can mount anything, so nothing
-        /// a guest does can change it. Kept coherent with `UnixPlatform` by
-        /// `withFileSystemType`, which refuses a type that flavour could not
-        /// report.
+        /// a guest does can change it. Set only by
+        /// `withUnixPlatformAndFileSystemType`, which writes it and
+        /// `UnixPlatform` together so that the two cannot disagree.
         FileSystemType : EmulatedFileSystemType
         /// The effective user ID the simulated process runs as, reported by
         /// `stat` as every inode's `st_uid` and by `SystemNative_GetEUid`.
@@ -1959,17 +1959,49 @@ module EmulatedKernel =
             Signals = SignalState.empty
         }
 
-    /// Set the Unix platform identity the simulated process reports. Rejects a
-    /// forged `Unchecked.defaultof` platform, whose null release would
-    /// otherwise reach a guest as its `uname -r`.
-    let withUnixPlatform (platform : SimulatedUnixPlatform) (kernel : EmulatedKernel) : EmulatedKernel =
+    /// Set the Unix platform identity the simulated process reports, together
+    /// with the filesystem its mount claims to be. `None` takes the flavour's
+    /// own default; an explicit type that flavour could not mount is refused.
+    ///
+    /// One setter for two fields, in the manner of `withUserAndGroupId`,
+    /// because they are not independent: `SystemNative_GetFileSystemType`
+    /// answers a *file* from the type and every other descriptor from the
+    /// flavour, so a kernel carrying Linux with APFS would hand a guest a
+    /// combination no machine could produce. Separate setters could each be
+    /// called alone, which is exactly how that state would arise; fused, it is
+    /// unrepresentable rather than merely checked.
+    ///
+    /// Rejects a forged `Unchecked.defaultof` platform, whose null release
+    /// would otherwise reach a guest as its `uname -r`.
+    let withUnixPlatformAndFileSystemType
+        (platform : SimulatedUnixPlatform)
+        (fileSystemType : EmulatedFileSystemType option)
+        (kernel : EmulatedKernel)
+        : EmulatedKernel
+        =
         // No eager validation of the release string:
         // `SimulatedUnixPlatform.create` validates at construction, so a value
         // of the type is already a platform some Unix could be. `assertValid`
         // still catches the one value that can bypass that — the forged
         // `Unchecked.defaultof`.
+        let platform =
+            SimulatedUnixPlatform.assertValid "EmulatedKernel.UnixPlatform" platform
+
+        let flavour = SimulatedUnixPlatform.flavour platform
+
+        let resolved =
+            match fileSystemType with
+            | None -> EmulatedFileSystemType.defaultFor flavour
+            | Some requested ->
+                if not (EmulatedFileSystemType.isReportableUnder flavour requested) then
+                    failwith
+                        $"EmulatedKernel.FileSystemType: a %O{flavour} kernel cannot report %O{requested}, so a guest asking `fstatfs` would learn a fact no such system could tell it. Leave KernelConfig.FileSystemType as None to take %O{flavour}'s own default, or pick a type that flavour mounts."
+
+                requested
+
         { kernel with
-            UnixPlatform = SimulatedUnixPlatform.assertValid "EmulatedKernel.UnixPlatform" platform
+            UnixPlatform = platform
+            FileSystemType = resolved
         }
 
     /// Set the simulated process's current working directory.
@@ -1994,36 +2026,6 @@ module EmulatedKernel =
         =
         { kernel with
             FileSystem = FileSystemSeed.toVirtualFileSystem createdAt seed
-        }
-
-    /// Set the filesystem type the emulated mount reports, resolving "no
-    /// preference" to the flavour's own default and refusing a type that
-    /// flavour could not report.
-    ///
-    /// Takes the platform explicitly rather than reading `kernel.UnixPlatform`,
-    /// for the reason `withFileSystem` takes its timestamp explicitly: an
-    /// ordering dependence between two `with` functions works right up until
-    /// someone reorders `KernelConfig.applyTo`.
-    let withFileSystemType
-        (platform : SimulatedUnixPlatform)
-        (requested : EmulatedFileSystemType option)
-        (kernel : EmulatedKernel)
-        : EmulatedKernel
-        =
-        let flavour = SimulatedUnixPlatform.flavour platform
-
-        let resolved =
-            match requested with
-            | None -> EmulatedFileSystemType.defaultFor flavour
-            | Some requested ->
-                if not (EmulatedFileSystemType.isReportableUnder flavour requested) then
-                    failwith
-                        $"EmulatedKernel.FileSystemType: a %O{flavour} kernel cannot report %O{requested}, so a guest asking `fstatfs` would learn a fact no such system could tell it. Leave KernelConfig.FileSystemType as None to take %O{flavour}'s own default, or pick a type that flavour mounts."
-
-                requested
-
-        { kernel with
-            FileSystemType = resolved
         }
 
     /// Set the effective user and group IDs the simulated process runs as.
@@ -2749,8 +2751,7 @@ module KernelConfig =
         |> EmulatedKernel.withInstructionCostTicks config.InstructionCostTicks
         |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
-        |> EmulatedKernel.withUnixPlatform config.UnixPlatform
-        |> EmulatedKernel.withFileSystemType config.UnixPlatform config.FileSystemType
+        |> EmulatedKernel.withUnixPlatformAndFileSystemType config.UnixPlatform config.FileSystemType
         |> EmulatedKernel.withCurrentDirectory config.CurrentDirectory
         |> EmulatedKernel.withFileSystem
             (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)

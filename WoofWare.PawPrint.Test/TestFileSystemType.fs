@@ -117,9 +117,39 @@ module TestFileSystemType =
         for flavour in everyFlavour do
             let kernel =
                 EmulatedKernel.initial
-                |> EmulatedKernel.withFileSystemType (platformOf flavour) None
+                |> EmulatedKernel.withUnixPlatformAndFileSystemType (platformOf flavour) None
 
             kernel.FileSystemType |> shouldEqual (EmulatedFileSystemType.defaultFor flavour)
+
+    [<Test>]
+    let ``the kernel's platform and its filesystem always agree`` () : unit =
+        // The invariant the handler relies on: it answers a *file* from the
+        // filesystem type and every other descriptor from the platform's
+        // flavour, so a kernel carrying one of each would report a combination
+        // no machine could produce. Asserted on the record rather than on the
+        // setter's argument, because that is what the handler reads — a setter
+        // that validated its input and then wrote only one of the two fields
+        // would pass every other test in this file.
+        for flavour in everyFlavour do
+            for requested in None :: List.map Some everyFileSystemType do
+                let permitted =
+                    match requested with
+                    | None -> true
+                    | Some fsType -> EmulatedFileSystemType.isReportableUnder flavour fsType
+
+                if permitted then
+                    let kernel =
+                        EmulatedKernel.initial
+                        |> EmulatedKernel.withUnixPlatformAndFileSystemType (platformOf flavour) requested
+
+                    let carried = SimulatedUnixPlatform.flavour kernel.UnixPlatform
+
+                    if carried <> flavour then
+                        failwith $"asked for %O{flavour}, but the kernel carries %O{carried}."
+
+                    if not (EmulatedFileSystemType.isReportableUnder carried kernel.FileSystemType) then
+                        failwith
+                            $"a kernel built as %O{flavour} from %O{requested} carries filesystem %O{kernel.FileSystemType}, which %O{carried} cannot report."
 
     [<Test>]
     let ``a filesystem the flavour could not mount is refused`` () : unit =
@@ -136,7 +166,7 @@ module TestFileSystemType =
             let thrown =
                 Assert.Throws (fun () ->
                     EmulatedKernel.initial
-                    |> EmulatedKernel.withFileSystemType (platformOf flavour) (Some fsType)
+                    |> EmulatedKernel.withUnixPlatformAndFileSystemType (platformOf flavour) (Some fsType)
                     |> ignore<EmulatedKernel>
                 )
 
@@ -159,7 +189,7 @@ module TestFileSystemType =
         for flavour, fsType in accepted do
             let kernel =
                 EmulatedKernel.initial
-                |> EmulatedKernel.withFileSystemType (platformOf flavour) (Some fsType)
+                |> EmulatedKernel.withUnixPlatformAndFileSystemType (platformOf flavour) (Some fsType)
 
             kernel.FileSystemType |> shouldEqual fsType
 
