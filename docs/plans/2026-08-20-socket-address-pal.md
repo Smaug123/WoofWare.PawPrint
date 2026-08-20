@@ -56,7 +56,7 @@ layouts spend the same two leading bytes differently rather than in different am
 linux-x64 pack (diffed with `IlDump`), so all the flavour difference lives in the handlers, and
 no linux-flavour variant of any guest is needed for this layer.
 
-## Two findings that reading the source gets wrong
+## Four findings that reading the source gets wrong
 
 **Managed code writes BSD's `sa_len`, and it is what makes the family's width observable.**
 Nothing in `pal_networking.c` mentions `sa_len`. `SocketAddress..ctor(AddressFamily, int)`
@@ -75,6 +75,24 @@ answers EFAULT: the cast makes the bound `SIZE_MAX`, so `baseAddr + len` wraps t
 base and the comparison fails. Modelling it therefore needs no undefined-behaviour reasoning at
 all — `offset + width <= socketAddressLen` is false for a negative length, which is the whole of
 it.
+
+**`SetIPv6Address` with an oversized `addressLen` stores zeroes and reports success.**
+`ConvertByteArrayToIn6Addr` calls `memcpy_s(&sin6_addr, 16, address, addressLen)`, and the PAL's
+own `memcpy_s` (`pal_safecrt.h:59`) will not copy into a destination it was told is too small: it
+`memset`s that destination to zero and returns ERANGE. `ConvertByteArrayToIn6Addr` discards the
+return, so the entry point reports success having stored the all-zeroes address. The
+`assert(sizeInBytes >= count)` above it is compiled out of the shipped Release build. Measured on
+both platforms with `addressLen` of 17 and 32. The getter is not symmetric — there `addressLen` is
+the *destination* size, so a larger one is simply room to spare.
+
+**`GetIPv6Address` reads `sin6_scope_id` after writing the address, and that is observable.**
+`address` may legally point at byte 24 of the very blob being read: `sin6_addr` ends there, so
+`memcpy_s`'s own overlap assertion passes. The copy then lands on `sin6_scope_id`, and the next
+statement reads it back. Measured: a `fe80::` address aliased there reports a scope of 33022
+rather than the one that was set, identically on both platforms.
+
+Both of these were found by Codex against the first revision, which had read the C's two
+statements as independent and treated every `addressLen >= 16` alike.
 
 ## What was built
 
@@ -116,8 +134,11 @@ parameter is rejected outright by `int32Argument`.
   managed surface never passes a null out-parameter or a short length and discards the class
   initialiser's return value entirely. Three ordering rows are the point: a short blob is EFAULT
   while an unsupported family is EAFNOSUPPORT and the *same* blob through `GetIPv4Address` is
-  EINVAL; and a negative length beats all of them. Every row was measured to answer identically
-  on macOS and Linux before being asserted.
+  EINVAL; and a negative length beats all of them. It also carries the two `memcpy_s` rows above,
+  whose address buffer has to start out holding the address rather than zeroes — a zeroed buffer
+  cannot tell "the destination was zeroed" from "the bytes were copied after all", and the mutant
+  that copies them survived until it did. Every row was measured to answer identically on macOS
+  and Linux before being asserted.
 - `sourcesImpure/SocketAddressLinuxBytes.cs` and `SocketAddressDarwinBytes.cs` — the blob itself,
   byte for byte, one guest per flavour. A round trip is self-consistent and would pass against a
   setter and getter that agreed with each other on a wrong offset, width or byte order; these are

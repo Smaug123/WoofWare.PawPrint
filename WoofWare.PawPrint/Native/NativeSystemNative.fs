@@ -1627,9 +1627,20 @@ module NativeSystemNative =
                     SockaddrOffsets.InternetV6AddressLength
                     state
 
+            let state =
+                writeBytesThrough ctx operation (requireStorage operation "address" addressOut) addressBytes state
+
             // `*scopeId = sin6_scope_id`, host order on both sides, so this is a
             // straight four-byte copy like the IPv4 address above rather than the
             // byte-swap the port needs.
+            //
+            // Read *after* the address has been written, which is the order of the
+            // two statements upstream and is observable: `address` may legally
+            // point at byte 24 of this very blob, where `memcpy_s`'s own overlap
+            // assertion still passes, and then the copy lands on `sin6_scope_id`
+            // before it is read. Measured — a `fe80::` address aliased there
+            // reports a scope of 33022 rather than the one that was set, on both
+            // platforms alike.
             let scopeIdBytes =
                 readBytesThrough
                     ctx
@@ -1639,7 +1650,6 @@ module NativeSystemNative =
                     state
 
             state
-            |> writeBytesThrough ctx operation (requireStorage operation "address" addressOut) addressBytes
             |> writeBytesThrough ctx operation (requireStorage operation "scopeId" scopeIdOut) scopeIdBytes
             |> complete UnixError.palSuccess
         | Some "SystemNative_SetIPv6Address",
@@ -1689,13 +1699,29 @@ module NativeSystemNative =
                 complete (UnixError.toPal UnixError.EINVAL) state
             else
 
+            // `memcpy_s(&sin6_addr, 16, address, addressLen)`, whose failure mode
+            // is not to fail: when `addressLen` exceeds the sixteen bytes of the
+            // destination, the PAL's `memcpy_s` zeroes the destination, returns
+            // ERANGE, and `ConvertByteArrayToIn6Addr` discards that — so the call
+            // still reports success while having stored the all-zeroes address.
+            // (The `assert(sizeInBytes >= count)` above it is compiled out of the
+            // shipped Release build.) It reads nothing from the caller's buffer on
+            // that path either, so neither does this.
+            //
+            // The getter is not symmetric: there `addressLen` is the *destination*
+            // size, so a larger one is simply room to spare.
+            let oversizedAddress = addressLen > SockaddrOffsets.InternetV6AddressLength
+
             let addressBytes =
-                readBytesThrough
-                    ctx
-                    operation
-                    (requireStorage operation "address" addressIn)
-                    SockaddrOffsets.InternetV6AddressLength
-                    state
+                if oversizedAddress then
+                    ImmutableArray.CreateRange (Array.zeroCreate<byte> SockaddrOffsets.InternetV6AddressLength)
+                else
+                    readBytesThrough
+                        ctx
+                        operation
+                        (requireStorage operation "address" addressIn)
+                        SockaddrOffsets.InternetV6AddressLength
+                        state
 
             let flowInfo = Array.zeroCreate<byte> 4
 

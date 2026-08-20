@@ -182,9 +182,16 @@ class Program
             byte[] v6 =
                 new byte[] { 0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77 };
             byte[] readBack = new byte[16];
+            // The first sixteen bytes are the address itself, not zeroes: the row
+            // below asserts that an oversized length stores *zeroes*, and a buffer
+            // that was already zero could not tell that apart from the bytes being
+            // copied after all.
+            byte[] oversized = new byte[32];
+            Array.Copy(v6, oversized, 16);
 
             fixed (byte* v6p = v6)
             fixed (byte* readBackP = readBack)
+            fixed (byte* oversizedP = oversized)
             {
                 uint scopeId = 7;
 
@@ -232,6 +239,56 @@ class Program
                 if (SetAddressFamily(p, BlobSize, AF_INET) != PAL_SUCCESS) return 98;
                 if (GetIPv4Address(p, 16, &address) != PAL_SUCCESS) return 99;
                 if (address != 0) return 100;
+
+                // An `addressLen` larger than the sixteen bytes of `sin6_addr`.
+                // The PAL's `memcpy_s` will not copy into a destination it was
+                // told is too small: it zeroes that destination and reports
+                // ERANGE, which `ConvertByteArrayToIn6Addr` discards -- so the
+                // call reports success and the address it stored is all zeroes,
+                // not the caller's bytes. The scope id, written by the caller
+                // rather than copied, still arrives.
+                if (SetAddressFamily(p, BlobSize, AF_INET6) != PAL_SUCCESS) return 101;
+                if (SetIPv6Address(p, 28, v6p, 16, 9) != PAL_SUCCESS) return 102;
+                if (SetIPv6Address(p, 28, oversizedP, 32, 11) != PAL_SUCCESS) return 103;
+                if (GetIPv6Address(p, 28, readBackP, 16, &scopeId) != PAL_SUCCESS) return 104;
+                if (scopeId != 11) return 105;
+
+                for (int i = 0; i < 16; i++)
+                {
+                    if (readBack[i] != 0) return 106;
+                }
+
+                // The getter is not symmetric with that: there `addressLen` is
+                // the destination's size, so more of it is simply room to spare.
+                if (SetIPv6Address(p, 28, v6p, 16, 11) != PAL_SUCCESS) return 107;
+                if (GetIPv6Address(p, 28, oversizedP, 32, &scopeId) != PAL_SUCCESS) return 108;
+
+                for (int i = 0; i < 16; i++)
+                {
+                    if (oversized[i] != v6[i]) return 109;
+                }
+            }
+
+            // `address` pointing into the blob it is reading from. `memcpy_s`'s
+            // own overlap assertion still passes -- `sin6_addr` ends at byte 24,
+            // where this destination begins -- so it is a legal call, and the copy
+            // lands squarely on `sin6_scope_id`. Upstream reads the scope in the
+            // statement *after* the copy, so what comes back is the address's
+            // first four bytes rather than the scope that was set.
+            //
+            // The address's leading word is a palindrome so that the number below
+            // says nothing about byte order, which is not what this row is about.
+            byte[] palindromic =
+                new byte[] { 0x20, 0x01, 0x01, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+            fixed (byte* palindromicP = palindromic)
+            {
+                uint scopeId = 7;
+
+                if (SetAddressFamily(p, BlobSize, AF_INET6) != PAL_SUCCESS) return 110;
+                if (SetIPv6Address(p, 28, palindromicP, 16, 42) != PAL_SUCCESS) return 111;
+                if (GetIPv6Address(p, BlobSize, p + 24, 16, &scopeId) != PAL_SUCCESS) return 112;
+                if (scopeId != 0x20010120) return 113;
             }
         }
 
