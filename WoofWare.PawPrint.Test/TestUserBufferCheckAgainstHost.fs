@@ -178,7 +178,7 @@ module TestUserBufferCheckAgainstHost =
                     | None -> UserBufferCheck.AtCopyTime
                     | Some limit ->
                         EmulatedKernel.initial
-                        |> EmulatedKernel.withUnixPlatform (hostPlatformOf flavour)
+                        |> EmulatedKernel.withUnixPlatformAndFileSystemType (hostPlatformOf flavour) None
                         |> EmulatedKernel.withUserAddressLimit limit
                         |> EmulatedKernel.userBufferCheck
 
