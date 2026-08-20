@@ -20,10 +20,9 @@ module TestSocketBinding =
 
     let private endpoint (address : uint32) (port : uint16) : InternetEndpoint = InternetEndpoint.ofParts address port
 
-    let private binding (address : uint32) (port : uint16) (reuse : bool) : SocketBinding =
+    let private binding (address : uint32) (port : uint16) : SocketBinding =
         {
             Endpoint = endpoint address port
-            ReuseAddress = reuse
         }
 
     let private loopback = InternetEndpoint.LoopbackAddress
@@ -131,15 +130,27 @@ module TestSocketBinding =
 
         for name, firstAddress, listening, firstReuse, secondAddress, secondReuse, linuxConflicts, darwinConflicts in
             rows do
-            let existing = binding firstAddress 40000us firstReuse
-            let candidate = binding secondAddress 40000us secondReuse
+            let existing = binding firstAddress 40000us
+            let candidate = binding secondAddress 40000us
 
-            SimulatedUnixPlatform.bindConflict SimulatedUnixPlatform.linuxX64 existing listening candidate
+            SimulatedUnixPlatform.bindConflict
+                SimulatedUnixPlatform.linuxX64
+                existing
+                firstReuse
+                listening
+                candidate
+                secondReuse
             |> fun actual ->
                 if actual <> linuxConflicts then
                     failwith $"linux, %s{name}: expected conflict=%b{linuxConflicts} but the model said %b{actual}"
 
-            SimulatedUnixPlatform.bindConflict SimulatedUnixPlatform.macOsArm64 existing listening candidate
+            SimulatedUnixPlatform.bindConflict
+                SimulatedUnixPlatform.macOsArm64
+                existing
+                firstReuse
+                listening
+                candidate
+                secondReuse
             |> fun actual ->
                 if actual <> darwinConflicts then
                     failwith $"darwin, %s{name}: expected conflict=%b{darwinConflicts} but the model said %b{actual}"
@@ -154,12 +165,12 @@ module TestSocketBinding =
                 true
             else
 
-            let existing = binding loopback firstPort reuse
-            let candidate = binding loopback secondPort reuse
+            let existing = binding loopback firstPort
+            let candidate = binding loopback secondPort
 
             platforms
             |> List.forall (fun platform ->
-                not (SimulatedUnixPlatform.bindConflict platform existing listening candidate)
+                not (SimulatedUnixPlatform.bindConflict platform existing reuse listening candidate reuse)
             )
 
         Check.One (propertyConfig, property)
@@ -170,9 +181,10 @@ module TestSocketBinding =
     [<Test>]
     let ``the flavours read one address list differently`` () : unit =
         let addresses = EmulatedKernel.defaultLocalAddresses
+        let routes = EmulatedKernel.defaultLocalRoutes
 
         let bindable (platform : SimulatedUnixPlatform) (address : uint32) : bool =
-            SimulatedUnixPlatform.isBindableAddress platform addresses address
+            SimulatedUnixPlatform.isBindableAddress platform addresses routes address
 
         for platform in platforms do
             // The wildcard always binds, and is not in the list at all.

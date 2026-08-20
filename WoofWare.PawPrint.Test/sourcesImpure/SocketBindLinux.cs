@@ -34,6 +34,9 @@ class SocketBindLinux
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_Bind")]
     static extern unsafe int Bind(IntPtr socket, int protocolType, byte* socketAddress, int socketAddressLen);
 
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Bind", SetLastError = true)]
+    static extern unsafe int BindReportingErrno(IntPtr socket, int protocolType, byte* socketAddress, int socketAddressLen);
+
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_Listen")]
     static extern unsafe int Listen(IntPtr socket, int backlog);
 
@@ -65,7 +68,11 @@ class SocketBindLinux
     const int AF_INET = 2;
     const int AF_INET6 = 23;
     const int SOCK_STREAM = 1;
+    const int PT_UNSPECIFIED = 0;
     const int PT_TCP = 6;
+
+    // The raw errno for EADDRNOTAVAIL on this flavour; the PAL value is shared.
+    const int RAW_EADDRNOTAVAIL = 99;
 
     const int V4Size = 16;
     const int V6Size = 28;
@@ -192,6 +199,72 @@ class SocketBindLinux
             if (!Address(blob, Loopback, 1024)) return 35;
             if (Bind(s, PT_TCP, blob, V4Size) != PAL_SUCCESS) return 36;
             Close(s);
+        }
+
+        // 8. `bind(2)` leaves the platform errno behind for a SetLastError
+        //    caller, and the raw number is per-flavour even though the PAL value
+        //    is not.
+        {
+            IntPtr s = Make();
+            if (s == (IntPtr) (-1)) return 37;
+            if (!Address(blob, 0x08080808u, 0)) return 38;
+            Marshal.SetLastSystemError(0);
+            if (BindReportingErrno(s, PT_TCP, blob, V4Size) != PAL_EADDRNOTAVAIL) return 39;
+            if (Marshal.GetLastSystemError() != RAW_EADDRNOTAVAIL) return 40;
+            Close(s);
+        }
+
+        // 9. SO_REUSEADDR is set by the *attempt*, not by the success. A PT_TCP
+        //    bind that fails still leaves it on, so a later PT_UNSPECIFIED bind
+        //    carries it -- which changes whether a third socket may share the
+        //    address.
+        {
+            IntPtr s = Make();
+            if (s == (IntPtr) (-1)) return 41;
+            // A PT_TCP bind that fails: the setsockopt already ran.
+            if (!Address(blob, 0x08080808u, 0)) return 42;
+            if (Bind(s, PT_TCP, blob, V4Size) != PAL_EADDRNOTAVAIL) return 43;
+            // ...then a successful bind that would not have set the flag itself.
+            if (!Address(blob, Loopback, 0)) return 44;
+            if (Bind(s, PT_UNSPECIFIED, blob, V4Size) != PAL_SUCCESS) return 45;
+
+            int len = V4Size;
+            if (GetSockName(s, readBack, &len) != PAL_SUCCESS) return 46;
+            ushort port = 0;
+            if (GetPort(readBack, V4Size, &port) != PAL_SUCCESS) return 47;
+
+            IntPtr rival = Make();
+            if (rival == (IntPtr) (-1)) return 48;
+            if (!Address(blob, Loopback, port)) return 49;
+            // Both carry the flag, and neither listens.
+            if (Bind(rival, PT_TCP, blob, V4Size) != PAL_SUCCESS) return 50;
+            Close(s);
+            Close(rival);
+        }
+
+        // 10. Two sockets may share an endpoint while neither listens, but only
+        //     one of them may then listen: the second `listen(2)` is EADDRINUSE.
+        //     Unreachable on Darwin, where the second bind fails first.
+        {
+            IntPtr first = Make();
+            if (first == (IntPtr) (-1)) return 51;
+            if (!Address(blob, Loopback, 0)) return 52;
+            if (Bind(first, PT_TCP, blob, V4Size) != PAL_SUCCESS) return 53;
+
+            int len = V4Size;
+            if (GetSockName(first, readBack, &len) != PAL_SUCCESS) return 54;
+            ushort port = 0;
+            if (GetPort(readBack, V4Size, &port) != PAL_SUCCESS) return 55;
+
+            IntPtr second = Make();
+            if (second == (IntPtr) (-1)) return 56;
+            if (!Address(blob, Loopback, port)) return 57;
+            if (Bind(second, PT_TCP, blob, V4Size) != PAL_SUCCESS) return 58;
+
+            if (Listen(first, 8) != PAL_SUCCESS) return 59;
+            if (Listen(second, 8) != PAL_EADDRINUSE) return 60;
+            Close(first);
+            Close(second);
         }
 
         return 0;

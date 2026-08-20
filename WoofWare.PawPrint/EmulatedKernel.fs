@@ -1517,6 +1517,14 @@ module SimulatedUnixPlatform =
     /// inside a local prefix as assigned while Darwin assigns loopback exactly
     /// one address.
     ///
+    /// Is this an address whose bind rule PawPrint has measured but not
+    /// modelled? Multicast (`224.0.0.0/4`) and the all-ones broadcast address
+    /// bind on Linux and answer `EAFNOSUPPORT` on Darwin, and PawPrint has no
+    /// interface to broadcast on either way — so the entry points refuse rather
+    /// than answering, and this is the classifier that says which.
+    let isUnmodelledAddressClass (address : uint32) : bool =
+        address = System.UInt32.MaxValue || (address >>> 28) = 0xEu
+
     /// Broadcast and multicast are a further Linux-only allowance
     /// (`255.255.255.255` and `224.0.0.1` bind there and are `EAFNOSUPPORT` on
     /// Darwin). Neither is modelled: PawPrint has no interface to broadcast on,
@@ -1524,17 +1532,25 @@ module SimulatedUnixPlatform =
     /// guest that needs one gets a diagnosis instead of a wrong errno.
     let isBindableAddress
         (platform : SimulatedUnixPlatform)
-        (localAddresses : Ipv4InterfaceAddress list)
+        (localAddresses : uint32 list)
+        (localRoutes : Ipv4Prefix list)
         (address : uint32)
         : bool
         =
         if address = InternetEndpoint.WildcardAddress then
             true
+        elif List.contains address localAddresses then
+            // An address this machine holds binds on either flavour.
+            true
         else
 
         match flavour platform with
-        | SimulatedUnixFlavour.Linux -> localAddresses |> List.exists (Ipv4InterfaceAddress.isWithinPrefix address)
-        | SimulatedUnixFlavour.Darwin -> localAddresses |> List.exists (Ipv4InterfaceAddress.isAssigned address)
+        // Linux additionally takes anything it has a *local route* to, which is
+        // why `127.9.9.9` binds there. An interface's subnet is not such a route
+        // — holding `192.168.1.10/24` does not make `192.168.1.11` bindable — so
+        // this reads the route table rather than widening the assigned addresses.
+        | SimulatedUnixFlavour.Linux -> localRoutes |> List.exists (Ipv4Prefix.contains address)
+        | SimulatedUnixFlavour.Darwin -> false
 
     /// Does a bind of `candidate` collide with the socket already bound at
     /// `existing`?
@@ -1553,18 +1569,26 @@ module SimulatedUnixPlatform =
     ///
     /// With the flag absent on either side — every UDP bind through the shim, and
     /// every `ProtocolType.Unspecified` one — the two agree and refuse.
+    ///
+    /// The same relation answers `listen(2)`, which is measured rather than
+    /// assumed: on Linux two reuse-carrying sockets may share an endpoint until
+    /// one listens, and the *second* `listen` is then EADDRINUSE — exactly what
+    /// this says when the other socket is already listening. Darwin never refuses
+    /// a listen, and never lets the pair coexist in the first place.
     let bindConflict
         (platform : SimulatedUnixPlatform)
         (existing : SocketBinding)
+        (existingReuse : bool)
         (existingIsListening : bool)
         (candidate : SocketBinding)
+        (candidateReuse : bool)
         : bool
         =
         if existing.Endpoint.Port <> candidate.Endpoint.Port then
             false
         elif not (InternetEndpoint.addressesOverlap existing.Endpoint candidate.Endpoint) then
             false
-        elif not (existing.ReuseAddress && candidate.ReuseAddress) then
+        elif not (existingReuse && candidateReuse) then
             true
         else
 
@@ -2015,7 +2039,11 @@ type EmulatedKernel =
         EphemeralPortRange : uint16 * uint16
         /// The IPv4 addresses this machine holds. Host configuration; see
         /// `EmulatedKernel.defaultLocalAddresses`.
-        LocalAddresses : Ipv4InterfaceAddress list
+        LocalAddresses : uint32 list
+        /// Prefixes this machine has a local route to, which Linux will bind any
+        /// address inside and Darwin ignores. See
+        /// `EmulatedKernel.defaultLocalRoutes`.
+        LocalRoutes : Ipv4Prefix list
         /// The identity the next `SystemNative_Socket` will allocate.
         ///
         /// Monotonic, and never reused: nothing guest-visible reports a
@@ -2608,8 +2636,12 @@ module EmulatedKernel =
     /// `127.0.0.0/8` rather than `127.0.0.1/32` because that is what Linux
     /// assigns to `lo`, and the flavours read the list differently — see
     /// `SimulatedUnixPlatform.isBindableAddress`.
-    let defaultLocalAddresses : Ipv4InterfaceAddress list =
-        [ Ipv4InterfaceAddress.create InternetEndpoint.LoopbackAddress 8 ]
+    let defaultLocalAddresses : uint32 list = [ InternetEndpoint.LoopbackAddress ]
+
+    /// The prefixes Linux's local routing table holds, which it will `bind(2)`
+    /// any address inside. Loopback's `127.0.0.0/8` is the one every Linux has,
+    /// and is why `127.9.9.9` binds there and not on Darwin.
+    let defaultLocalRoutes : Ipv4Prefix list = [ Ipv4Prefix.create 0x7F000000u 8 ]
 
     let defaultUserId : uint32 = 1000u
 
@@ -2648,6 +2680,7 @@ module EmulatedKernel =
             NextEphemeralPort = fst defaultEphemeralPortRange
             EphemeralPortRange = defaultEphemeralPortRange
             LocalAddresses = defaultLocalAddresses
+            LocalRoutes = defaultLocalRoutes
             LowLevelMonitors = Map.empty
             NextLowLevelMonitorId = 1
             WaitHandles = Map.empty
@@ -3374,12 +3407,24 @@ module EmulatedKernel =
             NextEphemeralPort = low
         }
 
-    let withLocalAddresses (addresses : Ipv4InterfaceAddress list) (kernel : EmulatedKernel) : EmulatedKernel =
+    let withLocalAddresses
+        (addresses : uint32 list)
+        (routes : Ipv4Prefix list)
+        (kernel : EmulatedKernel)
+        : EmulatedKernel
+        =
+        // The prefix record is public, so a host can build one whose length is
+        // outside [0, 32]; the CLI masks such a shift rather than faulting, which
+        // would give an unrelated mask and a silently wrong bindability.
+        let routes =
+            routes |> List.map (Ipv4Prefix.assertValid "EmulatedKernel.LocalRoutes")
+
         // An empty list is legal and means a machine with no addresses at all,
         // on which only the wildcard binds. That is a strange machine but a
         // representable one, and refusing it here would be inventing a rule.
         { kernel with
             LocalAddresses = addresses
+            LocalRoutes = routes
         }
 
     /// Hands out the lowest free port at or after the cursor, sweeping the range
@@ -3492,6 +3537,7 @@ module EmulatedKernel =
                         // `socket(2)` binds nothing and listens for nothing.
                         Binding = None
                         IsListening = false
+                        ReuseAddress = false
                     }
                     kernel.Sockets
             NextSocketId = SocketId (raw + 1L)
@@ -3695,7 +3741,11 @@ type KernelConfig =
         /// The IPv4 addresses this machine holds, as prefixes. See
         /// `EmulatedKernel.defaultLocalAddresses`, and note the flavours read one
         /// list differently.
-        LocalAddresses : Ipv4InterfaceAddress list
+        LocalAddresses : uint32 list
+        /// Prefixes this machine has a local route to. Linux binds any address
+        /// inside one; Darwin ignores them. See
+        /// `EmulatedKernel.defaultLocalRoutes`.
+        LocalRoutes : Ipv4Prefix list
     }
 
     /// Configuration a host gets if it expresses no preference: no environment
@@ -3719,6 +3769,7 @@ type KernelConfig =
             FileSystemType = None
             EphemeralPortRange = EmulatedKernel.defaultEphemeralPortRange
             LocalAddresses = EmulatedKernel.defaultLocalAddresses
+            LocalRoutes = EmulatedKernel.defaultLocalRoutes
         }
 
 [<RequireQualifiedAccess>]
@@ -3743,5 +3794,5 @@ module KernelConfig =
             config.FileSystem
         |> EmulatedKernel.withUserAndGroupId config.UserId config.GroupId
         |> EmulatedKernel.withEphemeralPortRange config.EphemeralPortRange
-        |> EmulatedKernel.withLocalAddresses config.LocalAddresses
+        |> EmulatedKernel.withLocalAddresses config.LocalAddresses config.LocalRoutes
         |> EmulatedKernel.withUmask config.Umask

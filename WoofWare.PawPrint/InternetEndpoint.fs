@@ -20,21 +20,21 @@ type InternetEndpoint =
         Port : uint16
     }
 
-/// One IPv4 address this machine holds, with the prefix length it was assigned
-/// with — `127.0.0.1/8`, as `ip addr` and `ifconfig` both print it.
+/// A route this machine has to a range of IPv4 addresses, as Linux's local
+/// routing table holds them.
 ///
-/// Both halves are needed, because the flavours read them differently and each
-/// reads only one. Darwin treats the *address* as the assigned one, so
-/// `127.0.0.1` binds and `127.9.9.9` is `EADDRNOTAVAIL`; Linux treats the whole
-/// *prefix* as local, so both bind. Recording only the address would make the
-/// Linux rule unstateable, and recording only the network address would leave
-/// Darwin unable to bind loopback at all.
-type Ipv4InterfaceAddress =
+/// Distinct from an *assigned* address, and the distinction is guest-visible.
+/// Linux lets `bind(2)` take any address it has a local route to, which is why
+/// `127.9.9.9` binds there: `127.0.0.0/8` is in the local table. It does **not**
+/// extend that to an interface's subnet — holding `192.168.1.10/24` does not
+/// make `192.168.1.11` bindable, because that is a route to a *peer*, not to
+/// this machine. Darwin takes only assigned addresses either way.
+type Ipv4Prefix =
     {
-        /// The assigned address, host order: `127.0.0.1` is `0x7F000001`.
-        Address : uint32
-        /// The prefix length assigned with it, in `[0, 32]`.
-        PrefixBits : int
+        /// The network address, host order.
+        Network : uint32
+        /// How many leading bits the prefix fixes, in `[0, 32]`.
+        Bits : int
     }
 
 [<RequireQualifiedAccess>]
@@ -81,28 +81,32 @@ module InternetEndpoint =
             endpoint.Port
 
 [<RequireQualifiedAccess>]
-module Ipv4InterfaceAddress =
+module Ipv4Prefix =
 
-    let create (address : uint32) (prefixBits : int) : Ipv4InterfaceAddress =
-        if prefixBits < 0 || prefixBits > 32 then
-            failwith $"Ipv4InterfaceAddress.create: a prefix length of %d{prefixBits} is not in [0, 32]."
+    let create (network : uint32) (bits : int) : Ipv4Prefix =
+        if bits < 0 || bits > 32 then
+            failwith $"Ipv4Prefix.create: a prefix length of %d{bits} is not in [0, 32]."
 
         {
-            Address = address
-            PrefixBits = prefixBits
+            Network = network
+            Bits = bits
         }
 
-    /// Is `address` the one assigned here? Darwin's rule, which is why
-    /// `127.0.0.1` binds there and `127.9.9.9` does not.
-    let isAssigned (address : uint32) (assigned : Ipv4InterfaceAddress) : bool = assigned.Address = address
+    /// Rejects a prefix whose fields were built by hand rather than through
+    /// `create` — the record is public, so `{ Network = x ; Bits = 99 }` is
+    /// representable, and a shift count outside [0, 32] is masked by the CLI
+    /// rather than faulting, which would silently produce an unrelated mask.
+    let assertValid (context : string) (prefix : Ipv4Prefix) : Ipv4Prefix =
+        if prefix.Bits < 0 || prefix.Bits > 32 then
+            failwith $"%s{context}: a prefix length of %d{prefix.Bits} is not in [0, 32]."
 
-    /// Is `address` inside the prefix this address was assigned with? Linux's
-    /// rule, which is why both of those bind there.
-    let isWithinPrefix (address : uint32) (assigned : Ipv4InterfaceAddress) : bool =
+        prefix
+
+    let contains (address : uint32) (prefix : Ipv4Prefix) : bool =
         let mask =
-            if assigned.PrefixBits = 0 then
+            if prefix.Bits = 0 then
                 0u
             else
-                System.UInt32.MaxValue <<< (32 - assigned.PrefixBits)
+                System.UInt32.MaxValue <<< (32 - prefix.Bits)
 
-        (address &&& mask) = (assigned.Address &&& mask)
+        (address &&& mask) = (prefix.Network &&& mask)

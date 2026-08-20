@@ -96,20 +96,6 @@ type SocketBinding =
     {
         /// Where the socket is bound.
         Endpoint : InternetEndpoint
-        /// Whether the bind that established this set `SO_REUSEADDR`.
-        ///
-        /// A property of the *bind call*, not of the socket:
-        /// `SystemNative_Bind` sets the option exactly when its own
-        /// `protocolType` argument is `PT_TCP` (`pal_networking.c:1770`), and
-        /// managed code passes whatever `ProtocolType` the constructor was
-        /// given — so a `ProtocolType.Unspecified` TCP socket does not get it,
-        /// and neither does a socket that `listen(2)` bound implicitly, having
-        /// never been through `SystemNative_Bind` at all.
-        ///
-        /// Not readable back by a guest: the PAL maps managed `ReuseAddress` to
-        /// `SO_REUSEPORT` where that exists (`pal_networking.c:2274`). Its whole
-        /// observable effect is which later binds are refused.
-        ReuseAddress : bool
     }
 
 /// A socket, as the emulated kernel's socket table holds it.
@@ -128,6 +114,21 @@ type SocketDescription =
         /// Where this socket is bound, if anywhere. `None` until `bind(2)` or a
         /// `listen(2)` that binds implicitly.
         Binding : SocketBinding option
+        /// Whether `SO_REUSEADDR` is set on this socket.
+        ///
+        /// Socket state rather than binding state, and that is measured rather
+        /// than assumed: `SystemNative_Bind` issues the `setsockopt` *before*
+        /// `bind(2)` and only when its own `protocolType` argument is `PT_TCP`
+        /// (`pal_networking.c:1770`), so a bind that then fails still leaves the
+        /// option on — confirmed by reading it back after a bind that answered
+        /// EADDRNOTAVAIL. A later successful bind with `PT_UNSPECIFIED` does not
+        /// clear it, so deriving the flag from the successful call alone would
+        /// lose it and change which later binds are refused.
+        ///
+        /// Not readable back by a guest: the PAL maps managed `ReuseAddress` to
+        /// `SO_REUSEPORT` where that exists (`pal_networking.c:2274`). Its whole
+        /// observable effect is which later binds and listens are refused.
+        ReuseAddress : bool
         /// Whether `listen(2)` has been called on this socket.
         ///
         /// A flag rather than the backlog, because nothing this slice implements

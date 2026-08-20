@@ -4402,22 +4402,43 @@ module NativeSystemNative =
                         declaredLength
                 )
 
-            let reuseAddress = SimulatedUnixPlatform.isTcpProtocolType palProtocolType
+            // The `setsockopt` precedes `bind(2)` in the C and is not undone when
+            // the bind fails, so this is recorded before any fault is weighed and
+            // survives every refusal below. Measured: reading the option back
+            // after a bind that answered EADDRNOTAVAIL still reports it set.
+            let socket =
+                if SimulatedUnixPlatform.isTcpProtocolType palProtocolType then
+                    { socket with
+                        ReuseAddress = true
+                    }
+                else
+                    socket
 
             let candidate =
                 endpoint
                 |> Option.map (fun endpoint ->
                     {
                         Endpoint = endpoint
-                        ReuseAddress = reuseAddress
                     }
                 )
+
+            match endpoint with
+            | Some endpoint when SimulatedUnixPlatform.isUnmodelledAddressClass endpoint.Address ->
+                failwith
+                    $"%s{operation}: fd %d{fd} asked to bind %s{InternetEndpoint.toString endpoint}, a multicast or broadcast address. Measured, Linux binds one and Darwin answers EAFNOSUPPORT — but PawPrint models no interface to send on either way, so answering EADDRNOTAVAIL here would be a plausible wrong errno. Model the address classes before letting a guest bind one."
+            | _ ->
 
             let addressNotLocalFault =
                 match endpoint with
                 | None -> false
                 | Some endpoint ->
-                    not (SimulatedUnixPlatform.isBindableAddress platform state.Kernel.LocalAddresses endpoint.Address)
+                    not (
+                        SimulatedUnixPlatform.isBindableAddress
+                            platform
+                            state.Kernel.LocalAddresses
+                            state.Kernel.LocalRoutes
+                            endpoint.Address
+                    )
 
             let privilegedPortFault =
                 match endpoint with
@@ -4440,7 +4461,13 @@ module NativeSystemNative =
                         // Separate port namespaces per transport, measured: a UDP
                         // socket takes a port a listening TCP socket holds.
                         other.Kind = socket.Kind
-                        && SimulatedUnixPlatform.bindConflict platform existing other.IsListening binding
+                        && SimulatedUnixPlatform.bindConflict
+                            platform
+                            existing
+                            other.ReuseAddress
+                            other.IsListening
+                            binding
+                            socket.ReuseAddress
                 )
 
             let addressInUseFault =
@@ -4463,6 +4490,32 @@ module NativeSystemNative =
                 |> List.choose (fun (fault, holds) -> if holds then Some fault else None)
                 |> Set.ofList
 
+            // Every fault below comes from `bind(2)` itself rather than from one
+            // of the wrapper's own screens, so each leaves the platform errno
+            // behind for a `SetLastError=true` caller to read. Measured: errno is
+            // 99 on Linux and 49 on Darwin after a bind that answered
+            // EADDRNOTAVAIL. The null-blob and negative-length screens above are
+            // the wrapper's and set nothing, which is why they return earlier.
+            // `toRawErrnoUnder` rather than `toRawErrno`: several of these errnos
+            // are numbered differently on the two flavours — EADDRNOTAVAIL is 99
+            // on Linux and 49 on Darwin — and the emulated kernel's own platform
+            // is what decides which a guest sees.
+            let failFromSyscall (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
+                let raw =
+                    UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
+
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
+                |> complete (UnixError.toPal error)
+
+            // The socket carries its reuse flag from here on, whether or not the
+            // bind succeeds.
+            let state =
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        Sockets = Map.add socketId socket kernel.Sockets
+                    }
+                )
+
             match SimulatedUnixPlatform.firstBindFault platform faults with
             | Some fault ->
                 let error =
@@ -4474,7 +4527,7 @@ module NativeSystemNative =
                     | BindFault.PrivilegedPort -> UnixError.EACCES
                     | BindFault.AddressInUse -> UnixError.EADDRINUSE
 
-                complete (UnixError.toPal error) state
+                failFromSyscall error state
             | None ->
 
             let binding =
@@ -4560,6 +4613,43 @@ module NativeSystemNative =
                     $"%s{operation}: fd %d{fd} is a %O{socket.Kind} socket. Whether `listen(2)` accepts one is unmeasured — SOCK_SEQPACKET connections on both, SOCK_RAW plausibly EOPNOTSUPP — so measure it rather than guessing."
             | SocketKind.Stream ->
 
+            // A socket that is already bound may still be refused a listen: on
+            // Linux two sockets carrying SO_REUSEADDR may share an endpoint until
+            // one of them listens, and the second `listen(2)` is then
+            // EADDRINUSE. Measured, and it is the same relation `bind(2)` uses —
+            // "does another socket's binding conflict with mine" — so there is
+            // one rule rather than two.
+            let conflictsWith (binding : SocketBinding) : bool =
+                state.Kernel.Sockets
+                |> Map.exists (fun otherId (other : SocketDescription) ->
+                    if otherId = socketId then
+                        false
+                    else
+
+                    match other.Binding with
+                    | None -> false
+                    | Some existing ->
+                        other.Kind = socket.Kind
+                        && SimulatedUnixPlatform.bindConflict
+                            state.Kernel.UnixPlatform
+                            existing
+                            other.ReuseAddress
+                            other.IsListening
+                            binding
+                            socket.ReuseAddress
+                )
+
+            match socket.Binding with
+            | Some binding when conflictsWith binding ->
+                let raw =
+                    UnixError.toRawErrnoUnder
+                        (SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform)
+                        UnixError.EADDRINUSE
+
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
+                |> complete (UnixError.toPal UnixError.EADDRINUSE)
+            | _ ->
+
             let bound, kernel =
                 match socket.Binding with
                 | Some binding -> binding, state.Kernel
@@ -4571,27 +4661,9 @@ module NativeSystemNative =
                     let candidate (port : uint16) : SocketBinding =
                         {
                             Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
-                            ReuseAddress = false
                         }
 
-                    let acceptable (port : uint16) : bool =
-                        state.Kernel.Sockets
-                        |> Map.exists (fun otherId (other : SocketDescription) ->
-                            if otherId = socketId then
-                                false
-                            else
-
-                            match other.Binding with
-                            | None -> false
-                            | Some existing ->
-                                other.Kind = socket.Kind
-                                && SimulatedUnixPlatform.bindConflict
-                                    state.Kernel.UnixPlatform
-                                    existing
-                                    other.IsListening
-                                    (candidate port)
-                        )
-                        |> not
+                    let acceptable (port : uint16) : bool = not (conflictsWith (candidate port))
 
                     match EmulatedKernel.allocateEphemeralPort acceptable state.Kernel with
                     | Some (port, kernel) -> candidate port, kernel
@@ -4674,7 +4746,14 @@ module NativeSystemNative =
             let familyOffset = SockaddrFamilyField.offset field
 
             match SockaddrFamilyField.width field with
-            | 1 -> blob.[familyOffset] <- byte SimulatedUnixPlatform.internetAddressFamily
+            | 1 ->
+                blob.[familyOffset] <- byte SimulatedUnixPlatform.internetAddressFamily
+                // BSD's `sa_len`, which the kernel fills in and byte 0 is
+                // otherwise left zero by. Measured: a Darwin `getsockname` on a
+                // bound socket reports `10 02 ...`, the leading `0x10` being the
+                // 16-byte length. Written only on the flavour that has the field
+                // — on Linux those two bytes are the family itself.
+                blob.[0] <- byte realLength
             | _ ->
                 BinaryPrimitives.WriteUInt16LittleEndian (
                     System.Span<byte> (blob, familyOffset, 2),
