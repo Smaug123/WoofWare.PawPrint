@@ -1517,12 +1517,15 @@ module SimulatedUnixPlatform =
     /// inside a local prefix as assigned while Darwin assigns loopback exactly
     /// one address.
     ///
-    /// Is this an address whose bind rule PawPrint has measured but not
-    /// modelled? Multicast (`224.0.0.0/4`) and the all-ones broadcast address
-    /// bind on Linux and answer `EAFNOSUPPORT` on Darwin, and PawPrint has no
-    /// interface to broadcast on either way — so the entry points refuse rather
-    /// than answering, and this is the classifier that says which.
-    let isUnmodelledAddressClass (address : uint32) : bool =
+    /// Is this the all-ones broadcast address, or a multicast one
+    /// (`224.0.0.0/4`)?
+    ///
+    /// Measured, `bind(2)` takes either on Linux and answers `EAFNOSUPPORT` on
+    /// Darwin — and on Darwin that answer beats a short declared length, so it
+    /// sits at the *family* position in the fault order rather than the address
+    /// one. Binding such an address is all PawPrint models: it has no interface
+    /// to send from, and every operation that would use one is unimplemented.
+    let isBroadcastOrMulticast (address : uint32) : bool =
         address = System.UInt32.MaxValue || (address >>> 28) = 0xEu
 
     /// Broadcast and multicast are a further Linux-only allowance
@@ -1541,6 +1544,11 @@ module SimulatedUnixPlatform =
             true
         elif List.contains address localAddresses then
             // An address this machine holds binds on either flavour.
+            true
+        elif isBroadcastOrMulticast address then
+            // Linux binds these; Darwin refuses them, but with EAFNOSUPPORT from
+            // the family position rather than EADDRNOTAVAIL from this one, so the
+            // refusal is not expressed here.
             true
         else
 

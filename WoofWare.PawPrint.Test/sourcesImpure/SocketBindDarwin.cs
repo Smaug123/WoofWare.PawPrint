@@ -40,6 +40,9 @@ class SocketBindDarwin
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_Listen")]
     static extern unsafe int Listen(IntPtr socket, int backlog);
 
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Listen", SetLastError = true)]
+    static extern int ListenReportingErrno(IntPtr socket, int backlog);
+
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetSockName")]
     static extern unsafe int GetSockName(IntPtr socket, byte* socketAddress, int* socketAddressLen);
 
@@ -73,6 +76,13 @@ class SocketBindDarwin
 
     // The raw errno for EADDRNOTAVAIL on this flavour; the PAL value is shared.
     const int RAW_EADDRNOTAVAIL = 49;
+
+    const int PAL_EBADF = 0x10008;
+    const int PAL_EOPNOTSUPP = 0x1003D;
+    const int SOCK_DGRAM = 2;
+    const int PT_UDP = 17;
+    // The raw errno `listen(2)` sets for a datagram socket on this flavour.
+    const int RAW_EOPNOTSUPP = 102;
 
     const int V4Size = 16;
     const int V6Size = 28;
@@ -256,6 +266,44 @@ class SocketBindDarwin
             if (GetSockName(s, readBack, &len) != PAL_SUCCESS) return 54;
             if (readBack[0] != V4Size) return 55;
             Close(s);
+        }
+
+        // 11. Multicast and broadcast: Linux binds them, Darwin answers
+        //     EAFNOSUPPORT — and on Darwin that answer beats a short declared
+        //     length, so it sits at the family position in the fault order.
+        {
+            IntPtr s = Make();
+            if (s == (IntPtr) (-1)) return 61;
+            // 224.0.0.1.
+            if (!Address(blob, 0x010000E0u, 0)) return 62;
+            if (Bind(s, PT_TCP, blob, V4Size) != PAL_EAFNOSUPPORT) return 63;
+            Close(s);
+
+            IntPtr t = Make();
+            if (t == (IntPtr) (-1)) return 64;
+            if (!Address(blob, 0x010000E0u, 0)) return 65;
+            if (Bind(t, PT_TCP, blob, 8) != PAL_EAFNOSUPPORT) return 66;
+            Close(t);
+        }
+
+        // 12. `listen(2)`'s own errnos, which a SetLastError caller reads. The
+        //     datagram one is the sharp case: the PAL folds EOPNOTSUPP and
+        //     ENOTSUP to one value, and the raw numbers differ on Darwin.
+        {
+            IntPtr s = Make();
+            if (s == (IntPtr) (-1)) return 67;
+            Close(s);
+            Marshal.SetLastSystemError(0);
+            if (ListenReportingErrno(s, 8) != PAL_EBADF) return 68;
+            if (Marshal.GetLastSystemError() != 9) return 69;
+        }
+        {
+            IntPtr d;
+            if (Socket(AF_INET, SOCK_DGRAM, PT_UDP, &d) != PAL_SUCCESS) return 70;
+            Marshal.SetLastSystemError(0);
+            if (ListenReportingErrno(d, 8) != PAL_EOPNOTSUPP) return 71;
+            if (Marshal.GetLastSystemError() != RAW_EOPNOTSUPP) return 72;
+            Close(d);
         }
 
         return 0;

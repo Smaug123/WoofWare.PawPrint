@@ -267,25 +267,25 @@ type UnixError =
     /// Darwin numbers it 49, where Linux reads 49 as "Protocol driver not
     /// attached".
     | EADDRNOTAVAIL
-    /// `ENOTSUP` — Not supported.
-    ///
-    /// Named for the PAL enum member rather than for the errno, because the PAL
-    /// folds two errnos into one value: `Error_EOPNOTSUPP = Error_ENOTSUP`, and
-    /// CoreLib's managed `Interop.Error` carries `EOPNOTSUPP` only as an alias.
-    /// This is the value CoreLib switches on.
+    /// `EOPNOTSUPP` — Operation not supported on socket.
     ///
     /// Reported by `listen(2)` on a socket whose type does not accept
     /// connections — a datagram socket, measured on both.
     ///
-    /// The raw numbering here is `ENOTSUP`'s own: Linux 95 (where Darwin reads 95
-    /// as "EMULTIHOP (Reserved)"), Darwin 45. **That is not the errno every
-    /// condition behind this PAL value sets.** Measured, Linux makes `ENOTSUP`
-    /// and `EOPNOTSUPP` the same number, but Darwin does not — `listen(2)` on a
-    /// datagram socket sets 102 there, while `flock` on a socket sets 45 — so an
-    /// entry point that reports a *raw* errno for one of these conditions must
-    /// not take it from here. None does today: every caller returns the PAL value
-    /// and touches no errno.
-    | ENOTSUP
+    /// The PAL folds this together with `ENOTSUP` (`Error_EOPNOTSUPP =
+    /// Error_ENOTSUP`), so CoreLib's managed `Interop.Error` carries this name
+    /// only as an alias and both conditions present the same value to a guest
+    /// switching on it. The *raw* errnos are not folded, and that is measured:
+    /// `listen(2)` on a datagram socket sets 95 on Linux and **102** on Darwin,
+    /// while `flock` on a socket sets Darwin's `ENOTSUP`, 45. This case carries
+    /// `EOPNOTSUPP`'s numbering; a caller meaning `ENOTSUP` needs its own case
+    /// rather than this one, or a Darwin guest reading `errno` sees 102 where the
+    /// kernel set 45.
+    ///
+    /// Neither number is free on the other platform: Darwin reads 95 as
+    /// "EMULTIHOP (Reserved)" and Linux reads 102 as "Network dropped connection
+    /// on reset".
+    | EOPNOTSUPP
 
 /// The raw and PAL numbering of one `UnixError`.
 type UnixErrorNumbering =
@@ -363,7 +363,7 @@ module UnixError =
             UnixError.EPROTONOSUPPORT
             UnixError.EADDRINUSE
             UnixError.EADDRNOTAVAIL
-            UnixError.ENOTSUP
+            UnixError.EOPNOTSUPP
         ]
 
     let private portable (pal : int) (raw : int) : UnixErrorNumbering =
@@ -441,7 +441,7 @@ module UnixError =
         | UnixError.EPROTONOSUPPORT -> platformDependent 0x10045 93 43
         | UnixError.EADDRINUSE -> platformDependent 0x10003 98 48
         | UnixError.EADDRNOTAVAIL -> platformDependent 0x10004 99 49
-        | UnixError.ENOTSUP -> platformDependent 0x1003D 95 45
+        | UnixError.EOPNOTSUPP -> platformDependent 0x1003D 95 102
 
     /// The `Interop.Error` value CoreLib switches on. Total: the PAL numbering is
     /// platform-independent, so it is always answerable.

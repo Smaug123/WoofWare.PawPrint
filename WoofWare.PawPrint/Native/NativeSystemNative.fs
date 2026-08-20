@@ -4328,10 +4328,22 @@ module NativeSystemNative =
             let platform = state.Kernel.UnixPlatform
 
             match socketOfFd operation fd state with
-            | Error error -> complete (UnixError.toPal error) state
+            | Error error ->
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
+                |> complete (UnixError.toPal error)
             | Ok (socketId, socket) ->
 
-            let blob = requireStorage operation "socketAddress" addressArgument
+            // `bind(2)`'s buffer, not the wrapper's: the C never dereferences it
+            // itself, so an address naming no storage faults in the *kernel* and
+            // comes back as EFAULT rather than killing the process. Measured with
+            // `(struct sockaddr *) 1` on both. That is the opposite of
+            // `SystemNative_CreateSocketEventPort`'s out-parameter, which the
+            // wrapper does dereference, and which `requireStorage` refuses for.
+            match BufferPointer.dereferenceable addressArgument with
+            | None ->
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EFAULT))
+                |> complete (UnixError.toPal UnixError.EFAULT)
+            | Some blob ->
 
             // Every fault this bind could report, computed together; which one is
             // *reported* is the platform's own order (`bindFaultOrder`), because
@@ -4379,7 +4391,15 @@ module NativeSystemNative =
                 // Unreadable: no family to disagree with, and the length fault
                 // fires instead.
                 | None -> false
-                | Some family when family = internetFamily -> false
+                | Some family when family = internetFamily ->
+                    // Darwin refuses a broadcast or multicast address with
+                    // EAFNOSUPPORT, and measured that answer beats a short
+                    // declared length — so it belongs at this position in the
+                    // order rather than at `AddressNotLocal`. Linux binds them.
+                    match SimulatedUnixPlatform.flavour platform, endpoint with
+                    | SimulatedUnixFlavour.Darwin, Some endpoint ->
+                        SimulatedUnixPlatform.isBroadcastOrMulticast endpoint.Address
+                    | _, _ -> false
                 | Some 0 ->
                     // AF_UNSPEC is two different rules. Linux accepts the blob
                     // only when the address is all-zero, and answers
@@ -4421,12 +4441,6 @@ module NativeSystemNative =
                         Endpoint = endpoint
                     }
                 )
-
-            match endpoint with
-            | Some endpoint when SimulatedUnixPlatform.isUnmodelledAddressClass endpoint.Address ->
-                failwith
-                    $"%s{operation}: fd %d{fd} asked to bind %s{InternetEndpoint.toString endpoint}, a multicast or broadcast address. Measured, Linux binds one and Darwin answers EAFNOSUPPORT — but PawPrint models no interface to send on either way, so answering EADDRNOTAVAIL here would be a plausible wrong errno. Model the address classes before letting a guest bind one."
-            | _ ->
 
             let addressNotLocalFault =
                 match endpoint with
@@ -4601,12 +4615,23 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
+            // Both of these are `listen(2)`'s own answers, so each leaves the
+            // platform errno for a `SetLastError=true` caller: measured 9 for a
+            // closed descriptor on both, and 95 on Linux against 102 on Darwin
+            // for a datagram socket.
+            let failFromSyscall (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
+                let raw =
+                    UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform) error
+
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
+                |> complete (UnixError.toPal error)
+
             match socketOfFd operation fd state with
-            | Error error -> complete (UnixError.toPal error) state
+            | Error error -> failFromSyscall error state
             | Ok (socketId, socket) ->
 
             match socket.Kind with
-            | SocketKind.Datagram -> complete (UnixError.toPal UnixError.ENOTSUP) state
+            | SocketKind.Datagram -> failFromSyscall UnixError.EOPNOTSUPP state
             | SocketKind.Raw
             | SocketKind.SeqPacket ->
                 failwith
@@ -4640,14 +4665,7 @@ module NativeSystemNative =
                 )
 
             match socket.Binding with
-            | Some binding when conflictsWith binding ->
-                let raw =
-                    UnixError.toRawErrnoUnder
-                        (SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform)
-                        UnixError.EADDRINUSE
-
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
-                |> complete (UnixError.toPal UnixError.EADDRINUSE)
+            | Some binding when conflictsWith binding -> failFromSyscall UnixError.EADDRINUSE state
             | _ ->
 
             let bound, kernel =
@@ -4720,9 +4738,22 @@ module NativeSystemNative =
                 complete (UnixError.toPal UnixError.EFAULT) state
             else
 
+            let failFromSyscall (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
+                |> complete (UnixError.toPal error)
+
             match socketOfFd operation fd state with
-            | Error error -> complete (UnixError.toPal error) state
+            | Error error -> failFromSyscall error state
             | Ok (_, socket) ->
+
+            // `getsockname(2)`'s buffer, like `bind(2)`'s: the wrapper passes it
+            // through untouched, so an address naming no storage is the kernel's
+            // EFAULT rather than a fault in the wrapper. Measured with
+            // `(struct sockaddr *) 1`. The *length* pointer is different — the C
+            // reads `*socketAddressLen` itself — so that one stays a refusal.
+            match BufferPointer.dereferenceable addressArgument with
+            | None -> failFromSyscall UnixError.EFAULT state
+            | Some addressStorage ->
 
             let platform = state.Kernel.UnixPlatform
             let realLength = (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
@@ -4775,7 +4806,7 @@ module NativeSystemNative =
                     writeBytesThrough
                         ctx
                         operation
-                        (requireStorage operation "socketAddress" addressArgument)
+                        addressStorage
                         (ImmutableArray.CreateRange (Array.sub blob 0 written))
                         state
 

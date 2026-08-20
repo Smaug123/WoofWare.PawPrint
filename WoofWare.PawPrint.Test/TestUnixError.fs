@@ -54,12 +54,16 @@ module TestUnixError =
     // The PAL column, against the pinned `Interop.Errors.cs`.
     // ---------------------------------------------------------------------
 
-    /// `EPERM = 0x10042,   // Operation not permitted.` and friends. Deliberately
-    /// anchored to the enum's indentation so that the `EOPNOTSUPP = ENOTSUP`
-    /// aliases at the end of the enum — which have no numeric literal — do not
-    /// match.
+    /// `EPERM = 0x10042,   // Operation not permitted.` and friends.
     let private palEntry : Regex =
         Regex (@"^\s+(?<name>E[A-Z0-9]+)\s*=\s*0x(?<value>[0-9A-Fa-f]+),", RegexOptions.Multiline)
+
+    /// `EOPNOTSUPP      = ENOTSUP,` and friends: the members the enum defines by
+    /// naming another member rather than a literal. They are as real as the rest
+    /// — CoreLib switches on the value either way — so a `UnixError` named after
+    /// one still has an oracle, and resolving them here is what lets it.
+    let private palAlias : Regex =
+        Regex (@"^\s+(?<name>E[A-Z0-9]+)\s*=\s*(?<target>E[A-Z0-9]+),", RegexOptions.Multiline)
 
     let private pinnedPalValues () : Map<string, int> =
         let path =
@@ -78,9 +82,29 @@ module TestUnixError =
             failwith
                 $"TestUnixError: expected the pinned PAL error enum at %s{path}. If the sparse checkout in flake.nix no longer includes src/libraries/Common/src/Interop/Unix, UnixError's PAL column has lost its oracle."
 
-        palEntry.Matches (File.ReadAllText path)
-        |> Seq.map (fun m -> m.Groups.["name"].Value, Convert.ToInt32 (m.Groups.["value"].Value, 16))
-        |> Map.ofSeq
+        let text = File.ReadAllText path
+
+        let literals =
+            palEntry.Matches text
+            |> Seq.map (fun m -> m.Groups.["name"].Value, Convert.ToInt32 (m.Groups.["value"].Value, 16))
+            |> Map.ofSeq
+
+        // One pass is enough: the enum defines no alias of an alias, and an
+        // unresolvable target would mean the file changed shape, so it fails
+        // loudly rather than quietly dropping the member.
+        palAlias.Matches text
+        |> Seq.fold
+            (fun (acc : Map<string, int>) m ->
+                let name = m.Groups.["name"].Value
+                let target = m.Groups.["target"].Value
+
+                match Map.tryFind target literals with
+                | Some value -> Map.add name value acc
+                | None ->
+                    failwith
+                        $"TestUnixError: the pinned enum aliases %s{name} to %s{target}, which has no literal value. The enum's shape has changed; teach this test to resolve it."
+            )
+            literals
 
     [<Test>]
     let ``PAL values agree with the pinned Interop.Errors.cs`` () : unit =

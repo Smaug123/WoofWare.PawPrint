@@ -132,6 +132,16 @@ class SocketBindScreens
         int deadLen = V4Size;
         if (GetSockName(dead, readBack, &deadLen) != PAL_EBADF) return 9;
 
+        // --- a pointer that is not null but names nothing ---
+        // The wrapper passes the blob straight to `bind(2)` without touching it,
+        // so the fault is the kernel's and comes back as EFAULT rather than
+        // killing the process. `getsockname(2)`'s output buffer is the same.
+        // Measured with `(struct sockaddr *) 1` on both platforms.
+        if (Bind(s, PT_TCP, (byte*) 1, V4Size) != PAL_EFAULT) return 63;
+
+        int strayLen = V4Size;
+        if (GetSockName(s, (byte*) 1, &strayLen) != PAL_EFAULT) return 64;
+
         // --- a length the struct does not fit in ---
         if (Bind(s, PT_TCP, blob, 8) != PAL_EINVAL) return 10;
 
