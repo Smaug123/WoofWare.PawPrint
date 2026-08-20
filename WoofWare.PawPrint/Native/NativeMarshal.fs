@@ -22,7 +22,9 @@ module NativeMarshal =
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int32 (Int32Source.Verbatim state.Kernel.LastPInvokeError))
+                (EvalStackValue.Int32 (
+                    Int32Source.Verbatim (EmulatedKernel.lastPInvokeErrorFor ctx.Thread state.Kernel)
+                ))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -34,7 +36,7 @@ module NativeMarshal =
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int32 (Int32Source.Verbatim state.Kernel.LastSystemError))
+                (EvalStackValue.Int32 (Int32Source.Verbatim (EmulatedKernel.lastSystemErrorFor ctx.Thread state.Kernel)))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -47,11 +49,7 @@ module NativeMarshal =
             let error =
                 NativeCall.int32Argument "Marshal.SetLastPInvokeError" instruction.Arguments.[0]
 
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    LastPInvokeError = error
-                }
-            )
+            state.MapKernel (EmulatedKernel.withLastPInvokeError ctx.Thread error)
             |> NativeHandlerResult.completed
             |> Some
         | "System.Private.CoreLib",
@@ -63,11 +61,7 @@ module NativeMarshal =
             let error =
                 NativeCall.int32Argument "Marshal.SetLastSystemError" instruction.Arguments.[0]
 
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    LastSystemError = error
-                }
-            )
+            state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread error)
             |> NativeHandlerResult.completed
             |> Some
         | _ -> None

@@ -802,11 +802,7 @@ module NativeSystemNative =
             // can answer where the bare conversion refuses to.
             let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    LastSystemError = UnixError.toRawErrnoUnder numbering error
-                }
-            )
+            state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error))
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -999,7 +995,8 @@ module NativeSystemNative =
         | Some "SystemNative_GetErrNo",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            pushInt32 state.Kernel.LastSystemError ctx |> Some
+            pushInt32 (EmulatedKernel.lastSystemErrorFor ctx.Thread state.Kernel) ctx
+            |> Some
         | Some "SystemNative_ConvertErrorPlatformToPal",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
@@ -1368,11 +1365,7 @@ module NativeSystemNative =
             /// Set errno and hand the guest a NULL `char*`, as the C does on
             /// every failure path.
             let fail (error : UnixError) : NativeHandlerResult option =
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrno error
-                    }
-                )
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ManagedPointerSource.Null) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -1520,10 +1513,8 @@ module NativeSystemNative =
             let fail (error : UnixError) : NativeHandlerResult option =
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrnoUnder numbering error
-                    }
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim -1L)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -1874,11 +1865,7 @@ module NativeSystemNative =
                 // agreeing. `toRawErrno` rather than `toRawErrnoUnder`: both
                 // errnos here are portable, and the stricter form would crash
                 // loudly if a platform-dependent one were ever routed through.
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrno error
-                    }
-                )
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
                 |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 0u) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -1902,10 +1889,8 @@ module NativeSystemNative =
             let fail (error : UnixError) : NativeHandlerResult option =
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrnoUnder numbering error
-                    }
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -1966,11 +1951,7 @@ module NativeSystemNative =
             let fd = fdArgument operation instruction.Arguments.[0]
 
             let fail (error : UnixError) : NativeHandlerResult option =
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrno error
-                    }
-                )
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -2071,10 +2052,8 @@ module NativeSystemNative =
             let failFrom (state : IlMachineState) (error : UnixError) : NativeHandlerResult option =
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrnoUnder numbering error
-                    }
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -2238,10 +2217,8 @@ module NativeSystemNative =
             let fail (error : UnixError) : NativeHandlerResult option =
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrnoUnder numbering error
-                    }
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -2480,10 +2457,8 @@ module NativeSystemNative =
             let fail (error : UnixError) : NativeHandlerResult option =
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrnoUnder numbering error
-                    }
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -2649,10 +2624,8 @@ module NativeSystemNative =
             let fail (error : UnixError) : NativeHandlerResult option =
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrnoUnder numbering error
-                    }
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -2858,10 +2831,8 @@ module NativeSystemNative =
             let fail (error : UnixError) : NativeHandlerResult option =
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrnoUnder numbering error
-                    }
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 (Int64Source.Verbatim -1L)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -3126,10 +3097,8 @@ module NativeSystemNative =
                 // which has no platform-independent number.
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrnoUnder numbering error
-                    }
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -3279,11 +3248,7 @@ module NativeSystemNative =
             let error =
                 NativeCall.int32Argument "SystemNative_SetErrNo" instruction.Arguments.[0]
 
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    LastSystemError = error
-                }
-            )
+            state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (error))
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_Malloc",
@@ -3356,10 +3321,8 @@ module NativeSystemNative =
                     )
                 | Error FileDescriptorDupError.BadFd ->
                     -1L,
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            LastSystemError = UnixError.toRawErrno UnixError.EBADF
-                        }
+                    state.MapKernel (
+                        EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EBADF)
                     )
 
             state
@@ -3389,10 +3352,8 @@ module NativeSystemNative =
                     )
                 | Error FileDescriptorCloseError.BadFd ->
                     -1,
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            LastSystemError = UnixError.toRawErrno UnixError.EBADF
-                        }
+                    state.MapKernel (
+                        EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EBADF)
                     )
 
             state
@@ -3605,10 +3566,8 @@ module NativeSystemNative =
                     )
                 | Error FileDescriptorCloseError.BadFd ->
                     UnixError.toPal UnixError.EBADF,
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            LastSystemError = UnixError.toRawErrno UnixError.EBADF
-                        }
+                    state.MapKernel (
+                        EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EBADF)
                     )
 
             state
@@ -3727,11 +3686,7 @@ module NativeSystemNative =
                 // numberings, so no flavour decision arises.
                 let state = storePointer ManagedPointerSource.Null state
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrno UnixError.ENOMEM
-                    }
-                )
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.ENOMEM))
                 |> IlMachineState.pushToEvalStack'
                     (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal UnixError.ENOMEM)))
                     ctx.Thread
@@ -3903,10 +3858,8 @@ module NativeSystemNative =
 
                 writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange bytes) state
                 |> fun state ->
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            LastSystemError = UnixError.toRawErrnoUnder numbering error
-                        }
+                    state.MapKernel (
+                        EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                     )
                 |> IlMachineState.pushToEvalStack'
                     (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal error)))
@@ -4049,11 +4002,7 @@ module NativeSystemNative =
                 | None -> UnixError.EBADF
 
             let state =
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrno error
-                    }
-                )
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
@@ -4083,11 +4032,7 @@ module NativeSystemNative =
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
 
             let setErrno (state : IlMachineState) (error : UnixError) : IlMachineState =
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrno error
-                    }
-                )
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
 
             // Decoding the `buffer` pointer is deferred until we are
             // about to dereference it. `Common_Write` is
@@ -4432,11 +4377,7 @@ module NativeSystemNative =
                 // errno, push 0. Don't fail loud here — uncatchable signals
                 // are a documented BCL-observable failure mode, not a
                 // simulator bug.
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrno UnixError.EINVAL
-                    }
-                )
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EINVAL))
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
