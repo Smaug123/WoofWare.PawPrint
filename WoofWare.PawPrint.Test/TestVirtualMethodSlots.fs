@@ -8,7 +8,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// `NativeRuntimeTypeHelpers.slotTableOfClosed` is the single definition of "which slot" in
+/// `VirtualSlotLayout.slotTableOfClosed` is the single definition of "which slot" in
 /// PawPrint: `RuntimeMethodHandle.GetSlot` is an index into it, and `RuntimeTypeHandle.GetNumVirtuals`
 /// is the length of its `Vtable` half alone. The end-to-end coverage is
 /// `sourcesPure/ReflectionVirtualMethodSlots.cs`, which
@@ -68,9 +68,9 @@ module TestVirtualMethodSlots =
     let private vtable
         (state : IlMachineState)
         (handle : ConcreteTypeHandle)
-        : IlMachineState * NativeRuntimeTypeHelpers.VtableSlot list
+        : IlMachineState * VirtualSlotLayout.VtableSlot list
         =
-        NativeRuntimeTypeHelpers.vtableOfClosed loggerFactory bct "test" state handle
+        VirtualSlotLayout.vtableOfClosed loggerFactory bct "test" state handle
 
     /// Closes a generic corelib type definition at the given corelib type arguments.
     let private concretizeClosed
@@ -288,7 +288,7 @@ module TestVirtualMethodSlots =
         |> List.ofArray
 
     /// The same list for PawPrint: each slot's occupant named by its MethodDef token.
-    let private pawPrintSlotLayout (slots : NativeRuntimeTypeHelpers.VtableSlot list) : int list =
+    let private pawPrintSlotLayout (slots : VirtualSlotLayout.VtableSlot list) : int list =
         slots
         |> List.map (fun slot ->
             match fst slot.Method.IdentityKey with
@@ -316,15 +316,14 @@ module TestVirtualMethodSlots =
         // A base method from corelib and a derived method from the guest, sharing row 6.
         let slots = [ "CoreLib", row 6 ; "Guest", row 6 ]
 
-        NativeRuntimeTypeHelpers.slotIndexOfIdentity ("Guest", row 6) slots
+        VirtualSlotLayout.slotIndexOfIdentity ("Guest", row 6) slots
         |> shouldEqual (Some 1)
 
-        NativeRuntimeTypeHelpers.slotIndexOfIdentity ("CoreLib", row 6) slots
+        VirtualSlotLayout.slotIndexOfIdentity ("CoreLib", row 6) slots
         |> shouldEqual (Some 0)
 
         // A row present in one assembly must not be found via another.
-        NativeRuntimeTypeHelpers.slotIndexOfIdentity ("Other", row 6) slots
-        |> shouldEqual None
+        VirtualSlotLayout.slotIndexOfIdentity ("Other", row 6) slots |> shouldEqual None
 
     /// An interface has no base class, so `MethodTableBuilder::PlaceVirtualMethods` adds every
     /// instance virtual it declares without consulting NewSlot. Corelib contains exactly one method
@@ -476,13 +475,13 @@ module TestVirtualMethodSlots =
             let state, handle = concretiseType (state ())
 
             let _, table =
-                NativeRuntimeTypeHelpers.slotTableOfClosed loggerFactory bct "test" state handle
+                VirtualSlotLayout.slotTableOfClosed loggerFactory bct "test" state handle
 
             let numVirtuals = List.length table.Vtable
 
             for method in hostDeclaredMethods host do
                 let expected = hostSlotOf method
-                let actual = NativeRuntimeTypeHelpers.slotIndexInTable (identityOf method) table
+                let actual = VirtualSlotLayout.slotIndexInTable (identityOf method) table
 
                 match actual with
                 | None ->
@@ -527,7 +526,7 @@ module TestVirtualMethodSlots =
             let state, slots = vtable state handle
 
             let _, count =
-                NativeRuntimeTypeHelpers.numVirtualsOfClosed loggerFactory bct "test" state handle
+                VirtualSlotLayout.numVirtualsOfClosed loggerFactory bct "test" state handle
 
             count |> shouldEqual (List.length slots)
 
@@ -646,7 +645,7 @@ module TestVirtualMethodSlots =
             ResolvedTypeIdentity.ofDefinitionInAssembly typeInfo.AssemblyFullName typeInfo.TypeDefHandle
 
         let _, slots =
-            NativeRuntimeTypeHelpers.vtableOfDefinition loggerFactory bct "test" (state ()) identity
+            VirtualSlotLayout.vtableOfDefinition loggerFactory bct "test" (state ()) identity
 
         let expected = hostSlotLayout (hostType ``namespace`` name)
 
@@ -680,7 +679,7 @@ module TestVirtualMethodSlots =
             ResolvedTypeIdentity.ofDefinitionInAssembly typeInfo.AssemblyFullName typeInfo.TypeDefHandle
 
         let _, table =
-            NativeRuntimeTypeHelpers.slotTableOfDefinition loggerFactory bct "test" (state ()) identity
+            VirtualSlotLayout.slotTableOfDefinition loggerFactory bct "test" (state ()) identity
 
         let numVirtuals = List.length table.Vtable
         let host = hostType ``namespace`` name
@@ -692,7 +691,7 @@ module TestVirtualMethodSlots =
         for method in hostDeclaredMethods host do
             let expected = hostSlotOf method
 
-            match NativeRuntimeTypeHelpers.slotIndexInTable (identityOf method) table with
+            match VirtualSlotLayout.slotIndexInTable (identityOf method) table with
             | None ->
                 failures <-
                     $"%s{method.Name} (row %i{method.MetadataToken &&& 0xFFFFFF}) has no slot in PawPrint's table, host says %i{expected}"
@@ -737,9 +736,9 @@ module TestVirtualMethodSlots =
                 ResolvedTypeIdentity.ofDefinitionInAssembly typeInfo.AssemblyFullName typeInfo.TypeDefHandle
 
             let state, slots =
-                NativeRuntimeTypeHelpers.vtableOfDefinition loggerFactory bct "test" (state ()) identity
+                VirtualSlotLayout.vtableOfDefinition loggerFactory bct "test" (state ()) identity
 
             let _, count =
-                NativeRuntimeTypeHelpers.numVirtualsOfDefinition loggerFactory bct "test" state identity
+                VirtualSlotLayout.numVirtualsOfDefinition loggerFactory bct "test" state identity
 
             count |> shouldEqual (List.length slots)

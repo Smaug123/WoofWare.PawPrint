@@ -458,7 +458,7 @@ module NativeRuntimeMethodHandle =
     /// definition is refused rather than approximated: resolving a signature or binding an
     /// invocation under `G&lt;&gt;` needs a formal type context — the definition's own type
     /// variables — and `ConcreteTypeHandle` cannot express one. Consumers that need only the
-    /// *layout* of a definition should ask `NativeRuntimeTypeHelpers.slotTableOfDefinition`, which
+    /// *layout* of a definition should ask `VirtualSlotLayout.slotTableOfDefinition`, which
     /// carries a formal context of its own.
     let requireClosedDeclaringType (operation : string) (identity : MetadataMethodIdentity) : ConcreteTypeHandle =
         match identity.GetDeclaringType () with
@@ -1211,7 +1211,7 @@ module NativeRuntimeMethodHandle =
             // (INT32)pMethod->GetSlot(), which is a bare read of the MethodDesc's slot number as
             // assigned once during method-table building. PawPrint has no persisted slot number, so
             // the layout is recomputed from the declaring type's chain; see
-            // `NativeRuntimeTypeHelpers.slotTableOfClosed` for the rule and for why MethodImpls are
+            // `VirtualSlotLayout.slotTableOfClosed` for the rule and for why MethodImpls are
             // not consulted.
             //
             // The number spans both halves of the method table, so this asks the slot table rather
@@ -1248,14 +1248,9 @@ module NativeRuntimeMethodHandle =
             let state, slotTable =
                 match declaringType with
                 | RuntimeTypeHandleTarget.Closed handle ->
-                    NativeRuntimeTypeHelpers.slotTableOfClosed
-                        ctx.LoggerFactory
-                        ctx.BaseClassTypes
-                        operation
-                        state
-                        handle
+                    VirtualSlotLayout.slotTableOfClosed ctx.LoggerFactory ctx.BaseClassTypes operation state handle
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition ->
-                    NativeRuntimeTypeHelpers.slotTableOfDefinition
+                    VirtualSlotLayout.slotTableOfDefinition
                         ctx.LoggerFactory
                         ctx.BaseClassTypes
                         operation
@@ -1270,7 +1265,7 @@ module NativeRuntimeMethodHandle =
 
             let slot =
                 slotTable
-                |> NativeRuntimeTypeHelpers.slotIndexInTable (identity.GetAssemblyFullName (), methodInfo.IdentityKey)
+                |> VirtualSlotLayout.slotIndexInTable (identity.GetAssemblyFullName (), methodInfo.IdentityKey)
                 |> Option.defaultWith (fun () ->
                     // Every method a type declares in metadata is placed in one half or the other,
                     // so reaching here means the method is not the declaring type's to place: a
@@ -1281,7 +1276,7 @@ module NativeRuntimeMethodHandle =
                     let declaringDescription =
                         match declaringType with
                         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition ->
-                            (NativeRuntimeTypeHelpers.ownerOfDefinition operation state definition).Description
+                            (VirtualSlotLayout.ownerOfDefinition operation state definition).Description
                         | other -> string other
 
                     failwith

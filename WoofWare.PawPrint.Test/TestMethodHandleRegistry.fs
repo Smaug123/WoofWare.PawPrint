@@ -1596,7 +1596,7 @@ public class HasNestedGeneric<TKey, TValue>
             }
 
         let _, _, walked =
-            NativeRuntimeTypeHelpers.introducedMethodsOf
+            VirtualSlotLayout.introducedMethodsOf
                 "test"
                 state
                 (RuntimeTypeHandleTarget.OpenGenericTypeDefinition typeInfo.Identity)

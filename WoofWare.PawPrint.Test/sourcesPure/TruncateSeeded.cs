@@ -312,10 +312,11 @@ class Program
         // emits no O_TRUNC at all: it opens, takes LOCK_EX, and calls
         // `SystemNative_FTruncate(fd, 0)` from `SafeFileHandle.Init`.
         //
-        // `FileShare.None` rather than the default, and not arbitrarily:
-        // `CanLockTheFile` returns immediately for LOCK_EX, while for a LOCK_SH
-        // taken with write access it consults `SystemNative_GetFileSystemType`,
-        // which PawPrint has no handler for yet.
+        // `FileShare.None` rather than the default, so `CanLockTheFile` answers
+        // LOCK_EX immediately instead of consulting
+        // `SystemNative_GetFileSystemType` as it does for a LOCK_SH taken with
+        // write access. That path is covered by `WriteSeeded.cs`; here it would
+        // only add a second reason for these rows to fail.
         //
         // The seeded file is non-empty on purpose. `SafeFileHandle.Init` *swallows*
         // EINVAL and EBADF from FTruncate ("a special file that can't be
