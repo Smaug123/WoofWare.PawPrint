@@ -496,6 +496,36 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The bytes `SocketAddressPal` lays a `sockaddr_in` and
+                // `sockaddr_in6` out in, under the Linux flavour. Not
+                // differential: the family field is two bytes at offset 0 here
+                // and one byte at offset 1 on Darwin, so no claim about these
+                // bytes holds on both. `SocketAddressRoundTrip.cs` carries what
+                // does.
+                FileName = "SocketAddressLinuxBytes.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The same rows under Darwin, where `sa_len` occupies byte 0 and
+                // `AF_INET6` is 30. Configured as macOS for the same reason
+                // `SocketCreateDarwin.cs` is; the pair is what makes the flavour
+                // split load-bearing in both directions rather than only pinning
+                // the default.
+                FileName = "SocketAddressDarwinBytes.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The `SystemNative_Socket` rows true only under the Linux
                 // flavour — the Unix-domain sockets Darwin refuses — together
                 // with the two descriptor-level rows a differential guest cannot

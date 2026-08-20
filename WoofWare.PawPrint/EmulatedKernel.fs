@@ -452,6 +452,75 @@ type SimulatedUnixPlatform =
     override this.GetHashCode () : int =
         System.HashCode.Combine (this.Flavour, this.Release)
 
+/// The four `sizeof`s `SystemNative_GetSocketAddressSizes` reports in one call,
+/// which `System.Net.Primitives`' `SocketAddressPal` class initialiser latches
+/// and every `SocketAddress` is then sized by.
+///
+/// Compile-time properties of the native shim rather than of any socket, like
+/// `reportsBirthTime`. Measured with a `sizeof` probe compiled on macOS arm64 and
+/// on Linux, rather than recalled; all four are invariant of pointer width, since
+/// every member of these structs is fixed-width and the two variable-length tails
+/// (`sun_path`, `sockaddr_storage`'s padding) are sized from a constant.
+type SocketAddressSizes =
+    {
+        /// `sizeof(struct sockaddr_in)`. 16 on both.
+        InterNetwork : int
+        /// `sizeof(struct sockaddr_in6)`. 28 on both.
+        InterNetworkV6 : int
+        /// `sizeof(struct sockaddr_un)`. The one of the four that differs: 110 on
+        /// Linux, whose `sun_path` is 108 bytes, against 106 on Darwin, whose is
+        /// 104.
+        UnixDomain : int
+        /// `sizeof(struct sockaddr_storage)`. 128 on both, and the same number
+        /// `SystemNative_GetMaximumAddressSize` reports through its own entry
+        /// point — hence `SimulatedUnixPlatform.maximumSocketAddressSize` rather
+        /// than a second literal.
+        Storage : int
+    }
+
+/// Where a `struct sockaddr`'s address family sits and how wide it is — the only
+/// part of the socket-address layout the two Unixes lay out differently.
+///
+/// BSD gave `struct sockaddr` a leading one-byte `sa_len` and narrowed
+/// `sa_family_t` to one byte to pay for it; Linux kept the original two-byte
+/// `sa_family_t` and has no length byte. That is why every *later* field agrees
+/// between the two — `sin_port` at 2, `sin_addr` at 4, `sin6_addr` at 8,
+/// `sin6_scope_id` at 24, all measured on both — since the two layouts spend the
+/// same two leading bytes differently rather than in different amounts.
+///
+/// A pair of numbers rather than an `int * int` so that no caller can pair an
+/// offset with the wrong width: the two vary together and never independently.
+[<RequireQualifiedAccess>]
+type SockaddrFamilyField =
+    /// Linux: `sa_family_t` is a two-byte `unsigned short` at offset 0, in the
+    /// machine's own byte order, and there is no length byte before it.
+    | TwoBytesAtOffsetZero
+    /// Darwin and the BSDs: `sa_len` occupies byte 0 and the one-byte
+    /// `sa_family_t` follows it at offset 1.
+    ///
+    /// Nothing in the shim writes `sa_len` — grep `pal_networking.c` and there is
+    /// no mention of it. The byte a guest sees there is written by managed code:
+    /// `SocketAddress..ctor` stores `(byte) _size` at index 0 before calling
+    /// `SetAddressFamily`, unconditionally on every platform, so BSD gets its
+    /// length byte and Linux has the same store overwritten by the wider family.
+    | OneByteAtOffsetOne
+
+[<RequireQualifiedAccess>]
+module SockaddrFamilyField =
+    /// Byte offset of the family field within any `struct sockaddr`.
+    let offset (field : SockaddrFamilyField) : int =
+        match field with
+        | SockaddrFamilyField.TwoBytesAtOffsetZero -> 0
+        | SockaddrFamilyField.OneByteAtOffsetOne -> 1
+
+    /// Width of the family field in bytes. Also what the shim's
+    /// `sizeof_member(sockaddr, sa_family)` bounds check uses, and what a
+    /// conversion failure truncates the unconvertible value to.
+    let width (field : SockaddrFamilyField) : int =
+        match field with
+        | SockaddrFamilyField.TwoBytesAtOffsetZero -> 2
+        | SockaddrFamilyField.OneByteAtOffsetOne -> 1
+
 /// Why `socketCreation` would not hand back a socket.
 [<RequireQualifiedAccess>]
 type SocketCreationRefusal =
@@ -896,9 +965,31 @@ module SimulatedUnixPlatform =
     /// the flavour on the day one of them disagrees.
     ///
     /// Contrast `sockaddr_un`, which genuinely does differ (106 on Darwin, 110 on
-    /// Linux): that belongs to `SystemNative_GetDomainSocketSizes`, and when it
-    /// arrives these numbers want collecting into one flavour-derived record.
+    /// Linux). That is `SocketAddressSizes.UnixDomain` below, reported through a
+    /// different entry point again; this binding is where the shared 128 is
+    /// defined, and `socketAddressSizes` reads it rather than repeating it.
     let maximumSocketAddressSize : int = 128
+
+    /// The sizes `SystemNative_GetSocketAddressSizes` reports. See
+    /// `SocketAddressSizes` for where each number was measured.
+    let socketAddressSizes (platform : SimulatedUnixPlatform) : SocketAddressSizes =
+        {
+            InterNetwork = 16
+            InterNetworkV6 = 28
+            UnixDomain =
+                match flavour platform with
+                | SimulatedUnixFlavour.Linux -> 110
+                | SimulatedUnixFlavour.Darwin -> 106
+            Storage = maximumSocketAddressSize
+        }
+
+    /// Where this platform keeps a socket address's family, and how wide it is.
+    /// See `SockaddrFamilyField`, which is also where the reason every other
+    /// field's offset is flavour-free is written down.
+    let sockaddrFamilyField (platform : SimulatedUnixPlatform) : SockaddrFamilyField =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> SockaddrFamilyField.TwoBytesAtOffsetZero
+        | SimulatedUnixFlavour.Darwin -> SockaddrFamilyField.OneByteAtOffsetOne
 
     /// Whether this platform's sockets report IPv4 packet information on a
     /// dual-mode socket — an IPv6 socket receiving IPv4-mapped traffic. Reported
@@ -1030,6 +1121,78 @@ module SimulatedUnixPlatform =
         [<Literal>]
         let PtRaw = 255
 
+    /// `AF_INET`, in the platform's own numbering. 2 on both, and on essentially
+    /// every Unix — it is one of the handful of `AF_*` values that predate the
+    /// BSD/Linux split and never moved.
+    ///
+    /// Exposed alongside `internetV6AddressFamily` because the `sockaddr`
+    /// accessors switch on the raw `sa_family` in the blob rather than on a
+    /// converted value: `SystemNative_GetPort` is a `switch (sockAddr->sa_family)`
+    /// over exactly these two, and `SystemNative_GetIPv4Address` is an equality
+    /// against the first.
+    let internetAddressFamily : int = 2
+
+    /// `AF_INET6`, in the platform's own numbering, which unlike `AF_INET` the two
+    /// families disagree about: 10 on Linux against 30 on Darwin. Measured.
+    let internetV6AddressFamily (platform : SimulatedUnixPlatform) : int =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> 10
+        | SimulatedUnixFlavour.Darwin -> 30
+
+    /// `TryConvertAddressFamilyPalToPlatform` (`pal_networking.c:218`): the
+    /// platform `AF_*` this PAL address family names, or `None` where the shim's
+    /// switch has no case for it.
+    ///
+    /// `None` is not the same as "refuse". Upstream the failing branch still
+    /// stores `(sa_family_t) palAddressFamily` — truncated to
+    /// `SockaddrFamilyField.width` — through the out-parameter before returning
+    /// false, so a caller that writes the family into a blob writes a truncated
+    /// value there *and* reports `EAFNOSUPPORT`. Callers must reproduce both
+    /// halves; see the `SystemNative_SetAddressFamily` handler.
+    ///
+    /// `AF_PACKET` and `AF_CAN` are the only flavour-dependent arms, and their
+    /// dependence is the shim's `#ifdef`s rather than any kernel's: Linux's
+    /// headers define the symbols (17 and 29, measured) and Darwin's do not, so
+    /// on Darwin those two arms are not compiled and the value falls to the
+    /// default.
+    let addressFamilyPalToPlatform (platform : SimulatedUnixPlatform) (palAddressFamily : int) : int option =
+        let isLinux =
+            match flavour platform with
+            | SimulatedUnixFlavour.Linux -> true
+            | SimulatedUnixFlavour.Darwin -> false
+
+        match palAddressFamily with
+        | Pal.AfUnspec -> Some 0
+        | Pal.AfUnix -> Some 1
+        | Pal.AfInet -> Some internetAddressFamily
+        | Pal.AfInet6 -> Some (internetV6AddressFamily platform)
+        | Pal.AfPacket -> if isLinux then Some 17 else None
+        | Pal.AfCan -> if isLinux then Some 29 else None
+        | _ -> None
+
+    /// `TryConvertAddressFamilyPlatformToPal` (`pal_networking.c:184`), the
+    /// inverse of `addressFamilyPalToPlatform` over exactly the same rows.
+    ///
+    /// `None` where the switch has no case. Upstream's failing branch copies the
+    /// platform number through unconverted, but `SystemNative_GetAddressFamily`
+    /// — its only caller that a guest can reach — overwrites that with
+    /// `AddressFamily_AF_UNKNOWN` and still reports success, so the unconverted
+    /// value never escapes and this returns no analogue of it.
+    let addressFamilyPlatformToPal (platform : SimulatedUnixPlatform) (platformAddressFamily : int) : int option =
+        let isLinux =
+            match flavour platform with
+            | SimulatedUnixFlavour.Linux -> true
+            | SimulatedUnixFlavour.Darwin -> false
+
+        match platformAddressFamily with
+        | 0 -> Some Pal.AfUnspec
+        | 1 -> Some Pal.AfUnix
+        | family when family = internetAddressFamily -> Some Pal.AfInet
+        | family when family = internetV6AddressFamily platform -> Some Pal.AfInet6
+        | 17 -> if isLinux then Some Pal.AfPacket else None
+        | 29 -> if isLinux then Some Pal.AfCan else None
+        | _ -> None
+
     /// What `SystemNative_Socket` does with a domain, type and protocol, all in
     /// the PAL numbering its caller supplies them in.
     ///
@@ -1064,19 +1227,13 @@ module SimulatedUnixPlatform =
             | SimulatedUnixFlavour.Linux -> true
             | SimulatedUnixFlavour.Darwin -> false
 
-        // `TryConvertAddressFamilyPalToPlatform`. `AF_PACKET` and `AF_CAN` are
-        // the only flavour-dependent arms: both are `#ifdef`-guarded on a symbol
-        // Linux's headers define and Darwin's do not, so on Darwin they fall to
-        // the default and are refused here rather than by any kernel.
-        let familyConverts =
-            match palAddressFamily with
-            | Pal.AfUnspec
-            | Pal.AfUnix
-            | Pal.AfInet
-            | Pal.AfInet6 -> true
-            | Pal.AfPacket
-            | Pal.AfCan -> isLinux
-            | _ -> false
+        // `TryConvertAddressFamilyPalToPlatform`, which is
+        // `addressFamilyPalToPlatform` above — the same C function screens
+        // `SystemNative_Socket`'s first argument and converts
+        // `SystemNative_SetAddressFamily`'s, so there is one rule here, not two.
+        // Only whether it converts matters to this caller; the number it converts
+        // to is a socket address's business.
+        let familyConverts = (addressFamilyPalToPlatform platform palAddressFamily).IsSome
 
         if not familyConverts then
             Error SocketCreationRefusal.AddressFamily
