@@ -141,6 +141,7 @@
     <Compile Include="TestUnixError.fs" />
     <Compile Include="TestSocketCreation.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />
+    <Compile Include="TestEmulatedKernelSockets.fs" />
     <Compile Include="TestFlockBlocking.fs" />
     <Compile Include="TestPReadNegativeSize.fs" />
     <Compile Include="TestLSeek.fs" />
