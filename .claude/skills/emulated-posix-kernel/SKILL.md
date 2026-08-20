@@ -75,11 +75,17 @@ agree, **and** no default may ever be stored.
 Code that needs to tell two descriptions apart wants `OpenFileDescriptionId`.
 
 Before keying it on anything per-description, ask what the *kernel* contends on
-and measure it. Every file on Linux's `anon_inodefs` shares a single inode, so
-two epoll ports contend under `flock` and `OpenFileObject.AnonymousInode` is
-payload-free; sockets are on `sockfs` with an inode each, so they do not. Giving
-each port its own identity granted two exclusive locks where Linux grants one —
-guest-visible, and invisible to any test that only locks one port.
+and **measure that descriptor kind**; do not generalise from a neighbouring one.
+Measured, epoll descriptors and an `eventfd` share a single `anon_inodefs` inode,
+so two epoll ports contend under `flock` and `OpenFileObject.AnonymousInode` is
+payload-free. That is a fact about those creators, not about anonymous inodes as
+a class: Linux hands a distinct inode to files created through
+`anon_inode_getfile_secure` and `anon_inode_create_getfile`, so a future
+descriptor kind on `anon_inodefs` may well need its own identity. Sockets are on
+`sockfs` with an inode each, and do not contend.
+
+Giving each epoll port its own identity granted two exclusive locks where Linux
+grants one — guest-visible, and invisible to any test that only locks one port.
 
 ## 4. Refuse rather than invent — but check for an observer first
 
@@ -133,7 +139,8 @@ Summarised here; `reference/testing.md` has the detail.
 
 - `reference/flavour-divergence.md` — measured Linux/Darwin tables for
   `open(O_CREAT)`, truncation, `fstatfs`, and the environment. **Do not
-  re-derive these.**
+  re-derive these** — and read its envelope section before relying on a row
+  outside what was varied.
 - `reference/descriptor-kinds.md` — what each descriptor kind answers, per
   platform.
 - `reference/testing.md` — choosing a tier, and the traps in each.

@@ -3,6 +3,13 @@
 Measured on Linux 6.18.5 aarch64 and Darwin 25.6.0 arm64. Re-derive rather than
 trust if the pinned kernel moves.
 
+Each table states the descriptor's blocking mode where that changes the answer;
+a row measured under `O_NONBLOCK` says nothing about the same call on a blocking
+descriptor, which is the mode `socket(2)` and `epoll_create1` actually hand back.
+And a row here is about *the creator named*, not about its filesystem as a class:
+`anon_inodefs` behaviour differs between `anon_inode_getfd` and the newer
+`anon_inode_getfile_secure`, so a new descriptor kind wants its own measurement.
+
 ## Socket event port (`epoll_create1` / `kqueue`)
 
 Only `pread`/`pwrite` agree.
