@@ -859,70 +859,107 @@ module VirtualSlotLayout =
                     parentArguments
                     table.Owner.Substitution
 
-            // Is the named type an ancestor at all, and if so at the instantiation the declaration
-            // spells? The two questions are kept apart because their answers mean opposite things: not
-            // an ancestor is the ordinary interface-declaration case, which writes the dispatch map
-            // and not the vtable; an ancestor at a *different* instantiation is metadata CoreCLR
-            // refuses (`MI_DECLARATIONNOTFOUND`), and answering "no vtable write" for it would lay out
-            // a type the runtime cannot load.
+            // Is the named type an ancestor?
+            //
+            // Identity alone answers it, and deliberately so. Upstream identifies the ancestor by
+            // MethodTable (`pCur->GetMethodTable() == pDeclMT`), which distinguishes `B<int32>` from
+            // `B<string>`; comparing the *spelled* instantiation here cannot do that, because a
+            // spelling is relative to the assembly that writes it. `BG : AG<int32>` in one assembly
+            // records `Spelled(Lib, int32)` while a `.override AG<int32>::M` in another records
+            // `Spelled(App, int32)`, and those are structurally different values for the same
+            // instantiation -- so comparing them rejects the cross-assembly covariant override that
+            // ordinary C# emits.
+            //
+            // Nothing is lost for *finding* the ancestor: a definition appears at most once in a
+            // single-inheritance chain, since a second appearance would require the type to be its own
+            // ancestor. The comparison would only ever have added a rejection, and the shape it would
+            // reject -- an ancestor named at an instantiation this type does not derive from -- is
+            // metadata CoreCLR refuses with `MI_DECLARATIONNOTFOUND` and PawPrint now accepts. That is
+            // a divergence in the permissive direction, on invalid images only; catching it needs the
+            // spellings resolved to a canonical instantiation first.
             let namedLevel =
-                table.Chain
-                |> List.tryFind (fun (identity, substitution) ->
-                    identity = parentIdentity && substitution = declarationSubstitution
-                )
+                table.Chain |> List.tryFind (fun (identity, _) -> identity = parentIdentity)
 
             match namedLevel with
             | None ->
-                if table.Chain |> List.exists (fun (identity, _) -> identity = parentIdentity) then
-                    failwith
-                        $"%s{operation}: MethodImpl on %s{table.Owner.Description} declares an override of %s{memberRef.PrettyName} on an ancestor it names at an instantiation this type does not derive from; CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_DECLARATIONNOTFOUND) rather than laying out a method table for it"
-                else
-                    // An interface, or a type unrelated to this one: not a vtable write. This is 4084
-                    // of corelib's 4120 MethodImpl rows.
-                    state, None
+                // An interface, or a type unrelated to this one: not a vtable write. This is 4084 of
+                // corelib's 4120 MethodImpl rows.
+                state, None
             | Some (namedIdentity, _) ->
 
-            // Only the named ancestor is searched, and only for an *exact* signature match.
-            //
-            // Upstream does more: `FindDeclMethodOnClassInHierarchy` searches the named type together
-            // with its own bases, and does so in two passes, exact matches before
-            // equivalent-under-substitution ones. Neither is implemented, because neither is reachable
-            // by any test here and shipping an untested rule is worse than refusing.
-            //
-            // Measured, on the fabricated generic chain: with exact matching alone every case still
-            // passes, so a MemberRef declaration to a method on a generic base is spelled with the
-            // *definition's* variables -- `M(!0)`, structurally equal to the declaration -- and the
-            // equivalent pass never fires. And the hierarchy walk cannot be provoked at all through
-            // `PersistedAssemblyBuilder`: `DefineMethodOverride` resolves the `MethodInfo` it is given
-            // to the type that declares it, so a declaration naming a type which merely *inherits* the
-            // method needs a hand-assembled image.
-            let exactMatches =
+            // Only the named ancestor is searched. Upstream's `FindDeclMethodOnClassInHierarchy`
+            // searches the named type together with its own bases; that is not implemented because no
+            // test here can reach it -- `DefineMethodOverride` resolves the `MethodInfo` it is given to
+            // the type that *declares* the method, so a declaration naming a type which merely
+            // inherits it needs a hand-assembled image -- and shipping an untested rule is worse than
+            // refusing below.
+            let candidates =
                 table.Placed
                 |> List.filter (fun (slot, _) ->
                     slot.DeclaredBy.Identity = namedIdentity
                     && slot.Method.Name = memberRef.PrettyName
-                    && slot.Method.Signature = signature
                 )
 
-            match exactMatches with
+            // Matching is under substitution and module-aware, which structural equality of the
+            // signatures is not: a nominal type in the signature decodes as `FromDefinition` from the
+            // MethodDef and as `FromReference` from a cross-module MemberRef, so comparing the two
+            // records directly misses a legal match. `signaturesEquivalent` resolves both sides'
+            // tokens against their own assemblies, which is what upstream's comparison does.
+            let state, equivalent =
+                ((state, []), candidates)
+                ||> List.fold (fun (state, acc) (slot, index) ->
+                    let declarationComparand : TypeConcretization.SignatureComparand =
+                        {
+                            Signature = signature
+                            AssemblyFullName = table.Owner.AssemblyFullName
+                            DeclaringTypeGenerics = declarationSubstitution
+                        }
+
+                    let candidateComparand : TypeConcretization.SignatureComparand =
+                        {
+                            Signature = slot.Method.Signature
+                            AssemblyFullName = slot.DeclaredBy.AssemblyFullName
+                            DeclaringTypeGenerics = slot.DeclaredBy.Substitution
+                        }
+
+                    let state, matches =
+                        IlMachineState.signaturesEquivalent
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            false
+                            declarationComparand
+                            candidateComparand
+
+                    state, (if matches then (slot, index) :: acc else acc)
+                )
+
+            match equivalent with
             | [ single ] -> state, Some single
             | [] ->
-                let named =
-                    table.Placed
-                    |> List.filter (fun (slot, _) ->
-                        slot.DeclaredBy.Identity = namedIdentity
-                        && slot.Method.Name = memberRef.PrettyName
-                    )
-                    |> List.length
-
                 failwith
-                    $"TODO: %s{operation} for %s{table.Owner.Description}, whose MethodImpl declares an override of %s{memberRef.PrettyName} on an ancestor that declares %i{named} method(s) of that name, none with an identical signature; resolving it needs the ancestor's own bases searched too, and signatures compared under substitution rather than structurally, as MethodTableBuilder::FindDeclMethodOnClassInHierarchy does in its second pass"
+                    $"TODO: %s{operation} for %s{table.Owner.Description}, whose MethodImpl declares an override of %s{memberRef.PrettyName} on an ancestor that declares %i{List.length candidates} method(s) of that name, none with an equivalent signature; resolving it needs that ancestor's own bases searched too, as MethodTableBuilder::FindDeclMethodOnClassInHierarchy does"
             | several ->
-                // Two declarations on one type with the same name and the *same* signature blob is
-                // metadata ECMA-335 II.22.26 forbids, so this is unreachable through a valid image;
-                // refusing beats picking one and writing a slot on a guess.
-                failwith
-                    $"%s{operation}: MethodImpl on %s{table.Owner.Description} declares an override of %s{memberRef.PrettyName}, which the named ancestor declares %i{List.length several} times with an identical signature; ECMA-335 II.22.26 forbids a type repeating a method signature"
+                // Substitution can make two distinct declarations coincide -- `M(!0)` and `M(string)`
+                // on `B<string>` -- and upstream separates them with a first pass over *raw*
+                // signatures before the equivalent one. Structural equality is safe as a tie-break
+                // even though it is not safe as the primary match: what distinguishes the tied
+                // candidates is a type variable, which is spelled the same in every assembly, whereas
+                // what structural equality gets wrong is a nominal token, which cannot be what
+                // separated them or they would not have tied.
+                let exact =
+                    several |> List.filter (fun (slot, _) -> slot.Method.Signature = signature)
+
+                match exact with
+                | [ single ] -> state, Some single
+                | _ ->
+                    let described =
+                        several
+                        |> List.map (fun (slot, index) -> $"%s{slot.DeclaredBy.Description} slot %i{index}")
+                        |> String.concat ", "
+
+                    failwith
+                        $"TODO: %s{operation} for %s{table.Owner.Description}, whose MethodImpl declaration %s{memberRef.PrettyName} matches more than one declaration on the named ancestor (%s{described}) and no one of them exactly; separating them needs upstream's iteration order rather than a set of matches"
         | other ->
             failwith
                 $"%s{operation}: MethodImpl on %s{table.Owner.Description} names its declaration with the token %O{other}, which is neither a MethodDef nor a MemberRef; ECMA-335 II.22.27 permits only those two"
