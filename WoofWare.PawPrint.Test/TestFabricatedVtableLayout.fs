@@ -606,7 +606,7 @@ module TestFabricatedVtableLayout =
     let private vtableOfClosedAt
         (name : string)
         (typeArguments : (string * string) list)
-        : NativeRuntimeTypeHelpers.VtableSlot list
+        : VirtualSlotLayout.VtableSlot list
         =
         let state = state ()
 
@@ -649,13 +649,12 @@ module TestFabricatedVtableLayout =
                 (ImmutableArray.CreateRange (List.rev argumentHandles))
                 ImmutableArray.Empty
 
-        NativeRuntimeTypeHelpers.vtableOfClosed loggerFactory bct "test" state handle
-        |> snd
+        VirtualSlotLayout.vtableOfClosed loggerFactory bct "test" state handle |> snd
 
-    let private vtableOf (name : string) : NativeRuntimeTypeHelpers.VtableSlot list = vtableOfClosedAt name []
+    let private vtableOf (name : string) : VirtualSlotLayout.VtableSlot list = vtableOfClosedAt name []
 
     /// The slot table of a fabricated type, both halves.
-    let private slotTableOf (name : string) : NativeRuntimeTypeHelpers.MethodSlotTable =
+    let private slotTableOf (name : string) : VirtualSlotLayout.MethodSlotTable =
         let state = state ()
 
         let typeInfo =
@@ -673,8 +672,7 @@ module TestFabricatedVtableLayout =
                 ImmutableArray.Empty
                 ImmutableArray.Empty
 
-        NativeRuntimeTypeHelpers.slotTableOfClosed loggerFactory bct "test" state handle
-        |> snd
+        VirtualSlotLayout.slotTableOfClosed loggerFactory bct "test" state handle |> snd
 
     let private hostSlotOf : MethodBase -> int =
         let impl =
@@ -768,7 +766,7 @@ module TestFabricatedVtableLayout =
             |> Array.map snd
             |> List.ofArray
 
-    let private pawPrintLayout (slots : NativeRuntimeTypeHelpers.VtableSlot list) : int list =
+    let private pawPrintLayout (slots : VirtualSlotLayout.VtableSlot list) : int list =
         slots
         |> List.map (fun slot ->
             match fst slot.Method.IdentityKey with

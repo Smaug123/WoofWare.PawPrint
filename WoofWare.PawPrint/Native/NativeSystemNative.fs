@@ -443,6 +443,192 @@ module NativeSystemNative =
 
         builder.MoveToImmutable ()
 
+    /// The storage a buffer pointer names, for a pointer the C dereferences with
+    /// no null check at all — `SystemNative_GetPort`'s `port` out-parameter, and
+    /// its siblings.
+    ///
+    /// Always a refusal when there is nothing to write through, and null is not
+    /// special: upstream would fault on a null exactly as it would on any other
+    /// address naming nothing.
+    let private requireUnscreenedStorage
+        (operation : string)
+        (argName : string)
+        (pointer : BufferPointer)
+        : ManagedPointerSource
+        =
+        match BufferPointer.dereferenceable pointer with
+        | Some storage -> storage
+        | None ->
+            failwith
+                $"%s{operation}: `%s{argName}` is %O{pointer}, which names no storage. The C never screens this parameter, so a real run would store through it and fault; PawPrint does not model that fault. Pass a real out-parameter."
+
+    /// Byte offsets within `struct sockaddr_in` and `struct sockaddr_in6`, past
+    /// the family field.
+    ///
+    /// Flavour-free, and `SockaddrFamilyField` is where the reason is written
+    /// down: the two layouts spend the same two leading bytes differently rather
+    /// than in different amounts. Measured with an `offsetof` probe on macOS
+    /// arm64 and on Linux, not recalled.
+    [<RequireQualifiedAccess>]
+    module private SockaddrOffsets =
+        /// `sin_port` and `sin6_port` alike: two bytes, network byte order.
+        [<Literal>]
+        let Port = 2
+
+        /// `sin_addr`: four bytes, moved verbatim in both directions, since the
+        /// managed caller supplies and expects network order too.
+        [<Literal>]
+        let InternetAddress = 4
+
+        /// `sin6_flowinfo`: four bytes. Nothing in the managed surface reads it,
+        /// but `SystemNative_SetIPv6Address` zeroes it, so it is not merely
+        /// ignored.
+        [<Literal>]
+        let FlowInfo = 4
+
+        /// `sin6_addr`: sixteen bytes.
+        [<Literal>]
+        let InternetV6Address = 8
+
+        /// `sin6_scope_id`: four bytes, and unlike the port it is in the host's
+        /// own byte order — the C assigns it with no `htonl`.
+        [<Literal>]
+        let ScopeId = 24
+
+        /// `NUM_BYTES_IN_IPV6_ADDRESS`, the length every IPv6 address buffer must
+        /// have room for.
+        [<Literal>]
+        let InternetV6AddressLength = 16
+
+    /// The storage a buffer pointer names, for a pointer whose caller has already
+    /// screened it for null.
+    ///
+    /// Refuses rather than answering EFAULT, for the reason
+    /// `SystemNative_CreateSocketEventPort` gives at length: a non-null address
+    /// naming no storage passes a C null check, so the real code runs on and
+    /// faults dereferencing it — a SIGSEGV that kills the process, not an error
+    /// code the guest can catch. Answering EFAULT would turn that crash into a
+    /// plausible wrong answer.
+    let private requireStorage
+        (operation : string)
+        (argName : string)
+        (pointer : BufferPointer)
+        : ManagedPointerSource
+        =
+        match BufferPointer.dereferenceable pointer with
+        | Some storage -> storage
+        | None ->
+            failwith
+                $"%s{operation}: `%s{argName}` is %O{pointer}, which is not null but names no storage. The C screens only for null, so a real run would dereference this address and fault; PawPrint does not model that fault. Pass a real buffer."
+
+    /// The storage `offset` bytes into a caller's buffer.
+    ///
+    /// `readBytesThrough` and `writeBytesThrough` both start at the pointer they
+    /// are given, so reaching one field of a `struct sockaddr` means advancing
+    /// the pointer first. Reaching fields individually rather than transferring
+    /// the whole struct is deliberate: it keeps the bytes PawPrint touches to the
+    /// bytes the C touches, which matters because the two differ — a
+    /// `SocketAddress` for an IPv4 endpoint is 16 bytes and a guest can read all
+    /// of them back, and PawPrint's typed address space aborts on a read that
+    /// runs past the storage rather than inventing what follows it.
+    let private sockaddrFieldAt
+        (ctx : NativeCallContext)
+        (operation : string)
+        (buffer : ManagedPointerSource)
+        (offset : int)
+        (state : IlMachineState)
+        : ManagedPointerSource
+        =
+        if offset = 0 then
+            buffer
+        else
+
+        let byteConcreteType =
+            NativeCall.requiredByteConcreteType operation ctx.BaseClassTypes state
+
+        ManagedPointerByteView.addByteOffset state byteConcreteType offset buffer
+
+    /// `IsInBounds(sockAddr, socketAddressLen, &sockAddr->sa_family,
+    /// sizeof_member(sockaddr, sa_family))` (pal_networking.c:692), which every
+    /// entry point below applies before it reads or writes a blob's family.
+    ///
+    /// Upstream's `IsInBounds` compares addresses; since the family field is at a
+    /// fixed offset from the base, that reduces to whether the caller's declared
+    /// length covers the field. It is the *declared* length that this answers
+    /// for, not the storage the pointer actually names — a guest may declare less
+    /// than it allocated, and the shim believes it.
+    ///
+    /// A negative `socketAddressLen` fails this, which is what upstream does too
+    /// and is not obvious from reading it: the cast to `size_t` makes the bound
+    /// `SIZE_MAX`, so `baseAddr + len` wraps to *below* the base and the
+    /// comparison fails. Measured rather than reasoned — `SystemNative_GetPort`
+    /// with a length of -1 answers EFAULT on both platforms, including for a
+    /// family whose own switch arm would have answered EAFNOSUPPORT.
+    let private sockaddrFamilyIsInBounds (platform : SimulatedUnixPlatform) (socketAddressLen : int) : bool =
+        let field = SimulatedUnixPlatform.sockaddrFamilyField platform
+
+        SockaddrFamilyField.offset field + SockaddrFamilyField.width field
+        <= socketAddressLen
+
+    /// `sockAddr->sa_family`, in the platform's own `AF_*` numbering.
+    ///
+    /// Little-endian for the two-byte flavour because `sa_family_t` is a plain
+    /// host-order `unsigned short` — unlike `sin_port`, which is network order —
+    /// and both architectures PawPrint models are little-endian.
+    let private readSockaddrFamily
+        (ctx : NativeCallContext)
+        (operation : string)
+        (platform : SimulatedUnixPlatform)
+        (buffer : ManagedPointerSource)
+        (state : IlMachineState)
+        : int
+        =
+        let field = SimulatedUnixPlatform.sockaddrFamilyField platform
+        let offset = SockaddrFamilyField.offset field
+
+        let bytes =
+            readBytesThrough
+                ctx
+                operation
+                (sockaddrFieldAt ctx operation buffer offset state)
+                (SockaddrFamilyField.width field)
+                state
+
+        match SockaddrFamilyField.width field with
+        | 1 -> int bytes.[0]
+        | _ -> int (BinaryPrimitives.ReadUInt16LittleEndian (bytes.AsSpan ()))
+
+    /// `sockAddr->sa_family = (sa_family_t) value`, truncated to this platform's
+    /// width exactly as the C's assignment through a `sa_family_t*` is. The
+    /// truncation is not hypothetical: upstream's conversion failure path stores
+    /// the unconverted PAL number through that same pointer.
+    let private writeSockaddrFamily
+        (ctx : NativeCallContext)
+        (operation : string)
+        (platform : SimulatedUnixPlatform)
+        (buffer : ManagedPointerSource)
+        (platformFamily : int)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let field = SimulatedUnixPlatform.sockaddrFamilyField platform
+        let offset = SockaddrFamilyField.offset field
+
+        let bytes =
+            match SockaddrFamilyField.width field with
+            | 1 -> [| byte platformFamily |]
+            | _ ->
+                let buf = Array.zeroCreate<byte> 2
+                BinaryPrimitives.WriteUInt16LittleEndian (Span<byte> buf, uint16 platformFamily)
+                buf
+
+        writeBytesThrough
+            ctx
+            operation
+            (sockaddrFieldAt ctx operation buffer offset state)
+            (ImmutableArray.CreateRange bytes)
+            state
+
     /// Commit a write of `bytes` at `offset` to the regular file `inode`,
     /// together with the `mtime` and `ctime` it moves.
     ///
@@ -939,6 +1125,625 @@ module NativeSystemNative =
             // PawPrint does not model Unix file flags. Report that hidden flags
             // are unsupported so CoreLib follows the portable attribute path.
             pushInt32 0 ctx |> Some
+        | Some "SystemNative_GetSocketAddressSizes",
+          [ ConcretePointer _ ; ConcretePointer _ ; ConcretePointer _ ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            // `int32_t SystemNative_GetSocketAddressSizes(int32_t*, int32_t*,
+            // int32_t*, int32_t*)` (pal_networking.c:700): four `sizeof`s of the
+            // shim's own compile, with no socket, no errno and no state involved.
+            //
+            // The sole managed caller is `System.Net.Primitives`'
+            // `SocketAddressPal` class initialiser, which latches all four and
+            // sizes every `SocketAddress` by them — and which *discards the
+            // return value* (`pop` at IL_0019), so the screen below is
+            // unobservable through that caller and exists for a hand-rolled one.
+            //
+            // Not to be confused with `SystemNative_GetMaximumAddressSize` below,
+            // despite the similar name and despite the fourth of these being the
+            // same `sizeof(struct sockaddr_storage)`: different entry point,
+            // different caller, and `SocketPal` latches that one separately.
+            let operation = "SystemNative_GetSocketAddressSizes"
+
+            let sizeOut (name : string) (index : int) : BufferPointer =
+                bufferPointerArgument operation name instruction.Arguments.[index]
+
+            let outputs =
+                [
+                    "ipv4SocketAddressSize", sizeOut "ipv4SocketAddressSize" 0
+                    "ipv6SocketAddressSize", sizeOut "ipv6SocketAddressSize" 1
+                    "udsSocketAddressSize", sizeOut "udsSocketAddressSize" 2
+                    "maxSocketAddressSize", sizeOut "maxSocketAddressSize" 3
+                ]
+
+            if outputs |> List.exists (fun (_, p) -> p = BufferPointer.RawAddress 0UL) then
+                // All four are screened together, before any of them is written,
+                // so a call with one null out-parameter leaves the other three
+                // untouched.
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal UnixError.EFAULT)))
+                    ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            else
+
+            let cells =
+                outputs
+                |> List.map (fun (name, pointer) -> requireStorage operation name pointer)
+
+            let sizes = SimulatedUnixPlatform.socketAddressSizes state.Kernel.UnixPlatform
+
+            let values =
+                [ sizes.InterNetwork ; sizes.InterNetworkV6 ; sizes.UnixDomain ; sizes.Storage ]
+
+            let state =
+                List.zip cells values
+                |> List.fold
+                    (fun state (cell, value) ->
+                        let bytes = Array.zeroCreate<byte> 4
+                        BinaryPrimitives.WriteInt32LittleEndian (Span<byte> bytes, value)
+                        writeBytesThrough ctx operation cell (ImmutableArray.CreateRange bytes) state
+                    )
+                    state
+
+            state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int32 (Int32Source.Verbatim UnixError.palSuccess))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        | Some "SystemNative_GetAddressFamily",
+          [ ConcretePointer _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            // `int32_t SystemNative_GetAddressFamily(const uint8_t* socketAddress,
+            // int32_t socketAddressLen, int32_t* addressFamily)`
+            // (pal_networking.c:714). Reads the family out of a blob the guest
+            // owns and reports it in PAL numbering. No socket and no kernel state:
+            // this and the seven below are pure `struct sockaddr` accessors, and
+            // the only thing about them that is not arithmetic is which platform's
+            // layout and `AF_*` numbering they use.
+            let operation = "SystemNative_GetAddressFamily"
+            let platform = state.Kernel.UnixPlatform
+
+            let blob = bufferPointerArgument operation "socketAddress" instruction.Arguments.[0]
+            let socketAddressLen = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            let familyOut =
+                bufferPointerArgument operation "addressFamily" instruction.Arguments.[2]
+
+            let fail (error : UnixError) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal error)))
+                    ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            if
+                blob = BufferPointer.RawAddress 0UL
+                || familyOut = BufferPointer.RawAddress 0UL
+                || socketAddressLen < 0
+            then
+                fail UnixError.EFAULT
+            elif not (sockaddrFamilyIsInBounds platform socketAddressLen) then
+                // The declared length does not reach the family field. Screened
+                // before the read, so a blob shorter than its family is EFAULT
+                // rather than whatever the bytes past it happen to be.
+                fail UnixError.EFAULT
+            else
+
+            let blobStorage = requireStorage operation "socketAddress" blob
+            let familyStorage = requireStorage operation "addressFamily" familyOut
+
+            let platformFamily = readSockaddrFamily ctx operation platform blobStorage state
+
+            // A family the shim's switch has no case for is reported as
+            // `AddressFamily_AF_UNKNOWN`, and the call still succeeds — upstream's
+            // conversion writes the raw platform number through the out-parameter
+            // on the way to returning false, and this entry point then overwrites
+            // it, so that value never reaches a guest.
+            let palFamily =
+                match SimulatedUnixPlatform.addressFamilyPlatformToPal platform platformFamily with
+                | Some pal -> pal
+                | None -> -1
+
+            let bytes = Array.zeroCreate<byte> 4
+            BinaryPrimitives.WriteInt32LittleEndian (Span<byte> bytes, palFamily)
+
+            writeBytesThrough ctx operation familyStorage (ImmutableArray.CreateRange bytes) state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int32 (Int32Source.Verbatim UnixError.palSuccess))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        | Some "SystemNative_SetAddressFamily",
+          [ ConcretePointer _
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            // `int32_t SystemNative_SetAddressFamily(uint8_t* socketAddress,
+            // int32_t socketAddressLen, int32_t addressFamily)`
+            // (pal_networking.c:735).
+            let operation = "SystemNative_SetAddressFamily"
+            let platform = state.Kernel.UnixPlatform
+
+            let blob = bufferPointerArgument operation "socketAddress" instruction.Arguments.[0]
+            let socketAddressLen = NativeCall.int32Argument operation instruction.Arguments.[1]
+            let palFamily = NativeCall.int32Argument operation instruction.Arguments.[2]
+
+            let fail (error : UnixError) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal error)))
+                    ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            if
+                blob = BufferPointer.RawAddress 0UL
+                || socketAddressLen < 0
+                || not (sockaddrFamilyIsInBounds platform socketAddressLen)
+            then
+                fail UnixError.EFAULT
+            else
+
+            let blobStorage = requireStorage operation "socketAddress" blob
+
+            // The conversion writes through the blob whether or not it succeeds:
+            // upstream's failing branch stores `(sa_family_t) palAddressFamily`,
+            // truncated to the field's width, and *then* returns EAFNOSUPPORT. So
+            // an unconvertible family leaves the low byte or two of the value
+            // behind in the blob rather than leaving it as it was.
+            let converted = SimulatedUnixPlatform.addressFamilyPalToPlatform platform palFamily
+
+            let written =
+                match converted with
+                | Some platformFamily -> platformFamily
+                | None -> palFamily
+
+            let state = writeSockaddrFamily ctx operation platform blobStorage written state
+
+            match converted with
+            | Some _ ->
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (Int32Source.Verbatim UnixError.palSuccess))
+                    ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | None ->
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal UnixError.EAFNOSUPPORT)))
+                    ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+        | Some "SystemNative_GetPort",
+          [ ConcretePointer _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            // `int32_t SystemNative_GetPort(const uint8_t* socketAddress,
+            // int32_t socketAddressLen, uint16_t* port)` (pal_networking.c:752).
+            //
+            // Note the screen order, which is what makes a short blob and an
+            // unsupported family distinguishable: the family bounds check comes
+            // first and answers EFAULT, then the family switch answers
+            // EAFNOSUPPORT for anything but the two internet families, and only
+            // inside those arms is the blob's length compared against the whole
+            // struct. So a two-byte AF_UNIX blob is EAFNOSUPPORT while a two-byte
+            // AF_INET blob is EFAULT.
+            let operation = "SystemNative_GetPort"
+            let platform = state.Kernel.UnixPlatform
+
+            let blob = bufferPointerArgument operation "socketAddress" instruction.Arguments.[0]
+            let socketAddressLen = NativeCall.int32Argument operation instruction.Arguments.[1]
+            let portOut = bufferPointerArgument operation "port" instruction.Arguments.[2]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            if blob = BufferPointer.RawAddress 0UL then
+                complete (UnixError.toPal UnixError.EFAULT) state
+            elif not (sockaddrFamilyIsInBounds platform socketAddressLen) then
+                complete (UnixError.toPal UnixError.EFAULT) state
+            else
+
+            let blobStorage = requireStorage operation "socketAddress" blob
+            let platformFamily = readSockaddrFamily ctx operation platform blobStorage state
+            let sizes = SimulatedUnixPlatform.socketAddressSizes platform
+
+            // `switch (sockAddr->sa_family)` over `AF_INET` and `AF_INET6`, on the
+            // raw platform number in the blob rather than on a converted one.
+            let required =
+                if platformFamily = SimulatedUnixPlatform.internetAddressFamily then
+                    Some sizes.InterNetwork
+                elif platformFamily = SimulatedUnixPlatform.internetV6AddressFamily platform then
+                    Some sizes.InterNetworkV6
+                else
+                    None
+
+            match required with
+            | None ->
+                // The switch's default. `port` is never touched, so a caller that
+                // passed nothing to write through is not refused here.
+                complete (UnixError.toPal UnixError.EAFNOSUPPORT) state
+            | Some minimumLength ->
+
+            if socketAddressLen < minimumLength then
+                complete (UnixError.toPal UnixError.EFAULT) state
+            else
+
+            let portStorage = requireUnscreenedStorage operation "port" portOut
+
+            let bytes =
+                readBytesThrough
+                    ctx
+                    operation
+                    (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.Port state)
+                    2
+                    state
+
+            // `ntohs`: the port sits in the blob in network order and is reported
+            // to the caller in the machine's own.
+            let port = BinaryPrimitives.ReadUInt16BigEndian (bytes.AsSpan ())
+
+            let output = Array.zeroCreate<byte> 2
+            BinaryPrimitives.WriteUInt16LittleEndian (Span<byte> output, port)
+
+            writeBytesThrough ctx operation portStorage (ImmutableArray.CreateRange output) state
+            |> complete UnixError.palSuccess
+        | Some "SystemNative_SetPort",
+          [ ConcretePointer _
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16 ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            // `int32_t SystemNative_SetPort(uint8_t* socketAddress, int32_t
+            // socketAddressLen, uint16_t port)` (pal_networking.c:794): the mirror
+            // of `SystemNative_GetPort` above, screen for screen.
+            let operation = "SystemNative_SetPort"
+            let platform = state.Kernel.UnixPlatform
+
+            let blob = bufferPointerArgument operation "socketAddress" instruction.Arguments.[0]
+            let socketAddressLen = NativeCall.int32Argument operation instruction.Arguments.[1]
+            let port = NativeCall.uint16Argument operation instruction.Arguments.[2]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            if blob = BufferPointer.RawAddress 0UL then
+                complete (UnixError.toPal UnixError.EFAULT) state
+            elif not (sockaddrFamilyIsInBounds platform socketAddressLen) then
+                complete (UnixError.toPal UnixError.EFAULT) state
+            else
+
+            let blobStorage = requireStorage operation "socketAddress" blob
+            let platformFamily = readSockaddrFamily ctx operation platform blobStorage state
+            let sizes = SimulatedUnixPlatform.socketAddressSizes platform
+
+            // `switch (sockAddr->sa_family)` over `AF_INET` and `AF_INET6`, on the
+            // raw platform number in the blob rather than on a converted one.
+            let required =
+                if platformFamily = SimulatedUnixPlatform.internetAddressFamily then
+                    Some sizes.InterNetwork
+                elif platformFamily = SimulatedUnixPlatform.internetV6AddressFamily platform then
+                    Some sizes.InterNetworkV6
+                else
+                    None
+
+            match required with
+            | None -> complete (UnixError.toPal UnixError.EAFNOSUPPORT) state
+            | Some minimumLength ->
+
+            if socketAddressLen < minimumLength then
+                complete (UnixError.toPal UnixError.EFAULT) state
+            else
+
+            // `htons`.
+            let bytes = Array.zeroCreate<byte> 2
+            BinaryPrimitives.WriteUInt16BigEndian (Span<byte> bytes, port)
+
+            writeBytesThrough
+                ctx
+                operation
+                (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.Port state)
+                (ImmutableArray.CreateRange bytes)
+                state
+            |> complete UnixError.palSuccess
+        | Some "SystemNative_GetIPv4Address",
+          [ ConcretePointer _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            // `int32_t SystemNative_GetIPv4Address(const uint8_t* socketAddress,
+            // int32_t socketAddressLen, uint32_t* address)`
+            // (pal_networking.c:836).
+            //
+            // Unlike the port accessors this screens the whole struct's length up
+            // front rather than inside a family arm, and answers EINVAL rather
+            // than EAFNOSUPPORT for the wrong family — the two entry points are
+            // not written to the same shape, and the difference is guest-visible.
+            let operation = "SystemNative_GetIPv4Address"
+            let platform = state.Kernel.UnixPlatform
+
+            let blob = bufferPointerArgument operation "socketAddress" instruction.Arguments.[0]
+            let socketAddressLen = NativeCall.int32Argument operation instruction.Arguments.[1]
+            let addressOut = bufferPointerArgument operation "address" instruction.Arguments.[2]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            let sizes = SimulatedUnixPlatform.socketAddressSizes platform
+
+            if
+                blob = BufferPointer.RawAddress 0UL
+                || addressOut = BufferPointer.RawAddress 0UL
+                || socketAddressLen < 0
+                || socketAddressLen < sizes.InterNetwork
+                || not (sockaddrFamilyIsInBounds platform socketAddressLen)
+            then
+                complete (UnixError.toPal UnixError.EFAULT) state
+            else
+
+            let blobStorage = requireStorage operation "socketAddress" blob
+
+            if
+                readSockaddrFamily ctx operation platform blobStorage state
+                <> SimulatedUnixPlatform.internetAddressFamily
+            then
+                complete (UnixError.toPal UnixError.EINVAL) state
+            else
+
+            // `*address = sin_addr.s_addr`, a whole-word copy with no `ntohl`:
+            // both sides of this call hold the address in network order.
+            let bytes =
+                readBytesThrough
+                    ctx
+                    operation
+                    (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.InternetAddress state)
+                    4
+                    state
+
+            writeBytesThrough ctx operation (requireStorage operation "address" addressOut) bytes state
+            |> complete UnixError.palSuccess
+        | Some "SystemNative_SetIPv4Address",
+          [ ConcretePointer _
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32 ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            // `int32_t SystemNative_SetIPv4Address(uint8_t* socketAddress,
+            // int32_t socketAddressLen, uint32_t address)` (pal_networking.c:861).
+            let operation = "SystemNative_SetIPv4Address"
+            let platform = state.Kernel.UnixPlatform
+
+            let blob = bufferPointerArgument operation "socketAddress" instruction.Arguments.[0]
+            let socketAddressLen = NativeCall.int32Argument operation instruction.Arguments.[1]
+            let address = NativeCall.uint32Argument operation instruction.Arguments.[2]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            let sizes = SimulatedUnixPlatform.socketAddressSizes platform
+
+            if
+                blob = BufferPointer.RawAddress 0UL
+                || socketAddressLen < 0
+                || socketAddressLen < sizes.InterNetwork
+                || not (sockaddrFamilyIsInBounds platform socketAddressLen)
+            then
+                complete (UnixError.toPal UnixError.EFAULT) state
+            else
+
+            let blobStorage = requireStorage operation "socketAddress" blob
+
+            if
+                readSockaddrFamily ctx operation platform blobStorage state
+                <> SimulatedUnixPlatform.internetAddressFamily
+            then
+                complete (UnixError.toPal UnixError.EINVAL) state
+            else
+
+            // Upstream also assigns `sin_family = AF_INET` here. The guard above
+            // has already established that the field holds exactly that, and the
+            // assignment is the same width, so it moves no byte; only the address
+            // is written.
+            let bytes = Array.zeroCreate<byte> 4
+            BinaryPrimitives.WriteUInt32LittleEndian (Span<byte> bytes, address)
+
+            writeBytesThrough
+                ctx
+                operation
+                (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.InternetAddress state)
+                (ImmutableArray.CreateRange bytes)
+                state
+            |> complete UnixError.palSuccess
+        | Some "SystemNative_GetIPv6Address",
+          [ ConcretePointer _
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer _
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            // `int32_t SystemNative_GetIPv6Address(const uint8_t* socketAddress,
+            // int32_t socketAddressLen, uint8_t* address, int32_t addressLen,
+            // uint32_t* scopeId)` (pal_networking.c:882).
+            let operation = "SystemNative_GetIPv6Address"
+            let platform = state.Kernel.UnixPlatform
+
+            let blob = bufferPointerArgument operation "socketAddress" instruction.Arguments.[0]
+            let socketAddressLen = NativeCall.int32Argument operation instruction.Arguments.[1]
+            let addressOut = bufferPointerArgument operation "address" instruction.Arguments.[2]
+            let addressLen = NativeCall.int32Argument operation instruction.Arguments.[3]
+            let scopeIdOut = bufferPointerArgument operation "scopeId" instruction.Arguments.[4]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            let sizes = SimulatedUnixPlatform.socketAddressSizes platform
+
+            if
+                blob = BufferPointer.RawAddress 0UL
+                || addressOut = BufferPointer.RawAddress 0UL
+                || scopeIdOut = BufferPointer.RawAddress 0UL
+                || socketAddressLen < 0
+                || socketAddressLen < sizes.InterNetworkV6
+                || addressLen < SockaddrOffsets.InternetV6AddressLength
+                || not (sockaddrFamilyIsInBounds platform socketAddressLen)
+            then
+                complete (UnixError.toPal UnixError.EFAULT) state
+            else
+
+            let blobStorage = requireStorage operation "socketAddress" blob
+
+            if
+                readSockaddrFamily ctx operation platform blobStorage state
+                <> SimulatedUnixPlatform.internetV6AddressFamily platform
+            then
+                complete (UnixError.toPal UnixError.EINVAL) state
+            else
+
+            // `memcpy_s` of exactly `NUM_BYTES_IN_IPV6_ADDRESS`, whatever the
+            // caller declared `addressLen` to be beyond that.
+            let addressBytes =
+                readBytesThrough
+                    ctx
+                    operation
+                    (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.InternetV6Address state)
+                    SockaddrOffsets.InternetV6AddressLength
+                    state
+
+            let state =
+                writeBytesThrough ctx operation (requireStorage operation "address" addressOut) addressBytes state
+
+            // `*scopeId = sin6_scope_id`, host order on both sides, so this is a
+            // straight four-byte copy like the IPv4 address above rather than the
+            // byte-swap the port needs.
+            //
+            // Read *after* the address has been written, which is the order of the
+            // two statements upstream and is observable: `address` may legally
+            // point at byte 24 of this very blob, where `memcpy_s`'s own overlap
+            // assertion still passes, and then the copy lands on `sin6_scope_id`
+            // before it is read. Measured — a `fe80::` address aliased there
+            // reports a scope of 33022 rather than the one that was set, on both
+            // platforms alike.
+            let scopeIdBytes =
+                readBytesThrough
+                    ctx
+                    operation
+                    (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.ScopeId state)
+                    4
+                    state
+
+            state
+            |> writeBytesThrough ctx operation (requireStorage operation "scopeId" scopeIdOut) scopeIdBytes
+            |> complete UnixError.palSuccess
+        | Some "SystemNative_SetIPv6Address",
+          [ ConcretePointer _
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer _
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32 ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            // `int32_t SystemNative_SetIPv6Address(uint8_t* socketAddress,
+            // int32_t socketAddressLen, uint8_t* address, int32_t addressLen,
+            // uint32_t scopeId)` (pal_networking.c:912).
+            let operation = "SystemNative_SetIPv6Address"
+            let platform = state.Kernel.UnixPlatform
+
+            let blob = bufferPointerArgument operation "socketAddress" instruction.Arguments.[0]
+            let socketAddressLen = NativeCall.int32Argument operation instruction.Arguments.[1]
+            let addressIn = bufferPointerArgument operation "address" instruction.Arguments.[2]
+            let addressLen = NativeCall.int32Argument operation instruction.Arguments.[3]
+            let scopeId = NativeCall.uint32Argument operation instruction.Arguments.[4]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            let sizes = SimulatedUnixPlatform.socketAddressSizes platform
+
+            if
+                blob = BufferPointer.RawAddress 0UL
+                || addressIn = BufferPointer.RawAddress 0UL
+                || socketAddressLen < 0
+                || socketAddressLen < sizes.InterNetworkV6
+                || addressLen < SockaddrOffsets.InternetV6AddressLength
+                || not (sockaddrFamilyIsInBounds platform socketAddressLen)
+            then
+                complete (UnixError.toPal UnixError.EFAULT) state
+            else
+
+            let blobStorage = requireStorage operation "socketAddress" blob
+
+            if
+                readSockaddrFamily ctx operation platform blobStorage state
+                <> SimulatedUnixPlatform.internetV6AddressFamily platform
+            then
+                complete (UnixError.toPal UnixError.EINVAL) state
+            else
+
+            // `memcpy_s(&sin6_addr, 16, address, addressLen)`, whose failure mode
+            // is not to fail: when `addressLen` exceeds the sixteen bytes of the
+            // destination, the PAL's `memcpy_s` zeroes the destination, returns
+            // ERANGE, and `ConvertByteArrayToIn6Addr` discards that — so the call
+            // still reports success while having stored the all-zeroes address.
+            // (The `assert(sizeInBytes >= count)` above it is compiled out of the
+            // shipped Release build.) It reads nothing from the caller's buffer on
+            // that path either, so neither does this.
+            //
+            // The getter is not symmetric: there `addressLen` is the *destination*
+            // size, so a larger one is simply room to spare.
+            let oversizedAddress = addressLen > SockaddrOffsets.InternetV6AddressLength
+
+            let addressBytes =
+                if oversizedAddress then
+                    ImmutableArray.CreateRange (Array.zeroCreate<byte> SockaddrOffsets.InternetV6AddressLength)
+                else
+                    readBytesThrough
+                        ctx
+                        operation
+                        (requireStorage operation "address" addressIn)
+                        SockaddrOffsets.InternetV6AddressLength
+                        state
+
+            let flowInfo = Array.zeroCreate<byte> 4
+
+            let scopeIdBytes = Array.zeroCreate<byte> 4
+            BinaryPrimitives.WriteUInt32LittleEndian (Span<byte> scopeIdBytes, scopeId)
+
+            // Upstream's `sin6_family = AF_INET6` is a no-op for the same reason
+            // `SystemNative_SetIPv4Address`'s is. `sin6_flowinfo = 0` is not: it
+            // clears whatever the caller's buffer held there, so it is written.
+            state
+            |> writeBytesThrough
+                ctx
+                operation
+                (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.InternetV6Address state)
+                addressBytes
+            |> writeBytesThrough
+                ctx
+                operation
+                (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.FlowInfo state)
+                (ImmutableArray.CreateRange flowInfo)
+            |> writeBytesThrough
+                ctx
+                operation
+                (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.ScopeId state)
+                (ImmutableArray.CreateRange scopeIdBytes)
+            |> complete UnixError.palSuccess
         | Some "SystemNative_GetMaximumAddressSize",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
