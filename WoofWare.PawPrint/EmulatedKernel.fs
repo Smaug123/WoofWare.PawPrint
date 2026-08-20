@@ -118,6 +118,269 @@ type SyncBlockSpuriousWakeupStrategy =
     /// changes.
     | Scripted of wakeups : (int64 * ManagedHeapAddress * ThreadId) list
 
+/// Deterministic strategy governing *clock jitter*: whether the driver, on a
+/// given scheduler tick, jumps the virtual clock forward onto a deadline some
+/// thread is already waiting on.
+///
+/// Without it the virtual clock is `StepCounter * InstructionCostTicks`, so a
+/// finite wait always expires after the same number of retired instructions and
+/// a guest's timeout path is only ever reached when the guest's *own*
+/// arithmetic sends it there. Real machines are not like that: a thread
+/// descheduled for a few milliseconds makes a `WaitOne(50)` time out in the
+/// middle of a window its author assumed was comfortable. This type is the
+/// deterministic knob for provoking that, so bugs of the form "if too much time
+/// elapses between these steps, something bad happens" surface as failing runs
+/// rather than latent races.
+///
+/// The randomised variant is anchored to an *outstanding* deadline, so each
+/// jump corresponds to a wait some thread had really posted — but it may land
+/// past that deadline rather than exactly on it, because a real timeout fires
+/// late by however long the thread waited to be rescheduled. Landing exactly on
+/// the deadline models an overshoot of zero, which is the one value a real
+/// timeout essentially never has, and modelling it as always-zero hides every
+/// bug where a guest budgets against a wait: "I wait at most 50 ms against a
+/// 100 ms lease, so the lease survives" is sound if and only if a 50 ms wait
+/// takes 50 ms. See `EagerDeadlines`'s `maxOvershootTicks`.
+///
+/// The strategy is data, not a closure, so it can be printed, diffed, and
+/// replayed across runs. Like `SpuriousWakeupStrategy`, each variant is
+/// independently deterministic given the current `EmulatedKernel.StepCounter`.
+[<RequireQualifiedAccess>]
+type ClockJitterStrategy =
+    /// Default. The clock advances only by `InstructionCostTicks` per retired
+    /// step, plus the driver's jump to the nearest deadline when nothing is
+    /// Runnable. Timeouts therefore fire on schedule, which masks
+    /// elapsed-time-sensitive bugs.
+    | Disabled
+    /// On each tick, with the given probability, jump the clock to one of the
+    /// deadlines currently outstanding — chosen uniformly among *all* of them,
+    /// not just the nearest, so a single jump can expire several waits at once
+    /// and the orderings that produces are reachable — plus an overshoot drawn
+    /// uniformly from `[0, maxOvershootTicks]`.
+    ///
+    /// `maxOvershootTicks = 0` fires every timeout at exactly its deadline. That
+    /// is the cheapest setting and it reaches the "a timeout arm ran that never
+    /// otherwise runs" bug class, but *only* that class: a guest's measured
+    /// elapsed time is then exactly what it asked to wait for, so any bug that
+    /// needs a wait to overrun its nominal duration stays invisible. Give it a
+    /// non-zero bound to reach those; a bound of a few times the guest's
+    /// timeouts is the useful range, since an overshoot far smaller than a
+    /// timeout perturbs nothing a guest can measure.
+    ///
+    /// Uniform rather than the heavy-tailed distribution real scheduling latency
+    /// follows: this is a search, not a simulation, and the large overshoots are
+    /// the ones that find bugs, so they should not be rare.
+    ///
+    /// The coin, the choice and the overshoot are independent deterministic
+    /// functions of `(seed, stepCounter)`, so the same seed reproduces the same
+    /// jump sequence across runs. `probability` is rejected if it is NaN or
+    /// outside `[0.0, 1.0]`; `maxOvershootTicks` if it is negative (the clock is
+    /// monotonic) or above `ClockJitter.maxOvershootBoundTicks`. A bound that is
+    /// legal here but still large enough to run the clock past its representable
+    /// range is not rejected — that fault belongs to
+    /// `EmulatedKernel.withVirtualClockTicks`, which raises it naming the wait
+    /// responsible.
+    ///
+    /// Keep the probability small. Every jump discards the interval between the
+    /// clock and the deadline, so a large one runs the guest's clock off into
+    /// the distance and starves the very interleavings it is trying to explore.
+    | EagerDeadlines of seed : uint64 * probability : float * maxOvershootTicks : int64
+    /// Explicit `(stepCounter, targetTicks)` pairs: at the named tick, set the
+    /// clock to the named value. Fully replayable, and the shrinking target —
+    /// record what an `EagerDeadlines` run jumped and replay it with jumps
+    /// removed to find the minimal set that still reproduces a failure.
+    ///
+    /// Unrestricted: a target need not be a deadline any thread is waiting on.
+    /// That is deliberate, and it is what keeps shrinking well-behaved — drop an
+    /// early jump from a script and the later ones must still mean what they
+    /// meant, which they would not if each had to remain a live deadline in a
+    /// run whose earlier history just changed.
+    ///
+    /// Targets are absolute clock readings rather than deltas precisely so that
+    /// removing one jump leaves every other jump landing on the same instant it
+    /// did before; with deltas, dropping an early jump would silently retime
+    /// every later one and a shrink step would change more than it removed.
+    ///
+    /// A pair whose target is behind the clock at the named tick fails loudly
+    /// rather than being skipped, for the same reason a `SpuriousWakeupStrategy`
+    /// script naming an absent waiter does: a script that has drifted out of
+    /// step with the run underneath it should say so.
+    | Scripted of jumps : (int64 * int64) list
+
+/// Interpretation of `ClockJitterStrategy`: given the tick, the clock, and the
+/// deadlines threads are currently parked on, decide where (if anywhere) the
+/// clock jumps before this tick's deadlines are fired.
+[<RequireQualifiedAccess>]
+module ClockJitter =
+
+    /// Largest `maxOvershootTicks` an `EagerDeadlines` strategy may name.
+    ///
+    /// `2^53 - 1`, because the overshoot draw scales a float in `[0, 1)` by the
+    /// inclusive range size: above `2^53` an `int64` is no longer exactly
+    /// representable as a `float`, so that size would round and whole stretches
+    /// of the range would become undrawable — an overshoot dial quietly
+    /// narrower than the number it was given. Rejecting is better than silently
+    /// sampling a different distribution from the documented one.
+    ///
+    /// Far above any useful setting: `2^53` ticks is about 28 years of
+    /// simulated time, against timeouts measured in milliseconds.
+    [<Literal>]
+    let maxOvershootBoundTicks : int64 = 9007199254740991L
+
+    /// SplitMix64-style hash over `(seed, stepCounter, salt)`, giving a value in
+    /// `[0.0, 1.0)`. Replayability comes from it being a pure hash with no
+    /// mutable PRNG state, so distinct ticks never share entropy; `salt`
+    /// separates the "does this tick jump" draw from the "which deadline" draw
+    /// so that the two are not perfectly correlated.
+    let private draw (seed : uint64) (stepCounter : int64) (salt : uint64) : float =
+        let mix (h : uint64) (x : uint64) : uint64 =
+            let h = h ^^^ x
+            h * 0x100000001B3UL
+
+        let finalise (h : uint64) : uint64 =
+            let h = h ^^^ (h >>> 33)
+            let h = h * 0xff51afd7ed558ccdUL
+            let h = h ^^^ (h >>> 33)
+            let h = h * 0xc4ceb9fe1a85ec53UL
+            h ^^^ (h >>> 33)
+
+        let h = seed
+        let h = mix h (uint64 stepCounter)
+        let h = mix h salt
+        let h = finalise h
+        // Top 53 bits as a float in [0, 1). Matches the common "uniform double
+        // from uint64" recipe; precision loss in the low bits is irrelevant for
+        // a fuzz threshold.
+        float (h >>> 11) / float (1UL <<< 53)
+
+    /// Reject a strategy whose numbers cannot mean anything. Called both by
+    /// `EmulatedKernel.withClockJitter`, so a misconfigured host finds out
+    /// before any guest code runs, and by `chooseJump`, which a kernel assembled
+    /// by record-copy reaches without having passed through that setter.
+    let validate (strategy : ClockJitterStrategy) : unit =
+        match strategy with
+        | ClockJitterStrategy.Disabled
+        | ClockJitterStrategy.Scripted _ -> ()
+        | ClockJitterStrategy.EagerDeadlines (_, probability, maxOvershootTicks) ->
+            // NaN first: every comparison against it is false, so a NaN
+            // probability would otherwise slip through as "never fires" and
+            // present a run that looked jittered and was not.
+            if System.Double.IsNaN probability || probability < 0.0 || probability > 1.0 then
+                failwith
+                    $"ClockJitterStrategy.EagerDeadlines: probability %f{probability} is outside [0.0, 1.0] (NaN or out of range)."
+
+            if maxOvershootTicks < 0L then
+                failwith
+                    $"ClockJitterStrategy.EagerDeadlines: maxOvershootTicks %d{maxOvershootTicks} is negative. An overshoot moves a timeout later, never earlier; the virtual clock is monotonic."
+
+            // See `maxOvershootBoundTicks`: past it the draw could no longer
+            // cover the range it was given, so the strategy would sample a
+            // narrower distribution than the one it documents.
+            if maxOvershootTicks > maxOvershootBoundTicks then
+                failwith
+                    $"ClockJitterStrategy.EagerDeadlines: maxOvershootTicks %d{maxOvershootTicks} exceeds %d{maxOvershootBoundTicks} (2^53 - 1), beyond which the overshoot draw cannot cover its own range exactly. That is about 28 years of simulated time; a bound anywhere near it is a unit mistake."
+
+    /// Where the clock should jump to on this tick, if anywhere. `None` means
+    /// the tick's clock advance is the ordinary `InstructionCostTicks` and
+    /// nothing more.
+    ///
+    /// A returned target is always strictly greater than `currentClock`, so a
+    /// caller can hand it straight to `EmulatedKernel.withVirtualClockTicks`.
+    /// `pendingDeadlines` may contain duplicates and need not be sorted: the
+    /// answer depends only on the *set* of deadlines strictly ahead of the
+    /// clock, so a caller need not enumerate threads in any particular order.
+    ///
+    /// Under `EagerDeadlines` the target lies in `[d, d + maxOvershootTicks]`
+    /// for some `d` in that set — it need not be a deadline itself, and with a
+    /// non-zero overshoot it usually is not.
+    let chooseJump
+        (strategy : ClockJitterStrategy)
+        (stepCounter : int64)
+        (currentClock : int64)
+        (pendingDeadlines : int64 list)
+        : int64 option
+        =
+        match strategy with
+        | ClockJitterStrategy.Disabled -> None
+
+        | ClockJitterStrategy.EagerDeadlines (seed, probability, maxOvershootTicks) ->
+            validate strategy
+
+            // Deadlines at or behind the clock are about to be fired by this
+            // tick's ordinary expiry pass, so "jumping" to one would move the
+            // clock nowhere. Dropping them here is what lets the caller treat a
+            // `Some` as a genuine advance.
+            //
+            // Sorted and deduplicated so that the draw indexes a canonical
+            // sequence: two threads parked on the same instant must not make
+            // that instant twice as likely as any other, and the selection must
+            // not depend on the order threads happen to be enumerated in.
+            let candidates =
+                pendingDeadlines
+                |> List.filter (fun deadline -> deadline > currentClock)
+                |> List.distinct
+                |> List.sort
+
+            match candidates with
+            | [] -> None
+            | _ ->
+
+            if draw seed stepCounter 0UL >= probability then
+                None
+            else
+                let index = int (draw seed stepCounter 1UL * float candidates.Length)
+                // `draw` is in [0, 1), so the product is below `Length` and this
+                // clamp cannot fire in exact arithmetic. It is here because the
+                // product is a float: a value a hair below 1.0 times a large
+                // length can round up to exactly `Length`.
+                let deadline = candidates.[min index (candidates.Length - 1)]
+
+                // Inclusive of `maxOvershootTicks`, hence the `+ 1L`: a bound
+                // the draw could never actually reach would make
+                // `maxOvershootTicks = 1` mean "always zero". Clamped for the
+                // same float-rounding reason as the index above.
+                let overshoot =
+                    int64 (draw seed stepCounter 2UL * float (maxOvershootTicks + 1L))
+                    |> min maxOvershootTicks
+
+                // The deadlines are whatever the caller passed, so a deadline
+                // close enough to `Int64.MaxValue` to make this sum wrap is
+                // reachable from outside this module. Wrapping would return a
+                // *negative* target, breaking the guarantee this function's
+                // callers rely on — that a `Some` is strictly ahead of the
+                // clock — and would surface downstream as a baffling
+                // "clock cannot be negative" rather than as the arithmetic
+                // problem it is. An over-horizon-but-representable target is
+                // deliberately still returned, for `withVirtualClockTicks` to
+                // diagnose naming the wait responsible.
+                if deadline > System.Int64.MaxValue - overshoot then
+                    failwith
+                        $"ClockJitterStrategy.EagerDeadlines: deadline %d{deadline} plus an overshoot of %d{overshoot} ticks is not representable as an int64. A deadline that large cannot have come from a wait this kernel posted."
+
+                Some (deadline + overshoot)
+
+        | ClockJitterStrategy.Scripted jumps ->
+            match jumps |> List.filter (fun (tick, _) -> tick = stepCounter) with
+            | [] -> None
+            | scheduled ->
+
+            // Every target scheduled for this tick is checked, not only the one
+            // that ends up winning: a script naming both 500 and 700 while the
+            // clock reads 600 has drifted, and validating the maximum alone
+            // would wave that through — which is exactly the silent
+            // "replay that no longer describes the run" this check exists to
+            // prevent.
+            for _, target in scheduled do
+                if target <= currentClock then
+                    failwith
+                        $"ClockJitterStrategy.Scripted: jump at step %d{stepCounter} names target %d{target} ticks, but the clock already reads %d{currentClock}; the clock is monotonic, so this script has drifted out of step with the run underneath it."
+
+            // The furthest wins rather than each being applied in turn: the
+            // clock is monotonic, so applying several jumps at one tick is
+            // observationally identical to applying the largest, and taking the
+            // max means a script listing them in any order behaves the same.
+            Some (scheduled |> List.map snd |> List.max)
+
 /// Deterministic model of a single Win32-shaped semaphore kernel object, as
 /// minted by `CreateSemaphoreExW`. CoreCLR backs this with a real Win32
 /// `CreateSemaphoreEx` on Windows and with a `SemaphoreSlim`-style construct
@@ -1044,6 +1307,30 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> SetIdBitsOnTruncation.Strip
         | SimulatedUnixFlavour.Darwin -> SetIdBitsOnTruncation.Preserve
 
+    /// Whether this platform's content-changing `write(2)` clears `S_ISGID` on a
+    /// file that is not group-executable.
+    ///
+    /// The only thing about a write's effect on the mode that the two Unixes
+    /// disagree about: `S_ISUID` goes on both whatever the execute bits say, and
+    /// the sticky bit is left alone by both. So this is a lone value rather than
+    /// a `CreatingOpenRules`-shaped record, for the reason
+    /// `setIdBitsOnTruncation` above gives.
+    ///
+    /// Measured non-root on macOS 26.6 and Linux 6.18.5, one byte written over
+    /// the front of a four-byte file; `PermissionBits.afterContentChangingWrite`
+    /// carries the table. Linux applies to a write the same rule it applies to a
+    /// truncation, and **Darwin does not** — there a write strips `02644` to
+    /// `00644` while an `ftruncate` on the same file leaves the whole mode alone,
+    /// which is why the two rules are separate values rather than one.
+    ///
+    /// The file must be handed to a group the caller belongs to before `chmod`,
+    /// or the kernel drops `S_ISGID` silently and the measurement reads as
+    /// agreement.
+    let setGroupIdOnWrite (platform : SimulatedUnixPlatform) : SetGroupIdOnWrite =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> SetGroupIdOnWrite.StripWhenGroupExecutable
+        | SimulatedUnixFlavour.Darwin -> SetGroupIdOnWrite.StripAlways
+
     /// How this platform's `open(2)` behaves when asked to create; see
     /// `CreatingOpenRules` for what each field means and how it was measured.
     let creatingOpenRules (platform : SimulatedUnixPlatform) : CreatingOpenRules =
@@ -1509,7 +1796,7 @@ module SimulatedUnixPlatform =
         | _, _, _ -> Error SocketCreationRefusal.Unmodelled
 
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
-/// syscall-emulation state: process-wide last-error registers, the native
+/// syscall-emulation state: the per-thread last-error registers, the native
 /// heap pool backing `Marshal.AllocHGlobal`, the Unix file-descriptor table,
 /// the `LowLevelMonitor` registry, and monotonic ID counters for opaque
 /// kernel handles. These are the pieces of interpreter state that exist
@@ -1521,15 +1808,28 @@ module SimulatedUnixPlatform =
 /// shaped emulation) without disturbing the rest of the state model.
 type EmulatedKernel =
     {
-        /// Last error reported by a modelled P/Invoke with SetLastError=true.
-        /// This is currently process-wide; model it per-thread when a guest
-        /// depends on thread-local last-error state.
-        LastPInvokeError : int
-        /// Last system error tracked separately from LastPInvokeError because
-        /// CoreLib wrappers can read this and then write LastPInvokeError.
-        /// This is currently process-wide; model it per-thread when a guest
-        /// depends on thread-local GetLastError or errno state.
-        LastSystemError : int
+        /// Per-thread value CoreCLR keeps in its `t_lastPInvokeError` thread-local and
+        /// `Marshal.GetLastPInvokeError` (equivalently `GetLastWin32Error`) reads. A
+        /// `SetLastError = true` P/Invoke's stub copies the system error here once the
+        /// call returns.
+        ///
+        /// A `Map` rather than a `ThreadState` field, unlike `Cpu` and `OsThreadId`,
+        /// because an absent key *does* have a truthful reading: 0, the value a thread
+        /// that has had no error reported to it sees. `withLastPInvokeError` drops an
+        /// entry it would set to 0, so "absent" and "zero" stay structurally equal —
+        /// the same canonicalisation `SignalState.Blocked` performs for empty masks,
+        /// and for the same reason: two states that differ only that way must compare
+        /// equal.
+        LastPInvokeError : Map<ThreadId, int>
+        /// Per-thread system error: errno on Unix, `GetLastError` on Windows. CoreCLR's
+        /// PAL stores its last-error *in* errno ("Reuse errno to store last error",
+        /// pal/src/include/pal/thread.hpp), and `Marshal.Get/SetLastSystemError` read and
+        /// write it directly.
+        ///
+        /// Tracked separately from `LastPInvokeError` because CoreLib's generated
+        /// `LibraryImport` stubs read this and then write that. Same `Map` reasoning and
+        /// same zero-drops-the-entry canonicalisation as `LastPInvokeError` above.
+        LastSystemError : Map<ThreadId, int>
         /// Globally-scoped pool of native-heap blocks allocated by
         /// `Marshal.AllocHGlobal` / `NativeMemory.Alloc`. Freeing a block
         /// deletes it from this pool, so any retained byref into the block
@@ -1544,6 +1844,25 @@ type EmulatedKernel =
         /// at `exec` time. SystemNative_Dup / Close / Read / Write etc.
         /// route through this table; the host's real fds are never used.
         FileDescriptors : FileDescriptorRegistry
+        /// Every socket the simulated process owns, by identity.
+        ///
+        /// Separate from `FileDescriptors` because a socket's lifetime is not a
+        /// descriptor's: `SystemNative_Accept` completes a connection into a
+        /// listening socket's backlog, where it is a socket no descriptor names
+        /// until the guest accepts it. An `OpenFileTarget.Socket` therefore
+        /// holds only the `SocketId`, and this is what it names.
+        ///
+        /// Today every entry does have exactly one description naming it, and
+        /// `EmulatedKernel.checkInvariants` enforces that; the backlog is what
+        /// will relax it.
+        Sockets : Map<SocketId, SocketDescription>
+        /// The identity the next `SystemNative_Socket` will allocate.
+        ///
+        /// Monotonic, and never reused: nothing guest-visible reports a
+        /// `SocketId`, but a replay trace does, and reuse would make two
+        /// distinct sockets indistinguishable in it. `NextLowLevelMonitorId`
+        /// is stored beside its table for the same reason.
+        NextSocketId : SocketId
         /// Registry of `System.Threading.LowLevelMonitor` instances minted by
         /// `SystemNative_LowLevelMonitor_Create`. The handle held by the
         /// guest (as an `IntPtr` in `LowLevelMonitor._nativeMonitor`) is the
@@ -1588,6 +1907,12 @@ type EmulatedKernel =
         /// the two condvar primitives separately. Defaults to `Disabled` so
         /// existing runs are bit-for-bit unchanged.
         SyncBlockSpuriousWakeup : SyncBlockSpuriousWakeupStrategy
+        /// Deterministic strategy governing whether the driver jumps the virtual
+        /// clock onto an outstanding deadline as part of a tick. Defaults to
+        /// `Disabled` so existing runs are bit-for-bit unchanged. See
+        /// `ClockJitterStrategy` for what it buys and `ClockJitter.chooseJump`
+        /// for how it is interpreted.
+        ClockJitter : ClockJitterStrategy
         /// Monotonically-advancing scheduler tick consumed by
         /// `SpuriousWakeupStrategy`. The driver loop applies the strategy
         /// against the current value and then increments by 1 before
@@ -1899,6 +2224,31 @@ type EmulatedKernel =
         Signals : SignalState
     }
 
+/// A way the emulated kernel's socket table and its descriptor table could
+/// disagree — a state no kernel could be in, and which `EmulatedKernel` exists
+/// to keep unreachable.
+///
+/// Separate from `FileDescriptorRegistryDefect` because these are claims about
+/// two tables at once, and `FileDescriptorRegistry` cannot see the socket table:
+/// it is defined in a file that compiles before this one.
+[<RequireQualifiedAccess>]
+type EmulatedKernelDefect =
+    /// A live open file description names a socket the socket table does not
+    /// hold, so resolving that descriptor would fail.
+    | DanglingSocket of description : OpenFileDescriptionId * socket : SocketId
+    /// The socket table holds a socket no live description names.
+    ///
+    /// A leak today, and deliberately a defect rather than a tolerated state:
+    /// `SystemNative_Socket` is the only way to make a socket and it hands back
+    /// a descriptor at once, so an unreferenced socket means a close forgot to
+    /// clean up. `SystemNative_Accept` is what will make this legal, by putting
+    /// completed connections in a listening socket's backlog; the rule relaxes
+    /// then, to "named by a description or held in some backlog".
+    | UnreferencedSocket of socket : SocketId
+    /// A socket in the table has an identity at or above the next one to
+    /// allocate, so a future `socket(2)` would mint a duplicate.
+    | NextSocketIdNotFresh of nextSocketId : SocketId * existing : SocketId
+
 [<RequireQualifiedAccess>]
 module EmulatedKernel =
     /// Default environment variables for a freshly-minted simulated process.
@@ -2101,10 +2451,12 @@ module EmulatedKernel =
     let initial : EmulatedKernel =
         {
             InstructionCostTicks = defaultInstructionCostTicks
-            LastPInvokeError = 0
-            LastSystemError = 0
+            LastPInvokeError = Map.empty
+            LastSystemError = Map.empty
             NativeMemoryPool = NativeMemoryPool.empty
             FileDescriptors = FileDescriptorRegistry.initial
+            Sockets = Map.empty
+            NextSocketId = SocketId 0L
             LowLevelMonitors = Map.empty
             NextLowLevelMonitorId = 1
             WaitHandles = Map.empty
@@ -2112,6 +2464,7 @@ module EmulatedKernel =
             NextEventPipeId = 1L
             SpuriousWakeup = SpuriousWakeupStrategy.Disabled
             SyncBlockSpuriousWakeup = SyncBlockSpuriousWakeupStrategy.Disabled
+            ClockJitter = ClockJitterStrategy.Disabled
             StepCounter = 0L
             VirtualClockTicks = 0L
             WallClockEpochMs = 0L
@@ -2223,6 +2576,19 @@ module EmulatedKernel =
 
         { kernel with
             InstructionCostTicks = cost
+        }
+
+    /// Install the clock-jitter strategy the driver applies each tick. See
+    /// `ClockJitterStrategy` for what the variants mean.
+    ///
+    /// A malformed `EagerDeadlines` probability is rejected here rather than at
+    /// the first tick that consults it, so a host that misconfigures a run finds
+    /// out before any guest code has executed.
+    let withClockJitter (strategy : ClockJitterStrategy) (kernel : EmulatedKernel) : EmulatedKernel =
+        ClockJitter.validate strategy
+
+        { kernel with
+            ClockJitter = strategy
         }
 
     /// Set the logical-processor count the simulated process reports. Rejects
@@ -2628,6 +2994,44 @@ module EmulatedKernel =
     /// (`IlMachineState.NextCpuRotation`) that only guest-visible thread
     /// creation advances. (`osThreadId`, below, makes the opposite choice for
     /// the opposite reason; see there.)
+    /// The system error (errno on Unix, `GetLastError` on Windows) `thread` would read.
+    /// 0 for a thread that has had none reported to it, which is what a fresh thread sees.
+    let lastSystemErrorFor (thread : ThreadId) (kernel : EmulatedKernel) : int =
+        match Map.tryFind thread kernel.LastSystemError with
+        | None -> 0
+        | Some value -> value
+
+    /// Set `thread`'s system error. Setting 0 removes the entry rather than storing it, so
+    /// that a state which has zeroed a thread's errno is structurally equal to one that
+    /// never wrote it; `EmulatedKernel` is compared for equality to decide whether a step
+    /// changed anything, so "absent" and "zero" must not be distinguishable.
+    let withLastSystemError (thread : ThreadId) (value : int) (kernel : EmulatedKernel) : EmulatedKernel =
+        { kernel with
+            LastSystemError =
+                if value = 0 then
+                    Map.remove thread kernel.LastSystemError
+                else
+                    Map.add thread value kernel.LastSystemError
+        }
+
+    /// The value `thread` would read from `Marshal.GetLastPInvokeError`. 0 until a
+    /// `SetLastError = true` P/Invoke on that thread copies a system error into it.
+    let lastPInvokeErrorFor (thread : ThreadId) (kernel : EmulatedKernel) : int =
+        match Map.tryFind thread kernel.LastPInvokeError with
+        | None -> 0
+        | Some value -> value
+
+    /// Set `thread`'s last-P/Invoke error, with the same zero-drops-the-entry
+    /// canonicalisation as `withLastSystemError`.
+    let withLastPInvokeError (thread : ThreadId) (value : int) (kernel : EmulatedKernel) : EmulatedKernel =
+        { kernel with
+            LastPInvokeError =
+                if value = 0 then
+                    Map.remove thread kernel.LastPInvokeError
+                else
+                    Map.add thread value kernel.LastPInvokeError
+        }
+
     let cpuForRotation (rotation : int) (kernel : EmulatedKernel) : CpuId =
         if rotation < 0 then
             failwith
@@ -2778,6 +3182,126 @@ module EmulatedKernel =
             Environment = merged
         }
 
+    /// The socket `socketId` names.
+    ///
+    /// Total, and loudly partial rather than an option: every `SocketId` a
+    /// caller can hold came out of an `OpenFileTarget.Socket`, and
+    /// `checkInvariants` rejects a kernel in which one of those names nothing.
+    /// A `None` here would push that impossible case onto every call site.
+    let socket (socketId : SocketId) (kernel : EmulatedKernel) : SocketDescription =
+        match Map.tryFind socketId kernel.Sockets with
+        | Some socket -> socket
+        | None ->
+            failwith
+                $"EmulatedKernel.socket: %O{socketId} names no socket in this kernel's socket table. Every SocketId reachable by a caller comes from an open file description, and EmulatedKernelDefect.DanglingSocket exists to make that unreachable, so this is an interpreter bug rather than anything a guest did."
+
+    /// Mirrors `socket(2)`: allocate a fresh socket, and a fresh descriptor onto
+    /// it.
+    ///
+    /// One operation for both allocations, rather than a socket-table insert
+    /// beside a separate `FileDescriptorRegistry.createSocket`, because the two
+    /// must agree: the identity this mints is the identity the description
+    /// names, and splitting them would let a caller do one without the other.
+    ///
+    /// Says nothing about whether this domain/kind/protocol combination *can*
+    /// exist — `SimulatedUnixPlatform.socketCreation` answers that, and this is
+    /// reached only once it has said yes.
+    let createSocket
+        (domain : SocketDomain)
+        (kind : SocketKind)
+        (protocol : SocketProtocol)
+        (kernel : EmulatedKernel)
+        : int * EmulatedKernel
+        =
+        let socketId = kernel.NextSocketId
+        let (SocketId raw) = socketId
+
+        let fd, registry =
+            FileDescriptorRegistry.createSocket socketId kernel.FileDescriptors
+
+        fd,
+        { kernel with
+            FileDescriptors = registry
+            Sockets =
+                Map.add
+                    socketId
+                    {
+                        Domain = domain
+                        Kind = kind
+                        Protocol = protocol
+                    }
+                    kernel.Sockets
+            NextSocketId = SocketId (raw + 1L)
+        }
+
+    /// Mirrors `close(2)`, including the kernel objects a description was the
+    /// last reference to.
+    ///
+    /// `FileDescriptorRegistry.close` cannot do this itself: the socket table
+    /// lives here, in a file that compiles after it. Closing one of several
+    /// descriptors onto a description destroys nothing, and so frees no socket.
+    let closeFd (fd : int) (kernel : EmulatedKernel) : Result<EmulatedKernel, FileDescriptorCloseError> =
+        match FileDescriptorRegistry.close fd kernel.FileDescriptors with
+        | Error e -> Error e
+        | Ok (registry, destroyed) ->
+            let sockets =
+                match destroyed with
+                | Some description ->
+                    match description.Target with
+                    | OpenFileTarget.Socket socketId -> Map.remove socketId kernel.Sockets
+                    | OpenFileTarget.StandardStream _
+                    | OpenFileTarget.SocketEventPort
+                    | OpenFileTarget.File _ -> kernel.Sockets
+                | None -> kernel.Sockets
+
+            Ok
+                { kernel with
+                    FileDescriptors = registry
+                    Sockets = sockets
+                }
+
+    /// Every way this kernel's socket table and its descriptor table disagree.
+    ///
+    /// The descriptor table's own rules are `FileDescriptorRegistry.checkInvariants`,
+    /// which this does not repeat.
+    let checkInvariants (kernel : EmulatedKernel) : EmulatedKernelDefect list =
+        let named =
+            kernel.FileDescriptors.Descriptions
+            |> Map.toList
+            |> List.choose (fun (id, description) ->
+                match description.Target with
+                | OpenFileTarget.StandardStream _
+                | OpenFileTarget.SocketEventPort
+                | OpenFileTarget.File _ -> None
+                | OpenFileTarget.Socket socketId -> Some (id, socketId)
+            )
+
+        let dangling =
+            named
+            |> List.filter (fun (_, socketId) -> not (Map.containsKey socketId kernel.Sockets))
+            |> List.map EmulatedKernelDefect.DanglingSocket
+
+        let namedIds = named |> List.map snd |> Set.ofList
+
+        let unreferenced =
+            kernel.Sockets
+            |> Map.toList
+            |> List.map fst
+            |> List.filter (fun socketId -> not (Set.contains socketId namedIds))
+            |> List.map EmulatedKernelDefect.UnreferencedSocket
+
+        // Against the table rather than against the descriptions: the table is
+        // where a socket lives, so it is the table that must stay below the
+        // counter even once a socket can outlive every descriptor of it.
+        let freshness =
+            kernel.Sockets
+            |> Map.toList
+            |> List.map fst
+            |> List.filter (fun socketId -> socketId >= kernel.NextSocketId)
+            |> List.map (fun socketId -> EmulatedKernelDefect.NextSocketIdNotFresh (kernel.NextSocketId, socketId))
+
+        dangling @ unreferenced @ freshness
+
 /// Host-supplied configuration for the simulated process's kernel, applied by
 /// `Program.prepare` before any guest code runs.
 ///
@@ -2820,6 +3344,18 @@ type KernelConfig =
         /// and `EmulatedKernel.defaultInstructionCostTicks` for the calibration behind the
         /// default of one tick (a 10 MIPS machine).
         InstructionCostTicks : int64
+        /// Whether, and how, the driver jitters the virtual clock forward onto
+        /// outstanding deadlines. Defaults to `Disabled`; see
+        /// `ClockJitterStrategy` for what turning it on buys.
+        ///
+        /// Configuration rather than something a host installs on
+        /// `PreparedProgram.State` afterwards, because class initialisers run
+        /// during `prepare` and are as entitled to have their waits jittered as
+        /// anything in `Main` — a `.cctor` that starts a thread and waits on it
+        /// with a timeout is exactly the shape this strategy exists to test.
+        ///
+        /// Whatever a host picks becomes part of that run's replay contract.
+        ClockJitter : ClockJitterStrategy
         /// Value the guest observes via the internal
         /// `Thread.OptimalMaxSpinWaitsPerSpinIteration`, consulted by
         /// `SpinWait.SpinOnce()` / `LowLevelSpinWaiter` to size each spin
@@ -2899,6 +3435,7 @@ type KernelConfig =
             ProcessorCount = EmulatedKernel.defaultProcessorCount
             UserAddressLimit = EmulatedKernel.defaultUserAddressLimit
             InstructionCostTicks = EmulatedKernel.defaultInstructionCostTicks
+            ClockJitter = ClockJitterStrategy.Disabled
             OptimalMaxSpinWaitsPerSpinIteration = EmulatedKernel.defaultOptimalMaxSpinWaitsPerSpinIteration
             WallClockEpochMs = 0L
             UnixPlatform = EmulatedKernel.defaultUnixPlatform
@@ -2922,6 +3459,7 @@ module KernelConfig =
         |> EmulatedKernel.withProcessorCount config.ProcessorCount
         |> EmulatedKernel.withUserAddressLimit config.UserAddressLimit
         |> EmulatedKernel.withInstructionCostTicks config.InstructionCostTicks
+        |> EmulatedKernel.withClockJitter config.ClockJitter
         |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
         |> EmulatedKernel.withUnixPlatformAndFileSystemType config.UnixPlatform config.FileSystemType

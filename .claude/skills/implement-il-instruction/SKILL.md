@@ -1,3 +1,8 @@
+---
+name: implement-il-instruction
+description: Steps for adding support for a new IL opcode to the interpreter. Use when a guest fails on an unimplemented instruction, or when adding any opcode to IlOp.fs and AbstractMachine.fs.
+---
+
 # Implementing a new IL instruction
 
 Follow these steps when adding support for a new IL opcode to the PawPrint interpreter.

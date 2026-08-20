@@ -650,14 +650,17 @@ module NativeSystemNative =
         let now = EmulatedKernel.fileTimestamp state.Kernel
 
         // A content-changing write strips a file's set-user-ID and set-group-ID
-        // bits unless the writer is root; measured on both platforms.
+        // bits unless the writer is root; measured on both platforms, which
+        // disagree only about `S_ISGID` on a file that is not group-executable.
+        let rule = SimulatedUnixPlatform.setGroupIdOnWrite state.Kernel.UnixPlatform
+
         let privilege =
             if EmulatedKernel.isPrivileged state.Kernel then
                 WritePrivilege.Privileged
             else
                 WritePrivilege.Unprivileged
 
-        match VirtualFileSystem.writeFile inode offset bytes privilege now state.Kernel.FileSystem with
+        match VirtualFileSystem.writeFile inode offset bytes rule privilege now state.Kernel.FileSystem with
         | Ok filesystem ->
             state.MapKernel (fun kernel ->
                 { kernel with
@@ -988,11 +991,7 @@ module NativeSystemNative =
             // can answer where the bare conversion refuses to.
             let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    LastSystemError = UnixError.toRawErrnoUnder numbering error
-                }
-            )
+            state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error))
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -1804,7 +1803,8 @@ module NativeSystemNative =
         | Some "SystemNative_GetErrNo",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            pushInt32 state.Kernel.LastSystemError ctx |> Some
+            pushInt32 (EmulatedKernel.lastSystemErrorFor ctx.Thread state.Kernel) ctx
+            |> Some
         | Some "SystemNative_ConvertErrorPlatformToPal",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
@@ -2173,11 +2173,7 @@ module NativeSystemNative =
             /// Set errno and hand the guest a NULL `char*`, as the C does on
             /// every failure path.
             let fail (error : UnixError) : NativeHandlerResult option =
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrno error
-                    }
-                )
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ManagedPointerSource.Null) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -2325,10 +2321,8 @@ module NativeSystemNative =
             let fail (error : UnixError) : NativeHandlerResult option =
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrnoUnder numbering error
-                    }
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim -1L)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -2679,11 +2673,7 @@ module NativeSystemNative =
                 // agreeing. `toRawErrno` rather than `toRawErrnoUnder`: both
                 // errnos here are portable, and the stricter form would crash
                 // loudly if a platform-dependent one were ever routed through.
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrno error
-                    }
-                )
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
                 |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 0u) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -2707,10 +2697,8 @@ module NativeSystemNative =
             let fail (error : UnixError) : NativeHandlerResult option =
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrnoUnder numbering error
-                    }
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -2771,11 +2759,7 @@ module NativeSystemNative =
             let fd = fdArgument operation instruction.Arguments.[0]
 
             let fail (error : UnixError) : NativeHandlerResult option =
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrno error
-                    }
-                )
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -2876,10 +2860,8 @@ module NativeSystemNative =
             let failFrom (state : IlMachineState) (error : UnixError) : NativeHandlerResult option =
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrnoUnder numbering error
-                    }
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -3043,10 +3025,8 @@ module NativeSystemNative =
             let fail (error : UnixError) : NativeHandlerResult option =
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrnoUnder numbering error
-                    }
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -3174,14 +3154,12 @@ module NativeSystemNative =
             // already run.
             if not readable then
                 fail UnixError.EBADF
-            else if
 
-                // Darwin's turn to validate the offset: it has now resolved the
-                // descriptor, its seekability and its access mode, which is exactly
-                // the window in which it differs from Linux. On Linux this cannot
-                // fire, because the check above already did.
-                not offsetCheckedBeforeDescriptor && offsetInvalid
-            then
+            // Darwin's turn to validate the offset: it has now resolved the
+            // descriptor, its seekability and its access mode, which is exactly
+            // the window in which it differs from Linux. On Linux this cannot
+            // fire, because the check above already did.
+            else if not offsetCheckedBeforeDescriptor && offsetInvalid then
                 fail UnixError.EINVAL
             else
 
@@ -3285,10 +3263,8 @@ module NativeSystemNative =
             let fail (error : UnixError) : NativeHandlerResult option =
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrnoUnder numbering error
-                    }
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -3309,22 +3285,20 @@ module NativeSystemNative =
             if bufferSize < 0 then
                 failwith
                     $"%s{operation}: fd %d{fd} was given bufferSize %d{bufferSize}, which is negative. The C shim casts that to an unsigned ~4 GB count rather than rejecting it (unlike SystemNative_Write, which goes through Common_Write and answers ERANGE), and what a kernel then does is not a fact PawPrint can state. Pass a non-negative size."
-            else if
 
-                // **Ahead of the descriptor, on both platforms** — which is where
-                // `pwrite` differs from `pread`, and it is measured rather than
-                // assumed. Every two-fault row is EINVAL on Linux *and* Darwin:
-                //
-                //   input                          Linux    Darwin
-                //   negative offset + bad fd       EINVAL   EINVAL
-                //   negative offset + pipe         EINVAL   EINVAL
-                //   negative offset + O_RDONLY fd  EINVAL   EINVAL
-                //
-                // For `pread`, Darwin resolves the descriptor first and answers EBADF
-                // or ESPIPE for the same shapes, so `SystemNative_PRead` needs a
-                // platform flag here and this does not. Do not copy that flag over.
-                fileOffset < 0L
-            then
+            // **Ahead of the descriptor, on both platforms** — which is where
+            // `pwrite` differs from `pread`, and it is measured rather than
+            // assumed. Every two-fault row is EINVAL on Linux *and* Darwin:
+            //
+            //   input                          Linux    Darwin
+            //   negative offset + bad fd       EINVAL   EINVAL
+            //   negative offset + pipe         EINVAL   EINVAL
+            //   negative offset + O_RDONLY fd  EINVAL   EINVAL
+            //
+            // For `pread`, Darwin resolves the descriptor first and answers EBADF
+            // or ESPIPE for the same shapes, so `SystemNative_PRead` needs a
+            // platform flag here and this does not. Do not copy that flag over.
+            else if fileOffset < 0L then
                 fail UnixError.EINVAL
             else
 
@@ -3391,16 +3365,14 @@ module NativeSystemNative =
             // screens nothing and discovers a bad address at the copy.
             if faultsBeforeOperation state.Kernel buffer bufferSize then
                 fail UnixError.EFAULT
-            else if
 
-                // A no-op on both platforms, and specifically one that leaves the
-                // inode alone: measured, a zero-length write moves neither `mtime` nor
-                // `ctime` and does not extend the file, even at an offset far past its
-                // end. The buffer is not resolved to storage, because nothing is read
-                // through it — `NULL` is an ordinary user address, so it reaches here
-                // rather than being screened above.
-                bufferSize = 0
-            then
+            // A no-op on both platforms, and specifically one that leaves the
+            // inode alone: measured, a zero-length write moves neither `mtime` nor
+            // `ctime` and does not extend the file, even at an offset far past its
+            // end. The buffer is not resolved to storage, because nothing is read
+            // through it — `NULL` is an ordinary user address, so it reaches here
+            // rather than being screened above.
+            else if bufferSize = 0 then
                 succeed 0 state
             else
 
@@ -3454,10 +3426,8 @@ module NativeSystemNative =
             let fail (error : UnixError) : NativeHandlerResult option =
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrnoUnder numbering error
-                    }
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -3522,7 +3492,8 @@ module NativeSystemNative =
                     match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
                     | SimulatedUnixFlavour.Linux -> Error UnixError.EINVAL
                     | SimulatedUnixFlavour.Darwin -> Error UnixError.ENXIO
-                | OpenFileTarget.Socket socket ->
+                | OpenFileTarget.Socket socketId ->
+                    let socket = EmulatedKernel.socket socketId state.Kernel
                     // Refused rather than answered, and the reason is that there
                     // is no single answer to give. Measured on a fresh,
                     // unbound, unconnected socket, `read` is ENOTCONN for a
@@ -3540,7 +3511,7 @@ module NativeSystemNative =
                     // `SystemNative_Read`, `SafeSocketHandle` not being a
                     // `SafeFileHandle` — so this is a hand-rolled P/Invoke.
                     failwith
-                        $"%s{operation}: fd %d{fd} is socket %O{socket.Id} (%O{socket.Domain}, %O{socket.Kind}). PawPrint models no socket connection state, and `read(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is ENOTCONN for a TCP socket, EINVAL on Linux against ENOTCONN on Darwin for a Unix-domain stream socket, and a block with no wake source for a datagram socket. Model the connection state before answering this."
+                        $"%s{operation}: fd %d{fd} is socket %O{socketId} (%O{socket.Domain}, %O{socket.Kind}). PawPrint models no socket connection state, and `read(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is ENOTCONN for a TCP socket, EINVAL on Linux against ENOTCONN on Darwin for a Unix-domain stream socket, and a block with no wake source for a datagram socket. Model the connection state before answering this."
                 | OpenFileTarget.File (inode, offset) -> Ok (ReadTarget.File (inode, offset))
 
             match target with
@@ -3663,10 +3634,8 @@ module NativeSystemNative =
             let fail (error : UnixError) : NativeHandlerResult option =
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrnoUnder numbering error
-                    }
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 (Int64Source.Verbatim -1L)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -3931,10 +3900,8 @@ module NativeSystemNative =
                 // which has no platform-independent number.
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrnoUnder numbering error
-                    }
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -4084,11 +4051,7 @@ module NativeSystemNative =
             let error =
                 NativeCall.int32Argument "SystemNative_SetErrNo" instruction.Arguments.[0]
 
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    LastSystemError = error
-                }
-            )
+            state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (error))
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_Malloc",
@@ -4161,10 +4124,8 @@ module NativeSystemNative =
                     )
                 | Error FileDescriptorDupError.BadFd ->
                     -1L,
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            LastSystemError = UnixError.toRawErrno UnixError.EBADF
-                        }
+                    state.MapKernel (
+                        EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EBADF)
                     )
 
             state
@@ -4184,20 +4145,12 @@ module NativeSystemNative =
             let fd = fdArgument "SystemNative_Close" instruction.Arguments.[0]
 
             let resultCode, state =
-                match FileDescriptorRegistry.close fd state.Kernel.FileDescriptors with
-                | Ok registry ->
-                    0,
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            FileDescriptors = registry
-                        }
-                    )
+                match EmulatedKernel.closeFd fd state.Kernel with
+                | Ok kernel -> 0, state.MapKernel (fun _ -> kernel)
                 | Error FileDescriptorCloseError.BadFd ->
                     -1,
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            LastSystemError = UnixError.toRawErrno UnixError.EBADF
-                        }
+                    state.MapKernel (
+                        EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EBADF)
                     )
 
             state
@@ -4298,14 +4251,9 @@ module NativeSystemNative =
                 state |> storeCreatedSocket -1L |> completeWith (UnixError.toPal error)
             | Ok (domain, kind, protocol) ->
 
-            let fd, registry =
-                FileDescriptorRegistry.createSocket domain kind protocol state.Kernel.FileDescriptors
+            let fd, kernel = EmulatedKernel.createSocket domain kind protocol state.Kernel
 
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    FileDescriptors = registry
-                }
-            )
+            state.MapKernel (fun _ -> kernel)
             |> storeCreatedSocket (int64 fd)
             |> completeWith UnixError.palSuccess
         | Some "SystemNative_CreateSocketEventPort",
@@ -4400,20 +4348,12 @@ module NativeSystemNative =
             let fd = fdArgument "SystemNative_CloseSocketEventPort" instruction.Arguments.[0]
 
             let error, state =
-                match FileDescriptorRegistry.close fd state.Kernel.FileDescriptors with
-                | Ok registry ->
-                    UnixError.palSuccess,
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            FileDescriptors = registry
-                        }
-                    )
+                match EmulatedKernel.closeFd fd state.Kernel with
+                | Ok kernel -> UnixError.palSuccess, state.MapKernel (fun _ -> kernel)
                 | Error FileDescriptorCloseError.BadFd ->
                     UnixError.toPal UnixError.EBADF,
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            LastSystemError = UnixError.toRawErrno UnixError.EBADF
-                        }
+                    state.MapKernel (
+                        EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EBADF)
                     )
 
             state
@@ -4532,11 +4472,7 @@ module NativeSystemNative =
                 // numberings, so no flavour decision arises.
                 let state = storePointer ManagedPointerSource.Null state
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrno UnixError.ENOMEM
-                    }
-                )
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.ENOMEM))
                 |> IlMachineState.pushToEvalStack'
                     (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal UnixError.ENOMEM)))
                     ctx.Thread
@@ -4708,10 +4644,8 @@ module NativeSystemNative =
 
                 writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange bytes) state
                 |> fun state ->
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            LastSystemError = UnixError.toRawErrnoUnder numbering error
-                        }
+                    state.MapKernel (
+                        EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                     )
                 |> IlMachineState.pushToEvalStack'
                     (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal error)))
@@ -4854,11 +4788,7 @@ module NativeSystemNative =
                 | None -> UnixError.EBADF
 
             let state =
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrno error
-                    }
-                )
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
@@ -4888,11 +4818,7 @@ module NativeSystemNative =
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
 
             let setErrno (state : IlMachineState) (error : UnixError) : IlMachineState =
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrno error
-                    }
-                )
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
 
             // Decoding the `buffer` pointer is deferred until we are
             // about to dereference it. `Common_Write` is
@@ -4953,7 +4879,8 @@ module NativeSystemNative =
                                 | SimulatedUnixFlavour.Darwin -> UnixError.ENXIO
 
                             -1, StepEffect.NoEffect, setErrno state error
-                        | OpenFileTarget.Socket socket ->
+                        | OpenFileTarget.Socket socketId ->
+                            let socket = EmulatedKernel.socket socketId state.Kernel
                             // Refused for the same reason `SystemNative_Read`
                             // refuses a socket: measured on a fresh, unbound,
                             // unconnected socket, `write` is EPIPE on Linux but
@@ -4971,7 +4898,7 @@ module NativeSystemNative =
                             // signal.cpp:244`). So the guest-visible fact is the
                             // bare errno.
                             failwith
-                                $"%s{operation}: fd %d{fd} is socket %O{socket.Id} (%O{socket.Domain}, %O{socket.Kind}). PawPrint models no socket connection state, and `write(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is EPIPE on Linux against ENOTCONN on Darwin for a TCP socket, ENOTCONN on both for a Unix-domain stream socket, and EDESTADDRREQ for a datagram socket. Model the connection state before answering this."
+                                $"%s{operation}: fd %d{fd} is socket %O{socketId} (%O{socket.Domain}, %O{socket.Kind}). PawPrint models no socket connection state, and `write(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is EPIPE on Linux against ENOTCONN on Darwin for a TCP socket, ENOTCONN on both for a Unix-domain stream socket, and EDESTADDRREQ for a datagram socket. Model the connection state before answering this."
                         | OpenFileTarget.File (inode, offset) ->
                             let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
@@ -5237,11 +5164,7 @@ module NativeSystemNative =
                 // errno, push 0. Don't fail loud here — uncatchable signals
                 // are a documented BCL-observable failure mode, not a
                 // simulator bug.
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        LastSystemError = UnixError.toRawErrno UnixError.EINVAL
-                    }
-                )
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EINVAL))
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some

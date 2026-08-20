@@ -155,6 +155,26 @@ type SetIdBitsOnTruncation =
     /// the same file by the same process would strip it.
     | Preserve
 
+/// Whether this Unix clears `S_ISGID` when an unprivileged process changes a
+/// file's contents, on a file that is not group-executable.
+///
+/// The one thing about a content-changing write the two platforms disagree
+/// about, so it is derived from `SimulatedUnixFlavour` rather than crashed on;
+/// see `SimulatedUnixPlatform.setGroupIdOnWrite`, which is where the measured
+/// table lives.
+///
+/// Only `S_ISGID` needs a rule. `S_ISUID` is cleared by both flavours in every
+/// measured row, and the sticky bit is left alone by both, so a DU spanning
+/// those too would carry a case no platform selects.
+[<RequireQualifiedAccess>]
+type SetGroupIdOnWrite =
+    /// Linux: without `S_IXGRP` the bit means mandatory locking rather than
+    /// privilege, so a write leaves it alone — `02644` survives.
+    | StripWhenGroupExecutable
+    /// Darwin: the bit goes whatever the execute bits say, exactly as `S_ISUID`
+    /// does — `02644` becomes `00644`.
+    | StripAlways
+
 [<RequireQualifiedAccess>]
 module PermissionBits =
     /// The widest `st_mode & 0o7777` can be: three rwx triples, plus setuid,
@@ -210,66 +230,78 @@ module PermissionBits =
     ///
     /// One rule, shared by `write(2)` and by truncation: measured non-root on
     /// Linux 6.18.5, `write`, `ftruncate`, `O_TRUNC` and a no-op `ftruncate`
-    /// agree on all of `04755`, `04644`, `02755`, `02644`, `06755` and `01755`.
-    /// Factored out so the bit arithmetic — which is where an off-by-one bit
-    /// would hide — exists once.
+    /// agree on all of `04755`, `04644`, `02755`, `02644`, `06755`, `02600`,
+    /// `02640`, `06644`, `03755` and `01755`. Factored out so the bit arithmetic
+    /// — which is where an off-by-one bit would hide — exists once.
+    ///
+    /// Linux only. Darwin strips nothing at all on truncation, and on a write
+    /// strips `S_ISGID` unconditionally; see `SetGroupIdOnWrite`.
     ///
     /// `S_ISUID` goes whatever the execute bits say (`04644` becomes `00644`).
     /// `S_ISGID` goes only alongside `S_IXGRP`: without it the bit means
     /// mandatory locking rather than privilege, and `02644` survives. The sticky
     /// bit is never touched.
-    let private setIdBitsLinuxClears (raw : int) : int =
-        let setUserId = 0o4000
-        let setGroupId = 0o2000
-        let groupExecute = 0o0010
+    let private setUserId : int = 0o4000
+    let private setGroupId : int = 0o2000
+    let private groupExecute : int = 0o0010
 
+    let private setIdBitsLinuxClears (raw : int) : int =
         setUserId ||| (if raw &&& groupExecute <> 0 then setGroupId else 0)
 
     /// The bits a regular file is left with after a *content-changing* write by a
-    /// process with `privilege`. A write that transfers nothing changes nothing,
-    /// so a caller must not consult this for one.
+    /// process with `privilege`, on a kernel with this `rule`. A write that
+    /// transfers nothing changes nothing, so a caller must not consult this for
+    /// one.
     ///
-    /// Measured, non-root, on macOS 26.6 and Linux 6.18.5:
+    /// Total. Measured non-root on macOS 26.6 and Linux 6.18.5:
     ///
-    /// | before | after |
-    /// |---|---|
-    /// | `04755` (setuid) | `00755` |
-    /// | `04644` (setuid, not executable at all) | `00644` |
-    /// | `02755` (setgid, group-executable) | `00755` |
-    /// | `01755` (sticky) | `01755` — untouched |
-    /// | `00644` | `00644` |
+    /// | before | Linux | Darwin |
+    /// |---|---|---|
+    /// | `04755` | `00755` | `00755` |
+    /// | `04644` | `00644` | `00644` |
+    /// | `02755` | `00755` | `00755` |
+    /// | `02644` | `02644` | `00644` |
+    /// | `02600` | `02600` | `00600` |
+    /// | `02640` | `02640` | `00640` |
+    /// | `06755` | `00755` | `00755` |
+    /// | `06644` | `02644` | `00644` |
+    /// | `03755` | `01755` | `01755` |
+    /// | `01755` | `01755` | `01755` |
+    /// | `00644` | `00644` | `00644` |
     ///
-    /// ...and as root every one of them is left exactly as it was, which is what
+    /// ...and as root every row is left exactly as it was, on both, which is what
     /// `WritePrivilege.Privileged` selects.
     ///
-    /// **Partial, deliberately**, and now known to be partial over a *divergence*
-    /// rather than over an unmeasured shape. `S_ISGID` on a file that is not
-    /// group-executable is the one row the platforms disagree about: measured
-    /// non-root, Linux keeps `02644` (there the bit means mandatory locking
-    /// rather than privilege) while macOS strips it to `00644`. So this function
-    /// has to grow a `SimulatedUnixFlavour` — as `afterTruncation` below already
-    /// has — and until it does, refusing is the only honest answer.
-    let afterContentChangingWrite (privilege : WritePrivilege) (bits : PermissionBits) : PermissionBits =
+    /// `S_ISUID` goes on both flavours whatever the execute bits say, and the
+    /// sticky bit is never touched on either. The whole of the disagreement is
+    /// `S_ISGID` on a file that is not group-executable, which is what `rule`
+    /// names: on Linux the bit means mandatory locking rather than privilege and
+    /// survives, and on Darwin it goes like any other set-ID bit. `06644` is the
+    /// row worth not eliding — it carries both bits with no group-execute bit, so
+    /// the two rules and "preserve everything" all answer it differently.
+    let afterContentChangingWrite
+        (rule : SetGroupIdOnWrite)
+        (privilege : WritePrivilege)
+        (bits : PermissionBits)
+        : PermissionBits
+        =
         match privilege with
         | WritePrivilege.Privileged -> bits
         | WritePrivilege.Unprivileged ->
 
         let raw = toInt bits
-        let setGroupId = 0o2000
-        let groupExecute = 0o0010
 
-        if raw &&& setGroupId <> 0 && raw &&& groupExecute = 0 then
-            failwith
-                $"PermissionBits.afterContentChangingWrite: %O{bits} carries the set-group-ID bit without the group-execute bit, and an unprivileged process is writing to it. The platforms disagree, so there is no flavour-independent answer: measured non-root, Linux leaves 0o2644 alone (there the bit means mandatory locking rather than privilege) while macOS strips it to 0o0644. Give this function the simulated flavour, the way PermissionBits.afterTruncation takes SetIdBitsOnTruncation, rather than picking one platform's answer for both."
-        else
+        let cleared =
+            match rule with
+            | SetGroupIdOnWrite.StripWhenGroupExecutable -> setIdBitsLinuxClears raw
+            | SetGroupIdOnWrite.StripAlways -> setUserId ||| setGroupId
 
-        parseOrFail "PermissionBits.afterContentChangingWrite" (raw &&& ~~~(setIdBitsLinuxClears raw))
+        parseOrFail "PermissionBits.afterContentChangingWrite" (raw &&& ~~~cleared)
 
     /// The bits a regular file is left with after being truncated by a process
     /// with `privilege`, on a kernel with this `rule`.
     ///
-    /// Total, unlike `afterContentChangingWrite`: every shape is measured on both
-    /// platforms. Non-root, on macOS 26.6 and Linux 6.18.5:
+    /// Measured non-root on macOS 26.6 and Linux 6.18.5:
     ///
     /// | before | Linux | Darwin |
     /// |---|---|---|
@@ -277,7 +309,11 @@ module PermissionBits =
     /// | `04644` | `00644` | `04644` |
     /// | `02755` | `00755` | `02755` |
     /// | `02644` | `02644` | `02644` |
+    /// | `02600` | `02600` | `02600` |
+    /// | `02640` | `02640` | `02640` |
     /// | `06755` | `00755` | `06755` |
+    /// | `06644` | `02644` | `06644` |
+    /// | `03755` | `01755` | `03755` |
     /// | `01755` | `01755` | `01755` |
     ///
     /// ...and as root every row is left exactly as it was, on both, which is what
@@ -1562,9 +1598,6 @@ module VirtualFileSystem =
     /// answers EISDIR for a directory and resolves a symlink to whatever it names
     /// — so anything else is an interpreter bug rather than a guest error.
     ///
-    /// Also partial in one combination of stored mode and `privilege`; see
-    /// `PermissionBits.afterContentChangingWrite`.
-    ///
     /// Must not be called with an empty `bytes`: a zero-length write moves no
     /// timestamp and strips no bit, so treating it as an ordinary write of nothing
     /// would restamp the inode for a call a real kernel makes no record of. The
@@ -1573,6 +1606,7 @@ module VirtualFileSystem =
         (inode : InodeNumber)
         (offset : int64)
         (bytes : ImmutableArray<byte>)
+        (rule : SetGroupIdOnWrite)
         (privilege : WritePrivilege)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
@@ -1609,10 +1643,12 @@ module VirtualFileSystem =
         | Error refusal -> Error refusal
         | Ok updated ->
 
-        // Changing a file's contents strips its set-user-ID and set-group-ID bits
-        // unless the writer is privileged — so this is a mode change as well as a
-        // content change, and the `ctime` above covers both.
-        let permissions = PermissionBits.afterContentChangingWrite privilege permissions
+        // Changing a file's contents strips its set-user-ID bit, and its
+        // set-group-ID bit on whichever files `rule` says, unless the writer is
+        // privileged — so this is a mode change as well as a content change, and
+        // the `ctime` above covers both.
+        let permissions =
+            PermissionBits.afterContentChangingWrite rule privilege permissions
 
         Ok
             { vfs with

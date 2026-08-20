@@ -115,14 +115,15 @@ module NativeKernel32 =
 
         bytes
 
-    let private withKernel32LastSystemError (error : int) (state : IlMachineState) : IlMachineState =
+    let private withKernel32LastSystemError
+        (thread : ThreadId)
+        (error : int)
+        (state : IlMachineState)
+        : IlMachineState
+        =
         // CoreLib's generated P/Invoke wrapper clears and reads this
         // GetLastError slot, then writes LastPInvokeError itself.
-        state.MapKernel (fun kernel ->
-            { kernel with
-                LastSystemError = error
-            }
-        )
+        state.MapKernel (EmulatedKernel.withLastSystemError thread error)
 
     let private writeUtf16Char
         (operation : string)
@@ -240,7 +241,7 @@ module NativeKernel32 =
                     writeNullTerminatedUtf16 operation ctx.BaseClassTypes state bufferPtr value
 
             state
-            |> withKernel32LastSystemError plan.LastError
+            |> withKernel32LastSystemError ctx.Thread plan.LastError
             |> pushUInt32 plan.ReturnLength ctx.Thread
             |> Some
         | "GetEnvironmentStringsW",

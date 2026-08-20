@@ -33,7 +33,12 @@ using System.Runtime.InteropServices;
 // one or two bytes lands inside the first character.
 class Program
 {
-    [DllImport("libSystem.Native", EntryPoint = "SystemNative_ReadLink", SetLastError = true)]
+    // Deliberately *without* `SetLastError`. The last row asserts that a
+    // successful call left the previous errno standing, which is a fact about
+    // the native: through a flagged import the P/Invoke stub zeroes errno before
+    // the call, so "left alone" and "cleared" would be the same observation. See
+    // sourcesPure/PInvokeSetLastError.cs for the stub itself.
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_ReadLink")]
     static extern unsafe int ReadLink(byte* path, byte* buffer, int bufferSize);
 
     const int ENOENT = 2;
