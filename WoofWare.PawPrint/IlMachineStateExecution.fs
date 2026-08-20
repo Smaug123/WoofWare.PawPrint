@@ -727,221 +727,48 @@ module IlMachineStateExecution =
 
             state, meth
 
-        /// Identifies a declaration well enough to compare two of them: a MethodDef row number is
-        /// unique only within its own module, and a dispatch chain routinely spans assemblies.
-        let declarationIdentity
-            (method : WoofWare.PawPrint.MethodInfo<'a, 'b, 'c>)
-            : string * (System.Reflection.Metadata.MethodDefinitionHandle option * SynthesisedMethod option)
-            =
-            method.DeclaringAssemblyFullName, method.IdentityKey
-
-        /// The receiver's class chain, most-derived first, stopping once `stopAfter` has been emitted.
-        /// `None` for any link the walk cannot describe as a nominal type -- an array or a TypeDesc --
-        /// which is what makes the slot rule decline those receivers rather than guess at them, and
-        /// `None` too if `stopAfter` is not on the chain at all.
+        /// The receiver's class chain, most-derived first, as `(handle, identity)`.
         ///
-        /// A slot's membership can extend *above* the call target -- a call spelled `B::M` names the
-        /// slot `A.M` introduced -- so the seeding walk extends this chain upward on demand
-        /// (`extendedAbove`). It is not built to the root eagerly because the extension is usually
-        /// empty: a target that is itself `newslot` introduced its slot, and nothing above it belongs.
-        let nominalChainUpTo
-            (stopAfter : ResolvedTypeIdentity)
+        /// Needed because the slot table names its occupant's declaring type by
+        /// `ResolvedTypeIdentity`, while concretising a method needs that type's `ConcreteTypeHandle`
+        /// -- the instantiation the receiver actually supplies. `None` means some link is not a
+        /// registered nominal type, which is the signal to fall back: a structural receiver has no
+        /// class chain to walk.
+        let concreteChainOfReceiver
             (state : IlMachineState)
-            : IlMachineState *
-              (ConcreteTypeHandle * ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>) list option
+            : IlMachineState * (ConcreteTypeHandle * ResolvedTypeIdentity) list option
             =
-            let rec go
-                (state : IlMachineState)
-                (handle : ConcreteTypeHandle)
-                (acc : _ list)
-                : IlMachineState * _ list option
-                =
+            let rec go state handle acc =
                 match IlMachineState.tryGetConcreteTypeInfo state handle with
                 | None -> state, None
-                | Some (ty, typeInfo) ->
-                    let acc = (handle, ty, typeInfo) :: acc
-
-                    if ty.Identity = stopAfter then
-                        state, Some (List.rev acc)
-                    else
+                | Some (ty, _) ->
+                    let acc = (handle, ty.Identity) :: acc
 
                     let state, baseHandle =
                         IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state handle
 
                     match baseHandle with
-                    | None -> state, None
+                    | None -> state, Some (List.rev acc)
                     | Some baseHandle -> go state baseHandle acc
 
             go state dispatchTypeHandle []
 
-        /// Do these two declarations have the same name and the exactly equivalent signature,
-        /// return type included?
+        /// Answer the call the way CoreCLR does: find the slot the target declaration owns, then read
+        /// that slot of the receiver's method table.
         ///
-        /// Exactness is CoreCLR's *layout* rule (`MetaSig::CompareMethodSigs`), and it is what this
-        /// needs rather than the assignable-return latitude `signatureMatchesTarget` applies: a
-        /// covariant-return override is `newslot` in CoreCLR and reaches its base slot through a
-        /// MethodImpl, so admitting an assignable return here would make it look like an ordinary
-        /// override of that slot and pick the wrong nearest ancestor.
+        /// This replaces a rule that reconstructed the slot from the set of declarations known to name
+        /// it. That rule took six review rounds and seven fixes and still declined five ways, because a
+        /// slot is a mutable indexed cell and a set of declarations cannot model one: it could not
+        /// order two writes on one type, retire an alias, or say which of two aliased slots a later
+        /// override wrote. None of those questions arises here -- there is a table, and index `i` of it
+        /// is the answer.
         ///
-        /// Both declaring types are non-generic wherever this is called, so the substitution
-        /// contexts are empty.
-        let declarationsMatch
-            (left : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-            (right : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-            (state : IlMachineState)
-            : IlMachineState * bool
-            =
-            if
-                left.Name <> right.Name
-                || left.Signature.GenericParameterCount <> right.Signature.GenericParameterCount
-                || left.Signature.RequiredParameterCount <> right.Signature.RequiredParameterCount
-            then
-                state, false
-            else
-
-            let comparand
-                (method : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-                : TypeConcretization.SignatureComparand
-                =
-                {
-                    Signature = method.Signature
-                    AssemblyFullName = method.DeclaringAssemblyFullName
-                    DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed ImmutableArray.Empty
-                }
-
-            IlMachineTypeResolution.signaturesEquivalent
-                loggerFactory
-                baseClassTypes
-                state
-                false
-                (comparand left)
-                (comparand right)
-
-        /// The declaration `candidate` overrides by ordinary layout placement: the nearest strict
-        /// ancestor of its declaring type that declares a matching virtual instance method.
-        ///
-        /// `None` when `candidate` is `newslot` (it takes a slot of its own and overrides nothing by
-        /// placement) or when no ancestor declares a match, which is CoreCLR giving an unmatched
-        /// non-newslot virtual a fresh slot.
-        ///
-        /// The scan stops after `bottom`'s declaring type, because nothing above it can be the
-        /// *nearest* match once that type declares one.
-        let overriddenByPlacement
-            (chain :
-                (ConcreteTypeHandle * ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>) list)
-            (candidateDeclaringType : ResolvedTypeIdentity)
-            (candidate : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-            (state : IlMachineState)
-            : IlMachineState *
-              WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option
-            =
-            if candidate.IsNewSlot then
-                state, None
-            else
-
-            let strictAncestors =
-                chain
-                |> List.skipWhile (fun (_, ty, _) -> ty.Identity <> candidateDeclaringType)
-                |> List.skip 1
-
-            let rec go (state : IlMachineState) (types : _ list) =
-                match types with
-                | [] -> state, None
-                | (_, _, (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)) :: rest ->
-                    let candidates =
-                        typeInfo.Methods |> List.filter (fun m -> m.IsVirtual && not m.IsStatic)
-
-                    let state, matched =
-                        ((state, None), candidates)
-                        ||> List.fold (fun (state, found) m ->
-                            match found with
-                            | Some _ -> state, found
-                            | None ->
-                                let state, matches = declarationsMatch candidate m state
-                                state, (if matches then Some m else None)
-                        )
-
-                    match matched with
-                    | Some m -> state, Some m
-                    | None -> go state rest
-
-            go state strictAncestors
-
-        /// Which method answers a `callvirt` naming `target`, by following the *overrides* relation
-        /// from the target to a fixed point.
-        ///
-        /// This is CoreCLR's slot unification (`MethodTableBuilder::SetupMethodTable2`,
-        /// methodtablebuilder.cpp:11344-11381) computed along the receiver's chain rather than by
-        /// iterating a materialised vtable, which dispatch cannot reach: the layout walk compiles
-        /// after this file. A declaration is overridden by `X` when either `X` is placed onto it
-        /// (`overriddenByPlacement`) or a MethodImpl on `X`'s declaring type names it, and the most
-        /// derived such `X` wins and is then itself asked the same question.
-        ///
-        /// `None` means the shape is outside what this rule serves and the caller should fall back:
-        /// the target has no MethodDef row, or is not a virtual instance method, or the chain is not
-        /// wholly nominal, or some type in it is a generic definition.
-        ///
-        /// That last exclusion is what keeps a generic chain on the pre-existing walk, which today
-        /// answers the shapes `sourcesPure/VirtualDispatchGenericChainOverrides.cs` pins correctly and
-        /// the ones `VirtualDispatchGenericDefinitionSlots.cs` parks wrongly. Serving them here needs
-        /// each ancestor's signature read in *its own* type variables -- two declarations that differ
-        /// in those variables can coincide once substituted, as `A&lt;T&gt;.M(T)` and `B&lt;T&gt;.M(string)` do at
-        /// `T = string` -- which is the definition-level base walk in `VirtualSlotLayout`. That
-        /// module now compiles before this file, so the obstacle is no longer compilation order but
-        /// that this rule reconstructs the slot from declarations instead of reading the table.
-        ///
-        /// The exclusion is not the only thing standing between a generic chain and a wrong answer:
-        /// `declarationsMatch` builds its comparands with an *empty* substitution context, so a
-        /// signature mentioning a type variable is a detected misuse there rather than a silent
-        /// mismatch ("the comparand was built with the wrong instantiation"). Removing this check
-        /// therefore makes the affected guests fail loudly, which is how it is tested.
-        /// Which method answers a `callvirt` naming `target`, by replaying the writes CoreCLR's
-        /// method-table builder would have made to that slot.
-        ///
-        /// A `callvirt` names a *slot*, and a slot is named by every declaration in its override
-        /// chain: if `B.M` overrides `A.M` they are one slot, so a MethodImpl spelled
-        /// `.override A::M` also replaces what a call spelled `B::M` reaches. The slot is therefore
-        /// tracked as the set of declarations known to name it, seeded with the target and everything
-        /// above it that shares its slot by placement, and extended by each write.
-        ///
-        /// Writes are replayed base-first and the last one wins, which is the order
-        /// `MethodTableBuilder` applies them in and what makes iterating to a fixed point unnecessary
-        /// (`SetupMethodTable2`'s loop, methodtablebuilder.cpp:11344-11381, exists because it works
-        /// over an already-built table rather than in inheritance order). Each type writes through its
-        /// MethodImpls first and then through ordinary placement, because `PlaceMethodImpls` runs
-        /// after `PlaceVirtualMethods`. A type may write more than once through MethodImpls: a
-        /// MethodImpl whose Declaration and Body sit on one type is legal, and chaining two of them
-        /// within a type is upstream's own worked example (methodtablebuilder.cpp:11337).
-        ///
-        /// Termination is by exhaustion rather than by descent: every write adds a declaration to the
-        /// slot, and only declarations not already in it are eligible, so even malformed cyclic
-        /// MethodImpls -- which CoreCLR's loader rejects and PawPrint does not validate -- cannot
-        /// spin.
-        ///
-        /// This agrees with CoreCLR whenever every class MethodImpl's Declaration is the nearest
-        /// matching declaration above its Body, which is everything Roslyn emits. Hand-written IL can
-        /// alias a slot in a way a declaration-keyed rule cannot see -- `.override A::M` from a method
-        /// whose name matches nothing above it -- and the answer then differs; the pre-existing walk
-        /// differs on that shape too, so nothing regresses.
-        ///
-        /// `None` means the shape is outside what this serves and the caller should fall back: the
-        /// target has no MethodDef row, or is not a virtual instance method, or is not a class method,
-        /// or `walkBaseTypes` is false (the `constrained.` exact-type probe), or the chain is not
-        /// wholly nominal, or some type in it is a generic definition.
-        ///
-        /// That last exclusion is what keeps a generic chain on the pre-existing walk, which today
-        /// answers the shapes `sourcesPure/VirtualDispatchGenericChainOverrides.cs` pins correctly and
-        /// the ones `VirtualDispatchGenericDefinitionSlots.cs` parks wrongly. Serving them here needs
-        /// each ancestor's signature read in *its own* type variables -- two declarations that differ
-        /// in those variables can coincide once substituted, as `A&lt;T&gt;.M(T)` and `B&lt;T&gt;.M(string)` do at
-        /// `T = string` -- which is the definition-level base walk in `VirtualSlotLayout`. That
-        /// module now compiles before this file, so the obstacle is no longer compilation order but
-        /// that this rule reconstructs the slot from declarations instead of reading the table.
-        /// The exclusion is not the only guard: `declarationsMatch` builds
-        /// its comparands with an *empty* substitution context, so a signature mentioning a type
-        /// variable is a detected misuse there rather than a silent mismatch, which is how removing
-        /// the exclusion is tested.
-        let tryResolveByOverrideChain
+        /// `None` means the shape is outside what this serves and the caller should fall back. The
+        /// reasons are now few: an interface target, whose dispatch goes through the interface map
+        /// rather than a vtable index; a non-virtual or static target; a target with no MethodDef row;
+        /// a receiver with no class chain; `walkBaseTypes = false`, which is the `constrained.`
+        /// exact-type probe; or a declaration owning no slot of its own declaring type.
+        let tryResolveBySlotTable
             (state : IlMachineState)
             : IlMachineState *
               (ConcreteTypeHandle *
@@ -953,344 +780,67 @@ module IlMachineStateExecution =
                 || methodDeclaringType.IsInterface
                 || not methodToCall.IsVirtual
                 || methodToCall.IsStatic
+                || methodToCall.TryMetadata.IsNone
             then
                 state, None
             else
 
-            match methodToCall.TryMetadata with
-            | None ->
-                // A synthesised target has no MethodDef row, so no MethodImpl can name it and no
-                // ancestor declaration can be compared against it.
-                state, None
-            | Some targetMetadata ->
+            // One walk gives both halves: which slot every declaration in the receiver's chain owns,
+            // and what each slot of the receiver holds. Asking the declaring type separately for the
+            // first would build a second table for no gain -- slot numbers are prefix-stable, so the
+            // receiver's own list already names the target's declaration at the index its declaring
+            // type gave it.
+            let state, table =
+                VirtualSlotLayout.dispatchTableOfClosed loggerFactory baseClassTypes "callvirt" state dispatchTypeHandle
 
-            let state, chain =
-                nominalChainUpTo methodToCall.RequiredDeclaringType.Identity state
+            match table with
+            | None ->
+                // A receiver with no method table: a byref, pointer or function pointer.
+                state, None
+            | Some (placed, content) ->
+
+            let target = methodToCall.DeclaringAssemblyFullName, methodToCall.IdentityKey
+
+            match
+                placed
+                |> List.tryFind (fun (slot, _) -> (slot.DeclaredBy.AssemblyFullName, slot.Method.IdentityKey) = target)
+            with
+            | None ->
+                // The target owns no vtable slot anywhere on the receiver's chain -- either it holds
+                // none of its own declaring type's slots, or the receiver does not derive from that
+                // type at all. Valid IL gives neither, so hand the question back rather than guess.
+                state, None
+            | Some (_, slot) ->
+
+            match List.tryItem slot content with
+            | None ->
+                // Prefix stability means a slot named by an ancestor is always within the receiver's
+                // table, so this is unreachable for a chain the walk built consistently. Falling back
+                // beats reading past the end.
+                state, None
+            | Some occupant ->
+
+            // The table says *which MethodDef*. Concretising it needs the instantiation the receiver
+            // supplies for the type that declares it, which is that type's handle on the receiver's own
+            // chain.
+            let state, chain = concreteChainOfReceiver state
 
             match chain with
             | None -> state, None
             | Some chain ->
 
-            if chain |> List.exists (fun (_, _, typeInfo) -> not typeInfo.Generics.IsEmpty) then
-                state, None
-            else
-
-            let targetDeclaration = declaringAssy.Methods.[targetMetadata.Handle]
-
-            let slotMembers = System.Collections.Generic.HashSet<_> ()
-            let slotShapes = System.Collections.Generic.HashSet<_> ()
-
-            // Set when the replay cannot faithfully model this slot and the caller must fall back.
-            // Every such exit must set it rather than proceeding with a partial slot: continuing with
-            // a member set that is missing declarations answers with whatever writes it *did* see,
-            // which is a wrong body rather than a decline.
-            //
-            // Ordering two writes on one type needs the
-            // slot *indices* CoreCLR has and this rule does not: with `B.M` overriding `A::M` and also
-            // carrying `.override A::N`, a later type overriding both `B.M` and `A.N` writes two
-            // different slots, and a declaration-keyed rule sees both candidates qualify for each.
-            // Measured on the host: `A::N` reaches `C.N`, not `C.M`. Rather than pick by metadata
-            // order, decline and let the pre-existing walk answer -- which it does correctly for that
-            // shape, as `TestFabricatedSlotAliasing` pins.
-            let mutable declined = false
-
-            let shapeOf
-                (method : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-                : string * int * int
-                =
-                method.Name, method.Signature.GenericParameterCount, method.Signature.RequiredParameterCount
-
-            let addSlotMember
-                (method : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-                : unit
-                =
-                slotMembers.Add (declarationIdentity method) |> ignore<bool>
-                slotShapes.Add (shapeOf method) |> ignore<bool>
-
-            /// Can this MethodImpl's Declaration name the slot, judged without resolving it?
-            ///
-            /// A type carries one MethodImpl row per explicit implementation, and for a primitive
-            /// that is most of its generic-math interface surface -- `System.Int32` has around 110 --
-            /// so resolving every row on every `callvirt` passing through such a type is not
-            /// affordable. Name and parameter counts come straight off the row.
-            let declarationCouldNameSlot (relativeAssembly : DumpedAssembly) (token : MetadataToken) : bool =
-                match token with
-                | MetadataToken.MethodDef h ->
-                    let method = relativeAssembly.Methods.[h]
-
-                    slotShapes.Contains (
-                        method.Name,
-                        method.Signature.GenericParameterCount,
-                        method.Signature.RequiredParameterCount
-                    )
-                | MetadataToken.MemberReference h ->
-                    let memberRef = relativeAssembly.Members.[h]
-
-                    match memberRef.Signature with
-                    | MemberSignature.Method signature ->
-                        slotShapes.Contains (
-                            memberRef.PrettyName,
-                            signature.GenericParameterCount,
-                            signature.RequiredParameterCount
-                        )
-                    | MemberSignature.Field _ -> false
-                | _ -> false
-
-            // Seed the slot with the target and everything above it sharing the slot by placement,
-            // one link at a time so that each step's declaring type is known, extending the chain
-            // upward as it goes. Without this, a MethodImpl naming an *ancestor* of the call site is
-            // missed: for `A.M`, `B.M` overriding it, `C.M` newslot with `.override A::M` and `D.M`
-            // overriding `C.M`, CoreCLR answers `D.M` for a call spelled `B::M`, and a rule keyed on
-            // `B.M` alone finds neither write.
-            //
-            // The extension stops as soon as placement does, which for a `newslot` target is
-            // immediately: it introduced the slot, so nothing above it can name it.
-            let rec seed
-                (state : IlMachineState)
-                (chainSoFar :
-                    (ConcreteTypeHandle *
-                    ConcreteType<ConcreteTypeHandle> *
-                    TypeInfo<GenericParamFromMetadata, TypeDefn>) list)
-                (declaringType : ResolvedTypeIdentity)
-                (method : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-                : IlMachineState *
-                  (ConcreteTypeHandle * ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>) list
-                =
-                addSlotMember method
-
-                if method.IsNewSlot then
-                    // It introduced this slot, so no declaration above it can name the slot and there
-                    // is nothing to seed from. Checking here rather than letting the placement scan
-                    // answer `None` is what keeps the common case off the upward extension entirely:
-                    // `None` from that scan is ambiguous between "newslot" and "the chain does not
-                    // reach far enough yet", and only the second is worth extending for.
-                    state, chainSoFar
-                else
-
-                let state, placedOnto = overriddenByPlacement chainSoFar declaringType method state
-
-                match placedOnto with
-                | Some placedOnto -> stepUp state chainSoFar declaringType placedOnto
-                | None -> extendUpward state chainSoFar declaringType method
-
-            /// `placedOnto` was found on the chain, so continue from the type that declares it.
-            and stepUp state chainSoFar declaringType placedOnto =
-                let identity = declarationIdentity placedOnto
-
-                let above =
-                    chainSoFar
-                    |> List.skipWhile (fun (_, ty, _) -> ty.Identity <> declaringType)
-                    |> List.tail
-                    |> List.tryFind (fun (_, _, typeInfo) ->
-                        typeInfo.Methods |> List.exists (fun m -> declarationIdentity m = identity)
-                    )
-
-                match above with
-                | Some (_, ty, _) -> seed state chainSoFar ty.Identity placedOnto
-                | None ->
-                    failwith
-                        $"virtual dispatch to %s{methodToCall.Name}: %s{placedOnto.Name} was found above %s{declaringType.AssemblyFullName} on the receiver's chain, but its declaring type was not"
-
-            /// Nothing on the chain so far declares what `method` was placed onto, so grow the chain
-            /// upward a link at a time and ask again. An intermediate type that declares nothing
-            /// matching is why this keeps climbing rather than giving up after one link.
-            and extendUpward state chainSoFar declaringType method =
-                let deepest = chainSoFar |> List.last |> (fun (handle, _, _) -> handle)
-
-                let state, baseHandle =
-                    IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state deepest
-
-                match baseHandle with
-                // The root: the slot extends no further.
-                | None -> state, chainSoFar
-                | Some baseHandle ->
-
-                match IlMachineState.tryGetConcreteTypeInfo state baseHandle with
-                | None ->
-                    // An ancestor this walk cannot describe, so the slot may extend into declarations
-                    // it cannot see. Same reasoning as the generic case below.
-                    declined <- true
-                    state, chainSoFar
-                | Some (baseTy, baseTypeInfo) ->
-
-                // A generic definition above the target: its signatures mention its own variables, so
-                // this cannot tell which of its declarations the slot extends into. Stopping here
-                // rather than declining would leave that declaration out of the slot, so a MethodImpl
-                // naming it is missed and the answer becomes the last write this *did* see. Measured
-                // on a fabricated `A<T>.M`, `B : A<int>` overriding it, `C : B` newslot with
-                // `.override A<int>::M` and `D : C`: a call spelled `B::M` on a `D` must reach `D.M`,
-                // and a truncated slot answers `B.M`.
-                if not baseTypeInfo.Generics.IsEmpty then
-                    declined <- true
-                    state, chainSoFar
-                else
-
-                let chainSoFar = chainSoFar @ [ baseHandle, baseTy, baseTypeInfo ]
-
-                let state, placedOnto = overriddenByPlacement chainSoFar declaringType method state
-
-                match placedOnto with
-                | Some placedOnto -> stepUp state chainSoFar declaringType placedOnto
-                | None -> extendUpward state chainSoFar declaringType method
-
-            let state, chain =
-                seed state chain methodToCall.RequiredDeclaringType.Identity targetDeclaration
-
-            /// Everything this type writes to the slot, MethodImpls first and repeatedly, then at
-            /// most one ordinary placement.
-            let writesOf
-                (state : IlMachineState)
-                (handle : ConcreteTypeHandle)
-                (ty : ConcreteType<ConcreteTypeHandle>)
-                (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-                (
-                    content :
-                        ConcreteTypeHandle *
-                        WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
-                )
-                =
-                let assembly = state._LoadedAssemblies.ByDefinitionName ty.Identity.AssemblyFullName
-
-                // Ordinary placement first, then MethodImpls, because that is the order the builder
-                // applies them (`PlaceVirtualMethods` then `PlaceMethodImpls`) and the later write
-                // wins. Measured: a type carrying both an ordinary override of `A::M` and a
-                // `.override A::M` on a differently-named method dispatches to the MethodImpl's body.
-                //
-                // A candidate already naming the slot is what the slot holds, not a fresh write to it.
-                let candidates =
-                    typeInfo.Methods
-                    |> List.filter (fun m ->
-                        m.IsVirtual
-                        && not m.IsStatic
-                        && not m.IsNewSlot
-                        && slotShapes.Contains (shapeOf m)
-                        && not (slotMembers.Contains (declarationIdentity m))
-                    )
-
-                let state, placementWrites =
-                    ((state, []), candidates)
-                    ||> List.fold (fun (state, found) m ->
-                        let state, placedOnto = overriddenByPlacement chain ty.Identity m state
-
-                        match placedOnto with
-                        | Some placedOnto when slotMembers.Contains (declarationIdentity placedOnto) ->
-                            state, m :: found
-                        | _ -> state, found
-                    )
-
-                let state, content =
-                    match placementWrites with
-                    | [] -> state, content
-                    | [ m ] ->
-                        addSlotMember m
-                        state, (handle, m)
-                    | _ ->
-                        declined <- true
-                        state, content
-
-                let rec viaMethodImpls (state : IlMachineState) content =
-                    let state, writes =
-                        ((state, []), typeInfo.MethodImpls.Values)
-                        ||> Seq.fold (fun (state, found) impl ->
-                            if not (declarationCouldNameSlot assembly impl.Declaration) then
-                                state, found
-                            else
-
-                            let state, declaration, _ =
-                                resolveMethodReference ty.Generics assembly impl.Declaration state
-
-                            if not (slotMembers.Contains (declarationIdentity declaration)) then
-                                state, found
-                            else
-
-                            match impl.Body with
-                            | MetadataToken.MethodDef body ->
-                                let body = assembly.Methods.[body]
-
-                                if slotMembers.Contains (declarationIdentity body) then
-                                    state, found
-                                else
-
-                                // Only a *shape-preserving* alias is served: Body and Declaration must
-                                // name the same method modulo the return type. That is what a
-                                // covariant-return override is, and it is the only class MethodImpl
-                                // Roslyn emits.
-                                //
-                                // A renaming alias -- `.override A::M` on a method called `X`, or a
-                                // Body called `M` overriding a Declaration called `N` -- makes one
-                                // declaration live in two slots that are otherwise unrelated, and this
-                                // rule tracks the slot as a *set of declarations* with no way to say
-                                // which slot a later write breaks. Real .NET retires the alias when a
-                                // direct write overwrites it; an additive set cannot. Measured on
-                                // fabricated IL: `B.M` aliased to body `B.X`, `C.M` overriding `M` and
-                                // `D.X` overriding `X`, dispatches `B::M` on a `D` to `C.M`, where
-                                // carrying the alias forward answers `D.X`.
-                                let state, samePlace =
-                                    let comparand
-                                        (assemblyFullName : string)
-                                        (signature : TypeMethodSignature<TypeDefn>)
-                                        =
-                                        {
-                                            TypeConcretization.SignatureComparand.Signature = signature
-                                            TypeConcretization.SignatureComparand.AssemblyFullName = assemblyFullName
-                                            TypeConcretization.SignatureComparand.DeclaringTypeGenerics =
-                                                TypeConcretization.SubstitutionContext.ofClosed ImmutableArray.Empty
-                                        }
-
-                                    if declaration.Name <> body.Name then
-                                        state, false
-                                    else
-                                        IlMachineTypeResolution.signaturesEquivalent
-                                            loggerFactory
-                                            baseClassTypes
-                                            state
-                                            true
-                                            (comparand declaration.DeclaringAssemblyFullName declaration.Signature)
-                                            (comparand body.DeclaringAssemblyFullName body.Signature)
-
-                                if not samePlace then
-                                    declined <- true
-                                    state, found
-                                else
-                                    state, body :: found
-                            | other ->
-                                failwith
-                                    $"MethodImpl body for %s{typeInfo.Namespace}.%s{typeInfo.Name} was not a MethodDef: %O{other}"
-                        )
-
-                    match writes with
-                    | [] -> state, content
-                    | [ body ] ->
-                        addSlotMember body
-                        viaMethodImpls state (handle, body)
-                    | _ ->
-                        declined <- true
-                        state, content
-
-                let state, content = viaMethodImpls state content
-
-                state, content
-
-            // Replay from the target's declaring type down to the receiver, base-first, so that the
-            // most derived write is the last applied. Types above the target wrote earlier and were
-            // superseded by the target itself, which is where the content starts.
-            let replaySpan =
+            match
                 chain
-                |> List.rev
-                |> List.skipWhile (fun (_, ty, _) -> ty.Identity <> methodToCall.RequiredDeclaringType.Identity)
-
-            let targetHandle = replaySpan |> List.head |> (fun (handle, _, _) -> handle)
-
-            let state, (answerHandle, answer) =
-                ((state, (targetHandle, targetDeclaration)), replaySpan)
-                ||> List.fold (fun (state, content) (handle, ty, typeInfo) -> writesOf state handle ty typeInfo content)
-
-            if declined then
+                |> List.tryFind (fun (_, identity) -> identity = occupant.DeclaredBy.Identity)
+            with
+            | None ->
+                // The occupant is declared by a type that is not on the receiver's chain, which would
+                // mean the content table and the chain disagree about the receiver's ancestry.
                 state, None
-            else
+            | Some (implementationHandle, _) ->
 
-            state, Some (answerHandle, answer, "Found concrete implementation by replaying writes to the slot")
-
+            state,
+            Some (implementationHandle, occupant.Method, "Found concrete implementation by reading the receiver's slot")
 
         let findClassImplementation (state : IlMachineState) : IlMachineState * _ option =
             // Resolution precedence: explicit MethodImpl entries, then method name/signature
@@ -1354,10 +904,10 @@ module IlMachineStateExecution =
 
             walk state dispatchTypeHandle
 
-        let state, byOverrideChain = tryResolveByOverrideChain state
+        let state, bySlotTable = tryResolveBySlotTable state
 
         let state, classImplementation =
-            match byOverrideChain with
+            match bySlotTable with
             | Some result -> state, Some result
             | None -> findClassImplementation state
 

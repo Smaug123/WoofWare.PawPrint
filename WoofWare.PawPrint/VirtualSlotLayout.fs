@@ -1270,6 +1270,64 @@ module VirtualSlotLayout =
 
         state, content |> List.map _.Occupant
 
+    /// What each vtable slot of a *runtime type* holds, in slot order: the method a `callvirt` through
+    /// slot `i` on a receiver of this type runs.
+    ///
+    /// The closed counterpart of `contentVtableOfDefinition`, and it delegates to it for the same
+    /// reason `vtableOfClosed` delegates to `vtableOfDefinition`: a nominal type's content is its
+    /// definition's, shared by every instantiation. A structural handle has no definition to ask --
+    /// byrefs, pointers and function pointers are TypeDescs with no method table, and a synthesised
+    /// array's slots are `System.Array`'s.
+    /// Both halves of what answering a `callvirt` needs, from one walk: which slot each declaration in
+    /// the receiver's chain owns, and what each slot of the receiver holds.
+    ///
+    /// Dispatch needs the slot of a declaration on some *ancestor* and the content of that slot on the
+    /// *receiver*, and it is tempting to ask two questions of two types. That doubles the work for
+    /// nothing: slot numbers are prefix-stable -- `CopyParentVtable` copies the parent's slots at the
+    /// same indices -- so the receiver's own placement list already names every ancestor's declaration
+    /// at the very index the ancestor gave it. Measured on the dispatch-saturated benchmark guest:
+    /// asking separately cost 275.4ms and asking once costs 255.2ms, against 184.7ms for the
+    /// signature-matching walk this replaced.
+    let rec dispatchTableOfClosed
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (concreteType : ConcreteTypeHandle)
+        : IlMachineState * ((VtableSlot * int) list * VtableSlot list) option
+        =
+        match concreteType with
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            // TypeDescs with no method table: no slots, so nothing to dispatch through.
+            state, None
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            // A synthesised array's virtual slots are `System.Array`'s, as in `vtableOfClosed`.
+            let state, baseHandle =
+                IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state concreteType
+
+            match baseHandle with
+            | None -> state, None
+            | Some baseHandle -> dispatchTableOfClosed loggerFactory baseClassTypes operation state baseHandle
+        | ConcreteTypeHandle.Concrete _ ->
+            let concreteTypeInfo, _ =
+                IlMachineState.tryGetConcreteTypeInfo state concreteType
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: concrete type handle was not registered: %O{concreteType}"
+                )
+
+            let state, table =
+                ownerOfDefinition operation state concreteTypeInfo.Identity
+                |> placeVirtualMethodsOfDefinitionOwner loggerFactory baseClassTypes operation state
+
+            let state, content =
+                contentOfDefinitionOwner loggerFactory baseClassTypes operation state table
+
+            state, Some (table.Placed, content |> List.map _.Occupant)
+
+
     /// The slot each declaration in a definition's chain owns, base-first: `MethodDesc::GetSlot()`
     /// for every method the chain *places*, which is more than the vtable records.
     ///
