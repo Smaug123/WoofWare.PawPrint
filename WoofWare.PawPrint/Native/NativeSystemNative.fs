@@ -4366,6 +4366,29 @@ module NativeSystemNative =
             // `requireStorage` refuses for.
             let resolvedBlob = BufferPointer.dereferenceable addressArgument
 
+            // `toRawErrnoUnder` rather than `toRawErrno`: several of these errnos
+            // are numbered differently on the two flavours — EADDRNOTAVAIL is 99
+            // on Linux and 49 on Darwin — and the emulated kernel's own platform
+            // is what decides which a guest sees.
+            let failFromSyscall (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
+                let raw =
+                    UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
+
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
+                |> complete (UnixError.toPal error)
+
+            let lengthVerdict =
+                SimulatedUnixPlatform.bindAddressLength
+                    platform
+                    (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
+                    declaredLength
+
+            // A length past the upper bound is refused before the kernel copies
+            // anything, so it beats both a faulting pointer and the family check.
+            match lengthVerdict with
+            | BindLengthVerdict.RejectedBeforeCopy error -> failFromSyscall error state
+            | _ ->
+
             // Darwin reads the family before it copies anything, so a length too
             // short to reach the family is EINVAL there and never touches the
             // pointer — measured, `(struct sockaddr *) 1` with a length of 1 is
@@ -4459,12 +4482,6 @@ module NativeSystemNative =
                         | None -> false
                 | Some _ -> true
 
-            let lengthVerdict =
-                SimulatedUnixPlatform.bindAddressLength
-                    platform
-                    (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
-                    declaredLength
-
             let lengthFault = lengthVerdict <> BindLengthVerdict.Accepted
 
             // `bind(2)` copies the caller's whole declared length, not merely the
@@ -4557,26 +4574,13 @@ module NativeSystemNative =
             // 99 on Linux and 49 on Darwin after a bind that answered
             // EADDRNOTAVAIL. The null-blob and negative-length screens above are
             // the wrapper's and set nothing, which is why they return earlier.
-            // `toRawErrnoUnder` rather than `toRawErrno`: several of these errnos
-            // are numbered differently on the two flavours — EADDRNOTAVAIL is 99
-            // on Linux and 49 on Darwin — and the emulated kernel's own platform
-            // is what decides which a guest sees.
-            let failFromSyscall (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
-                let raw =
-                    UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
-
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
-                |> complete (UnixError.toPal error)
-
             match SimulatedUnixPlatform.firstBindFault platform faults with
             | Some fault ->
                 let error =
                     match fault with
-                    | BindFault.Length ->
-                        match lengthVerdict with
-                        | BindLengthVerdict.TooLong -> UnixError.ENAMETOOLONG
-                        | BindLengthVerdict.Invalid
-                        | BindLengthVerdict.Accepted -> UnixError.EINVAL
+                    // `RejectedBeforeCopy` never reaches the fault order: it is
+                    // answered above, before anything is read.
+                    | BindFault.Length -> UnixError.EINVAL
                     | BindFault.AlreadyBound -> UnixError.EINVAL
                     | BindFault.Family -> UnixError.EAFNOSUPPORT
                     | BindFault.AddressNotLocal -> UnixError.EADDRNOTAVAIL

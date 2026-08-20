@@ -1143,15 +1143,25 @@ module CreatingOpenRules =
 /// when several hold at once is per-flavour. See
 /// `SimulatedUnixPlatform.bindFaultOrder`.
 /// What this platform's `bind(2)` makes of a declared `socketAddressLen`.
+///
+/// The two rejections are not interchangeable, and the difference is *when* they
+/// happen rather than which errno they carry. Measured on both: a length past the
+/// upper bound is rejected before the kernel copies anything, so it beats a
+/// faulting pointer and beats the family check — an unmapped pointer at 129 is
+/// EINVAL on Linux where at 8 it is EFAULT, and a wrong-family blob at 256 is
+/// ENAMETOOLONG on Darwin where at 129 it is EAFNOSUPPORT. A length merely too
+/// short takes its ordinary place in `bindFaultOrder`.
 [<RequireQualifiedAccess>]
 type BindLengthVerdict =
     /// A length this platform will parse an address out of.
     | Accepted
-    /// `EINVAL`: not a length this family's sockaddr can have.
+    /// Past the greatest length this platform will consider, and so refused
+    /// before the address is copied or read at all. Linux answers `EINVAL` above
+    /// `sizeof(struct sockaddr_storage)`; Darwin answers `ENAMETOOLONG` above its
+    /// own, larger threshold.
+    | RejectedBeforeCopy of error : UnixError
+    /// `EINVAL`, from the `Length` position of this platform's fault order.
     | Invalid
-    /// `ENAMETOOLONG`: past the greatest length the platform considers at all.
-    /// Darwin only; Linux answers `EINVAL` however large the length.
-    | TooLong
 
 [<RequireQualifiedAccess>]
 type BindFault =
@@ -1527,17 +1537,17 @@ module SimulatedUnixPlatform =
     let bindAddressLength (platform : SimulatedUnixPlatform) (exactSize : int) (declared : int) : BindLengthVerdict =
         match flavour platform with
         | SimulatedUnixFlavour.Linux ->
-            if declared >= exactSize && declared <= maximumSocketAddressSize then
+            if declared > maximumSocketAddressSize then
+                BindLengthVerdict.RejectedBeforeCopy UnixError.EINVAL
+            elif declared >= exactSize then
                 BindLengthVerdict.Accepted
             else
                 BindLengthVerdict.Invalid
         | SimulatedUnixFlavour.Darwin ->
-            if declared = exactSize then
+            if declared > maximumDarwinSocketAddressLength then
+                BindLengthVerdict.RejectedBeforeCopy UnixError.ENAMETOOLONG
+            elif declared = exactSize then
                 BindLengthVerdict.Accepted
-            elif declared > maximumDarwinSocketAddressLength then
-                // Measured: 255 is EINVAL and 256 is ENAMETOOLONG, on Darwin
-                // only. Linux answers EINVAL at every oversized length.
-                BindLengthVerdict.TooLong
             else
                 BindLengthVerdict.Invalid
 

@@ -109,7 +109,11 @@ class SocketBindDarwin
 
     static unsafe int Main(string[] args)
     {
-        byte* blob = stackalloc byte[64];
+        // Large enough for every declared length these rows use: `bind(2)` copies
+        // the caller's whole declared length, so a shorter allocation is one a
+        // real kernel reads past, and PawPrint refuses rather than guessing what
+        // follows it.
+        byte* blob = stackalloc byte[256];
         byte* readBack = stackalloc byte[V4Size];
 
         // 1. An address inside the loopback prefix but not the loopback address.
@@ -353,6 +357,28 @@ class SocketBindDarwin
             if (Bind(specific, PT_TCP, blob, V4Size) != PAL_SUCCESS) return 95;
             Close(listener);
             Close(specific);
+        }
+
+        // 17. A length past the upper bound is refused before the kernel copies
+        //     or inspects anything, so it beats both a faulting pointer and the
+        //     family check. A length merely too *short* does not: it takes its
+        //     ordinary place in the fault order. Measured on both.
+        {
+            IntPtr s = Make();
+            if (s == (IntPtr) (-1)) return 96;
+
+            // Unmapped pointer, oversized length: the length wins.
+            if (Bind(s, PT_TCP, (byte*) 1, 256) != PAL_ENAMETOOLONG) return 97;
+            // Unmapped pointer, merely-short length: the copy happens first.
+            if (Bind(s, PT_TCP, (byte*) 1, 8) != PAL_EFAULT) return 98;
+
+            // Wrong family, oversized length: the length still wins...
+            for (int i = 0; i < 256; i++) blob[i] = 0;
+            if (SetAddressFamily(blob, V6Size, AF_INET6) != PAL_SUCCESS) return 99;
+            if (Bind(s, PT_TCP, blob, 256) != PAL_ENAMETOOLONG) return 100;
+            // ...and just below it, the flavour's own fault order decides.
+            if (Bind(s, PT_TCP, blob, 129) != PAL_EAFNOSUPPORT) return 101;
+            Close(s);
         }
 
         return 0;
