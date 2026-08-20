@@ -1,68 +1,48 @@
-# What each descriptor kind answers
+# What a descriptor kind answers
 
-Measured on Linux 6.18.5 aarch64 and Darwin 25.6.0 arm64 — the machines that ran
-the probes, which are not pinned by this repository and are not the release
-strings `SimulatedUnixPlatform` reports. Re-measure when a host-oracle test
-disagrees with a row, or when you deliberately target a different kernel; there
-is no version to watch.
+As with the flavour tables, the rows themselves live in tests. This file says
+which test, and records the handful of things the tests cannot say because they
+are facts about *upstream source being misleading*.
 
-Each table states the descriptor's blocking mode where that changes the answer;
-a row measured under `O_NONBLOCK` says nothing about the same call on a blocking
-descriptor, which is the mode `socket(2)` and `epoll_create1` actually hand back.
-And a row here is about *the creator named*, not about its filesystem as a class:
-`anon_inodefs` behaviour differs between `anon_inode_getfd` and the newer
-`anon_inode_getfile_secure`, so a new descriptor kind wants its own measurement.
+| descriptor kind | owned by |
+| --- | --- |
+| socket event port (`epoll_create1` / `kqueue`) | `TestLSeek` for the whence rows; `TestFileDescriptorRegistry`: `two socket event ports are two descriptions but one flock object`; `sourcesImpure/SocketEventPortDarwin.cs` and `sourcesImpure/SocketEventsWait{Linux,Darwin}.cs` for the guest-visible answers |
+| socket | `TestFileDescriptorRegistry`: `two sockets are two descriptions and two flock objects`, `dup of a socket names the same socket`; `sourcesImpure/SocketCreate{Linux,Darwin}.cs` |
+| the creatable socket triples | `TestSocketCreation` against `socketMatrix/{linux,darwin}.tsv` |
+| standard streams, regular files, directories | `TestVirtualFileSystem` and `TestVirtualFileSystemAgainstHost` |
 
-## Socket event port (`epoll_create1` / `kqueue`)
+## Three things reading the kernel source gets wrong
 
-Of the rows below, only `pread`/`pwrite` agree; other operations do agree — see
-`flavour-divergence.md` for `ftruncate`, which is `EINVAL` on both.
+These are why the rows above were measured rather than derived, and none of them
+is visible in a test's name.
 
-| op | Linux | Darwin |
-| --- | --- | --- |
-| `read` / `write` | `EINVAL` | `ENXIO` |
-| `pread` / `pwrite` | `ESPIPE` | `ESPIPE` |
-| `lseek`, whence 0–4, any offset | succeeds, reports 0 | `ESPIPE` |
-| `lseek`, whence ≥ 5 | `EINVAL` | `ESPIPE` |
-| `flock` | succeeds | `ENOTSUP` (45) |
-| `fstat` `st_mode` | `0600`, no type bits | `S_IFIFO`, no permission bits |
+1. **`lseek` on an epoll descriptor is `noop_llseek`, not `ESPIPE`.** It
+   succeeds and reports 0 — for `SEEK_SET` with `-1` and with `INT64_MAX` alike.
+   Darwin refuses with `ESPIPE`, so this is a divergence and not a shared
+   no-op.
+2. **`do_epoll_wait`'s widely-reproduced check order is stale.** The order
+   commonly quoted is maxevents → `access_ok` → `fdget`; measured on 6.18.5 it is
+   **EBADF → EINVAL (maxevents) → EFAULT (buffer) → EINVAL (not an epoll fd)**.
+3. **`access_ok` rejects only kernel-range addresses.** A userspace-but-unmapped
+   buffer passes it, and `epoll_wait` then blocks rather than faulting — so do
+   not eagerly validate a buffer before parking. `UserBufferCheck.BeforeOperation`
+   models this, and `TestUserBufferCheckAgainstHost` holds it to the host.
 
-**Two rows that source-reading gets wrong**, which is why they were measured:
+## Two scoping rules for adding a kind
 
-1. `lseek` on an epoll fd is `noop_llseek`, **not** `ESPIPE`: it succeeds and
-   reports 0 for `SEEK_SET` with `-1` and with `INT64_MAX` alike.
-2. `do_epoll_wait`'s widely-reproduced check order (maxevents → `access_ok` →
-   `fdget`) is stale. Measured on 6.18.5 the order is **EBADF → EINVAL
-   (maxevents) → EFAULT (buffer) → EINVAL (not an epoll fd)**.
+**Blocking mode changes the answer, so state it.** A row measured under
+`O_NONBLOCK` says nothing about the same call on a blocking descriptor, which is
+what `socket(2)` and `epoll_create1` actually hand back. `read` on a fresh
+unconnected *datagram* socket is the sharp case: `EAGAIN` with the flag set, and
+a block with no wake source without it. That is why the handler refuses instead
+of answering — every available answer is a claim about connection state PawPrint
+does not model, and the answers differ by platform besides (`read` is `ENOTCONN`
+for TCP on both, `EINVAL` on Linux against `ENOTCONN` on Darwin for a
+Unix-domain stream socket).
 
-`access_ok` rejects only *kernel-range* addresses, so a userspace-but-unmapped
-buffer passes it and `epoll_wait` blocks. Do not eagerly validate a buffer before
-parking; `UserBufferCheck.BeforeOperation` already models this.
-
-## Socket
-
-On a fresh, unbound, unconnected socket (`O_NONBLOCK` set, so a would-block shows
-as `EAGAIN` rather than hanging):
-
-| op | Linux (euid 1000) | Darwin |
-| --- | --- | --- |
-| `lseek`, whence 0–4, any offset | `ESPIPE` | `ESPIPE` |
-| `lseek`, whence 9 | `EINVAL` | `ESPIPE` |
-| `pread` / `pwrite` | `ESPIPE` | `ESPIPE` |
-| `flock(LOCK_EX\|LOCK_NB)` | succeeds | `ENOTSUP` (45) |
-| `ftruncate` / `fsync` | `EINVAL` | `EINVAL` |
-| `fstat` `st_mode` | `S_IFSOCK\|0777` | `S_IFSOCK\|0666` |
-| `fstat` `st_dev` / `st_ino` | sockfs dev, one inode per socket | 0 / 0 for `AF_INET`, real for `AF_UNIX` |
-| `fstat` `st_blksize` | 4096 | 131072 TCP, 9216 UDP, 8192 unix |
-| `epoll_wait` / `kevent` on it | `EINVAL` (after the `EFAULT` buffer screen) | `EBADF` |
-
-`read` and `write` on a socket are refused rather than answered, because every
-answer is a claim about connection state that PawPrint does not model: `read` is
-`ENOTCONN` for TCP on both, and `EINVAL` on Linux against `ENOTCONN` on Darwin for
-a Unix-domain stream socket. For a datagram socket the answer depends on the
-descriptor's own blocking mode, which is why the probe above set `O_NONBLOCK`: it
-saw `EAGAIN`, but a socket straight from `socket(2)` is *blocking*, and a real
-`read` on one **blocks with no wake source**. `write` is `EPIPE` on Linux against
-`ENOTCONN` on Darwin for TCP, and `EDESTADDRREQ` for a datagram socket. The Linux TCP row raises `SIGPIPE` as well,
-but a .NET guest never sees it: CoreCLR installs `signal(SIGPIPE, SIG_IGN)`
-process-wide (`src/coreclr/pal/src/exception/signal.cpp`).
+**A measurement is about the creator named, not its filesystem as a class.**
+Epoll descriptors and an `eventfd` share one `anon_inodefs` inode, which is why
+`OpenFileObject.AnonymousInode` is payload-free and two ports contend under
+`flock`. Linux hands a *distinct* inode to files made through
+`anon_inode_getfile_secure` and `anon_inode_create_getfile`, so a new descriptor
+kind on that filesystem needs its own measurement rather than this verdict.

@@ -142,12 +142,11 @@ Summarised here; `reference/testing.md` has the detail.
 
 ## Reference
 
-- `reference/flavour-divergence.md` — measured Linux/Darwin tables for
-  `open(O_CREAT)`, truncation, `fstatfs`, and the environment. **Do not
-  re-derive these** — and read its envelope section before relying on a row
-  outside what was varied.
-- `reference/descriptor-kinds.md` — what each descriptor kind answers, per
-  platform.
+- `reference/flavour-divergence.md` — an index from each measured Linux/Darwin
+  fact to the test that owns its rows, the envelope those measurements were taken
+  in, and the few facts no test states. **Read the test, do not re-measure.**
+- `reference/descriptor-kinds.md` — the same for descriptor kinds, plus three
+  places where reading the kernel source gives the wrong answer.
 - `reference/testing.md` — choosing a tier, and the traps in each.
 - `reference/probing.md` — running a probe on both platforms, and the two
   environment facts that make a probe lie.
