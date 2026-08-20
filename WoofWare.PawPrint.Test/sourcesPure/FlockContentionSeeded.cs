@@ -18,10 +18,20 @@ using System.IO;
 // each other even from one thread. A model that keyed locks on the process
 // would pass every check by never conflicting at all.
 //
-// Every check requests `FileAccess.Read`, which keeps `CanLockTheFile` on its
-// simple path (it consults the filesystem type only for a *shared* lock under
-// write access) and keeps the file unmodified, so the checks are independent of
-// each other and of order.
+// The checks below the divider request `FileAccess.Read`, which keeps
+// `CanLockTheFile` on its simple path and keeps the file unmodified, so they
+// are independent of each other and of order. The write-access checks are
+// segregated at the end for that reason, and because they are the only ones
+// that reach `SystemNative_GetFileSystemType` at all.
+//
+// Two environmental premises the differential comparison rests on, neither of
+// which any check can state for itself. The real runtime takes these locks only
+// because the harness scratch directory is on a filesystem CoreCLR considers
+// safe to `flock` — it refuses NFS, CIFS and SMB — and only because
+// `DOTNET_SYSTEM_IO_DISABLEFILELOCKING` is unset, which would short-circuit
+// `CanLockTheFile` to `false` before any of this. Both hold everywhere the
+// suite runs; a machine where either failed would make every check here pass
+// vacuously against a runtime that took no locks at all.
 //
 // The exit code is the index of the first check that failed; 0 means all
 // passed. Kept below 128, since an exit code is eight bits.
@@ -130,6 +140,49 @@ class Program
             }
             catch (IOException) { }
             if (opened) return check;
+        }
+
+        // --- the write-access half: `CanLockTheFile`'s long path ---
+        //
+        // A shared lock taken under *write* access is the one combination that
+        // consults `SystemNative_GetFileSystemType`, because `flock` is unsafe
+        // on NFS, CIFS and SMB. Everything above returns from `CanLockTheFile`
+        // before that call. This is the combination `File.WriteAllBytes` asks
+        // for, so these two checks are what say the emulated filesystem
+        // reports a type CoreCLR is willing to lock on — a runtime answering
+        // "I do not know what filesystem this is" takes no lock at all and
+        // fails check 10 while passing every check above it.
+
+        // A write-access shared lock is still a lock, so it blocks a later
+        // exclusive one.
+        check = 10;
+        using (FileStream a = File.Open("f", FileMode.Open, FileAccess.Write, FileShare.Read))
+        {
+            bool opened = false;
+            try
+            {
+                using (FileStream b = Open(FileShare.None)) { }
+                opened = true;
+            }
+            catch (IOException) { }
+            if (opened) return check;
+        }
+
+        // ...and it is *shared*, so it does not block a later shared one. Both
+        // halves are needed: a runtime that answered the filesystem-type
+        // question by taking `LOCK_EX` instead would pass check 10 and fail
+        // this one.
+        check = 11;
+        using (FileStream a = File.Open("f", FileMode.Open, FileAccess.Write, FileShare.Read))
+        {
+            try
+            {
+                using (FileStream b = Open(FileShare.Read)) { }
+            }
+            catch (IOException)
+            {
+                return check;
+            }
         }
 
         return 0;

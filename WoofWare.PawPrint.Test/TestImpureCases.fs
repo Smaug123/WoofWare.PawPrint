@@ -239,6 +239,18 @@ module TestImpureCases =
                 entry "otrunc" 0o4755
             ]
 
+    /// The seed both `GetFileSystemType` flavour guests read: one file and one
+    /// directory, which is all the mount has to hold for descriptors of both
+    /// kinds to exist.
+    let private getFileSystemTypeSeed : Map<FileName, SeedEntry> =
+        let name (s : string) = FileName.parseOrFail "test seed" s
+
+        Map.ofList
+            [
+                name "f", SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                name "d", SeedEntry.directory Map.empty
+            ]
+
     let cases : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
@@ -352,6 +364,65 @@ module TestImpureCases =
                                     // ASCII is all the oracle's seed validator
                                     // permits.
                                     name "mb", SeedEntry.Symlink (target "ßx")
+                                ]
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `SystemNative_GetFileSystemType` for every kind of descriptor
+                // the table holds, under each flavour in turn. Not differential:
+                // the number a *file* reports is a property of whichever mount
+                // the oracle's scratch directory is on, where PawPrint's is
+                // `KernelConfig.FileSystemType`. The portable half — that the
+                // reported filesystem is one CoreCLR will lock, so
+                // `File.WriteAllBytes` works — is in `WriteSeeded.cs` and
+                // `FlockContentionSeeded.cs`.
+                FileName = "GetFileSystemTypeLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        FileSystem = getFileSystemTypeSeed
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The same checks in the same order under the Darwin flavour,
+                // where `fstatfs(2)` refuses every object that is not on a
+                // filesystem. This case is what pins the Darwin column even when
+                // CI runs on Linux: the flavour is the kernel's configuration
+                // rather than the host's.
+                FileName = "GetFileSystemTypeDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        FileSystem = getFileSystemTypeSeed
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The one filesystem whose *behaviour* differs: CoreCLR will not
+                // take a shared lock under write access on NFS. Pairs with
+                // `FlockContentionSeeded.cs` check 10, which is the same two
+                // opens under the default filesystem, where they do contend.
+                FileName = "FileSystemTypeNfs.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        FileSystemType = Some EmulatedFileSystemType.Nfs
+                        FileSystem =
+                            let name (s : string) = FileName.parseOrFail "test seed" s
+
+                            Map.ofList
+                                [
+                                    name "f",
+                                    SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
                                 ]
                     }
                 AppContext = AppContextProperties.empty

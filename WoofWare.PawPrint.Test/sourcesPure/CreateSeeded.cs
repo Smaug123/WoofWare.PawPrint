@@ -42,8 +42,9 @@ using System.Text;
 // `open(2)` at the errno level and need no exception at all.
 //
 // FileShare.None throughout, deliberately: it takes LOCK_EX, where a shared lock
-// taken with write access would first consult SystemNative_GetFileSystemType,
-// which PawPrint does not implement.
+// taken with write access would first consult SystemNative_GetFileSystemType.
+// That path is covered by WriteSeeded.cs; here it would only add a second
+// reason for a creation row to fail.
 //
 // The exit code is the index of the first check that failed; 0 means all passed.
 // Kept below 128, since an exit code is eight bits.

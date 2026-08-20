@@ -1830,6 +1830,58 @@ module NativeSystemNative =
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_GetFileSystemType",
+          [ ConcreteIntPtr state.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->
+            // `uint32_t SystemNative_GetFileSystemType(intptr_t fd)`
+            // (pal_io.c:1700): `fstatfs(2)` behind an EINTR retry. **Every
+            // failure is reported as 0**, not -1, which is why the answer table
+            // below is a success-or-failure rather than a bare number.
+            //
+            // Reached from `SafeFileHandle.CanLockTheFile`, and only there:
+            // a `LOCK_SH` taken under write access is refused on NFS, CIFS and
+            // SMB, where `flock` is unsafe. That is the combination
+            // `File.WriteAllBytes` asks for (`FileMode.Create`,
+            // `FileAccess.Write`, `FileShare.Read`), so this native is what
+            // stands between a guest and the BCL's commonest write API.
+            // `File.Create` never arrives here: it is `FileShare.None`, and
+            // `CanLockTheFile` answers `LOCK_EX` without consulting anything.
+            let operation = "SystemNative_GetFileSystemType"
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            // One call into the table, which is shared with the unit tests and
+            // with the host-comparison oracle. Deliberately no per-descriptor
+            // arms here: a mutation swapping two rows would have somewhere to
+            // hide if the classification were re-done in the handler.
+            let answer =
+                FileDescriptorRegistry.tryFindObject fd state.Kernel.FileDescriptors
+                |> EmulatedFileSystemType.reportedFor
+                    (SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform)
+                    state.Kernel.FileSystemType
+
+            match answer with
+            | FileSystemTypeAnswer.Reported magic ->
+                // errno untouched on success, as `fstatfs` leaves it.
+                state
+                |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 magic) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | FileSystemTypeAnswer.Failed error ->
+                // CoreLib never reads this errno — its `LibraryImport` declares
+                // no `SetLastError`, so `TryGetFileSystemType` sees only the 0.
+                // A hand-rolled guest that does declare it would see the errno
+                // on a real host, though, so recording it is what keeps the two
+                // agreeing. `toRawErrno` rather than `toRawErrnoUnder`: both
+                // errnos here are portable, and the stricter form would crash
+                // loudly if a platform-dependent one were ever routed through.
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        LastSystemError = UnixError.toRawErrno error
+                    }
+                )
+                |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 0u) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
         | Some "SystemNative_FTruncate",
           [ ConcreteIntPtr state.ConcreteTypes ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64 ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
