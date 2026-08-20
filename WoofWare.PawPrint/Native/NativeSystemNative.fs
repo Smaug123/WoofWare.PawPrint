@@ -482,6 +482,43 @@ module NativeSystemNative =
             failwith
                 $"%s{operation}: fd %d{fd} asked to write %d{count} bytes at offset %d{offset} of inode %O{inode}, which would leave the file longer than the %d{VirtualFileSystem.maxFileLength} bytes PawPrint can represent. A real filesystem answers this without difficulty — measured on ext4 and APFS alike, a one-byte write at offset 2^40 succeeds and leaves a sparse 1 TB file — so this is a limit of the model, and refusing is better than reporting an errno no kernel would have produced."
 
+    /// Commit a truncation of the regular file `inode` to `length`, together with
+    /// the `mtime`, `ctime` and set-ID bits it moves.
+    ///
+    /// Shared by `SystemNative_FTruncate` and by `SystemNative_Open`'s `O_TRUNC`,
+    /// which are the same operation with the same measured consequences — the
+    /// mode rule, the timestamp rule and the truncate-to-the-same-length rule all
+    /// agree between them on both platforms.
+    ///
+    /// Not short-circuited when the file is already that length: unlike a write of
+    /// no bytes, a truncation that moves no bytes still stamps the inode.
+    let private commitTruncation
+        (operation : string)
+        (inode : InodeNumber)
+        (length : int64)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let now = EmulatedKernel.fileTimestamp state.Kernel
+        let rule = SimulatedUnixPlatform.setIdBitsOnTruncation state.Kernel.UnixPlatform
+
+        let privilege =
+            if EmulatedKernel.isPrivileged state.Kernel then
+                WritePrivilege.Privileged
+            else
+                WritePrivilege.Unprivileged
+
+        match VirtualFileSystem.truncateFile inode length rule privilege now state.Kernel.FileSystem with
+        | Ok filesystem ->
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    FileSystem = filesystem
+                }
+            )
+        | Error (FileTruncationRefusal.WouldExceedMaxLength length) ->
+            failwith
+                $"%s{operation}: asked to set inode %O{inode} to %d{length} bytes, which is longer than the %d{VirtualFileSystem.maxFileLength} bytes PawPrint can represent. A real filesystem answers this without difficulty — measured on ext4 and APFS alike, ftruncate to three gigabytes succeeds and leaves a sparse file — so this is a limit of the model, and refusing is better than reporting an errno no kernel would have produced for that length."
+
     /// Turn the NUL-terminated bytes a guest passed as a pathname into a
     /// `UnixPath`, applying the length rule a kernel applies at *its* boundary.
     ///
@@ -1514,20 +1551,16 @@ module NativeSystemNative =
 
             if accessMode <> palRdOnly && accessMode <> palWrOnly && accessMode <> palRdWr then
                 fail UnixError.EINVAL
-            else if
-
-                // `O_TRUNC` alone is still refused loudly: nothing in the emulated
-                // filesystem can shorten a file, so honouring it as a no-op would
-                // hand the guest a descriptor whose contract PawPrint cannot keep,
-                // and the crash names the flag rather than falling through to a
-                // generic "unimplemented native".
-                flags &&& palTrunc <> 0
-            then
-                failwith
-                    $"%s{operation}: the guest asked for O_TRUNC, but PawPrint cannot yet shorten a file — nothing in the emulated filesystem truncates one, so a descriptor opened this way could not honour its contract. Implement truncation, together with SystemNative_FTruncate (issue #956), before opening one."
             else
 
             let creating = flags &&& palCreat <> 0
+
+            // `O_TRUNC` truncates a regular file to zero once every other check
+            // has passed. It is *not* confined to a write access mode: measured on
+            // both platforms, `open(f, O_RDONLY | O_TRUNC)` on a writable file
+            // succeeds and empties it. What it does instead is demand the write
+            // permission bit; see `neededBits` below.
+            let truncating = flags &&& palTrunc <> 0
 
             // `O_EXCL` without `O_CREAT` is not an error and not a refusal: the
             // shim passes it through and both kernels ignore it entirely
@@ -1671,7 +1704,7 @@ module NativeSystemNative =
                 // answer, and is what `SafeFileHandle.OpenNoFollowSymlink`
                 // reads back to decide a path was a symlink without racing.
                 fail UnixError.ELOOP
-            | InodeContent.Directory _ when FileAccessMode.permitsWrite requestedAccess ->
+            | InodeContent.Directory _ when FileAccessMode.permitsWrite requestedAccess || truncating ->
                 // Measured on both platforms, for `O_WRONLY` and `O_RDWR` alike,
                 // and at uid 0 as well as uid 1000: a directory cannot be opened
                 // for writing, and this beats the EACCES check below (a
@@ -1683,6 +1716,13 @@ module NativeSystemNative =
                 //
                 // This is also what makes every writable descriptor name a
                 // regular file, which `VirtualFileSystem.writeFile` relies on.
+                //
+                // `O_TRUNC` earns the same refusal whatever the access mode:
+                // measured, `open(d, O_RDONLY | O_TRUNC)` is EISDIR on both, so
+                // this is the one row where the arm fires for a *read-only* open.
+                // That includes `O_CREAT | O_RDONLY | O_TRUNC` on Darwin, where
+                // `CreatingOpenRules.RefusesExistingDirectory` is false and the
+                // verdict is therefore `OpenExisting` on the directory itself.
                 fail UnixError.EISDIR
             | InodeContent.RegularFile _
             | InodeContent.Directory _ ->
@@ -1714,12 +1754,23 @@ module NativeSystemNative =
             // inode's `st_uid`, so the emulated process owns everything it can
             // see and the group and other triples can never be the applicable
             // ones.
+            //
+            // `O_TRUNC` adds the write bit to whatever the access mode already
+            // asked for, and adds nothing else. Measured at uid 1000 on both:
+            //
+            //   mode   flags               answer
+            //   0444   RDONLY|TRUNC        EACCES
+            //   0400   RDONLY|TRUNC        EACCES
+            //   0200   RDONLY|TRUNC        EACCES   (the read bit is still owed)
+            //   0600   RDONLY|TRUNC        ok
+            //   0200   WRONLY|TRUNC        ok
+            //   0400   WRONLY|TRUNC        EACCES
             let neededBits =
                 (if FileAccessMode.permitsRead requestedAccess then
                      0o400
                  else
                      0)
-                ||| (if FileAccessMode.permitsWrite requestedAccess then
+                ||| (if FileAccessMode.permitsWrite requestedAccess || truncating then
                          0o200
                      else
                          0)
@@ -1747,6 +1798,25 @@ module NativeSystemNative =
             // correctly fails. That is a complete rule about the binding
             // directory rather than half of the walk's rule, which is why it does
             // not wait for the resolver's.
+
+            // Only now, with every refusal discharged: measured, a refused open
+            // leaves the bytes alone, and specifically `O_CREAT | O_EXCL | O_TRUNC`
+            // on an existing file is EEXIST with its contents intact, while
+            // `O_NOFOLLOW | O_TRUNC` on a symbolic link is ELOOP with its target
+            // intact.
+            //
+            // Unconditional rather than skipped for an already-empty file: the
+            // inode's timestamps move and its set-ID bits go regardless. Only a
+            // regular file is truncated — a directory cannot reach here at all
+            // (the arm above refuses every truncating open of one), so the match
+            // is over what the descriptor may still name rather than a filter.
+            let state =
+                match entry.Content with
+                | InodeContent.RegularFile _ when truncating -> commitTruncation operation inode 0L state
+                | InodeContent.RegularFile _
+                | InodeContent.Directory _
+                | InodeContent.Symlink _ -> state
+
             let fd, registry =
                 FileDescriptorRegistry.openFile inode requestedAccess state.Kernel.FileDescriptors
 
@@ -1764,20 +1834,74 @@ module NativeSystemNative =
           [ ConcreteIntPtr state.ConcreteTypes ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64 ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_FTruncate(intptr_t fd, int64_t length)`
-            // (pal_io.c:1094). Refused loudly rather than answered, because
-            // nothing in the emulated filesystem can shorten or extend a file
-            // yet, and this is the entry point through which the BCL's most
-            // common creation APIs truncate: with file locking enabled
-            // `FileMode.Create` and `FileMode.Truncate` emit no `O_TRUNC` at all
-            // and call this from `SafeFileHandle.Init` instead
-            // (SafeFileHandle.Unix.cs:416), *after* the open has succeeded.
+            // (pal_io.c:1094): `ftruncate(2)` verbatim behind an EINTR retry, with
+            // no validation of its own, so the order below is the kernel's.
             //
-            // A curated arm rather than the generic unimplemented-native failure:
-            // now that `O_CREAT` works, `File.Create`/`File.WriteAllText` get
-            // through their open and land here, so this is the message that
-            // names what is missing for the commonest way to reach it.
-            failwith
-                $"SystemNative_FTruncate: PawPrint cannot yet change a file's length. The guest reached this through a FileMode.Create or FileMode.Truncate open, which truncates from SafeFileHandle.Init rather than with O_TRUNC. Implement truncation (issue #956)."
+            // This is how the BCL's commonest creation APIs truncate: with file
+            // locking enabled `FileMode.Create` and `FileMode.Truncate` emit no
+            // `O_TRUNC` at all and call this from `SafeFileHandle.Init`
+            // (SafeFileHandle.Unix.cs:416) *after* the open has succeeded.
+            // `FileStream.SetLength` reaches it through
+            // `RandomAccess.SetFileLength`.
+            let operation = "SystemNative_FTruncate"
+            let fd = fdArgument operation instruction.Arguments.[0]
+            let length = NativeCall.int64Argument operation instruction.Arguments.[1]
+
+            let fail (error : UnixError) : NativeHandlerResult option =
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        LastSystemError = UnixError.toRawErrnoUnder numbering error
+                    }
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            // **Ahead of the descriptor**, measured on both platforms: the same
+            // unknown fd is EBADF with a length of 0 and EINVAL with a length of
+            // -1, so the length really is validated first rather than the two
+            // faults merely sharing an errno.
+            if length < 0L then
+                fail UnixError.EINVAL
+            else
+
+            match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+            | None -> fail UnixError.EBADF
+            | Some description ->
+
+            match description.Target with
+            | OpenFileTarget.StandardStream _
+            | OpenFileTarget.SocketEventPort
+            | OpenFileTarget.Socket _ ->
+                // EINVAL on both platforms for every object that is not a regular
+                // file: measured on a pipe (either end), an INET socket, a UNIX
+                // socket, an epoll port and a kqueue. Unlike `pread`/`pwrite`
+                // there is no unseekable-versus-unwritable tie for the platforms
+                // to break differently, so this arm deliberately carries no
+                // Darwin flag — do not copy `SystemNative_PWrite`'s over.
+                fail UnixError.EINVAL
+            | OpenFileTarget.File (inode, _) ->
+
+            // A descriptor not open for writing is EINVAL rather than EBADF —
+            // `ftruncate(2)` differs from `write(2)` here, and it is measured on
+            // both platforms.
+            //
+            // This is also what makes a *directory* descriptor answer EINVAL
+            // without a type check: one can only ever be opened `O_RDONLY`,
+            // `SystemNative_Open` answering EISDIR for every write access mode.
+            // Adding a type check here would be a mistake as well as redundant —
+            // EISDIR is what path-based `truncate(2)` answers for a directory,
+            // where `ftruncate(2)` answers EINVAL.
+            if not (FileAccessMode.permitsWrite description.AccessMode) then
+                fail UnixError.EINVAL
+            else
+
+            commitTruncation operation inode length state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_FStat",
           [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer fileStatusHandle ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->

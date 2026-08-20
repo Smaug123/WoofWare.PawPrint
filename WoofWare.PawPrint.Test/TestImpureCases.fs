@@ -213,6 +213,32 @@ module TestImpureCases =
         methodNames |> List.contains "Thrower" |> shouldEqual true
         methodNames |> List.contains "Main" |> shouldEqual true
 
+    /// The seed both truncation-wiring guests read: one file per mode shape, each
+    /// holding the same five bytes, so a row's answer turns on its mode alone.
+    let private truncationModeSeed : Map<FileName, SeedEntry> =
+        let hello =
+            Text.Encoding.UTF8.GetBytes "hello"
+            |> System.Collections.Immutable.ImmutableArray.CreateRange
+
+        let entry (name : string) (mode : int) : FileName * SeedEntry =
+            FileName.parseOrFail "test seed" name, SeedEntry.File (hello, PermissionBits.parseOrFail "test seed" mode)
+
+        Map.ofList
+            [
+                entry "suid" 0o4755
+                entry "sgid" 0o2755
+                // Set-group-ID without group-execute: the row that separates the
+                // real rule from "clear both bits whenever either is set".
+                entry "sgnox" 0o2644
+                entry "sticky" 0o1755
+                // Truncated to the length it already has.
+                entry "noop" 0o4755
+                // Not writable by its owner, which is what makes `O_TRUNC`'s
+                // extra permission demand observable.
+                entry "readonly" 0o444
+                entry "otrunc" 0o4755
+            ]
+
     let cases : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
@@ -686,6 +712,39 @@ module TestImpureCases =
                             // `pathLimits`, so that this test disagrees with a
                             // wrong `pathLimits` instead of agreeing with it.
                             [ chain "a" 32 ; chain "b" 33 ; chain "c" 41 ] |> List.concat |> Map.ofList
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Truncation's set-ID rule, one guest per flavour. The pair is
+                // what closes the wiring: a handler that hardcoded either answer
+                // instead of reading
+                // `SimulatedUnixPlatform.setIdBitsOnTruncation` would still
+                // satisfy every unit test (they pass the rule in by hand), the
+                // host oracle (it compares the pure function) *and* one of these
+                // two.
+                FileName = "TruncateWiringLinuxSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        // The default already, stated explicitly because this
+                        // case's whole subject is which flavour is configured.
+                        UnixPlatform = SimulatedUnixPlatform.linuxX64
+                        FileSystem = truncationModeSeed
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                FileName = "TruncateWiringDarwinSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        FileSystem = truncationModeSeed
                     }
                 AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false

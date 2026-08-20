@@ -49,6 +49,23 @@ module TestVirtualFileSystemAgainstHost =
     extern int private close(int fd)
 
     [<DllImport("libc", SetLastError = true)>]
+    extern int private ftruncate(int fd, int64 length)
+
+    /// `chown(2)`, used here only to hand a file to a group the caller belongs
+    /// to. That is a precondition for setting `S_ISGID` at all: a non-root
+    /// `chmod` silently drops the bit when the file's group is not one of the
+    /// caller's, and a file created under the temporary directory inherits *its*
+    /// group under BSD semantics — `wheel` on macOS.
+    [<DllImport("libc", SetLastError = true)>]
+    extern int private chown(string path, uint32 owner, uint32 group)
+
+    [<DllImport("libc")>]
+    extern uint32 private getegid()
+
+    [<DllImport("libc")>]
+    extern uint32 private geteuid()
+
+    [<DllImport("libc", SetLastError = true)>]
     extern nativeint private realpath(string path, nativeint resolved)
 
     [<DllImport("libc")>]
@@ -897,6 +914,164 @@ module TestVirtualFileSystemAgainstHost =
             observed
             |> List.contains (CreatingOutcome.Failed (hostErrno UnixError.ENOTDIR))
             |> shouldEqual true
+
+    // ------------------------------------------------------- truncation's mode
+
+    /// `UnixFileMode`'s members are numbered as the mode bits themselves, so the
+    /// conversion each way is a cast rather than a table. Asserted by
+    /// ``UnixFileMode is numbered as the raw mode bits`` below, so an upstream
+    /// renumbering fails there rather than silently comparing the wrong bits.
+    let private unixFileModeOf (raw : int) : UnixFileMode = enum<UnixFileMode> raw
+
+    let private rawModeOf (mode : UnixFileMode) : int = int mode
+
+    [<Test>]
+    let ``UnixFileMode is numbered as the raw mode bits`` () : unit =
+        int UnixFileMode.SetUser |> shouldEqual 0o4000
+        int UnixFileMode.SetGroup |> shouldEqual 0o2000
+        int UnixFileMode.StickyBit |> shouldEqual 0o1000
+        int UnixFileMode.UserRead |> shouldEqual 0o0400
+        int UnixFileMode.UserWrite |> shouldEqual 0o0200
+        int UnixFileMode.UserExecute |> shouldEqual 0o0100
+        int UnixFileMode.GroupRead |> shouldEqual 0o0040
+        int UnixFileMode.GroupWrite |> shouldEqual 0o0020
+        int UnixFileMode.GroupExecute |> shouldEqual 0o0010
+        int UnixFileMode.OtherRead |> shouldEqual 0o0004
+        int UnixFileMode.OtherWrite |> shouldEqual 0o0002
+        int UnixFileMode.OtherExecute |> shouldEqual 0o0001
+
+    /// `O_WRONLY`, which is 1 on every Unix — unlike `O_CREAT`, this one needs no
+    /// per-platform table.
+    [<Literal>]
+    let private hostOWrOnly = 0x0001
+
+    /// The set-ID rows: the ones whose answer differs between the flavours.
+    /// `0o4644` and `0o2644` are what tell the real rule from "strip both bits
+    /// whenever either is set".
+    let private setIdModeProbes : int list =
+        [ 0o4755 ; 0o4644 ; 0o2755 ; 0o2644 ; 0o6755 ]
+
+    /// The rows both flavours agree on, which is every mode carrying no set-ID
+    /// bit. Each needs the user-write bit, or the `O_WRONLY` open below would be
+    /// the thing that failed.
+    let private ordinaryModeProbes : int list =
+        [ 0o0644 ; 0o0755 ; 0o0600 ; 0o0666 ; 0o1755 ]
+
+    /// Gives `path` the mode, reporting whether it took. A refusal is not a
+    /// failure of the thing under test: Nix's Linux build sandbox answers EPERM
+    /// to any `chmod` setting S_ISUID or S_ISGID ("Prevent builders from
+    /// creating setuid/setgid binaries", in `linux-derivation-builder.cc`), and
+    /// a kernel may also drop a set-ID bit silently. Either way the row cannot
+    /// be compared, so it is dropped and counted rather than believed.
+    let private trySetMode (path : string) (mode : int) : bool =
+        try
+            File.SetUnixFileMode (path, unixFileModeOf mode)
+            rawModeOf (File.GetUnixFileMode path) = mode
+        with
+        | :? UnauthorizedAccessException
+        | :? IOException -> false
+
+    /// Truncates a fresh four-byte file at each mode and compares what the
+    /// kernel left behind against `PermissionBits.afterTruncation`. Returns how
+    /// many rows were compared, which is not necessarily the length of `modes`.
+    let private compareTruncationModes (root : string) (modes : int list) : int =
+        let rule = SimulatedUnixPlatform.setIdBitsOnTruncation (hostPlatform ())
+
+        let privilege =
+            if geteuid () = 0u then
+                WritePrivilege.Privileged
+            else
+                WritePrivilege.Unprivileged
+
+        let mutable compared = 0
+
+        for mode in modes do
+            let path = Path.Combine (root, $"m%04o{mode}")
+            File.WriteAllBytes (path, [| 1uy ; 2uy ; 3uy ; 4uy |])
+
+            // Hand it to a group we are in, or `chmod` will drop S_ISGID.
+            if chown (path, 0xFFFFFFFFu, getegid ()) <> 0 then
+                failwith $"chown(%s{path}) failed: errno %d{errno ()}"
+
+            if trySetMode path mode then
+                let fd = ``open`` (path, hostOWrOnly, 0)
+
+                if fd < 0 then
+                    failwith $"open(%s{path}, O_WRONLY) failed: errno %d{errno ()}"
+
+                let result = ftruncate (fd, 0L)
+                let truncateErrno = errno ()
+                close fd |> ignore<int>
+
+                if result <> 0 then
+                    failwith $"ftruncate(%s{path}, 0) failed: errno %d{truncateErrno}"
+
+                let kernelSaid = rawModeOf (File.GetUnixFileMode path)
+
+                let modelSaid =
+                    PermissionBits.parseOrFail "test" mode
+                    |> PermissionBits.afterTruncation rule privilege
+                    |> PermissionBits.toInt
+
+                if kernelSaid <> modelSaid then
+                    failwith
+                        $"truncating a 0o%04o{mode} file: this kernel left it 0o%04o{kernelSaid} but PermissionBits.afterTruncation says 0o%04o{modelSaid} under %O{rule} as %O{privilege}."
+
+                compared <- compared + 1
+
+        compared
+
+    /// Makes a directory of its own on the real filesystem, hands the path to
+    /// `body`, and deletes it afterwards.
+    let private withTruncationRoot (body : string -> unit) : unit =
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-truncmode-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            body root
+        finally
+            Directory.Delete (root, true)
+
+    [<Test>]
+    let ``truncation leaves a file's ordinary permission bits alone`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        withTruncationRoot (fun root ->
+            // Every row must land: nothing refuses a `chmod` that sets no set-ID
+            // bit, so a dropped one here is a surprise to fail on rather than a
+            // host that cannot answer.
+            compareTruncationModes root ordinaryModeProbes
+            |> shouldEqual (List.length ordinaryModeProbes)
+        )
+
+    [<Test>]
+    let ``truncation moves a file's set-ID bits exactly as this kernel does`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        if geteuid () = 0u then
+            // Root preserves every bit on both flavours, so the whole table
+            // collapses to the identity and could not falsify anything. The
+            // suite does not choose the uid it runs as, so this is a skip rather
+            // than a failure.
+            Assert.Ignore "Running as root, where neither flavour strips and the comparison is vacuous."
+
+        withTruncationRoot (fun root ->
+            match compareTruncationModes root setIdModeProbes with
+            | 0 ->
+                // `nix build` lands here and the `dotnet test` CI job does not,
+                // so the Linux half of the table is still measured on every push
+                // — just by the other job.
+                Assert.Ignore
+                    "This host refuses to set S_ISUID and S_ISGID at all, so no row here can tell the flavours apart."
+            | compared ->
+                // All-or-nothing: a host that takes some set-ID bits and drops
+                // others is one we do not understand, and this names the row.
+                compared |> shouldEqual (List.length setIdModeProbes)
+        )
 
     // ------------------------------------------------ the S_IFMT band's values
 

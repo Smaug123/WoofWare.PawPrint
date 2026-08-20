@@ -140,6 +140,21 @@ type WritePrivilege =
     /// Any other identity.
     | Unprivileged
 
+/// Whether this Unix clears a truncated file's set-user-ID and set-group-ID bits.
+///
+/// The one thing about truncation the two platforms disagree about, so it is
+/// derived from `SimulatedUnixFlavour` rather than crashed on; see
+/// `SimulatedUnixPlatform.setIdBitsOnTruncation`, which is where the measured
+/// table lives.
+[<RequireQualifiedAccess>]
+type SetIdBitsOnTruncation =
+    /// Linux: truncating is a content change like any other, and clears the same
+    /// bits a write clears.
+    | Strip
+    /// Darwin: truncating leaves the whole mode alone — even where a *write* to
+    /// the same file by the same process would strip it.
+    | Preserve
+
 [<RequireQualifiedAccess>]
 module PermissionBits =
     /// The widest `st_mode & 0o7777` can be: three rwx triples, plus setuid,
@@ -190,6 +205,26 @@ module PermissionBits =
     /// `0o777 &&& ~~~0o022`. See `defaultForRegularFile`.
     let defaultForDirectory : PermissionBits = PermissionBits (0o777 &&& ~~~0o022)
 
+    /// The set-ID bits a Linux kernel clears when an unprivileged process changes
+    /// a file's contents.
+    ///
+    /// One rule, shared by `write(2)` and by truncation: measured non-root on
+    /// Linux 6.18.5, `write`, `ftruncate`, `O_TRUNC` and a no-op `ftruncate`
+    /// agree on all of `04755`, `04644`, `02755`, `02644`, `06755` and `01755`.
+    /// Factored out so the bit arithmetic — which is where an off-by-one bit
+    /// would hide — exists once.
+    ///
+    /// `S_ISUID` goes whatever the execute bits say (`04644` becomes `00644`).
+    /// `S_ISGID` goes only alongside `S_IXGRP`: without it the bit means
+    /// mandatory locking rather than privilege, and `02644` survives. The sticky
+    /// bit is never touched.
+    let private setIdBitsLinuxClears (raw : int) : int =
+        let setUserId = 0o4000
+        let setGroupId = 0o2000
+        let groupExecute = 0o0010
+
+        setUserId ||| (if raw &&& groupExecute <> 0 then setGroupId else 0)
+
     /// The bits a regular file is left with after a *content-changing* write by a
     /// process with `privilege`. A write that transfers nothing changes nothing,
     /// so a caller must not consult this for one.
@@ -199,6 +234,7 @@ module PermissionBits =
     /// | before | after |
     /// |---|---|
     /// | `04755` (setuid) | `00755` |
+    /// | `04644` (setuid, not executable at all) | `00644` |
     /// | `02755` (setgid, group-executable) | `00755` |
     /// | `01755` (sticky) | `01755` — untouched |
     /// | `00644` | `00644` |
@@ -206,31 +242,65 @@ module PermissionBits =
     /// ...and as root every one of them is left exactly as it was, which is what
     /// `WritePrivilege.Privileged` selects.
     ///
-    /// **Partial, deliberately.** `S_ISGID` set on a file that is *not*
-    /// group-executable is a shape this cannot answer: Linux keeps the bit
-    /// (measured — `02745` survives a non-root write, because `S_ISGID` without
-    /// `S_IXGRP` means mandatory locking there rather than privilege), while macOS
-    /// could not be measured at all, a non-root user on that host being unable to
-    /// set `S_ISGID` on a regular file even inside a directory of their own group.
-    /// Guessing would silently give one platform's answer for both.
+    /// **Partial, deliberately**, and now known to be partial over a *divergence*
+    /// rather than over an unmeasured shape. `S_ISGID` on a file that is not
+    /// group-executable is the one row the platforms disagree about: measured
+    /// non-root, Linux keeps `02644` (there the bit means mandatory locking
+    /// rather than privilege) while macOS strips it to `00644`. So this function
+    /// has to grow a `SimulatedUnixFlavour` — as `afterTruncation` below already
+    /// has — and until it does, refusing is the only honest answer.
     let afterContentChangingWrite (privilege : WritePrivilege) (bits : PermissionBits) : PermissionBits =
         match privilege with
         | WritePrivilege.Privileged -> bits
         | WritePrivilege.Unprivileged ->
 
         let raw = toInt bits
-        let setUserId = 0o4000
         let setGroupId = 0o2000
         let groupExecute = 0o0010
 
         if raw &&& setGroupId <> 0 && raw &&& groupExecute = 0 then
             failwith
-                $"PermissionBits.afterContentChangingWrite: %O{bits} carries the set-group-ID bit without the group-execute bit, and an unprivileged process is writing to it. Linux keeps the bit for that shape (measured: 0o2745 survives such a write), because there it means mandatory locking rather than privilege; macOS was not measurable, a non-root user being unable to set S_ISGID on a regular file at all. Measure macOS as root before deciding what PawPrint answers."
+                $"PermissionBits.afterContentChangingWrite: %O{bits} carries the set-group-ID bit without the group-execute bit, and an unprivileged process is writing to it. The platforms disagree, so there is no flavour-independent answer: measured non-root, Linux leaves 0o2644 alone (there the bit means mandatory locking rather than privilege) while macOS strips it to 0o0644. Give this function the simulated flavour, the way PermissionBits.afterTruncation takes SetIdBitsOnTruncation, rather than picking one platform's answer for both."
         else
 
-        // The sticky bit is deliberately *not* in this mask: measured, a write
-        // leaves 0o1755 alone on both platforms.
-        parseOrFail "PermissionBits.afterContentChangingWrite" (raw &&& ~~~(setUserId ||| setGroupId))
+        parseOrFail "PermissionBits.afterContentChangingWrite" (raw &&& ~~~(setIdBitsLinuxClears raw))
+
+    /// The bits a regular file is left with after being truncated by a process
+    /// with `privilege`, on a kernel with this `rule`.
+    ///
+    /// Total, unlike `afterContentChangingWrite`: every shape is measured on both
+    /// platforms. Non-root, on macOS 26.6 and Linux 6.18.5:
+    ///
+    /// | before | Linux | Darwin |
+    /// |---|---|---|
+    /// | `04755` | `00755` | `04755` |
+    /// | `04644` | `00644` | `04644` |
+    /// | `02755` | `00755` | `02755` |
+    /// | `02644` | `02644` | `02644` |
+    /// | `06755` | `00755` | `06755` |
+    /// | `01755` | `01755` | `01755` |
+    ///
+    /// ...and as root every row is left exactly as it was, on both, which is what
+    /// `WritePrivilege.Privileged` selects.
+    ///
+    /// `ftruncate(2)`, `O_TRUNC`, and an `ftruncate` to the length the file
+    /// already has all give the same answers, which is why one function serves
+    /// all three. That last column is the one worth not eliding: **a truncation
+    /// that changes no bytes still strips**, where a write of no bytes is not a
+    /// write at all.
+    let afterTruncation
+        (rule : SetIdBitsOnTruncation)
+        (privilege : WritePrivilege)
+        (bits : PermissionBits)
+        : PermissionBits
+        =
+        match rule, privilege with
+        | SetIdBitsOnTruncation.Preserve, _
+        | _, WritePrivilege.Privileged -> bits
+        | SetIdBitsOnTruncation.Strip, WritePrivilege.Unprivileged ->
+
+        let raw = toInt bits
+        parseOrFail "PermissionBits.afterTruncation" (raw &&& ~~~(setIdBitsLinuxClears raw))
 
 /// A filesystem timestamp: `struct timespec`, whole seconds since the Unix
 /// epoch plus a nanosecond part in `[0, 1e9)`.
@@ -904,6 +974,23 @@ type FileWriteRefusal =
     /// number: `offset + count` can leave `int64` entirely.
     | WouldExceedMaxLength of offset : int64 * count : int
 
+/// Why a truncation has no answer.
+///
+/// Separate from `FileWriteRefusal` rather than a case added to it: the payloads
+/// differ (a truncation names one length, a write names an offset and a count),
+/// and neither operation can produce the other's case, so sharing the type would
+/// force every `match` to handle something unreachable.
+///
+/// Like `FileWriteRefusal`, this is a limit of the model rather than anything a
+/// kernel does, so a caller fails loudly rather than translating it into an
+/// errno. Measured on ext4 and APFS alike, `ftruncate(fd, 3e9)` succeeds and
+/// leaves a sparse three-gigabyte file behind.
+[<RequireQualifiedAccess>]
+type FileTruncationRefusal =
+    /// The requested length is more than `VirtualFileSystem.maxFileLength`.
+    /// Carries the length as asked for, which need not fit in an `int`.
+    | WouldExceedMaxLength of length : int64
+
 /// Why a seek computation has no answer.
 ///
 /// Split into two cases rather than one because the platforms disagree about
@@ -1114,6 +1201,60 @@ module VirtualFileSystem =
         contents.CopyTo result
         bytes.CopyTo (0, result, int offset, bytes.Length)
 
+        Ok (ImmutableArray.CreateRange result)
+
+    /// The length a regular file becomes when truncated to `length`, or the
+    /// refusal if that is more than this model can hold.
+    ///
+    /// Separate from `truncatedContents` for the reason `writtenLength` is
+    /// separate from `writtenContents`: it is the only way to check both sides of
+    /// the ceiling without allocating two gigabytes to do it.
+    ///
+    /// A negative length is the handler's to reject (EINVAL), so it is
+    /// established before here.
+    let truncatedLength (length : int64) : Result<int, FileTruncationRefusal> =
+        System.Diagnostics.Debug.Assert (length >= 0L, "truncatedLength: length must not be negative")
+
+        if length > maxFileLength then
+            Error (FileTruncationRefusal.WouldExceedMaxLength length)
+        else
+            // Bounded by `maxFileLength` just above, so this conversion is exact.
+            Ok (int length)
+
+    /// The contents a regular file holds after being truncated to `length`.
+    ///
+    /// Shortening discards the tail; lengthening zero-fills, which is what a real
+    /// filesystem reports for the hole (measured on ext4 and APFS). A truncation
+    /// to the length the file already has returns it unchanged — but that is
+    /// *not* a licence for the caller to skip the operation, because the inode's
+    /// timestamps and set-ID bits move regardless; see `truncateFile`.
+    ///
+    /// Separated from `truncateFile` for the reason `writtenContents` is
+    /// separated from `writeFile`: as a function of a byte array and a length it
+    /// is property-testable against naive take/pad, where the same arithmetic
+    /// inlined into a syscall handler is reachable only through a guest.
+    let truncatedContents
+        (contents : ImmutableArray<byte>)
+        (length : int64)
+        : Result<ImmutableArray<byte>, FileTruncationRefusal>
+        =
+        if contents.IsDefault then
+            failwith
+                "VirtualFileSystem.truncatedContents: contents is the default ImmutableArray, whose underlying array is null. That is not an empty file; pass ImmutableArray<byte>.Empty."
+
+        match truncatedLength length with
+        | Error refusal -> Error refusal
+        | Ok length ->
+
+        if length = contents.Length then
+            Ok contents
+        elif length < contents.Length then
+            Ok (ImmutableArray.CreateRange (Seq.truncate length contents))
+        else
+
+        // Zero-initialised, which is exactly what the extension reads as.
+        let result = Array.zeroCreate<byte> length
+        contents.CopyTo result
         Ok (ImmutableArray.CreateRange result)
 
     /// Where `lseek(2)` would land, given where it is measuring from.
@@ -1472,6 +1613,75 @@ module VirtualFileSystem =
         // unless the writer is privileged — so this is a mode change as well as a
         // content change, and the `ctime` above covers both.
         let permissions = PermissionBits.afterContentChangingWrite privilege permissions
+
+        Ok
+            { vfs with
+                Inodes =
+                    Map.add
+                        inode
+                        { entry with
+                            Content = InodeContent.RegularFile (updated, permissions)
+                            Times = InodeTimes.contentsChangedAt now entry.Times
+                        }
+                        vfs.Inodes
+            }
+
+    /// Set the length of the regular file at `inode` to `length`, moving its
+    /// `mtime` and `ctime` and — subject to `rule` and `privilege` — clearing its
+    /// set-user-ID and set-group-ID bits.
+    ///
+    /// **Unconditionally**, which is the whole of what separates this from
+    /// `writeFile`. A write of no bytes is not a write and the caller must
+    /// short-circuit it; a truncation to the length the file already has *is* a
+    /// truncation. Measured on both platforms: `ftruncate(fd, 4)` on a four-byte
+    /// file moves `mtime` and `ctime`, and on Linux non-root it strips `04755` to
+    /// `00755` — as does `O_TRUNC` on a file that is already empty.
+    ///
+    /// Those two timestamps and no others: `atime` stays where it was and `birth`
+    /// never moves, measured on both. A truncation that *fails* moves nothing,
+    /// which falls out of this returning an error rather than a filesystem.
+    ///
+    /// Partial in the inode, which must name a regular file this filesystem
+    /// contains, for the reason `writeFile` gives: a caller arrives having
+    /// resolved a descriptor open for writing, and `open(2)` answers EISDIR for
+    /// every write access mode on a directory and resolves a symlink to whatever
+    /// it names.
+    let truncateFile
+        (inode : InodeNumber)
+        (length : int64)
+        (rule : SetIdBitsOnTruncation)
+        (privilege : WritePrivilege)
+        (now : UnixTimestamp)
+        (vfs : VirtualFileSystem)
+        : Result<VirtualFileSystem, FileTruncationRefusal>
+        =
+        System.Diagnostics.Debug.Assert (length >= 0L, "truncateFile: length must not be negative")
+
+        match Map.tryFind inode vfs.Inodes with
+        | None ->
+            failwith
+                $"VirtualFileSystem.truncateFile: inode %O{inode} is not in this filesystem. A descriptor outliving its inode means an unlink removed a still-open file; the open file description must keep it alive."
+        | Some {
+                   Content = InodeContent.Directory _
+               } ->
+            failwith
+                $"VirtualFileSystem.truncateFile: inode %O{inode} is a directory, so no descriptor naming it can be open for writing — `open(2)` answers EISDIR for every write access mode, and `ftruncate(2)` answers EINVAL for the read-only descriptor that is left. The caller resolved a writable descriptor to it anyway (this is an interpreter bug)."
+        | Some {
+                   Content = InodeContent.Symlink _
+               } ->
+            failwith
+                $"VirtualFileSystem.truncateFile: inode %O{inode} is a symbolic link. `open` resolves symlinks, so no descriptor should name one (this is an interpreter bug)."
+        | Some ({
+                    Content = InodeContent.RegularFile (contents, permissions)
+                } as entry) ->
+
+        match truncatedContents contents length with
+        | Error refusal -> Error refusal
+        | Ok updated ->
+
+        // A truncation is a mode change as well as a content change on one of the
+        // two platforms, and the `ctime` below covers both either way.
+        let permissions = PermissionBits.afterTruncation rule privilege permissions
 
         Ok
             { vfs with

@@ -211,6 +211,35 @@ module TestPureCases =
                     name "dang", SeedEntry.Symlink (target "nx")
                     name "cyc", SeedEntry.Symlink (target "cyc")
                 ]
+            "TruncateSeeded.cs",
+            Map.ofList
+                [
+                    // A separate file per group of rows, so each starts from a
+                    // known five bytes rather than from whatever the previous
+                    // group left behind.
+                    name "f", file "hello"
+                    name "g", file "hello"
+                    name "h", file "hello"
+                    name "d", SeedEntry.directory Map.empty
+                    // The symlink O_TRUNC follows: its *target* is what must end
+                    // up empty, and the two names are distinct so that following
+                    // it can be told from replacing it.
+                    name "lf", SeedEntry.Symlink (target "f2")
+                    name "f2", file "hello"
+                    // The pair the refusal rows read back: a refused open must
+                    // leave "keep" exactly as it was, whether it was refused for
+                    // EEXIST or (through the link, under O_NOFOLLOW) for ELOOP.
+                    name "keep", file "hello"
+                    name "lkeep", SeedEntry.Symlink (target "keep")
+                    // All four BCL rows need a *non-empty* file to start from:
+                    // `SafeFileHandle.Init` swallows EINVAL and EBADF from
+                    // FTruncate, so a wrongly-refused truncation shows up only as
+                    // bytes that are still there.
+                    name "bcl", file "hello"
+                    name "bcl2", file "hello"
+                    name "bcl3", file "hello"
+                    name "bcl4", file "x"
+                ]
             "WriteSeeded.cs",
             Map.ofList
                 [
