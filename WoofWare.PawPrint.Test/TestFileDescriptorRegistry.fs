@@ -35,6 +35,17 @@ module TestFileDescriptorRegistry =
             Flock = None
         }
 
+    /// `close`, for tests whose subject is the descriptor table rather than the
+    /// kernel object a close may have destroyed. That second half is
+    /// `EmulatedKernel.closeFd`'s business, and is asserted in
+    /// `TestEmulatedKernelSockets`.
+    let private closeOnly
+        (fd : int)
+        (registry : FileDescriptorRegistry)
+        : Result<FileDescriptorRegistry, FileDescriptorCloseError>
+        =
+        FileDescriptorRegistry.close fd registry |> Result.map fst
+
     let private someInode : InodeNumber = InodeNumber 42L
     let private otherInode : InodeNumber = InodeNumber 43L
 
@@ -98,14 +109,9 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``two sockets are two descriptions and two flock objects`` () : unit =
         let a, registry =
-            FileDescriptorRegistry.createSocket
-                SocketDomain.InterNetwork
-                SocketKind.Stream
-                SocketProtocol.Tcp
-                FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocket (SocketId 0L) FileDescriptorRegistry.initial
 
-        let b, registry =
-            FileDescriptorRegistry.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp registry
+        let b, registry = FileDescriptorRegistry.createSocket (SocketId 1L) registry
 
         a |> shouldEqual 3
         b |> shouldEqual 4
@@ -135,11 +141,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``dup of a socket names the same socket`` () : unit =
         let a, registry =
-            FileDescriptorRegistry.createSocket
-                SocketDomain.Unix
-                SocketKind.Datagram
-                SocketProtocol.Unspecified
-                FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocket (SocketId 0L) FileDescriptorRegistry.initial
 
         match FileDescriptorRegistry.dup a registry with
         | Error e -> failwith $"expected dup to succeed, got %O{e}"
@@ -151,25 +153,18 @@ module TestFileDescriptorRegistry =
         FileDescriptorRegistry.tryFindObject b registry
         |> shouldEqual (FileDescriptorRegistry.tryFindObject a registry)
 
-    /// The description a socket gets, field by field.
+    /// The description a socket gets. The triple it names is the socket table's
+    /// business, and is asserted in `TestEmulatedKernelSockets`.
     ///
     /// The access mode is not cosmetic: `SystemNative_Read` and
     /// `SystemNative_Write` test it *before* they look at the target, so
     /// anything narrower than `ReadWrite` would answer EBADF where a real socket
     /// answers about its connection state (measured: ENOTCONN, EINVAL, or a
     /// block — never EBADF).
-    ///
-    /// The triple is asserted per field because nothing else in the runtime
-    /// reads it back yet: a transposition here would otherwise survive until
-    /// `SystemNative_GetSocketType` reported it.
     [<Test>]
-    let ``a fresh socket description carries its triple and is ReadWrite`` () : unit =
+    let ``a fresh socket description names its socket and is ReadWrite`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.createSocket
-                SocketDomain.InterNetworkV6
-                SocketKind.Datagram
-                SocketProtocol.Udp
-                FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocket (SocketId 4L) FileDescriptorRegistry.initial
 
         match FileDescriptorRegistry.tryFind fd registry with
         | None -> failwith "the socket descriptor is not live"
@@ -178,29 +173,19 @@ module TestFileDescriptorRegistry =
         description.AccessMode |> shouldEqual FileAccessMode.ReadWrite
         // `socket(2)` takes no lock, exactly as `open(2)` does not.
         description.Flock |> shouldEqual None
+        // The identity the caller minted, not one the registry invented.
+        description.Target |> shouldEqual (OpenFileTarget.Socket (SocketId 4L))
 
-        match description.Target with
-        | OpenFileTarget.Socket socket ->
-            socket.Domain |> shouldEqual SocketDomain.InterNetworkV6
-            socket.Kind |> shouldEqual SocketKind.Datagram
-            socket.Protocol |> shouldEqual SocketProtocol.Udp
-        | other -> failwith $"expected a socket target, got %O{other}"
-
-    /// Closing the last descriptor destroys the socket with its description. This
-    /// is the property that lets a socket live in its description rather than in
-    /// a table of its own: there is no second lifetime to manage.
+    /// Closing the last descriptor destroys its description. What becomes of the
+    /// *socket* that description named is `EmulatedKernel.closeFd`'s business.
     [<Test>]
-    let ``closing the last descriptor destroys the socket`` () : unit =
+    let ``closing the last descriptor destroys the description`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.createSocket
-                SocketDomain.InterNetwork
-                SocketKind.Stream
-                SocketProtocol.Unspecified
-                FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocket (SocketId 0L) FileDescriptorRegistry.initial
 
         FileDescriptorRegistry.descriptions registry |> Map.count |> shouldEqual 4
 
-        match FileDescriptorRegistry.close fd registry with
+        match closeOnly fd registry with
         | Error e -> failwith $"expected close to succeed, got %O{e}"
         | Ok registry ->
 
@@ -271,7 +256,7 @@ module TestFileDescriptorRegistry =
         let id = FileDescriptorRegistry.tryFindId a registry
 
         let registry =
-            match FileDescriptorRegistry.close a registry with
+            match closeOnly a registry with
             | Ok registry -> registry
             | Error e -> failwith $"expected close to succeed, got %O{e}"
 
@@ -279,7 +264,7 @@ module TestFileDescriptorRegistry =
         FileDescriptorRegistry.descriptions registry |> Map.count |> shouldEqual 4
 
         let registry =
-            match FileDescriptorRegistry.close b registry with
+            match closeOnly b registry with
             | Ok registry -> registry
             | Error e -> failwith $"expected close to succeed, got %O{e}"
 
@@ -300,7 +285,7 @@ module TestFileDescriptorRegistry =
         let firstId = FileDescriptorRegistry.tryFindId fd registry
 
         let registry =
-            match FileDescriptorRegistry.close fd registry with
+            match closeOnly fd registry with
             | Ok registry -> registry
             | Error e -> failwith $"expected close to succeed, got %O{e}"
 
@@ -329,7 +314,6 @@ module TestFileDescriptorRegistry =
                 (Map.ofList [ 0, OpenFileDescriptionId 7L ])
                 (Map.ofList [ OpenFileDescriptionId 7L, openOn someInode ])
                 (OpenFileDescriptionId next)
-                (SocketId 0L)
 
         FileDescriptorRegistry.checkInvariants registry
         |> shouldEqual
@@ -343,7 +327,6 @@ module TestFileDescriptorRegistry =
             (Map.ofList [ 0, OpenFileDescriptionId 7L ])
             (Map.ofList [ OpenFileDescriptionId 7L, openOn someInode ])
             (OpenFileDescriptionId 8L)
-            (SocketId 0L)
         |> FileDescriptorRegistry.checkInvariants
         |> shouldEqual []
 
@@ -514,7 +497,7 @@ module TestFileDescriptorRegistry =
 
         let sharedId = FileDescriptorRegistry.tryFindId duped registry
 
-        match FileDescriptorRegistry.close duped registry with
+        match closeOnly duped registry with
         | Error e -> failwith $"unexpected close error: %O{e}"
         | Ok afterClose ->
 
@@ -534,7 +517,7 @@ module TestFileDescriptorRegistry =
     let ``the last close of a description destroys it`` () : unit =
         // Close stdout with no dup outstanding: nothing names its description
         // afterwards, so the kernel would destroy it.
-        match FileDescriptorRegistry.close 1 FileDescriptorRegistry.initial with
+        match closeOnly 1 FileDescriptorRegistry.initial with
         | Error e -> failwith $"unexpected close error: %O{e}"
         | Ok afterClose ->
 
@@ -566,7 +549,7 @@ module TestFileDescriptorRegistry =
         let b, registry = dupOf 1 registry
 
         let closeOf (fd : int) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
-            match FileDescriptorRegistry.close fd registry with
+            match closeOnly fd registry with
             | Ok result -> result
             | Error e -> failwith $"unexpected close error: %O{e}"
 
@@ -583,10 +566,10 @@ module TestFileDescriptorRegistry =
 
     [<Test>]
     let ``close of unknown fd returns BadFd`` () : unit =
-        FileDescriptorRegistry.close 3 FileDescriptorRegistry.initial
+        closeOnly 3 FileDescriptorRegistry.initial
         |> shouldEqual (Error FileDescriptorCloseError.BadFd)
 
-        FileDescriptorRegistry.close -1 FileDescriptorRegistry.initial
+        closeOnly -1 FileDescriptorRegistry.initial
         |> shouldEqual (Error FileDescriptorCloseError.BadFd)
 
     /// Reference implementation: the lowest non-negative integer not in `used`.
@@ -628,7 +611,7 @@ module TestFileDescriptorRegistry =
                     let pickIndex = rng.Next (liveList.Length)
                     let chosen = liveList.[pickIndex]
 
-                    match FileDescriptorRegistry.close chosen registry with
+                    match closeOnly chosen registry with
                     | Ok registry' ->
                         live <- Set.remove chosen live
                         registry <- registry'
@@ -697,7 +680,7 @@ module TestFileDescriptorRegistry =
                 let doClose = rng.Next 10 < 3 && liveList.Length > 3
 
                 if doClose then
-                    match FileDescriptorRegistry.close chosen registry with
+                    match closeOnly chosen registry with
                     | Ok registry' ->
                         origin <- Map.remove chosen origin
                         registry <- registry'
@@ -754,7 +737,6 @@ module TestFileDescriptorRegistry =
                 (Map.ofList [ 0, OpenFileDescriptionId 7L ])
                 Map.empty
                 (OpenFileDescriptionId 8L)
-                (SocketId 0L)
 
         FileDescriptorRegistry.checkInvariants registry
         |> shouldEqual [ FileDescriptorRegistryDefect.DanglingFd (0, OpenFileDescriptionId 7L) ]
@@ -766,7 +748,6 @@ module TestFileDescriptorRegistry =
                 Map.empty
                 (Map.ofList [ OpenFileDescriptionId 7L, standardStream FileDescriptorRole.StandardOutput ])
                 (OpenFileDescriptionId 8L)
-                (SocketId 0L)
 
         FileDescriptorRegistry.checkInvariants registry
         |> shouldEqual
@@ -784,7 +765,6 @@ module TestFileDescriptorRegistry =
                 (Map.ofList [ 0, OpenFileDescriptionId 7L ])
                 Map.empty
                 (OpenFileDescriptionId 8L)
-                (SocketId 0L)
 
         let exc =
             Assert.Throws<System.Exception> (fun () ->
@@ -1026,7 +1006,7 @@ module TestFileDescriptorRegistry =
         |> shouldEqual (Some FlockError.WouldBlock)
 
         let registry =
-            match FileDescriptorRegistry.close a registry with
+            match closeOnly a registry with
             | Ok registry -> registry
             | Error e -> failwith $"unexpected close error: %O{e}"
 
@@ -1067,7 +1047,6 @@ module TestFileDescriptorRegistry =
                         OpenFileDescriptionId 8L, locked second
                     ])
                 (OpenFileDescriptionId 9L)
-                (SocketId 0L)
 
         let expected =
             [
@@ -1105,7 +1084,6 @@ module TestFileDescriptorRegistry =
                     OpenFileDescriptionId 8L, locked otherInode
                 ])
             (OpenFileDescriptionId 9L)
-            (SocketId 0L)
         |> FileDescriptorRegistry.checkInvariants
         |> shouldEqual []
 
@@ -1163,7 +1141,7 @@ module TestFileDescriptorRegistry =
                     let fd = liveFds.[rng.Next liveFds.Length]
                     let id = idOf fd
 
-                    match FileDescriptorRegistry.close fd registry with
+                    match closeOnly fd registry with
                     | Ok registry' ->
                         registry <- registry'
                         fdToId <- Map.remove fd fdToId
@@ -1276,7 +1254,6 @@ module TestFileDescriptorRegistry =
                 (Map.ofList [ 0, OpenFileDescriptionId 7L ])
                 Map.empty
                 (OpenFileDescriptionId 8L)
-                (SocketId 0L)
 
         let exc =
             Assert.Throws<System.Exception> (fun () -> FileDescriptorRegistry.tryFind 0 registry |> ignore)
@@ -1416,7 +1393,7 @@ module TestFileDescriptorRegistry =
         let registry = FileDescriptorRegistry.setOffset fd 11L registry
 
         let registry =
-            match FileDescriptorRegistry.close fd registry with
+            match closeOnly fd registry with
             | Ok registry -> registry
             | Error error -> failwith $"close failed: %O{error}"
 
@@ -1428,46 +1405,10 @@ module TestFileDescriptorRegistry =
     /// A negative offset is the one unsound position still representable, so `checkInvariants` names
     let private socketOn (socketId : int64) : OpenFileDescription =
         {
-            Target =
-                OpenFileTarget.Socket
-                    {
-                        Id = SocketId socketId
-                        Domain = SocketDomain.InterNetwork
-                        Kind = SocketKind.Stream
-                        Protocol = SocketProtocol.Tcp
-                    }
+            Target = OpenFileTarget.Socket (SocketId socketId)
             AccessMode = FileAccessMode.ReadWrite
             Flock = None
         }
-
-    /// A socket identity at or above the cursor would be minted again by the next
-    /// `socket(2)`, giving two sockets one identity — and hence, through
-    /// `OpenFileObject`, one `flock` contention key. `NextIdNotFresh`'s sibling.
-    [<TestCase(5L)>]
-    [<TestCase(0L)>]
-    let ``checkInvariants rejects a NextSocketId at or below a live socket`` (next : int64) : unit =
-        let registry =
-            FileDescriptorRegistry.Unchecked.ofParts
-                (Map.ofList [ 0, OpenFileDescriptionId 7L ])
-                (Map.ofList [ OpenFileDescriptionId 7L, socketOn 5L ])
-                (OpenFileDescriptionId 8L)
-                (SocketId next)
-
-        FileDescriptorRegistry.checkInvariants registry
-        |> shouldEqual
-            [
-                FileDescriptorRegistryDefect.NextSocketIdNotFresh (SocketId next, SocketId 5L)
-            ]
-
-    [<Test>]
-    let ``checkInvariants accepts a NextSocketId above every live socket`` () : unit =
-        FileDescriptorRegistry.Unchecked.ofParts
-            (Map.ofList [ 0, OpenFileDescriptionId 7L ])
-            (Map.ofList [ OpenFileDescriptionId 7L, socketOn 5L ])
-            (OpenFileDescriptionId 8L)
-            (SocketId 6L)
-        |> FileDescriptorRegistry.checkInvariants
-        |> shouldEqual []
 
     /// Two descriptions naming one socket. PawPrint models no way to produce
     /// this — `dup(2)` shares a description rather than copying it — and it
@@ -1484,7 +1425,6 @@ module TestFileDescriptorRegistry =
                     OpenFileDescriptionId 8L, socketOn 5L
                 ])
             (OpenFileDescriptionId 9L)
-            (SocketId 6L)
         |> FileDescriptorRegistry.checkInvariants
         |> shouldEqual
             [
@@ -1507,17 +1447,20 @@ module TestFileDescriptorRegistry =
                     OpenFileDescriptionId 8L, socketOn 4L
                 ])
             (OpenFileDescriptionId 9L)
-            (SocketId 6L)
         |> FileDescriptorRegistry.checkInvariants
         |> shouldEqual []
 
     /// Every allocating operation the module offers, interleaved at random, must
-    /// leave a table `checkInvariants` accepts. The two socket clauses are the
-    /// reason this exists in its present form: they are asserted directly above
+    /// leave a table `checkInvariants` accepts. The duplicate-socket clause is
+    /// the reason this exists in its present form: it is asserted directly above
     /// against tables `Unchecked.ofParts` built by hand, and this is what
-    /// connects them to the allocation path — a `createSocket` that failed to
-    /// advance `NextSocketId` would hand two sockets one identity, and hence one
-    /// `flock` contention key, which shows up here as both new defects at once.
+    /// connects it to the allocation path.
+    ///
+    /// Identities are minted here rather than by `createSocket`, which no longer
+    /// mints them — the counter lives beside the socket table in
+    /// `EmulatedKernel`. That the *kernel* keeps both tables in step under the
+    /// same interleaving is `TestEmulatedKernelSockets`' own random-mix
+    /// property.
     [<Test>]
     let ``a random mix of allocations and closes keeps the table sound`` () : unit =
         let mutable observedSockets = 0
@@ -1530,6 +1473,7 @@ module TestFileDescriptorRegistry =
             let steps = rng.Next (1, 30)
 
             let mutable registry = FileDescriptorRegistry.initial
+            let mutable nextSocketId = 0L
 
             for _ in 1..steps do
                 let live = FileDescriptorRegistry.fds registry |> Map.toList |> List.map fst
@@ -1546,7 +1490,7 @@ module TestFileDescriptorRegistry =
                 match (if List.isEmpty live then 9 else rng.Next 10) with
                 | 0
                 | 1 ->
-                    match FileDescriptorRegistry.close live.[rng.Next live.Length] registry with
+                    match closeOnly live.[rng.Next live.Length] registry with
                     | Ok registry' ->
                         registry <- registry'
                         observedCloses <- observedCloses + 1
@@ -1586,9 +1530,16 @@ module TestFileDescriptorRegistry =
                         else
                             SocketKind.Datagram
 
-                    let _, registry' =
-                        FileDescriptorRegistry.createSocket domain kind SocketProtocol.Unspecified registry
+                    // The triple no longer reaches the registry at all, but it
+                    // is still drawn: `EmulatedKernel.createSocket` is what
+                    // carries it to the socket table, and the kernel-level
+                    // property is what asserts what becomes of it there.
+                    ignore<SocketDomain * SocketKind> (domain, kind)
 
+                    let _, registry' =
+                        FileDescriptorRegistry.createSocket (SocketId nextSocketId) registry
+
+                    nextSocketId <- nextSocketId + 1L
                     registry <- registry'
                     observedSockets <- observedSockets + 1
 
@@ -1597,7 +1548,7 @@ module TestFileDescriptorRegistry =
                     |> Map.toList
                     |> List.choose (fun (_, description) ->
                         match description.Target with
-                        | OpenFileTarget.Socket socket -> Some socket.Id
+                        | OpenFileTarget.Socket socketId -> Some socketId
                         | _ -> None
                     )
 
@@ -1637,7 +1588,6 @@ module TestFileDescriptorRegistry =
                         }
                     ])
                 (OpenFileDescriptionId 9L)
-                (SocketId 0L)
 
         FileDescriptorRegistry.checkInvariants (table -1L)
         |> shouldEqual [ FileDescriptorRegistryDefect.NegativeOffset (OpenFileDescriptionId 7L, -1L) ]

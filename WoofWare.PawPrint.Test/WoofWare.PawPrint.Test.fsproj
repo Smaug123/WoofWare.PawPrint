@@ -141,6 +141,7 @@
     <Compile Include="TestUnixError.fs" />
     <Compile Include="TestSocketCreation.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />
+    <Compile Include="TestEmulatedKernelSockets.fs" />
     <Compile Include="TestFlockBlocking.fs" />
     <Compile Include="TestPReadNegativeSize.fs" />
     <Compile Include="TestLSeek.fs" />
@@ -211,6 +212,8 @@
     <Compile Include="TestImpureCases.fs" />
     <Compile Include="TestRaces.fs" />
     <Compile Include="TestConcurrencyBugs.fs" />
+    <Compile Include="TestClockJitter.fs" />
+    <Compile Include="TestClockJitterFindsBugs.fs" />
     <Compile Include="TestScheduleFork.fs" />
     <Compile Include="TestBoxedAllocationParity.fs" />
     <Compile Include="TestCalliSuspensionOutcome.fs" />
