@@ -48,10 +48,16 @@ asserted*. `ELOOP` agrees as an errno but not as a number (40 against 62).
 
 Two walls worth knowing before writing a row:
 
-- **No `EEXIST` row is reachable.** The BCL's `EEXIST` arm goes through
-  `GetIOException`, which needs `SystemNative_ConvertErrorPalToPlatform` and
-  `StrErrorR`, so the guest aborts while *constructing* the exception. The same
-  wall stops `OpenMissingFile.cs`'s `EACCES` row.
+- **`EEXIST` is unreachable *through the BCL*, not unreachable.** The BCL's
+  `EEXIST` arm goes through `GetIOException`, which needs
+  `SystemNative_ConvertErrorPalToPlatform` and `StrErrorR`, so a guest that
+  catches the exception aborts while *constructing* it — the same wall that stops
+  `OpenMissingFile.cs`'s `EACCES` row. A hand-rolled `[DllImport]` of
+  `SystemNative_Open` sidesteps it entirely, and `sourcesPure/SystemNativeOpen.cs`
+  is the working pattern: read `Marshal.GetLastSystemError` (a hand-rolled
+  `DllImport` gets no generated last-error plumbing) and normalise it through
+  `SystemNative_ConvertErrorPlatformToPal`, which is implemented. That keeps the
+  row differential, because the PAL value is what both runtimes agree on.
 - **A seeded guest sees two different filesystems.** PawPrint puts the seed at
   `/` with cwd `/`; `RealRuntime` materialises it into a scratch directory that
   is the oracle's cwd. Relative names agree, absolute ones do not — and an
