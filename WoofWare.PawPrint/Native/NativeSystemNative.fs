@@ -548,6 +548,40 @@ module NativeSystemNative =
 
         ManagedPointerByteView.addByteOffset state byteConcreteType offset buffer
 
+    /// The socket `fd` names, for an entry point that takes one.
+    ///
+    /// `EBADF` for a descriptor that is not live. Every other shape is refused
+    /// rather than answered: `ENOTSOCK` for a non-socket descriptor is
+    /// unmeasured, and the two address families PawPrint can create but not bind
+    /// each have a reason of their own.
+    let private socketOfFd
+        (operation : string)
+        (fd : int)
+        (state : IlMachineState)
+        : Result<SocketId * SocketDescription, UnixError>
+        =
+        match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+        | None -> Error UnixError.EBADF
+        | Some description ->
+
+        match description.Target with
+        | OpenFileTarget.Socket socketId ->
+            let socket = EmulatedKernel.socket socketId state.Kernel
+
+            match socket.Domain with
+            | SocketDomain.InterNetwork -> Ok (socketId, socket)
+            | SocketDomain.InterNetworkV6 ->
+                failwith
+                    $"%s{operation}: fd %d{fd} is an IPv6 socket, whose local address PawPrint does not model. No *managed* guest can hold one — `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented — so this is a hand-rolled P/Invoke. Implement SetSockOpt first: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
+            | SocketDomain.Unix ->
+                failwith
+                    $"%s{operation}: fd %d{fd} is a Unix-domain socket, which binds a *path* in the emulated filesystem rather than a transport endpoint. That belongs with the filesystem work, not here."
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.SocketEventPort
+        | OpenFileTarget.File _ ->
+            failwith
+                $"%s{operation}: fd %d{fd} is %O{description.Target}, not a socket. A real kernel answers ENOTSOCK, which PawPrint has not measured under this shim; measure it before answering."
+
     /// `IsInBounds(sockAddr, socketAddressLen, &sockAddr->sa_family,
     /// sizeof_member(sockaddr, sa_family))` (pal_networking.c:692), which every
     /// entry point below applies before it reads or writes a blob's family.
@@ -4256,6 +4290,422 @@ module NativeSystemNative =
             state.MapKernel (fun _ -> kernel)
             |> storeCreatedSocket (int64 fd)
             |> completeWith UnixError.palSuccess
+        // `int32_t SystemNative_Bind(intptr_t socket, int32_t protocolType,
+        // uint8_t* socketAddress, int32_t socketAddressLen)`
+        // (pal_networking.c:1760).
+        //
+        // The C screens a null blob and a negative length, sets SO_REUSEADDR when
+        // `protocolType` is PT_TCP, and calls `bind(2)`. Both screens precede
+        // `ToFileDescriptor`, so they beat EBADF.
+        | Some "SystemNative_Bind",
+          [ ConcreteIntPtr state.ConcreteTypes
+            _
+            ConcretePointer _
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            let operation = "SystemNative_Bind"
+            let fd = fdArgument operation instruction.Arguments.[0]
+            let palProtocolType = NativeCall.int32Argument operation instruction.Arguments.[1]
+            let declaredLength = NativeCall.int32Argument operation instruction.Arguments.[3]
+
+            let addressArgument =
+                bufferPointerArgument operation "socketAddress" instruction.Arguments.[2]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match addressArgument with
+            | BufferPointer.RawAddress 0UL -> complete (UnixError.toPal UnixError.EFAULT) state
+            | _ ->
+
+            if declaredLength < 0 then
+                complete (UnixError.toPal UnixError.EFAULT) state
+            else
+
+            let platform = state.Kernel.UnixPlatform
+
+            match socketOfFd operation fd state with
+            | Error error -> complete (UnixError.toPal error) state
+            | Ok (socketId, socket) ->
+
+            let blob = requireStorage operation "socketAddress" addressArgument
+
+            // Every fault this bind could report, computed together; which one is
+            // *reported* is the platform's own order (`bindFaultOrder`), because
+            // the two disagree about it.
+            let internetFamily = SimulatedUnixPlatform.internetAddressFamily
+
+            let blobFamily =
+                if sockaddrFamilyIsInBounds platform declaredLength then
+                    Some (readSockaddrFamily ctx operation platform blob state)
+                else
+                    None
+
+            // Reading the address and port needs the declared length to cover
+            // them. It cannot change the answer when it does not: every flavour
+            // reports `Length` ahead of any address-derived fault, so a blob too
+            // short to read is a blob whose length is already wrong.
+            let endpoint =
+                if declaredLength >= SockaddrOffsets.InternetAddress + 4 then
+                    let portBytes =
+                        readBytesThrough
+                            ctx
+                            operation
+                            (sockaddrFieldAt ctx operation blob SockaddrOffsets.Port state)
+                            2
+                            state
+
+                    let addressBytes =
+                        readBytesThrough
+                            ctx
+                            operation
+                            (sockaddrFieldAt ctx operation blob SockaddrOffsets.InternetAddress state)
+                            4
+                            state
+
+                    Some (
+                        InternetEndpoint.ofParts
+                            (BinaryPrimitives.ReadUInt32BigEndian (addressBytes.AsSpan ()))
+                            (BinaryPrimitives.ReadUInt16BigEndian (portBytes.AsSpan ()))
+                    )
+                else
+                    None
+
+            let familyFault =
+                match blobFamily with
+                // Unreadable: no family to disagree with, and the length fault
+                // fires instead.
+                | None -> false
+                | Some family when family = internetFamily -> false
+                | Some 0 ->
+                    // AF_UNSPEC is two different rules. Linux accepts the blob
+                    // only when the address is all-zero, and answers
+                    // EAFNOSUPPORT otherwise; Darwin reads the address and port
+                    // out of it and binds them, exactly as for AF_INET. Both
+                    // measured.
+                    match SimulatedUnixPlatform.flavour platform with
+                    | SimulatedUnixFlavour.Darwin -> false
+                    | SimulatedUnixFlavour.Linux ->
+                        match endpoint with
+                        | Some endpoint -> endpoint.Address <> InternetEndpoint.WildcardAddress
+                        | None -> false
+                | Some _ -> true
+
+            let lengthFault =
+                not (
+                    SimulatedUnixPlatform.bindAddressLengthAccepted
+                        platform
+                        (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
+                        declaredLength
+                )
+
+            let reuseAddress = SimulatedUnixPlatform.isTcpProtocolType palProtocolType
+
+            let candidate =
+                endpoint
+                |> Option.map (fun endpoint ->
+                    {
+                        Endpoint = endpoint
+                        ReuseAddress = reuseAddress
+                    }
+                )
+
+            let addressNotLocalFault =
+                match endpoint with
+                | None -> false
+                | Some endpoint ->
+                    not (SimulatedUnixPlatform.isBindableAddress platform state.Kernel.LocalAddresses endpoint.Address)
+
+            let privilegedPortFault =
+                match endpoint with
+                | None -> false
+                | Some endpoint ->
+                    endpoint.Port > 0us
+                    && endpoint.Port < EmulatedKernel.privilegedPortCeiling
+                    && state.Kernel.UserId <> 0u
+
+            let conflictsWith (binding : SocketBinding) : bool =
+                state.Kernel.Sockets
+                |> Map.exists (fun otherId (other : SocketDescription) ->
+                    if otherId = socketId then
+                        false
+                    else
+
+                    match other.Binding with
+                    | None -> false
+                    | Some existing ->
+                        // Separate port namespaces per transport, measured: a UDP
+                        // socket takes a port a listening TCP socket holds.
+                        other.Kind = socket.Kind
+                        && SimulatedUnixPlatform.bindConflict platform existing other.IsListening binding
+                )
+
+            let addressInUseFault =
+                match candidate with
+                // A bind of port 0 asks for a free port rather than a particular
+                // one, so it cannot collide; the allocator's own search is what
+                // avoids one.
+                | Some binding when binding.Endpoint.Port > 0us -> conflictsWith binding
+                | _ -> false
+
+            let faults =
+                [
+                    BindFault.Length, lengthFault
+                    BindFault.Family, familyFault
+                    BindFault.AddressNotLocal, addressNotLocalFault
+                    BindFault.PrivilegedPort, privilegedPortFault
+                    BindFault.AlreadyBound, socket.Binding.IsSome
+                    BindFault.AddressInUse, addressInUseFault
+                ]
+                |> List.choose (fun (fault, holds) -> if holds then Some fault else None)
+                |> Set.ofList
+
+            match SimulatedUnixPlatform.firstBindFault platform faults with
+            | Some fault ->
+                let error =
+                    match fault with
+                    | BindFault.Length
+                    | BindFault.AlreadyBound -> UnixError.EINVAL
+                    | BindFault.Family -> UnixError.EAFNOSUPPORT
+                    | BindFault.AddressNotLocal -> UnixError.EADDRNOTAVAIL
+                    | BindFault.PrivilegedPort -> UnixError.EACCES
+                    | BindFault.AddressInUse -> UnixError.EADDRINUSE
+
+                complete (UnixError.toPal error) state
+            | None ->
+
+            let binding =
+                match candidate with
+                | Some binding -> binding
+                | None ->
+                    failwith
+                        $"%s{operation}: no fault was reported for fd %d{fd} and yet the blob was too short to read an address from (declared length %d{declaredLength}). The length fault should have fired; this is an interpreter bug."
+
+            let bound, kernel =
+                if binding.Endpoint.Port > 0us then
+                    binding, state.Kernel
+                else
+                    let acceptable (port : uint16) : bool =
+                        not (
+                            conflictsWith
+                                { binding with
+                                    Endpoint =
+                                        { binding.Endpoint with
+                                            Port = port
+                                        }
+                                }
+                        )
+
+                    match EmulatedKernel.allocateEphemeralPort acceptable state.Kernel with
+                    | Some (port, kernel) ->
+                        { binding with
+                            Endpoint =
+                                { binding.Endpoint with
+                                    Port = port
+                                }
+                        },
+                        kernel
+                    | None ->
+                        let low, high = state.Kernel.EphemeralPortRange
+
+                        failwith
+                            $"%s{operation}: every port in the ephemeral range %d{low}-%d{high} is already taken, so this bind of port 0 has no answer. A real kernel reports EADDRINUSE here, but that has not been measured under this shim, and inventing it would be a guess. Widen KernelConfig.EphemeralPortRange, or measure the real answer."
+
+            // From `kernel` rather than `state.Kernel`: the ephemeral allocator
+            // advanced the cursor, and that advance is part of this bind.
+            state.MapKernel (fun _ ->
+                { kernel with
+                    Sockets =
+                        Map.add
+                            socketId
+                            { socket with
+                                Binding = Some bound
+                            }
+                            kernel.Sockets
+                }
+            )
+            |> complete UnixError.palSuccess
+        // `int32_t SystemNative_Listen(intptr_t socket, int32_t backlog)`
+        // (pal_networking.c:1892). No screens of its own: it is `listen(2)`.
+        | Some "SystemNative_Listen",
+          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            let operation = "SystemNative_Listen"
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            // The backlog is read and discarded. Every value is accepted —
+            // measured, 0, -1 and INT_MAX all succeed on both — and nothing this
+            // slice implements can observe the number: its only reader is the
+            // depth of the queue `accept(2)` drains.
+            NativeCall.int32Argument operation instruction.Arguments.[1] |> ignore<int>
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match socketOfFd operation fd state with
+            | Error error -> complete (UnixError.toPal error) state
+            | Ok (socketId, socket) ->
+
+            match socket.Kind with
+            | SocketKind.Datagram -> complete (UnixError.toPal UnixError.EOPNOTSUPP) state
+            | SocketKind.Raw
+            | SocketKind.SeqPacket ->
+                failwith
+                    $"%s{operation}: fd %d{fd} is a %O{socket.Kind} socket. Whether `listen(2)` accepts one is unmeasured — SOCK_SEQPACKET connections on both, SOCK_RAW plausibly EOPNOTSUPP — so measure it rather than guessing."
+            | SocketKind.Stream ->
+
+            let bound, kernel =
+                match socket.Binding with
+                | Some binding -> binding, state.Kernel
+                | None ->
+                    // `listen(2)` on an unbound socket binds it to the wildcard
+                    // and an ephemeral port. Measured on both — and note it does
+                    // *not* go through `SystemNative_Bind`, so no SO_REUSEADDR is
+                    // set, which is a distinction a later bind can see.
+                    let candidate (port : uint16) : SocketBinding =
+                        {
+                            Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
+                            ReuseAddress = false
+                        }
+
+                    let acceptable (port : uint16) : bool =
+                        state.Kernel.Sockets
+                        |> Map.exists (fun otherId (other : SocketDescription) ->
+                            if otherId = socketId then
+                                false
+                            else
+
+                            match other.Binding with
+                            | None -> false
+                            | Some existing ->
+                                other.Kind = socket.Kind
+                                && SimulatedUnixPlatform.bindConflict
+                                    state.Kernel.UnixPlatform
+                                    existing
+                                    other.IsListening
+                                    (candidate port)
+                        )
+                        |> not
+
+                    match EmulatedKernel.allocateEphemeralPort acceptable state.Kernel with
+                    | Some (port, kernel) -> candidate port, kernel
+                    | None ->
+                        let low, high = state.Kernel.EphemeralPortRange
+
+                        failwith
+                            $"%s{operation}: every port in the ephemeral range %d{low}-%d{high} is taken, so this implicit bind has no answer. Widen KernelConfig.EphemeralPortRange, or measure what a real kernel says here."
+
+            state.MapKernel (fun _ ->
+                { kernel with
+                    Sockets =
+                        Map.add
+                            socketId
+                            { socket with
+                                Binding = Some bound
+                                IsListening = true
+                            }
+                            kernel.Sockets
+                }
+            )
+            |> complete UnixError.palSuccess
+        // `int32_t SystemNative_GetSockName(intptr_t socket, uint8_t* socketAddress,
+        // int32_t* socketAddressLen)` (pal_networking.c:1871).
+        | Some "SystemNative_GetSockName",
+          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer _ ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            let operation = "SystemNative_GetSockName"
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            let addressArgument =
+                bufferPointerArgument operation "socketAddress" instruction.Arguments.[1]
+
+            let lengthArgument =
+                bufferPointerArgument operation "socketAddressLen" instruction.Arguments.[2]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match addressArgument, lengthArgument with
+            | BufferPointer.RawAddress 0UL, _
+            | _, BufferPointer.RawAddress 0UL -> complete (UnixError.toPal UnixError.EFAULT) state
+            | _, _ ->
+
+            let lengthCell = requireStorage operation "socketAddressLen" lengthArgument
+
+            let declaredLength =
+                BinaryPrimitives.ReadInt32LittleEndian ((readBytesThrough ctx operation lengthCell 4 state).AsSpan ())
+
+            if declaredLength < 0 then
+                complete (UnixError.toPal UnixError.EFAULT) state
+            else
+
+            match socketOfFd operation fd state with
+            | Error error -> complete (UnixError.toPal error) state
+            | Ok (_, socket) ->
+
+            let platform = state.Kernel.UnixPlatform
+            let realLength = (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
+
+            // An unbound socket reports its family and nothing else: port 0,
+            // address all-zero. Measured on both.
+            let endpoint =
+                match socket.Binding with
+                | Some binding -> binding.Endpoint
+                | None -> InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 0us
+
+            let blob = Array.zeroCreate<byte> realLength
+            BinaryPrimitives.WriteUInt16BigEndian (System.Span<byte> (blob, SockaddrOffsets.Port, 2), endpoint.Port)
+
+            BinaryPrimitives.WriteUInt32BigEndian (
+                System.Span<byte> (blob, SockaddrOffsets.InternetAddress, 4),
+                endpoint.Address
+            )
+
+            let field = SimulatedUnixPlatform.sockaddrFamilyField platform
+            let familyOffset = SockaddrFamilyField.offset field
+
+            match SockaddrFamilyField.width field with
+            | 1 -> blob.[familyOffset] <- byte SimulatedUnixPlatform.internetAddressFamily
+            | _ ->
+                BinaryPrimitives.WriteUInt16LittleEndian (
+                    System.Span<byte> (blob, familyOffset, 2),
+                    uint16 SimulatedUnixPlatform.internetAddressFamily
+                )
+
+            // The caller's declared length bounds what is *written*, and does not
+            // bound what is *reported*: measured on both, `getsockname` with a
+            // declared length of 8 writes eight bytes and reports 16, and with 0
+            // writes nothing and still reports 16. The C's
+            // `assert(addrLen <= *socketAddressLen)` is false on both platforms
+            // and compiled out of the shipped build.
+            let written = min declaredLength realLength
+
+            let state =
+                if written = 0 then
+                    state
+                else
+                    writeBytesThrough
+                        ctx
+                        operation
+                        (requireStorage operation "socketAddress" addressArgument)
+                        (ImmutableArray.CreateRange (Array.sub blob 0 written))
+                        state
+
+            let reported = Array.zeroCreate<byte> 4
+            BinaryPrimitives.WriteInt32LittleEndian (System.Span<byte> reported, realLength)
+
+            state
+            |> writeBytesThrough ctx operation lengthCell (ImmutableArray.CreateRange reported)
+            |> complete UnixError.palSuccess
         | Some "SystemNative_CreateSocketEventPort",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->

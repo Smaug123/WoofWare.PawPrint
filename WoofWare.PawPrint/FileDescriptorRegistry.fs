@@ -90,6 +90,28 @@ type SocketProtocol =
     /// `PT_UDP`, PAL 17.
     | Udp
 
+/// The local address a socket holds, once `bind(2)` — or `listen(2)`'s implicit
+/// bind — has given it one.
+type SocketBinding =
+    {
+        /// Where the socket is bound.
+        Endpoint : InternetEndpoint
+        /// Whether the bind that established this set `SO_REUSEADDR`.
+        ///
+        /// A property of the *bind call*, not of the socket:
+        /// `SystemNative_Bind` sets the option exactly when its own
+        /// `protocolType` argument is `PT_TCP` (`pal_networking.c:1770`), and
+        /// managed code passes whatever `ProtocolType` the constructor was
+        /// given — so a `ProtocolType.Unspecified` TCP socket does not get it,
+        /// and neither does a socket that `listen(2)` bound implicitly, having
+        /// never been through `SystemNative_Bind` at all.
+        ///
+        /// Not readable back by a guest: the PAL maps managed `ReuseAddress` to
+        /// `SO_REUSEPORT` where that exists (`pal_networking.c:2274`). Its whole
+        /// observable effect is which later binds are refused.
+        ReuseAddress : bool
+    }
+
 /// A socket, as the emulated kernel's socket table holds it.
 ///
 /// Carries no identity of its own: the table is keyed by `SocketId`, so a field
@@ -103,6 +125,20 @@ type SocketDescription =
         Kind : SocketKind
         /// The protocol given to `socket(2)`, likewise fixed.
         Protocol : SocketProtocol
+        /// Where this socket is bound, if anywhere. `None` until `bind(2)` or a
+        /// `listen(2)` that binds implicitly.
+        Binding : SocketBinding option
+        /// Whether `listen(2)` has been called on this socket.
+        ///
+        /// A flag rather than the backlog, because nothing this slice implements
+        /// can read a backlog: its only observer is the depth of the queue
+        /// `accept(2)` drains, and storing a number nothing reads is state no
+        /// test can cover. `Accept` adds it together with that queue.
+        ///
+        /// Load-bearing for `bind(2)` all the same: a listening socket's address
+        /// conflicts with a second bind on both flavours, where a merely-bound
+        /// one may not.
+        IsListening : bool
     }
 
 /// What an open file description refers to — the kernel object on the far side

@@ -1138,6 +1138,27 @@ module CreatingOpenRules =
         &&& ~~~(PermissionBits.toInt umask &&& permissionBitsOnly)
         |> PermissionBits.parseOrFail "CreatingOpenRules.createdPermissions"
 
+/// A reason `bind(2)` refuses, as one of the checks it makes rather than as an
+/// errno: which errno a fault becomes is fixed, but *which fault is reported*
+/// when several hold at once is per-flavour. See
+/// `SimulatedUnixPlatform.bindFaultOrder`.
+[<RequireQualifiedAccess>]
+type BindFault =
+    /// The declared `socketAddressLen` is not one this platform accepts for the
+    /// address family in the blob. `EINVAL`.
+    | Length
+    /// The blob's address family is not the socket's. `EAFNOSUPPORT`.
+    | Family
+    /// No local interface holds the address. `EADDRNOTAVAIL`.
+    | AddressNotLocal
+    /// The port is below `privilegedPortCeiling` and the process is not root.
+    /// `EACCES`.
+    | PrivilegedPort
+    /// This socket already has a local address. `EINVAL`.
+    | AlreadyBound
+    /// Another socket holds a conflicting address. `EADDRINUSE`.
+    | AddressInUse
+
 [<RequireQualifiedAccess>]
 module SimulatedUnixPlatform =
     /// Loosest ceiling any Unix we model imposes on `utsname.release`:
@@ -1434,6 +1455,123 @@ module SimulatedUnixPlatform =
     /// Where this platform keeps a socket address's family, and how wide it is.
     /// See `SockaddrFamilyField`, which is also where the reason every other
     /// field's offset is flavour-free is written down.
+    /// The order `bind(2)` reports its faults in, which is **not** the same on
+    /// the two flavours.
+    ///
+    /// Measured pairwise, by presenting each pair of faults together and seeing
+    /// which errno came back. Linux checks the declared length before it reads
+    /// the family, and defers "this socket is already bound" until after it has
+    /// validated the address; Darwin reads the family first and rejects an
+    /// already-bound socket before it looks at the address at all. So
+    /// a rebind to a non-local address is `EADDRNOTAVAIL` on Linux and `EINVAL`
+    /// on Darwin, and a short `sockaddr_in6` on an IPv4 socket is `EINVAL` on
+    /// Linux and `EAFNOSUPPORT` on Darwin.
+    ///
+    /// Expressed as an order over faults rather than as nested branches so that
+    /// the divergence is one list rather than two code paths, and so a test can
+    /// assert the order directly.
+    let bindFaultOrder (platform : SimulatedUnixPlatform) : BindFault list =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux ->
+            [
+                BindFault.Length
+                BindFault.Family
+                BindFault.AddressNotLocal
+                BindFault.PrivilegedPort
+                BindFault.AlreadyBound
+                BindFault.AddressInUse
+            ]
+        | SimulatedUnixFlavour.Darwin ->
+            [
+                BindFault.Family
+                BindFault.Length
+                BindFault.AlreadyBound
+                BindFault.AddressNotLocal
+                BindFault.PrivilegedPort
+                BindFault.AddressInUse
+            ]
+
+    /// The first fault in this platform's order that `faults` contains.
+    let firstBindFault (platform : SimulatedUnixPlatform) (faults : Set<BindFault>) : BindFault option =
+        bindFaultOrder platform |> List.tryFind (fun fault -> Set.contains fault faults)
+
+    /// How long `bind(2)` insists a `struct sockaddr_in` argument is.
+    ///
+    /// Measured, and not the same shape on the two: Linux accepts any length from
+    /// the family's own `sizeof` up to `sizeof(struct sockaddr_storage)` — 16
+    /// through 128 inclusive for IPv4, with 129 the least rejected — while Darwin
+    /// insists on exactly 16 and answers `EINVAL` for every value from 17 to 32.
+    ///
+    /// Invisible through the managed API, which always passes
+    /// `SocketAddress.Size`; a hand-rolled `[DllImport]` sees it immediately.
+    let bindAddressLengthAccepted (platform : SimulatedUnixPlatform) (exactSize : int) (declared : int) : bool =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> declared >= exactSize && declared <= maximumSocketAddressSize
+        | SimulatedUnixFlavour.Darwin -> declared = exactSize
+
+    /// May a socket bind to this address, given the addresses this machine holds?
+    ///
+    /// The wildcard always binds. Beyond that the flavours read the same list
+    /// differently, which is measured rather than inferred: `127.9.9.9` binds on
+    /// Linux and is `EADDRNOTAVAIL` on Darwin, because Linux treats every address
+    /// inside a local prefix as assigned while Darwin assigns loopback exactly
+    /// one address.
+    ///
+    /// Broadcast and multicast are a further Linux-only allowance
+    /// (`255.255.255.255` and `224.0.0.1` bind there and are `EAFNOSUPPORT` on
+    /// Darwin). Neither is modelled: PawPrint has no interface to broadcast on,
+    /// and the entry point refuses such an address rather than answering, so a
+    /// guest that needs one gets a diagnosis instead of a wrong errno.
+    let isBindableAddress
+        (platform : SimulatedUnixPlatform)
+        (localAddresses : Ipv4Prefix list)
+        (address : uint32)
+        : bool
+        =
+        if address = InternetEndpoint.WildcardAddress then
+            true
+        else
+
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> localAddresses |> List.exists (Ipv4Prefix.contains address)
+        | SimulatedUnixFlavour.Darwin -> localAddresses |> List.exists (Ipv4Prefix.isExactly address)
+
+    /// Does a bind of `candidate` collide with the socket already bound at
+    /// `existing`?
+    ///
+    /// Both flavours refuse two sockets the same port on overlapping addresses,
+    /// and both relax that when `SO_REUSEADDR` is set — in opposite directions,
+    /// which is the whole of the divergence here and is measured in both:
+    ///
+    /// * **Linux** relaxes only while nothing is listening. Two sockets that both
+    ///   set the flag may share an address, exactly or through the wildcard,
+    ///   until one of them calls `listen(2)`; after that the second bind is
+    ///   `EADDRINUSE`.
+    /// * **Darwin** relaxes only for addresses that differ. Two sockets that both
+    ///   set the flag may hold the wildcard and a specific address on one port,
+    ///   listening or not; the exact duplicate is `EADDRINUSE` either way.
+    ///
+    /// With the flag absent on either side — every UDP bind through the shim, and
+    /// every `ProtocolType.Unspecified` one — the two agree and refuse.
+    let bindConflict
+        (platform : SimulatedUnixPlatform)
+        (existing : SocketBinding)
+        (existingIsListening : bool)
+        (candidate : SocketBinding)
+        : bool
+        =
+        if existing.Endpoint.Port <> candidate.Endpoint.Port then
+            false
+        elif not (InternetEndpoint.addressesOverlap existing.Endpoint candidate.Endpoint) then
+            false
+        elif not (existing.ReuseAddress && candidate.ReuseAddress) then
+            true
+        else
+
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> existingIsListening
+        | SimulatedUnixFlavour.Darwin -> existing.Endpoint.Address = candidate.Endpoint.Address
+
     let sockaddrFamilyField (platform : SimulatedUnixPlatform) : SockaddrFamilyField =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> SockaddrFamilyField.TwoBytesAtOffsetZero
@@ -1663,6 +1801,12 @@ module SimulatedUnixPlatform =
     /// this emulated kernel's declared protocol table; a row outside it is a
     /// socket PawPrint has not decided how to be, and a refusal leaves that
     /// decision open where a guessed errno would not.
+    /// Is this the PAL protocol type `SystemNative_Bind` sets `SO_REUSEADDR`
+    /// for? The C keys on its own `protocolType` *argument* being `PT_TCP`
+    /// (`pal_networking.c:1770`), not on the socket's protocol, so this asks
+    /// about the argument.
+    let isTcpProtocolType (palProtocolType : int) : bool = palProtocolType = Pal.PtTcp
+
     let socketCreation
         (platform : SimulatedUnixPlatform)
         (palAddressFamily : int)
@@ -1856,6 +2000,22 @@ type EmulatedKernel =
         /// `EmulatedKernel.checkInvariants` enforces that; the backlog is what
         /// will relax it.
         Sockets : Map<SocketId, SocketDescription>
+        /// The port a `bind(2)` of port 0 will try first.
+        ///
+        /// A counter rather than a draw from the seeded PRNG. Which port an
+        /// ephemeral bind picks is unspecified — Linux randomises within its
+        /// range and Darwin ascends — so PawPrint owes a guest only *a* free
+        /// port, and a trace whose ports read 32768, 32769, 32770 is far easier
+        /// to follow than one whose ports are scattered. Nothing guest-visible
+        /// may depend on the value; `SocketBindListen.cs` asserts only that it is
+        /// non-zero and unprivileged, which is all the two real kernels agree on.
+        NextEphemeralPort : uint16
+        /// Range `NextEphemeralPort` sweeps, inclusive at both ends. Host
+        /// configuration; see `EmulatedKernel.defaultEphemeralPortRange`.
+        EphemeralPortRange : uint16 * uint16
+        /// The IPv4 addresses this machine holds. Host configuration; see
+        /// `EmulatedKernel.defaultLocalAddresses`.
+        LocalAddresses : Ipv4Prefix list
         /// The identity the next `SystemNative_Socket` will allocate.
         ///
         /// Monotonic, and never reused: nothing guest-visible reports a
@@ -2423,6 +2583,33 @@ module EmulatedKernel =
     /// is also the first interactive user on the Ubuntu-shaped platform
     /// `defaultUnixPlatform` already claims to be. A host that wants root says
     /// so in `KernelConfig.UserId`.
+    /// The range `bind(2)` draws from when asked for port 0.
+    ///
+    /// A sysctl on both platforms rather than a property of the kernel image —
+    /// Linux's `ip_local_port_range` reads 32768-60999 and Darwin's
+    /// `net.inet.ip.portrange.first`/`last` read 49152-65535 — so this is
+    /// configuration with one default, in the way `FileSystemType` is, and not a
+    /// per-flavour derivation. The default is Linux's, matching
+    /// `defaultUnixPlatform`.
+    let defaultEphemeralPortRange : uint16 * uint16 = 32768us, 60999us
+
+    /// Ports a process may bind only as root.
+    ///
+    /// Measured as 1024 on both: binding 1023 is `EACCES` for an unprivileged
+    /// caller and 1024 succeeds. Not configurable, though Linux does expose it as
+    /// `ip_unprivileged_port_start`: nothing needs to vary it yet, and a knob
+    /// with no consumer is a knob no test covers.
+    let privilegedPortCeiling : uint16 = 1024us
+
+    /// The addresses this machine holds, as `bind(2)` decides whether an address
+    /// is assignable. Loopback only: PawPrint models no interface a guest could
+    /// reach, so anything else would be an address no packet could arrive on.
+    ///
+    /// `127.0.0.0/8` rather than `127.0.0.1/32` because that is what Linux
+    /// assigns to `lo`, and the flavours read the list differently — see
+    /// `SimulatedUnixPlatform.isBindableAddress`.
+    let defaultLocalAddresses : Ipv4Prefix list = [ Ipv4Prefix.create 0x7F000000u 8 ]
+
     let defaultUserId : uint32 = 1000u
 
     /// Effective group ID a freshly-minted simulated process runs as. Matches
@@ -2457,6 +2644,9 @@ module EmulatedKernel =
             FileDescriptors = FileDescriptorRegistry.initial
             Sockets = Map.empty
             NextSocketId = SocketId 0L
+            NextEphemeralPort = fst defaultEphemeralPortRange
+            EphemeralPortRange = defaultEphemeralPortRange
+            LocalAddresses = defaultLocalAddresses
             LowLevelMonitors = Map.empty
             NextLowLevelMonitorId = 1
             WaitHandles = Map.empty
@@ -3166,6 +3356,75 @@ module EmulatedKernel =
     /// one — which is what lets every reader of the table treat its names as
     /// ones a real process could hold. Failing here rather than at the first read
     /// means a host learns at configuration time, before any guest code runs.
+    /// Sets the ephemeral range, and rewinds the cursor into it: a cursor left
+    /// outside the range would hand out its first port from wherever the previous
+    /// range had reached.
+    let withEphemeralPortRange ((low, high) : uint16 * uint16) (kernel : EmulatedKernel) : EmulatedKernel =
+        if low = 0us then
+            failwith
+                "EmulatedKernel.EphemeralPortRange: port 0 is how a guest *asks* for an ephemeral port, so it cannot also be one that gets handed out. Start the range at 1 or above."
+
+        if low > high then
+            failwith
+                $"EmulatedKernel.EphemeralPortRange: the range %d{low}-%d{high} is empty, so no bind of port 0 could ever be answered."
+
+        { kernel with
+            EphemeralPortRange = low, high
+            NextEphemeralPort = low
+        }
+
+    let withLocalAddresses (addresses : Ipv4Prefix list) (kernel : EmulatedKernel) : EmulatedKernel =
+        // An empty list is legal and means a machine with no addresses at all,
+        // on which only the wildcard binds. That is a strange machine but a
+        // representable one, and refusing it here would be inventing a rule.
+        { kernel with
+            LocalAddresses = addresses
+        }
+
+    /// Hands out the lowest free port at or after the cursor, sweeping the range
+    /// once and wrapping. `isAcceptable` decides freedom, and must be the same
+    /// conflict test `bind(2)` itself applies — a port a TCP socket holds is free
+    /// to a UDP one, so a naive "is this port taken" set would refuse a legal
+    /// bind.
+    ///
+    /// `None` when a full sweep finds nothing. The caller decides what to do:
+    /// there is no measured answer for an exhausted range, so inventing an errno
+    /// here would be a guess.
+    let allocateEphemeralPort
+        (isAcceptable : uint16 -> bool)
+        (kernel : EmulatedKernel)
+        : (uint16 * EmulatedKernel) option
+        =
+        let low, high = kernel.EphemeralPortRange
+        let width = int high - int low + 1
+
+        let rec sweep (remaining : int) (candidate : uint16) =
+            if remaining = 0 then
+                None
+            else
+
+            let next = if candidate = high then low else candidate + 1us
+
+            if isAcceptable candidate then
+                Some (
+                    candidate,
+                    { kernel with
+                        NextEphemeralPort = next
+                    }
+                )
+            else
+                sweep (remaining - 1) next
+
+        // A cursor outside the range can only come from a hand-built kernel;
+        // start from the bottom rather than sweeping from nowhere.
+        let start =
+            if kernel.NextEphemeralPort < low || kernel.NextEphemeralPort > high then
+                low
+            else
+                kernel.NextEphemeralPort
+
+        sweep width start
+
     let withEnvironment (env : Map<string, string>) (kernel : EmulatedKernel) : EmulatedKernel =
         for KeyValue (name, value) in env do
             match environmentEntryProblem name value with
@@ -3229,6 +3488,9 @@ module EmulatedKernel =
                         Domain = domain
                         Kind = kind
                         Protocol = protocol
+                        // `socket(2)` binds nothing and listens for nothing.
+                        Binding = None
+                        IsListening = false
                     }
                     kernel.Sockets
             NextSocketId = SocketId (raw + 1L)
@@ -3424,6 +3686,15 @@ type KernelConfig =
         /// throughout, so `Nfs` here buys a kernel that reports NFS, not one
         /// that behaves like a remote filesystem.
         FileSystemType : EmulatedFileSystemType option
+        /// Range `bind(2)` draws an ephemeral port from, inclusive at both ends.
+        /// See `EmulatedKernel.defaultEphemeralPortRange`; the low end must not
+        /// exceed the high end, and neither may be zero, since port 0 is the
+        /// request rather than an answer.
+        EphemeralPortRange : uint16 * uint16
+        /// The IPv4 addresses this machine holds, as prefixes. See
+        /// `EmulatedKernel.defaultLocalAddresses`, and note the flavours read one
+        /// list differently.
+        LocalAddresses : Ipv4Prefix list
     }
 
     /// Configuration a host gets if it expresses no preference: no environment
@@ -3445,6 +3716,8 @@ type KernelConfig =
             GroupId = EmulatedKernel.defaultGroupId
             Umask = EmulatedKernel.defaultUmask
             FileSystemType = None
+            EphemeralPortRange = EmulatedKernel.defaultEphemeralPortRange
+            LocalAddresses = EmulatedKernel.defaultLocalAddresses
         }
 
 [<RequireQualifiedAccess>]
@@ -3468,4 +3741,6 @@ module KernelConfig =
             (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)
             config.FileSystem
         |> EmulatedKernel.withUserAndGroupId config.UserId config.GroupId
+        |> EmulatedKernel.withEphemeralPortRange config.EphemeralPortRange
+        |> EmulatedKernel.withLocalAddresses config.LocalAddresses
         |> EmulatedKernel.withUmask config.Umask
