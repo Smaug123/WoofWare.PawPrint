@@ -16,7 +16,7 @@ because three of them look alike from the call site.
 
 | home | the fact is… | examples |
 | --- | --- | --- |
-| `SimulatedUnixPlatform` | true of *this kernel's source*, the same on every machine running it | `sa_family_t` width, `AF_INET6`'s number, `pathLimits`, `symlinkPermissions`, `reportsBirthTime` |
+| `SimulatedUnixPlatform` | true of *this kernel's source*, the same on every machine running it | `sa_family_t` width, `AF_INET6`'s number, `sizeof(struct sockaddr_un)`, `reportsBirthTime`, `setIdBitsOnTruncation`, `creatingOpenRules` |
 | `KernelConfig` | true of *this machine or mount or process*, and a different admin could change it | `FileSystemType`, `UserAddressLimit`, `UserId`, `Umask`, `ProcessorCount`, `WallClockEpochMs` |
 | CoreLib flavour | not modelled at all — it decides which *guest* code path exists | `Environment.OSVersion`'s implementation, `Lock.ThreadId.InitializeForCurrentThread` |
 | the interpreter | an artefact of how PawPrint represents memory, which no real kernel has | `Int32.MaxValue / stride` limits on a native block |
@@ -24,6 +24,16 @@ because three of them look alike from the call site.
 The test that separates the first two: **could two machines running the same
 kernel image disagree?** A sysctl, a mount option, a uid — yes, so it is
 configuration. `sizeof(struct sockaddr_un)` — no, so it is the platform.
+
+Two entries currently in `SimulatedUnixPlatform` do not pass that test, and are
+there as deliberate approximations rather than as precedent. `pathLimits` holds a
+`NAME_MAX` that varies per mount on Linux, because PawPrint models exactly one
+filesystem. `symlinkPermissions` holds Darwin's `umask 022` answer, because a
+symlink can only enter this filesystem through a *seed* — a tree some other
+process built, to which this run's configured umask never applied. Each has a
+named trigger for becoming configuration, stated beside it: a second filesystem,
+and `SystemNative_SymLink` letting a guest create a link. Do not cite either as a
+reason to put a machine-dependent fact in the platform.
 `SystemNative_GetFileSystemType` is the worked example: the value is a *mount*
 fact, so it lives in `KernelConfig.FileSystemType`, even though the flavour
 constrains which types are possible (`Tmpfs` is Linux-only, `Apfs` Darwin-only).

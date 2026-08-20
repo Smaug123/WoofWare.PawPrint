@@ -47,9 +47,11 @@ as `EAGAIN` rather than hanging):
 
 `read` and `write` on a socket are refused rather than answered, because every
 answer is a claim about connection state that PawPrint does not model: `read` is
-`ENOTCONN` for TCP on both, `EINVAL` on Linux against `ENOTCONN` on Darwin for a
-Unix-domain stream socket, and for a datagram socket it *blocks with no wake
-source*. `write` is `EPIPE` on Linux against `ENOTCONN` on Darwin for TCP, and
-`EDESTADDRREQ` for a datagram socket. The Linux TCP row raises `SIGPIPE` as well,
+`ENOTCONN` for TCP on both, and `EINVAL` on Linux against `ENOTCONN` on Darwin for
+a Unix-domain stream socket. For a datagram socket the answer depends on the
+descriptor's own blocking mode, which is why the probe above set `O_NONBLOCK`: it
+saw `EAGAIN`, but a socket straight from `socket(2)` is *blocking*, and a real
+`read` on one **blocks with no wake source**. `write` is `EPIPE` on Linux against
+`ENOTCONN` on Darwin for TCP, and `EDESTADDRREQ` for a datagram socket. The Linux TCP row raises `SIGPIPE` as well,
 but a .NET guest never sees it: CoreCLR installs `signal(SIGPIPE, SIG_IGN)`
 process-wide (`src/coreclr/pal/src/exception/signal.cpp`).
