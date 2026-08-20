@@ -844,20 +844,7 @@ module VirtualSlotLayout =
             | None ->
                 // A ModuleRef or MethodDef parent: neither can name a class ancestor's method.
                 state, None
-            | Some (parentIdentity, parentArguments) ->
-
-            // The declaration names its ancestor *by instantiation*: upstream matches MethodTables
-            // (`pCur->GetMethodTable() == pDeclMT`), and `B<int32>` and `B<string>` are different
-            // MethodTables sharing one `ResolvedTypeIdentity`. Comparing the substitution is what
-            // separates them. Comparing only the identity would accept `.override B<int32>::M` from a
-            // `C : B<string>` -- and whenever the declaration's signature mentions no type variable
-            // the signature comparison agrees too, so the row would write a slot for a type CoreCLR
-            // rejects with `MI_DECLARATIONNOTFOUND`.
-            let declarationSubstitution =
-                TypeConcretization.SubstitutionContext.forBase
-                    table.Owner.AssemblyFullName
-                    parentArguments
-                    table.Owner.Substitution
+            | Some (parentIdentity, _parentArguments) ->
 
             // Is the named type an ancestor?
             //
@@ -900,29 +887,51 @@ module VirtualSlotLayout =
                     && slot.Method.Name = memberRef.PrettyName
                 )
 
-            // Matching is under substitution and module-aware, which structural equality of the
-            // signatures is not: a nominal type in the signature decodes as `FromDefinition` from the
-            // MethodDef and as `FromReference` from a cross-module MemberRef, so comparing the two
-            // records directly misses a legal match. `signaturesEquivalent` resolves both sides'
-            // tokens against their own assemblies, which is what upstream's comparison does.
-            let state, equivalent =
+            // Both signatures are compared in the named ancestor's *own, open* vocabulary: its type
+            // variables are left standing on both sides, while nominal tokens are resolved against
+            // whichever assembly spelled them.
+            //
+            // That is upstream's comparison, and the shape of it matters. `CompareMethodSigs` is
+            // handed `NULL` as the declaration's substitution and `pDeclTypeSubstitution` as the
+            // candidate's, and `pDeclTypeSubstitution` begins as `emptySubstitution` -- it only
+            // accumulates as the search climbs *above* the named type. So for the named type itself
+            // neither side is substituted. The two passes the loop makes differ only in
+            // `AdjustForTypeEquivalenceForbiddenScope`, which is COM type equivalence and which
+            // PawPrint does not model at all, so they collapse into this one.
+            //
+            // Comparing under the *closed* instantiation instead would be wrong in a way that looks
+            // harmless: with an ancestor declaring `M(T)` and `M(string)` and closed at `string`, both
+            // substitute to `M(string)` and tie, where upstream sees `M(!0)` match only the first.
+            // A tie invented that way cannot then be broken, because what distinguished the two has
+            // been substituted away.
+            //
+            // Resolving tokens per module is the other half, and structural equality of the signature
+            // records is not a substitute for it: a nominal type decodes as `FromDefinition` from the
+            // ancestor's MethodDef and as `FromReference` from a cross-module MemberRef, so comparing
+            // the records directly misses a legal match.
+            let openContext =
+                let _, namedTypeInfo = definitionMetadata operation state namedIdentity
+
+                TypeConcretization.SubstitutionContext.forDefinition namedIdentity namedTypeInfo.Generics.Length
+
+            let state, matches =
                 ((state, []), candidates)
                 ||> List.fold (fun (state, acc) (slot, index) ->
                     let declarationComparand : TypeConcretization.SignatureComparand =
                         {
                             Signature = signature
                             AssemblyFullName = table.Owner.AssemblyFullName
-                            DeclaringTypeGenerics = declarationSubstitution
+                            DeclaringTypeGenerics = openContext
                         }
 
                     let candidateComparand : TypeConcretization.SignatureComparand =
                         {
                             Signature = slot.Method.Signature
                             AssemblyFullName = slot.DeclaredBy.AssemblyFullName
-                            DeclaringTypeGenerics = slot.DeclaredBy.Substitution
+                            DeclaringTypeGenerics = openContext
                         }
 
-                    let state, matches =
+                    let state, equivalent =
                         IlMachineState.signaturesEquivalent
                             loggerFactory
                             baseClassTypes
@@ -931,41 +940,26 @@ module VirtualSlotLayout =
                             declarationComparand
                             candidateComparand
 
-                    state, (if matches then (slot, index) :: acc else acc)
+                    state, (if equivalent then (slot, index) :: acc else acc)
                 )
 
-            match equivalent with
+            match matches with
             | [ single ] -> state, Some single
             | [] ->
                 failwith
-                    $"TODO: %s{operation} for %s{table.Owner.Description}, whose MethodImpl declares an override of %s{memberRef.PrettyName} on an ancestor that declares %i{List.length candidates} method(s) of that name, none with an equivalent signature; resolving it needs that ancestor's own bases searched too, as MethodTableBuilder::FindDeclMethodOnClassInHierarchy does"
+                    $"TODO: %s{operation} for %s{table.Owner.Description}, whose MethodImpl declares an override of %s{memberRef.PrettyName} on an ancestor that declares %i{List.length candidates} method(s) of that name, none matching its signature; resolving it needs that ancestor's own bases searched too, as MethodTableBuilder::FindDeclMethodOnClassInHierarchy does, or COM type equivalence, which its second pass permits and PawPrint does not model"
             | several ->
-                // Substitution can make two distinct declarations coincide: `B<T>` declaring `M(T)`
-                // and `M(string)` ties at `T = string`. Upstream separates them with a first pass over
-                // *raw* signatures before the equivalent one, and this refuses instead.
-                //
-                // A structural comparison of the raw signatures is not that first pass, and an earlier
-                // revision of this used one on the mistaken grounds that what distinguishes tied
-                // candidates is always a type variable, spelled identically in every assembly.
-                // The distinguishing element is indeed a type variable -- but the comparison is of the
-                // *whole* signature, so a nominal type elsewhere in it decides the outcome too, and
-                // that is exactly what differs across token spaces. `B<T>` declaring `M(T, Arg)` and
-                // `M(string, Arg)` in a library, overridden from another assembly, ties on the
-                // substituted form and then matches neither raw form, because the MemberRef spells
-                // `Arg` as `FromReference` where the MethodDef spells it `FromDefinition`.
-                //
-                // The first pass therefore has to keep the type variables distinct while resolving
-                // nominal tokens per module -- `signaturesEquivalent` against a substitution context
-                // that maps each `!i` to a formal marker rather than to an argument. That is a
-                // separate change, and no test here reaches a tie at all: C# refuses to compile the
-                // shape (CS0462), so provoking one needs a fabricated image.
+                // Comparing in the open vocabulary means two candidates can only tie by declaring the
+                // same name and the same signature, which ECMA-335 II.22.26 forbids. Upstream would
+                // take the first in `IntroducedMethodIterator` order; refusing says the image is
+                // invalid rather than picking one.
                 let described =
                     several
                     |> List.map (fun (slot, index) -> $"%s{slot.DeclaredBy.Description} slot %i{index}")
                     |> String.concat ", "
 
                 failwith
-                    $"TODO: %s{operation} for %s{table.Owner.Description}, whose MethodImpl declaration %s{memberRef.PrettyName} is equivalent to more than one declaration on the named ancestor (%s{described}); separating them needs the raw signatures compared with type variables left standing and nominal tokens resolved per module, which is the first of the two passes MethodTableBuilder::FindDeclMethodOnClassInHierarchy makes"
+                    $"%s{operation}: MethodImpl on %s{table.Owner.Description} declares an override of %s{memberRef.PrettyName}, which the named ancestor declares more than once with the same signature (%s{described}); ECMA-335 II.22.26 forbids a type repeating a method signature"
         | other ->
             failwith
                 $"%s{operation}: MethodImpl on %s{table.Owner.Description} names its declaration with the token %O{other}, which is neither a MethodDef nor a MemberRef; ECMA-335 II.22.27 permits only those two"
