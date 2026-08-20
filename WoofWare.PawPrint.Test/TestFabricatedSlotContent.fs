@@ -108,6 +108,14 @@ module TestFabricatedSlotContent =
         let agMethod = agBuilder.DefineMethod ("M", newSlot, typeof<int>, [| tParameter |])
 
         body agMethod (tagOf "AG")
+
+        // A second `M` of a different arity, which nothing ever calls. It is here so that resolving
+        // `CG`'s declaration has to compare *signatures* and not merely names: with a single `M` on the
+        // ancestor, matching on the name alone gives the same answer and the signature comparison goes
+        // untested. Measured -- with this overload present the mutant that drops that comparison is
+        // killed; without it, that mutant survives the entire suite.
+        body (agBuilder.DefineMethod ("M", newSlot, typeof<int>, [| tParameter ; typeof<int> |])) 99
+
         let agType = agBuilder.CreateType ()
 
         let agClosed = agType.MakeGenericType [| typeof<int> |]
@@ -244,11 +252,14 @@ public static class Driver
             | :? UnauthorizedAccessException -> ()
 
     /// `(declaration spelling, most-derived receiver)` pairs, as the driver spells them.
+    /// Every spelling the driver knows, non-generic chain and generic chain alike. The generic ones
+    /// exercise a MethodImpl declaration that is a MemberRef whose parent is a TypeSpec -- `CG`'s
+    /// `.override AG<int32>::M` -- which is resolved by finding the ancestor at that instantiation and
+    /// then searching it and its own bases, exact signature matches before equivalent ones.
     let private spellings : string list =
         [ "A" ; "B" ; "C" ; "D" ; "AG" ; "BG" ; "CG" ; "DG" ]
 
-    [<TestCaseSource(nameof spellings)>]
-    let ``the slot a declaration owns holds the body the real runtime dispatches to`` (spelling : string) : unit =
+    let private checkSpelling (spelling : string) : unit =
         let receiver =
             if spelling.EndsWith ("G", StringComparison.Ordinal) then
                 "DG"
@@ -278,6 +289,8 @@ public static class Driver
             |> List.filter (fun (candidate, _) ->
                 candidate.DeclaredBy.Identity = declarationIdentity
                 && candidate.Method.Name = "M"
+                // `AG`1` declares two `M`s; the two-parameter one is the overload nothing calls.
+                && candidate.Method.Signature.RequiredParameterCount <> 2
             )
             |> function
                 | [ (_, index) ] -> index
@@ -297,14 +310,60 @@ public static class Driver
 
         pawPrintTag |> shouldEqual hostTag
 
-    [<Test>]
-    let ``the fabrication really does alias two slots`` () : unit =
-        // Otherwise every spelling would reach the receiver's own body and the fixture would agree with
-        // any content rule whatever. Measured on the host: `B` reaches `D` (one slot, overridden all
-        // the way down) while `A` and `C` reach `D` too but *through C's slot*, and the shape is only
-        // interesting because `A` and `B` name different slots -- which shows up as the receiver's own
-        // body not being the answer for every spelling of the *generic* chain.
-        let distinct = spellings |> List.map (fun s -> hostTags.[s]) |> List.distinct
+    [<TestCaseSource(nameof spellings)>]
+    let ``the slot a declaration owns holds the body the real runtime dispatches to`` (spelling : string) : unit =
+        checkSpelling spelling
 
-        // At least two different bodies are reached across the eight spellings.
-        List.length distinct |> shouldBeGreaterThan 1
+    [<Test>]
+    let ``the fabrication really does move a slot away from placement`` () : unit =
+        // The fixture would agree with any content rule whatever if placement alone already gave the
+        // right answer everywhere. It does not: in each chain the third type claims the first's slot
+        // with a MethodImpl, so that slot is *owned* by the second type's method and *holds* the
+        // fourth's.
+        //
+        // Note that every spelling reaches the most-derived body here, so "different spellings reach
+        // different bodies" would be the wrong check: it is vacuously false and says nothing. What
+        // matters is that the content table disagrees with the identity table at a slot some spelling
+        // names.
+        let movedIn (receiver : string) (spellingsOfChain : string list) : string list =
+            let receiverIdentity = identityOfFabricated receiver
+            let state = state ()
+
+            let state, identityTable =
+                VirtualSlotLayout.vtableOfDefinition loggerFactory bct "test" state receiverIdentity
+
+            let state, contentTable =
+                VirtualSlotLayout.contentVtableOfDefinition loggerFactory bct "test" state receiverIdentity
+
+            let state, placed =
+                VirtualSlotLayout.placedSlotsOfDefinition loggerFactory bct "test" state receiverIdentity
+
+            ignore<IlMachineState> state
+
+            // `AG`1` declares two `M`s; the two-parameter one is the overload nothing calls. The
+            // non-generic chain's `M` takes no parameters and the generic chain's takes one, so
+            // "not the two-parameter one" is what names the called method in both.
+            let slotOf (spelling : string) : int =
+                let declaration = identityOfFabricated spelling
+
+                placed
+                |> List.filter (fun (candidate, _) ->
+                    candidate.DeclaredBy.Identity = declaration
+                    && candidate.Method.Name = "M"
+                    && candidate.Method.Signature.RequiredParameterCount <> 2
+                )
+                |> List.exactlyOne
+                |> snd
+
+            spellingsOfChain
+            |> List.filter (fun spelling ->
+                let slot = slotOf spelling
+
+                tagOfDeclaringType (List.item slot identityTable).DeclaredBy.Description
+                <> tagOfDeclaringType (List.item slot contentTable).DeclaredBy.Description
+            )
+
+        // Measured: in each chain the two lower spellings name the slot placement gave to the second
+        // type, which the MethodImpl plus unification moves to the fourth type's body.
+        movedIn "D" [ "A" ; "B" ; "C" ; "D" ] |> shouldEqual [ "A" ; "B" ]
+        movedIn "DG" [ "AG" ; "BG" ; "CG" ; "DG" ] |> shouldEqual [ "AG" ; "BG" ]

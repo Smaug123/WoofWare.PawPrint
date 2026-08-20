@@ -202,6 +202,7 @@
     <Compile Include="TestFabricatedVtableLayout.fs" />
     <Compile Include="TestFabricatedSlotAliasing.fs" />
     <Compile Include="TestFabricatedSlotContent.fs" />
+    <Compile Include="TestCrossAssemblySlotContent.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />
     <Compile Include="TestInlineArrayLayout.fs" />
     <Compile Include="TestReinterpretCellAccess.fs" />
