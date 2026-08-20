@@ -1,3 +1,8 @@
+---
+name: probe-methodology
+description: How to measure ground truth with a throwaway probe without measuring the wrong thing. Use before writing any claim about runtime ordering, 'runs once', or that a branch is unreachable.
+---
+
 # Probing this codebase before implementing
 
 A "probe" is a throwaway measurement — a temporary `failwith`, a minimal repro compiled and run against real .NET or PawPrint — used to establish ground truth before writing a fix or a comment about behaviour. Three ways a probe can look successful while measuring the wrong thing.
