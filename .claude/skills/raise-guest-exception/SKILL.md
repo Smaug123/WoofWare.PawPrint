@@ -1,6 +1,6 @@
 ---
 name: raise-guest-exception
-description: How to make the interpreter throw a managed exception inside the guest, catchable by the guest's own try/catch, rather than a host failwith that kills the run. Use when replacing a `failwith "TODO: throw ..."` or when a modelled syscall must surface an exception to guest code.
+description: How to make the interpreter throw a managed exception inside the guest, catchable by the guest's own try/catch, rather than a host failwith that kills the run. Use when replacing a TODO-throw failwith, or when a modelled syscall must surface an exception to guest code.
 ---
 
 # How to raise a guest exception in the PawPrint runtime

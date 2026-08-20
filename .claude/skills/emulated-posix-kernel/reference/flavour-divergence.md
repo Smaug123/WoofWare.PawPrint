@@ -54,10 +54,12 @@ mode demands and nothing else, so `open(f, O_RDONLY|O_TRUNC)` empties a writable
 file while the same call on `0444` is `EACCES`. A directory is `EISDIR` at *any*
 access mode. A refused open truncates nothing.
 
-**Truncation stamps unconditionally.** `ftruncate(fd, n)` on a file already `n`
-bytes long still moves mtime and ctime and still strips set-ID. This is the
-opposite of a zero-length write, which is not a write at all — and it is the rule
-most likely to be got wrong by copying `writeFile`'s shape.
+**A no-op truncation is still a truncation.** `ftruncate(fd, n)` on a file
+already `n` bytes long moves mtime and ctime, and applies whatever set-ID rule the
+platform has — so it strips on Linux and preserves on Darwin, exactly as a
+size-changing truncation would. It does not become a no-op by changing no bytes.
+This is the opposite of a zero-length write, which is not a write at all, and it
+is the rule most likely to be got wrong by copying `writeFile`'s shape.
 
 **The one divergence is the set-ID bits.**
 
