@@ -111,6 +111,15 @@ module TestClockJitter =
 
             let permuted = deadlines |> List.rev
             let duplicated = deadlines @ deadlines
+            // Duplicating *one* deadline rather than all of them. Doubling the
+            // whole list is uniform, so it leaves the draw's distribution
+            // unchanged even if duplicates were never removed at all; only a
+            // lopsided repeat distinguishes "deduplicated" from "not".
+            let oneRepeated =
+                match deadlines with
+                | [] -> []
+                | head :: rest -> head :: head :: rest
+
             // Deadlines at or behind the clock are about to fire anyway, so
             // adding more of them must not change where the clock jumps.
             let withStale = deadlines @ [ clock ; 0L ]
@@ -121,6 +130,7 @@ module TestClockJitter =
 
                 ClockJitter.chooseJump strategy tick clock permuted = expected
                 && ClockJitter.chooseJump strategy tick clock duplicated = expected
+                && ClockJitter.chooseJump strategy tick clock oneRepeated = expected
                 && ClockJitter.chooseJump strategy tick clock withStale = expected
             )
 
@@ -189,6 +199,26 @@ module TestClockJitter =
             |> Set.ofList
 
         chosen |> shouldEqual (Set.ofList candidates)
+
+    [<Test>]
+    let ``threads sharing a deadline do not make that instant likelier`` () : unit =
+        // How many threads happen to be parked on one instant is an accident of
+        // the guest's structure, not a statement about which orderings are
+        // worth exploring. Left in, it would bias the search towards whichever
+        // deadline the most threads shared — so the candidate list is
+        // deduplicated, and this is the assertion that keeps it that way.
+        let ticks = [ 0L .. 999L ]
+
+        let countsFor (deadlines : int64 list) : Map<int64, int> =
+            ticks
+            |> List.choose (fun tick ->
+                ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (31UL, 1.0)) tick 0L deadlines
+            )
+            |> List.countBy id
+            |> Map.ofList
+
+        // Three threads waiting on 10 and one on 20, against one each.
+        countsFor [ 10L ; 10L ; 10L ; 20L ] |> shouldEqual (countsFor [ 10L ; 20L ])
 
     [<Test>]
     let ``the jump rate tracks the configured probability`` () : unit =
