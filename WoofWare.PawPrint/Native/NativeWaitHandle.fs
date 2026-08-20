@@ -74,12 +74,8 @@ module NativeWaitHandle =
     /// reads this immediately after the QCall returns and copies it
     /// into `LastPInvokeError`, so writing here is sufficient to make
     /// the error visible to `Marshal.GetLastPInvokeError`.
-    let private withLastSystemError (error : int) (state : IlMachineState) : IlMachineState =
-        state.MapKernel (fun kernel ->
-            { kernel with
-                LastSystemError = error
-            }
-        )
+    let private withLastSystemError (thread : ThreadId) (error : int) (state : IlMachineState) : IlMachineState =
+        state.MapKernel (EmulatedKernel.withLastSystemError thread error)
 
     /// Decode the `IntPtr handle` argument that every wait-handle entry
     /// point except the Create QCalls carries. The guest only ever
@@ -508,7 +504,7 @@ module NativeWaitHandle =
             let id, state = WaitHandle.createSemaphore initialCount maximumCount state
 
             state
-            |> withLastSystemError 0
+            |> withLastSystemError ctx.Thread 0
             |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.WaitHandlePtr id)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -543,14 +539,14 @@ module NativeWaitHandle =
                             (CliType.Numeric (CliNumericType.Int32 previousCount))
 
                 state
-                |> withLastSystemError 0
+                |> withLastSystemError ctx.Thread 0
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
 
             | Error (WaitHandle.ReleaseFailure.WouldExceedMaximum _) ->
                 state
-                |> withLastSystemError errorTooManyPosts
+                |> withLastSystemError ctx.Thread errorTooManyPosts
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -565,7 +561,7 @@ module NativeWaitHandle =
             let state = WaitHandle.close id state
 
             state
-            |> withLastSystemError 0
+            |> withLastSystemError ctx.Thread 0
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -690,7 +686,7 @@ module NativeWaitHandle =
             // WaitTimeout`.
             let raiseDuplicate (state : IlMachineState) : NativeHandlerResult option =
                 state
-                |> withLastSystemError errorInvalidParameter
+                |> withLastSystemError ctx.Thread errorInvalidParameter
                 |> NativeHandlerResult.raiseException ctx.BaseClassTypes.DuplicateWaitObjectException
                 |> Some
 
@@ -770,7 +766,7 @@ module NativeWaitHandle =
             let id, state = WaitHandle.createMutex initialOwner ctx.Thread state
 
             state
-            |> withLastSystemError 0
+            |> withLastSystemError ctx.Thread 0
             |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.WaitHandlePtr id)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -793,13 +789,13 @@ module NativeWaitHandle =
             match outcome with
             | Ok () ->
                 state
-                |> withLastSystemError 0
+                |> withLastSystemError ctx.Thread 0
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
             | Error WaitHandle.ReleaseMutexFailure.NotOwner ->
                 state
-                |> withLastSystemError errorNotOwner
+                |> withLastSystemError ctx.Thread errorNotOwner
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -841,7 +837,7 @@ module NativeWaitHandle =
             let id, state = WaitHandle.createEvent initialState mode state
 
             state
-            |> withLastSystemError 0
+            |> withLastSystemError ctx.Thread 0
             |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.WaitHandlePtr id)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -861,7 +857,7 @@ module NativeWaitHandle =
             let state = WaitHandle.setEvent id state
 
             state
-            |> withLastSystemError 0
+            |> withLastSystemError ctx.Thread 0
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -876,7 +872,7 @@ module NativeWaitHandle =
             let state = WaitHandle.resetEvent id state
 
             state
-            |> withLastSystemError 0
+            |> withLastSystemError ctx.Thread 0
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some

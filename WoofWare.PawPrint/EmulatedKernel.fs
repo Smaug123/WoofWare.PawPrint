@@ -1509,7 +1509,7 @@ module SimulatedUnixPlatform =
         | _, _, _ -> Error SocketCreationRefusal.Unmodelled
 
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
-/// syscall-emulation state: process-wide last-error registers, the native
+/// syscall-emulation state: the per-thread last-error registers, the native
 /// heap pool backing `Marshal.AllocHGlobal`, the Unix file-descriptor table,
 /// the `LowLevelMonitor` registry, and monotonic ID counters for opaque
 /// kernel handles. These are the pieces of interpreter state that exist
@@ -1521,15 +1521,28 @@ module SimulatedUnixPlatform =
 /// shaped emulation) without disturbing the rest of the state model.
 type EmulatedKernel =
     {
-        /// Last error reported by a modelled P/Invoke with SetLastError=true.
-        /// This is currently process-wide; model it per-thread when a guest
-        /// depends on thread-local last-error state.
-        LastPInvokeError : int
-        /// Last system error tracked separately from LastPInvokeError because
-        /// CoreLib wrappers can read this and then write LastPInvokeError.
-        /// This is currently process-wide; model it per-thread when a guest
-        /// depends on thread-local GetLastError or errno state.
-        LastSystemError : int
+        /// Per-thread value CoreCLR keeps in its `t_lastPInvokeError` thread-local and
+        /// `Marshal.GetLastPInvokeError` (equivalently `GetLastWin32Error`) reads. A
+        /// `SetLastError = true` P/Invoke's stub copies the system error here once the
+        /// call returns.
+        ///
+        /// A `Map` rather than a `ThreadState` field, unlike `Cpu` and `OsThreadId`,
+        /// because an absent key *does* have a truthful reading: 0, the value a thread
+        /// that has had no error reported to it sees. `withLastPInvokeError` drops an
+        /// entry it would set to 0, so "absent" and "zero" stay structurally equal —
+        /// the same canonicalisation `SignalState.Blocked` performs for empty masks,
+        /// and for the same reason: two states that differ only that way must compare
+        /// equal.
+        LastPInvokeError : Map<ThreadId, int>
+        /// Per-thread system error: errno on Unix, `GetLastError` on Windows. CoreCLR's
+        /// PAL stores its last-error *in* errno ("Reuse errno to store last error",
+        /// pal/src/include/pal/thread.hpp), and `Marshal.Get/SetLastSystemError` read and
+        /// write it directly.
+        ///
+        /// Tracked separately from `LastPInvokeError` because CoreLib's generated
+        /// `LibraryImport` stubs read this and then write that. Same `Map` reasoning and
+        /// same zero-drops-the-entry canonicalisation as `LastPInvokeError` above.
+        LastSystemError : Map<ThreadId, int>
         /// Globally-scoped pool of native-heap blocks allocated by
         /// `Marshal.AllocHGlobal` / `NativeMemory.Alloc`. Freeing a block
         /// deletes it from this pool, so any retained byref into the block
@@ -2101,8 +2114,8 @@ module EmulatedKernel =
     let initial : EmulatedKernel =
         {
             InstructionCostTicks = defaultInstructionCostTicks
-            LastPInvokeError = 0
-            LastSystemError = 0
+            LastPInvokeError = Map.empty
+            LastSystemError = Map.empty
             NativeMemoryPool = NativeMemoryPool.empty
             FileDescriptors = FileDescriptorRegistry.initial
             LowLevelMonitors = Map.empty
@@ -2628,6 +2641,44 @@ module EmulatedKernel =
     /// (`IlMachineState.NextCpuRotation`) that only guest-visible thread
     /// creation advances. (`osThreadId`, below, makes the opposite choice for
     /// the opposite reason; see there.)
+    /// The system error (errno on Unix, `GetLastError` on Windows) `thread` would read.
+    /// 0 for a thread that has had none reported to it, which is what a fresh thread sees.
+    let lastSystemErrorFor (thread : ThreadId) (kernel : EmulatedKernel) : int =
+        match Map.tryFind thread kernel.LastSystemError with
+        | None -> 0
+        | Some value -> value
+
+    /// Set `thread`'s system error. Setting 0 removes the entry rather than storing it, so
+    /// that a state which has zeroed a thread's errno is structurally equal to one that
+    /// never wrote it; `EmulatedKernel` is compared for equality to decide whether a step
+    /// changed anything, so "absent" and "zero" must not be distinguishable.
+    let withLastSystemError (thread : ThreadId) (value : int) (kernel : EmulatedKernel) : EmulatedKernel =
+        { kernel with
+            LastSystemError =
+                if value = 0 then
+                    Map.remove thread kernel.LastSystemError
+                else
+                    Map.add thread value kernel.LastSystemError
+        }
+
+    /// The value `thread` would read from `Marshal.GetLastPInvokeError`. 0 until a
+    /// `SetLastError = true` P/Invoke on that thread copies a system error into it.
+    let lastPInvokeErrorFor (thread : ThreadId) (kernel : EmulatedKernel) : int =
+        match Map.tryFind thread kernel.LastPInvokeError with
+        | None -> 0
+        | Some value -> value
+
+    /// Set `thread`'s last-P/Invoke error, with the same zero-drops-the-entry
+    /// canonicalisation as `withLastSystemError`.
+    let withLastPInvokeError (thread : ThreadId) (value : int) (kernel : EmulatedKernel) : EmulatedKernel =
+        { kernel with
+            LastPInvokeError =
+                if value = 0 then
+                    Map.remove thread kernel.LastPInvokeError
+                else
+                    Map.add thread value kernel.LastPInvokeError
+        }
+
     let cpuForRotation (rotation : int) (kernel : EmulatedKernel) : CpuId =
         if rotation < 0 then
             failwith
