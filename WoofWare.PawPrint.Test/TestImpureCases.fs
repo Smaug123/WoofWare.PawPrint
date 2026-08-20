@@ -213,6 +213,34 @@ module TestImpureCases =
         methodNames |> List.contains "Thrower" |> shouldEqual true
         methodNames |> List.contains "Main" |> shouldEqual true
 
+    /// The seed both write-wiring guests read: one file per mode shape, each
+    /// holding the same five bytes, so a row's answer turns on its mode alone.
+    let private writeModeSeed : Map<FileName, SeedEntry> =
+        let hello =
+            Text.Encoding.UTF8.GetBytes "hello"
+            |> System.Collections.Immutable.ImmutableArray.CreateRange
+
+        let entry (name : string) (mode : int) : FileName * SeedEntry =
+            FileName.parseOrFail "test seed" name, SeedEntry.File (hello, PermissionBits.parseOrFail "test seed" mode)
+
+        Map.ofList
+            [
+                entry "suid" 0o4755
+                entry "sgid" 0o2755
+                // Set-group-ID without group-execute: the row the two flavours
+                // answer differently.
+                entry "sgnox" 0o2644
+                // Both set-ID bits, still without group-execute. The two flavour
+                // rules and "strip nothing" each answer this one differently, so
+                // no two of them can be confused on it.
+                entry "both" 0o6644
+                entry "sticky" 0o1755
+                entry "plain" 0o0644
+                // Written with a zero-length write, which is not a write at all
+                // and must strip nothing.
+                entry "zerolen" 0o4755
+            ]
+
     /// The seed both truncation-wiring guests read: one file per mode shape, each
     /// holding the same five bytes, so a row's answer turns on its mode alone.
     let private truncationModeSeed : Map<FileName, SeedEntry> =
@@ -846,6 +874,38 @@ module TestImpureCases =
                     { KernelConfig.Default with
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
                         FileSystem = truncationModeSeed
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // A content-changing write's set-ID rule, one guest per flavour,
+                // and the same pairing argument the truncation guests above make:
+                // a `commitFileWrite` that hardcoded either answer instead of
+                // reading `SimulatedUnixPlatform.setGroupIdOnWrite` would satisfy
+                // every unit test (they pass the rule in by hand), the host
+                // oracle (it compares the pure function) *and* one of these two.
+                FileName = "WriteModeWiringLinuxSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        // The default already, stated explicitly because this
+                        // case's whole subject is which flavour is configured.
+                        UnixPlatform = SimulatedUnixPlatform.linuxX64
+                        FileSystem = writeModeSeed
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                FileName = "WriteModeWiringDarwinSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        FileSystem = writeModeSeed
                     }
                 AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
