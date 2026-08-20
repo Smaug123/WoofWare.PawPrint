@@ -90,11 +90,12 @@ type SocketProtocol =
     /// `PT_UDP`, PAL 17.
     | Udp
 
-/// A socket, as an open file description refers to it.
+/// A socket, as the emulated kernel's socket table holds it.
+///
+/// Carries no identity of its own: the table is keyed by `SocketId`, so a field
+/// here would be a second copy of the key, free to disagree with it.
 type SocketDescription =
     {
-        /// What distinguishes this socket from every other one. See `SocketId`.
-        Id : SocketId
         /// The domain given to `socket(2)`, and fixed for the socket's life:
         /// no modelled syscall can change it.
         Domain : SocketDomain
@@ -204,15 +205,17 @@ type OpenFileTarget =
     /// No offset, because neither kernel maintains one: measured, `lseek` on a
     /// socket is ESPIPE on both for every whence in 0..4 and every offset.
     ///
-    /// The socket itself lives here rather than in a table the id points into,
-    /// because the correspondence is 1:1 — PawPrint models no way to obtain a
-    /// second open file description onto one socket, `/proc/self/fd` reopening
-    /// and `SCM_RIGHTS` both being absent (and the latter sharing the
-    /// description in any case). So the socket dies with its description, which
-    /// costs no lifetime bookkeeping. A socket that must outlive or precede
-    /// every descriptor — a completed connection waiting in a listening
-    /// socket's backlog — would break that, and wants the table.
-    | Socket of socket : SocketDescription
+    /// The socket this names lives in `EmulatedKernel.Sockets`, not here: a
+    /// socket outlives, and can precede, any particular description of it. That
+    /// is not yet true — `SystemNative_Socket` is the only way to make one, and
+    /// it hands back a descriptor in the same breath — but it is what a
+    /// completed connection waiting in a listening socket's backlog *is*, and
+    /// `SystemNative_Accept` produces those.
+    ///
+    /// So the description names a socket rather than containing one, and the
+    /// kernel is where a socket's lifetime is decided. `EmulatedKernel.socket`
+    /// resolves the name.
+    | Socket of socket : SocketId
 
 /// Which transfers `open(2)`'s access mode permits: `O_RDONLY`, `O_WRONLY` or
 /// `O_RDWR`.
@@ -304,7 +307,7 @@ module OpenFileDescription =
         | OpenFileTarget.SocketEventPort -> OpenFileObject.AnonymousInode
         // Each socket is its own object, unlike the ports above: measured, two
         // sockets do not contend under `flock`. See `OpenFileObject.Socket`.
-        | OpenFileTarget.Socket socket -> OpenFileObject.Socket socket.Id
+        | OpenFileTarget.Socket socketId -> OpenFileObject.Socket socketId
 
 /// In-memory model of a Unix per-process file descriptor table, and of the
 /// open file descriptions those descriptors point at.
@@ -346,16 +349,6 @@ type FileDescriptorRegistry =
             /// `VirtualFileSystem.NextInode` is stored for the stronger version
             /// of this reason, inode reuse being guest-visible.
             NextId : OpenFileDescriptionId
-            /// The identity the next `SystemNative_Socket` will allocate.
-            /// Monotonic for the same reason `NextId` is.
-            ///
-            /// A counter of its own rather than a projection of `NextId`:
-            /// today one socket description is minted per `socket(2)` call so
-            /// the two advance together, but a `SocketId` means "this socket"
-            /// and an `OpenFileDescriptionId` means "this description", and
-            /// deriving one from the other would make a coincidence look like
-            /// a definition.
-            NextSocketId : SocketId
         }
 
 [<RequireQualifiedAccess>]
@@ -422,10 +415,6 @@ type FileDescriptorRegistryDefect =
     /// exclusive. This is the mutual-exclusion property itself rather than a
     /// bookkeeping check.
     | ConflictingFlocks of first : OpenFileDescriptionId * second : OpenFileDescriptionId
-    /// A live socket's identity is at or above the next one to allocate, so a
-    /// future `socket(2)` would mint a duplicate. `NextIdNotFresh`'s sibling,
-    /// for the same reason.
-    | NextSocketIdNotFresh of nextSocketId : SocketId * existing : SocketId
     /// Two distinct open file descriptions name the same socket. PawPrint
     /// models no way to produce that — `dup(2)` shares a description rather
     /// than copying it — and it would be guest-visible through `flock`, which
@@ -475,7 +464,6 @@ module FileDescriptorRegistry =
                 |> Map.add stdoutId (stream FileDescriptorRole.StandardOutput FileAccessMode.WriteOnly)
                 |> Map.add stderrId (stream FileDescriptorRole.StandardError FileAccessMode.WriteOnly)
             NextId = OpenFileDescriptionId 3L
-            NextSocketId = SocketId 0L
         }
 
     /// Which description `fd` names, if `fd` is live. Callers that need to know
@@ -573,10 +561,17 @@ module FileDescriptorRegistry =
     /// `NativeSystemNative.fs`; the in-house property tests drive close+dup
     /// cycles directly against this function to exercise the `lowestFree`
     /// invariant against the gap structure that close produces.
+    ///
+    /// Reports the description it destroyed, if this was the last descriptor
+    /// naming one: closing a `dup(2)` of a live descriptor destroys nothing and
+    /// answers `None`. The caller needs this because a description can be the
+    /// last reference to a *kernel object* whose lifetime is decided elsewhere —
+    /// `EmulatedKernel.Sockets` is the one that exists today — and this registry
+    /// cannot reach that state to clean it up itself.
     let close
         (fd : int)
         (registry : FileDescriptorRegistry)
-        : Result<FileDescriptorRegistry, FileDescriptorCloseError>
+        : Result<FileDescriptorRegistry * OpenFileDescription option, FileDescriptorCloseError>
         =
         match Map.tryFind fd registry.Fds with
         | None -> Error FileDescriptorCloseError.BadFd
@@ -586,15 +581,26 @@ module FileDescriptorRegistry =
             let stillNamed =
                 fds |> Map.exists (fun _ (other : OpenFileDescriptionId) -> other = id)
 
-            Ok
+            if stillNamed then
+                Ok (
+                    { registry with
+                        Fds = fds
+                    },
+                    None
+                )
+            else
+
+            // Present by `DanglingFd`: a live descriptor names a live
+            // description, so the lookup that found `id` above proves this one.
+            let destroyed = Map.find id registry.Descriptions
+
+            Ok (
                 { registry with
                     Fds = fds
-                    Descriptions =
-                        if stillNamed then
-                            registry.Descriptions
-                        else
-                            Map.remove id registry.Descriptions
-                }
+                    Descriptions = Map.remove id registry.Descriptions
+                },
+                Some destroyed
+            )
 
     /// Mirrors the descriptor half of `open(2)`: allocate a *fresh* open file
     /// description naming `inode`, and the lowest non-negative descriptor not
@@ -690,8 +696,13 @@ module FileDescriptorRegistry =
     /// description naming it, and the lowest non-negative descriptor not in use.
     ///
     /// Says nothing about whether this domain/kind/protocol combination *can*
-    /// exist — that is `EmulatedKernel.createSocket`'s question, and this is
-    /// reached only once it has answered yes.
+    /// exist — that is `SimulatedUnixPlatform.socketCreation`'s question, and
+    /// this is reached only once it has answered yes.
+    ///
+    /// `socketId` is minted by the caller, because the socket it names lives in
+    /// the emulated kernel's socket table rather than here; `EmulatedKernel.createSocket`
+    /// is the one operation that allocates both and is the only thing that
+    /// should call this.
     ///
     /// The access mode is `ReadWrite`, and that is load-bearing rather than
     /// cosmetic, for the reason `createSocketEventPort`'s is:
@@ -703,17 +714,9 @@ module FileDescriptorRegistry =
     /// Total, like `openFile` and `createSocketEventPort`: PawPrint models no
     /// descriptor limit, so there is no `EMFILE`/`ENFILE` to report, and no
     /// resource a socket could exhaust.
-    let createSocket
-        (domain : SocketDomain)
-        (kind : SocketKind)
-        (protocol : SocketProtocol)
-        (registry : FileDescriptorRegistry)
-        : int * FileDescriptorRegistry
-        =
+    let createSocket (socketId : SocketId) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
         let id = registry.NextId
         let (OpenFileDescriptionId raw) = id
-        let socketId = registry.NextSocketId
-        let (SocketId rawSocket) = socketId
         let fd = lowestFree registry.Fds
 
         fd,
@@ -723,21 +726,13 @@ module FileDescriptorRegistry =
                 Map.add
                     id
                     {
-                        Target =
-                            OpenFileTarget.Socket
-                                {
-                                    Id = socketId
-                                    Domain = domain
-                                    Kind = kind
-                                    Protocol = protocol
-                                }
+                        Target = OpenFileTarget.Socket socketId
                         AccessMode = FileAccessMode.ReadWrite
                         // `socket(2)` takes no lock, exactly as `open(2)` does not.
                         Flock = None
                     }
                     registry.Descriptions
             NextId = OpenFileDescriptionId (raw + 1L)
-            NextSocketId = SocketId (rawSocket + 1L)
         }
 
     /// May two *different* open file descriptions on one file hold these two
@@ -880,9 +875,9 @@ module FileDescriptorRegistry =
         | OpenFileTarget.SocketEventPort ->
             failwith
                 $"setOffset: fd %d{fd} names a socket event port, which holds no file offset on either platform — Linux's lseek on one is noop_llseek and Darwin's is ESPIPE (this is an interpreter bug: the caller should have answered without moving a position)."
-        | OpenFileTarget.Socket socket ->
+        | OpenFileTarget.Socket socketId ->
             failwith
-                $"setOffset: fd %d{fd} names socket %O{socket.Id}, which holds no file offset on either platform — `lseek` on a socket is ESPIPE on both (this is an interpreter bug: the caller should have answered ESPIPE)."
+                $"setOffset: fd %d{fd} names socket %O{socketId}, which holds no file offset on either platform — `lseek` on a socket is ESPIPE on both (this is an interpreter bug: the caller should have answered ESPIPE)."
         | OpenFileTarget.File (inode, _) ->
 
         { registry with
@@ -970,14 +965,7 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.SocketEventPort
                 | OpenFileTarget.File _ -> None
-                | OpenFileTarget.Socket socket -> Some (id, socket.Id)
-            )
-
-        let socketFreshness =
-            sockets
-            |> List.filter (fun (_, socketId) -> socketId >= registry.NextSocketId)
-            |> List.map (fun (_, socketId) ->
-                FileDescriptorRegistryDefect.NextSocketIdNotFresh (registry.NextSocketId, socketId)
+                | OpenFileTarget.Socket socketId -> Some (id, socketId)
             )
 
         // Every unordered pair of distinct descriptions, as `conflicting` above
@@ -1000,7 +988,6 @@ module FileDescriptorRegistry =
         @ freshness
         @ negativeOffsets
         @ conflicting
-        @ socketFreshness
         @ duplicateSockets
 
     /// Fail loudly if `registry` is not sound, naming `context`.
@@ -1022,12 +1009,10 @@ module FileDescriptorRegistry =
             (fds : Map<int, OpenFileDescriptionId>)
             (descriptions : Map<OpenFileDescriptionId, OpenFileDescription>)
             (nextId : OpenFileDescriptionId)
-            (nextSocketId : SocketId)
             : FileDescriptorRegistry
             =
             {
                 Fds = fds
                 Descriptions = descriptions
                 NextId = nextId
-                NextSocketId = nextSocketId
             }

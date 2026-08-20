@@ -1756,6 +1756,25 @@ type EmulatedKernel =
         /// at `exec` time. SystemNative_Dup / Close / Read / Write etc.
         /// route through this table; the host's real fds are never used.
         FileDescriptors : FileDescriptorRegistry
+        /// Every socket the simulated process owns, by identity.
+        ///
+        /// Separate from `FileDescriptors` because a socket's lifetime is not a
+        /// descriptor's: `SystemNative_Accept` completes a connection into a
+        /// listening socket's backlog, where it is a socket no descriptor names
+        /// until the guest accepts it. An `OpenFileTarget.Socket` therefore
+        /// holds only the `SocketId`, and this is what it names.
+        ///
+        /// Today every entry does have exactly one description naming it, and
+        /// `EmulatedKernel.checkInvariants` enforces that; the backlog is what
+        /// will relax it.
+        Sockets : Map<SocketId, SocketDescription>
+        /// The identity the next `SystemNative_Socket` will allocate.
+        ///
+        /// Monotonic, and never reused: nothing guest-visible reports a
+        /// `SocketId`, but a replay trace does, and reuse would make two
+        /// distinct sockets indistinguishable in it. `NextLowLevelMonitorId`
+        /// is stored beside its table for the same reason.
+        NextSocketId : SocketId
         /// Registry of `System.Threading.LowLevelMonitor` instances minted by
         /// `SystemNative_LowLevelMonitor_Create`. The handle held by the
         /// guest (as an `IntPtr` in `LowLevelMonitor._nativeMonitor`) is the
@@ -2117,6 +2136,31 @@ type EmulatedKernel =
         Signals : SignalState
     }
 
+/// A way the emulated kernel's socket table and its descriptor table could
+/// disagree — a state no kernel could be in, and which `EmulatedKernel` exists
+/// to keep unreachable.
+///
+/// Separate from `FileDescriptorRegistryDefect` because these are claims about
+/// two tables at once, and `FileDescriptorRegistry` cannot see the socket table:
+/// it is defined in a file that compiles before this one.
+[<RequireQualifiedAccess>]
+type EmulatedKernelDefect =
+    /// A live open file description names a socket the socket table does not
+    /// hold, so resolving that descriptor would fail.
+    | DanglingSocket of description : OpenFileDescriptionId * socket : SocketId
+    /// The socket table holds a socket no live description names.
+    ///
+    /// A leak today, and deliberately a defect rather than a tolerated state:
+    /// `SystemNative_Socket` is the only way to make a socket and it hands back
+    /// a descriptor at once, so an unreferenced socket means a close forgot to
+    /// clean up. `SystemNative_Accept` is what will make this legal, by putting
+    /// completed connections in a listening socket's backlog; the rule relaxes
+    /// then, to "named by a description or held in some backlog".
+    | UnreferencedSocket of socket : SocketId
+    /// A socket in the table has an identity at or above the next one to
+    /// allocate, so a future `socket(2)` would mint a duplicate.
+    | NextSocketIdNotFresh of nextSocketId : SocketId * existing : SocketId
+
 [<RequireQualifiedAccess>]
 module EmulatedKernel =
     /// Default environment variables for a freshly-minted simulated process.
@@ -2323,6 +2367,8 @@ module EmulatedKernel =
             LastSystemError = Map.empty
             NativeMemoryPool = NativeMemoryPool.empty
             FileDescriptors = FileDescriptorRegistry.initial
+            Sockets = Map.empty
+            NextSocketId = SocketId 0L
             LowLevelMonitors = Map.empty
             NextLowLevelMonitorId = 1
             WaitHandles = Map.empty
@@ -3055,6 +3101,126 @@ module EmulatedKernel =
         { kernel with
             Environment = merged
         }
+
+    /// The socket `socketId` names.
+    ///
+    /// Total, and loudly partial rather than an option: every `SocketId` a
+    /// caller can hold came out of an `OpenFileTarget.Socket`, and
+    /// `checkInvariants` rejects a kernel in which one of those names nothing.
+    /// A `None` here would push that impossible case onto every call site.
+    let socket (socketId : SocketId) (kernel : EmulatedKernel) : SocketDescription =
+        match Map.tryFind socketId kernel.Sockets with
+        | Some socket -> socket
+        | None ->
+            failwith
+                $"EmulatedKernel.socket: %O{socketId} names no socket in this kernel's socket table. Every SocketId reachable by a caller comes from an open file description, and EmulatedKernelDefect.DanglingSocket exists to make that unreachable, so this is an interpreter bug rather than anything a guest did."
+
+    /// Mirrors `socket(2)`: allocate a fresh socket, and a fresh descriptor onto
+    /// it.
+    ///
+    /// One operation for both allocations, rather than a socket-table insert
+    /// beside a separate `FileDescriptorRegistry.createSocket`, because the two
+    /// must agree: the identity this mints is the identity the description
+    /// names, and splitting them would let a caller do one without the other.
+    ///
+    /// Says nothing about whether this domain/kind/protocol combination *can*
+    /// exist — `SimulatedUnixPlatform.socketCreation` answers that, and this is
+    /// reached only once it has said yes.
+    let createSocket
+        (domain : SocketDomain)
+        (kind : SocketKind)
+        (protocol : SocketProtocol)
+        (kernel : EmulatedKernel)
+        : int * EmulatedKernel
+        =
+        let socketId = kernel.NextSocketId
+        let (SocketId raw) = socketId
+
+        let fd, registry =
+            FileDescriptorRegistry.createSocket socketId kernel.FileDescriptors
+
+        fd,
+        { kernel with
+            FileDescriptors = registry
+            Sockets =
+                Map.add
+                    socketId
+                    {
+                        Domain = domain
+                        Kind = kind
+                        Protocol = protocol
+                    }
+                    kernel.Sockets
+            NextSocketId = SocketId (raw + 1L)
+        }
+
+    /// Mirrors `close(2)`, including the kernel objects a description was the
+    /// last reference to.
+    ///
+    /// `FileDescriptorRegistry.close` cannot do this itself: the socket table
+    /// lives here, in a file that compiles after it. Closing one of several
+    /// descriptors onto a description destroys nothing, and so frees no socket.
+    let closeFd (fd : int) (kernel : EmulatedKernel) : Result<EmulatedKernel, FileDescriptorCloseError> =
+        match FileDescriptorRegistry.close fd kernel.FileDescriptors with
+        | Error e -> Error e
+        | Ok (registry, destroyed) ->
+            let sockets =
+                match destroyed with
+                | Some description ->
+                    match description.Target with
+                    | OpenFileTarget.Socket socketId -> Map.remove socketId kernel.Sockets
+                    | OpenFileTarget.StandardStream _
+                    | OpenFileTarget.SocketEventPort
+                    | OpenFileTarget.File _ -> kernel.Sockets
+                | None -> kernel.Sockets
+
+            Ok
+                { kernel with
+                    FileDescriptors = registry
+                    Sockets = sockets
+                }
+
+    /// Every way this kernel's socket table and its descriptor table disagree.
+    ///
+    /// The descriptor table's own rules are `FileDescriptorRegistry.checkInvariants`,
+    /// which this does not repeat.
+    let checkInvariants (kernel : EmulatedKernel) : EmulatedKernelDefect list =
+        let named =
+            kernel.FileDescriptors.Descriptions
+            |> Map.toList
+            |> List.choose (fun (id, description) ->
+                match description.Target with
+                | OpenFileTarget.StandardStream _
+                | OpenFileTarget.SocketEventPort
+                | OpenFileTarget.File _ -> None
+                | OpenFileTarget.Socket socketId -> Some (id, socketId)
+            )
+
+        let dangling =
+            named
+            |> List.filter (fun (_, socketId) -> not (Map.containsKey socketId kernel.Sockets))
+            |> List.map EmulatedKernelDefect.DanglingSocket
+
+        let namedIds = named |> List.map snd |> Set.ofList
+
+        let unreferenced =
+            kernel.Sockets
+            |> Map.toList
+            |> List.map fst
+            |> List.filter (fun socketId -> not (Set.contains socketId namedIds))
+            |> List.map EmulatedKernelDefect.UnreferencedSocket
+
+        // Against the table rather than against the descriptions: the table is
+        // where a socket lives, so it is the table that must stay below the
+        // counter even once a socket can outlive every descriptor of it.
+        let freshness =
+            kernel.Sockets
+            |> Map.toList
+            |> List.map fst
+            |> List.filter (fun socketId -> socketId >= kernel.NextSocketId)
+            |> List.map (fun socketId -> EmulatedKernelDefect.NextSocketIdNotFresh (kernel.NextSocketId, socketId))
+
+        dangling @ unreferenced @ freshness
 
 /// Host-supplied configuration for the simulated process's kernel, applied by
 /// `Program.prepare` before any guest code runs.
