@@ -61,6 +61,17 @@ module TestFileSystemType =
     let private everyFlavour : SimulatedUnixFlavour list =
         [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
 
+    /// The (flavour, mount) pairs that describe one machine, written out rather
+    /// than filtered through `isReportableUnder` so that this list is an oracle
+    /// for that function rather than a restatement of it.
+    let private everyCoherentPair : (SimulatedUnixFlavour * EmulatedFileSystemType) list =
+        [
+            SimulatedUnixFlavour.Linux, EmulatedFileSystemType.Tmpfs
+            SimulatedUnixFlavour.Linux, EmulatedFileSystemType.Nfs
+            SimulatedUnixFlavour.Darwin, EmulatedFileSystemType.Apfs
+            SimulatedUnixFlavour.Darwin, EmulatedFileSystemType.Nfs
+        ]
+
     let private everyFileSystemType : EmulatedFileSystemType list =
         [
             EmulatedFileSystemType.Tmpfs
@@ -197,13 +208,13 @@ module TestFileSystemType =
     let ``a file reports the mount's own type, whatever the flavour`` () : unit =
         // The one row that is about the mount rather than the kernel object, so
         // the only one where the configured type must come through unchanged.
-        for flavour in everyFlavour do
-            for fsType in everyFileSystemType do
-                let answer =
-                    EmulatedFileSystemType.reportedFor flavour fsType (Some (OpenFileObject.File (InodeNumber 7L)))
+        // Between them these pairs cover every filesystem.
+        for flavour, fsType in everyCoherentPair do
+            let answer =
+                EmulatedFileSystemType.reportedFor flavour fsType (Some (OpenFileObject.File (InodeNumber 7L)))
 
-                answer
-                |> shouldEqual (FileSystemTypeAnswer.Reported (EmulatedFileSystemType.magic fsType))
+            answer
+            |> shouldEqual (FileSystemTypeAnswer.Reported (EmulatedFileSystemType.magic fsType))
 
     [<Test>]
     let ``a descriptor that is not on the mount ignores the mount's type`` () : unit =
@@ -219,12 +230,46 @@ module TestFileSystemType =
             ]
 
         for flavour in everyFlavour do
+            let mounts = everyCoherentPair |> List.filter (fst >> (=) flavour) |> List.map snd
+
             for target in notOnTheMount do
-                everyFileSystemType
+                mounts
                 |> List.map (fun fsType -> EmulatedFileSystemType.reportedFor flavour fsType target)
                 |> List.distinct
                 |> List.length
                 |> shouldEqual 1
+
+    [<Test>]
+    let ``answering for a pair that describes no machine is refused`` () : unit =
+        // `EmulatedKernel` is a public record, so `{ kernel with UnixPlatform =
+        // ... }` bypasses the setter that keeps the two fields together. This
+        // is what stops such a kernel producing a *quietly* wrong answer — one
+        // machine's files with another's pipes — rather than a loud one.
+        let incoherent =
+            [
+                SimulatedUnixFlavour.Darwin, EmulatedFileSystemType.Tmpfs
+                SimulatedUnixFlavour.Linux, EmulatedFileSystemType.Apfs
+            ]
+
+        for flavour, fsType in incoherent do
+            // Every descriptor kind, not just a file: the mount is irrelevant to
+            // the others, so a check placed after the `match` would let them
+            // through.
+            let targets =
+                [
+                    Some (OpenFileObject.File (InodeNumber 7L))
+                    Some (OpenFileObject.StandardStream FileDescriptorRole.StandardInput)
+                    Some (OpenFileObject.Socket (SocketId 1L))
+                    Some OpenFileObject.AnonymousInode
+                    None
+                ]
+
+            for target in targets do
+                Assert.Throws (fun () ->
+                    EmulatedFileSystemType.reportedFor flavour fsType target
+                    |> ignore<FileSystemTypeAnswer>
+                )
+                |> ignore<exn>
 
     [<Test>]
     let ``this host's own shim answers what the model says for each kind of object`` () : unit =

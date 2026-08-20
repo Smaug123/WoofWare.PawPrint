@@ -413,12 +413,28 @@ module EmulatedFileSystemType =
     /// Every row measured on both flavours (macOS 26.6, Linux 6.x), for both
     /// ends of a pipe, an `AF_INET` and an `AF_UNIX` socket, an epoll port, a
     /// kqueue, a regular file, a directory and an unknown descriptor.
+    ///
+    /// Refuses a `flavour` and `mount` that do not describe one machine.
     let reportedFor
         (flavour : SimulatedUnixFlavour)
         (mount : EmulatedFileSystemType)
         (target : OpenFileObject option)
         : FileSystemTypeAnswer
         =
+        // The two arguments are a *pair*: a file's answer comes from the mount
+        // and every other descriptor's from the flavour, so a caller supplying
+        // one of each would get a machine that is Linux for its pipes and macOS
+        // for its files. `withUnixPlatformAndFileSystemType` writes both fields
+        // together so the kernel cannot hold such a pair, but `EmulatedKernel`
+        // is a public record and `{ kernel with UnixPlatform = ... }` bypasses
+        // every setter on it. Checking here rather than trusting the caller is
+        // what keeps this function's contract true wherever it is reached: the
+        // handler, the unit tests and the host-comparison oracle all arrive
+        // through it.
+        if not (isReportableUnder flavour mount) then
+            failwith
+                $"EmulatedFileSystemType.reportedFor: asked what a %O{flavour} kernel reports for a %O{mount} mount, which %O{flavour} cannot have. The kernel's UnixPlatform and FileSystemType have come apart — set them together with EmulatedKernel.withUnixPlatformAndFileSystemType rather than by updating the record directly."
+
         /// Darwin's `fstatfs` refuses every object that is not on a
         /// filesystem, uniformly; Linux's succeeds and names the
         /// pseudo-filesystem the object lives on. So each of these rows is a
