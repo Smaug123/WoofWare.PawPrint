@@ -211,6 +211,11 @@ module TestScheduleFork =
             "SimultaneousCounter.cs"
             "InvertedMonitorDeadlock.cs"
             "QueueIsNotThreadSafe.cs"
+
+            // Swept the same way by `TestClockJitterFindsBugs`, whose negative half — that no
+            // schedule reaches its bug — is a claim about the whole schedule space and so rests
+            // on the fanout being faithful.
+            "JoinTimeoutIgnored.cs"
         ]
 
     /// Fixed rather than randomly generated, so a failure is reproducible without a shrink
