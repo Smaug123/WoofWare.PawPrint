@@ -174,9 +174,10 @@ type ClockJitterStrategy =
     /// The coin, the choice and the overshoot are independent deterministic
     /// functions of `(seed, stepCounter)`, so the same seed reproduces the same
     /// jump sequence across runs. `probability` is rejected if it is NaN or
-    /// outside `[0.0, 1.0]`; `maxOvershootTicks` if it is negative, since the
-    /// clock is monotonic. A bound large enough to run the clock past its
-    /// representable range is not rejected here — that fault belongs to
+    /// outside `[0.0, 1.0]`; `maxOvershootTicks` if it is negative (the clock is
+    /// monotonic) or above `ClockJitter.maxOvershootBoundTicks`. A bound that is
+    /// legal here but still large enough to run the clock past its representable
+    /// range is not rejected — that fault belongs to
     /// `EmulatedKernel.withVirtualClockTicks`, which raises it naming the wait
     /// responsible.
     ///
@@ -211,6 +212,20 @@ type ClockJitterStrategy =
 /// clock jumps before this tick's deadlines are fired.
 [<RequireQualifiedAccess>]
 module ClockJitter =
+
+    /// Largest `maxOvershootTicks` an `EagerDeadlines` strategy may name.
+    ///
+    /// `2^53 - 1`, because the overshoot draw scales a float in `[0, 1)` by the
+    /// inclusive range size: above `2^53` an `int64` is no longer exactly
+    /// representable as a `float`, so that size would round and whole stretches
+    /// of the range would become undrawable — an overshoot dial quietly
+    /// narrower than the number it was given. Rejecting is better than silently
+    /// sampling a different distribution from the documented one.
+    ///
+    /// Far above any useful setting: `2^53` ticks is about 28 years of
+    /// simulated time, against timeouts measured in milliseconds.
+    [<Literal>]
+    let maxOvershootBoundTicks : int64 = 9007199254740991L
 
     /// SplitMix64-style hash over `(seed, stepCounter, salt)`, giving a value in
     /// `[0.0, 1.0)`. Replayability comes from it being a pure hash with no
@@ -258,17 +273,12 @@ module ClockJitter =
                 failwith
                     $"ClockJitterStrategy.EagerDeadlines: maxOvershootTicks %d{maxOvershootTicks} is negative. An overshoot moves a timeout later, never earlier; the virtual clock is monotonic."
 
-            // The bound is inclusive, so `chooseJump` scales the draw by
-            // `maxOvershootTicks + 1L`; `Int64.MaxValue` is the one value that
-            // makes that sum overflow.
-            //
-            // Deliberately the *only* upper limit here. Whether a bound is
-            // sane against the clock's representable range is
-            // `withVirtualClockTicks`'s question, not this module's, and it
-            // already faults there naming the wait that ran time off the end.
-            if maxOvershootTicks = System.Int64.MaxValue then
+            // See `maxOvershootBoundTicks`: past it the draw could no longer
+            // cover the range it was given, so the strategy would sample a
+            // narrower distribution than the one it documents.
+            if maxOvershootTicks > maxOvershootBoundTicks then
                 failwith
-                    "ClockJitterStrategy.EagerDeadlines: maxOvershootTicks cannot be Int64.MaxValue; the bound is inclusive, so it must leave room to be incremented."
+                    $"ClockJitterStrategy.EagerDeadlines: maxOvershootTicks %d{maxOvershootTicks} exceeds %d{maxOvershootBoundTicks} (2^53 - 1), beyond which the overshoot draw cannot cover its own range exactly. That is about 28 years of simulated time; a bound anywhere near it is a unit mistake."
 
     /// Where the clock should jump to on this tick, if anywhere. `None` means
     /// the tick's clock advance is the ordinary `InstructionCostTicks` and
@@ -332,6 +342,20 @@ module ClockJitter =
                 let overshoot =
                     int64 (draw seed stepCounter 2UL * float (maxOvershootTicks + 1L))
                     |> min maxOvershootTicks
+
+                // The deadlines are whatever the caller passed, so a deadline
+                // close enough to `Int64.MaxValue` to make this sum wrap is
+                // reachable from outside this module. Wrapping would return a
+                // *negative* target, breaking the guarantee this function's
+                // callers rely on — that a `Some` is strictly ahead of the
+                // clock — and would surface downstream as a baffling
+                // "clock cannot be negative" rather than as the arithmetic
+                // problem it is. An over-horizon-but-representable target is
+                // deliberately still returned, for `withVirtualClockTicks` to
+                // diagnose naming the wait responsible.
+                if deadline > System.Int64.MaxValue - overshoot then
+                    failwith
+                        $"ClockJitterStrategy.EagerDeadlines: deadline %d{deadline} plus an overshoot of %d{overshoot} ticks is not representable as an int64. A deadline that large cannot have come from a wait this kernel posted."
 
                 Some (deadline + overshoot)
 

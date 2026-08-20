@@ -407,6 +407,35 @@ module TestClockJitter =
         observed |> shouldEqual expected
 
     [<Test>]
+    let ``a deadline too large to overshoot is refused, not wrapped`` () : unit =
+        // `chooseJump` takes whatever deadlines its caller hands it, so a value
+        // close enough to `Int64.MaxValue` for the overshoot to wrap is
+        // reachable from outside. Wrapping would return a *negative* target,
+        // breaking the guarantee callers rely on — a `Some` is strictly ahead
+        // of the clock — and would then surface as a confusing
+        // "clock cannot be negative" from the setter rather than as the
+        // arithmetic fault it is.
+        let choose () =
+            ClockJitter.chooseJump
+                (ClockJitterStrategy.EagerDeadlines (1UL, 1.0, 1_000L))
+                0L
+                0L
+                [ System.Int64.MaxValue ]
+            |> ignore<int64 option>
+
+        Assert.Throws<Exception> (TestDelegate choose) |> ignore<Exception>
+
+        // A deadline beyond the clock's own horizon but with room to spare for
+        // the overshoot is *not* this function's problem to refuse: it is
+        // returned, so that `withVirtualClockTicks` can fault naming the wait.
+        ClockJitter.chooseJump
+            (ClockJitterStrategy.EagerDeadlines (1UL, 1.0, 0L))
+            0L
+            0L
+            [ EmulatedKernel.maxMonotonicTimestampClockTicks + 1L ]
+        |> shouldEqual (Some (EmulatedKernel.maxMonotonicTimestampClockTicks + 1L))
+
+    [<Test>]
     let ``the overshoot does not disturb which deadline was chosen`` () : unit =
         // The two draws are independent, so raising the bound must not resample
         // the deadline: a shrinker that lowers the bound to find the smallest
@@ -439,7 +468,13 @@ module TestClockJitter =
         // later tick rather than as a statement about the configuration. Beyond
         // the clock's range is the typo case (ticks mistaken for milliseconds,
         // say), and it is also what keeps the inclusive `+ 1L` from overflowing.
-        for bad in [ -1L ; System.Int64.MinValue ; System.Int64.MaxValue ] do
+        for bad in
+            [
+                -1L
+                System.Int64.MinValue
+                ClockJitter.maxOvershootBoundTicks + 1L
+                System.Int64.MaxValue
+            ] do
             let choose () =
                 ClockJitter.chooseJump (ClockJitterStrategy.EagerDeadlines (1UL, 1.0, bad)) 0L 0L [ 10L ]
                 |> ignore<int64 option>
@@ -453,13 +488,29 @@ module TestClockJitter =
 
             Assert.Throws<Exception> (TestDelegate install) |> ignore<Exception>
 
-        // One below is legal: the rejection is about the inclusive bound's
-        // arithmetic, not about the value being implausibly large. Whether a
-        // large bound runs the clock off its representable range is the clock
-        // writer's question, and it faults there.
+        // The boundary itself is legal, so the check is `>` and not `>=` — and
+        // the draw really does reach it there, which is the whole reason the
+        // limit sits at 2^53 - 1 rather than anywhere rounder.
         EmulatedKernel.initial
-        |> EmulatedKernel.withClockJitter (ClockJitterStrategy.EagerDeadlines (1UL, 1.0, System.Int64.MaxValue - 1L))
+        |> EmulatedKernel.withClockJitter (
+            ClockJitterStrategy.EagerDeadlines (1UL, 1.0, ClockJitter.maxOvershootBoundTicks)
+        )
         |> ignore<EmulatedKernel>
+
+        let atBound =
+            [ 0L .. 199L ]
+            |> List.choose (fun tick ->
+                ClockJitter.chooseJump
+                    (ClockJitterStrategy.EagerDeadlines (3UL, 1.0, ClockJitter.maxOvershootBoundTicks))
+                    tick
+                    0L
+                    [ 100L ]
+                |> Option.map (fun target -> target - 100L)
+            )
+
+        atBound
+        |> List.forall (fun o -> 0L <= o && o <= ClockJitter.maxOvershootBoundTicks)
+        |> shouldEqual true
 
     [<Test>]
     let ``a malformed probability is rejected`` () : unit =
