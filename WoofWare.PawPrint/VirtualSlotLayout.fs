@@ -747,6 +747,18 @@ module VirtualSlotLayout =
             HomeSlot : int
         }
 
+    /// What a MethodImpl declaration turned out to name.
+    ///
+    /// `Unsupported` is separate from `NoSlot` because the two must not be conflated by a caller.
+    /// `NoSlot` is a fact about the metadata -- the row writes the dispatch map, not the vtable.
+    /// `Unsupported` is a fact about *this rule*, and the image may be perfectly valid, so a caller
+    /// that needs an answer has to get it elsewhere rather than proceed as though the row were absent.
+    /// Treating it as `NoSlot` would silently give the slot whatever placement had put there.
+    type private DeclarationTarget =
+        | NoSlot
+        | Names of declaration : VtableSlot * slot : int
+        | Unsupported of reason : string
+
     /// Which slot of the class chain does this MethodImpl declaration name, and which declaration is
     /// it?
     ///
@@ -794,7 +806,7 @@ module VirtualSlotLayout =
         (table : PlacedVtable)
         (assembly : DumpedAssembly)
         (declaration : MetadataToken)
-        : IlMachineState * (VtableSlot * int) option
+        : IlMachineState * DeclarationTarget
         =
         match declaration with
         | MetadataToken.MethodDef handle ->
@@ -805,8 +817,12 @@ module VirtualSlotLayout =
             let target = assembly.Name.FullName, (Some handle, None)
 
             state,
-            table.Placed
-            |> List.tryFind (fun (slot, _) -> (slot.DeclaredBy.AssemblyFullName, slot.Method.IdentityKey) = target)
+            (match
+                table.Placed
+                |> List.tryFind (fun (slot, _) -> (slot.DeclaredBy.AssemblyFullName, slot.Method.IdentityKey) = target)
+             with
+             | Some (declaration, slot) -> DeclarationTarget.Names (declaration, slot)
+             | None -> DeclarationTarget.NoSlot)
         | MetadataToken.MemberReference handle ->
             let memberRef = assembly.Members.[handle]
 
@@ -852,7 +868,7 @@ module VirtualSlotLayout =
             match parentIdentity with
             | None ->
                 // A ModuleRef or MethodDef parent: neither can name a class ancestor's method.
-                state, None
+                state, DeclarationTarget.NoSlot
             | Some parentIdentity ->
 
             // Is the named type an ancestor?
@@ -880,7 +896,7 @@ module VirtualSlotLayout =
             | None ->
                 // An interface, or a type unrelated to this one: not a vtable write. This is 4084 of
                 // corelib's 4120 MethodImpl rows.
-                state, None
+                state, DeclarationTarget.NoSlot
             | Some (namedIdentity, _) ->
 
             // Only the named ancestor is searched. Upstream's `FindDeclMethodOnClassInHierarchy`
@@ -953,10 +969,16 @@ module VirtualSlotLayout =
                 )
 
             match matches with
-            | [ single ] -> state, Some single
+            | [ single ] -> state, DeclarationTarget.Names single
             | [] ->
-                failwith
-                    $"TODO: %s{operation} for %s{table.Owner.Description}, whose MethodImpl declares an override of %s{memberRef.PrettyName} on an ancestor that declares %i{List.length candidates} method(s) of that name, none matching its signature; resolving it needs that ancestor's own bases searched too, as MethodTableBuilder::FindDeclMethodOnClassInHierarchy does, or COM type equivalence, which its second pass permits and PawPrint does not model"
+                // Not an invalid image: upstream would search the named ancestor's own bases, so a
+                // MemberRef naming `B` legally resolves to a method `A` introduced, and would then
+                // retry permitting COM type equivalence. PawPrint models neither, so it declines and
+                // the caller answers some other way -- crucially *not* by treating the row as absent,
+                // which would hand the slot whatever placement had put there.
+                state,
+                DeclarationTarget.Unsupported
+                    $"MethodImpl on %s{table.Owner.Description} declares an override of %s{memberRef.PrettyName} on an ancestor that declares %i{List.length candidates} method(s) of that name, none matching its signature; resolving it needs that ancestor's own bases searched, as MethodTableBuilder::FindDeclMethodOnClassInHierarchy does, or COM type equivalence, which its second pass permits"
             | several ->
                 // Comparing in the open vocabulary means two candidates can only tie by declaring the
                 // same name and the same signature, which ECMA-335 II.22.26 forbids. Upstream would
@@ -1008,7 +1030,7 @@ module VirtualSlotLayout =
         (table : PlacedVtable)
         (parentContent : SlotContent list)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        : IlMachineState * SlotContent list
+        : IlMachineState * Result<SlotContent list, string>
         =
         let assembly, _ = definitionMetadata operation state table.Owner.Identity
 
@@ -1050,15 +1072,20 @@ module VirtualSlotLayout =
 
         // `PlaceMethodImpls`. A row whose declaration names an interface method writes the dispatch
         // map and not the vtable, and `declarationSlot` returns `None` for those.
-        let state, content, _ =
-            ((state, content, Map.empty), typeInfo.MethodImpls.Values |> List.ofSeq)
-            ||> List.fold (fun (state, content, writtenHere) impl ->
+        let state, applied, _ =
+            ((state, Ok content, Map.empty), typeInfo.MethodImpls.Values |> List.ofSeq)
+            ||> List.fold (fun (state, applied, writtenHere) impl ->
+                match applied with
+                | Error _ -> state, applied, writtenHere
+                | Ok content ->
+
                 let state, declared =
                     declarationSlot loggerFactory baseClassTypes operation state table assembly impl.Declaration
 
                 match declared with
-                | None -> state, content, writtenHere
-                | Some (declaration, declaredSlot) ->
+                | DeclarationTarget.NoSlot -> state, Ok content, writtenHere
+                | DeclarationTarget.Unsupported reason -> state, Error reason, writtenHere
+                | DeclarationTarget.Names (declaration, declaredSlot) ->
 
                 // "The body shall be a MethodDef of this type" -- upstream throws
                 // `IDS_CLASSLOAD_MI_ILLEGAL_BODY` (methodtablebuilder.cpp:2415-2421) otherwise, so a
@@ -1092,7 +1119,7 @@ module VirtualSlotLayout =
                     let bodyMethod = assembly.Methods.[bodyHandle]
 
                     if bodyMethod.IsStatic then
-                        state, content, writtenHere
+                        state, Ok content, writtenHere
                     else
                         failwith
                             $"%s{operation}: MethodImpl on %s{table.Owner.Description} names the non-static, non-virtual method %s{bodyMethod.Name} as its body; CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_MUSTBEVIRTUAL) rather than laying out a method table for it"
@@ -1165,22 +1192,28 @@ module VirtualSlotLayout =
                 | _ ->
 
                 state,
-                (content
-                 |> List.mapi (fun i entry ->
-                     if i = declaredSlot then
-                         {
-                             SlotContent.Occupant = bodySlot
-                             SlotContent.HomeSlot = bodyHome
-                         }
-                     else
-                         entry
-                 )),
+                Ok (
+                    content
+                    |> List.mapi (fun i entry ->
+                        if i = declaredSlot then
+                            {
+                                SlotContent.Occupant = bodySlot
+                                SlotContent.HomeSlot = bodyHome
+                            }
+                        else
+                            entry
+                    )
+                ),
                 Map.add declaredSlot bodyIdentity writtenHere
             )
 
+        match applied with
+        | Error reason -> state, Error reason
+        | Ok content ->
+
         // `SetupMethodTable2`'s loop, skipped for interfaces exactly as upstream skips it (:11318).
         if typeInfo.IsInterface then
-            state, content
+            state, Ok content
         else
 
         let content = Array.ofList content
@@ -1209,7 +1242,7 @@ module VirtualSlotLayout =
                         content.[i] <- atHome
                         changed <- true
 
-        state, List.ofArray content
+        state, Ok (List.ofArray content)
 
     /// The content of every vtable slot of a definition: for each slot, the method a `callvirt`
     /// through it actually runs.
@@ -1224,14 +1257,22 @@ module VirtualSlotLayout =
         (operation : string)
         (state : IlMachineState)
         (table : PlacedVtable)
-        : IlMachineState * SlotContent list
+        : IlMachineState * Result<SlotContent list, string>
         =
         let _, typeInfo = definitionMetadata operation state table.Owner.Identity
 
         let state, parentContent =
             match table.Parent with
-            | None -> state, []
+            | None -> state, Ok []
             | Some parent -> contentOfDefinitionOwner loggerFactory baseClassTypes operation state parent
+
+        match parentContent with
+        | Error reason ->
+            // An ancestor's own table could not be built, and this type's inherits from it. Declining
+            // here rather than proceeding matters: a partial parent would hand every slot it failed to
+            // fill back to placement, which is a wrong body rather than an absent one.
+            state, Error reason
+        | Ok parentContent ->
 
         // The parent's content is read in the parent's own vocabulary; this type's vtable entries have
         // already been rebased into this type's. Only the *occupant* is taken from the parent's
@@ -1268,7 +1309,14 @@ module VirtualSlotLayout =
         let state, content =
             contentOfDefinitionOwner loggerFactory baseClassTypes operation state table
 
-        state, content |> List.map _.Occupant
+        match content with
+        | Ok content -> state, content |> List.map _.Occupant
+        | Error reason ->
+            // This entry point answers a direct question about one definition's table, so a caller
+            // that cannot be answered should hear why. Virtual dispatch goes through
+            // `dispatchTableOfClosed`, which declines instead -- see there for why the difference
+            // matters.
+            failwith $"TODO: %s{operation}: %s{reason}"
 
     /// What each vtable slot of a *runtime type* holds, in slot order: the method a `callvirt` through
     /// slot `i` on a receiver of this type runs.
@@ -1325,7 +1373,32 @@ module VirtualSlotLayout =
             let state, content =
                 contentOfDefinitionOwner loggerFactory baseClassTypes operation state table
 
-            state, Some (table.Placed, content |> List.map _.Occupant)
+            match content with
+            | Ok content -> state, Some (table.Placed, content |> List.map _.Occupant)
+            | Error reason ->
+                // Declining, not crashing, and the difference is the whole point of returning an
+                // option here.
+                //
+                // Dispatch builds this table on *every* `callvirt`, which resolves every MethodImpl row
+                // on every type in the receiver's chain. So one row this rule cannot resolve -- a
+                // MemberRef naming an ancestor that merely inherits the method, which is valid IL
+                // CoreCLR loads -- would otherwise abort every virtual call on that type, `ToString`
+                // included. The old signature-matching walk never had that blast radius: it stopped at
+                // its first match and never looked at unrelated rows.
+                //
+                // Falling back hands the call to that walk, which is exactly what answered it before
+                // this table existed. A wrong answer is possible there, but it is the *previous*
+                // answer rather than a new failure, and it is confined to the type that carries the
+                // row instead of spreading to every call on it.
+                let logger = loggerFactory.CreateLogger "VirtualSlotLayout"
+
+                logger.LogDebug (
+                    "Declining to build a dispatch table for {Type}: {Reason}",
+                    concreteTypeInfo.Identity.TypeDefinition.Get,
+                    reason
+                )
+
+                state, None
 
 
     /// The slot each declaration in a definition's chain owns, base-first: `MethodDesc::GetSlot()`
