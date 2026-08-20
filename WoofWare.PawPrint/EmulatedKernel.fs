@@ -1142,10 +1142,25 @@ module CreatingOpenRules =
 /// errno: which errno a fault becomes is fixed, but *which fault is reported*
 /// when several hold at once is per-flavour. See
 /// `SimulatedUnixPlatform.bindFaultOrder`.
+/// What this platform's `bind(2)` makes of a declared `socketAddressLen`.
+[<RequireQualifiedAccess>]
+type BindLengthVerdict =
+    /// A length this platform will parse an address out of.
+    | Accepted
+    /// `EINVAL`: not a length this family's sockaddr can have.
+    | Invalid
+    /// `ENAMETOOLONG`: past the greatest length the platform considers at all.
+    /// Darwin only; Linux answers `EINVAL` however large the length.
+    | TooLong
+
 [<RequireQualifiedAccess>]
 type BindFault =
     /// The declared `socketAddressLen` is not one this platform accepts for the
-    /// address family in the blob. `EINVAL`.
+    /// address family in the blob. Which errno that becomes is the
+    /// `BindLengthVerdict` the length classifier gave — `EINVAL`, or
+    /// `ENAMETOOLONG` past the greatest length the platform considers — but the
+    /// *position* in the order is the same either way, which is why the verdict
+    /// is not carried here.
     | Length
     /// The blob's address family is not the socket's. `EAFNOSUPPORT`.
     | Family
@@ -1504,10 +1519,27 @@ module SimulatedUnixPlatform =
     ///
     /// Invisible through the managed API, which always passes
     /// `SocketAddress.Size`; a hand-rolled `[DllImport]` sees it immediately.
-    let bindAddressLengthAccepted (platform : SimulatedUnixPlatform) (exactSize : int) (declared : int) : bool =
+    /// The greatest `socketAddressLen` Darwin's `bind(2)` will consider at all.
+    /// Above it the answer is `ENAMETOOLONG` rather than `EINVAL`; measured, 255
+    /// is `EINVAL` and 256 is `ENAMETOOLONG`. Linux has no such threshold.
+    let maximumDarwinSocketAddressLength : int = 255
+
+    let bindAddressLength (platform : SimulatedUnixPlatform) (exactSize : int) (declared : int) : BindLengthVerdict =
         match flavour platform with
-        | SimulatedUnixFlavour.Linux -> declared >= exactSize && declared <= maximumSocketAddressSize
-        | SimulatedUnixFlavour.Darwin -> declared = exactSize
+        | SimulatedUnixFlavour.Linux ->
+            if declared >= exactSize && declared <= maximumSocketAddressSize then
+                BindLengthVerdict.Accepted
+            else
+                BindLengthVerdict.Invalid
+        | SimulatedUnixFlavour.Darwin ->
+            if declared = exactSize then
+                BindLengthVerdict.Accepted
+            elif declared > maximumDarwinSocketAddressLength then
+                // Measured: 255 is EINVAL and 256 is ENAMETOOLONG, on Darwin
+                // only. Linux answers EINVAL at every oversized length.
+                BindLengthVerdict.TooLong
+            else
+                BindLengthVerdict.Invalid
 
     /// May a socket bind to this address, given the addresses this machine holds?
     ///
@@ -1596,13 +1628,17 @@ module SimulatedUnixPlatform =
             false
         elif not (InternetEndpoint.addressesOverlap existing.Endpoint candidate.Endpoint) then
             false
-        elif not (existingReuse && candidateReuse) then
-            true
         else
 
         match flavour platform with
-        | SimulatedUnixFlavour.Linux -> existingIsListening
-        | SimulatedUnixFlavour.Darwin -> existing.Endpoint.Address = candidate.Endpoint.Address
+        // Linux relaxes only while nothing listens, and only when *both* sockets
+        // carry the flag.
+        | SimulatedUnixFlavour.Linux -> not (existingReuse && candidateReuse) || existingIsListening
+        // Darwin relaxes only for addresses that differ, and keys on the
+        // *candidate's* flag alone — measured: a wildcard listener that
+        // `listen(2)` bound implicitly carries no flag at all, and a later
+        // reuse-carrying bind to a specific address on its port still succeeds.
+        | SimulatedUnixFlavour.Darwin -> existing.Endpoint.Address = candidate.Endpoint.Address || not candidateReuse
 
     let sockaddrFamilyField (platform : SimulatedUnixPlatform) : SockaddrFamilyField =
         match flavour platform with

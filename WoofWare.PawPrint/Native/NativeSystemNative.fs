@@ -4366,8 +4366,21 @@ module NativeSystemNative =
             // `requireStorage` refuses for.
             let resolvedBlob = BufferPointer.dereferenceable addressArgument
 
+            // Darwin reads the family before it copies anything, so a length too
+            // short to reach the family is EINVAL there and never touches the
+            // pointer — measured, `(struct sockaddr *) 1` with a length of 1 is
+            // EINVAL on Darwin and EFAULT on Linux, and with 2 it is EFAULT on
+            // both. Linux copies first at every positive length.
+            let copiesFromPointer =
+                declaredLength > 0
+                && (
+                    match SimulatedUnixPlatform.flavour platform with
+                    | SimulatedUnixFlavour.Linux -> true
+                    | SimulatedUnixFlavour.Darwin -> sockaddrFamilyIsInBounds platform declaredLength
+                )
+
             match resolvedBlob with
-            | None when declaredLength > 0 ->
+            | None when copiesFromPointer ->
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EFAULT))
                 |> complete (UnixError.toPal UnixError.EFAULT)
             | _ ->
@@ -4446,13 +4459,27 @@ module NativeSystemNative =
                         | None -> false
                 | Some _ -> true
 
-            let lengthFault =
-                not (
-                    SimulatedUnixPlatform.bindAddressLengthAccepted
-                        platform
-                        (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
-                        declaredLength
-                )
+            let lengthVerdict =
+                SimulatedUnixPlatform.bindAddressLength
+                    platform
+                    (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
+                    declaredLength
+
+            let lengthFault = lengthVerdict <> BindLengthVerdict.Accepted
+
+            // `bind(2)` copies the caller's whole declared length, not merely the
+            // fields this handler parses out of it — so an allocation shorter
+            // than the declared length is one a real kernel reads past. Whether
+            // that faults depends on which pages happen to be mapped beyond the
+            // object, which PawPrint does not model: measured, a 128-byte
+            // declared length over a 64-byte stack buffer succeeds on Linux
+            // because the stack below it is mapped. Refusing is the honest answer
+            // to a question whose real one is not a property of the program.
+            match resolvedBlob with
+            | Some blob when lengthVerdict = BindLengthVerdict.Accepted ->
+                requireBufferRoom ctx operation BufferTransfer.OutOf blob declaredLength state
+            | _ -> ()
+
 
             let candidate =
                 endpoint
@@ -4545,7 +4572,11 @@ module NativeSystemNative =
             | Some fault ->
                 let error =
                     match fault with
-                    | BindFault.Length
+                    | BindFault.Length ->
+                        match lengthVerdict with
+                        | BindLengthVerdict.TooLong -> UnixError.ENAMETOOLONG
+                        | BindLengthVerdict.Invalid
+                        | BindLengthVerdict.Accepted -> UnixError.EINVAL
                     | BindFault.AlreadyBound -> UnixError.EINVAL
                     | BindFault.Family -> UnixError.EAFNOSUPPORT
                     | BindFault.AddressNotLocal -> UnixError.EADDRNOTAVAIL

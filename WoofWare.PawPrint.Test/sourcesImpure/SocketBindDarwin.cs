@@ -77,6 +77,8 @@ class SocketBindDarwin
     // The raw errno for EADDRNOTAVAIL on this flavour; the PAL value is shared.
     const int RAW_EADDRNOTAVAIL = 49;
 
+    const int PAL_EFAULT = 0x10015;
+    const int PAL_ENAMETOOLONG = 0x10025;
     const int PAL_EBADF = 0x10008;
     const int PAL_EOPNOTSUPP = 0x1003D;
     const int SOCK_DGRAM = 2;
@@ -304,6 +306,53 @@ class SocketBindDarwin
             if (ListenReportingErrno(d, 8) != PAL_EOPNOTSUPP) return 71;
             if (Marshal.GetLastSystemError() != RAW_EOPNOTSUPP) return 72;
             Close(d);
+        }
+
+        // 14. An oversized declared length. Linux answers EINVAL however large;
+        //     Darwin has a threshold, and past it the answer is ENAMETOOLONG.
+        //     Measured: 255 is EINVAL on Darwin and 256 is ENAMETOOLONG.
+        {
+            IntPtr s = Make();
+            if (s == (IntPtr) (-1)) return 82;
+            if (!Address(blob, Loopback, 0)) return 83;
+            if (Bind(s, PT_TCP, blob, 255) != PAL_EINVAL) return 84;
+            if (Bind(s, PT_TCP, blob, 256) != PAL_ENAMETOOLONG) return 85;
+            Close(s);
+        }
+
+        // 15. An unmapped pointer with a length too short to reach the family.
+        //     Linux copies first and faults; Darwin reads the family first, so it
+        //     rejects the length without ever touching the pointer.
+        {
+            IntPtr s = Make();
+            if (s == (IntPtr) (-1)) return 86;
+            if (Bind(s, PT_TCP, (byte*) 1, 1) != PAL_EINVAL) return 87;
+            // At two bytes the family fits, so both flavours copy and fault.
+            if (Bind(s, PT_TCP, (byte*) 1, 2) != PAL_EFAULT) return 88;
+            Close(s);
+        }
+
+        // 16. Darwin keys its relaxation on the *candidate's* flag alone: a
+        //     wildcard listener that `listen(2)` bound implicitly carries no
+        //     SO_REUSEADDR at all, and a later PT_TCP bind to a specific address
+        //     on its port still succeeds. Linux refuses it, the listener being
+        //     the thing that matters there.
+        {
+            IntPtr listener = Make();
+            if (listener == (IntPtr) (-1)) return 89;
+            if (Listen(listener, 8) != PAL_SUCCESS) return 90;
+
+            int len = V4Size;
+            if (GetSockName(listener, readBack, &len) != PAL_SUCCESS) return 91;
+            ushort port = 0;
+            if (GetPort(readBack, V4Size, &port) != PAL_SUCCESS) return 92;
+
+            IntPtr specific = Make();
+            if (specific == (IntPtr) (-1)) return 93;
+            if (!Address(blob, Loopback, port)) return 94;
+            if (Bind(specific, PT_TCP, blob, V4Size) != PAL_SUCCESS) return 95;
+            Close(listener);
+            Close(specific);
         }
 
         return 0;

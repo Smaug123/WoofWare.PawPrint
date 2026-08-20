@@ -343,6 +343,51 @@ class SocketBindLinux
             Close(rival);
         }
 
+        // 14. An oversized declared length. Linux answers EINVAL however large;
+        //     Darwin has a threshold, and past it the answer is ENAMETOOLONG.
+        //     Measured: 255 is EINVAL on Darwin and 256 is ENAMETOOLONG.
+        {
+            IntPtr s = Make();
+            if (s == (IntPtr) (-1)) return 82;
+            if (!Address(blob, Loopback, 0)) return 83;
+            if (Bind(s, PT_TCP, blob, 255) != PAL_EINVAL) return 84;
+            if (Bind(s, PT_TCP, blob, 256) != PAL_EINVAL) return 85;
+            Close(s);
+        }
+
+        // 15. An unmapped pointer with a length too short to reach the family.
+        //     Linux copies first and faults; Darwin reads the family first, so it
+        //     rejects the length without ever touching the pointer.
+        {
+            IntPtr s = Make();
+            if (s == (IntPtr) (-1)) return 86;
+            if (Bind(s, PT_TCP, (byte*) 1, 1) != PAL_EFAULT) return 87;
+            // At two bytes the family fits, so both flavours copy and fault.
+            if (Bind(s, PT_TCP, (byte*) 1, 2) != PAL_EFAULT) return 88;
+            Close(s);
+        }
+
+        // 16. The mirror of Darwin's rule: an implicitly-bound listener carries no
+        //     SO_REUSEADDR, so Linux — which needs the flag on *both* sides, and
+        //     refuses once anything listens — answers EADDRINUSE.
+        {
+            IntPtr listener = Make();
+            if (listener == (IntPtr) (-1)) return 89;
+            if (Listen(listener, 8) != PAL_SUCCESS) return 90;
+
+            int len = V4Size;
+            if (GetSockName(listener, readBack, &len) != PAL_SUCCESS) return 91;
+            ushort port = 0;
+            if (GetPort(readBack, V4Size, &port) != PAL_SUCCESS) return 92;
+
+            IntPtr specific = Make();
+            if (specific == (IntPtr) (-1)) return 93;
+            if (!Address(blob, Loopback, port)) return 94;
+            if (Bind(specific, PT_TCP, blob, V4Size) != PAL_EADDRINUSE) return 95;
+            Close(listener);
+            Close(specific);
+        }
+
         return 0;
     }
 }
