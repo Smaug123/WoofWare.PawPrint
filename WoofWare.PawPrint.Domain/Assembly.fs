@@ -392,6 +392,21 @@ type DumpedAssembly =
         metadata.GetGuid (metadata.GetModuleDefinition().Mvid)
 
     /// <summary>
+    /// The <c>Name</c> column of this module's <c>Module</c> metadata row (ECMA-335 II.22.30):
+    /// the file name the compiler stamped into the image, extension included, such as
+    /// <c>"System.Private.CoreLib.dll"</c>. Surfaced to a guest as <c>Module.ScopeName</c>.
+    /// </summary>
+    /// <remarks>
+    /// Not the assembly's simple name, which lives on the <c>Assembly</c> row and is what
+    /// <c>this.Name.Name</c> answers: an assembly named <c>Foo</c> normally has a module named
+    /// <c>Foo.dll</c>, but nothing in the format requires the two to agree. Nor is it a path —
+    /// the row records a bare file name, so this says nothing about where the image was read from.
+    /// </remarks>
+    member this.ScopeName : string =
+        let metadata = this.PeReader.GetMetadataReader ()
+        metadata.GetString (metadata.GetModuleDefinition().Name)
+
+    /// <summary>
     /// The raw <c>Culture</c> column of this assembly's manifest row: the empty string for a
     /// culture-neutral assembly, and otherwise a culture name such as <c>"en-GB"</c>.
     /// </summary>
