@@ -1049,7 +1049,7 @@ module CreatingOpenRules =
     /// rather than a step before it.
     let verdict
         (rules : CreatingOpenRules)
-        (privileged : bool)
+        (privilege : CallerPrivilege)
         (creating : bool)
         (exclusive : bool)
         (resolution : Resolution)
@@ -1107,7 +1107,12 @@ module CreatingOpenRules =
                 failwith
                     $"CreatingOpenRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{FileName.toString name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
 
-        if not privileged && parentBits &&& bindBits <> bindBits then
+        let lacksBindBits =
+            match privilege with
+            | CallerPrivilege.Privileged -> false
+            | CallerPrivilege.Unprivileged -> parentBits &&& bindBits <> bindBits
+
+        if lacksBindBits then
             CreatingOpenVerdict.Refuse UnixError.EACCES
         else
             CreatingOpenVerdict.Create (directory, name)
@@ -1239,7 +1244,7 @@ module MkDirRules =
     /// `lstat` through an unsearchable intermediate is EACCES too — so it is a
     /// change to the walk rather than to `mkdir`, and no corpus here contains
     /// such a row.
-    let verdict (privileged : bool) (resolution : Resolution) (vfs : VirtualFileSystem) : MkDirVerdict =
+    let verdict (privilege : CallerPrivilege) (resolution : Resolution) (vfs : VirtualFileSystem) : MkDirVerdict =
         match resolution.Target with
         | ResolvedTarget.Directory _ -> MkDirVerdict.Refuse UnixError.EEXIST
         | ResolvedTarget.Entry (directory, name, existing) ->
@@ -1263,7 +1268,9 @@ module MkDirRules =
                     $"MkDirRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{FileName.toString name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
 
         let lacks (bit : int) : bool =
-            not privileged && PermissionBits.toInt parentPermissions &&& bit <> bit
+            match privilege with
+            | CallerPrivilege.Privileged -> false
+            | CallerPrivilege.Unprivileged -> PermissionBits.toInt parentPermissions &&& bit <> bit
 
         if lacks search then
             MkDirVerdict.Refuse UnixError.EACCES
@@ -3291,12 +3298,18 @@ module EmulatedKernel =
     /// answer *different* questions from the same fact — whether `open` may ignore
     /// a mode that forbids the access it was asked for, and whether a write keeps
     /// a file's set-user-ID bits — and they must not be able to drift apart about
-    /// who root is.
+    /// who root is. `CallerPrivilege` rather than a `bool` for the same reason:
+    /// the answer travels through several signatures before it is used, and a
+    /// bare flag arrives at them saying nothing about which fact it is.
     ///
     /// `EmulatedKernel.defaultUserId` is deliberately not 0: `Environment.IsPrivilegedProcess`
     /// is literally `GetEUid() == 0`, so a guest run as root skips its own
     /// privilege guards.
-    let isPrivileged (kernel : EmulatedKernel) : bool = kernel.UserId = 0u
+    let callerPrivilege (kernel : EmulatedKernel) : CallerPrivilege =
+        if kernel.UserId = 0u then
+            CallerPrivilege.Privileged
+        else
+            CallerPrivilege.Unprivileged
 
     /// The moment the emulated kernel stamps on an inode it changes now, in the
     /// `struct timespec` an inode's timestamps are kept in.

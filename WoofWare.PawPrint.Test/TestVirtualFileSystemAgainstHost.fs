@@ -815,10 +815,10 @@ module TestVirtualFileSystemAgainstHost =
         | Error error -> CreatingOutcome.Failed (hostErrno error)
         | Ok resolution ->
 
-        // `privileged = false`: no directory in the corpus has its owner write
-        // or search bit clear, so the EACCES arm is unreachable here and the two
-        // worlds cannot disagree about it even if this test runs as root.
-        match CreatingOpenRules.verdict rules false true exclusive resolution vfs with
+        // Unprivileged: no directory in the corpus has its owner write or search
+        // bit clear, so the EACCES arm is unreachable here and the two worlds
+        // cannot disagree about it even if this test runs as root.
+        match CreatingOpenRules.verdict rules CallerPrivilege.Unprivileged true exclusive resolution vfs with
         | CreatingOpenVerdict.Refuse error -> CreatingOutcome.Failed (hostErrno error)
         | CreatingOpenVerdict.Create _ -> CreatingOutcome.Created
         | CreatingOpenVerdict.OpenExisting _ -> CreatingOutcome.Opened
@@ -1007,9 +1007,9 @@ module TestVirtualFileSystemAgainstHost =
 
         let privilege =
             if geteuid () = 0u then
-                WritePrivilege.Privileged
+                CallerPrivilege.Privileged
             else
-                WritePrivilege.Unprivileged
+                CallerPrivilege.Unprivileged
 
         let mutable compared = 0
 
@@ -1061,9 +1061,9 @@ module TestVirtualFileSystemAgainstHost =
 
         let privilege =
             if geteuid () = 0u then
-                WritePrivilege.Privileged
+                CallerPrivilege.Privileged
             else
-                WritePrivilege.Unprivileged
+                CallerPrivilege.Unprivileged
 
         let mutable compared = 0
 
@@ -1235,11 +1235,11 @@ module TestVirtualFileSystemAgainstHost =
         | Error error -> MkDirOutcome.Failed (hostErrno error)
         | Ok resolution ->
 
-        // `privileged = false`: every directory in the corpus has its owner write
-        // and search bits set, so the EACCES arm is unreachable here and the two
+        // Unprivileged: every directory in the corpus has its owner write and
+        // search bits set, so the EACCES arm is unreachable here and the two
         // worlds cannot disagree about it even if this test runs as root. The
         // EACCES rows live in the wiring guests, whose uid the suite chooses.
-        match MkDirRules.verdict false resolution vfs with
+        match MkDirRules.verdict CallerPrivilege.Unprivileged resolution vfs with
         | MkDirVerdict.Refuse error -> MkDirOutcome.Failed (hostErrno error)
         | MkDirVerdict.Create _ -> MkDirOutcome.Created
 

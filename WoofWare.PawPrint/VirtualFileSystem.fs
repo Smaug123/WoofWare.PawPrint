@@ -126,16 +126,22 @@ type PermissionBits =
         match this with
         | PermissionBits bits -> "0o" + System.Convert.ToString(bits, 8).PadLeft (4, '0')
 
-/// Whether the process performing a write is exempt from the rule that strips a
-/// file's set-user-ID and set-group-ID bits when its contents change.
+/// Whether the calling process is exempt from the file-permission rules — which
+/// is one question, asked by several of them, because the emulated kernel has a
+/// single identity and being exempt means being uid 0.
 ///
-/// A DU rather than a `bool`, because it sits next to a `PermissionBits` in every
-/// signature that takes it and the two orders would otherwise be
-/// indistinguishable to the compiler.
+/// The rules that ask: whether a write or a truncation strips a file's
+/// set-user-ID and set-group-ID bits, and whether a permission bit is consulted
+/// at all before reading, writing, binding a name, or searching a directory on
+/// the way through a path.
+///
+/// A DU rather than a `bool`, so that a caller cannot silently pass the wrong
+/// one of two adjacent flags, and so that the answer arrives at a signature
+/// saying what it means.
 [<RequireQualifiedAccess>]
-type WritePrivilege =
+type CallerPrivilege =
     /// uid 0. Measured on Linux as root: a write to an `04755` file leaves it
-    /// `04755`.
+    /// `04755`, and a directory whose mode is 0o000 can still be searched.
     | Privileged
     /// Any other identity.
     | Unprivileged
@@ -299,7 +305,7 @@ module PermissionBits =
     /// | `00644` | `00644` | `00644` |
     ///
     /// ...and as root every row is left exactly as it was, on both, which is what
-    /// `WritePrivilege.Privileged` selects.
+    /// `CallerPrivilege.Privileged` selects.
     ///
     /// `S_ISUID` goes on both flavours whatever the execute bits say, and the
     /// sticky bit is never touched on either. The whole of the disagreement is
@@ -310,13 +316,13 @@ module PermissionBits =
     /// the two rules and "preserve everything" all answer it differently.
     let afterContentChangingWrite
         (rule : SetGroupIdOnWrite)
-        (privilege : WritePrivilege)
+        (privilege : CallerPrivilege)
         (bits : PermissionBits)
         : PermissionBits
         =
         match privilege with
-        | WritePrivilege.Privileged -> bits
-        | WritePrivilege.Unprivileged ->
+        | CallerPrivilege.Privileged -> bits
+        | CallerPrivilege.Unprivileged ->
 
         let raw = toInt bits
 
@@ -346,7 +352,7 @@ module PermissionBits =
     /// | `01755` | `01755` | `01755` |
     ///
     /// ...and as root every row is left exactly as it was, on both, which is what
-    /// `WritePrivilege.Privileged` selects.
+    /// `CallerPrivilege.Privileged` selects.
     ///
     /// `ftruncate(2)`, `O_TRUNC`, and an `ftruncate` to the length the file
     /// already has all give the same answers, which is why one function serves
@@ -355,14 +361,14 @@ module PermissionBits =
     /// write at all.
     let afterTruncation
         (rule : SetIdBitsOnTruncation)
-        (privilege : WritePrivilege)
+        (privilege : CallerPrivilege)
         (bits : PermissionBits)
         : PermissionBits
         =
         match rule, privilege with
         | SetIdBitsOnTruncation.Preserve, _
-        | _, WritePrivilege.Privileged -> bits
-        | SetIdBitsOnTruncation.Strip, WritePrivilege.Unprivileged ->
+        | _, CallerPrivilege.Privileged -> bits
+        | SetIdBitsOnTruncation.Strip, CallerPrivilege.Unprivileged ->
 
         let raw = toInt bits
         parseOrFail "PermissionBits.afterTruncation" (raw &&& ~~~(setIdBitsLinuxClears raw))
@@ -1673,7 +1679,7 @@ module VirtualFileSystem =
         (offset : int64)
         (bytes : ImmutableArray<byte>)
         (rule : SetGroupIdOnWrite)
-        (privilege : WritePrivilege)
+        (privilege : CallerPrivilege)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
         : Result<VirtualFileSystem, FileWriteRefusal>
@@ -1752,7 +1758,7 @@ module VirtualFileSystem =
         (inode : InodeNumber)
         (length : int64)
         (rule : SetIdBitsOnTruncation)
-        (privilege : WritePrivilege)
+        (privilege : CallerPrivilege)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
         : Result<VirtualFileSystem, FileTruncationRefusal>

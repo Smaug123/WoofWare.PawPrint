@@ -695,11 +695,7 @@ module NativeSystemNative =
         // disagree only about `S_ISGID` on a file that is not group-executable.
         let rule = SimulatedUnixPlatform.setGroupIdOnWrite state.Kernel.UnixPlatform
 
-        let privilege =
-            if EmulatedKernel.isPrivileged state.Kernel then
-                WritePrivilege.Privileged
-            else
-                WritePrivilege.Unprivileged
+        let privilege = EmulatedKernel.callerPrivilege state.Kernel
 
         match VirtualFileSystem.writeFile inode offset bytes rule privilege now state.Kernel.FileSystem with
         | Ok filesystem ->
@@ -732,11 +728,7 @@ module NativeSystemNative =
         let now = EmulatedKernel.fileTimestamp state.Kernel
         let rule = SimulatedUnixPlatform.setIdBitsOnTruncation state.Kernel.UnixPlatform
 
-        let privilege =
-            if EmulatedKernel.isPrivileged state.Kernel then
-                WritePrivilege.Privileged
-            else
-                WritePrivilege.Unprivileged
+        let privilege = EmulatedKernel.callerPrivilege state.Kernel
 
         match VirtualFileSystem.truncateFile inode length rule privilege now state.Kernel.FileSystem with
         | Ok filesystem ->
@@ -2546,7 +2538,7 @@ module NativeSystemNative =
             match
                 CreatingOpenRules.verdict
                     rules
-                    (EmulatedKernel.isPrivileged state.Kernel)
+                    (EmulatedKernel.callerPrivilege state.Kernel)
                     creating
                     exclusive
                     resolution
@@ -2682,9 +2674,12 @@ module NativeSystemNative =
             // Root gets read and write whatever the mode says — measured on Linux
             // as uid 0, where a mode-0000 file opens for writing. (Only *execute*
             // still needs a bit set for root, and `open` never asks for it.)
-            let privileged = EmulatedKernel.isPrivileged state.Kernel
+            let lacksNeededBits =
+                match EmulatedKernel.callerPrivilege state.Kernel with
+                | CallerPrivilege.Privileged -> false
+                | CallerPrivilege.Unprivileged -> permissionBits &&& neededBits <> neededBits
 
-            if not privileged && permissionBits &&& neededBits <> neededBits then
+            if lacksNeededBits then
                 fail UnixError.EACCES
             else
 
@@ -2790,7 +2785,9 @@ module NativeSystemNative =
             | Error error -> fail error
             | Ok resolution ->
 
-            match MkDirRules.verdict (EmulatedKernel.isPrivileged state.Kernel) resolution state.Kernel.FileSystem with
+            match
+                MkDirRules.verdict (EmulatedKernel.callerPrivilege state.Kernel) resolution state.Kernel.FileSystem
+            with
             | MkDirVerdict.Refuse error -> fail error
             | MkDirVerdict.Create (directory, name, parentPermissions) ->
 
