@@ -85,11 +85,6 @@
     "hash": "sha256-5Mzj3XkYYLkwDWh17r1NEXSbXwwWYQPiOmkSMlgo1JY="
   },
   {
-    "pname": "Microsoft.CodeCoverage",
-    "version": "17.14.1",
-    "hash": "sha256-f8QytG8GvRoP47rO2KEmnDLxIpyesaq26TFjDdW40Gs="
-  },
-  {
     "pname": "Microsoft.Extensions.Configuration",
     "version": "9.0.2",
     "hash": "sha256-AUNaLhYTcHUkqKGhSL7QgrifV9JkjKhNQ4Ws8UtZhlM="
@@ -118,6 +113,11 @@
     "pname": "Microsoft.Extensions.DependencyInjection.Abstractions",
     "version": "9.0.6",
     "hash": "sha256-40rY38OwSqueIWr/KMvJX9u+vipN+AaRQ6eNCZLqrog="
+  },
+  {
+    "pname": "Microsoft.Extensions.DependencyModel",
+    "version": "8.0.2",
+    "hash": "sha256-PyuO/MyCR9JtYqpA1l/nXGh+WLKCq34QuAXN9qNza9Q="
   },
   {
     "pname": "Microsoft.Extensions.Logging",
@@ -158,11 +158,6 @@
     "pname": "Microsoft.Extensions.Primitives",
     "version": "9.0.2",
     "hash": "sha256-zy/YNMaY47o6yNv2WuYiAJEjtoOF8jlWgsWHqXeSm4s="
-  },
-  {
-    "pname": "Microsoft.NET.Test.Sdk",
-    "version": "17.14.1",
-    "hash": "sha256-mZUzDFvFp7x1nKrcnRd0hhbNu5g8EQYt8SKnRgdhT/A="
   },
   {
     "pname": "Microsoft.NETCore.App.Host.linux-arm64",
@@ -231,48 +226,33 @@
   },
   {
     "pname": "Microsoft.Testing.Extensions.Telemetry",
-    "version": "1.7.3",
-    "hash": "sha256-Z6WsY2FCUbNnT5HJd7IOrfOvqknVXp6PWzTVeb0idVg="
+    "version": "2.1.0",
+    "hash": "sha256-SawLiz1fB3QbkkyEVloEj8UpQTAIZR7U9FZfqwCkGr0="
   },
   {
     "pname": "Microsoft.Testing.Extensions.TrxReport.Abstractions",
-    "version": "1.7.3",
-    "hash": "sha256-PTee04FHyTHx/gF5NLckXuVje807G51MzkPrZ1gkgCw="
+    "version": "2.1.0",
+    "hash": "sha256-X54qc4Ey+3hm0e5eCY1R2me8b4zGrWzjesm9fGJWXys="
   },
   {
     "pname": "Microsoft.Testing.Extensions.VSTestBridge",
-    "version": "1.7.3",
-    "hash": "sha256-8d+wZmucfSO7PsviHjVxYB4q6NcjgxvnCUpLePq35sM="
+    "version": "2.1.0",
+    "hash": "sha256-2m14uEmuEELn4Ci/CZNpKjhlnzq9vYvhgeiM03DZj7A="
   },
   {
     "pname": "Microsoft.Testing.Platform",
-    "version": "1.7.3",
-    "hash": "sha256-cavX11P5o9rooqC3ZHw5h002OKRg2ZNR/VaRwpNTQYA="
+    "version": "2.1.0",
+    "hash": "sha256-CbR0j0Dh65cMccO7L6ppx4b5iiXjqxjjfC9A85HeLuM="
   },
   {
     "pname": "Microsoft.Testing.Platform.MSBuild",
-    "version": "1.7.3",
-    "hash": "sha256-cREl529UQ/c5atT8KimMgrgNdy6MrAd0sBGT8sXRRPM="
-  },
-  {
-    "pname": "Microsoft.TestPlatform.AdapterUtilities",
-    "version": "17.13.0",
-    "hash": "sha256-Vr+3Tad/h/nk7f/5HMExn3HvCGFCarehFAzJSfCBaOc="
+    "version": "2.1.0",
+    "hash": "sha256-6T2tBSokr5/oiwqKASk18BieKqkIzDbYX32j1Hl1z1g="
   },
   {
     "pname": "Microsoft.TestPlatform.ObjectModel",
-    "version": "17.13.0",
-    "hash": "sha256-6S0fjfj8vA+h6dJVNwLi6oZhYDO/I/6hBZaq2VTW+Uk="
-  },
-  {
-    "pname": "Microsoft.TestPlatform.ObjectModel",
-    "version": "17.14.1",
-    "hash": "sha256-QMf6O+w0IT+16Mrzo7wn+N20f3L1/mDhs/qjmEo1rYs="
-  },
-  {
-    "pname": "Microsoft.TestPlatform.TestHost",
-    "version": "17.14.1",
-    "hash": "sha256-1cxHWcvHRD7orQ3EEEPPxVGEkTpxom1/zoICC9SInJs="
+    "version": "18.0.1",
+    "hash": "sha256-oJbS7SZ46RzyOQ+gCysW7qJRy7V8RlQVa5d8uajb91M="
   },
   {
     "pname": "Myriad.Core",
@@ -290,19 +270,14 @@
     "hash": "sha256-gPMrVbjOZxXoofczF/pn6eVkLhjVSJIyQrLO2oljrDc="
   },
   {
-    "pname": "Newtonsoft.Json",
-    "version": "13.0.3",
-    "hash": "sha256-hy/BieY4qxBWVVsDqqOPaLy1QobiIapkbrESm6v2PHc="
-  },
-  {
     "pname": "NUnit",
     "version": "4.4.0",
     "hash": "sha256-5geF5QOF+X/WkuCEgkPVKH4AdKx4U0olpU07S8+G3nU="
   },
   {
     "pname": "NUnit3TestAdapter",
-    "version": "5.1.0",
-    "hash": "sha256-5z470sFjV67wGHaw8KfmSloIAYe81Dokp0f8I6zXsDc="
+    "version": "6.2.0",
+    "hash": "sha256-sKQjvF/qlEgfrCKHt1OzT+QZdtPt4RBBZd2f0oD1ldg="
   },
   {
     "pname": "runtime.any.System.Runtime",
@@ -348,11 +323,6 @@
     "pname": "System.Private.Uri",
     "version": "4.3.0",
     "hash": "sha256-fVfgcoP4AVN1E5wHZbKBIOPYZ/xBeSIdsNF+bdukIRM="
-  },
-  {
-    "pname": "System.Reflection.Metadata",
-    "version": "1.6.0",
-    "hash": "sha256-JJfgaPav7UfEh4yRAQdGhLZF1brr0tUWPl6qmfNWq/E="
   },
   {
     "pname": "System.Reflection.Metadata",
