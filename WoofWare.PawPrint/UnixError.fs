@@ -286,6 +286,17 @@ type UnixError =
     /// "EMULTIHOP (Reserved)" and Linux reads 102 as "Network dropped connection
     /// on reset".
     | EOPNOTSUPP
+    /// `ENOTSOCK` — Socket operation on non-socket.
+    ///
+    /// Reported by the socket syscalls for a descriptor that is not a socket.
+    /// Measured per entry point rather than generalised: `accept(2)`,
+    /// `bind(2)`, `listen(2)` and `getsockname(2)` on a regular file, a socket
+    /// event port and both ends of a pipe all answer this, on both kernels.
+    ///
+    /// Platform-dependent, and neither number is free on the other platform:
+    /// Linux numbers this 88, which Darwin reads as `EBADMACHO`; Darwin numbers
+    /// it 38, which Linux reads as `ENOSYS`.
+    | ENOTSOCK
 
 /// The raw and PAL numbering of one `UnixError`.
 type UnixErrorNumbering =
@@ -364,6 +375,7 @@ module UnixError =
             UnixError.EADDRINUSE
             UnixError.EADDRNOTAVAIL
             UnixError.EOPNOTSUPP
+            UnixError.ENOTSOCK
         ]
 
     let private portable (pal : int) (raw : int) : UnixErrorNumbering =
@@ -442,6 +454,9 @@ module UnixError =
         | UnixError.EADDRINUSE -> platformDependent 0x10003 98 48
         | UnixError.EADDRNOTAVAIL -> platformDependent 0x10004 99 49
         | UnixError.EOPNOTSUPP -> platformDependent 0x1003D 95 102
+        // Measured on both: raw 88 is ENOTSOCK on Linux and EBADMACHO on
+        // Darwin, while raw 38 is ENOTSOCK on Darwin and ENOSYS on Linux.
+        | UnixError.ENOTSOCK -> platformDependent 0x1003C 88 38
 
     /// The `Interop.Error` value CoreLib switches on. Total: the PAL numbering is
     /// platform-independent, so it is always answerable.

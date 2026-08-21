@@ -550,10 +550,13 @@ module NativeSystemNative =
 
     /// The socket `fd` names, for an entry point that takes one.
     ///
-    /// `EBADF` for a descriptor that is not live. Every other shape is refused
-    /// rather than answered: `ENOTSOCK` for a non-socket descriptor is
-    /// unmeasured, and the two address families PawPrint can create but not bind
-    /// each have a reason of their own.
+    /// `EBADF` for a descriptor that is not live, and `ENOTSOCK` for one that
+    /// is live but names no socket — measured for each caller of this helper
+    /// rather than generalised across syscalls: `accept(2)`, `bind(2)`,
+    /// `listen(2)` and `getsockname(2)` on a regular file, an event port and
+    /// both pipe ends all answer `ENOTSOCK` on both kernels. The two address
+    /// families PawPrint can create but not operate on are refused rather than
+    /// answered, each for a reason of its own.
     let private socketOfFd
         (operation : string)
         (fd : int)
@@ -578,9 +581,7 @@ module NativeSystemNative =
                     $"%s{operation}: fd %d{fd} is a Unix-domain socket, which binds a *path* in the emulated filesystem rather than a transport endpoint. That belongs with the filesystem work, not here."
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.SocketEventPort
-        | OpenFileTarget.File _ ->
-            failwith
-                $"%s{operation}: fd %d{fd} is %O{description.Target}, not a socket. A real kernel answers ENOTSOCK, which PawPrint has not measured under this shim; measure it before answering."
+        | OpenFileTarget.File _ -> Error UnixError.ENOTSOCK
 
     /// `IsInBounds(sockAddr, socketAddressLen, &sockAddr->sa_family,
     /// sizeof_member(sockaddr, sa_family))` (pal_networking.c:692), which every
@@ -4453,7 +4454,13 @@ module NativeSystemNative =
 
             match socketOfFd operation fd state with
             | Error error ->
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
+                // `toRawErrnoUnder` rather than `toRawErrno`: ENOTSOCK's raw
+                // number is platform-dependent (88 on Linux, 38 on Darwin).
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError
+                        ctx.Thread
+                        (UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error)
+                )
                 |> complete (UnixError.toPal error)
             | Ok (socketId, socket) ->
 
@@ -4897,6 +4904,113 @@ module NativeSystemNative =
                 }
             )
             |> complete UnixError.palSuccess
+        // `int32_t SystemNative_Accept(intptr_t socket, uint8_t* socketAddress,
+        // int32_t* socketAddressLen, intptr_t* acceptedSocket)`
+        // (pal_networking.c:1705).
+        | Some "SystemNative_Accept",
+          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer _ ; ConcretePointer _ ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            let operation = "SystemNative_Accept"
+
+            let addressArgument =
+                bufferPointerArgument operation "socketAddress" instruction.Arguments.[1]
+
+            let lengthArgument =
+                bufferPointerArgument operation "socketAddressLen" instruction.Arguments.[2]
+
+            let acceptedArgument =
+                bufferPointerArgument operation "acceptedSocket" instruction.Arguments.[3]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            // The wrapper's own screens, which precede the descriptor lookup —
+            // even decoding the fd, whose argument may be a pointer no fd
+            // integer could equal — and store nothing: any of the three
+            // pointers NULL, or a negative `*socketAddressLen`, is
+            // `Error_EFAULT` directly.
+            match addressArgument, lengthArgument, acceptedArgument with
+            | BufferPointer.RawAddress 0UL, _, _
+            | _, BufferPointer.RawAddress 0UL, _
+            | _, _, BufferPointer.RawAddress 0UL -> complete (UnixError.toPal UnixError.EFAULT) state
+            | _, _, _ ->
+
+            let lengthCell = requireStorage operation "socketAddressLen" lengthArgument
+
+            let declaredLength =
+                BinaryPrimitives.ReadInt32LittleEndian ((readBytesThrough ctx operation lengthCell 4 state).AsSpan ())
+
+            if declaredLength < 0 then
+                complete (UnixError.toPal UnixError.EFAULT) state
+            else
+
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            // Resolved ahead of every remaining answer: each of them stores
+            // through `acceptedSocket` — the C writes -1 there on every syscall
+            // failure, before returning the PAL error — so a stray pointer is
+            // the SIGSEGV `requireStorage` explains, whichever answer it would
+            // have accompanied. The address buffer is different: the kernel
+            // writes it only on *success*, of which there is none below, so it
+            // is never resolved and a stray address answers as measured.
+            let acceptedCell = requireStorage operation "acceptedSocket" acceptedArgument
+
+            let failFromSyscall (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
+                let raw =
+                    UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform) error
+
+                let bytes = Array.zeroCreate<byte> 8
+                BinaryPrimitives.WriteInt64LittleEndian (Span<byte> bytes, -1L)
+
+                writeBytesThrough ctx operation acceptedCell (ImmutableArray.CreateRange bytes) state
+                |> fun state -> state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
+                |> complete (UnixError.toPal error)
+
+            match socketOfFd operation fd state with
+            | Error error -> failFromSyscall error state
+            | Ok (_, socket) ->
+
+            match socket.Kind with
+            | SocketKind.Datagram ->
+                // The kind check beats the listening check: measured on both,
+                // a datagram socket — which is also "not listening" — answers
+                // EOPNOTSUPP, blocking or not.
+                failFromSyscall UnixError.EOPNOTSUPP state
+            | SocketKind.Raw
+            | SocketKind.SeqPacket ->
+                failwith
+                    $"%s{operation}: fd %d{fd} is a %O{socket.Kind} socket. What `accept(2)` answers for one is unmeasured — SOCK_SEQPACKET does accept connections, SOCK_RAW plausibly EOPNOTSUPP — so measure it rather than guessing."
+            | SocketKind.Stream ->
+
+            if not socket.IsListening then
+                // ...and the listening check beats blocking behaviour: measured
+                // on both, a *blocking* non-listening socket answers EINVAL
+                // immediately rather than parking.
+                failFromSyscall UnixError.EINVAL state
+            else
+
+            // `O_NONBLOCK` is a fact about the open file description `fd` came
+            // through, not about the socket, so an accept through a `dup` of a
+            // non-blocking listener answers EAGAIN too.
+            let nonBlocking =
+                match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+                | Some description -> description.NonBlocking
+                | None ->
+                    failwith
+                        $"%s{operation}: fd %d{fd} was live for socketOfFd just above and nothing in this handler closes it, so this is an interpreter bug."
+
+            if nonBlocking then
+                // The backlog is empty by construction, not by inspection:
+                // `SystemNative_Connect` does not exist, so no modelled
+                // operation can complete a connection into any socket's
+                // backlog. When Connect lands, this answer becomes a dequeue.
+                failFromSyscall UnixError.EAGAIN state
+            else
+                failwith
+                    $"%s{operation}: fd %d{fd} is a *blocking* listening socket with an empty backlog, which a real kernel parks until a connection arrives — and no modelled operation can produce one until SystemNative_Connect lands. No managed caller reaches this (SocketAsyncContext switches the listener non-blocking before its first accept), so this is a hand-rolled P/Invoke or a synchronous Socket.Accept(); implement Connect, and the accept-queue wake beside it, before answering."
         // `int32_t SystemNative_GetSockName(intptr_t socket, uint8_t* socketAddress,
         // int32_t* socketAddressLen)` (pal_networking.c:1871).
         | Some "SystemNative_GetSockName",
@@ -4931,8 +5045,16 @@ module NativeSystemNative =
                 complete (UnixError.toPal UnixError.EFAULT) state
             else
 
+            // `toRawErrnoUnder` rather than `toRawErrno`: ENOTSOCK's raw number
+            // is platform-dependent (88 on Linux, 38 on Darwin).
             let failFromSyscall (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError
+                        ctx.Thread
+                        (UnixError.toRawErrnoUnder
+                            (SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform)
+                            error)
+                )
                 |> complete (UnixError.toPal error)
 
             match socketOfFd operation fd state with

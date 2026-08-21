@@ -1,9 +1,7 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Generic
+open System
 open System.Collections.Immutable
-open FsCheck
-open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -11,7 +9,7 @@ open WoofWare.PawPrint
 /// An SZ array implicitly implements five generic interfaces whose bodies the runtime supplies
 /// from `System.SZArrayHelper` (CoreCLR `MethodTable::FindDispatchImpl` /
 /// `GetActualImplementationForArrayGenericIListOrIReadOnlyListMethod`). The end-to-end cases in
-/// `sourcesPure/ArrayInterface*.cs` exercise the slots C# syntax can reach; these properties
+/// `sourcesPure/ArrayInterface*.cs` exercise the slots C# syntax can reach; these tests
 /// quantify over *every* method of *every* one of the five interfaces, crossed with a
 /// deliberately awkward pool of element/argument type pairs, and assert what a behavioural test
 /// can only observe indirectly: that dispatch always lands on a callable body, and that the shim
@@ -46,7 +44,7 @@ module TestSzArrayInterfaceDispatch =
 
     /// Virtual resolution takes a thread only to resolve MemberRef tokens while scanning
     /// MethodImpls. The SZ-array carve-out returns before any of that, so no thread state is
-    /// needed; every property here stays on that path.
+    /// needed; every case here stays on that path.
     let private unusedThread = ThreadId.ThreadId 0
 
     let private topLevelType (``namespace`` : string) (name : string) : TypeInfo<GenericParamFromMetadata, TypeDefn> =
@@ -110,26 +108,28 @@ module TestSzArrayInterfaceDispatch =
         override this.ToString () =
             $"%s{this.ElementTypeName}[] as %s{this.InterfaceName}<%s{this.ArgumentTypeName}>::%s{this.Method.Name}"
 
-    let private genDispatchCase : Gen<DispatchCase> =
-        gen {
-            let! elementTypeName, elementType = Gen.elements elementTypes
-            let! argumentTypeName, argumentType = Gen.elements elementTypes
-            let! interfaceName, interfaceType = Gen.elements theFiveInterfaces
-            // Skip the property accessors' backing `.ctor`-less oddities by taking only what the
-            // interface actually declares as a slot; every method on these interfaces is one.
-            let! method = Gen.elements interfaceType.Methods
-
-            return
-                {
-                    ElementTypeName = elementTypeName
-                    ElementType = elementType
-                    ArgumentTypeName = argumentTypeName
-                    ArgumentType = argumentType
-                    InterfaceName = interfaceName
-                    Interface = interfaceType
-                    Method = method
-                }
-        }
+    /// Every element/argument/interface/slot combination the pool describes. The space is small
+    /// enough to walk in full, so these tests enumerate it rather than sampling it: how often
+    /// each awkward corner gets reached is then a fixed property of the pool rather than a random
+    /// variable, which is what the coverage assertions below rely on.
+    let private allDispatchCases : DispatchCase list =
+        [
+            for elementTypeName, elementType in elementTypes do
+                for argumentTypeName, argumentType in elementTypes do
+                    for interfaceName, interfaceType in theFiveInterfaces do
+                        // Every method these interfaces declare is a virtual slot, so the whole
+                        // `Methods` list is fair game.
+                        for method in interfaceType.Methods do
+                            {
+                                ElementTypeName = elementTypeName
+                                ElementType = elementType
+                                ArgumentTypeName = argumentTypeName
+                                ArgumentType = argumentType
+                                InterfaceName = interfaceName
+                                Interface = interfaceType
+                                Method = method
+                            }
+        ]
 
     /// Set up `elem[]` and the concretized `I<arg>::meth` the interpreter would be dispatching.
     let private prepare
@@ -174,8 +174,6 @@ module TestSzArrayInterfaceDispatch =
             true
             state
 
-    let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 400
-
     let private objectHandle : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle concreteTypes bct.Object
 
@@ -193,7 +191,12 @@ module TestSzArrayInterfaceDispatch =
         else
             objectHandle
 
-    /// The central property: whenever a well-typed program can hold an `elem[]` in an
+    let private checkCoverage (what : string) (expected : int) (actual : int) : unit =
+        if actual <> expected then
+            failwith
+                $"coverage of %s{what} changed: expected %i{expected} cases but the walk found %i{actual}. This count is fixed by the element pool above and by the methods corelib declares on the five interfaces; work out which of those changed before updating the number."
+
+    /// The central claim: whenever a well-typed program can hold an `elem[]` in an
     /// `I<arg>` local — i.e. whenever the cast the interpreter itself performs would succeed —
     /// dispatching any slot of `I<arg>` must land on a concrete, callable `SZArrayHelper`
     /// method, instantiated per CoreCLR's rule. Returning `None` is what produced the original
@@ -201,8 +204,8 @@ module TestSzArrayInterfaceDispatch =
     /// its abstract-body guard.
     [<Test>]
     let ``assignable SZ-array receivers always dispatch to a callable SZArrayHelper body`` () =
-        // The property is conditional on assignability, so it would pass vacuously if the pool
-        // never produced an assignable pair. Track both halves of the instantiation rule so a
+        // The claim is conditional on assignability, so it would hold vacuously if the pool
+        // produced no assignable pair. Count both halves of the instantiation rule as well, so a
         // pool that stopped reaching one of them fails loudly instead of quietly weakening.
         let mutable exercised = 0
         // Assignable cases where the interface argument differs from the element type *and* the
@@ -212,68 +215,61 @@ module TestSzArrayInterfaceDispatch =
         // Assignable cases where the rule canonicalises to System.Object.
         let mutable exercisedCanonicalised = 0
 
-        let property (case : DispatchCase) : bool =
-            let state, arrayHandle, interfaceHandle, argumentHandle, concretizedMethod =
-                prepare case
+        for case in allDispatchCases do
+            try
+                let state, arrayHandle, interfaceHandle, argumentHandle, concretizedMethod =
+                    prepare case
 
-            let state, assignable =
-                IlMachineState.isConcreteTypeAssignableTo loggerFactory bct state arrayHandle interfaceHandle
+                let state, assignable =
+                    IlMachineState.isConcreteTypeAssignableTo loggerFactory bct state arrayHandle interfaceHandle
 
-            if not assignable then
-                // Unreachable from a well-typed program: the cast would have thrown first, so
-                // dispatch makes no promise. Covered by the negative property below.
-                true
-            else
+                // A non-assignable pair is unreachable from a well-typed program: the cast would
+                // have thrown first, so dispatch makes no promise. Covered by the negative test
+                // below.
+                if assignable then
+                    let expected = expectedInstantiation case argumentHandle
 
-            let expected = expectedInstantiation case argumentHandle
+                    exercised <- exercised + 1
 
-            exercised <- exercised + 1
+                    if expected = objectHandle && argumentHandle <> objectHandle then
+                        exercisedCanonicalised <- exercisedCanonicalised + 1
+                    elif case.ElementTypeName <> case.ArgumentTypeName then
+                        exercisedPreservedCovariant <- exercisedPreservedCovariant + 1
 
-            if expected = objectHandle && argumentHandle <> objectHandle then
-                exercisedCanonicalised <- exercisedCanonicalised + 1
-            elif case.ElementTypeName <> case.ArgumentTypeName then
-                exercisedPreservedCovariant <- exercisedPreservedCovariant + 1
+                    let _, resolved = resolve state concretizedMethod arrayHandle
 
-            let _, resolved = resolve state concretizedMethod arrayHandle
+                    match resolved with
+                    | None -> failwith "dispatch did not resolve, so the interpreter would crash on the abstract body"
+                    | Some resolved ->
 
-            match resolved with
-            | None ->
-                failwith $"%O{case}: dispatch did not resolve, so the interpreter would crash on the abstract body"
-            | Some resolved ->
+                    resolved.RequiredDeclaringType.Identity
+                    |> shouldEqual bct.SZArrayHelper.Identity
 
-            resolved.RequiredDeclaringType.Identity
-            |> shouldEqual bct.SZArrayHelper.Identity
+                    // The shim is instantiated from the *interface's* type argument (not the
+                    // array's element type), modulo CoreCLR's reference-type canonicalisation.
+                    // Getting this wrong is observable: see
+                    // `sourcesPure/ArrayInterfaceEqualityComparer.cs`.
+                    Seq.toList resolved.Generics |> shouldEqual [ expected ]
 
-            // The shim is instantiated from the *interface's* type argument (not the array's
-            // element type), modulo CoreCLR's reference-type canonicalisation. Getting this
-            // wrong is observable: see `sourcesPure/ArrayInterfaceEqualityComparer.cs`.
-            Seq.toList resolved.Generics |> shouldEqual [ expected ]
+                    // The whole point: an interpretable body, not another abstract slot.
+                    match resolved.Body with
+                    | MethodBody.Il _ -> ()
+                    | other -> failwith $"resolved to a non-IL body %O{other}"
 
-            // The whole point: an interpretable body, not another abstract slot.
-            match resolved.Body with
-            | MethodBody.Il _ -> ()
-            | other -> failwith $"%O{case}: resolved to a non-IL body %O{other}"
+                    resolved.IsStatic |> shouldEqual false
 
-            resolved.IsStatic |> shouldEqual false
+                    resolved.Signature.RequiredParameterCount
+                    |> shouldEqual concretizedMethod.Signature.RequiredParameterCount
+            with e ->
+                // An enumerated walk has no counterexample reporting of its own, and the
+                // assertions above name only the values that disagreed.
+                raise (Exception ($"%O{case}: %s{e.Message}", e))
 
-            resolved.Signature.RequiredParameterCount
-            |> shouldEqual concretizedMethod.Signature.RequiredParameterCount
+        checkCoverage "assignable receivers" 285 exercised
 
-            true
+        checkCoverage "instantiations preserved at a type other than the element type" 136 exercisedPreservedCovariant
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genDispatchCase) property)
-
-        if exercised < 50 then
-            failwith
-                $"property was near-vacuous: only %i{exercised} of the generated cases were assignable, so the assertions barely ran"
-
-        if exercisedPreservedCovariant < 5 then
-            failwith
-                $"property never exercised a preserved non-identical instantiation: only %i{exercisedPreservedCovariant} such cases, so it cannot tell the interface's argument from the array's element type"
-
-        if exercisedCanonicalised < 5 then
-            failwith
-                $"property never exercised the reference-type canonicalisation to System.Object: only %i{exercisedCanonicalised} such cases"
+        checkCoverage "instantiations canonicalised to System.Object" 56 exercisedCanonicalised
 
     /// Multi-dimensional arrays are excluded from the carve-out (CoreCLR reaches
     /// `IsImplicitInterfaceOfSZArray` only for SZ arrays), so they must never be handed an
@@ -281,40 +277,41 @@ module TestSzArrayInterfaceDispatch =
     /// `Unsafe.As<T[]>(this)` would read the wrong shape.
     [<Test>]
     let ``multi-dimensional arrays never dispatch to SZArrayHelper`` () =
-        let property (case : DispatchCase) : bool =
-            let state = state ()
-            let state, elementHandle = concretizeNonGeneric case.ElementType state
-            let state, argumentHandle = concretizeNonGeneric case.ArgumentType state
+        for case in allDispatchCases do
+            try
+                let state = state ()
+                let state, elementHandle = concretizeNonGeneric case.ElementType state
+                let state, argumentHandle = concretizeNonGeneric case.ArgumentType state
 
-            let mdArrayHandle = ConcreteTypeHandle.Array (elementHandle, 2)
+                let mdArrayHandle = ConcreteTypeHandle.Array (elementHandle, 2)
 
-            let state, concretizedMethod, mdInterfaceHandle =
-                ExecutionConcretization.concretizeMethodWithAllGenerics
-                    loggerFactory
-                    bct
-                    (ImmutableArray.Create argumentHandle)
-                    case.Method
-                    ImmutableArray.Empty
-                    state
+                let state, concretizedMethod, mdInterfaceHandle =
+                    ExecutionConcretization.concretizeMethodWithAllGenerics
+                        loggerFactory
+                        bct
+                        (ImmutableArray.Create argumentHandle)
+                        case.Method
+                        ImmutableArray.Empty
+                        state
 
-            // Precondition of the whole exercise: a multi-dim array is never assignable to one
-            // of the five, so this dispatch is unreachable and the carve-out must stay out of it.
-            let state, assignable =
-                IlMachineState.isConcreteTypeAssignableTo loggerFactory bct state mdArrayHandle mdInterfaceHandle
+                // Precondition of the whole exercise: a multi-dim array is never assignable to
+                // one of the five, so this dispatch is unreachable and the carve-out must stay
+                // out of it.
+                let state, assignable =
+                    IlMachineState.isConcreteTypeAssignableTo loggerFactory bct state mdArrayHandle mdInterfaceHandle
 
-            assignable |> shouldEqual false
+                assignable |> shouldEqual false
 
-            let _, resolved = resolve state concretizedMethod mdArrayHandle
+                let _, resolved = resolve state concretizedMethod mdArrayHandle
 
-            match resolved with
-            | None -> true
-            | Some resolved ->
+                match resolved with
+                | None -> ()
+                | Some resolved ->
+
                 resolved.RequiredDeclaringType.Identity
                 |> shouldNotEqual bct.SZArrayHelper.Identity
-
-                true
-
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genDispatchCase) property)
+            with e ->
+                raise (Exception ($"%O{case}: %s{e.Message}", e))
 
     /// The dispatch carve-out and the assignability carve-out are two halves of one rule, and
     /// they must agree on which interfaces are in the set. Both read
