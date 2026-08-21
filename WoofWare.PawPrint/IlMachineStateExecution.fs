@@ -811,17 +811,7 @@ module IlMachineStateExecution =
                 // table, so this is unreachable for a chain the walk built consistently. Falling back
                 // beats reading past the end.
                 state, None
-            | Some (VirtualSlotLayout.SlotOccupant.Unresolved reason) ->
-                // A MethodImpl row somewhere in the receiver's chain could have written this slot and
-                // the rule that reads those rows could not tell whether it did, so there is no answer
-                // to give. Falling back to the name-and-signature walk would answer with the
-                // most-derived method of that name, which is what a MethodImpl exists to override; on
-                // the shape that gets here it is the wrong body about as often as the right one.
-                // Refusing is confined to calls through *this* slot -- every other slot of the receiver
-                // still answers from the table.
-                failwith
-                    $"TODO: callvirt to %s{methodToCall.Name} on %s{methodDeclaringType.Namespace}.%s{methodDeclaringType.Name} reads vtable slot %i{slot} of the receiver, which %s{reason}"
-            | Some (VirtualSlotLayout.SlotOccupant.Occupied occupant) ->
+            | Some occupant ->
 
             // The table says *which MethodDef*. Concretising it needs the instantiation the receiver
             // supplies for the type that declares it, which is that type's handle on the receiver's own
