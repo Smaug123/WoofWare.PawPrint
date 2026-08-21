@@ -789,6 +789,42 @@ module NativeRuntimeMethodHandle =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
+        | "RuntimeMethodHandle_GetIsCollectible",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
+          "GetIsCollectible",
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
+            handleGenerics.IsEmpty && boolGenerics.IsEmpty
+            ->
+            let operation = "RuntimeMethodHandle.GetIsCollectible"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            // CoreCLR is `pMethod->GetLoaderAllocator()->IsCollectible()`
+            // (runtimehandles.cpp:1294), on a `MethodDesc*` it asserts non-null. Resolving the
+            // handle keeps that precondition; the resolved method is not consulted, because with
+            // one loader allocator the answer cannot depend on it. `FromDynamic` is admitted here
+            // rather than refused: the resolution below accepts either kind, and a dynamic method
+            // never reaches this QCall anyway -- `DynamicMethod` does not override
+            // `MemberInfo.IsCollectible`, so it answers `true` from the managed default without
+            // asking the runtime.
+            resolveMethodHandleFromArg operation state instruction.Arguments.[0]
+            |> ignore<MethodHandle>
+
+            // Interop.BOOL is int-backed with FALSE = 0 and TRUE = 1.
+            let state =
+                let ret =
+                    if LoaderAllocator.isCollectible LoaderAllocator.Global then
+                        1
+                    else
+                        0
+
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
         | "RuntimeMethodHandle_GetMethodInstantiation",
           "System.Private.CoreLib",
           "System",
