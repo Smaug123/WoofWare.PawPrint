@@ -1684,7 +1684,7 @@ module TestFileDescriptorRegistry =
         nonBlockingOf fd registry |> shouldEqual true
 
     [<Test>]
-    let ``setNonBlocking refuses a dead fd, and refuses to flag a stream or an event port`` () : unit =
+    let ``setNonBlocking refuses a dead fd, and refuses to flag a stream`` () : unit =
         // A dead fd is the caller's EBADF to answer, not this module's.
         (fun () ->
             FileDescriptorRegistry.setNonBlocking 99 true FileDescriptorRegistry.initial
@@ -1695,7 +1695,7 @@ module TestFileDescriptorRegistry =
         // Setting on a standard stream would store a flag no modelled stream
         // transfer consults; the backstop refuses even when the handler screen
         // is bypassed. Clearing is a no-op statement of the truth, so it is
-        // permitted on the same targets.
+        // permitted on the same target.
         (fun () ->
             FileDescriptorRegistry.setNonBlocking 0 true FileDescriptorRegistry.initial
             |> ignore
@@ -1705,11 +1705,18 @@ module TestFileDescriptorRegistry =
         nonBlockingOf 0 (FileDescriptorRegistry.setNonBlocking 0 false FileDescriptorRegistry.initial)
         |> shouldEqual false
 
+    /// The store is flavour-free: measured on both kernels, `F_SETFL` on an
+    /// event port genuinely toggles the bit (on Darwin the call *also* reports
+    /// ENOTTY, which is the handler's business — the flavour split lives in
+    /// `SimulatedUnixPlatform.eventPortSetStatusFlagsError`, and the handler
+    /// stores before reporting).
+    [<Test>]
+    let ``setNonBlocking round-trips on a socket event port`` () : unit =
         let portFd, registry =
             FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
 
-        (fun () -> FileDescriptorRegistry.setNonBlocking portFd true registry |> ignore)
-        |> shouldFail<exn>
+        let registry = FileDescriptorRegistry.setNonBlocking portFd true registry
+        nonBlockingOf portFd registry |> shouldEqual true
 
-        nonBlockingOf portFd (FileDescriptorRegistry.setNonBlocking portFd false registry)
-        |> shouldEqual false
+        let registry = FileDescriptorRegistry.setNonBlocking portFd false registry
+        nonBlockingOf portFd registry |> shouldEqual false

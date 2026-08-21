@@ -4197,17 +4197,20 @@ module NativeSystemNative =
             // `int32_t SystemNative_FcntlSetIsNonBlocking(intptr_t fd,
             // int32_t isNonBlocking)` (pal_io.c:655): `fcntl(F_GETFL)`, toggle
             // `O_NONBLOCK`, `fcntl(F_SETFL)`. Returns 0, or -1-and-errno; any
-            // nonzero second argument sets. The only errno the modelled targets
-            // can draw is EBADF, from `F_GETFL` on a dead descriptor.
+            // nonzero second argument sets. The modelled targets draw two
+            // errnos: EBADF from `F_GETFL` on a dead descriptor, and Darwin's
+            // ENOTTY from `F_SETFL` on a kqueue.
             //
             // The flag lands on the open file description
             // (`OpenFileDescription.NonBlocking`), where POSIX keeps the status
-            // flags — but only for the targets whose every modelled transfer
+            // flags — but only for the targets whose every modelled operation
             // honours it: a socket (no transfer syscall exists yet, and each
             // one that lands must consult the flag, `SystemNative_Accept`
-            // first), and a regular file (both kernels give `O_NONBLOCK` no
-            // effect there, so handlers that never look are right not to). The
-            // targets whose modelled transfers would *ignore* a stored flag are
+            // first), a regular file (both kernels give `O_NONBLOCK` no effect
+            // there, so handlers that never look are right not to), and a
+            // socket event port (whose waits block per their own timeout
+            // argument, never per this flag). The one target whose modelled
+            // transfers would *ignore* a stored flag — a standard stream — is
             // refused below rather than silently diverging.
             //
             // The second parameter is matched loosely for the reason
@@ -4240,11 +4243,25 @@ module NativeSystemNative =
                 // here.
                 failwith
                     $"%s{operation}: fd %d{fd} is the standard stream %O{role}, which PawPrint models as a pipe, and no modelled stream transfer consults O_NONBLOCK; storing it would silently keep blocking semantics. Decide what a non-blocking stream read does before accepting this."
-            | Some OpenFileTarget.SocketEventPort when isNonBlocking ->
-                failwith
-                    $"%s{operation}: fd %d{fd} is a socket event port, and PawPrint has not decided what O_NONBLOCK on an epoll or kqueue descriptor even means — no modelled wait consults it, and neither platform's semantics have been measured here. Decide, with a measurement, before accepting this."
+            | Some OpenFileTarget.SocketEventPort ->
+                // Store first, report second: measured, the platforms agree that
+                // the bit toggles and disagree on the answer — Linux succeeds
+                // where Darwin reports -1/ENOTTY *with the bit toggled anyway*.
+                // See `SimulatedUnixPlatform.eventPortSetStatusFlagsError`.
+                let state =
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            FileDescriptors =
+                                FileDescriptorRegistry.setNonBlocking fd isNonBlocking kernel.FileDescriptors
+                        }
+                    )
+
+                match SimulatedUnixPlatform.eventPortSetStatusFlagsError state.Kernel.UnixPlatform with
+                | None -> complete 0 state
+                | Some error ->
+                    state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
+                    |> complete (-1)
             | Some (OpenFileTarget.StandardStream _)
-            | Some OpenFileTarget.SocketEventPort
             | Some (OpenFileTarget.File _)
             | Some (OpenFileTarget.Socket _) ->
                 state.MapKernel (fun kernel ->

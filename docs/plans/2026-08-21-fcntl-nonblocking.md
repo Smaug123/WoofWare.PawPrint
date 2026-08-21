@@ -58,13 +58,19 @@ a later transfer blocks anyway, and the divergence is silent. Per target kind:
   pipes, and a real pipe honours `O_NONBLOCK` (an empty read becomes EAGAIN),
   but no modelled stream transfer consults the flag. Recording it would keep
   blocking semantics silently. Crash names the missing work instead.
-* **SocketEventPort** — refuse to set, loudly. Nothing modelled consults it,
-  the BCL never sets it on the port, and what `F_SETFL` even does to an epoll
-  or kqueue descriptor has not been measured here.
+* **SocketEventPort** — record, and flavour-dispatch the *answer*. Measured
+  (review round two prompted this, and the claim survived measurement): on
+  Linux 6.18.5 `F_SETFL` on an epoll descriptor succeeds and the bit
+  round-trips; on Darwin, through the real shim on the macOS host, it returns
+  -1 with ENOTTY **and the bit toggles anyway**, in both directions, with
+  `F_GETFL` succeeding throughout. So the handler stores first and then
+  reports `SimulatedUnixPlatform.eventPortSetStatusFlagsError`. The stored
+  bit changes no modelled wait: `epoll_wait` and `kevent` block per their own
+  timeout argument, not per the descriptor's status flags.
 
 *Clearing* the flag is recorded for every target kind: `false` cannot be a lie,
-because the refusal above means no refused target can ever be `true`. This also
-matches the shim's own `Accept`, which clears unconditionally.
+because the stream refusal means the one refused target can never be `true`.
+This also matches the shim's own `Accept`, which clears unconditionally.
 
 The refusal is enforced twice: at the handler (user-facing, names the gap) and
 as a backstop inside `FileDescriptorRegistry.setNonBlocking` (interpreter-bug
@@ -77,8 +83,12 @@ targets that can never be set.
 ## Tests
 
 * `TestFileDescriptorRegistry.fs`: a fresh socket/file description starts
-  blocking; set/clear round-trips; a `dup` pair shares the flag both ways;
-  `close` of one half leaves the other's flag; the stream/port backstops fire.
+  blocking; set/clear round-trips (event port included); a `dup` pair shares
+  the flag both ways; `close` of one half leaves the other's flag; the stream
+  backstop fires.
+* `sourcesImpure/SocketEventPortLinux.cs` / `...Darwin.cs`: the flavour-split
+  event-port rows — Linux succeeds and round-trips, Darwin answers -1/ENOTTY
+  with the bit toggled anyway.
 * `sourcesPure/FcntlNonBlocking.cs`: raw-P/Invoke differential guest — create a
   socket, get (expect blocking), set, get, set with a nonzero-non-one value,
   clear, get; NULL-pointer row pinning the `Error_EFAULT` oddity; EBADF row on

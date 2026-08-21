@@ -951,13 +951,17 @@ module FileDescriptorRegistry =
     ///
     /// Like `setOffset`, *partial* in the descriptor: the caller
     /// (`SystemNative_FcntlSetIsNonBlocking`) has already answered `EBADF` for
-    /// a dead fd. It has also refused to *set* the flag on the targets whose
-    /// modelled transfers do not consult it — a standard stream (modelled as a
-    /// pipe, whose reads a real kernel's `O_NONBLOCK` turns into `EAGAIN`
-    /// while PawPrint's stream handlers would block regardless) and a socket
-    /// event port. Storing `true` against either would be a divergence nothing
-    /// could see coming, so that is an interpreter bug here; clearing is
-    /// always honest and always permitted.
+    /// a dead fd. It has also refused to *set* the flag on a standard stream —
+    /// modelled as a pipe, whose reads a real kernel's `O_NONBLOCK` turns into
+    /// `EAGAIN` while PawPrint's stream handlers would block regardless, so a
+    /// stored `true` there would be a divergence nothing could see coming, and
+    /// is an interpreter bug here. Clearing is always honest and always
+    /// permitted. A socket event port stores freely: measured on both
+    /// flavours, `F_SETFL` genuinely toggles the bit there (even on Darwin,
+    /// where the call also reports ENOTTY — the caller's business, not this
+    /// store's), and no modelled wait consults it, because `epoll_wait` and
+    /// `kevent` block per their own timeout argument rather than per the
+    /// descriptor's flags.
     let setNonBlocking (fd : int) (value : bool) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
         match Map.tryFind fd registry.Fds with
         | None ->
@@ -976,11 +980,8 @@ module FileDescriptorRegistry =
         | OpenFileTarget.StandardStream role, true ->
             failwith
                 $"setNonBlocking: fd %d{fd} names standard stream %O{role}, and no modelled stream transfer consults O_NONBLOCK, so a stored `true` would silently keep blocking semantics (this is an interpreter bug: the caller should have refused)."
-        | OpenFileTarget.SocketEventPort, true ->
-            failwith
-                $"setNonBlocking: fd %d{fd} names a socket event port, and PawPrint has not decided what O_NONBLOCK on an epoll or kqueue descriptor even means (this is an interpreter bug: the caller should have refused)."
         | OpenFileTarget.StandardStream _, false
-        | OpenFileTarget.SocketEventPort, false
+        | OpenFileTarget.SocketEventPort, _
         | OpenFileTarget.File _, _
         | OpenFileTarget.Socket _, _ ->
 
