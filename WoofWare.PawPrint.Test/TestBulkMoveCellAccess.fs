@@ -374,9 +374,9 @@ public class TestBulkMoveCellAccessSweep
             | ret :: _ -> failwith $"%s{sourceName}: expected the program to return an int, but it returned %O{ret}"
         | RunOutcome.GuestUnhandledException (_, _, exn) ->
             failwith $"%s{sourceName}: guest threw an unhandled exception: %O{exn.ExceptionObject}"
-        | RunOutcome.FailFast (_, _, message) ->
-            let message = message |> Option.defaultValue "<no message>"
-            failwith $"%s{sourceName}: guest called Environment.FailFast: %s{message}"
+        | RunOutcome.Aborted (_, _, fatal) ->
+            let message = fatal.Message |> Option.defaultValue "<no message>"
+            failwith $"%s{sourceName}: guest aborted (%O{fatal.Code}): %s{message}"
         | RunOutcome.SignalTerminated (_, signal) ->
             failwith $"%s{sourceName}: guest was terminated by POSIX signal %O{signal}"
 
@@ -430,7 +430,7 @@ public class TestBulkMoveShapeMismatch
             | RealRuntimeResult.NormalExit exitCode -> exitCode
             | RealRuntimeResult.UnhandledException report ->
                 failwith $"real runtime terminated with an unhandled exception:\n%s{report}"
-            | RealRuntimeResult.FailFast report -> failwith $"real runtime called FailFast:\n%s{report}"
+            | RealRuntimeResult.Aborted (code, report) -> failwith $"real runtime aborted (%O{code}):\n%s{report}"
 
         runUnderPawPrint "shapeMismatch" image |> shouldEqual expected
 
@@ -446,7 +446,8 @@ public class TestBulkMoveShapeMismatch
             | RealRuntimeResult.NormalExit exitCode -> exitCode
             | RealRuntimeResult.UnhandledException report ->
                 failwith $"%s{case}: real runtime terminated with an unhandled exception:\n%s{report}"
-            | RealRuntimeResult.FailFast report -> failwith $"%s{case}: real runtime called FailFast:\n%s{report}"
+            | RealRuntimeResult.Aborted (code, report) ->
+                failwith $"%s{case}: real runtime aborted (%O{code}):\n%s{report}"
 
         let expected = (measure 0) ||| ((measure 1) <<< 8) ||| ((measure 2) <<< 16)
 

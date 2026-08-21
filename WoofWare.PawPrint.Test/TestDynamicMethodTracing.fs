@@ -86,9 +86,9 @@ module TestDynamicMethodTracing =
             | RunOutcome.ProcessExit (state, thread) -> state, thread
             | RunOutcome.GuestUnhandledException (_, _, exn) ->
                 failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
-            | RunOutcome.FailFast (_, _, message) ->
-                let message = message |> Option.defaultValue "<no message>"
-                failwith $"Guest called Environment.FailFast: %s{message}"
+            | RunOutcome.Aborted (_, _, fatal) ->
+                let message = fatal.Message |> Option.defaultValue "<no message>"
+                failwith $"Guest aborted (%O{fatal.Code}): %s{message}"
             | RunOutcome.SignalTerminated (_, signal) -> failwith $"Guest was terminated by POSIX signal %O{signal}"
 
         match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with

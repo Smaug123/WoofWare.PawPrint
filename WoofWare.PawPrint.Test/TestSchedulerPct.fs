@@ -370,9 +370,9 @@ module TestSchedulerPct =
             match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
             | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> $"exit %d{i}"
             | other -> $"exit other (%A{other})"
-        | RunOutcome.FailFast (_, _, message) ->
-            let msg = message |> Option.defaultValue "<none>"
-            $"failfast %s{msg}"
+        | RunOutcome.Aborted (_, _, fatal) ->
+            let msg = fatal.Message |> Option.defaultValue "<none>"
+            $"aborted %O{fatal.Code} %s{msg}"
         | RunOutcome.SignalTerminated (_, signal) -> $"signal %O{signal}"
         | RunOutcome.GuestUnhandledException (_, _, _) -> "unhandled exception"
 
@@ -395,7 +395,7 @@ module TestSchedulerPct =
         match outcome with
         | RunOutcome.NormalExit (state, _)
         | RunOutcome.ProcessExit (state, _)
-        | RunOutcome.FailFast (state, _, _)
+        | RunOutcome.Aborted (state, _, _)
         | RunOutcome.SignalTerminated (state, _)
         | RunOutcome.GuestUnhandledException (state, _, _) -> state.Scheduling
 

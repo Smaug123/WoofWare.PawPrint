@@ -351,11 +351,13 @@ module DebuggerServer =
             writer.WriteString ("kind", "processExit")
             writer.WriteNumber ("thread", threadIdValue thread)
             writeOptionalInt writer "exitCode" (tryExitCode state thread)
-        | RunOutcome.FailFast (_state, thread, message) ->
-            writer.WriteString ("kind", "failFast")
+        | RunOutcome.Aborted (_state, thread, fatal) ->
+            writer.WriteString ("kind", "aborted")
             writer.WriteNumber ("thread", threadIdValue thread)
+            writer.WriteString ("code", sprintf "%O" fatal.Code)
+            writer.WriteNumber ("hresult", FatalErrorCode.toHResult fatal.Code)
 
-            match message with
+            match fatal.Message with
             | Some m -> writer.WriteString ("message", m)
             | None -> writer.WriteNull "message"
         | RunOutcome.SignalTerminated (_state, signal) ->
@@ -390,7 +392,7 @@ module DebuggerServer =
         | SessionState.Running (prepared, _) -> prepared.State
         | SessionState.Finished (RunOutcome.NormalExit (state, _), _)
         | SessionState.Finished (RunOutcome.ProcessExit (state, _), _)
-        | SessionState.Finished (RunOutcome.FailFast (state, _, _), _)
+        | SessionState.Finished (RunOutcome.Aborted (state, _, _), _)
         | SessionState.Finished (RunOutcome.SignalTerminated (state, _), _)
         | SessionState.Finished (RunOutcome.GuestUnhandledException (state, _, _), _) -> state
         | SessionState.Deadlocked (prepared, _, _) -> prepared.State
@@ -431,6 +433,7 @@ module DebuggerServer =
                 match whatWeDid with
                 | WhatWeDid.BlockedOnClassInit blocker -> Some (threadIdValue blocker)
                 | WhatWeDid.Executed
+                | WhatWeDid.Aborted _
                 | WhatWeDid.VoluntaryYield _
                 | WhatWeDid.SuspendedForClassInit
                 | WhatWeDid.SuspendedForManagedCall
@@ -456,7 +459,7 @@ module DebuggerServer =
                 match outcome with
                 | RunOutcome.NormalExit _ -> "normal exit"
                 | RunOutcome.ProcessExit _ -> "process exit"
-                | RunOutcome.FailFast _ -> "fail fast"
+                | RunOutcome.Aborted (_, _, fatal) -> sprintf "aborted (%O)" fatal.Code
                 | RunOutcome.SignalTerminated _ -> "signal terminated"
                 | RunOutcome.GuestUnhandledException _ -> "guest unhandled exception"
 

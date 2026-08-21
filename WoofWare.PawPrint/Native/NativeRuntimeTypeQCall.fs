@@ -608,6 +608,7 @@ module NativeRuntimeTypeQCall =
                     NativeHandlerResult.blockedOnClassInit blockedBy state |> Some
                 | WhatWeDid.ThrowingTypeInitializationException ->
                     NativeHandlerResult.throwingTypeInitializationException state |> Some
+                | WhatWeDid.Aborted fatal -> NativeHandlerResult.aborted ctx.Thread fatal state |> Some
                 | WhatWeDid.SuspendedForManagedCall ->
                     failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
                 | WhatWeDid.VoluntaryYield _ ->
@@ -1893,6 +1894,7 @@ module NativeRuntimeTypeQCall =
             | WhatWeDid.BlockedOnClassInit blockedBy -> NativeHandlerResult.blockedOnClassInit blockedBy state |> Some
             | WhatWeDid.ThrowingTypeInitializationException ->
                 NativeHandlerResult.throwingTypeInitializationException state |> Some
+            | WhatWeDid.Aborted fatal -> NativeHandlerResult.aborted ctx.Thread fatal state |> Some
             | WhatWeDid.SuspendedForManagedCall ->
                 failwith
                     $"logic error: %s{operation}: ensureTypeInitialised cannot suspend for an arbitrary managed call"

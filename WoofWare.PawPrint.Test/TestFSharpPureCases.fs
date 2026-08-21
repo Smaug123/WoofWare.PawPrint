@@ -202,7 +202,7 @@ module TestFSharpPureCases =
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (_, _, exn) ->
                 failwith
                     $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception: %O{exn.ExceptionObject}"
-            | RealRuntimeResult.FailFast report, _ ->
+            | RealRuntimeResult.Aborted (_code, report), _ ->
                 failwith
                     $"Real runtime called Environment.FailFast for %s{testCaseName}; this fixture does not exercise FailFast:\n%s{report}"
             | RealRuntimeResult.UnhandledException realExn, RunOutcome.NormalExit (terminalState, terminatingThread) ->
@@ -214,9 +214,9 @@ module TestFSharpPureCases =
 
                 failwith
                     $"Real runtime terminated with an unhandled exception, but PawPrint exited normally (code: %O{pawPrintExitCode}):\n%s{realExn}"
-            | _, RunOutcome.FailFast _ ->
+            | _, RunOutcome.Aborted (_, _, fatal) ->
                 failwith
-                    "PawPrint called Environment.FailFast; the real runtime can't have done so or the test harness would be gone"
+                    $"PawPrint aborted (%O{fatal.Code}); the real runtime can't have done so or the test harness would be gone"
             | _, RunOutcome.ProcessExit _ ->
                 failwith
                     "PawPrint called Environment.Exit; the real runtime can't have done so or the test harness would be gone"
@@ -427,5 +427,5 @@ module TestFSharpPureCases =
         | RealRuntimeResult.NormalExit exitCode -> exitCode |> shouldEqual expectedExitCode
         | RealRuntimeResult.UnhandledException report ->
             failwith $"Real runtime terminated with an unhandled exception for %s{testCaseName}:\n%s{report}"
-        | RealRuntimeResult.FailFast report ->
+        | RealRuntimeResult.Aborted (_code, report) ->
             failwith $"Real runtime called Environment.FailFast for %s{testCaseName}:\n%s{report}"

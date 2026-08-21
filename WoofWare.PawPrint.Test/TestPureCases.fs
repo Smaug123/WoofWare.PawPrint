@@ -402,7 +402,7 @@ module TestPureCases =
                 | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith
                         $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception: %O{exn.ExceptionObject}"
-                | RealRuntimeResult.FailFast report, _ ->
+                | RealRuntimeResult.Aborted (_code, report), _ ->
                     failwith
                         $"Real runtime called Environment.FailFast for %s{case.FileName}; this fixture does not exercise FailFast:\n%s{report}"
                 | RealRuntimeResult.UnhandledException realExn,
@@ -415,10 +415,10 @@ module TestPureCases =
 
                     failwith
                         $"Real runtime terminated with an unhandled exception, but PawPrint exited normally (code: %O{pawPrintExitCode}):\n%s{realExn}"
-                | _, RunOutcome.FailFast (_, _, message) ->
-                    let m = message |> Option.defaultValue "<no message>"
+                | _, RunOutcome.Aborted (_, _, fatal) ->
+                    let m = fatal.Message |> Option.defaultValue "<no message>"
 
-                    failwith $"PawPrint guest called Environment.FailFast for %s{case.FileName}: %s{m}"
+                    failwith $"PawPrint guest aborted (%O{fatal.Code}) for %s{case.FileName}: %s{m}"
                 | _, RunOutcome.SignalTerminated (_, signal) ->
                     failwith
                         $"PawPrint guest was terminated by POSIX signal %O{signal} for %s{case.FileName}; this test does not exercise signal-driven termination"
@@ -661,9 +661,9 @@ class Program
                     | [] -> failwith "expected program to return an int, but it returned void"
                     | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
-                | RunOutcome.FailFast (_, _, message) ->
-                    let m = message |> Option.defaultValue "<no message>"
-                    failwith $"expected normal exit, got Environment.FailFast: %s{m}"
+                | RunOutcome.Aborted (_, _, fatal) ->
+                    let m = fatal.Message |> Option.defaultValue "<no message>"
+                    failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
@@ -726,9 +726,9 @@ class Program
                     | [] -> failwith "expected program to return an int, but it returned void"
                     | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
-                | RunOutcome.FailFast (_, _, message) ->
-                    let m = message |> Option.defaultValue "<no message>"
-                    failwith $"expected normal exit, got Environment.FailFast: %s{m}"
+                | RunOutcome.Aborted (_, _, fatal) ->
+                    let m = fatal.Message |> Option.defaultValue "<no message>"
+                    failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
@@ -785,9 +785,9 @@ class Program
                     | [] -> failwith "expected program to return an int, but it returned void"
                     | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
-                | RunOutcome.FailFast (_, _, message) ->
-                    let m = message |> Option.defaultValue "<no message>"
-                    failwith $"expected normal exit, got Environment.FailFast: %s{m}"
+                | RunOutcome.Aborted (_, _, fatal) ->
+                    let m = fatal.Message |> Option.defaultValue "<no message>"
+                    failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
@@ -831,9 +831,9 @@ class Program
                     | [] -> failwith "expected program to return an int, but it returned void"
                     | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
-                | RunOutcome.FailFast (_, _, message) ->
-                    let m = message |> Option.defaultValue "<no message>"
-                    failwith $"expected normal exit, got Environment.FailFast: %s{m}"
+                | RunOutcome.Aborted (_, _, fatal) ->
+                    let m = fatal.Message |> Option.defaultValue "<no message>"
+                    failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
@@ -862,7 +862,9 @@ class Program
             KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.FailFast (_, _, message) -> message |> shouldEqual (Some "boom")
+                | RunOutcome.Aborted (_, _, fatal) ->
+                    fatal.Code |> shouldEqual FatalErrorCode.FailFast
+                    fatal.Message |> shouldEqual (Some "boom")
                 | RunOutcome.NormalExit _ -> failwith "expected FailFast, got normal exit"
                 | RunOutcome.ProcessExit _ -> failwith "expected FailFast, got process exit"
                 | RunOutcome.SignalTerminated (_, signal) ->
@@ -944,7 +946,7 @@ class Program
         | RealRuntimeResult.NormalExit exitCode -> exitCode |> shouldEqual expectedExitCode
         | RealRuntimeResult.UnhandledException report ->
             failwith $"Real runtime terminated with an unhandled exception for %s{fileName}:\n%s{report}"
-        | RealRuntimeResult.FailFast report ->
+        | RealRuntimeResult.Aborted (_code, report) ->
             failwith $"Real runtime called Environment.FailFast for %s{fileName}:\n%s{report}"
 
     [<TestCaseSource(nameof unimplemented)>]
@@ -974,9 +976,9 @@ class Program
             | [] -> failwith "expected program to return an int, but it returned void"
             | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
         | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
-        | RunOutcome.FailFast (_, _, message) ->
-            let m = message |> Option.defaultValue "<no message>"
-            failwith $"expected normal exit, got Environment.FailFast: %s{m}"
+        | RunOutcome.Aborted (_, _, fatal) ->
+            let m = fatal.Message |> Option.defaultValue "<no message>"
+            failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
         | RunOutcome.SignalTerminated (_, signal) ->
             failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
         | RunOutcome.GuestUnhandledException (_, _, exn) ->

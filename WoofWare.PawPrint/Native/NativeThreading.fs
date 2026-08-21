@@ -998,7 +998,17 @@ module NativeThreading =
             | WhatWeDid.BlockedOnClassInit _ ->
                 failwith
                     $"Thread.StartInternal: target type %s{MethodOwner.describe targetMethod.Owner} is being initialised on another thread. Cross-thread class-init synchronisation for workers is not yet implemented."
-            | _ -> ()
+            | WhatWeDid.Aborted fatal ->
+                // Initialising the worker's declaring type tore the process down. Attributed to the
+                // worker, which is the thread `ensureTypeInitialised` was asked to initialise on;
+                // which of the two threads is named makes no difference to what happens next, since
+                // nothing runs after this on either.
+                NativeHandlerResult.aborted newThreadId fatal state |> Some
+            | WhatWeDid.Executed
+            | WhatWeDid.VoluntaryYield _
+            | WhatWeDid.SuspendedForClassInit
+            | WhatWeDid.SuspendedForManagedCall
+            | WhatWeDid.ThrowingTypeInitializationException ->
 
             let state = Scheduler.onWorkerSpawned newThreadId workerInitOutcome state
 

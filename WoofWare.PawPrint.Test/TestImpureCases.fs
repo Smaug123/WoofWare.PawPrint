@@ -2100,9 +2100,9 @@ module TestImpureCases =
                 with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
-                | RunOutcome.FailFast (_, _, message) ->
-                    let m = message |> Option.defaultValue "<no message>"
-                    failwith $"Guest called Environment.FailFast: %s{m}"
+                | RunOutcome.Aborted (_, _, fatal) ->
+                    let m = fatal.Message |> Option.defaultValue "<no message>"
+                    failwith $"Guest aborted (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal) -> failwith $"Guest was terminated by POSIX signal %O{signal}"
                 | RunOutcome.NormalExit (state, thread) -> state, thread
                 | RunOutcome.ProcessExit (state, thread) -> state, thread

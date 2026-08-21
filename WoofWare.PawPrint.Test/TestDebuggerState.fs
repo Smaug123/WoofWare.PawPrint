@@ -15,9 +15,9 @@ module TestDebuggerState =
             match outcome with
             | RunOutcome.NormalExit (state, thread)
             | RunOutcome.ProcessExit (state, thread) -> state, thread
-            | RunOutcome.FailFast (_, _, message) ->
-                let m = message |> Option.defaultValue "<no message>"
-                failwith $"PawPrint guest called Environment.FailFast: %s{m}"
+            | RunOutcome.Aborted (_, _, fatal) ->
+                let m = fatal.Message |> Option.defaultValue "<no message>"
+                failwith $"PawPrint guest aborted (%O{fatal.Code}): %s{m}"
             | RunOutcome.SignalTerminated (_, signal) ->
                 failwith $"PawPrint guest was terminated by POSIX signal %O{signal}"
             | RunOutcome.GuestUnhandledException (_, _, exn) ->

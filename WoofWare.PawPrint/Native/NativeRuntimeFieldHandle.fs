@@ -314,7 +314,7 @@ module NativeRuntimeFieldHandle =
                             declaringTypeHandle
                             state
 
-                    match NativeHandlerResult.tryEarlyReturn (state, whatWeDid) with
+                    match NativeHandlerResult.tryEarlyReturn ctx.Thread (state, whatWeDid) with
                     | Some earlyReturn -> Choice2Of2 earlyReturn
                     | None -> Choice1Of2 state
 

@@ -268,6 +268,44 @@ initialized state for the type, but no deadlock will arise.
 2.5 Mark the type as initialized, release the initialization lock, awaken any threads waiting for this type
 to be initialized, and return.
 *)
+/// Which of CoreCLR's fatal errors tore the process down, identified by the <c>COR_E_*</c>
+/// HRESULT that <c>EEPolicy::HandleFatalError</c> was handed (coreclr/vm/eepolicy.cpp:800).
+///
+/// The HRESULT is the identity rather than a label attached to one: everything else CoreCLR does
+/// with a fatal error is derived from it. The stderr banner is
+/// <c>if (exitCode == (UINT)COR_E_FAILFAST)</c> (eepolicy.cpp:374-383), and the process then dies
+/// via <c>CrashDumpAndTerminateProcess(exitCode)</c> — <c>abort()</c> on Unix, so every kind is
+/// exit 134 there, and <c>TerminateProcess(..., exitCode)</c> on Windows, where they differ.
+///
+/// Cases are added as PawPrint gains a producer for one; the space is open, not two-valued
+/// (<c>COR_E_STACKOVERFLOW</c> is a third that CoreCLR raises and PawPrint does not model).
+[<RequireQualifiedAccess>]
+type FatalErrorCode =
+    /// <c>COR_E_FAILFAST</c>, 0x80131623: the guest called <c>Environment.FailFast</c>.
+    | FailFast
+    /// <c>COR_E_EXECUTIONENGINE</c>, 0x80131506: the runtime itself refused to continue.
+    | ExecutionEngine
+
+[<RequireQualifiedAccess>]
+module FatalErrorCode =
+    /// The <c>COR_E_*</c> value, which on Windows is also the process exit code
+    /// (<c>TerminateProcess</c>); on Unix the process aborts and the shell sees 134 regardless.
+    let toHResult (code : FatalErrorCode) : int =
+        match code with
+        | FatalErrorCode.FailFast -> 0x80131623
+        | FatalErrorCode.ExecutionEngine -> 0x80131506
+
+/// A fatal error that tore the simulated process down: uncatchable by the guest, no exit code on
+/// any eval stack, and no clean-shutdown semantics (finalizers do not run).
+type FatalError =
+    {
+        Code : FatalErrorCode
+        /// The diagnostic CoreCLR would print after the banner: the guest's own string for
+        /// <c>Environment.FailFast</c>, or the runtime's hardcoded message otherwise. `None` when
+        /// there is none, which `Environment.FailFast()` with a null message produces.
+        Message : string option
+    }
+
 type WhatWeDid =
     | Executed
     /// We didn't run what you wanted, because we have to do class initialisation first.
@@ -311,6 +349,19 @@ type WhatWeDid =
     /// optimistic-push-then-rewrite contract `Scheduler.fireJoinTimeout` uses. `Thread.Sleep(0)`
     /// returns `void` and so has no slot to rewrite; it passes `false`.
     | VoluntaryYield of reportsSwitch : bool
+    /// The step did not retire: it tore the process down. No further step runs on any thread, and
+    /// the state is whatever the aborting thread was holding at the moment it gave up.
+    ///
+    /// This is the channel by which an *IL instruction* aborts, which the other terminating
+    /// outcomes do not need: `Environment.FailFast` and `Environment._Exit` are native handlers,
+    /// and a native handler returns `NativeHandlerResult.Terminating` with an `ExecutionResult`
+    /// already in hand. An opcode has only a `WhatWeDid` to report with.
+    ///
+    /// `AbstractMachine` converts this to `ExecutionResult.Aborted` at the one point where an op's
+    /// `WhatWeDid` becomes an `ExecutionResult`, so the scheduler never observes it: a step that
+    /// aborted is not a step that made progress, and `Scheduler.onStepOutcome` has no meaningful
+    /// answer for one.
+    | Aborted of FatalError
 
 /// An externally-observable side-effect that a single interpreter step requests
 /// from the driver (the imperative shell around the functional core). The
@@ -356,13 +407,16 @@ type ExecutionResult =
     /// guest execution (e.g. finalizers, AppDomain-unload hooks), this constructor will
     /// need to return the thread to a consistent state first.
     | ProcessExit of IlMachineState * exitingThread : ThreadId
-    /// Environment.FailFast was called on `abortingThread`. Like ProcessExit, the process
-    /// terminates immediately; unlike ProcessExit, this represents an abort (no exit code
-    /// on the stack, no clean-shutdown semantics). `message` is the guest-supplied diagnostic
-    /// string (if any). Distinct from ProcessExit so test harnesses can assert the difference,
-    /// and so callers can surface the abort to the host (logs, non-zero exit) rather than
-    /// reporting a clean exit.
-    | FailFast of IlMachineState * abortingThread : ThreadId * message : string option
+    /// A fatal error tore the process down while `abortingThread` was running. Like ProcessExit,
+    /// the process terminates immediately; unlike ProcessExit, this represents an abort (no exit
+    /// code on the stack, no clean-shutdown semantics). Distinct from ProcessExit so test
+    /// harnesses can assert the difference, and so callers can surface the abort to the host
+    /// (logs, non-zero exit) rather than reporting a clean exit.
+    ///
+    /// `Environment.FailFast` is one producer, not the only one: `FatalError.Code` says which of
+    /// CoreCLR's fatal errors this is, and a runtime-raised one carries a different HRESULT,
+    /// banner and Windows exit code.
+    | Aborted of IlMachineState * abortingThread : ThreadId * fatal : FatalError
     /// A non-cancelled signal handler reached the kernel-default
     /// `Terminate` disposition, so the simulated process exits with the
     /// signal's identity. Mirrors `pal_signal.c`'s
@@ -528,11 +582,12 @@ type RunOutcome =
     /// code. Distinct from `NormalExit` so the pre-main cctor pump can bail rather
     /// than silently continuing into `Main` after the guest already asked to die.
     | ProcessExit of IlMachineState * exitingThread : ThreadId
-    /// A thread called `Environment.FailFast`. The process aborts immediately; the
-    /// abort message (if any) is surfaced for diagnostics. Distinct from ProcessExit
-    /// because FailFast is semantically an abort, not a clean exit — finalizers do not
-    /// run on real CoreCLR, and the host typically reports a non-zero/abort exit.
-    | FailFast of IlMachineState * abortingThread : ThreadId * message : string option
+    /// A fatal error aborted the process while `abortingThread` was running: `Environment.FailFast`,
+    /// or a refusal the runtime itself raises. The `FatalError` is surfaced for diagnostics, and
+    /// its `Code` is what the host derives the banner and exit code from. Distinct from ProcessExit
+    /// because an abort is not a clean exit — finalizers do not run on real CoreCLR, and the host
+    /// reports a non-zero/abort exit.
+    | Aborted of IlMachineState * abortingThread : ThreadId * fatal : FatalError
     /// The simulation was terminated by a POSIX signal whose
     /// registered handler(s) did not cancel the default disposition,
     /// and whose kernel default is `Terminate`. Carries the originating
@@ -595,8 +650,8 @@ module ExecutionResult =
         | ExecutionResult.Terminated (state, terminatingThread) ->
             ExecutionResult.Terminated (f state, terminatingThread)
         | ExecutionResult.ProcessExit (state, exitingThread) -> ExecutionResult.ProcessExit (f state, exitingThread)
-        | ExecutionResult.FailFast (state, abortingThread, message) ->
-            ExecutionResult.FailFast (f state, abortingThread, message)
+        | ExecutionResult.Aborted (state, abortingThread, fatal) ->
+            ExecutionResult.Aborted (f state, abortingThread, fatal)
         | ExecutionResult.SignalTerminated (state, signal) -> ExecutionResult.SignalTerminated (f state, signal)
         | ExecutionResult.Stepped (state, whatWeDid, effect) -> ExecutionResult.Stepped (f state, whatWeDid, effect)
         | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
@@ -687,6 +742,12 @@ module NativeHandlerResult =
     let throwingTypeInitializationException (state : IlMachineState) : NativeHandlerResult =
         NativeHandlerResult.ThrowingTypeInitializationException (state, StepEffect.NoEffect)
 
+    /// Forward a `WhatWeDid.Aborted` outcome from a sub-call. The process is going down, so the
+    /// native frame's own bookkeeping is irrelevant: the dispatcher surfaces a `Terminating`
+    /// result verbatim without touching frames.
+    let aborted (thread : ThreadId) (fatal : FatalError) (state : IlMachineState) : NativeHandlerResult =
+        NativeHandlerResult.Terminating (ExecutionResult.Aborted (state, thread, fatal))
+
     /// Translate the outcome of a managed sub-call (e.g. `ensureTypeInitialised`,
     /// `callMethod`) into a `NativeHandlerResult` the native handler can return early
     /// with. Returns `Some` when the sub-call's outcome means the native handler must
@@ -699,9 +760,17 @@ module NativeHandlerResult =
     /// handler, or an IL op that has to run guest code mid-instruction (see
     /// `DynamicScopeOperand.mintDynamicMethod`) — never by a managed sub-call returning to a
     /// native handler, which is what this function translates.
-    let tryEarlyReturn ((state, whatWeDid) : IlMachineState * WhatWeDid) : NativeHandlerResult option =
+    let tryEarlyReturn
+        (thread : ThreadId)
+        ((state, whatWeDid) : IlMachineState * WhatWeDid)
+        : NativeHandlerResult option
+        =
         match whatWeDid with
         | WhatWeDid.Executed -> None
+        // The sub-call tore the process down. Nothing the calling handler was going to do
+        // afterwards matters, so propagate rather than letting it run on against a state whose
+        // thread has already given up.
+        | WhatWeDid.Aborted fatal -> Some (aborted thread fatal state)
         // A sub-call that voluntarily yielded did make forward progress, so the
         // calling native handler should continue exactly as for Executed. The yield
         // hint is meaningful only at the dispatcher/scheduler boundary; it does not
@@ -746,6 +815,6 @@ module NativeHandlerResult =
                 $"logic error: ExternImpl produced Stepped with WhatWeDid=%A{other}; ExternImpls may only produce Executed steps or terminating outcomes. Use a dedicated NativeHandlerResult constructor from the native handler instead."
         | ExecutionResult.Terminated _
         | ExecutionResult.ProcessExit _
-        | ExecutionResult.FailFast _
+        | ExecutionResult.Aborted _
         | ExecutionResult.SignalTerminated _
         | ExecutionResult.UnhandledException _ -> NativeHandlerResult.Terminating executionResult

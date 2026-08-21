@@ -26,8 +26,10 @@ type RealRuntimeResult =
     /// The runtime terminated the program because an exception escaped. The payload is the
     /// runtime's own stderr report, which names the exception type and carries its stack trace.
     | UnhandledException of report : string
-    /// The program called `Environment.FailFast`. The payload is the runtime's stderr report.
-    | FailFast of report : string
+    /// A fatal error tore the program down: `Environment.FailFast`, or a refusal the runtime
+    /// itself raised. `code` is which, read back from the banner CoreCLR chose; the payload is the
+    /// runtime's stderr report, banner included.
+    | Aborted of code : FatalErrorCode * report : string
 
 [<RequireQualifiedAccess>]
 module RealRuntime =
@@ -38,10 +40,19 @@ module RealRuntime =
     [<Literal>]
     let private UnhandledExceptionBanner = "Unhandled exception."
 
-    /// As `UnhandledExceptionBanner`, for `Environment.FailFast`: `PrintToStdErrA("Process
-    /// terminated.\n")` in coreclr/vm/eepolicy.cpp.
+    /// As `UnhandledExceptionBanner`, for a fatal error whose code is `COR_E_FAILFAST` --
+    /// `Environment.FailFast`, and nothing else. `PrintToStdErrA("Process terminated.\n")` in
+    /// coreclr/vm/eepolicy.cpp:378.
     [<Literal>]
     let private FailFastBanner = "Process terminated."
+
+    /// The banner for every *other* fatal error, chosen by the same `if` that chooses the one
+    /// above (eepolicy.cpp:374-383) -- so a guest whose runtime refused to continue prints this
+    /// one and exits 134, exactly as `Environment.FailFast` does. Without this the two are
+    /// indistinguishable from the exit code alone, and a runtime-raised abort would be classified
+    /// as an ordinary `NormalExit 134`.
+    [<Literal>]
+    let private FatalErrorBanner = "Fatal error."
 
     /// A guest that neither exits nor blocks is a bug in the guest, but without a bound it hangs CI
     /// with no diagnostic at all. This only has to be larger than any legitimate guest; the
@@ -210,16 +221,23 @@ module RealRuntime =
         let outputText = snapshot stdout
         let errorText = snapshot stderr
 
-        // Exit code alone cannot classify this: an escaped exception, a `FailFast`, and a guest
-        // that merely returns 134 all exit 134 on Unix (128 + SIGABRT). Requiring a nonzero
-        // exit *and* the runtime's banner keeps both a plain `return 134` and a guest that
-        // prints the banner itself on the normal path. A guest that does both at once would be
-        // misclassified, but it's either impossible or extremely hard to repair that.
+        // Exit code alone cannot classify this: an escaped exception, either flavour of fatal
+        // error, and a guest that merely returns 134 all exit 134 on Unix (128 + SIGABRT).
+        // Requiring a nonzero exit *and* the runtime's banner keeps both a plain `return 134` and
+        // a guest that prints the banner itself on the normal path. A guest that does both at once
+        // would be misclassified, but it's either impossible or extremely hard to repair that.
+        //
+        // The two fatal-error banners are tried in the order CoreCLR chooses between them
+        // (eepolicy.cpp:374-383): `Process terminated.` exactly when the code was `COR_E_FAILFAST`,
+        // `Fatal error.` for every other code. They are disjoint strings, so the order is for
+        // readability rather than correctness.
         let result =
             if exitCode <> 0 && errorText.Contains UnhandledExceptionBanner then
                 RealRuntimeResult.UnhandledException (errorText.Trim ())
             elif exitCode <> 0 && errorText.Contains FailFastBanner then
-                RealRuntimeResult.FailFast (errorText.Trim ())
+                RealRuntimeResult.Aborted (FatalErrorCode.FailFast, errorText.Trim ())
+            elif exitCode <> 0 && errorText.Contains FatalErrorBanner then
+                RealRuntimeResult.Aborted (FatalErrorCode.ExecutionEngine, errorText.Trim ())
             else
                 RealRuntimeResult.NormalExit exitCode
 
@@ -235,7 +253,7 @@ module RealRuntime =
             if errorText.Length > 0 then
                 Console.Error.Write errorText
         | RealRuntimeResult.UnhandledException _
-        | RealRuntimeResult.FailFast _ -> ()
+        | RealRuntimeResult.Aborted _ -> ()
 
         result
 

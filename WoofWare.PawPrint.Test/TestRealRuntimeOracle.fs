@@ -4,6 +4,7 @@ open System
 open System.Threading.Tasks
 open NUnit.Framework
 open FsUnitTyped
+open WoofWare.PawPrint
 
 /// Tests for the differential oracle itself.
 ///
@@ -148,10 +149,56 @@ public static class Program
             guest """    public static int Main() { Environment.FailFast("nope"); return 0; }"""
 
         match RealRuntime.executeWithRealRuntime [||] image with
-        | RealRuntimeResult.FailFast report ->
+        | RealRuntimeResult.Aborted (FatalErrorCode.FailFast, report) ->
             if not (report.Contains "nope") then
                 failwith $"expected the FailFast report to carry the message, got: %s{report}"
         | other -> failwith $"expected FailFast to be reported as such, got %O{other}"
+
+    [<Test>]
+    let ``a runtime-raised fatal error is distinguished from Environment FailFast`` () : unit =
+        // CoreCLR routes both through `EEPolicy::HandleFatalError`, and picks the banner from the
+        // `COR_E_*` code it was handed: `Process terminated.` for `COR_E_FAILFAST`, `Fatal error.`
+        // for everything else (eepolicy.cpp:374-383). Both then die via
+        // `CrashDumpAndTerminateProcess`, which on Unix is `abort()` -- so both exit 134 and the
+        // banner is the only thing that tells them apart.
+        //
+        // Entering an `[UnmanagedCallersOnly]` method from managed code is the second kind
+        // (`ReversePInvokeBadTransition`, dllimportcallback.cpp:167-180). It is used here purely
+        // as a guest that provokes the banner; nothing about the gate for it is asserted.
+        let image =
+            Roslyn.compile
+                [
+                    """
+using System;
+using System.Reflection;
+using System.Runtime.InteropServices;
+
+public static class Uco
+{
+    [UnmanagedCallersOnly]
+    public static int Doubler (int x)
+    {
+        return x * 2;
+    }
+}
+
+public static class Program
+{
+    public static int Main ()
+    {
+        Func<int, int> f =
+            (Func<int, int>) typeof (Uco).GetMethod ("Doubler").CreateDelegate (typeof (Func<int, int>));
+        return f (21);
+    }
+}
+"""
+                ]
+
+        match RealRuntime.executeWithRealRuntime [||] image with
+        | RealRuntimeResult.Aborted (FatalErrorCode.ExecutionEngine, report) ->
+            if not (report.Contains "UnmanagedCallersOnly") then
+                failwith $"expected the abort report to carry the runtime's message, got: %s{report}"
+        | other -> failwith $"expected a runtime-raised fatal error to be reported as ExecutionEngine, got %O{other}"
 
     [<Test>]
     let ``a guest that never terminates is killed and reported`` () : unit =

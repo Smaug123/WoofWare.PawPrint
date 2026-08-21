@@ -23,10 +23,12 @@
     <Compile Include="TestArrayShapeGuard.fs" />
     <Compile Include="TestFriendAssemblies.fs" />
     <Compile Include="TestAccessCheck.fs" />
+    <Compile Include="TestFatalErrorCode.fs" />
     <Compile Include="RealRuntime.fs" />
     <Compile Include="TestRealRuntimeOracle.fs" />
     <Compile Include="TestHarness.fs"/>
     <Compile Include="TestBoundedRun.fs" />
+    <Compile Include="TestAbortChannel.fs" />
     <Compile Include="TestGuestLocation.fs" />
     <Compile Include="TestGuestFailure.fs" />
     <Compile Include="CrossAssemblyHarness.fs" />

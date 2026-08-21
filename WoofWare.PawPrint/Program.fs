@@ -408,6 +408,12 @@ module Program =
                 "Executed one step (voluntary yield requested); active assembly: {ActiveAssembly}",
                 state.ActiveAssembly(thread).Name.Name
             )
+        | WhatWeDid.Aborted fatal ->
+            logger.LogTrace (
+                "Step aborted the process ({FatalErrorCode}): {FatalErrorMessage}",
+                fatal.Code,
+                (fatal.Message |> Option.defaultValue "<no message>")
+            )
         | WhatWeDid.SuspendedForClassInit ->
             logger.LogTrace "Suspended execution of current method for class initialisation."
         | WhatWeDid.SuspendedForManagedCall ->
@@ -675,8 +681,8 @@ module Program =
                     )
             | ExecutionResult.ProcessExit (state, exitingThread) ->
                 ProgramStepOutcome.Completed (RunOutcome.ProcessExit (state, exitingThread))
-            | ExecutionResult.FailFast (state, abortingThread, message) ->
-                ProgramStepOutcome.Completed (RunOutcome.FailFast (state, abortingThread, message))
+            | ExecutionResult.Aborted (state, abortingThread, message) ->
+                ProgramStepOutcome.Completed (RunOutcome.Aborted (state, abortingThread, message))
             | ExecutionResult.SignalTerminated (state, signal) ->
                 ProgramStepOutcome.Completed (RunOutcome.SignalTerminated (state, signal))
             | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
@@ -1128,6 +1134,15 @@ module Program =
                 |> IlMachineStateExecution.ensureTypeInitialised loggerFactory baseClassTypes mainThread mainTypeHandle
 
             match init with
+            | WhatWeDid.Aborted fatal ->
+                // Triggered when initialising the entry point's declaring type tears the process
+                // down. Startup has no `RunOutcome` to hand back at this point -- it is still
+                // assembling the machine -- so the abort cannot be reported as one; surface it
+                // rather than installing Main on a state whose process has already died.
+                let message = fatal.Message |> Option.defaultValue "<no message>"
+
+                failwith
+                    $"TODO: initialising the entry point's declaring type aborted the process (%O{fatal.Code}): %s{message}"
             | WhatWeDid.SuspendedForClassInit -> failwith "TODO: suspended for class init"
             | WhatWeDid.SuspendedForManagedCall ->
                 failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
@@ -1266,9 +1281,9 @@ module Program =
                 match outcome with
                 | RunOutcome.NormalExit _ -> "returned normally" // unreachable, matched above
                 | RunOutcome.ProcessExit (_, thread) -> $"called Environment.Exit on %O{thread}"
-                | RunOutcome.FailFast (_, thread, message) ->
-                    let message = message |> Option.defaultValue "<no message>"
-                    $"called Environment.FailFast on %O{thread}: %s{message}"
+                | RunOutcome.Aborted (_, thread, fatal) ->
+                    let message = fatal.Message |> Option.defaultValue "<no message>"
+                    $"aborted on %O{thread} with %O{fatal.Code}: %s{message}"
                 | RunOutcome.SignalTerminated (_, signal) -> $"was terminated by signal %O{signal}"
                 | RunOutcome.GuestUnhandledException (_, thread, exn) ->
                     $"threw an unhandled exception on %O{thread}: %O{exn.ExceptionObject}"
@@ -1278,7 +1293,7 @@ module Program =
             StartupStepOutcome.Completed (startup.InstallMain state mainArgs)
         | StartupPhase.InitialisingClasses _, RunOutcome.GuestUnhandledException _
         | StartupPhase.InitialisingClasses _, RunOutcome.ProcessExit _
-        | StartupPhase.InitialisingClasses _, RunOutcome.FailFast _
+        | StartupPhase.InitialisingClasses _, RunOutcome.Aborted _
         | StartupPhase.InitialisingClasses _, RunOutcome.SignalTerminated _ ->
             // The entry thread's `.cctor` raised, or a worker spawned during cctor pumping
             // exited, failed fast, or took a terminating signal. In every case the CLR would
@@ -1432,6 +1447,7 @@ module Program =
                 failwith
                     $"Program: thread %O{ran} yielded at a tick whose scheduling decision was forced, but the state after the step is contended (Runnable: %A{contenders}). Scheduler.chargeYieldDebt reads contention after class-init waiters are woken, so a Pct policy would have drawn here — and could have declined the yield where RoundRobin honours it — which means the prefix up to this point is not seed-independent and must not be shared. See Scheduler.onStepOutcome."
         | WhatWeDid.Executed
+        | WhatWeDid.Aborted _
         | WhatWeDid.SuspendedForClassInit
         | WhatWeDid.SuspendedForManagedCall
         | WhatWeDid.BlockedOnClassInit _
