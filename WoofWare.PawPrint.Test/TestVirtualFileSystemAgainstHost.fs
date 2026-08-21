@@ -303,6 +303,16 @@ module TestVirtualFileSystemAgainstHost =
             // ...and a free name in that same unwritable directory, which is
             // ENOENT on both: the missing-name check beats the permission one.
             "cls500/nx"
+            // An over-long final component, with and without a trailing
+            // separator. Measured ENAMETOOLONG on both kernels either way, which
+            // is what says the *length* check beats the trailing-separator
+            // answer — the opposite of `TrailingSeparatorPolicy.RefuseIsDirectory`,
+            // whose whole point is that the separator is decided first. The
+            // dedicated NAME_MAX tests pin the limit itself; these two pin its
+            // precedence, against a real kernel rather than against the model's
+            // own beliefs.
+            String.replicate 300 "a"
+            String.replicate 300 "a" + "/"
         ]
 
     // ------------------------------------------------------------ the host side
