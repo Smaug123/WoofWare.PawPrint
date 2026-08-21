@@ -14,7 +14,12 @@ open Microsoft.Extensions.Logging
 module DelegateBindingFlags =
     let staticMethodOnly = 0x00000001
     let instanceMethodOnly = 0x00000002
+
+    /// Refuse a binding the arity classifies as closed. Set by the two overloads that predate
+    /// closed delegates over a supplied `MethodInfo` — `Delegate.CreateDelegate(Type, MethodInfo,
+    /// bool)` and `MethodInfo.CreateDelegate(Type)` — to keep their v1 contract.
     let openDelegateOnly = 0x00000004
+
     let closedDelegateOnly = 0x00000008
     let neverCloseOverNull = 0x00000010
 
@@ -23,10 +28,11 @@ module DelegateBindingFlags =
     /// point is handed a specific method rather than a name.
     let caselessMatching = 0x00000020
 
-    /// Co/contravariant matching. The only flag any caller that can reach
-    /// `Delegate_BindToMethodInfo` with a `DynamicMethod` sets, and the only one the handler
-    /// accepts — see the enumeration of callers there, and `NativeDelegate.isCompatible`'s remarks
-    /// for why the other filters are absent rather than transcribed.
+    /// Co/contravariant matching. Set by every caller that can reach
+    /// `Delegate_BindToMethodInfo`, which is why that handler accepts only this flag and this flag
+    /// plus `openDelegateOnly` — see the enumeration of callers there, and
+    /// `NativeDelegate.isCompatible`'s remarks for why the remaining filters are absent rather
+    /// than transcribed.
     ///
     /// A *strict* comparison is nonetheless reachable even so, because
     /// `isLocationAssignable` suppresses relaxation itself for a byref: strictness is not only
@@ -68,10 +74,64 @@ type DelegateBindingShape =
     | Closed
 
 /// <summary>
+/// Where <c>COMDelegate::IsMethodDescCompatible</c> takes the target's first argument from
+/// (comdelegate.cpp:2681-2707). This is the whole of what that routine consults about the target
+/// beyond its signature, and the static/instance distinction is what decides it.
+/// </summary>
+/// <remarks>
+/// Notably absent is any notion of virtualness, because the routine has none:
+/// <c>IsMethodDescCompatible</c> (comdelegate.cpp:2544-2762) never asks whether the target is
+/// virtual. Every virtual decision belongs to <c>COMDelegate::BindToMethod</c>
+/// (comdelegate.cpp:1184), whose caller here holds the target's <c>MethodInfo</c> and can read
+/// <c>IsVirtual</c> directly — which matters, because <c>MethodInfo.DispatchesVirtually</c> folds
+/// <c>not IsStatic</c> in and so cannot describe a static virtual method at all.
+/// </remarks>
+[<RequireQualifiedAccess>]
+type private TargetFirstArgument =
+    /// A static target: its first argument is its first fixed parameter, and its total argument
+    /// count has no implicit <c>this</c> to add.
+    | FirstFixedParameter
+    /// An instance target: its first argument is the declaring type — CoreCLR's <c>pMethMT</c>,
+    /// which is the QCall's <c>methodType</c> argument — and its total argument count adds one for
+    /// the implicit <c>this</c>.
+    | DeclaringType of ConcreteTypeHandle
+
+/// <summary>
+/// What <c>COMDelegate::BindToMethod</c> (comdelegate.cpp:1184) will point the delegate's
+/// <c>_methodPtr</c> at, before the virtualisation its closed path performs.
+/// </summary>
+[<RequireQualifiedAccess>]
+type private BindTarget =
+    /// Minted by <c>Reflection.Emit</c>: always static (<c>DynamicMethod</c>'s constructors set
+    /// <c>mdStatic</c> unconditionally) and never virtual, so nothing to virtualise; and its
+    /// identity is a registry handle rather than a <c>MethodInfo</c>, because it has no MethodDef
+    /// row for one to be read from.
+    | Dynamic of DynamicMethodHandle
+    /// A method with a MethodDef row, concretised against its declaring instantiation, together
+    /// with that instantiation — CoreCLR's <c>pExactMethodType</c>, which the closed path compares
+    /// the bound receiver's runtime type against before deciding to virtualise.
+    | Metadata of
+        method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+        declaringType : ConcreteTypeHandle
+
+[<RequireQualifiedAccess>]
+module private BindTarget =
+    /// The one thing `isCompatible` is told about the target beyond its signature. Derived rather
+    /// than passed alongside, so the two cannot disagree about whether the target is static.
+    let firstArgument (target : BindTarget) : TargetFirstArgument =
+        match target with
+        | BindTarget.Dynamic _ -> TargetFirstArgument.FirstFixedParameter
+        | BindTarget.Metadata (method, declaringType) ->
+            if method.IsStatic then
+                TargetFirstArgument.FirstFixedParameter
+            else
+                TargetFirstArgument.DeclaringType declaringType
+
+/// <summary>
 /// The QCalls behind <c>Delegate.CreateDelegate</c> and <c>Delegate.Method</c>. Two are
-/// implemented: <c>Delegate_BindToMethodInfo</c>, and only for a target minted by
-/// <c>Reflection.Emit</c>; and <c>Delegate_FindMethodHandle</c>, for a delegate over an ordinary
-/// metadata method.
+/// implemented: <c>Delegate_BindToMethodInfo</c>, for a target minted by <c>Reflection.Emit</c> and
+/// for one with a MethodDef row; and <c>Delegate_FindMethodHandle</c>, for a delegate over an
+/// ordinary metadata method.
 /// </summary>
 [<RequireQualifiedAccess>]
 module NativeDelegate =
@@ -93,12 +153,14 @@ module NativeDelegate =
     /// by construction, so the whole generic-variable half of the function (comdelegate.cpp:
     /// 2399-2489, the <c>ConstrainedAsObjRef</c>/<c>ConstrainedAsValueType</c> table) is dead: a
     /// delegate type reaching <c>CreateDelegate</c> is a runtime type with its instantiation
-    /// already substituted, and a dynamic method's signature cannot spell a variable at all.
+    /// already substituted; a dynamic method's signature cannot spell a variable at all; and a
+    /// metadata method's is read against the exact instantiation its declaring handle names, an
+    /// open generic definition being refused before it gets here.
     /// </para>
     /// <para>
     /// The enum arm at the end is <em>not</em> dead, and it is the reason this function exists
-    /// rather than a bare assignability call: <c>Func&lt;DayOfWeek, int&gt;</c> over a dynamic
-    /// method taking an <c>int</c> is a legal binding in CoreCLR, decided entirely by that arm
+    /// rather than a bare assignability call: <c>Func&lt;DayOfWeek, int&gt;</c> over a method
+    /// taking an <c>int</c> is a legal binding in CoreCLR, decided entirely by that arm
     /// (the two types have the same verifier element type, and one of them is an enum). An
     /// implementation that stopped at "identical, or castable" would reject it.
     /// </para>
@@ -176,11 +238,12 @@ module NativeDelegate =
         // variance, at which point the objref-ness check below would silently admit `string&`
         // where an `object&` was wanted.)
         //
-        // No test kills this, and none can today: reaching it from the target side needs a dynamic
-        // method with a byref parameter, which needs `typeof(int).MakeByRefType()`, and
-        // `RuntimeTypeHandle_MakeByRef` is unimplemented (measured). The delegate-side direction is
-        // reachable and `DynamicMethodDelegateBinding.cs` exercises it, but the enum arm gives the
-        // same answer there.
+        // Reachable from the target side, though not through a dynamic method: an *open* binding
+        // over a value type's instance method promotes the receiver to a byref
+        // (comdelegate.cpp:2698-2707), which `DelegateBindToMetadataMethod.cs` exercises together
+        // with the by-value delegate shape that this then refuses. The delegate-side direction is
+        // reachable too and `DynamicMethodDelegateBinding.cs` exercises it, but the enum arm gives
+        // the same answer there.
         let eitherIsByref =
             let isByref (handle : ConcreteTypeHandle) : bool =
                 match handle with
@@ -269,27 +332,28 @@ module NativeDelegate =
         state, concretised
 
     /// <summary>
-    /// <c>COMDelegate::IsMethodDescCompatible</c> (comdelegate.cpp:2544), specialised to a target
-    /// method minted by <c>Reflection.Emit</c>.
+    /// <c>COMDelegate::IsMethodDescCompatible</c> (comdelegate.cpp:2544).
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Being specialised to a dynamic method removes three of CoreCLR's cases outright. A
-    /// <c>DynamicMethod</c> is always static (<c>DynamicMethod</c>'s constructors set
-    /// <c>mdStatic</c> unconditionally), so every "is the target an instance method" branch takes
-    /// its static side; it is never virtual, so the open path's virtual sub-branch is dead; and it
-    /// is never a generic method definition, which <c>Delegate_BindToMethodInfo</c> rejects with
-    /// <c>ArgumentException(Arg_DlgtTargMeth)</c> before ever reaching here
-    /// (comdelegate.cpp:1137-1139).
+    /// Two of CoreCLR's cases are absent. It is never asked about a generic method definition,
+    /// which <c>Delegate_BindToMethodInfo</c> rejects with
+    /// <c>ArgumentException(Arg_DlgtTargMeth)</c> before reaching here (comdelegate.cpp:1137-1139);
+    /// and the generic-variable branch of the closed-static objref constraint
+    /// (<c>ConstrainedAsObjRef</c>, comdelegate.cpp:2673-2679) is dead because every type here is a
+    /// <c>ConcreteTypeHandle</c> — a dynamic method's signature blob cannot spell a variable, and a
+    /// metadata target's is read against the exact instantiation its declaring handle names, an
+    /// open generic definition being refused by the caller.
     /// </para>
     /// <para>
-    /// It also removes four of the five flag filters, which is why this takes a bare
-    /// <c>relaxedMatch</c> rather than the bitfield. The caller has already established that the
-    /// flags are exactly <c>DBF_RelaxedSignature</c> — see the handler for the enumeration of
-    /// callers that makes that exhaustive — so <c>DBF_StaticMethodOnly</c>,
-    /// <c>DBF_InstanceMethodOnly</c>, <c>DBF_OpenDelegateOnly</c>, <c>DBF_ClosedDelegateOnly</c>
-    /// and <c>DBF_NeverCloseOverNull</c> are all unset on every reachable call. Whoever makes a
-    /// second caller reachable should add their arms back with the tests that exercise them.
+    /// Of the five flag filters, this takes the two a caller can reach it with and nothing else,
+    /// which is why the parameters are <c>bool</c>s rather than the bitfield. The handler has
+    /// already established that the flags are either <c>DBF_RelaxedSignature</c> or
+    /// <c>DBF_OpenDelegateOnly ||| DBF_RelaxedSignature</c> — see it for the enumeration of callers
+    /// that makes that exhaustive — so <c>DBF_StaticMethodOnly</c>, <c>DBF_InstanceMethodOnly</c>,
+    /// <c>DBF_ClosedDelegateOnly</c> and <c>DBF_NeverCloseOverNull</c> are unset on every reachable
+    /// call. Those four belong to <c>BindToMethodName</c>, a different QCall; whoever implements it
+    /// should add their arms back with the tests that exercise them.
     /// </para>
     /// </remarks>
     let private isCompatible
@@ -297,6 +361,8 @@ module NativeDelegate =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (relaxed : bool)
+        (openDelegateOnly : bool)
+        (targetFirstArgument : TargetFirstArgument)
         /// The runtime type of the object supplied as the bound first argument, if one was.
         (firstArgType : ConcreteTypeHandle option)
         (invokeSignature : TypeMethodSignature<ConcreteTypeHandle>)
@@ -304,10 +370,11 @@ module NativeDelegate =
         (state : IlMachineState)
         : IlMachineState * DelegateBindingShape option
         =
-        // "Check that there is no vararg mismatch." A vararg dynamic method is not constructible
-        // (`DynamicMethod`'s constructors pass `CallingConventions.Standard`), and neither is a
-        // vararg delegate type from any language PawPrint's tests compile, so no test can
-        // exercise this check.
+        // "Check that there is no vararg mismatch." A vararg *dynamic* method is not constructible
+        // (`DynamicMethod`'s constructors pass `CallingConventions.Standard`), and no language
+        // PawPrint's tests compile produces a vararg delegate type — but a metadata target can be
+        // one: `static void M(__arglist)` compiles, and binding it is measured to fail on real
+        // .NET, which `DelegateBindToMetadataMethod.cs` pins.
         if
             invokeSignature.Header.Get.CallingConvention
             <> targetSignature.Header.Get.CallingConvention
@@ -315,10 +382,17 @@ module NativeDelegate =
             state, None
         else
 
-        // A `DynamicMethod` is static, so its total argument count is its fixed count with no
+        // The target's total argument count is its fixed count plus one for an instance method's
         // implicit `this`. Invoke supplies `numFixedInvokeArgs`; the difference decides the shape.
+        let targetIsStatic =
+            match targetFirstArgument with
+            | TargetFirstArgument.FirstFixedParameter -> true
+            | TargetFirstArgument.DeclaringType _ -> false
+
         let numFixedInvokeArgs = invokeSignature.ParameterTypes.Length
-        let numTotalTargetArgs = targetSignature.ParameterTypes.Length
+
+        let numTotalTargetArgs =
+            targetSignature.ParameterTypes.Length + (if targetIsStatic then 0 else 1)
 
         let shape =
             if numTotalTargetArgs = numFixedInvokeArgs then
@@ -334,14 +408,23 @@ module NativeDelegate =
 
         let isOpen = (shape = DelegateBindingShape.Open)
 
-        // "If, on the other hand, we're looking at an open delegate but the caller has provided a
-        // target it's also not a match."
-        //
-        // The shape comes from the *arity*, and the supplied target is then checked against it —
-        // not the other way round. A closed delegate over a null first argument is a real and
-        // reachable shape (`CreateDelegate(t, null)` on a dynamic method taking one more argument
-        // than the delegate), so "target is null" must not be read as "must be open".
-        if isOpen && firstArgType.IsSome then
+        // "Deal with cases where the caller wants a specific type of delegate."
+        // (comdelegate.cpp:2611). The only one of those four filters a caller of this QCall can
+        // set: `MethodInfo.CreateDelegate(Type)` and `Delegate.CreateDelegate(Type, MethodInfo,
+        // bool)` both pass it, to keep their v1 contract of binding open delegates only.
+        if openDelegateOnly && not isOpen then
+            state, None
+        else if
+
+            // "If, on the other hand, we're looking at an open delegate but the caller has provided a
+            // target it's also not a match."
+            //
+            // The shape comes from the *arity*, and the supplied target is then checked against it —
+            // not the other way round. A closed delegate over a null first argument is a real and
+            // reachable shape (`CreateDelegate(t, null)` on a dynamic method taking one more argument
+            // than the delegate), so "target is null" must not be read as "must be open".
+            isOpen && firstArgType.IsSome
+        then
             state, None
         else
 
@@ -355,9 +438,37 @@ module NativeDelegate =
             // Where the first argument's type comes from differs on each side. On the invoke side
             // it is the first `Invoke` parameter when open, and the *runtime type of the bound
             // object* when closed — CoreCLR reads `refFirstArg->GetTypeHandle()`
-            // (comdelegate.cpp:1156), not any declared type. On the target side a dynamic method
-            // is static, so it is always the first declared parameter.
-            let firstTargetArg = targetSignature.ParameterTypes.Head
+            // (comdelegate.cpp:1156), not any declared type. On the target side it is the first
+            // declared parameter for a static method and the declaring type for an instance one
+            // (comdelegate.cpp:2681-2707).
+            let firstTargetArg =
+                match targetFirstArgument with
+                | TargetFirstArgument.FirstFixedParameter -> targetSignature.ParameterTypes.Head
+                | TargetFirstArgument.DeclaringType declaringType ->
+                    // "If the delegate is open and the target method is on a value type or
+                    // primitive then the first argument of the invoke method must be a reference to
+                    // that type." CoreCLR spells the condition on the element type
+                    // (`etFirstTargetArg <= ELEMENT_TYPE_R8 || VALUETYPE || I || U`), which for a
+                    // closed handle partitions exactly as "is not a reference type": that set is
+                    // every value type, enums included — their internal element type is the
+                    // underlying integer — and `I`/`U` are `IntPtr`/`UIntPtr`.
+                    //
+                    // A closed binding needs no promotion, because there the invoke-side type came
+                    // from the bound object and has had the ref stripped implicitly.
+                    if
+                        isOpen
+                        && not (IlMachineState.isReferenceTypeHandle baseClassTypes operation state declaringType)
+                    then
+                        ConcreteTypeHandle.Byref declaringType
+                    else
+                        declaringType
+
+            // "We always relax signature matching for the first argument of an instance method,
+            // since it's always allowable to call the method on a more derived type"
+            // (comdelegate.cpp:2719). Transcribed rather than dropped, though it cannot currently
+            // differ from `relaxed`: both flag sets that reach this QCall contain
+            // `DBF_RelaxedSignature`.
+            let firstArgRelaxed = not targetIsStatic || relaxed
 
             let state, firstArgOk =
                 match shape with
@@ -370,14 +481,21 @@ module NativeDelegate =
                         operation
                         firstInvokeArg
                         firstTargetArg
-                        relaxed
+                        firstArgRelaxed
                         false
                         state
                 | DelegateBindingShape.Closed ->
                     // "Delegates closed over static methods have a further constraint: the first
                     // argument of the target must be an object reference type (otherwise the
-                    // argument shuffling logic could get complicated)."
-                    if not (IlMachineState.isReferenceTypeHandle baseClassTypes operation state firstTargetArg) then
+                    // argument shuffling logic could get complicated)." Static only: CoreCLR puts
+                    // this inside the `pTargetMethod->IsStatic()` branch
+                    // (comdelegate.cpp:2669-2685), and a closed *instance* binding over a value
+                    // type is legal and reachable — `int.ToString()` closed over a boxed `5` binds
+                    // on real .NET.
+                    if
+                        targetIsStatic
+                        && not (IlMachineState.isReferenceTypeHandle baseClassTypes operation state firstTargetArg)
+                    then
                         state, false
                     else
 
@@ -396,7 +514,7 @@ module NativeDelegate =
                             operation
                             firstArgType
                             firstTargetArg
-                            relaxed
+                            firstArgRelaxed
                             true
                             state
 
@@ -410,7 +528,16 @@ module NativeDelegate =
                 | DelegateBindingShape.Open -> invokeSignature.ParameterTypes.Tail
                 | DelegateBindingShape.Closed -> invokeSignature.ParameterTypes
 
-            let remainingTargetArgs = targetSignature.ParameterTypes.Tail
+            // The target side's pairing depends on whether the first argument came *out of* the
+            // signature. CoreCLR's static branch consumes the first fixed argument with
+            // `sigTarget.NextArgNormalized()` before the loop; its instance branch takes the
+            // declaring type instead and consumes nothing, so the loop then walks every fixed
+            // parameter (comdelegate.cpp:2681-2745).
+            let remainingTargetArgs =
+                if targetIsStatic then
+                    targetSignature.ParameterTypes.Tail
+                else
+                    targetSignature.ParameterTypes
 
             if remainingInvokeArgs.Length <> remainingTargetArgs.Length then
                 failwith
@@ -524,18 +651,23 @@ module NativeDelegate =
 
             DelegateBindingFlags.requireKnown operation flags
 
-            // Every reachable caller passes exactly `RelaxedSignature`.
-            // `Delegate.CreateDelegateNoSecurityCheck` — the only
-            // route `DynamicMethod.CreateDelegate` takes — passes exactly that
-            // (Delegate.CoreCLR.cs:387-391). The two public `Delegate.CreateDelegate(Type,
-            // MethodInfo, ...)` overloads pass `RelaxedSignature` or `OpenDelegateOnly |
-            // RelaxedSignature`, but they first require `method is RuntimeMethodInfo`
-            // (Delegate.CoreCLR.cs:304, 339), and a `DynamicMethod` is not one — so they cannot
-            // deliver a `FromDynamic` handle here at all, and the `FromMetadata` arm below refuses
-            // them anyway. `BindToMethodName`'s flag sets belong to a different QCall.
-            if flags <> DelegateBindingFlags.relaxedSignature then
-                failwith
-                    $"TODO: %s{operation} was passed DelegateBindingFlags 0x%08x{flags}; PawPrint implements only DBF_RelaxedSignature (0x%08x{DelegateBindingFlags.relaxedSignature}), which is what every caller that can reach this QCall with a Reflection.Emit method passes"
+            // Exactly two flag sets reach this QCall, enumerated over its five managed callers:
+            // `Delegate.CreateDelegateNoSecurityCheck` (Delegate.CoreCLR.cs:387, the only route
+            // `DynamicMethod.CreateDelegate` takes), `Delegate.CreateDelegate(Type, object?,
+            // MethodInfo, bool)` (:350) and `RuntimeMethodInfo.CreateDelegate(Type, object?)`
+            // (RuntimeMethodInfo.CoreCLR.cs:384) pass `RelaxedSignature`;
+            // `Delegate.CreateDelegate(Type, MethodInfo, bool)` (:318) and
+            // `RuntimeMethodInfo.CreateDelegate(Type)` (:371) add `OpenDelegateOnly`, to keep their
+            // v1 contract. `BindToMethodName`'s flag sets — which is where the other three filters
+            // and `CaselessMatching` come from — belong to a different QCall.
+            let openDelegateOnly =
+                if flags = DelegateBindingFlags.relaxedSignature then
+                    false
+                elif flags = (DelegateBindingFlags.openDelegateOnly ||| DelegateBindingFlags.relaxedSignature) then
+                    true
+                else
+                    failwith
+                        $"TODO: %s{operation} was passed DelegateBindingFlags 0x%08x{flags}; PawPrint implements only DBF_RelaxedSignature (0x%08x{DelegateBindingFlags.relaxedSignature}) and DBF_OpenDelegateOnly|DBF_RelaxedSignature (0x%08x{DelegateBindingFlags.openDelegateOnly ||| DelegateBindingFlags.relaxedSignature}), which are the only sets any caller that can reach this QCall passes"
 
             let methodHandle =
                 match NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation instruction.Arguments.[2] with
@@ -554,63 +686,131 @@ module NativeDelegate =
                     state
                     (EvalStackValue.ofCliType instruction.Arguments.[3])
 
+            // A generic method definition cannot be dispatched to, and CoreCLR says so by
+            // *raising* rather than by reporting a bind failure (comdelegate.cpp:1137-1139). The
+            // distinction is guest-visible: `Delegate.CreateDelegate(type, method,
+            // throwOnBindFailure: false)` suppresses a bind failure into a null return, and is
+            // measured on real .NET to throw here anyway.
             match methodHandle with
-            | MethodHandle.FromMetadata identity ->
-                // Deliberately a host crash and not FALSE, per the note above. This is reachable:
-                // `Delegate.CreateDelegate(type, someMethodInfo)` takes exactly this path
-                // (Delegate.CoreCLR.cs:395-403).
-                failwith
-                    $"TODO: %s{operation} was asked to bind a delegate to the metadata method %O{identity.GetMethodDefinitionHandle ()} in %s{identity.GetAssemblyFullName ()}; PawPrint implements this QCall only for a method minted by Reflection.Emit, which is what DynamicMethod.CreateDelegate reaches it with"
-            | MethodHandle.FromDynamic dynamicHandle ->
-
-            let definition =
-                MethodHandleRegistry.resolveDynamicMethod dynamicHandle state.MethodHandles
-                |> Option.defaultWith (fun () ->
-                    failwith $"%s{operation}: %O{dynamicHandle} is not registered in the method-handle registry"
-                )
-
-            let scopeAssemblyFullName = definition.GetScopeAssemblyFullName ()
-
-            // `methodType` is the declaring type the managed caller read off the same handle
-            // (`RuntimeMethodHandle.GetDeclaringType`, Delegate.CoreCLR.cs:389). CoreCLR uses it as
-            // the exact instantiation to interpret the target's signature against; a dynamic
-            // method has no instantiation, so nothing here needs it. Checked rather than dropped:
-            // an argument that is unmarshalled and then ignored is where a mismatch between the
-            // handle and the type hides, and this is the one place both are in hand.
-            match declaringTypeTarget with
-            | RuntimeTypeHandleTarget.DynamicMethodsClass declaringScope when declaringScope = scopeAssemblyFullName ->
-                ()
-            | other ->
-                failwith
-                    $"%s{operation}: %O{dynamicHandle} is scoped to %s{scopeAssemblyFullName}, but the methodType argument names %O{other}; these come from the same handle and must agree"
-
-            let scopeAssembly =
-                state.LoadedAssembly scopeAssemblyFullName
-                |> Option.defaultWith (fun () ->
-                    failwith $"%s{operation}: the scope assembly %s{scopeAssemblyFullName} is not loaded"
-                )
-
-            // The blob `ModuleHandle_GetDynamicMethod` recorded verbatim. `SignatureHelper`
-            // spells any type that is not a primitive, string or object as
-            // `ELEMENT_TYPE_INTERNAL`, which the decoder refuses by name, so a dynamic method
-            // with a `MyClass` or enum parameter dies at this line rather than being declared
-            // incompatible — a separate gap from the compatibility rules below.
-            let targetSignature =
-                MethodSignatureDecoding.decode
-                    scopeAssembly.Name
-                    (scopeAssembly.PeReader.GetMetadataReader ())
-                    (definition.GetSignature () |> Seq.toArray)
-                |> TypeMethodSignature.make
-
-            let state, targetSignature =
-                targetSignature
-                |> IlMachineState.concretizeMethodSignature
-                    ctx.LoggerFactory
-                    ctx.BaseClassTypes
+            | MethodHandle.FromMetadata identity when
+                NativeRuntimeMethodHandle.isGenericMethodDefinition
+                    (NativeRuntimeMethodHandle.methodInfoOfMetadataIdentity operation state identity).Generics.Length
+                    (identity.GetMethodGenerics ()).Length
+                ->
+                NativeHandlerResult.raiseExceptionWithMessage
+                    ctx.BaseClassTypes.ArgumentException
+                    (Some
+                        "Cannot bind to the target method because its signature is not compatible with that of the delegate type.")
                     state
-                    scopeAssembly.DefinitionFullName
-                    ImmutableArray.Empty
-                    ImmutableArray.Empty
+                |> Some
+            | _ ->
+
+            let state, targetSignature, bindTarget =
+                match methodHandle with
+                | MethodHandle.FromMetadata identity ->
+                    let methodInfo =
+                        NativeRuntimeMethodHandle.methodInfoOfMetadataIdentity operation state identity
+
+                    // `methodType` is the declaring type the managed caller read off the same
+                    // handle (`RuntimeMethodHandle.GetDeclaringType`, Delegate.CoreCLR.cs:389), and
+                    // CoreCLR uses it as `pMethMT`: the exact instantiation the target's signature
+                    // is read against, and the receiver type an instance binding compares against.
+                    // Cross-checked against the handle's own declaring type rather than trusted,
+                    // because the two travelling separately is where a mismatch would hide.
+                    let declaringType =
+                        NativeRuntimeMethodHandle.requireClosedDeclaringType operation identity
+
+                    match declaringTypeTarget with
+                    | RuntimeTypeHandleTarget.Closed argumentHandle when argumentHandle = declaringType -> ()
+                    | other ->
+                        failwith
+                            $"%s{operation}: the method handle's declaring type is %O{declaringType}, but the methodType argument names %O{other}; these come from the same handle and must agree"
+
+                    if methodInfo.IsStatic && methodInfo.IsVirtual then
+                        // A static abstract interface method: `IsVirtual` without `not IsStatic`,
+                        // which no other shape here is. CoreCLR treats it as virtual throughout,
+                        // and both paths then do something PawPrint cannot follow. The open path
+                        // takes the virtual-call-stub branch (comdelegate.cpp:1237) and produces a
+                        // delegate whose invocation raises `EntryPointNotFoundException` —
+                        // measured: real .NET binds this and fails only when it is called. The
+                        // closed path virtualises on `IsVirtual() && *pRefFirstArg != NULL` without
+                        // excluding statics (comdelegate.cpp:1284-1286), resolving against the
+                        // *bound first parameter* rather than a receiver.
+                        //
+                        // Refused before the shape reaches the compatibility check, which is also
+                        // what lets the open path below use `DispatchesVirtually`: that predicate
+                        // folds `not IsStatic` in, so on its own it would let a static virtual
+                        // through unnoticed.
+                        failwith
+                            $"TODO: %s{operation} was asked to bind a delegate to %s{MethodOwner.describe methodInfo.Owner}.%s{methodInfo.Name}, which is both static and virtual (a static abstract interface method); real .NET binds it and raises EntryPointNotFoundException on invocation, which PawPrint cannot reproduce while an abstract target has no body to name"
+
+                    let concreteDeclaringType, _ =
+                        IlMachineState.tryGetConcreteTypeInfo state declaringType
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"%s{operation}: the declaring type %O{declaringType} of %s{methodInfo.Name} has no TypeDef row"
+                        )
+
+                    let state, concretised, _declaringHandle =
+                        ExecutionConcretization.concretizeMethodWithAllGenerics
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            concreteDeclaringType.Generics
+                            methodInfo
+                            (identity.GetMethodGenerics () |> ImmutableArray.CreateRange)
+                            state
+
+                    state, concretised.Signature, BindTarget.Metadata (concretised, declaringType)
+
+                | MethodHandle.FromDynamic dynamicHandle ->
+
+                let definition =
+                    MethodHandleRegistry.resolveDynamicMethod dynamicHandle state.MethodHandles
+                    |> Option.defaultWith (fun () ->
+                        failwith $"%s{operation}: %O{dynamicHandle} is not registered in the method-handle registry"
+                    )
+
+                let scopeAssemblyFullName = definition.GetScopeAssemblyFullName ()
+
+                // As above, `methodType` is checked rather than dropped -- but a dynamic method has
+                // no instantiation for it to name, so all it can say is which module's synthetic
+                // class the method hangs off.
+                match declaringTypeTarget with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass declaringScope when declaringScope = scopeAssemblyFullName ->
+                    ()
+                | other ->
+                    failwith
+                        $"%s{operation}: %O{dynamicHandle} is scoped to %s{scopeAssemblyFullName}, but the methodType argument names %O{other}; these come from the same handle and must agree"
+
+                let scopeAssembly =
+                    state.LoadedAssembly scopeAssemblyFullName
+                    |> Option.defaultWith (fun () ->
+                        failwith $"%s{operation}: the scope assembly %s{scopeAssemblyFullName} is not loaded"
+                    )
+
+                // The blob `ModuleHandle_GetDynamicMethod` recorded verbatim. `SignatureHelper`
+                // spells any type that is not a primitive, string or object as
+                // `ELEMENT_TYPE_INTERNAL`, which the decoder refuses by name, so a dynamic method
+                // with a `MyClass` or enum parameter dies at this line rather than being declared
+                // incompatible -- a separate gap from the compatibility rules below.
+                let targetSignature =
+                    MethodSignatureDecoding.decode
+                        scopeAssembly.Name
+                        (scopeAssembly.PeReader.GetMetadataReader ())
+                        (definition.GetSignature () |> Seq.toArray)
+                    |> TypeMethodSignature.make
+
+                let state, targetSignature =
+                    targetSignature
+                    |> IlMachineState.concretizeMethodSignature
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        state
+                        scopeAssembly.DefinitionFullName
+                        ImmutableArray.Empty
+                        ImmutableArray.Empty
+
+                state, targetSignature, BindTarget.Dynamic dynamicHandle
 
             let delegateType = ManagedHeap.getObjectConcreteType delegateAddr state.ManagedHeap
 
@@ -629,6 +829,8 @@ module NativeDelegate =
                     ctx.BaseClassTypes
                     operation
                     (flags &&& DelegateBindingFlags.relaxedSignature <> 0)
+                    openDelegateOnly
+                    (BindTarget.firstArgument bindTarget)
                     firstArgType
                     invokeMethod.Signature
                     targetSignature
@@ -638,15 +840,16 @@ module NativeDelegate =
                 match shape with
                 | None -> state
                 | Some shape ->
-                    // `COMDelegate::BindToMethod` (comdelegate.cpp:1184), reduced to what a
-                    // dynamic method needs. Three of its branches cannot fire here.
-                    // `NeedsWrapperDelegate` is ARM32-only and instance-virtual-only
-                    // (comdelegate.cpp:2053); the open path's virtualisation sub-branch needs a
-                    // virtual target; and the `SetMethodBase` tail fires only for a collectible
-                    // `LoaderAllocator`, which PawPrint does not model. (`_methodBase`
-                    // still ends up holding the `DynamicMethod` — `DynamicMethod.CreateDelegate`
-                    // assigns it in managed code straight after this QCall returns, via
-                    // `StoreDynamicMethod`, which is why `d.Method` works without anything here.)
+                    // `COMDelegate::BindToMethod` (comdelegate.cpp:1184). Three of its branches
+                    // cannot fire here. `NeedsWrapperDelegate` is ARM32-only and
+                    // instance-virtual-only (comdelegate.cpp:2053); the open path's virtualisation
+                    // sub-branch needs a virtual target on a reference type, which the refusal
+                    // below rejects; and the `SetMethodBase` tail fires only for a collectible
+                    // `LoaderAllocator`, of which PawPrint has none (`LoaderAllocator.fs`). For a
+                    // dynamic method `_methodBase` still ends up holding the `DynamicMethod`, which
+                    // `DynamicMethod.CreateDelegate` assigns in managed code straight after this
+                    // QCall returns via `StoreDynamicMethod`; for a metadata method
+                    // `Delegate.GetMethodImpl` asks `Delegate_FindMethodHandle` instead.
                     //
                     // What is left is the field write, and it is where PawPrint's delegate
                     // representation diverges from CoreCLR's: see docs/divergences.md. CoreCLR's
@@ -654,7 +857,11 @@ module NativeDelegate =
                     // `_methodPtr` and the real code address in `_methodPtrAux`. PawPrint has no
                     // shuffle thunks, and `IlMachineRuntimeMetadata.executeDelegateConstructor`
                     // already puts the target in `_target` and the method in `_methodPtr` for
-                    // *every* delegate; this follows that convention.
+                    // *every* delegate; this follows that convention. Writing null rather than the
+                    // delegate itself is what keeps `d.Target` truthful, since
+                    // `Delegate.GetTarget` is `_methodPtrAux == 0 ? _target : null` and PawPrint's
+                    // aux is always zero; measured, it also keeps an open reflection-built delegate
+                    // `Equals` to an `ldftn`-built one over the same method.
                     let delegateTypeHandle =
                         AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes ctx.BaseClassTypes.DelegateType
 
@@ -676,6 +883,81 @@ module NativeDelegate =
                     | DelegateBindingShape.Open, None
                     | DelegateBindingShape.Closed, _ -> ()
 
+                    let state, methodPtr =
+                        match bindTarget with
+                        | BindTarget.Dynamic dynamicHandle -> state, FunctionPointerTarget.Dynamic dynamicHandle
+                        | BindTarget.Metadata (method, declaringType) ->
+
+                        match shape with
+                        | DelegateBindingShape.Open ->
+                            // "Use stub dispatch for all virtuals" (comdelegate.cpp:1236): CoreCLR
+                            // leaves an open delegate over a virtual method to resolve at
+                            // *invocation*, through a virtual call stub in `_methodPtrAux` with
+                            // `_invocationCount` holding the `MethodDesc`.
+                            // `AbstractMachine.dispatchDelegateInvoke` calls whatever `_methodPtr`
+                            // names without virtualising, so binding the declared method here would
+                            // silently ignore an override -- measured, real .NET does dispatch per
+                            // argument for this shape. That is issue #959's representation gap, and
+                            // `Delegate_FindMethodHandle` already refuses a nonzero
+                            // `_invocationCount` for the same reason.
+                            //
+                            // CoreCLR exempts a value-type declaring type from that branch
+                            // (`&& !pTargetMethod->GetMethodTable()->IsValueType()`) and treats it
+                            // "like non-virtual methods", so a struct's override -- which Roslyn
+                            // leaves non-`final`, measured -- is served rather than refused. A
+                            // `final` virtual on a reference type is served too, by
+                            // `DispatchesVirtually` being false for it: CoreCLR takes its stub path,
+                            // but a final method's slot always resolves to itself.
+                            if
+                                method.DispatchesVirtually
+                                && IlMachineState.isReferenceTypeHandle ctx.BaseClassTypes operation state declaringType
+                            then
+                                failwith
+                                    $"TODO: %s{operation} was asked for an open delegate over the virtual method %s{method.Name} on the reference type %s{MethodOwner.describe method.Owner}; CoreCLR resolves that at invocation through a virtual call stub in _methodPtrAux, which PawPrint does not model (issue #959), so binding the declared method would ignore an override"
+
+                            state, FunctionPointerTarget.Managed method
+                        | DelegateBindingShape.Closed ->
+
+                        // "For virtual methods we can (and should) virtualize the call now (so we
+                        // don't have to insert a thunk to do so at runtime)"
+                        // (comdelegate.cpp:1281-1287). All three of CoreCLR's conjuncts: the target
+                        // is virtual, a receiver was supplied, and its runtime type differs from
+                        // the declaring type. `executeLdvirtftn` binds eagerly for the same reason
+                        // and through the same resolver -- `Delegate.Equals` compares the stored
+                        // `_methodPtr`, so two delegates over receivers of different runtime types
+                        // must hold different pointers -- and it is guest-visible through
+                        // `d.Method`, which reports the override on real .NET.
+                        //
+                        // `DispatchesVirtually` in place of CoreCLR's `IsVirtual()`: the two differ
+                        // only on `final` methods, whose slot always resolves to themselves, so
+                        // skipping the resolution there gives the same method.
+                        match targetAddr with
+                        | Some receiver when method.DispatchesVirtually ->
+                            let receiverType = ManagedHeap.getObjectConcreteType receiver state.ManagedHeap
+
+                            if receiverType = declaringType then
+                                state, FunctionPointerTarget.Managed method
+                            else
+
+                            let state, resolved =
+                                IlMachineStateExecution.tryResolveVirtualImplementation
+                                    ctx.LoggerFactory
+                                    ctx.BaseClassTypes
+                                    ctx.Thread
+                                    method.Generics
+                                    method
+                                    receiverType
+                                    true
+                                    state
+
+                            state, FunctionPointerTarget.Managed (resolved |> Option.defaultValue method)
+                        | Some _
+                        | None ->
+                            // No receiver to virtualise on. A delegate closed over a null receiver
+                            // is legal and reachable, and CoreCLR's `*pRefFirstArg != NULL`
+                            // conjunct is what makes it bind the declared body unvirtualised.
+                            state, FunctionPointerTarget.Managed method
+
                     let heap =
                         state.ManagedHeap
                         |> ManagedHeap.setFieldById
@@ -685,11 +967,7 @@ module NativeDelegate =
                         |> ManagedHeap.setFieldById
                             delegateAddr
                             (delegateField "_methodPtr")
-                            (CliType.Numeric (
-                                CliNumericType.NativeInt (
-                                    NativeIntSource.FunctionPointer (FunctionPointerTarget.Dynamic dynamicHandle)
-                                )
-                            ))
+                            (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodPtr)))
 
                     { state with
                         ManagedHeap = heap
@@ -841,11 +1119,12 @@ module NativeDelegate =
             // MethodInfo. Off a non-generic declaring type that branch is never entered and the
             // answer is correct, so those are served.
             //
-            // No test reaches this: the illegal shape is parked as
-            // `sourcesPure/DelegateOverNullInstanceReceiver.cs`, and the legal open one needs
-            // either raw `ldnull; ldftn; newobj` IL, which the C# harness cannot emit, or
-            // `Delegate.CreateDelegate(Type, MethodInfo)`, which `Delegate_BindToMethodInfo`
-            // refuses first.
+            // Both shapes are parked: the illegal one as
+            // `sourcesPure/DelegateOverNullInstanceReceiver.cs`, and the legal open one as
+            // `sourcesPure/DelegateFindMethodHandleOpenInstanceGeneric.cs`. The legal one became
+            // reachable when `Delegate_BindToMethodInfo` learned to bind a metadata method, which
+            // is what `Delegate.CreateDelegate(Type, MethodInfo)` needs; measured, real .NET
+            // answers `Describe` on `Wrap<string>` where this stops.
             let targetIsNull =
                 let delegateTypeHandle =
                     AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes ctx.BaseClassTypes.DelegateType
