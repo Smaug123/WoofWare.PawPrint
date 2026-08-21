@@ -434,13 +434,19 @@ module NativeRuntimeTypeHelpers =
                 methodTableFor
                 state
 
+        // CoreCLR's field loop (comutilnative.cpp:1637-1657) rejects exactly two things: a
+        // `VALUETYPE` field whose own type is not bit-comparable, and an `R4`/`R8` field, because
+        // -0.0 and 0.0 compare equal while their bits differ. Every other element type — the
+        // integers, `bool`, `char`, `ELEMENT_TYPE_I`/`U` and `ELEMENT_TYPE_PTR` — is accepted.
+        // Object references need no arm of their own: `ContainsGCPointers` has already rejected
+        // the whole type before the loop begins.
         match CliType.unwrapPrimitiveLikeDeep field.Contents with
         | CliType.Numeric numeric ->
             match numeric with
             | CliNumericType.Float32 _
             | CliNumericType.Float64 _
-            | CliNumericType.NativeFloat _
-            | CliNumericType.NativeInt _ -> state, false
+            | CliNumericType.NativeFloat _ -> state, false
+            | CliNumericType.NativeInt _
             | CliNumericType.Int32 _
             | CliNumericType.Int64 _
             | CliNumericType.Int8 _
@@ -449,8 +455,12 @@ module NativeRuntimeTypeHelpers =
             | CliNumericType.UInt16 _ -> state, true
         | CliType.Bool _
         | CliType.Char _ -> state, true
-        | CliType.ObjectRef _
-        | CliType.RuntimePointer _ -> state, false
+        // A pointer field is `ELEMENT_TYPE_PTR`, which CoreCLR accepts. A *byref* field is
+        // spelled the same way in PawPrint's storage, but only a `ByRefLike` type may declare
+        // one, and such a type cannot be boxed — so neither caller of this predicate,
+        // `ValueType.Equals` nor `ValueType.GetHashCode`, can be reached for one.
+        | CliType.RuntimePointer _ -> state, true
+        | CliType.ObjectRef _ -> state, false
         | CliType.ValueType _ -> canCompareValueType seen field.Type state
 
     and canCompareBitsOrUseFastGetHashCodeImpl
@@ -481,6 +491,20 @@ module NativeRuntimeTypeHelpers =
             if not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo) then
                 failwith
                     $"MethodTable_CanCompareBitsOrUseFastGetHashCode: expected value-type MethodTable, got %s{typeInfo.Namespace}.%s{typeInfo.Name}"
+
+            // CoreCLR gives an `[InlineArray]` type two different answers, and PawPrint can give
+            // neither: the QCall throws `NotSupportedException`
+            // (`NotSupported_InlineArrayEqualsGetHashCode`, comutilnative.cpp:1678) before this
+            // walk runs at all, while the internal recursion a *field* of one reaches answers
+            // `FALSE` (:1614). PawPrint would answer from expanded storage slots — N repeats of
+            // the one declared field (`InlineArrayStorage.expand`) — which is neither. Both of
+            // this predicate's callers, `ValueType.Equals` and `ValueType.GetHashCode`, would
+            // then diverge silently, so refuse.
+            match InlineArrayStorage.effectiveLength true typeInfo.InlineArrayLength with
+            | Some length ->
+                failwith
+                    $"TODO: MethodTable_CanCompareBitsOrUseFastGetHashCode was asked about the `[InlineArray(%d{length})]` type %s{typeInfo.Namespace}.%s{typeInfo.Name}. CoreCLR throws NotSupportedException here and answers FALSE for a field of one; PawPrint models neither, and answering from the expanded storage slots would make ValueType.Equals and ValueType.GetHashCode disagree with real .NET silently"
+            | None -> ()
 
             let zero, state =
                 IlMachineState.cliTypeZeroOfHandle state baseClassTypes methodTableFor

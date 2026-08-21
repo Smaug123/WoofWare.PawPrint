@@ -63,6 +63,9 @@ module NativeQCall =
             "ModuleHandle_ResolveMethod", NativeRuntimeType.tryExecuteQCall "ModuleHandle_ResolveMethod"
             "MethodTable_CanCompareBitsOrUseFastGetHashCode",
             NativeRuntimeType.tryExecuteQCall "MethodTable_CanCompareBitsOrUseFastGetHashCode"
+            // The other half of `ValueType.GetHashCode`: reached exactly when the predicate
+            // above says no, and reports which single field to hash instead of the whole image.
+            "ValueType_GetHashCodeStrategy", NativeValueType.tryExecuteQCall "ValueType_GetHashCodeStrategy"
             "TypeHandle_GetCorElementType", NativeRuntimeType.tryExecuteQCall "TypeHandle_GetCorElementType"
             "TypeHandle_CanCastTo_NoCacheLookup", NativeRuntimeType.tryExecuteQCall "TypeHandle_CanCastTo_NoCacheLookup"
             // The *object*-castability sibling of the above. Reachable from ordinary guest code
