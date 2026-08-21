@@ -248,8 +248,11 @@ type MethodBody<'methodVars> =
     | RuntimeProvided of RuntimeBehaviour
 
     /// <summary>
-    /// Marked <c>[MethodAttributes.Abstract]</c> — virtual without a body. Direct dispatch
-    /// is illegal; reachable only via mis-resolved <c>callvirt</c>.
+    /// Marked <c>[MethodAttributes.Abstract]</c> — virtual without a body. Direct dispatch is
+    /// illegal, and a <c>callvirt</c> reaching one means dispatch mis-resolved; but a *delegate*
+    /// can legitimately name one, since <c>Delegate.CreateDelegate</c> closed over a null receiver
+    /// has nothing to virtualise on. Real .NET binds that and raises
+    /// <c>BadImageFormatException</c> at invocation, which delegate dispatch reproduces.
     /// </summary>
     | Abstract
 

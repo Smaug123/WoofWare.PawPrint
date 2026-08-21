@@ -386,3 +386,36 @@ invoked. There is no bind-time arm to add — CoreCLR checks it in `GetDelegateC
 (comdelegate.cpp:2791), on the JIT's `ldftn`/`newobj` path — so the refusal belongs in
 `dispatchDelegateInvoke`, and it cannot be a `sourcesPure` check because the oracle run does not
 exit 0.
+
+## Fallout found by review after implementation
+
+Codex found one shape this change made reachable and got wrong, and it is the same class of problem
+as the `Delegate_FindMethodHandle` guard: a target that only the metadata path can name.
+
+An **abstract** instance method closed over a **null** receiver. That is the one route to an abstract
+target — a non-null receiver's runtime type is necessarily a subclass of the abstract declaring type,
+so binding virtualises to a concrete override, and the open shape is refused — and it reached
+`AbstractMachine.executeOneStep`'s internal `BUG: reached executeOneStep for abstract method`
+invariant, from ordinary guest code.
+
+Measured on real .NET 10: the binding *succeeds*, and invocation raises a catchable
+`BadImageFormatException` with `HResult = 0x8007000B` (`COR_E_BADIMAGEFORMAT`). An interface member
+behaves identically, being abstract for the same reason. A non-abstract virtual closed over null
+runs normally, so the failure is about the absent body rather than the null receiver.
+
+Fixed at the faithful place — the invocation, not the binding — in `dispatchDelegateInvoke`, reusing
+the frame-pop-then-raise ordering the dynamic-target failure already establishes (a stub frame still
+on the stack lands in the guest's trace, which `DelegateCctorFailureTraceHasNoStubFrame.cs` pins).
+That ordering is now a named local rather than inline, so both failures share it.
+
+`sourcesPure/DelegateToAbstractMethodOverNull.cs` pins it, with the two controls above. Its message
+check asserts only the `0x8007000B` numeral: the prose around it is the CLR's localisable HRESULT
+text, so a machine with a non-English UI culture would report different words for the same failure,
+and a test on the whole string would depend on the machine that ran it. All three mutants die at a
+named check — removing the abstract branch (check 2, via the `BUG:` invariant), raising the wrong
+exception type (check 2), and using the parameterless constructor's message instead of the CLR's
+(check 4).
+
+Two comments were falsified by this and are part of the diff: `MethodBody.Abstract`'s docstring said
+an abstract body is "reachable only via mis-resolved `callvirt`", and the `BUG:` message said virtual
+dispatch was the only thing that should have prevented it.
