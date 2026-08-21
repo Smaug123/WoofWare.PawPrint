@@ -455,17 +455,18 @@ module NativeRuntimeMethodHandle =
     /// The declaring type of a metadata method handle, narrowed to a closed instantiation.
     ///
     /// For consumers that can only work under a concrete instantiation. An open generic type
-    /// definition is refused rather than approximated: resolving a signature or binding an
-    /// invocation under `G&lt;&gt;` needs a formal type context — the definition's own type
-    /// variables — and `ConcreteTypeHandle` cannot express one. Consumers that need only the
-    /// *layout* of a definition should ask `VirtualSlotLayout.slotTableOfDefinition`, which
-    /// carries a formal context of its own.
+    /// definition is refused rather than approximated: binding an invocation under `G&lt;&gt;`
+    /// needs a formal type context — the definition's own type variables — and
+    /// `ConcreteTypeHandle` cannot express one. Consumers that need only the *layout* of a
+    /// definition should ask `VirtualSlotLayout.slotTableOfDefinition`, and those that need the
+    /// types a definition's signature *reflects as* should ask
+    /// `NativeRuntimeTypeHelpers.reflectedTypeTarget`; both carry a formal context of their own.
     let requireClosedDeclaringType (operation : string) (identity : MetadataMethodIdentity) : ConcreteTypeHandle =
         match identity.GetDeclaringType () with
         | RuntimeTypeHandleTarget.Closed handle -> handle
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringIdentity ->
             failwith
-                $"TODO: %s{operation} on a method declared by open generic type definition %O{declaringIdentity}; this needs the definition's own type variables as a substitution context, which ConcreteTypeHandle cannot express -- the same capability RuntimeTypeHandle.GetNumVirtuals lacks for an open definition"
+                $"TODO: %s{operation} on a method declared by open generic type definition %O{declaringIdentity}; this needs the definition's own type variables as a substitution context, which ConcreteTypeHandle cannot express -- reflection over such a definition names them with RuntimeTypeHandleTarget.GenericParameter instead, which no runtime type can stand in for here"
         | other ->
             // `MethodHandleRegistry` admits only `Closed` and `OpenGenericTypeDefinition` when
             // minting, so any other shape here means a handle was built outside that chokepoint.
@@ -785,6 +786,42 @@ module NativeRuntimeMethodHandle =
             // Interop.BOOL is int-backed with FALSE=0, TRUE=1.
             let state =
                 let ret = if visible then 1 else 0
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "RuntimeMethodHandle_GetIsCollectible",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
+          "GetIsCollectible",
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
+            handleGenerics.IsEmpty && boolGenerics.IsEmpty
+            ->
+            let operation = "RuntimeMethodHandle.GetIsCollectible"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            // CoreCLR is `pMethod->GetLoaderAllocator()->IsCollectible()`
+            // (runtimehandles.cpp:1294), on a `MethodDesc*` it asserts non-null. Resolving the
+            // handle keeps that precondition; the resolved method is not consulted, because with
+            // one loader allocator the answer cannot depend on it. `FromDynamic` is admitted here
+            // rather than refused: the resolution below accepts either kind, and a dynamic method
+            // never reaches this QCall anyway -- `DynamicMethod` does not override
+            // `MemberInfo.IsCollectible`, so it answers `true` from the managed default without
+            // asking the runtime.
+            resolveMethodHandleFromArg operation state instruction.Arguments.[0]
+            |> ignore<MethodHandle>
+
+            // Interop.BOOL is int-backed with FALSE = 0 and TRUE = 1.
+            let state =
+                let ret =
+                    if LoaderAllocator.isCollectible LoaderAllocator.Global then
+                        1
+                    else
+                        0
+
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some

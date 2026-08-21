@@ -312,8 +312,12 @@ type CliType =
         | CliType.Bool b -> [| b |]
         | CliType.Char (high, low) -> [| low ; high |]
         | CliType.ObjectRef None -> Array.zeroCreate NATIVE_INT_SIZE
-        | CliType.ObjectRef (Some i) -> failwith "todo"
-        | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.ObjectRef (Some addr) ->
+            failwith
+                $"TODO: CliType.ToBytes cannot render the non-null object reference %O{addr} as bytes; PawPrint models a reference as an opaque handle rather than an address, so any value containing one has no byte image (see CliType.ByteAddressability)"
+        | CliType.RuntimePointer pointer ->
+            failwith
+                $"TODO: CliType.ToBytes cannot render the runtime pointer %O{pointer} as bytes; PawPrint models a managed pointer as a provenance-carrying identity rather than an address, so it has no byte image (see CliType.ByteAddressability, and CliType.SymbolicBytesAt for the byref byte-view reader that can name one instead)"
         | CliType.ValueType cvt -> CliValueType.ToBytes cvt
 
     static member OfBytesAsType (targetType : ConcreteTypeHandle) (bytes : byte[]) : CliType = failwith "TODO"

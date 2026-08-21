@@ -49,6 +49,9 @@ module TestVirtualFileSystemAgainstHost =
     extern int private close(int fd)
 
     [<DllImport("libc", SetLastError = true)>]
+    extern int private mkdir(string path, uint32 mode)
+
+    [<DllImport("libc", SetLastError = true)>]
     extern int private ftruncate(int fd, int64 length)
 
     [<DllImport("libc", SetLastError = true)>]
@@ -148,9 +151,42 @@ module TestVirtualFileSystemAgainstHost =
     /// rooted target would resolve against the real root on the host and
     /// against the model's root in the model, which is a divergence created by
     /// the test rather than found by it.
-    let private directories = [ "d" ; "d/sub" ]
+    let private directories =
+        [
+            "d"
+            "d/sub"
+            "ns"
+            "ns/kid"
+            "ns/kid/gk"
+            "cls677"
+            "cls677/kid"
+            "cls500"
+            "cls500/kid"
+        ]
 
-    let private files = [ "f" ; "d/g" ]
+    /// Directories whose mode is *not* the default, and the mode each ends up
+    /// with. Applied after every directory, file and symlink exists, because
+    /// three of them cannot be written or searched once narrowed.
+    ///
+    /// `ns` is the plain unsearchable case, two levels deep so that a walk can
+    /// fail on an intermediate as well as on a holding directory. The other two
+    /// are what separate "the owner triple decides" from "any class decides":
+    /// measured on both kernels against a directory owned by the calling uid,
+    /// 0o677 is EACCES to its owner though group and other may search it, and
+    /// 0o500 is searchable though nobody else may.
+    ///
+    /// Every mode here keeps the owner's *read* bit, and must. The creating-open
+    /// comparison stops at `CreatingOpenRules.verdict`, which does not model the
+    /// access-mode permission check the handler applies afterwards — so a
+    /// directory this caller could not open `O_RDONLY` would make the real
+    /// `open(2)` fail for a reason the model here never sees. 0o100 is the
+    /// sharpest search-only mode and is exactly that case; it is pinned in
+    /// `TestVirtualFileSystem` instead, where the comparison is against the walk
+    /// alone.
+    let private narrowedDirectories =
+        [ "ns", 0o666 ; "cls677", 0o677 ; "cls500", 0o500 ]
+
+    let private files = [ "f" ; "d/g" ; "ns/file" ]
 
     let private symlinks =
         [
@@ -174,6 +210,10 @@ module TestVirtualFileSystemAgainstHost =
             "selfext", "selfext/x"
             // A target no path parser may normalise, checked verbatim.
             "weird", "a//b/"
+            // Into the unsearchable directory's interior. A component spliced in
+            // from a symlink target is looked up like any other, so this must
+            // earn the same EACCES that naming it directly does.
+            "lns", "ns"
         ]
 
     /// The paths resolved through both worlds.
@@ -219,6 +259,11 @@ module TestVirtualFileSystemAgainstHost =
             "ldslash/sub"
             "up"
             "cycleA"
+            // A cyclic link with a trailing separator. Every lookup traverses it
+            // and gives ELOOP, as does Darwin's `mkdir`; Linux's `mkdir` never
+            // dereferences it and gives EEXIST, which is the row that separates
+            // `TrailingSeparatorPolicy.Ignore` from `Demand`.
+            "cycleA/"
             "selfext"
             // readlink(2) does not follow a *final* symlink, so a cycle only
             // shows up as ELOOP when it sits part-way along a path. Without
@@ -226,6 +271,25 @@ module TestVirtualFileSystemAgainstHost =
             "cycleA/x"
             "selfext/x"
             "weird"
+            // Through an unsearchable directory: the object itself resolves
+            // (nothing looks inside it), while every path *through* it is
+            // EACCES — whether the component exists, is missing, is over-long,
+            // or is reached by splicing a symlink target.
+            "ns"
+            "ns/"
+            "ns/kid"
+            "ns/kid/gk"
+            "ns/file"
+            "ns/nx"
+            "ns/."
+            "ns/.."
+            "lns/kid"
+            // The class-asymmetric pair: an ordinary corpus cannot tell "the
+            // owner triple decides" from "any execute bit decides".
+            "cls677"
+            "cls677/kid"
+            "cls500"
+            "cls500/kid"
         ]
 
     // ------------------------------------------------------------ the host side
@@ -240,6 +304,38 @@ module TestVirtualFileSystemAgainstHost =
         else
             root + "/" + relative
 
+    /// `UnixFileMode`'s members are numbered as the mode bits themselves, so the
+    /// conversion each way is a cast rather than a table. Asserted by
+    /// ``UnixFileMode is numbered as the raw mode bits`` below, so an upstream
+    /// renumbering fails there rather than silently comparing the wrong bits.
+    let private unixFileModeOf (raw : int) : UnixFileMode = enum<UnixFileMode> raw
+
+    let private rawModeOf (mode : UnixFileMode) : int = int mode
+
+    /// Gives `path` the mode, reporting whether it took. A refusal is not a
+    /// failure of the thing under test: Nix's Linux build sandbox answers EPERM
+    /// to any `chmod` setting S_ISUID or S_ISGID ("Prevent builders from
+    /// creating setuid/setgid binaries", in `linux-derivation-builder.cc`), and
+    /// a kernel may also drop a set-ID bit silently. Either way the row cannot
+    /// be compared, so it is dropped and counted rather than believed.
+    let private trySetMode (path : string) (mode : int) : bool =
+        try
+            File.SetUnixFileMode (path, unixFileModeOf mode)
+            rawModeOf (File.GetUnixFileMode path) = mode
+        with
+        | :? UnauthorizedAccessException
+        | :? IOException -> false
+
+    /// The privilege the model must be asked at, so that it answers the question
+    /// this host's kernel is actually answering. Root ignores every permission
+    /// bit, so under a root test host the corpus's EACCES rows go vacuous rather
+    /// than red — the same choice `compareTruncationModes` makes.
+    let private hostPrivilege () : CallerPrivilege =
+        if geteuid () = 0u then
+            CallerPrivilege.Privileged
+        else
+            CallerPrivilege.Unprivileged
+
     let private buildHostTree (root : string) : unit =
         for directory in directories do
             Directory.CreateDirectory (Path.Combine (root, directory))
@@ -253,6 +349,30 @@ module TestVirtualFileSystemAgainstHost =
             // has opinions about targets that do not exist.
             if symlink (target, Path.Combine (root, name)) <> 0 then
                 failwith $"could not create symlink %s{name} -> %s{target}: errno %d{errno ()}"
+
+        for name, mode in narrowedDirectories do
+            // Last, and it has to be: `ns/kid` and `ns/file` cannot be created
+            // once `ns` is unsearchable. A refusal is fatal rather than skipped —
+            // silently keeping 0o755 would make every row below agree for the
+            // wrong reason.
+            if not (trySetMode (Path.Combine (root, name)) mode) then
+                failwith
+                    $"could not set %s{name} to 0o%04o{mode}: this fixture cannot compare a permission rule it was not allowed to set up."
+
+    /// Remove a corpus tree, widening the narrowed directories first.
+    ///
+    /// `Directory.Delete (root, true)` cannot unlink a child of a directory it
+    /// may not search, and every caller wraps its teardown in `try … with _ ->
+    /// ()`. Without this the failure is invisible and each row leaks a
+    /// temporary tree — and the comparison helpers build one *per row*.
+    let private removeHostTree (root : string) : unit =
+        for name, _ in narrowedDirectories do
+            trySetMode (Path.Combine (root, name)) 0o755 |> ignore<bool>
+
+        try
+            Directory.Delete (root, true)
+        with _ ->
+            ()
 
     let private hostOutcome (root : string) (relative : string) : Outcome =
         let path = hostPath root relative
@@ -289,6 +409,10 @@ module TestVirtualFileSystemAgainstHost =
             match
                 VirtualFileSystem.resolveExisting
                     (limits ())
+                    // Privileged: this is the builder placing an inode, not a
+                    // guest looking one up. `ns/kid/gk` could not be reached
+                    // otherwise, since `ns` is narrowed below.
+                    CallerPrivilege.Privileged
                     (VirtualFileSystem.root vfs)
                     SymlinkPolicy.Follow
                     (UnixPath.parseOrFail "test" relative)
@@ -309,13 +433,22 @@ module TestVirtualFileSystemAgainstHost =
             | Ok value -> value
             | Error error -> failwith $"could not create %s{what} in the model: %O{error}"
 
+        let narrowed = Map.ofList narrowedDirectories
+
         for directory in directories do
             let parent, name = split directory
 
+            // The narrowed ones are created *with* their mode rather than
+            // chmod'ed afterwards, since this module has no chmod; the host tree
+            // narrows last for the opposite reason. Both end at the same graph,
+            // because a builder applies no permission rule of its own.
+            let permissions =
+                match Map.tryFind directory narrowed with
+                | Some mode -> PermissionBits.parseOrFail "test" mode
+                | None -> PermissionBits.defaultForDirectory
+
             let _, updated =
-                apply
-                    (VirtualFileSystem.createDirectory parent name PermissionBits.defaultForDirectory buildTime vfs)
-                    directory
+                apply (VirtualFileSystem.createDirectory parent name permissions buildTime vfs) directory
 
             vfs <- updated
 
@@ -353,6 +486,7 @@ module TestVirtualFileSystemAgainstHost =
         match
             VirtualFileSystem.resolveExisting
                 (limits ())
+                (hostPrivilege ())
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.NoFollowFinal
                 (UnixPath.parseOrFail "test" relative)
@@ -421,10 +555,7 @@ module TestVirtualFileSystemAgainstHost =
                 failwith
                     $"This kernel resolves a chain of %d{limit} symlinks and refuses %d{limit + 1}, but SimulatedUnixPlatform.pathLimits says %O{hostPlatform ()} permits %d{modelled}. The model would disagree with a real kernel of the flavour it claims to be; %d{limit} is the measured answer."
         finally
-            try
-                Directory.Delete (root, true)
-            with _ ->
-                ()
+            removeHostTree root
 
     /// Names whose treatment separates the three implementations anyone might
     /// write: counting bytes, counting characters, and counting UTF-16 units.
@@ -485,10 +616,7 @@ module TestVirtualFileSystemAgainstHost =
                     failwith
                         $"%s{label} (%d{Text.Encoding.UTF8.GetByteCount candidate} UTF-8 bytes, %d{candidate.Length} UTF-16 units): this kernel %s{verb hostPermits} it, but PathLimits for %O{hostPlatform ()} %s{verb modelPermits} it."
         finally
-            try
-                Directory.Delete (root, true)
-            with _ ->
-                ()
+            removeHostTree root
 
     /// The longest pathname argument this kernel accepts, in bytes. Every
     /// component is "." so that `NAME_MAX` cannot be what refuses it, and the
@@ -539,10 +667,7 @@ module TestVirtualFileSystemAgainstHost =
                 failwith
                     $"This kernel accepts a pathname argument of %d{usable} bytes and refuses %d{usable + 1}, so its PATH_MAX is %d{usable + 1}; SimulatedUnixPlatform.pathLimits says %O{hostPlatform ()} has %d{modelled}."
         finally
-            try
-                Directory.Delete (root, true)
-            with _ ->
-                ()
+            removeHostTree root
 
     // ------------------------------------------------- symlink splice length
 
@@ -638,6 +763,7 @@ module TestVirtualFileSystemAgainstHost =
                             match
                                 VirtualFileSystem.resolve
                                     (limits ())
+                                    CallerPrivilege.Privileged
                                     (VirtualFileSystem.root vfs)
                                     SymlinkPolicy.Follow
                                     (UnixPath.parseOrFail "test" ("/" + linkName + suffix))
@@ -665,10 +791,7 @@ module TestVirtualFileSystemAgainstHost =
             // vacuously hold.
             compared |> shouldBeGreaterThan 30
         finally
-            try
-                Directory.Delete (root, true)
-            with _ ->
-                ()
+            removeHostTree root
 
     // ------------------------------------------------------------------ the test
 
@@ -728,11 +851,19 @@ module TestVirtualFileSystemAgainstHost =
             observed
             |> List.contains (Outcome.Failed (hostErrno UnixError.ELOOP))
             |> shouldEqual true
+
+            // The corpus's unsearchable directories must actually be
+            // unsearchable. Without this a `chmod` that silently did nothing
+            // would leave every permission row agreeing for the wrong reason —
+            // and `buildHostTree` would have to have failed loudly for that to
+            // happen, so this is the second line of defence rather than the
+            // first. Root searches anything, so it cannot make the observation.
+            if geteuid () <> 0u then
+                observed
+                |> List.contains (Outcome.Failed (hostErrno UnixError.EACCES))
+                |> shouldEqual true
         finally
-            try
-                Directory.Delete (root, true)
-            with _ ->
-                ()
+            removeHostTree root
 
     // --------------------------------------------------- creating opens
 
@@ -798,6 +929,7 @@ module TestVirtualFileSystemAgainstHost =
         match
             VirtualFileSystem.resolveFull
                 (limits ())
+                (hostPrivilege ())
                 (VirtualFileSystem.root vfs)
                 policy
                 rules.TrailingSeparator
@@ -807,10 +939,10 @@ module TestVirtualFileSystemAgainstHost =
         | Error error -> CreatingOutcome.Failed (hostErrno error)
         | Ok resolution ->
 
-        // `privileged = false`: no directory in the corpus has its owner write
-        // or search bit clear, so the EACCES arm is unreachable here and the two
-        // worlds cannot disagree about it even if this test runs as root.
-        match CreatingOpenRules.verdict rules false true exclusive resolution vfs with
+        // At the host's own privilege: the corpus *does* contain directories
+        // whose owner bits are clear, so this arm is reachable and the two
+        // worlds would disagree under a root host if it were hardcoded.
+        match CreatingOpenRules.verdict rules (hostPrivilege ()) true exclusive resolution vfs with
         | CreatingOpenVerdict.Refuse error -> CreatingOutcome.Failed (hostErrno error)
         | CreatingOpenVerdict.Create _ -> CreatingOutcome.Created
         | CreatingOpenVerdict.OpenExisting _ -> CreatingOutcome.Opened
@@ -839,10 +971,7 @@ module TestVirtualFileSystemAgainstHost =
             let vfs = buildModel ()
             hostCreatingOutcome root relative exclusive, modelCreatingOutcome vfs relative exclusive
         finally
-            try
-                Directory.Delete (root, true)
-            with _ ->
-                ()
+            removeHostTree root
 
     [<Test>]
     let ``a creating open decides exactly as this kernel does`` () : unit =
@@ -920,14 +1049,6 @@ module TestVirtualFileSystemAgainstHost =
 
     // ------------------------------------------------------- truncation's mode
 
-    /// `UnixFileMode`'s members are numbered as the mode bits themselves, so the
-    /// conversion each way is a cast rather than a table. Asserted by
-    /// ``UnixFileMode is numbered as the raw mode bits`` below, so an upstream
-    /// renumbering fails there rather than silently comparing the wrong bits.
-    let private unixFileModeOf (raw : int) : UnixFileMode = enum<UnixFileMode> raw
-
-    let private rawModeOf (mode : UnixFileMode) : int = int mode
-
     [<Test>]
     let ``UnixFileMode is numbered as the raw mode bits`` () : unit =
         int UnixFileMode.SetUser |> shouldEqual 0o4000
@@ -977,20 +1098,6 @@ module TestVirtualFileSystemAgainstHost =
     let private ordinaryModeProbes : int list =
         [ 0o0644 ; 0o0755 ; 0o0600 ; 0o0666 ; 0o1755 ]
 
-    /// Gives `path` the mode, reporting whether it took. A refusal is not a
-    /// failure of the thing under test: Nix's Linux build sandbox answers EPERM
-    /// to any `chmod` setting S_ISUID or S_ISGID ("Prevent builders from
-    /// creating setuid/setgid binaries", in `linux-derivation-builder.cc`), and
-    /// a kernel may also drop a set-ID bit silently. Either way the row cannot
-    /// be compared, so it is dropped and counted rather than believed.
-    let private trySetMode (path : string) (mode : int) : bool =
-        try
-            File.SetUnixFileMode (path, unixFileModeOf mode)
-            rawModeOf (File.GetUnixFileMode path) = mode
-        with
-        | :? UnauthorizedAccessException
-        | :? IOException -> false
-
     /// Truncates a fresh four-byte file at each mode and compares what the
     /// kernel left behind against `PermissionBits.afterTruncation`. Returns how
     /// many rows were compared, which is not necessarily the length of `modes`.
@@ -999,9 +1106,9 @@ module TestVirtualFileSystemAgainstHost =
 
         let privilege =
             if geteuid () = 0u then
-                WritePrivilege.Privileged
+                CallerPrivilege.Privileged
             else
-                WritePrivilege.Unprivileged
+                CallerPrivilege.Unprivileged
 
         let mutable compared = 0
 
@@ -1053,9 +1160,9 @@ module TestVirtualFileSystemAgainstHost =
 
         let privilege =
             if geteuid () = 0u then
-                WritePrivilege.Privileged
+                CallerPrivilege.Privileged
             else
-                WritePrivilege.Unprivileged
+                CallerPrivilege.Unprivileged
 
         let mutable compared = 0
 
@@ -1191,6 +1298,248 @@ module TestVirtualFileSystemAgainstHost =
     /// The pinned runtime source only exists inside the Nix devshell, so a plain
     /// `dotnet test` in a non-Nix checkout skips rather than fails. Same shape
     /// as `TestUnixError.requireRuntimeSrc`, which is private to its own module.
+    // --------------------------------------------------------------- mkdir
+
+    /// What a `mkdir(2)` did, in terms both worlds can express.
+    [<RequireQualifiedAccess>]
+    type private MkDirOutcome =
+        /// The call bound a new directory. *Which* name it bound is not recorded
+        /// here — on Darwin `mkdir("dang/")` binds the link's target rather than
+        /// anything the path names — because the host side cannot say. That
+        /// identity is pinned instead by `MkDirRules.verdict`'s unit rows, which
+        /// see the bound name directly, and by the Darwin wiring guest, which
+        /// looks for the target afterwards.
+        | Created
+        /// The call failed with this errno.
+        | Failed of errno : int
+
+    let private hostMkDirOutcome (root : string) (relative : string) : MkDirOutcome =
+        if mkdir (hostPath root relative, 0o777u) = 0 then
+            MkDirOutcome.Created
+        else
+            MkDirOutcome.Failed (errno ())
+
+    let private modelMkDirOutcome (vfs : VirtualFileSystem) (relative : string) : MkDirOutcome =
+        let rules = SimulatedUnixPlatform.mkDirRules (hostPlatform ())
+
+        match
+            VirtualFileSystem.resolveFull
+                (limits ())
+                (hostPrivilege ())
+                (VirtualFileSystem.root vfs)
+                SymlinkPolicy.NoFollowFinal
+                rules.TrailingSeparator
+                (UnixPath.parseOrFail "test" relative)
+                vfs
+        with
+        | Error error -> MkDirOutcome.Failed (hostErrno error)
+        | Ok resolution ->
+
+        // At the host's own privilege, for the same reason as the creating-open
+        // comparison: the corpus contains directories this caller may not write
+        // or search, so the answer depends on who is asking.
+        match MkDirRules.verdict (hostPrivilege ()) resolution vfs with
+        | MkDirVerdict.Refuse error -> MkDirOutcome.Failed (hostErrno error)
+        | MkDirVerdict.Create _ -> MkDirOutcome.Created
+
+    /// `probePaths`, less the one path this comparison structurally cannot make.
+    ///
+    /// "/" is the host's real root here, since every other path is prefixed with
+    /// the temporary directory; `mkdir("/")` would be asking the machine's root
+    /// rather than the corpus's. The model's answer for a path that consumed no
+    /// component at all is pinned in `TestVirtualFileSystem` instead, against
+    /// the measurement (EEXIST on both).
+    let private mkDirProbePaths = probePaths |> List.filter (fun path -> path <> "/")
+
+    /// Run one `mkdir` through both worlds, each built fresh — `mkdir` mutates,
+    /// so no two rows may share a tree.
+    let private compareMkDir (relative : string) : MkDirOutcome * MkDirOutcome =
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-mkdir-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            buildHostTree root
+            let vfs = buildModel ()
+            hostMkDirOutcome root relative, modelMkDirOutcome vfs relative
+        finally
+            removeHostTree root
+
+    [<Test>]
+    let ``mkdir decides exactly as this kernel does`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // The rows that matter most here are the ones the two kernels answer
+        // differently, and they are all trailing-separator rows: "f/", "lf/",
+        // "dang/" and "cycleA/" are EEXIST on Linux — whose creating lookup
+        // never dereferences the last component — and ENOTDIR, ENOTDIR, a
+        // *creation*, and ELOOP on Darwin. macOS locally and Linux in CI each
+        // falsify their own column.
+        let mismatches =
+            [
+                for relative in mkDirProbePaths do
+                    let expected, actual = compareMkDir relative
+
+                    if expected <> actual then
+                        yield $"mkdir %s{relative}: kernel said %A{expected}, model said %A{actual}"
+            ]
+
+        if not (List.isEmpty mismatches) then
+            let rendered = String.Join (Environment.NewLine, mismatches)
+
+            failwith $"The model disagrees with this kernel about mkdir:%s{Environment.NewLine}%s{rendered}"
+
+    [<Test>]
+    let ``the mkdir corpus reaches every verdict this kernel can give`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // Without this the comparison above could pass by never creating
+        // anything, or by never provoking a refusal. Stated against the
+        // *kernel's* answers rather than the model's, so it cannot be satisfied
+        // by the model agreeing with itself.
+        let observed =
+            mkDirProbePaths
+            |> List.map (fun relative -> fst (compareMkDir relative))
+            |> List.distinct
+
+        observed |> List.contains MkDirOutcome.Created |> shouldEqual true
+
+        observed
+        |> List.contains (MkDirOutcome.Failed (hostErrno UnixError.EEXIST))
+        |> shouldEqual true
+
+        observed
+        |> List.contains (MkDirOutcome.Failed (hostErrno UnixError.ENOENT))
+        |> shouldEqual true
+
+        // The divergent verdicts, asserted per flavour so that the corpus cannot
+        // quietly lose the rows which separate the two kernels. Darwin resolves
+        // a trailing separator as a lookup would, so it alone reaches ENOTDIR
+        // (through "f/" and "lf/") and ELOOP (through "cycleA/"); Linux answers
+        // EEXIST for all three, which the shared assertion above already covers.
+        if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
+            observed
+            |> List.contains (MkDirOutcome.Failed (hostErrno UnixError.ENOTDIR))
+            |> shouldEqual true
+
+            observed
+            |> List.contains (MkDirOutcome.Failed (hostErrno UnixError.ELOOP))
+            |> shouldEqual true
+        else
+            // Linux's own ENOTDIR row: a path *through* a regular file, where the
+            // walk fails before the last component and the creating lookup never
+            // gets a say.
+            observed
+            |> List.contains (MkDirOutcome.Failed (hostErrno UnixError.ENOTDIR))
+            |> shouldEqual true
+
+    /// The umask this test host is actually running under, measured rather than
+    /// asked for: `umask(2)` is process-global, and reading it means setting it,
+    /// which would race every other fixture. A directory created with mode 0o777
+    /// comes back with exactly the bits the umask left, so the complement of
+    /// what a fresh one reports *is* the umask.
+    let private observedUmask (root : string) : PermissionBits =
+        let path = Path.Combine (root, "umask-probe")
+
+        if mkdir (path, 0o777u) <> 0 then
+            failwith $"mkdir(%s{path}, 0o777) failed: errno %d{errno ()}"
+
+        0o777 &&& ~~~(rawModeOf (File.GetUnixFileMode path))
+        |> PermissionBits.parseOrFail "test"
+
+    /// Creates a directory at each mode inside `parent` and compares what the
+    /// kernel left behind against `MkDirRules.createdPermissions`. Returns how
+    /// many rows were compared.
+    let private compareMkDirModes (root : string) (parent : string) (modes : int list) : int =
+        let rules = SimulatedUnixPlatform.mkDirRules (hostPlatform ())
+        let umask = observedUmask root
+
+        let parentBits =
+            rawModeOf (File.GetUnixFileMode parent) |> PermissionBits.parseOrFail "test"
+
+        let mutable compared = 0
+
+        for mode in modes do
+            let path = Path.Combine (parent, $"m%04o{mode}")
+
+            if mkdir (path, uint32 mode) <> 0 then
+                failwith $"mkdir(%s{path}, 0o%04o{mode}) failed: errno %d{errno ()}"
+
+            let kernelSaid = rawModeOf (File.GetUnixFileMode path)
+
+            let modelSaid =
+                MkDirRules.createdPermissions rules parentBits umask mode
+                |> PermissionBits.toInt
+
+            if kernelSaid <> modelSaid then
+                failwith
+                    $"mkdir at mode 0o%05o{mode} inside a 0o%04o{PermissionBits.toInt parentBits} directory: this kernel made it 0o%04o{kernelSaid} but MkDirRules.createdPermissions says 0o%04o{modelSaid} under umask 0o%04o{PermissionBits.toInt umask}."
+
+            compared <- compared + 1
+
+        compared
+
+    /// Every mode worth asking about: the ordinary one CoreLib passes, the three
+    /// upper bits one at a time, all of them at once, one above the permission
+    /// word, and zero.
+    let private mkDirModeProbes : int list =
+        [ 0o777 ; 0o7777 ; 0o1777 ; 0o2777 ; 0o4777 ; 0o10777 ; 0o666 ; 0o000 ]
+
+    [<Test>]
+    let ``a new directory keeps exactly the mode bits this kernel keeps`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-mkdir-mode-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            // The whole point of the row set: `mkdir`'s mask is not `open`'s.
+            // Linux keeps the sticky bit and drops both set-ID bits, so 0o7777
+            // lands as 0o1755 here where a creating open lands 0o7755.
+            compareMkDirModes root root mkDirModeProbes
+            |> shouldEqual (List.length mkDirModeProbes)
+        finally
+            removeHostTree root
+
+    [<Test>]
+    let ``a new directory inherits set-group-ID exactly as this kernel does`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-mkdir-sgid-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            let parent = Path.Combine (root, "sgid")
+
+            if mkdir (parent, 0o777u) <> 0 then
+                failwith $"mkdir(%s{parent}) failed: errno %d{errno ()}"
+
+            // Hand it to a group we are in, or `chmod` will drop S_ISGID —
+            // silently, which is exactly how a probe of this shape reads as
+            // "unsupported on this platform" when it is nothing of the kind.
+            if chown (parent, 0xFFFFFFFFu, getegid ()) <> 0 then
+                failwith $"chown(%s{parent}) failed: errno %d{errno ()}"
+
+            if not (trySetMode parent 0o2777) then
+                // A sandbox may refuse the chmod outright. Skipping is honest:
+                // the alternative is measuring a parent that never carried the
+                // bit and concluding the platform does not inherit it.
+                Assert.Ignore "This host would not let the test set S_ISGID on a directory."
+
+            compareMkDirModes root parent mkDirModeProbes
+            |> shouldEqual (List.length mkDirModeProbes)
+        finally
+            removeHostTree root
+
     let private requireRuntimeSrc () : string =
         match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with
         | null

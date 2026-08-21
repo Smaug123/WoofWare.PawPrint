@@ -450,11 +450,25 @@ module NativeSignature =
         else
             withThis
 
-    /// The `SigTypeContext` a method-backed `Signature` resolves its blob against: CoreCLR builds
-    /// it from the declaring type's class instantiation plus
-    /// `pMethodDesc->LoadMethodInstantiation()` (`Signature_Init`, runtimehandles.cpp:1622, and
-    /// `SignatureNative::GetTypeContext`, runtimehandles.h:388). Returns the defining assembly too,
-    /// since token resolution against the blob needs it.
+    /// What ECMA-335 `!i` denotes in a method-backed `Signature`'s blob: CoreCLR takes it from
+    /// `declType.GetClassOrArrayInstantiation()` (`Signature_Init`, runtimehandles.cpp:1622, and
+    /// `SignatureNative::GetTypeContext`, runtimehandles.h:388), which for the typical
+    /// instantiation is the declaring definition's own type variables rather than an instantiation
+    /// of them.
+    ///
+    /// Two cases and not a vector of either kind, because a mixture cannot arise:
+    /// `MethodHandleRegistry` mints a declaring type only as a closed handle or as an open generic
+    /// definition, and under a definition the `i`th argument is always that definition's `i`th
+    /// variable, so it is derivable rather than carried.
+    [<RequireQualifiedAccess>]
+    type private DeclaringTypeContext =
+        /// The declaring type is an instantiation, so each `!i` denotes a runtime type.
+        | Instantiation of typeGenerics : ImmutableArray<ConcreteTypeHandle>
+        /// The declaring type is the generic definition itself.
+        | Definition of definition : ResolvedTypeIdentity
+
+    /// The context a method-backed `Signature` resolves its blob against, plus the defining
+    /// assembly, since token resolution against the blob needs it.
     ///
     /// A generic method *definition* has no representable context: the handle the introduced-method
     /// iterator mints carries empty `MethodGenerics` while the method declares type parameters, and
@@ -468,7 +482,7 @@ module NativeSignature =
         : DumpedAssembly *
           MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> *
           MetadataMethodIdentity *
-          ImmutableArray<ConcreteTypeHandle> *
+          DeclaringTypeContext *
           ImmutableArray<ConcreteTypeHandle>
         =
         let identity =
@@ -483,22 +497,28 @@ module NativeSignature =
             state.LoadedAssembly assemblyFullName
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
-        let declaringTypeHandle =
-            NativeRuntimeMethodHandle.requireClosedDeclaringType operation identity
+        let declaringTypeContext =
+            match identity.GetDeclaringType () with
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition ->
+                // The definition's own variables are what the signature's `!i` will be read as, so
+                // the identity naming them has to be the one that declares this MethodDef row.
+                match methodInfo.TryDeclaringType with
+                | Some declaringType when declaringType.Identity = definition -> ()
+                | Some declaringType ->
+                    failwith
+                        $"%s{operation}: method %s{methodInfo.Name} is declared on %O{declaringType.Identity}, but its handle names %O{definition} as the declaring definition"
+                | None ->
+                    failwith
+                        $"%s{operation}: method %s{methodInfo.Name} has no declaring type, so it cannot be declared by the definition %O{definition} its handle names"
 
-        let typeGenerics =
-            match declaringTypeHandle with
-            | ConcreteTypeHandle.Concrete _ ->
+                DeclaringTypeContext.Definition definition
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as declaringTypeHandle) ->
                 match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
-                | Some declaringType -> declaringType.Generics
+                | Some declaringType -> DeclaringTypeContext.Instantiation declaringType.Generics
                 | None ->
                     failwith
                         $"%s{operation}: declaring type handle %O{declaringTypeHandle} was not concretized, so the method signature cannot be resolved"
-            | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _
-            | ConcreteTypeHandle.OneDimArrayZero _
-            | ConcreteTypeHandle.Array _ ->
+            | RuntimeTypeHandleTarget.Closed declaringTypeHandle ->
                 // CoreCLR reaches this via `declType.GetClassOrArrayInstantiation()`, which for an
                 // array type yields its element type as a one-element instantiation, so the
                 // runtime-generated array methods (Get/Set/Address/.ctor) resolve their signatures
@@ -506,6 +526,11 @@ module NativeSignature =
                 // than as a generic argument vector, so that projection does not exist here.
                 failwith
                     $"TODO: %s{operation} on a method whose declaring type is the structural type %O{declaringTypeHandle}; CoreCLR resolves such a signature against GetClassOrArrayInstantiation, which PawPrint does not model"
+            | other ->
+                // `MethodHandleRegistry` admits only `Closed` and `OpenGenericTypeDefinition` when
+                // minting, so any other shape here means a handle was built outside that chokepoint.
+                failwith
+                    $"%s{operation}: declaring type %O{other} cannot declare a metadata-backed method; MethodHandleRegistry refuses to mint such a handle, so this identity did not come from it"
 
         let methodGenerics = identity.GetMethodGenerics () |> ImmutableArray.CreateRange
 
@@ -519,7 +544,7 @@ module NativeSignature =
             failwith
                 $"TODO: %s{operation} on generic method definition %s{methodInfo.Name}: it declares %d{methodInfo.Generics.Length} %s{plural} but the handle carries %d{methodGenerics.Length} generic argument(s); CoreCLR resolves the signature against the typical instantiation, whose method generic parameters PawPrint's ConcreteTypeHandle cannot represent"
 
-        assembly, methodInfo, identity, typeGenerics, methodGenerics
+        assembly, methodInfo, identity, declaringTypeContext, methodGenerics
 
     /// Populate the Signature object's `_returnTypeORfieldType`, `_arguments`, `_sig`, `_csig`,
     /// `_pMethod` and calling-convention fields for the method-backed path, mirroring CoreCLR's
@@ -538,25 +563,57 @@ module NativeSignature =
         (state : IlMachineState)
         : IlMachineState
         =
-        let assembly, methodInfo, identity, typeGenerics, methodGenerics =
+        let assembly, methodInfo, identity, declaringTypeContext, methodGenerics =
             methodSignatureTypeContext operation state methodHandleArg
 
         // The types come from PawPrint's already-parsed `MethodInfo.Signature` rather than from a
         // second parse of the COR blob, which is what makes the reflected parameter types agree
         // with the types the interpreter binds calls against.
-        let concretize (state : IlMachineState) (defn : TypeDefn) : IlMachineState * ConcreteTypeHandle =
-            IlMachineState.concretizeType
-                ctx.LoggerFactory
-                ctx.BaseClassTypes
-                state
-                assembly.DefinitionFullName
-                typeGenerics
-                methodGenerics
-                defn
+        let resolve (state : IlMachineState) (defn : TypeDefn) : IlMachineState * RuntimeTypeHandleTarget =
+            match declaringTypeContext with
+            | DeclaringTypeContext.Instantiation typeGenerics ->
+                let state, handle =
+                    IlMachineState.concretizeType
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        state
+                        assembly.DefinitionFullName
+                        typeGenerics
+                        methodGenerics
+                        defn
+
+                state, RuntimeTypeHandleTarget.Closed handle
+            | DeclaringTypeContext.Definition definition ->
+                // Nothing to substitute: each `!i` denotes the definition's own `i`th variable,
+                // which is the very target `RuntimeTypeHandle.GetInstantiation` hands the guest for
+                // `typeof(G<>).GetGenericArguments()`, so the two are the same `Type` object.
+                let environment =
+                    {
+                        NativeRuntimeTypeHelpers.ReflectionTypeEnvironment.TypeVariables =
+                            Seq.init
+                                methodInfo.DeclaringTypeGenerics.Length
+                                (fun index -> RuntimeTypeHandleTarget.GenericParameter (definition, index))
+                            |> ImmutableArray.CreateRange
+                        // The arity check in `methodSignatureTypeContext` has already refused a
+                        // method that declares generic parameters the handle does not supply, and a
+                        // method declaring none cannot spell `!!i` in its own signature.
+                        NativeRuntimeTypeHelpers.ReflectionTypeEnvironment.MethodVariables =
+                            methodGenerics |> ImmutableArray.map RuntimeTypeHandleTarget.Closed
+                    }
+
+                NativeRuntimeTypeHelpers.reflectedTypeTarget
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    operation
+                    $"the signature of %s{methodInfo.Name}"
+                    assembly
+                    environment
+                    state
+                    defn
 
         // CoreCLR takes the return type from `msig.GetRetTypeHandleThrowing()`, which for a void
         // return is `System.Void`'s TypeHandle rather than a null one.
-        let state, returnTypeHandle =
+        let state, returnTypeTarget =
             match methodInfo.Signature.ReturnType with
             | MethodReturnType.Void ->
                 let state, _, voidHandle =
@@ -567,15 +624,11 @@ module NativeSignature =
                         "System"
                         "Void"
 
-                state, voidHandle
-            | MethodReturnType.Returns ret -> concretize state ret
+                state, RuntimeTypeHandleTarget.Closed voidHandle
+            | MethodReturnType.Returns ret -> resolve state ret
 
         let returnTypeAddr, state =
-            IlMachineState.getOrAllocateType
-                ctx.LoggerFactory
-                ctx.BaseClassTypes
-                (RuntimeTypeHandleTarget.Closed returnTypeHandle)
-                state
+            IlMachineState.getOrAllocateType ctx.LoggerFactory ctx.BaseClassTypes returnTypeTarget state
 
         let state =
             setSignatureField state signatureAddr "_returnTypeORfieldType" (CliType.ObjectRef (Some returnTypeAddr))
@@ -620,14 +673,10 @@ module NativeSignature =
         let state =
             ((state, 0), parameterTypes)
             ||> List.fold (fun (state, index) parameterType ->
-                let state, handle = concretize state parameterType
+                let state, parameterTarget = resolve state parameterType
 
                 let addr, state =
-                    IlMachineState.getOrAllocateType
-                        ctx.LoggerFactory
-                        ctx.BaseClassTypes
-                        (RuntimeTypeHandleTarget.Closed handle)
-                        state
+                    IlMachineState.getOrAllocateType ctx.LoggerFactory ctx.BaseClassTypes parameterTarget state
 
                 let state =
                     IlMachineState.setArrayValue arrayAddr (CliType.ObjectRef (Some addr)) index state
@@ -1006,10 +1055,19 @@ module NativeSignature =
             let typeGenerics, methodGenerics =
                 match NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation pMethod with
                 | Some _ ->
-                    let _, _, _, typeGenerics, methodGenerics =
+                    let _, methodInfo, _, declaringTypeContext, methodGenerics =
                         methodSignatureTypeContext operation state pMethod
 
-                    typeGenerics, methodGenerics
+                    match declaringTypeContext with
+                    | DeclaringTypeContext.Instantiation typeGenerics -> typeGenerics, methodGenerics
+                    | DeclaringTypeContext.Definition definition ->
+                        // A modifier token is resolved and concretised below, and both want runtime
+                        // types for the declaring type's `!i` -- which a definition does not supply.
+                        // The near-free half is a modifier that mentions no variable at all, which
+                        // is every modifier the corpus actually carries; the general case wants the
+                        // whole walk `Signature_Init` now takes for its parameter types.
+                        failwith
+                            $"TODO: %s{operation} on method %s{methodInfo.Name}, whose declaring type is the open generic definition %O{definition}: a custom modifier is resolved and concretised against the declaring type's generic arguments, and a definition supplies its own type variables instead, which ConcreteTypeHandle cannot name"
                 | None -> declaringTypeGenericsOfSignature operation state signatureObj, ImmutableArray.Empty
 
             let assembly, blobHandle = resolveSignatureBlobHandle operation state sigCliValue

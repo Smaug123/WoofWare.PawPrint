@@ -161,6 +161,43 @@ module NativeRuntimeTypeQCall =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
+        | "RuntimeTypeHandle_IsCollectible",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "IsCollectible",
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
+            qCallGenerics.IsEmpty && boolGenerics.IsEmpty
+            ->
+            let operation = "RuntimeTypeHandle.IsCollectible"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            // CoreCLR is `pTypeHandle.AsTypeHandle().GetLoaderAllocator()->IsCollectible()`
+            // (runtimehandles.cpp:1094). The target is decoded rather than ignored so that a
+            // malformed handle fails here rather than being reported as non-collectible; the
+            // decoded value is not consulted, because with one loader allocator the answer cannot
+            // depend on it. Deliberately no walk from the target to an assembly: it would have to
+            // handle every structural and synthetic shape -- `int[]`, `int&`, a function pointer,
+            // the dynamic-methods class -- and could fail on one, where the answer cannot.
+            instruction.Arguments.[0]
+            |> EvalStackValue.ofCliType
+            |> NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state
+            |> ignore<RuntimeTypeHandleTarget>
+
+            // Interop.BOOL is int-backed with FALSE = 0 and TRUE = 1.
+            let state =
+                let ret =
+                    if LoaderAllocator.isCollectible LoaderAllocator.Global then
+                        1
+                    else
+                        0
+
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
         | "RuntimeTypeHandle_Instantiate",
           "System.Private.CoreLib",
           "System",
@@ -955,6 +992,24 @@ module NativeRuntimeTypeQCall =
                                 index
                     }
                 )
+
+            // A token naming a row this module does not have. CoreCLR's
+            // `ClassLoader::LoadTypeDefOrRefOrSpecThrowing` throws for one, and the managed
+            // wrapper `ModuleHandle.ResolveTypeHandle` catches *that* and asks
+            // `MetadataImport.IsValidToken` whether the token was the problem; when it says no,
+            // the guest gets an `ArgumentOutOfRangeException` naming `typeToken`
+            // (RuntimeHandles.cs:1851-1857). So the exception raised here is not the one the guest
+            // sees, and deliberately so: only CoreLib can attach that `paramName`.
+            //
+            // Screened with the same predicate the `IsValidToken` FCall answers from, rather than a
+            // separate `ContainsKey` test per arm. The two must agree — if this raised while
+            // `IsValidToken` called the token valid, the managed wrapper would rethrow and the
+            // guest would see an `ArgumentException` instead — and sharing the predicate is what
+            // makes that structural rather than a coincidence of two tests over the same data.
+            if not (NativeMetadataImport.isValidToken operation assembly typeToken) then
+                NativeHandlerResult.raiseException ctx.BaseClassTypes.BadImageFormatException state
+                |> Some
+            else
 
             // The C# wrapper validates the token kind (TypeDef/TypeSpec/TypeRef, and not the
             // global TypeDef token) before reaching this QCall, so any other kind here is a

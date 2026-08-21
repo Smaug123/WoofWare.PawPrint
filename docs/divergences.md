@@ -201,6 +201,44 @@ Console.WriteLine(typeof(Program).Assembly.CodeBase);
 
 **Where this lives in code**: `NativeRuntimeAssembly.tryExecuteQCall`, the `AssemblyNative_GetCodeBase` case.
 
+## `Environment.ProcessPath` reports no executable, and is never resolved against the filesystem
+
+**CoreCLR**: `SystemNative_GetProcessPath` (`pal_process.c:898-901`) is `return minipal_getexepath();`, and both of the arms PawPrint models in `minipal_getexepath` (`src/native/minipal/getexepath.h`) end in `realpath(..., NULL)` — macOS on the buffer `_NSGetExecutablePath` filled, Linux on `/proc/self/exe` and then on `AT_EXECFN`. So the answer is a `malloc`'d canonical path, and it exists only if every component resolved. Measured on .NET 10.0.7: `dotnet app.dll` reports the *muxer* (`/usr/share/dotnet/dotnet`), an apphost-launched app reports the apphost. The app's own `.dll` is never the answer — that is `GetCommandLineArgs()[0]`.
+
+**PawPrint**: reports whatever `KernelConfig.ProcessPath` says. That defaults to `None`, which the handler answers as the C does for a process whose executable no longer resolves: a NULL return with errno `ENOENT`, which CoreLib turns into a null `Environment.ProcessPath`. A host that names a path gets that path back verbatim — **it is not resolved against the emulated filesystem**, so `File.Exists(Environment.ProcessPath)` can be false where every real Unix makes it true.
+
+**Spec status**: Outside ECMA-335, which says nothing about how a process learns its own image path — this is the PAL rather than the CLI. Compliant with the *API* contract in both halves: `Environment.ProcessPath` is documented to "return null when the path is not available", `Interop.Sys.GetProcessPath()` is declared `string?` precisely to carry that, and `Environment.ProcessPath` caches `GetProcessPath() ?? ""` to handle it. The API also documents that if the executable "is renamed or deleted before this property is first accessed, the return value is undefined", which is the licence the non-resolution half sits under.
+
+**Why we chose this**: two separate decisions.
+
+*The default is `None` because it is true.* PawPrint models no `exec(2)`: no file started this process, and the emulated filesystem holds no image of one. The alternatives are both worse:
+
+* *Synthesise a plausible path* (say `/pawprint`). This is the same fiction rejected under "`Assembly.Location` is empty for every assembly" above, for the same reason — nothing would be there, so the guest could not act on it — and it would leave `File.Exists(Environment.ProcessPath)` false, which is the one thing `realpath` guarantees on a real Unix. Upstream does have a fixed-path arm (`TARGET_WASM` returns `"/managed"`), but only because wasm's packaging convention guarantees a file is there; that is this option *plus* seeding, not this option.
+* *Refuse — `failwith` naming the unset knob.* The house move when PawPrint would otherwise invent something, but its precondition does not hold here: the flavours agree on an answer, and the distinguishing state is modelled (it is the config field). Refusing would trade a first-class BCL state for a host crash.
+
+Answering NULL is not an invention: it is the state both flavours report for a live process whose executable has been unlinked. Measured, by having a guest delete its own executable before its first read — macOS arm64 and Linux arm64 both give NULL, errno 2, and a null `Environment.ProcessPath`.
+
+*The configured path is answered verbatim* because resolving it would buy a whole errno surface (`ENAMETOOLONG`, `ELOOP`, `EACCES`, plus a symlink-resolving walk) for a knob nothing yet exercises, and because `SystemNative_GetCwd` already answers `KernelConfig.CurrentDirectory` the same way — that field's configured directory need not exist in the seeded filesystem either, and `getcwd(2)` fails `ENOENT` on an unlinked cwd on both flavours just as `realpath` does. This entry is therefore the record for both syscalls' non-resolution. A host that wants the file to be there seeds it.
+
+**Knock-on effect**: guests that assume a non-null `Environment.ProcessPath` fault under the default. Microsoft.Testing.Platform is one: it throws `ArgumentNullException`. The fix is one line of host configuration, not a code change.
+
+**Observable example**:
+
+```csharp
+// dotnet app.dll:  "/usr/share/dotnet/dotnet"
+// PawPrint:        null   (KernelConfig.ProcessPath = None, the default)
+Console.WriteLine(Environment.ProcessPath ?? "<null>");
+
+// With KernelConfig.ProcessPath = Some "/opt/app/Guest", and nothing seeded there:
+// dotnet app.dll:  True   (realpath only succeeds if the path resolves)
+// PawPrint:        False
+Console.WriteLine(File.Exists(Environment.ProcessPath));
+```
+
+**Testing note**: Cannot be a `sourcesPure` comparison test. The real runtime reports whatever launched the test host, so there is no cross-runtime value to assert, and under the `None` default the PawPrint side would skip the whole non-null spine — leaving a differential that was green without checking anything. Covered instead by the PawPrint-only `sourcesImpure/ProcessPathConfigured.cs` (the exact configured bytes, plus the entry point's allocation contract: two live pointers distinct, equal bytes, both freeable through `NativeMemory.Free`, and a further call after the frees) and `sourcesImpure/ProcessPathAbsent.cs` (NULL, errno 2, and a null `Environment.ProcessPath`). Both were run on real .NET on both flavours — the latter with a self-delete preamble, to put a real runtime in the state it describes — so their expected exit codes are measured rather than assumed. `TestProcessPath.fs` pins the config-to-kernel wiring, which no guest can distinguish from a write that `applyTo` discards. Note that no test may assert errno on a *successful* call: measured, macOS leaves a pre-set errno alone while Linux clobbers it with `EINVAL`, and CoreLib cannot see either, because its `SetLastError = true` stub zeroes the slot before the call and rewrites it after.
+
+**Where this lives in code**: the `SystemNative_GetProcessPath` case in `NativeSystemNative.fs`; `EmulatedKernel.ProcessPath` and `defaultProcessPath` for the state and the default; `KernelConfig.ProcessPath` is where a host names one.
+
 ## A `runtimeconfig.json` is validated only where PawPrint reads it
 
 **CoreCLR**: `hostpolicy` parses the whole file with rapidjson, which rejects the *entire document* for faults anywhere in it — a numeric token too large to store in a double (`kParseErrorNumberTooBig`, so `1e400`), an unpaired `\uD800` surrogate escape (`kParseErrorStringUnicodeSurrogateInvalid`), and the rest of its error surface. A fault in a section nobody reads is still fatal: for the main config the app does not launch, and for `runtimeconfig.dev.json` the whole sidecar is ignored.

@@ -87,6 +87,7 @@
     <Compile Include="TestSwitchIlOp.fs" />
     <Compile Include="TestUnaryConstIlOp.fs" />
     <Compile Include="TestUnaryMetadataIlOp.fs" />
+    <Compile Include="TestMetadataTokenValidity.fs" />
     <Compile Include="TestMethodTableProjection.fs" />
     <Compile Include="TestElementOffsetOverflow.fs" />
     <Compile Include="TestSzArrayInterfaceDispatch.fs" />
@@ -184,6 +185,7 @@
     <Compile Include="TestSocketEventBuffer.fs" />
     <Compile Include="TestEffectiveProcessorCount.fs" />
     <Compile Include="TestEnvironmentEntryInvariant.fs" />
+    <Compile Include="TestProcessPath.fs" />
     <Compile Include="TestSystemTimeAsTicks.fs" />
     <Compile Include="TestMonotonicTimestamp.fs" />
     <Compile Include="TestCpuPlacement.fs" />

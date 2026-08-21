@@ -126,16 +126,22 @@ type PermissionBits =
         match this with
         | PermissionBits bits -> "0o" + System.Convert.ToString(bits, 8).PadLeft (4, '0')
 
-/// Whether the process performing a write is exempt from the rule that strips a
-/// file's set-user-ID and set-group-ID bits when its contents change.
+/// Whether the calling process is exempt from the file-permission rules — which
+/// is one question, asked by several of them, because the emulated kernel has a
+/// single identity and being exempt means being uid 0.
 ///
-/// A DU rather than a `bool`, because it sits next to a `PermissionBits` in every
-/// signature that takes it and the two orders would otherwise be
-/// indistinguishable to the compiler.
+/// The rules that ask: whether a write or a truncation strips a file's
+/// set-user-ID and set-group-ID bits, and whether a permission bit is consulted
+/// at all before reading, writing, binding a name, or searching a directory on
+/// the way through a path.
+///
+/// A DU rather than a `bool`, so that a caller cannot silently pass the wrong
+/// one of two adjacent flags, and so that the answer arrives at a signature
+/// saying what it means.
 [<RequireQualifiedAccess>]
-type WritePrivilege =
+type CallerPrivilege =
     /// uid 0. Measured on Linux as root: a write to an `04755` file leaves it
-    /// `04755`.
+    /// `04755`, and a directory whose mode is 0o000 can still be searched.
     | Privileged
     /// Any other identity.
     | Unprivileged
@@ -225,6 +231,35 @@ module PermissionBits =
     /// `0o777 &&& ~~~0o022`. See `defaultForRegularFile`.
     let defaultForDirectory : PermissionBits = PermissionBits (0o777 &&& ~~~0o022)
 
+    /// The bits an inode created with this `mode` argument ends up with, under
+    /// this platform's own mask and this process's `umask`.
+    ///
+    /// Two masks, in this order, and both measured. `modeMask` is the
+    /// platform's, and it is per-*syscall* rather than per-platform: measured at
+    /// `umask 022`, Linux's `mkdir(p, 0o7777)` gives 0o1755 while its
+    /// `open(p, O_CREAT, 0o7777)` gives 0o7755, so `mkdir` keeps only the sticky
+    /// bit where `open` keeps all twelve. Darwin drops all three upper bits from
+    /// both. See `CreatingOpenRules.ModeMask` and `MkDirRules.ModeMask` for the
+    /// values, which is where each syscall's rows live.
+    ///
+    /// Only the low nine bits of `umask` take part, and that is exact on both
+    /// platforms for two *different* measured reasons. Linux's `umask(2)` stores
+    /// just `mask &&& 0o777` -- `umask(0o4000)` reads back 0o0000 -- so a
+    /// requested 0o4644 stays 0o4644 there; a mask applied at full width would
+    /// strip the set-user-ID bit instead, making a setuid file impossible for a
+    /// guest to create. Darwin *does* store all twelve bits, but creation cannot
+    /// see the upper three because `modeMask` has already cleared them:
+    /// measured, `umask 0o4000` with mode 0o4644 gives 0o0644 there whether or
+    /// not the mask is truncated. So one expression is right for both.
+    ///
+    /// A bit above the permission word is dropped rather than rejected -- `mode`
+    /// 0o10777 creates 0o0755 on both kernels, under `mkdir` as under `open`.
+    let fromCreationMode (modeMask : PermissionBits) (umask : PermissionBits) (mode : int) : PermissionBits =
+        let umaskBitsOnly = 0o777
+
+        mode &&& toInt modeMask &&& ~~~(toInt umask &&& umaskBitsOnly)
+        |> parseOrFail "PermissionBits.fromCreationMode"
+
     /// The set-ID bits a Linux kernel clears when an unprivileged process changes
     /// a file's contents.
     ///
@@ -270,7 +305,7 @@ module PermissionBits =
     /// | `00644` | `00644` | `00644` |
     ///
     /// ...and as root every row is left exactly as it was, on both, which is what
-    /// `WritePrivilege.Privileged` selects.
+    /// `CallerPrivilege.Privileged` selects.
     ///
     /// `S_ISUID` goes on both flavours whatever the execute bits say, and the
     /// sticky bit is never touched on either. The whole of the disagreement is
@@ -281,13 +316,13 @@ module PermissionBits =
     /// the two rules and "preserve everything" all answer it differently.
     let afterContentChangingWrite
         (rule : SetGroupIdOnWrite)
-        (privilege : WritePrivilege)
+        (privilege : CallerPrivilege)
         (bits : PermissionBits)
         : PermissionBits
         =
         match privilege with
-        | WritePrivilege.Privileged -> bits
-        | WritePrivilege.Unprivileged ->
+        | CallerPrivilege.Privileged -> bits
+        | CallerPrivilege.Unprivileged ->
 
         let raw = toInt bits
 
@@ -317,7 +352,7 @@ module PermissionBits =
     /// | `01755` | `01755` | `01755` |
     ///
     /// ...and as root every row is left exactly as it was, on both, which is what
-    /// `WritePrivilege.Privileged` selects.
+    /// `CallerPrivilege.Privileged` selects.
     ///
     /// `ftruncate(2)`, `O_TRUNC`, and an `ftruncate` to the length the file
     /// already has all give the same answers, which is why one function serves
@@ -326,14 +361,14 @@ module PermissionBits =
     /// write at all.
     let afterTruncation
         (rule : SetIdBitsOnTruncation)
-        (privilege : WritePrivilege)
+        (privilege : CallerPrivilege)
         (bits : PermissionBits)
         : PermissionBits
         =
         match rule, privilege with
         | SetIdBitsOnTruncation.Preserve, _
-        | _, WritePrivilege.Privileged -> bits
-        | SetIdBitsOnTruncation.Strip, WritePrivilege.Unprivileged ->
+        | _, CallerPrivilege.Privileged -> bits
+        | SetIdBitsOnTruncation.Strip, CallerPrivilege.Unprivileged ->
 
         let raw = toInt bits
         parseOrFail "PermissionBits.afterTruncation" (raw &&& ~~~(setIdBitsLinuxClears raw))
@@ -646,7 +681,7 @@ type SymlinkPolicy =
 type TrailingSeparatorPolicy =
     /// Record the demand on `Resolution.TrailingSeparatorDemanded` and let the
     /// caller enforce it. Every lookup (`stat`, `lstat`, `readlink`), every
-    /// non-creating `open`, and a creating `open` on Darwin.
+    /// non-creating `open`, and -- on Darwin -- a creating `open` and `mkdir`.
     | Demand
     /// Answer EISDIR on *reaching* a final component that carries a trailing
     /// separator — before that component's length is checked, before it is
@@ -665,6 +700,27 @@ type TrailingSeparatorPolicy =
     /// `O_CREAT` is EISDIR rather than ELOOP, so the check has to sit inside the
     /// walk rather than at the syscall boundary.
     | RefuseIsDirectory
+    /// Record the demand on `Resolution.TrailingSeparatorDemanded` and impose
+    /// *nothing*: the final component is neither dereferenced because of the
+    /// separator nor required to be a directory. What Linux's `mkdir` does,
+    /// whose last component is resolved by `filename_create` -- a plain dentry
+    /// lookup that never follows a link and never inspects what it found.
+    ///
+    /// Measured, and it is two suppressions rather than one. Under Linux
+    /// `mkdir`, "lf/", "ld/", "dang/" and "cyc/" are all EEXIST -- no traversal,
+    /// so no ELOOP and no chance to create a dangling link's target -- *and*
+    /// "f/" is EEXIST rather than the ENOTDIR every lookup owes it. Darwin's
+    /// `mkdir` wants `Demand` instead, and answers ENOTDIR, ELOOP, and (for
+    /// "dang/") creates the link's target.
+    ///
+    /// The two suppressions co-occur here because Linux's creating lookup does
+    /// neither; they are *not* the same fact, and a Linux syscall is known that
+    /// wants one without the other -- `rmdir("f/")` and `rmdir("ld/")` are both
+    /// ENOTDIR there, which is no-follow *with* the directory demand. When the
+    /// deletion slice measures that, this DU wants to become a two-axis product
+    /// rather than to gain a fourth case; it is left one-dimensional until there
+    /// is a second inhabitant to shape it.
+    | Ignore
 
 /// Which component a resolution last consumed, for the paths that end without
 /// a name to look up.
@@ -715,9 +771,14 @@ type Resolution =
         /// Not simply the caller's `UnixPath.hasTrailingSeparator`: following a
         /// final symlink replaces the final path segment, so a link whose
         /// target is "d/" imposes the demand even when the guest's own path did
-        /// not. The unanimous part of the rule is enforced here (an *existing*
-        /// non-directory final gives ENOTDIR). The part that is not unanimous
-        /// is left to the caller — see `FinalSymlinkFollowed`.
+        /// not.
+        ///
+        /// What the demand *costs* is the walk's business under
+        /// `TrailingSeparatorPolicy.Demand` (an existing non-directory final
+        /// gives ENOTDIR) and under `RefuseIsDirectory` (EISDIR on reaching the
+        /// component). Under `Ignore` it costs nothing and this flag is a report
+        /// about the path rather than about anything enforced. The part that is
+        /// left to the caller either way — see `FinalSymlinkFollowed`.
         TrailingSeparatorDemanded : bool
         /// A symlink in the *final* position was followed to get here.
         ///
@@ -725,10 +786,21 @@ type Resolution =
         /// Linux and macOS disagree destructively. Probed on macOS: with `ld -> realdir`,
         /// `rmdir("ld/")` *removes realdir*; with `dang -> nx`, `mkdir("dang/")`
         /// *creates nx*. Linux refuses both (ENOTDIR, EEXIST). A mutating
-        /// operation that sees both flags set must therefore fail loudly rather
-        /// than pick a platform, since the two choices destroy different
-        /// objects. Lookup operations (`stat`, `lstat`) are unanimous and can
-        /// ignore this.
+        /// operation that sees both flags set must therefore never pick a
+        /// platform *unconditionally*, since the two choices destroy different
+        /// objects: it either dispatches on the flavour, or fails loudly.
+        ///
+        /// Dispatching is only honest once both columns are measured at that
+        /// operation's own scale, which is a per-syscall question rather than a
+        /// property of this flag. `mkdir` is measured on both and dispatches
+        /// (`SimulatedUnixPlatform.mkDirRules` picks the walk that reproduces
+        /// each), and it never sees this flag set, because Linux's walk is
+        /// `TrailingSeparatorPolicy.Ignore` and Darwin's acts on the following
+        /// rather than reporting it. `rmdir` and `unlink` are not measured yet
+        /// and still owe a loud failure.
+        ///
+        /// Lookup operations (`stat`, `lstat`) are unanimous and can ignore
+        /// this.
         FinalSymlinkFollowed : bool
     }
 
@@ -1607,7 +1679,7 @@ module VirtualFileSystem =
         (offset : int64)
         (bytes : ImmutableArray<byte>)
         (rule : SetGroupIdOnWrite)
-        (privilege : WritePrivilege)
+        (privilege : CallerPrivilege)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
         : Result<VirtualFileSystem, FileWriteRefusal>
@@ -1686,7 +1758,7 @@ module VirtualFileSystem =
         (inode : InodeNumber)
         (length : int64)
         (rule : SetIdBitsOnTruncation)
-        (privilege : WritePrivilege)
+        (privilege : CallerPrivilege)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
         : Result<VirtualFileSystem, FileTruncationRefusal>
@@ -1733,17 +1805,6 @@ module VirtualFileSystem =
 
     // ------------------------------------------------------------ resolution
 
-    /// The directory ".." names from `directory`. The root is its own parent.
-    /// Fails loudly rather than guessing when the graph does not say: a walk
-    /// that reached `directory` has already established it is a directory, so
-    /// a missing `Parent` is a broken graph rather than a guest error.
-    let private parentOf (directory : InodeNumber) (vfs : VirtualFileSystem) : InodeNumber =
-        match tryGetDirectory directory vfs with
-        | Some content -> content.Parent
-        | None ->
-            failwith
-                $"VirtualFileSystem: resolving \"..\" from inode %O{directory}, which the walk had already established was a directory, but it is now absent or not a directory. The inode graph is inconsistent; run VirtualFileSystem.checkInvariants."
-
     /// Resolve `path` against `startDirectory`, which is where a *relative*
     /// path begins; a rooted path ignores it and starts at the root.
     ///
@@ -1763,6 +1824,7 @@ module VirtualFileSystem =
     /// caller; see `TrailingSeparatorPolicy`.
     let resolveFull
         (limits : PathLimits)
+        (privilege : CallerPrivilege)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
@@ -1814,6 +1876,13 @@ module VirtualFileSystem =
             match PathCursor.next remaining with
             // Reached when the path has no name left to look up: after a "." or
             // "..", or immediately for a path that named no component at all.
+            //
+            // Deliberately *before* the search check below, and that is what
+            // makes `lstat("p")` and `lstat("p/")` succeed on an unsearchable
+            // `p`: this walk never looks inside it. Measured on both kernels,
+            // and `lstat("p/.")` is EACCES beside them -- one more place where
+            // a trailing separator is not "/." and must not be desugared into
+            // one.
             | None ->
                 Ok
                     {
@@ -1821,11 +1890,54 @@ module VirtualFileSystem =
                         TrailingSeparatorDemanded = trailing
                         FinalSymlinkFollowed = finalSymlinkFollowed
                     }
-            | Some (PathComponent.Current, rest) ->
+            | Some (nextComponent, rest) ->
+
+            // Consuming *any* component from `directory` -- a name, "." or ".."
+            // alike -- is a lookup, and a lookup needs the directory's search
+            // bit. Checked here, above the dispatch on which kind of component
+            // it is, because all three need it: measured on both kernels,
+            // `lstat("p/.")` and `lstat("p/..")` are EACCES exactly as
+            // `lstat("p/kid")` is.
+            //
+            // Everything else this walk can refuse sits below this point, which
+            // is what reproduces the measured precedence without encoding it:
+            // against an unsearchable holding directory, a missing name, an
+            // over-long one, a symlink cycle and (on Linux) a creating open's
+            // trailing separator all report EACCES rather than the ENOENT,
+            // ENAMETOOLONG, ELOOP or EISDIR the same call earns under a
+            // searchable one.
+            //
+            // Only the *owner* triple can ever apply: `stat` reports
+            // `Kernel.UserId` as every inode's `st_uid`, so the emulated process
+            // owns everything it can see. Measured, and a corpus of ordinary
+            // modes cannot show it: a 0o677 directory is EACCES to its owner
+            // though group and other may search it, while 0o100 is searchable
+            // though nobody else may.
+            let searchBit = 0o100
+
+            let directoryContent =
+                match tryGetDirectory directory vfs with
+                | Some content -> content
+                | None ->
+                    failwith
+                        $"VirtualFileSystem: about to consume a component from inode %O{directory}, which the walk had already established was a directory, but it is now absent or not a directory. The inode graph is inconsistent; run VirtualFileSystem.checkInvariants."
+
+            let maySearch =
+                match privilege with
+                | CallerPrivilege.Privileged -> true
+                | CallerPrivilege.Unprivileged ->
+                    PermissionBits.toInt directoryContent.Permissions &&& searchBit = searchBit
+
+            if not maySearch then
+                Error UnixError.EACCES
+            else
+
+            match nextComponent with
+            | PathComponent.Current ->
                 walk directory rest trailing finalSymlinkFollowed FinalNavigation.Current symlinks
-            | Some (PathComponent.Parent, rest) ->
-                walk (parentOf directory vfs) rest trailing finalSymlinkFollowed FinalNavigation.Parent symlinks
-            | Some (PathComponent.Name name, rest) ->
+            | PathComponent.Parent ->
+                walk directoryContent.Parent rest trailing finalSymlinkFollowed FinalNavigation.Parent symlinks
+            | PathComponent.Name name ->
 
             // Before the length check, before the lookup, and before any symlink
             // this component names is traversed -- which is the whole content of
@@ -1848,18 +1960,14 @@ module VirtualFileSystem =
             match trailingSeparatorPolicy with
             | TrailingSeparatorPolicy.RefuseIsDirectory when isFinal && trailing -> Error UnixError.EISDIR
             | TrailingSeparatorPolicy.RefuseIsDirectory
-            | TrailingSeparatorPolicy.Demand ->
+            | TrailingSeparatorPolicy.Demand
+            | TrailingSeparatorPolicy.Ignore ->
 
             if not (PathLimits.nameWithinLimit limits name) then
                 Error UnixError.ENAMETOOLONG
             else
 
-            let entries =
-                match tryGetDirectory directory vfs with
-                | Some content -> content.Entries
-                | None ->
-                    failwith
-                        $"VirtualFileSystem: looking up \"%s{FileName.toString name}\" in inode %O{directory}, which the walk had already established was a directory, but it is now absent or not a directory. The inode graph is inconsistent; run VirtualFileSystem.checkInvariants."
+            let entries = directoryContent.Entries
 
             let finish (target : ResolvedTarget) : Result<Resolution, UnixError> =
                 Ok
@@ -1894,7 +2002,16 @@ module VirtualFileSystem =
             // directory the link names). Where they *disagree* is what a
             // mutating caller may then do, which is why the fact is reported
             // rather than acted on.
-            let followFinal = policy = SymlinkPolicy.Follow || trailing
+            //
+            // `Ignore` is the one walk that opts out, because Linux's creating
+            // lookup does: see that case for the rows.
+            let trailingActsOnFinal =
+                match trailingSeparatorPolicy with
+                | TrailingSeparatorPolicy.Demand
+                | TrailingSeparatorPolicy.RefuseIsDirectory -> trailing
+                | TrailingSeparatorPolicy.Ignore -> false
+
+            let followFinal = policy = SymlinkPolicy.Follow || trailingActsOnFinal
 
             match content with
             | InodeContent.Symlink linkTarget when not isFinal || followFinal ->
@@ -1989,10 +2106,12 @@ module VirtualFileSystem =
                     walk target rest trailing finalSymlinkFollowed lastNavigation symlinks
             | InodeContent.RegularFile _ ->
                 if isFinal then
-                    // The one part of the trailing-separator rule every platform
-                    // agrees on: "p/" where p exists and is not a directory is
-                    // ENOTDIR.
-                    if trailing then
+                    // "p/" where p exists and is not a directory is ENOTDIR --
+                    // for every lookup, on both platforms, and for Darwin's
+                    // `mkdir`. Linux's `mkdir` is the exception and answers
+                    // EEXIST, which is what `Ignore` selects: it never asks what
+                    // the final component was.
+                    if trailingActsOnFinal then
                         Error UnixError.ENOTDIR
                     else
                         finish (ResolvedTarget.Entry (directory, name, Some target))
@@ -2007,13 +2126,14 @@ module VirtualFileSystem =
     /// them.
     let resolve
         (limits : PathLimits)
+        (privilege : CallerPrivilege)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
         : Result<ResolvedTarget, UnixError>
         =
-        resolveFull limits startDirectory policy TrailingSeparatorPolicy.Demand path vfs
+        resolveFull limits privilege startDirectory policy TrailingSeparatorPolicy.Demand path vfs
         |> Result.map (fun resolution -> resolution.Target)
 
     /// The inode a resolved target names. Turns a free final name into ENOENT,
@@ -2030,13 +2150,15 @@ module VirtualFileSystem =
     /// want: `resolve` followed by `existingOf`.
     let resolveExisting
         (limits : PathLimits)
+        (privilege : CallerPrivilege)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
         : Result<InodeNumber, UnixError>
         =
-        resolve limits startDirectory policy path vfs |> Result.bind existingOf
+        resolve limits privilege startDirectory policy path vfs
+        |> Result.bind existingOf
 
     // ------------------------------------------------------------ inspection
 

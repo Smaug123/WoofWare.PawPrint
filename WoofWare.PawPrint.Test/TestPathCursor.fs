@@ -580,7 +580,14 @@ module TestPathCursor =
 
             let parsed = path candidate
 
-            VirtualFileSystem.resolveFull limits start policy TrailingSeparatorPolicy.Demand parsed vfs
+            VirtualFileSystem.resolveFull
+                limits
+                CallerPrivilege.Privileged
+                start
+                policy
+                TrailingSeparatorPolicy.Demand
+                parsed
+                vfs
             |> shouldEqual (referenceResolveFull limits start policy parsed vfs)
 
         let generator =

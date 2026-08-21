@@ -95,7 +95,13 @@ module TestVirtualFileSystem =
         VirtualFileSystem.inodes emptyFs |> Map.count |> shouldEqual 1
 
         // The root's parent is itself, so "/.." is "/".
-        VirtualFileSystem.resolve limits (rootOf emptyFs) SymlinkPolicy.Follow (path "/..") emptyFs
+        VirtualFileSystem.resolve
+            limits
+            CallerPrivilege.Privileged
+            (rootOf emptyFs)
+            SymlinkPolicy.Follow
+            (path "/..")
+            emptyFs
         |> shouldEqual (Ok (ResolvedTarget.Directory (rootOf emptyFs, FinalNavigation.Parent)))
 
     [<Test>]
@@ -103,7 +109,13 @@ module TestVirtualFileSystem =
         // The trap this guards: a walk over zero components would silently mean
         // "the start directory", which is a successful answer to a call every
         // Unix rejects.
-        VirtualFileSystem.resolve limits (rootOf emptyFs) SymlinkPolicy.Follow UnixPath.empty emptyFs
+        VirtualFileSystem.resolve
+            limits
+            CallerPrivilege.Privileged
+            (rootOf emptyFs)
+            SymlinkPolicy.Follow
+            UnixPath.empty
+            emptyFs
         |> shouldEqual (Error UnixError.ENOENT)
 
     [<Test>]
@@ -111,17 +123,23 @@ module TestVirtualFileSystem =
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
         let file =
-            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                (path "/f")
+                vfs
             |> ok
 
-        VirtualFileSystem.resolve limits file SymlinkPolicy.Follow (path "a") vfs
+        VirtualFileSystem.resolve limits CallerPrivilege.Privileged file SymlinkPolicy.Follow (path "a") vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
     [<Test>]
     let ``a path cannot continue through a regular file`` () : unit =
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
-        VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path "/f/x") vfs
+        VirtualFileSystem.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/f/x") vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
     [<Test>]
@@ -130,14 +148,20 @@ module TestVirtualFileSystem =
         // open(O_CREAT) need this state, and only stat turns it into ENOENT.
         let vfs = emptyFs
 
-        VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path "/nx") vfs
+        VirtualFileSystem.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/nx") vfs
         |> shouldEqual (Ok (ResolvedTarget.Entry (rootOf vfs, name "nx", None)))
 
-        VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/nx") vfs
+        VirtualFileSystem.resolveExisting
+            limits
+            CallerPrivilege.Privileged
+            (rootOf vfs)
+            SymlinkPolicy.Follow
+            (path "/nx")
+            vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
         // ...but a free name part-way along is ENOENT even so.
-        VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path "/nx/y") vfs
+        VirtualFileSystem.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/nx/y") vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
     // --------------------------------------------------- the trailing separator
@@ -153,6 +177,7 @@ module TestVirtualFileSystem =
         let resolution : Resolution =
             VirtualFileSystem.resolveFull
                 limits
+                CallerPrivilege.Privileged
                 (rootOf vfs)
                 SymlinkPolicy.Follow
                 TrailingSeparatorPolicy.Demand
@@ -170,6 +195,7 @@ module TestVirtualFileSystem =
         let withDot =
             VirtualFileSystem.resolveFull
                 limits
+                CallerPrivilege.Privileged
                 (rootOf vfs)
                 SymlinkPolicy.Follow
                 TrailingSeparatorPolicy.Demand
@@ -183,18 +209,24 @@ module TestVirtualFileSystem =
         // The part of the trailing-separator rule every platform agrees on.
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
-        VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path "/f/") vfs
+        VirtualFileSystem.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/f/") vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
         // Without the separator the same path is perfectly fine.
-        VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+        VirtualFileSystem.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
         |> shouldEqual (
             Ok (
                 ResolvedTarget.Entry (
                     rootOf vfs,
                     name "f",
                     Some (
-                        VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+                        VirtualFileSystem.resolveExisting
+                            limits
+                            CallerPrivilege.Privileged
+                            (rootOf vfs)
+                            SymlinkPolicy.Follow
+                            (path "/f")
+                            vfs
                         |> ok
                     )
                 )
@@ -208,12 +240,19 @@ module TestVirtualFileSystem =
         let vfs = build [ mkdir (rootOf emptyFs) "d" ; mklink (rootOf emptyFs) "ld" "d" ]
 
         let directory =
-            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/d") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                (path "/d")
+                vfs
             |> ok
 
         let withSlash =
             VirtualFileSystem.resolveFull
                 limits
+                CallerPrivilege.Privileged
                 (rootOf vfs)
                 SymlinkPolicy.NoFollowFinal
                 TrailingSeparatorPolicy.Demand
@@ -232,7 +271,13 @@ module TestVirtualFileSystem =
 
         // Without the separator, NoFollowFinal stops at the link itself.
         let link =
-            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.NoFollowFinal (path "/ld") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.NoFollowFinal
+                (path "/ld")
+                vfs
             |> ok
 
         match VirtualFileSystem.tryGetContent link vfs with
@@ -245,7 +290,7 @@ module TestVirtualFileSystem =
 
         // "lf" expands to "f/", whose trailing separator now demands that f be
         // a directory. It is not.
-        VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path "/lf") vfs
+        VirtualFileSystem.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/lf") vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
     // ------------------------------------------------------------- symlinks
@@ -256,14 +301,14 @@ module TestVirtualFileSystem =
         // has to hand back the *target's* parent and name.
         let vfs = build [ mklink (rootOf emptyFs) "dang" "nx" ]
 
-        VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path "/dang") vfs
+        VirtualFileSystem.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/dang") vfs
         |> shouldEqual (Ok (ResolvedTarget.Entry (rootOf vfs, name "nx", None)))
 
         // But a dangling link whose target's *parent* is missing is ENOENT,
         // because that failure happens part-way along.
         let vfs = build [ mklink (rootOf emptyFs) "deep" "nx1/nx2" ]
 
-        VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path "/deep") vfs
+        VirtualFileSystem.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/deep") vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
     [<Test>]
@@ -274,7 +319,13 @@ module TestVirtualFileSystem =
                     mkdir (rootOf emptyFs) "a"
                     fun vfs ->
                         let a =
-                            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/a") vfs
+                            VirtualFileSystem.resolveExisting
+                                limits
+                                CallerPrivilege.Privileged
+                                (rootOf vfs)
+                                SymlinkPolicy.Follow
+                                (path "/a")
+                                vfs
                             |> ok
 
                         vfs |> mkfile a "f" |> mklink a "up" "/f2"
@@ -282,10 +333,22 @@ module TestVirtualFileSystem =
                 ]
 
         let f2 =
-            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/f2") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                (path "/f2")
+                vfs
             |> ok
 
-        VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/a/up") vfs
+        VirtualFileSystem.resolveExisting
+            limits
+            CallerPrivilege.Privileged
+            (rootOf vfs)
+            SymlinkPolicy.Follow
+            (path "/a/up")
+            vfs
         |> shouldEqual (Ok f2)
 
     /// A chain of `length` symlinks ending at a regular file, so that resolving
@@ -319,7 +382,13 @@ module TestVirtualFileSystem =
 
         let exn =
             Assert.Throws<Exception> (fun () ->
-                VirtualFileSystem.resolveExisting forged (rootOf vfs) SymlinkPolicy.Follow (path "/l") vfs
+                VirtualFileSystem.resolveExisting
+                    forged
+                    CallerPrivilege.Privileged
+                    (rootOf vfs)
+                    SymlinkPolicy.Follow
+                    (path "/l")
+                    vfs
                 |> ignore<Result<InodeNumber, UnixError>>
             )
 
@@ -328,7 +397,13 @@ module TestVirtualFileSystem =
         // ...and it is refused even where no symlink is involved, so that the
         // guard cannot be satisfied by a check that only runs at a traversal.
         Assert.Throws<Exception> (fun () ->
-            VirtualFileSystem.resolveExisting forged (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+            VirtualFileSystem.resolveExisting
+                forged
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                (path "/f")
+                vfs
             |> ignore<Result<InodeNumber, UnixError>>
         )
         |> ignore<Exception>
@@ -384,6 +459,7 @@ module TestVirtualFileSystem =
     let private refuse (candidate : string) : Result<Resolution, UnixError> =
         VirtualFileSystem.resolveFull
             limits
+            CallerPrivilege.Privileged
             (rootOf separatorFs)
             SymlinkPolicy.Follow
             TrailingSeparatorPolicy.RefuseIsDirectory
@@ -393,6 +469,7 @@ module TestVirtualFileSystem =
     let private demand (candidate : string) : Result<Resolution, UnixError> =
         VirtualFileSystem.resolveFull
             limits
+            CallerPrivilege.Privileged
             (rootOf separatorFs)
             SymlinkPolicy.Follow
             TrailingSeparatorPolicy.Demand
@@ -484,7 +561,13 @@ module TestVirtualFileSystem =
     /// Resolve a bare name in the root of an otherwise empty filesystem, so the
     /// only thing that can be reported is the name's own length.
     let private resolveName (limits : PathLimits) (candidate : string) : Result<InodeNumber, UnixError> =
-        VirtualFileSystem.resolveExisting limits (rootOf emptyFs) SymlinkPolicy.Follow (path ("/" + candidate)) emptyFs
+        VirtualFileSystem.resolveExisting
+            limits
+            CallerPrivilege.Privileged
+            (rootOf emptyFs)
+            SymlinkPolicy.Follow
+            (path ("/" + candidate))
+            emptyFs
 
     [<Test>]
     let ``a name of 255 ASCII characters is permitted and 256 is not, on both`` () : unit =
@@ -549,6 +632,7 @@ module TestVirtualFileSystem =
 
         VirtualFileSystem.resolveExisting
             linuxLimits
+            CallerPrivilege.Privileged
             (rootOf emptyFs)
             SymlinkPolicy.Follow
             (path ("/nxdir/" + tooLong))
@@ -558,6 +642,7 @@ module TestVirtualFileSystem =
         // ...whereas with the long component *first*, it is reached and refused.
         VirtualFileSystem.resolveExisting
             linuxLimits
+            CallerPrivilege.Privileged
             (rootOf emptyFs)
             SymlinkPolicy.Follow
             (path ("/" + tooLong + "/x"))
@@ -573,7 +658,13 @@ module TestVirtualFileSystem =
         let tooLong = String.replicate 300 "a"
         let vfs = build [ mklink (rootOf emptyFs) "l" tooLong ]
 
-        VirtualFileSystem.resolveExisting linuxLimits (rootOf vfs) SymlinkPolicy.Follow (path "/l") vfs
+        VirtualFileSystem.resolveExisting
+            linuxLimits
+            CallerPrivilege.Privileged
+            (rootOf vfs)
+            SymlinkPolicy.Follow
+            (path "/l")
+            vfs
         |> shouldEqual (Error UnixError.ENAMETOOLONG)
 
     [<Test>]
@@ -582,7 +673,13 @@ module TestVirtualFileSystem =
             let limits = SimulatedUnixPlatform.pathLimits platform
             let vfs = symlinkChain (PathLimits.maxSymlinkTraversals limits)
 
-            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                (path "/s1")
+                vfs
             |> Result.isOk
             |> shouldEqual true
 
@@ -592,7 +689,13 @@ module TestVirtualFileSystem =
             let limits = SimulatedUnixPlatform.pathLimits platform
             let vfs = symlinkChain (PathLimits.maxSymlinkTraversals limits + 1)
 
-            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                (path "/s1")
+                vfs
             |> shouldEqual (Error UnixError.ELOOP)
 
     [<Test>]
@@ -607,10 +710,22 @@ module TestVirtualFileSystem =
 
         let vfs = symlinkChain inBetween
 
-        VirtualFileSystem.resolveExisting darwin (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
+        VirtualFileSystem.resolveExisting
+            darwin
+            CallerPrivilege.Privileged
+            (rootOf vfs)
+            SymlinkPolicy.Follow
+            (path "/s1")
+            vfs
         |> shouldEqual (Error UnixError.ELOOP)
 
-        VirtualFileSystem.resolveExisting linux (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
+        VirtualFileSystem.resolveExisting
+            linux
+            CallerPrivilege.Privileged
+            (rootOf vfs)
+            SymlinkPolicy.Follow
+            (path "/s1")
+            vfs
         |> Result.isOk
         |> shouldEqual true
 
@@ -639,10 +754,22 @@ module TestVirtualFileSystem =
 
         let vfs = build steps
 
-        VirtualFileSystem.resolveExisting darwin (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
+        VirtualFileSystem.resolveExisting
+            darwin
+            CallerPrivilege.Privileged
+            (rootOf vfs)
+            SymlinkPolicy.Follow
+            (path "/s1")
+            vfs
         |> shouldEqual (Error UnixError.ELOOP)
 
-        VirtualFileSystem.resolveExisting linux (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
+        VirtualFileSystem.resolveExisting
+            linux
+            CallerPrivilege.Privileged
+            (rootOf vfs)
+            SymlinkPolicy.Follow
+            (path "/s1")
+            vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
     [<Test>]
@@ -652,7 +779,13 @@ module TestVirtualFileSystem =
         // traversal count stops it, which is why there is no seen-state set.
         let vfs = build [ mklink (rootOf emptyFs) "l" "l/x" ]
 
-        VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/l") vfs
+        VirtualFileSystem.resolveExisting
+            limits
+            CallerPrivilege.Privileged
+            (rootOf vfs)
+            SymlinkPolicy.Follow
+            (path "/l")
+            vfs
         |> shouldEqual (Error UnixError.ELOOP)
 
     [<Test>]
@@ -663,7 +796,13 @@ module TestVirtualFileSystem =
         let vfs =
             build [ mklink (rootOf emptyFs) "a" "b" ; mklink (rootOf emptyFs) "b" "a" ]
 
-        VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/a") vfs
+        VirtualFileSystem.resolveExisting
+            limits
+            CallerPrivilege.Privileged
+            (rootOf vfs)
+            SymlinkPolicy.Follow
+            (path "/a")
+            vfs
         |> shouldEqual (Error UnixError.ELOOP)
 
     [<Test>]
@@ -675,7 +814,13 @@ module TestVirtualFileSystem =
         let vfs = build [ mklink (rootOf emptyFs) "l" raw ]
 
         let link =
-            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.NoFollowFinal (path "/l") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.NoFollowFinal
+                (path "/l")
+                vfs
             |> ok
 
         match VirtualFileSystem.tryGetContent link vfs with
@@ -719,7 +864,15 @@ module TestVirtualFileSystem =
                 ]
 
         let reachedBy (candidate : string) =
-            match VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.NoFollowFinal (path candidate) vfs with
+            match
+                VirtualFileSystem.resolve
+                    limits
+                    CallerPrivilege.Privileged
+                    (rootOf vfs)
+                    SymlinkPolicy.NoFollowFinal
+                    (path candidate)
+                    vfs
+            with
             | Ok (ResolvedTarget.Directory (_, reachedBy)) -> reachedBy
             | other -> failwith $"expected a navigation-final directory, got %A{other}"
 
@@ -747,11 +900,23 @@ module TestVirtualFileSystem =
         let root = rootOf vfs
 
         let file =
-            VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow (path "/f") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                root
+                SymlinkPolicy.Follow
+                (path "/f")
+                vfs
             |> ok
 
         let directory =
-            VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow (path "/d") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                root
+                SymlinkPolicy.Follow
+                (path "/d")
+                vfs
             |> ok
 
         VirtualFileSystem.createDirectory root (name "d") dirPerms buildTime vfs
@@ -772,7 +937,13 @@ module TestVirtualFileSystem =
         let linked = VirtualFileSystem.hardLink root (name "f2") file buildTime vfs |> ok
         VirtualFileSystem.checkInvariants linked |> shouldEqual []
 
-        VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow (path "/f2") linked
+        VirtualFileSystem.resolveExisting
+            limits
+            CallerPrivilege.Privileged
+            root
+            SymlinkPolicy.Follow
+            (path "/f2")
+            linked
         |> shouldEqual (Ok file)
 
     [<Test>]
@@ -829,7 +1000,13 @@ module TestVirtualFileSystem =
                     mkdir (rootOf emptyFs) "a"
                     fun vfs ->
                         let a =
-                            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/a") vfs
+                            VirtualFileSystem.resolveExisting
+                                limits
+                                CallerPrivilege.Privileged
+                                (rootOf vfs)
+                                SymlinkPolicy.Follow
+                                (path "/a")
+                                vfs
                             |> ok
 
                         vfs |> mkdir a "b" |> mkfile a "f"
@@ -843,6 +1020,7 @@ module TestVirtualFileSystem =
                 | Some absolute ->
                     VirtualFileSystem.resolveExisting
                         limits
+                        CallerPrivilege.Privileged
                         (rootOf vfs)
                         SymlinkPolicy.Follow
                         (UnixPath.ofAbsolute absolute)
@@ -1197,6 +1375,7 @@ module TestVirtualFileSystem =
                         // every directory but the root.
                         VirtualFileSystem.resolveExisting
                             limits
+                            CallerPrivilege.Privileged
                             (rootOf vfs)
                             SymlinkPolicy.Follow
                             (UnixPath.ofAbsolute absolute)
@@ -1238,6 +1417,7 @@ module TestVirtualFileSystem =
             for policy in [ SymlinkPolicy.Follow ; SymlinkPolicy.NoFollowFinal ] do
                 VirtualFileSystem.resolveFull
                     limits
+                    CallerPrivilege.Privileged
                     (rootOf vfs)
                     policy
                     TrailingSeparatorPolicy.Demand
@@ -1253,10 +1433,22 @@ module TestVirtualFileSystem =
 
         let property (vfs : VirtualFileSystem, candidate : string) : unit =
             let full =
-                VirtualFileSystem.resolve limits (rootOf vfs) SymlinkPolicy.Follow (path candidate) vfs
+                VirtualFileSystem.resolve
+                    limits
+                    CallerPrivilege.Privileged
+                    (rootOf vfs)
+                    SymlinkPolicy.Follow
+                    (path candidate)
+                    vfs
 
             let existing =
-                VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path candidate) vfs
+                VirtualFileSystem.resolveExisting
+                    limits
+                    CallerPrivilege.Privileged
+                    (rootOf vfs)
+                    SymlinkPolicy.Follow
+                    (path candidate)
+                    vfs
 
             match full, existing with
             | Ok (ResolvedTarget.Directory (a, _)), Ok b -> b |> shouldEqual a
@@ -1363,7 +1555,13 @@ module TestVirtualFileSystem =
 
         let permissionsOf (p : string) : InodePermissions =
             let inode =
-                VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.NoFollowFinal (path p) vfs
+                VirtualFileSystem.resolveExisting
+                    limits
+                    CallerPrivilege.Privileged
+                    (rootOf vfs)
+                    SymlinkPolicy.NoFollowFinal
+                    (path p)
+                    vfs
                 |> ok
 
             match VirtualFileSystem.tryGet inode vfs with
@@ -1384,7 +1582,13 @@ module TestVirtualFileSystem =
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
         let file =
-            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                (path "/f")
+                vfs
             |> ok
 
         timesOf file vfs |> shouldEqual (InodeTimes.createdAt buildTime)
@@ -1425,7 +1629,13 @@ module TestVirtualFileSystem =
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
         let file =
-            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                (path "/f")
+                vfs
             |> ok
 
         let linked =
@@ -1450,7 +1660,13 @@ module TestVirtualFileSystem =
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
         let file =
-            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                (path "/f")
+                vfs
             |> ok
 
         let written =
@@ -1460,7 +1676,7 @@ module TestVirtualFileSystem =
                     0L
                     (ImmutableArray.CreateRange [| 1uy ; 2uy |])
                     SetGroupIdOnWrite.StripWhenGroupExecutable
-                    WritePrivilege.Unprivileged
+                    CallerPrivilege.Unprivileged
                     later
                     vfs
             with
@@ -1502,7 +1718,7 @@ module TestVirtualFileSystem =
     /// answer every row correctly.
     [<Test>]
     let ``writeFile strips a written file's set-ID bits, per the flavour and the writer's privilege`` () : unit =
-        let modeAfter (start : int) (rule : SetGroupIdOnWrite) (privilege : WritePrivilege) : int =
+        let modeAfter (start : int) (rule : SetGroupIdOnWrite) (privilege : CallerPrivilege) : int =
             let vfs =
                 VirtualFileSystem.createFile
                     (rootOf emptyFs)
@@ -1515,7 +1731,13 @@ module TestVirtualFileSystem =
                 |> snd
 
             let file =
-                VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/s") vfs
+                VirtualFileSystem.resolveExisting
+                    limits
+                    CallerPrivilege.Privileged
+                    (rootOf vfs)
+                    SymlinkPolicy.Follow
+                    (path "/s")
+                    vfs
                 |> ok
 
             let written =
@@ -1538,19 +1760,19 @@ module TestVirtualFileSystem =
 
         // Setuid: both flavours strip it, and root keeps it.
         for rule in [ SetGroupIdOnWrite.StripWhenGroupExecutable ; SetGroupIdOnWrite.StripAlways ] do
-            modeAfter 0o4755 rule WritePrivilege.Unprivileged |> shouldEqual 0o0755
-            modeAfter 0o4755 rule WritePrivilege.Privileged |> shouldEqual 0o4755
+            modeAfter 0o4755 rule CallerPrivilege.Unprivileged |> shouldEqual 0o0755
+            modeAfter 0o4755 rule CallerPrivilege.Privileged |> shouldEqual 0o4755
 
         // Setgid without group-execute: the flavours part company, and this is
         // what proves the rule reaches the stored mode rather than stopping at
         // `PermissionBits`.
-        modeAfter 0o2644 SetGroupIdOnWrite.StripWhenGroupExecutable WritePrivilege.Unprivileged
+        modeAfter 0o2644 SetGroupIdOnWrite.StripWhenGroupExecutable CallerPrivilege.Unprivileged
         |> shouldEqual 0o2644
 
-        modeAfter 0o2644 SetGroupIdOnWrite.StripAlways WritePrivilege.Unprivileged
+        modeAfter 0o2644 SetGroupIdOnWrite.StripAlways CallerPrivilege.Unprivileged
         |> shouldEqual 0o0644
 
-        modeAfter 0o2644 SetGroupIdOnWrite.StripAlways WritePrivilege.Privileged
+        modeAfter 0o2644 SetGroupIdOnWrite.StripAlways CallerPrivilege.Privileged
         |> shouldEqual 0o2644
 
     /// Where truncation parts company with `writeFile`: a write of no bytes is not
@@ -1565,7 +1787,13 @@ module TestVirtualFileSystem =
             let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
             let file =
-                VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+                VirtualFileSystem.resolveExisting
+                    limits
+                    CallerPrivilege.Privileged
+                    (rootOf vfs)
+                    SymlinkPolicy.Follow
+                    (path "/f")
+                    vfs
                 |> ok
 
             match
@@ -1574,7 +1802,7 @@ module TestVirtualFileSystem =
                     0L
                     (ImmutableArray.CreateRange [| 1uy ; 2uy ; 3uy |])
                     SetGroupIdOnWrite.StripWhenGroupExecutable
-                    WritePrivilege.Unprivileged
+                    CallerPrivilege.Unprivileged
                     buildTime
                     vfs
             with
@@ -1582,7 +1810,13 @@ module TestVirtualFileSystem =
             | Error refusal -> failwith $"expected success, got %O{refusal}"
 
         let file =
-            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                (path "/f")
+                vfs
             |> ok
 
         let truncated =
@@ -1591,7 +1825,7 @@ module TestVirtualFileSystem =
                     file
                     3L
                     SetIdBitsOnTruncation.Preserve
-                    WritePrivilege.Unprivileged
+                    CallerPrivilege.Unprivileged
                     later
                     vfs
             with
@@ -1626,10 +1860,16 @@ module TestVirtualFileSystem =
             |> snd
 
         let file =
-            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/s") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                (path "/s")
+                vfs
             |> ok
 
-        let modeAfter (rule : SetIdBitsOnTruncation) (privilege : WritePrivilege) : int =
+        let modeAfter (rule : SetIdBitsOnTruncation) (privilege : CallerPrivilege) : int =
             let truncated =
                 match VirtualFileSystem.truncateFile file 0L rule privilege buildTime vfs with
                 | Ok vfs -> vfs
@@ -1639,16 +1879,16 @@ module TestVirtualFileSystem =
             | Some (InodeContent.RegularFile (_, permissions)) -> PermissionBits.toInt permissions
             | other -> failwith $"expected a regular file, got %O{other}"
 
-        modeAfter SetIdBitsOnTruncation.Strip WritePrivilege.Unprivileged
+        modeAfter SetIdBitsOnTruncation.Strip CallerPrivilege.Unprivileged
         |> shouldEqual 0o755
 
-        modeAfter SetIdBitsOnTruncation.Preserve WritePrivilege.Unprivileged
+        modeAfter SetIdBitsOnTruncation.Preserve CallerPrivilege.Unprivileged
         |> shouldEqual 0o4755
 
-        modeAfter SetIdBitsOnTruncation.Strip WritePrivilege.Privileged
+        modeAfter SetIdBitsOnTruncation.Strip CallerPrivilege.Privileged
         |> shouldEqual 0o4755
 
-        modeAfter SetIdBitsOnTruncation.Preserve WritePrivilege.Privileged
+        modeAfter SetIdBitsOnTruncation.Preserve CallerPrivilege.Privileged
         |> shouldEqual 0o4755
 
     /// The three shapes `truncateFile` refuses to answer for, each of which means
@@ -1659,11 +1899,23 @@ module TestVirtualFileSystem =
         let vfs = build [ mkdir (rootOf emptyFs) "d" ; mklink (rootOf emptyFs) "l" "d" ]
 
         let directory =
-            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/d") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                (path "/d")
+                vfs
             |> ok
 
         let link =
-            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.NoFollowFinal (path "/l") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.NoFollowFinal
+                (path "/l")
+                vfs
             |> ok
 
         // Each arm is asserted by its message as well as by throwing, so a test
@@ -1675,7 +1927,7 @@ module TestVirtualFileSystem =
                         inode
                         0L
                         SetIdBitsOnTruncation.Strip
-                        WritePrivilege.Unprivileged
+                        CallerPrivilege.Unprivileged
                         buildTime
                         vfs
                     |> ignore<Result<VirtualFileSystem, FileTruncationRefusal>>
@@ -1695,13 +1947,13 @@ module TestVirtualFileSystem =
     /// Non-root on macOS 26.6 and Linux 6.18.5, and root on both.
     [<Test>]
     let ``truncation strips the set-ID bits only on Linux, and only for a non-root caller`` () : unit =
-        let after (rule : SetIdBitsOnTruncation) (privilege : WritePrivilege) (mode : int) : int =
+        let after (rule : SetIdBitsOnTruncation) (privilege : CallerPrivilege) (mode : int) : int =
             PermissionBits.parseOrFail "test" mode
             |> PermissionBits.afterTruncation rule privilege
             |> PermissionBits.toInt
 
-        let linux = after SetIdBitsOnTruncation.Strip WritePrivilege.Unprivileged
-        let darwin = after SetIdBitsOnTruncation.Preserve WritePrivilege.Unprivileged
+        let linux = after SetIdBitsOnTruncation.Strip CallerPrivilege.Unprivileged
+        let darwin = after SetIdBitsOnTruncation.Preserve CallerPrivilege.Unprivileged
 
         // Linux, unprivileged: setuid goes whatever the execute bits say; setgid
         // goes only alongside group-execute, because without it the bit means
@@ -1733,7 +1985,7 @@ module TestVirtualFileSystem =
         // Root keeps everything, on either kernel.
         for rule in [ SetIdBitsOnTruncation.Strip ; SetIdBitsOnTruncation.Preserve ] do
             for mode in [ 0o4755 ; 0o4644 ; 0o2755 ; 0o2644 ; 0o6755 ; 0o1755 ; 0o6644 ; 0o3755 ] do
-                after rule WritePrivilege.Privileged mode |> shouldEqual mode
+                after rule CallerPrivilege.Privileged mode |> shouldEqual mode
 
     /// The measured table, as unit assertions, with every expectation written as
     /// an octal literal rather than computed — a version that asked
@@ -1743,15 +1995,15 @@ module TestVirtualFileSystem =
     /// Non-root on macOS 26.6 and Linux 6.18.5, and root on both.
     [<Test>]
     let ``a content-changing write strips the set-ID bits, and the flavours differ over S_ISGID`` () : unit =
-        let after (rule : SetGroupIdOnWrite) (privilege : WritePrivilege) (mode : int) : int =
+        let after (rule : SetGroupIdOnWrite) (privilege : CallerPrivilege) (mode : int) : int =
             PermissionBits.parseOrFail "test" mode
             |> PermissionBits.afterContentChangingWrite rule privilege
             |> PermissionBits.toInt
 
         let linux =
-            after SetGroupIdOnWrite.StripWhenGroupExecutable WritePrivilege.Unprivileged
+            after SetGroupIdOnWrite.StripWhenGroupExecutable CallerPrivilege.Unprivileged
 
-        let darwin = after SetGroupIdOnWrite.StripAlways WritePrivilege.Unprivileged
+        let darwin = after SetGroupIdOnWrite.StripAlways CallerPrivilege.Unprivileged
 
         // Both flavours agree about `S_ISUID` — it goes whatever the execute bits
         // say — and about the sticky bit, which never moves.
@@ -1782,7 +2034,7 @@ module TestVirtualFileSystem =
         // this about privilege rather than about a mask applied unconditionally.
         for rule in [ SetGroupIdOnWrite.StripWhenGroupExecutable ; SetGroupIdOnWrite.StripAlways ] do
             for mode in [ 0o4755 ; 0o2755 ; 0o6755 ; 0o2644 ; 0o6644 ; 0o1755 ; 0o0644 ] do
-                after rule WritePrivilege.Privileged mode |> shouldEqual mode
+                after rule CallerPrivilege.Privileged mode |> shouldEqual mode
 
     /// `0o6644` carries both set-ID bits with no group-execute bit, so the three
     /// rules anyone might plausibly implement give three different answers. A
@@ -1792,7 +2044,7 @@ module TestVirtualFileSystem =
     let ``the rules are distinguishable, and this is the row that distinguishes them`` () : unit =
         let after (rule : SetGroupIdOnWrite) (mode : int) : int =
             PermissionBits.parseOrFail "test" mode
-            |> PermissionBits.afterContentChangingWrite rule WritePrivilege.Unprivileged
+            |> PermissionBits.afterContentChangingWrite rule CallerPrivilege.Unprivileged
             |> PermissionBits.toInt
 
         after SetGroupIdOnWrite.StripAlways 0o6644 |> shouldEqual 0o0644
@@ -1802,7 +2054,7 @@ module TestVirtualFileSystem =
         // does on Darwin. Named here so that the write rule cannot quietly
         // acquire it.
         PermissionBits.parseOrFail "test" 0o6644
-        |> PermissionBits.afterTruncation SetIdBitsOnTruncation.Preserve WritePrivilege.Unprivileged
+        |> PermissionBits.afterTruncation SetIdBitsOnTruncation.Preserve CallerPrivilege.Unprivileged
         |> PermissionBits.toInt
         |> shouldEqual 0o6644
 
@@ -1812,11 +2064,23 @@ module TestVirtualFileSystem =
         let some = ImmutableArray.CreateRange [| 1uy |]
 
         let directory =
-            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.Follow (path "/d") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.Follow
+                (path "/d")
+                vfs
             |> ok
 
         let link =
-            VirtualFileSystem.resolveExisting limits (rootOf vfs) SymlinkPolicy.NoFollowFinal (path "/l") vfs
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.NoFollowFinal
+                (path "/l")
+                vfs
             |> ok
 
         // A caller reaches `writeFile` only through a descriptor open for
@@ -1835,7 +2099,7 @@ module TestVirtualFileSystem =
                     0L
                     some
                     SetGroupIdOnWrite.StripWhenGroupExecutable
-                    WritePrivilege.Unprivileged
+                    CallerPrivilege.Unprivileged
                     buildTime
                     vfs
                 |> function
@@ -1851,7 +2115,7 @@ module TestVirtualFileSystem =
                     0L
                     some
                     SetGroupIdOnWrite.StripWhenGroupExecutable
-                    WritePrivilege.Unprivileged
+                    CallerPrivilege.Unprivileged
                     buildTime
                     vfs
                 |> function
@@ -1867,7 +2131,7 @@ module TestVirtualFileSystem =
                     0L
                     some
                     SetGroupIdOnWrite.StripWhenGroupExecutable
-                    WritePrivilege.Unprivileged
+                    CallerPrivilege.Unprivileged
                     buildTime
                     vfs
                 |> function
@@ -1951,6 +2215,7 @@ module TestVirtualFileSystem =
 
         VirtualFileSystem.resolve
             (SimulatedUnixPlatform.pathLimits platform)
+            CallerPrivilege.Privileged
             (rootOf vfs)
             SymlinkPolicy.Follow
             (path ("/L" + suffix))
@@ -2044,6 +2309,7 @@ module TestVirtualFileSystem =
 
             VirtualFileSystem.resolve
                 (SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.macOsArm64)
+                CallerPrivilege.Privileged
                 (rootOf vfs)
                 SymlinkPolicy.Follow
                 (path "/c1/a")
@@ -2080,6 +2346,7 @@ module TestVirtualFileSystem =
         let resolve (platform : SimulatedUnixPlatform) : Result<ResolvedTarget, UnixError> =
             VirtualFileSystem.resolve
                 (SimulatedUnixPlatform.pathLimits platform)
+                CallerPrivilege.Privileged
                 (rootOf vfs)
                 SymlinkPolicy.Follow
                 (path "/a/a")
@@ -2122,6 +2389,7 @@ module TestVirtualFileSystem =
         let resolve (platform : SimulatedUnixPlatform) : Result<ResolvedTarget, UnixError> =
             VirtualFileSystem.resolve
                 (SimulatedUnixPlatform.pathLimits platform)
+                CallerPrivilege.Privileged
                 (rootOf vfs)
                 SymlinkPolicy.Follow
                 (path "/L")
@@ -2160,6 +2428,7 @@ module TestVirtualFileSystem =
         let resolve (platform : SimulatedUnixPlatform) : Result<ResolvedTarget, UnixError> =
             VirtualFileSystem.resolve
                 (SimulatedUnixPlatform.pathLimits platform)
+                CallerPrivilege.Privileged
                 (rootOf vfs)
                 SymlinkPolicy.Follow
                 (path argument)
@@ -2792,7 +3061,7 @@ module TestCreatingOpenRules =
     /// rather than one this test hand-assembled.
     let private verdict
         (rules : CreatingOpenRules)
-        (privileged : bool)
+        (privilege : CallerPrivilege)
         (exclusive : bool)
         (vfs : VirtualFileSystem)
         (candidate : string)
@@ -2809,6 +3078,7 @@ module TestCreatingOpenRules =
         match
             VirtualFileSystem.resolveFull
                 limits
+                privilege
                 (VirtualFileSystem.root vfs)
                 policy
                 rules.TrailingSeparator
@@ -2816,7 +3086,7 @@ module TestCreatingOpenRules =
                 vfs
         with
         | Error error -> CreatingOpenVerdict.Refuse error
-        | Ok resolution -> CreatingOpenRules.verdict rules privileged true exclusive resolution vfs
+        | Ok resolution -> CreatingOpenRules.verdict rules privilege true exclusive resolution vfs
 
     [<Test>]
     let ``a path that consumed no component diverges between the two kernels`` () : unit =
@@ -2827,19 +3097,19 @@ module TestCreatingOpenRules =
         // too. `TestVirtualFileSystemAgainstHost` cannot carry this row: it
         // prefixes every path with a temporary directory, so the kernel never
         // sees a path with no components.
-        verdict darwin false false tree "/"
+        verdict darwin CallerPrivilege.Unprivileged false tree "/"
         |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.EEXIST)
 
-        verdict linux false false tree "/"
+        verdict linux CallerPrivilege.Unprivileged false tree "/"
         |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.EISDIR)
 
         // ...while the navigations that reach the same inode do not diverge on
         // Darwin, which is what makes this about `FinalNavigation` rather than
         // about the root.
-        verdict darwin false false tree "/."
+        verdict darwin CallerPrivilege.Unprivileged false tree "/."
         |> shouldEqual (CreatingOpenVerdict.OpenExisting (VirtualFileSystem.root tree))
 
-        verdict darwin false false tree "/d/.."
+        verdict darwin CallerPrivilege.Unprivileged false tree "/d/.."
         |> shouldEqual (CreatingOpenVerdict.OpenExisting (VirtualFileSystem.root tree))
 
     [<Test>]
@@ -2847,11 +3117,11 @@ module TestCreatingOpenRules =
         // Measured: `open("d", O_RDONLY|O_CREAT)` is EISDIR on Linux and opens
         // the directory on macOS, where a plain `open("d", O_RDONLY)` succeeds
         // on both. This is the divergence CI checks from the other side.
-        match verdict darwin false false tree "/d" with
+        match verdict darwin CallerPrivilege.Unprivileged false tree "/d" with
         | CreatingOpenVerdict.OpenExisting _ -> ()
         | other -> failwith $"expected Darwin to open the directory, got %A{other}"
 
-        verdict linux false false tree "/d"
+        verdict linux CallerPrivilege.Unprivileged false tree "/d"
         |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.EISDIR)
 
     [<Test>]
@@ -2861,7 +3131,7 @@ module TestCreatingOpenRules =
         // ordered, and a handler that checked the directory rule first would
         // report EISDIR where every kernel reports EEXIST.
         for rules in [ linux ; darwin ] do
-            verdict rules false true tree "/d"
+            verdict rules CallerPrivilege.Unprivileged true tree "/d"
             |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.EEXIST)
 
     [<Test>]
@@ -2871,12 +3141,12 @@ module TestCreatingOpenRules =
         // are all EACCES. The host oracle's corpus has no such directory, so
         // this is the only place the rule is stated.
         for permitted in [ 0o333 ; 0o300 ; 0o777 ] do
-            match verdict linux false false (treeWith (mode permitted)) "/locked/new" with
+            match verdict linux CallerPrivilege.Unprivileged false (treeWith (mode permitted)) "/locked/new" with
             | CreatingOpenVerdict.Create (_, created) -> created |> shouldEqual (name "new")
             | other -> failwith $"expected mode 0o%s{Convert.ToString (permitted, 8)} to permit creation, got %A{other}"
 
         for refused in [ 0o644 ; 0o555 ; 0o111 ; 0o000 ] do
-            verdict linux false false (treeWith (mode refused)) "/locked/new"
+            verdict linux CallerPrivilege.Unprivileged false (treeWith (mode refused)) "/locked/new"
             |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.EACCES)
 
     [<Test>]
@@ -2884,11 +3154,11 @@ module TestCreatingOpenRules =
         // Measured: as uid 0 a creating open succeeds in a mode-0000 directory.
         // The second half is what stops "privileged" being read as "unchecked":
         // root still gets EISDIR from Linux's directory rule.
-        match verdict linux true false (treeWith (mode 0o000)) "/locked/new" with
+        match verdict linux CallerPrivilege.Privileged false (treeWith (mode 0o000)) "/locked/new" with
         | CreatingOpenVerdict.Create _ -> ()
         | other -> failwith $"expected root to create in a mode-0000 directory, got %A{other}"
 
-        verdict linux true false tree "/d"
+        verdict linux CallerPrivilege.Privileged false tree "/d"
         |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.EISDIR)
 
     [<Test>]
@@ -2899,10 +3169,10 @@ module TestCreatingOpenRules =
         // that a reader can see the two kernels reach the same "nothing was
         // created" by different routes.
         for exclusive in [ false ; true ] do
-            verdict darwin false exclusive tree "/nx/"
+            verdict darwin CallerPrivilege.Unprivileged exclusive tree "/nx/"
             |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.ENOENT)
 
-            verdict linux false exclusive tree "/nx/"
+            verdict linux CallerPrivilege.Unprivileged exclusive tree "/nx/"
             |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.EISDIR)
 
     [<Test>]
@@ -2916,6 +3186,7 @@ module TestCreatingOpenRules =
             match
                 VirtualFileSystem.resolveFull
                     limits
+                    CallerPrivilege.Privileged
                     (VirtualFileSystem.root tree)
                     SymlinkPolicy.Follow
                     TrailingSeparatorPolicy.Demand
@@ -2926,11 +3197,11 @@ module TestCreatingOpenRules =
             | Error error -> failwith $"could not resolve %s{candidate}: %O{error}"
 
         for rules in [ linux ; darwin ] do
-            match CreatingOpenRules.verdict rules false false false (resolveFor "/d") tree with
+            match CreatingOpenRules.verdict rules CallerPrivilege.Unprivileged false false (resolveFor "/d") tree with
             | CreatingOpenVerdict.OpenExisting _ -> ()
             | other -> failwith $"a non-creating open of a directory must open it, got %A{other}"
 
-            CreatingOpenRules.verdict rules false false false (resolveFor "/nx") tree
+            CreatingOpenRules.verdict rules CallerPrivilege.Unprivileged false false (resolveFor "/nx") tree
             |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.ENOENT)
 
     [<Test>]
@@ -2993,3 +3264,517 @@ module TestCreatingOpenRules =
 
         CreatingOpenRules.createdPermissions darwin (mode 0o7777) 0o7777
         |> shouldEqual (mode 0o0000)
+
+/// `mkdir(2)`'s rules, in the rows `TestVirtualFileSystemAgainstHost` cannot
+/// reach: the flavour it is *not* running on, the path its temporary root cannot
+/// express, the permission bits its corpus does not have, and the identity of
+/// the name a creation actually binds. Every expectation is a measurement
+/// against real `mkdir(2)` on macOS 25.6/APFS at uid 501 and Linux 6.x arm64 at
+/// uid 1000, umask 022, with a fresh tree per row.
+[<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
+module TestMkDirRules =
+
+    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+
+    let private path (s : string) : UnixPath = UnixPath.parseOrFail "test" s
+
+    let private target (s : string) : SymlinkTarget = SymlinkTarget.parseOrFail "test" s
+
+    let private buildTime : UnixTimestamp =
+        UnixTimestamp.createOrFail "test" 1_700_000_000L 0
+
+    let private linux : MkDirRules =
+        SimulatedUnixPlatform.mkDirRules SimulatedUnixPlatform.linuxX64
+
+    let private darwin : MkDirRules =
+        SimulatedUnixPlatform.mkDirRules SimulatedUnixPlatform.macOsArm64
+
+    let private mode (raw : int) : PermissionBits = PermissionBits.parseOrFail "test" raw
+
+    /// A root holding `d` (a directory), `f` (a file), `lf -> f`, `ld -> d`,
+    /// `dang -> nx` and `cyc -> cyc`, plus a directory `locked` whose permission
+    /// bits are given.
+    let private treeWith (lockedBits : PermissionBits) : VirtualFileSystem =
+        let vfs = VirtualFileSystem.empty buildTime
+        let root = VirtualFileSystem.root vfs
+
+        let apply (result : Result<InodeNumber * VirtualFileSystem, UnixError>) : VirtualFileSystem =
+            match result with
+            | Ok (_, vfs) -> vfs
+            | Error error -> failwith $"could not build the tree: %O{error}"
+
+        vfs
+        |> fun vfs ->
+            apply (VirtualFileSystem.createDirectory root (name "d") PermissionBits.defaultForDirectory buildTime vfs)
+        |> fun vfs ->
+            apply (
+                VirtualFileSystem.createFile
+                    root
+                    (name "f")
+                    PermissionBits.defaultForRegularFile
+                    buildTime
+                    ImmutableArray<byte>.Empty
+                    vfs
+            )
+        |> fun vfs -> apply (VirtualFileSystem.createSymlink root (name "lf") buildTime (target "f") vfs)
+        |> fun vfs -> apply (VirtualFileSystem.createSymlink root (name "ld") buildTime (target "d") vfs)
+        |> fun vfs -> apply (VirtualFileSystem.createSymlink root (name "dang") buildTime (target "nx") vfs)
+        |> fun vfs -> apply (VirtualFileSystem.createSymlink root (name "cyc") buildTime (target "cyc") vfs)
+        |> fun vfs ->
+            // `locked` holds a child, so that a row can ask what an *existing*
+            // name inside an unreachable directory answers. The builder applies
+            // no permission rule of its own — those live in the verdict — so a
+            // 0o000 directory can still be given one here.
+            let locked, vfs =
+                match VirtualFileSystem.createDirectory root (name "locked") lockedBits buildTime vfs with
+                | Ok (inode, vfs) -> inode, vfs
+                | Error error -> failwith $"could not build the tree: %O{error}"
+
+            apply (
+                VirtualFileSystem.createDirectory locked (name "kid") PermissionBits.defaultForDirectory buildTime vfs
+            )
+
+    let private tree : VirtualFileSystem = treeWith PermissionBits.defaultForDirectory
+
+    /// Resolve as a `mkdir` of the given flavour would, then ask for the verdict
+    /// — so the `Resolution` under test is one the walk really produces rather
+    /// than one this test hand-assembled. Mirrors what `SystemNative_MkDir`
+    /// does, which is why a wrong policy here would be a wrong policy there too.
+    ///
+    /// `privilege` reaches the walk as well as the verdict, because the two now
+    /// split the permission rule between them: the walk refuses a directory this
+    /// caller may not search, and the verdict one it may not write. A row that
+    /// hands privilege only to the verdict would be testing a resolution no
+    /// handler could produce.
+    let private verdict
+        (rules : MkDirRules)
+        (privilege : CallerPrivilege)
+        (vfs : VirtualFileSystem)
+        (candidate : string)
+        : MkDirVerdict
+        =
+        let limits = SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
+
+        match
+            VirtualFileSystem.resolveFull
+                limits
+                privilege
+                (VirtualFileSystem.root vfs)
+                SymlinkPolicy.NoFollowFinal
+                rules.TrailingSeparator
+                (path candidate)
+                vfs
+        with
+        | Error error -> MkDirVerdict.Refuse error
+        | Ok resolution -> MkDirRules.verdict privilege resolution vfs
+
+    /// The name a verdict binds, so a row can say *what* was created rather than
+    /// only that something was.
+    let private bound (verdict : MkDirVerdict) : string =
+        match verdict with
+        | MkDirVerdict.Create (_, name, _) -> FileName.toString name
+        | MkDirVerdict.Refuse error -> failwith $"expected a creation, got %O{error}"
+
+    [<Test>]
+    let ``a path that consumed no component is EEXIST on both kernels`` () : unit =
+        // Measured: `mkdir("/")`, `mkdir(".")`, `mkdir("d/.")` and `mkdir("d/..")`
+        // are all EEXIST on both. Unlike a creating `open`, which diverges here
+        // (Darwin EEXIST, Linux EISDIR), and unlike `rmdir`, which owes all three
+        // navigations *different* errnos. `TestVirtualFileSystemAgainstHost`
+        // cannot carry the "/" row: it prefixes every path with a temporary
+        // directory, so the kernel never sees a path with no components.
+        for rules in [ linux ; darwin ] do
+            for candidate in [ "/" ; "." ; "d/." ; "d/.." ; "/." ] do
+                verdict rules CallerPrivilege.Unprivileged tree candidate
+                |> shouldEqual (MkDirVerdict.Refuse UnixError.EEXIST)
+
+    [<Test>]
+    let ``an existing final name is EEXIST whatever it is`` () : unit =
+        // Measured on both, with no trailing separator: a directory, a file, a
+        // link to either, a dangling link and a cyclic link are all EEXIST.
+        // `mkdir` never dereferences the name it is about to bind.
+        for rules in [ linux ; darwin ] do
+            for candidate in [ "d" ; "f" ; "lf" ; "ld" ; "dang" ; "cyc" ] do
+                verdict rules CallerPrivilege.Unprivileged tree candidate
+                |> shouldEqual (MkDirVerdict.Refuse UnixError.EEXIST)
+
+    [<Test>]
+    let ``a trailing separator reaches past the final component only on Darwin`` () : unit =
+        // The divergence, and the reason `MkDirRules.TrailingSeparator` exists.
+        // Linux's creating lookup never dereferences the last component, so every
+        // one of these is EEXIST there.
+        for candidate in [ "f/" ; "lf/" ; "ld/" ; "dang/" ; "cyc/" ] do
+            verdict linux CallerPrivilege.Unprivileged tree candidate
+            |> shouldEqual (MkDirVerdict.Refuse UnixError.EEXIST)
+
+        // Darwin resolves it as a lookup would, so each row fails — or succeeds —
+        // for its own reason. Measured individually rather than as a group: "f/"
+        // and "lf/" are ENOTDIR, "ld/" lands on the directory the link names and
+        // is EEXIST, and "cyc/" is ELOOP.
+        verdict darwin CallerPrivilege.Unprivileged tree "f/"
+        |> shouldEqual (MkDirVerdict.Refuse UnixError.ENOTDIR)
+
+        verdict darwin CallerPrivilege.Unprivileged tree "lf/"
+        |> shouldEqual (MkDirVerdict.Refuse UnixError.ENOTDIR)
+
+        verdict darwin CallerPrivilege.Unprivileged tree "ld/"
+        |> shouldEqual (MkDirVerdict.Refuse UnixError.EEXIST)
+
+        verdict darwin CallerPrivilege.Unprivileged tree "cyc/"
+        |> shouldEqual (MkDirVerdict.Refuse UnixError.ELOOP)
+
+        // And the destructive one: measured on macOS, `mkdir("dang/")` creates
+        // the link's *target*. The name bound is "nx", not "dang" — which is
+        // what no host-side comparison can see, since a kernel reports only that
+        // it succeeded.
+        verdict darwin CallerPrivilege.Unprivileged tree "dang/"
+        |> bound
+        |> shouldEqual "nx"
+
+    [<Test>]
+    let ``a free name creates, with or without a trailing separator`` () : unit =
+        // Measured on both: `mkdir("nx")` and `mkdir("nx/")` alike succeed. This
+        // is the one place `mkdir` and a creating `open` disagree about a
+        // resolution of the same shape — `open` owes a free name that demands a
+        // directory ENOENT on Darwin.
+        for rules in [ linux ; darwin ] do
+            verdict rules CallerPrivilege.Unprivileged tree "new"
+            |> bound
+            |> shouldEqual "new"
+
+            verdict rules CallerPrivilege.Unprivileged tree "new/"
+            |> bound
+            |> shouldEqual "new"
+
+            verdict rules CallerPrivilege.Unprivileged tree "new//"
+            |> bound
+            |> shouldEqual "new"
+
+    [<Test>]
+    let ``binding a name needs both write and search on the holding directory`` () : unit =
+        // Measured at uid 1000 on both: a 0o555 parent and a 0o666 parent are
+        // each EACCES, while 0o300 — the bare pair — succeeds.
+        for rules in [ linux ; darwin ] do
+            for bits in [ 0o555 ; 0o666 ; 0o111 ; 0o644 ] do
+                verdict rules CallerPrivilege.Unprivileged (treeWith (mode bits)) "locked/new"
+                |> shouldEqual (MkDirVerdict.Refuse UnixError.EACCES)
+
+            for bits in [ 0o300 ; 0o333 ; 0o755 ] do
+                verdict rules CallerPrivilege.Unprivileged (treeWith (mode bits)) "locked/new"
+                |> bound
+                |> shouldEqual "new"
+
+    [<Test>]
+    let ``the holding directory's search bit is needed to look the name up at all`` () : unit =
+        // Measured on both, and it is the *search* bit alone that decides
+        // whether the lookup happens: with an existing child, a 0o666 parent and
+        // a 0o200 parent are EACCES while a 0o100 parent — which cannot be
+        // written — is EEXIST. So this check sits above the EEXIST arm, and the
+        // write check sits below it.
+        for rules in [ linux ; darwin ] do
+            for bits in [ 0o666 ; 0o200 ; 0o000 ; 0o644 ] do
+                verdict rules CallerPrivilege.Unprivileged (treeWith (mode bits)) "locked/kid"
+                |> shouldEqual (MkDirVerdict.Refuse UnixError.EACCES)
+
+            for bits in [ 0o100 ; 0o500 ; 0o555 ; 0o300 ] do
+                verdict rules CallerPrivilege.Unprivileged (treeWith (mode bits)) "locked/kid"
+                |> shouldEqual (MkDirVerdict.Refuse UnixError.EEXIST)
+
+        // Root looks anything up.
+        for rules in [ linux ; darwin ] do
+            verdict rules CallerPrivilege.Privileged (treeWith (mode 0o000)) "locked/kid"
+            |> shouldEqual (MkDirVerdict.Refuse UnixError.EEXIST)
+
+    [<Test>]
+    let ``an existing name beats the permission rule`` () : unit =
+        // Measured on both: `mkdir` of a name that already exists inside a
+        // directory the caller cannot write is EEXIST, not EACCES. This ordering
+        // is the only thing that distinguishes the two checks, since a row that
+        // trips just one cannot say which came first.
+        let locked = treeWith (mode 0o555)
+
+        let locked =
+            match VirtualFileSystem.createDirectory (InodeNumber 1L) (name "unused") (mode 0o755) buildTime locked with
+            | Ok (_, vfs) -> vfs
+            | Error error -> failwith $"could not extend the tree: %O{error}"
+
+        // "locked" itself is an existing name inside the (writable) root, so it
+        // exercises the ordering without needing an entry inside the unwritable
+        // directory — which the builder could not create anyway.
+        for rules in [ linux ; darwin ] do
+            verdict rules CallerPrivilege.Unprivileged locked "locked"
+            |> shouldEqual (MkDirVerdict.Refuse UnixError.EEXIST)
+
+    [<Test>]
+    let ``root bypasses the permission rule but not the others`` () : unit =
+        // Measured on Linux as uid 0: `mkdir` into a 0o555 directory succeeds.
+        // The refusals above it do not care about privilege.
+        for rules in [ linux ; darwin ] do
+            verdict rules CallerPrivilege.Privileged (treeWith (mode 0o555)) "locked/new"
+            |> bound
+            |> shouldEqual "new"
+
+            verdict rules CallerPrivilege.Privileged tree "d"
+            |> shouldEqual (MkDirVerdict.Refuse UnixError.EEXIST)
+
+            verdict rules CallerPrivilege.Privileged tree "/"
+            |> shouldEqual (MkDirVerdict.Refuse UnixError.EEXIST)
+
+    [<Test>]
+    let ``the created mode is masked by the platform and then by the umask`` () : unit =
+        // Measured at umask 022, unprivileged, in a parent *without* S_ISGID.
+        // Linux keeps the sticky bit and drops both set-ID bits (`vfs_mkdir`
+        // masks with S_IRWXUGO|S_ISVTX); Darwin drops all three. That Linux row
+        // is what makes this mask its own fact rather than `open`'s, which keeps
+        // all twelve bits there.
+        let umask = mode 0o022
+        let plainParent = mode 0o755
+
+        for mkMode, expected in
+            [
+                0o777, 0o755
+                0o7777, 0o1755
+                0o1777, 0o1755
+                0o2777, 0o755
+                0o4777, 0o755
+                0o10777, 0o755
+                0o666, 0o644
+                0o000, 0o000
+            ] do
+            MkDirRules.createdPermissions linux plainParent umask mkMode
+            |> shouldEqual (mode expected)
+
+        for mkMode, expected in
+            [
+                0o777, 0o755
+                0o7777, 0o755
+                0o1777, 0o755
+                0o2777, 0o755
+                0o4777, 0o755
+                0o10777, 0o755
+                0o666, 0o644
+                0o000, 0o000
+            ] do
+            MkDirRules.createdPermissions darwin plainParent umask mkMode
+            |> shouldEqual (mode expected)
+
+        // A umask of 0 masks nothing, so the platform mask is visible alone.
+        MkDirRules.createdPermissions linux plainParent (mode 0o000) 0o7777
+        |> shouldEqual (mode 0o1777)
+
+        MkDirRules.createdPermissions darwin plainParent (mode 0o000) 0o7777
+        |> shouldEqual (mode 0o777)
+
+    [<Test>]
+    let ``set-group-ID is inherited from the parent only on Linux`` () : unit =
+        // Measured with a parent chmod'ed to 0o2777 *and read back at 0o2777*
+        // first, since a non-root chmod silently drops S_ISGID when the caller is
+        // not in the directory's group — which reads exactly like a platform
+        // that does not support the bit.
+        let umask = mode 0o022
+        let setGidParent = mode 0o2777
+        let plainParent = mode 0o777
+
+        for mkMode, expected in
+            [
+                // The OR happens *after* both masks: 0o7777 is masked down to
+                // 0o1755 and then regains the bit, giving 0o3755.
+                0o777, 0o2755
+                0o7777, 0o3755
+                0o1777, 0o3755
+                0o2777, 0o2755
+                0o4777, 0o2755
+            ] do
+            MkDirRules.createdPermissions linux setGidParent umask mkMode
+            |> shouldEqual (mode expected)
+
+        // Darwin inherits nothing: every mode gives the same answer it gives
+        // under a plain parent.
+        for mkMode in [ 0o777 ; 0o7777 ; 0o1777 ; 0o2777 ; 0o4777 ] do
+            MkDirRules.createdPermissions darwin setGidParent umask mkMode
+            |> shouldEqual (MkDirRules.createdPermissions darwin plainParent umask mkMode)
+
+        // ...and on Linux the bit comes from the *parent*, not from the mode: a
+        // parent without it leaves 0o2777 masked away to 0o755.
+        MkDirRules.createdPermissions linux plainParent umask 0o2777
+        |> shouldEqual (mode 0o755)
+
+/// The directory *search* bit, which the walk consults before it consumes any
+/// component. Every row is measured against real `lstat(2)` on macOS 25.6/APFS
+/// at uid 501 and Linux 6.x arm64 at uid 1000 — the two kernels agree on all of
+/// them, so nothing here is flavour-dependent.
+///
+/// `TestVirtualFileSystemAgainstHost` compares the same rule against whichever
+/// kernel it runs on. These are the rows that fixture cannot carry: a mode whose
+/// *read* bit is clear (its creating-open comparison would then fail for a
+/// reason it does not model), and the privileged bypass, whose uid the suite
+/// does not choose.
+[<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
+module TestWalkSearchPermission =
+
+    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+
+    let private path (s : string) : UnixPath = UnixPath.parseOrFail "test" s
+
+    let private target (s : string) : SymlinkTarget = SymlinkTarget.parseOrFail "test" s
+
+    let private buildTime : UnixTimestamp =
+        UnixTimestamp.createOrFail "test" 1_700_000_000L 0
+
+    let private limits : PathLimits =
+        SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
+
+    let private mode (raw : int) : PermissionBits = PermissionBits.parseOrFail "test" raw
+
+    /// A root holding `p` at the given mode — containing a subdirectory, a file
+    /// and a cyclic symlink — plus, outside it, a link *into* `p` and a link to
+    /// `p` itself.
+    let private treeWith (bits : PermissionBits) : VirtualFileSystem =
+        let vfs = VirtualFileSystem.empty buildTime
+        let root = VirtualFileSystem.root vfs
+
+        let dir (parent : InodeNumber) (n : string) (bits : PermissionBits) (vfs : VirtualFileSystem) =
+            match VirtualFileSystem.createDirectory parent (name n) bits buildTime vfs with
+            | Ok (inode, vfs) -> inode, vfs
+            | Error error -> failwith $"could not build the tree: %O{error}"
+
+        let p, vfs = dir root "p" bits vfs
+
+        let _, vfs = dir p "kid" PermissionBits.defaultForDirectory vfs
+
+        let vfs =
+            match
+                VirtualFileSystem.createFile
+                    p
+                    (name "f")
+                    PermissionBits.defaultForRegularFile
+                    buildTime
+                    ImmutableArray<byte>.Empty
+                    vfs
+            with
+            | Ok (_, vfs) -> vfs
+            | Error error -> failwith $"could not build the tree: %O{error}"
+
+        let vfs =
+            match VirtualFileSystem.createSymlink p (name "cyc") buildTime (target "cyc") vfs with
+            | Ok (_, vfs) -> vfs
+            | Error error -> failwith $"could not build the tree: %O{error}"
+
+        match VirtualFileSystem.createSymlink root (name "lp") buildTime (target "p") vfs with
+        | Ok (_, vfs) -> vfs
+        | Error error -> failwith $"could not build the tree: %O{error}"
+
+    let private resolveAs
+        (privilege : CallerPrivilege)
+        (bits : PermissionBits)
+        (candidate : string)
+        : Result<ResolvedTarget, UnixError>
+        =
+        let vfs = treeWith bits
+
+        VirtualFileSystem.resolve
+            limits
+            privilege
+            (VirtualFileSystem.root vfs)
+            SymlinkPolicy.Follow
+            (path candidate)
+            vfs
+
+    let private refuses (bits : int) (candidate : string) : unit =
+        match resolveAs CallerPrivilege.Unprivileged (mode bits) candidate with
+        | Error UnixError.EACCES -> ()
+        | other ->
+            failwith $"resolving \"%s{candidate}\" under a 0o%04o{bits} directory should be EACCES, got %A{other}"
+
+    let private resolves (bits : int) (candidate : string) : unit =
+        match resolveAs CallerPrivilege.Unprivileged (mode bits) candidate with
+        | Ok _ -> ()
+        | other -> failwith $"resolving \"%s{candidate}\" under a 0o%04o{bits} directory should succeed, got %A{other}"
+
+    [<Test>]
+    let ``search denial beats every other reason the walk can refuse`` () : unit =
+        // Each of these earns a *different* errno under a searchable directory —
+        // the row below this one says which — so this is a precedence claim
+        // rather than four restatements of one fact. The check sits above them
+        // all because a kernel checks it as it steps into the directory, before
+        // it has looked at the component at all.
+        refuses 0o666 "/p/kid" // would be Ok
+        refuses 0o666 "/p/nx" // would be ENOENT
+        refuses 0o666 ("/p/" + String.replicate 300 "a") // would be ENAMETOOLONG
+        refuses 0o666 "/p/cyc" // would be ELOOP
+        refuses 0o666 "/p/f/x" // would be ENOTDIR
+
+    [<Test>]
+    let ``and those errnos are what the same paths earn when it is searchable`` () : unit =
+        // The control for the row above: without it, "search denial beats X"
+        // could pass against an implementation that refused everything.
+        resolves 0o755 "/p/kid"
+
+        resolveAs CallerPrivilege.Unprivileged (mode 0o755) "/p/nx"
+        |> shouldEqual (Ok (ResolvedTarget.Entry (InodeNumber 2L, name "nx", None)))
+
+        resolveAs CallerPrivilege.Unprivileged (mode 0o755) ("/p/" + String.replicate 300 "a")
+        |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+        resolveAs CallerPrivilege.Unprivileged (mode 0o755) "/p/cyc"
+        |> shouldEqual (Error UnixError.ELOOP)
+
+        resolveAs CallerPrivilege.Unprivileged (mode 0o755) "/p/f/x"
+        |> shouldEqual (Error UnixError.ENOTDIR)
+
+    [<Test>]
+    let ``"." and ".." are lookups too`` () : unit =
+        // Measured: `lstat("p/.")` and `lstat("p/..")` are EACCES exactly as
+        // `lstat("p/kid")` is. So the check belongs above the dispatch on which
+        // kind of component was consumed, not inside the name-lookup arm.
+        refuses 0o666 "/p/."
+        refuses 0o666 "/p/.."
+
+        resolves 0o755 "/p/."
+        resolves 0o755 "/p/.."
+
+    [<Test>]
+    let ``the object being named needs nothing`` () : unit =
+        // Measured, and the negative half of the rule: `lstat("p")` succeeds on
+        // an unsearchable `p`, because this walk never looks inside it.
+        resolves 0o666 "/p"
+        resolves 0o000 "/p"
+
+        // ...including with a trailing separator, which is one more place where
+        // "p/" is not "p/." — measured, `lstat("p/")` succeeds where
+        // `lstat("p/.")` is EACCES.
+        resolves 0o666 "/p/"
+        refuses 0o666 "/p/."
+
+    [<Test>]
+    let ``a component spliced from a symlink target is looked up like any other`` () : unit =
+        // "lp" is a link to "p", so this resolves "kid" *inside* p having got
+        // there by splicing. A check that ran only on components the guest wrote
+        // would let this through.
+        refuses 0o666 "/lp/kid"
+        resolves 0o755 "/lp/kid"
+
+    [<Test>]
+    let ``only the owner triple decides`` () : unit =
+        // Measured on both kernels against a directory owned by the calling uid.
+        // An ordinary corpus cannot show this: 0o666 and 0o755 have the same
+        // execute bits in all three classes, so `bits &&& 0o111 <> 0` and
+        // `bits &&& 0o001 <> 0` both match every row above.
+        refuses 0o677 "/p/kid" // group and other may search; the owner may not
+        resolves 0o100 "/p/kid" // the owner may search; nobody else may
+        resolves 0o300 "/p/kid"
+        refuses 0o477 "/p/kid"
+
+    [<Test>]
+    let ``root searches anything`` () : unit =
+        // Measured as uid 0 on Linux: `lstat` inside a 0o000 directory succeeds.
+        for candidate in [ "/p/kid" ; "/p/." ; "/p/.." ; "/lp/kid" ] do
+            match resolveAs CallerPrivilege.Privileged (mode 0o000) candidate with
+            | Ok _ -> ()
+            | other -> failwith $"root resolving \"%s{candidate}\" should succeed, got %A{other}"
+
+        // ...but privilege does not invent entries that are not there.
+        resolveAs CallerPrivilege.Privileged (mode 0o000) "/p/f/x"
+        |> shouldEqual (Error UnixError.ENOTDIR)
