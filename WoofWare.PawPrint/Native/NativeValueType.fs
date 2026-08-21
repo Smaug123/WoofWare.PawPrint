@@ -78,8 +78,19 @@ module NativeValueType =
                 failwith
                     $"%s{operation}: field of type System.TypedReference; only a ByRefLike type may declare one, and such a type cannot be boxed, so ValueType.GetHashCode is unreachable for it"
 
+        // `ConcretePrimitive` matches on namespace and name alone, and a guest assembly may
+        // legally declare its own `System.Double` or `System.IntPtr` and use it as a field type
+        // (measured: real .NET binds the field to the guest's type and consults its `GetHashCode`
+        // override). Only corelib's are the primitives CoreCLR reports as such; anything else is
+        // an ordinary value type, whatever it is called.
+        let declaredByCorelib (handle : ConcreteTypeHandle) : bool =
+            match AllConcreteTypes.lookup handle state.ConcreteTypes with
+            | Some ct -> ct.AssemblyFullName = baseClassTypes.Corelib.DefinitionFullName
+            | None -> false
+
         match fieldType with
-        | ConcretePrimitive state.ConcreteTypes primitive -> state, ofPrimitive primitive
+        | ConcretePrimitive state.ConcreteTypes primitive when declaredByCorelib fieldType ->
+            state, ofPrimitive primitive
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ -> state, FieldClass.ObjectReference
         | ConcreteTypeHandle.Pointer _
