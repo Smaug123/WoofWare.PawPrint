@@ -64,6 +64,44 @@ public static class Entry
             failwith $"type %s{namespaceName}.%s{typeName} not found in %s{assembly.Name.Name}"
         )
 
+    /// This QCall's own method, concretized, so a frame or a `NativeCallContext` sees the same
+    /// `ExecutingMethod` signature the interpreter would have handed the handler.
+    let private qCallMethod
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : IlMachineState * WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        let declaringType =
+            requiredTopLevelType baseClassTypes.Corelib "System.Diagnostics" "StackTrace"
+
+        let rawMethod =
+            declaringType.Methods
+            |> List.filter (fun method ->
+                match method.TryNativeImport with
+                | Some import ->
+                    import.ModuleName = "QCall"
+                    && import.EntryPointName = "StackTrace_GetStackFramesInternal"
+                | None -> false
+            )
+            |> function
+                | [ method ] -> method
+                | [] -> failwith "QCall entry point StackTrace_GetStackFramesInternal not found on StackTrace"
+                | methods -> failwith $"StackTrace_GetStackFramesInternal was ambiguous: %d{methods.Length} matches"
+
+        let state, method, _ =
+            ExecutionConcretization.concretizeMethodWithTypeGenerics
+                loggerFactory
+                baseClassTypes
+                ImmutableArray.Empty
+                rawMethod
+                None
+                baseClassTypes.Corelib.DefinitionFullName
+                ImmutableArray.Empty
+                state
+
+        state, method
+
     /// Concretize a class of corelib by name. The prepared guest has only concretized what its own
     /// startup touched, so nothing here may assume a handle already exists.
     let private concretizeCorelibClass
@@ -158,6 +196,65 @@ public static class Entry
                 ThreadState = state.ThreadState |> Map.add thread threadState
             }
         )
+
+    /// Push a frame whose method has no IL body — this very QCall, which is `MethodBody.PInvoke`.
+    ///
+    /// Not a contrived shape: the innermost frame of every real current-thread capture is exactly
+    /// this, the P/Invoke stub the guest is standing in when the QCall runs. A `MethodState` for such
+    /// a method carries the synthetic program counter 0, which is what must not be reported as a
+    /// genuine IL offset.
+    let private pushNonIlFrame
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let state, method = qCallMethod loggerFactory baseClassTypes state
+
+        // The point of the frame.
+        match method.Body with
+        | MethodBody.Il _ -> failwith "expected the QCall's own method to have no IL body"
+        | _ -> ()
+
+        let threadState = state.ThreadState.[thread]
+
+        let returnState : MethodReturnState =
+            {
+                JumpTo = threadState.ActiveMethodState
+                WasInitialisingType = None
+                Constructing = ConstructionState.NotConstructing
+                CallSiteIlOpIndex = 0
+                ReturnValueDisposition = ReturnValueDisposition.PushToCaller
+                WrapExceptionInTargetInvocation = false
+            }
+
+        let frame =
+            match
+                MethodState.Empty
+                    state.ConcreteTypes
+                    baseClassTypes
+                    state._LoadedAssemblies
+                    baseClassTypes.Corelib
+                    method
+                    ImmutableArray.Empty
+                    // Placeholders: `MethodState.Empty` checks only the count, and this frame is
+                    // never executed — it exists to be walked.
+                    (ImmutableArray.Create (CliType.ObjectRef None, CliType.ObjectRef None, CliType.ObjectRef None))
+                    (Some returnState)
+            with
+            | Ok frame -> frame
+            | Error missing -> failwith $"unexpected missing assembly references building a non-IL frame: %O{missing}"
+
+        // A runtime-provided method's frame really does sit at the synthetic 0.
+        frame.IlOpIndex |> shouldEqual 0
+
+        let frameId, threadState = ThreadState.appendFrame frame threadState
+        let threadState = ThreadState.setActiveFrame frameId threadState
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add thread threadState
+        }
 
     /// Push a frame running a *generic* method instantiated at `int` — `Array.Empty<int>()`.
     ///
@@ -298,30 +395,7 @@ public static class Entry
         let declaringType =
             requiredTopLevelType baseClassTypes.Corelib "System.Diagnostics" "StackTrace"
 
-        let rawMethod =
-            declaringType.Methods
-            |> List.filter (fun method ->
-                match method.TryNativeImport with
-                | Some import ->
-                    import.ModuleName = "QCall"
-                    && import.EntryPointName = "StackTrace_GetStackFramesInternal"
-                | None -> false
-            )
-            |> function
-                | [ method ] -> method
-                | [] -> failwith "QCall entry point StackTrace_GetStackFramesInternal not found on StackTrace"
-                | methods -> failwith $"StackTrace_GetStackFramesInternal was ambiguous: %d{methods.Length} matches"
-
-        let state, method, _ =
-            ExecutionConcretization.concretizeMethodWithTypeGenerics
-                loggerFactory
-                baseClassTypes
-                ImmutableArray.Empty
-                rawMethod
-                None
-                baseClassTypes.Corelib.DefinitionFullName
-                ImmutableArray.Empty
-                state
+        let state, method = qCallMethod loggerFactory baseClassTypes state
 
         let helperArg, state =
             objectHandleOnStack loggerFactory baseClassTypes (Some helperAddr) state
@@ -488,7 +562,21 @@ public static class Entry
             |> Option.get
             |> int32Elements state
 
-        ilOffsets |> shouldEqual (expected |> List.map (fun frame -> frame.IlOffset))
+        // Normalised the same way the handler does: a frame with no IL body reports
+        // `OFFSET_UNKNOWN`. Every frame in this fixture has IL, so this reduces to the raw offsets
+        // here; `a frame with no IL body reports OFFSET_UNKNOWN` below is what pins the other arm.
+        ilOffsets
+        |> shouldEqual (
+            expected
+            |> List.map (fun frame ->
+                match frame.Method.Body with
+                | MethodBody.Il _ -> frame.IlOffset
+                | _ -> -1
+            )
+        )
+
+        // The fixture would not detect a handler that answered -1 for everything.
+        ilOffsets |> List.forall (fun offset -> offset >= 0) |> shouldEqual true
 
         // PawPrint runs no native code, so every native offset is `StackFrame.OFFSET_UNKNOWN`.
         readArrayField state helperAddr "rgiOffset"
@@ -613,3 +701,40 @@ public static class Entry
             invoke loggerFactory prepared false helperAddr (Some exceptionAddr) state
 
         readInt32Field state helperAddr "iFrameCount" |> shouldEqual 0
+
+    [<Test>]
+    let ``a frame with no IL body reports OFFSET_UNKNOWN rather than offset zero`` () =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let prepared = prepareGuest loggerFactory
+        let baseClassTypes = prepared.BaseClassTypes
+        let state = prepared.State
+
+        // Two IL frames underneath a non-IL one, so the test distinguishes "normalises the non-IL
+        // frame" from "answers -1 for everything".
+        let state = deepenStack prepared.EntryThread 2 state
+        let state = pushNonIlFrame loggerFactory baseClassTypes prepared.EntryThread state
+
+        let expected = StackFrameCapture.ofThread state.ThreadState.[prepared.EntryThread]
+
+        let helperAddr, state = allocateHelper loggerFactory baseClassTypes 0 state
+        let state = invoke loggerFactory prepared false helperAddr None state
+
+        let ilOffsets =
+            readArrayField state helperAddr "rgiILOffset"
+            |> Option.get
+            |> int32Elements state
+
+        ilOffsets |> List.length |> shouldEqual expected.Length
+
+        // Innermost first, so the non-IL frame is the head.
+        ilOffsets.Head |> shouldEqual -1
+
+        // The rest have IL and keep their real offsets, none of which is -1.
+        ilOffsets.Tail |> List.forall (fun offset -> offset >= 0) |> shouldEqual true
+
+        // The native-offset array is -1 throughout regardless, so a handler that filled
+        // `rgiILOffset` from it would pass the head check above; this pins that it did not.
+        readArrayField state helperAddr "rgiOffset"
+        |> Option.get
+        |> int32Elements state
+        |> shouldEqual (expected |> List.map (fun _ -> -1))

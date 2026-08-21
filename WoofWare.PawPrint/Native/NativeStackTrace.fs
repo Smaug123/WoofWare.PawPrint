@@ -215,9 +215,32 @@ module NativeStackTrace =
                 |> List.map (fun _ -> CliType.Numeric (CliNumericType.Int32 -1))
                 |> allocateFilledArray ctx state int32Handle
 
+            // A frame whose method has no IL body has no IL offset either, and reports
+            // `OFFSET_UNKNOWN`. CoreCLR distinguishes the two ways an offset can be missing
+            // (`InitPass2`, debugdebugger.cpp:1543-1607): a *valid* jitted method whose debug info
+            // yields no mapping gets 0, but a frame with no managed code information at all falls
+            // to `bRes = false` and then to `(DWORD)-1`. A runtime-provided method is the second
+            // case — `MethodState.IlOpIndex` for one is the synthetic 0 it was created with, not a
+            // position in a body it does not have — so reporting 0 would present that placeholder
+            // as a real offset into the first instruction.
+            //
+            // This is not hypothetical: the innermost frame of every current-thread capture is the
+            // P/Invoke stub for this very QCall, and PawPrint keeps frames for InternalCall and
+            // QCall methods too (`ExceptionDispatching` deliberately does not suppress them,
+            // because a real trace does name them).
+            //
+            // Normalised here rather than in `StackFrameCapture`, because it is a property of what
+            // `rgiILOffset` means: `ExceptionStackFrame.IlOffset` is documented as a byte position
+            // within a method's IL, and -1 is not one. The frozen traces the exception branch
+            // returns are shared with `renderExceptionStackTrace`, which must keep reading that
+            // field as the position it claims to be.
             let state, ilOffsetArray =
                 frames
-                |> List.map (fun frame -> CliType.Numeric (CliNumericType.Int32 frame.IlOffset))
+                |> List.map (fun frame ->
+                    match frame.Method.Body with
+                    | MethodBody.Il _ -> CliType.Numeric (CliNumericType.Int32 frame.IlOffset)
+                    | _ -> CliType.Numeric (CliNumericType.Int32 -1)
+                )
                 |> allocateFilledArray ctx state int32Handle
 
             // Zero for every frame: CoreLib reads a non-zero token as "ask the portable-PDB reader

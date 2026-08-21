@@ -562,7 +562,18 @@ to a guest that only reads the number; the IL offset is separately and faithfull
 `GetILOffset()`. Nothing in the common rendering path depends on this: `StackTrace.ToString` reads
 only `GetILOffset()` (`StackTrace.cs:335`).
 
-**Where this lives in code**: `NativeStackTrace.tryExecuteQCall`, the `rgiOffset` array.
+**A related case in the same handler**: a frame whose method has *no IL body* — an InternalCall,
+QCall or P/Invoke — reports `OFFSET_UNKNOWN` for its **IL** offset too, because it has no IL to be
+at an offset within. That matches CoreCLR, which distinguishes the two ways an IL offset can be
+missing (`InitPass2`, `debugdebugger.cpp:1543-1607`): a valid jitted method whose debug info yields
+no mapping reports `0`, but a frame with no managed code information at all falls through to
+`(DWORD)-1`. PawPrint keeps frames for such methods (a real trace does name them), and a
+`MethodState` for one carries the synthetic program counter `0`, so reporting that would present a
+placeholder as a position in the first instruction. Not academic: the innermost frame of every
+current-thread capture is the P/Invoke stub of this very QCall.
+
+**Where this lives in code**: `NativeStackTrace.tryExecuteQCall`, the `rgiOffset` and `rgiILOffset`
+arrays.
 
 ## An unhandled exception is reported after its cleanup runs, not before
 

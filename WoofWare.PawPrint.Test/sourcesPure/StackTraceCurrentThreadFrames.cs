@@ -84,8 +84,12 @@ class StackTraceCurrentThreadFrames
             return 6;
         }
 
-        // No frame of a capture taken from a live stack is the end of an earlier throw's trace:
-        // that flag only ever marks a trace spliced back on by `ExceptionDispatchInfo.Throw`.
+        // Every *reported* frame is one of this guest's own, so every one has an IL body and a
+        // real offset into it. A frame with no IL body reports `OFFSET_UNKNOWN` (-1) instead —
+        // PawPrint's capture contains several such frames, the innermost being the P/Invoke stub
+        // of the QCall itself — but all of them are inside the `System.Diagnostics` run that
+        // `CalculateFramesToSkip` removes, so none survives to here. This check is what would
+        // notice if one did.
         for (int i = 0; i < st.FrameCount; i++)
         {
             if (st.GetFrame(i).GetILOffset() < 0)
