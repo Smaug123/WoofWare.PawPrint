@@ -619,6 +619,30 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The raw errno numbers `accept(2)`'s failures leave, under the
+                // Linux flavour. The classification is flavour-independent
+                // (SocketAccept.cs carries it differentially); the numbers are
+                // not -- EAGAIN 11/35, ENOTSOCK 88/38, EOPNOTSUPP 95/102.
+                FileName = "SocketAcceptLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The same rows under Darwin's numbering.
+                FileName = "SocketAcceptDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The bytes `SocketAddressPal` lays a `sockaddr_in` and
                 // `sockaddr_in6` out in, under the Linux flavour. Not
                 // differential: the family field is two bytes at offset 0 here

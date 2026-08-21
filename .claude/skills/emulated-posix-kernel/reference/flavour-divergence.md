@@ -21,6 +21,8 @@ To change what PawPrint answers, change the test first.
 | `lseek` whence handling per flavour | `TestLSeek`: `the refused whence is named per the simulated platform`, `Darwin decides seekability before the whence is validated`, `Darwin reports EOVERFLOW where Linux reports EINVAL` |
 | the socket event buffer's stride and count cap | `TestLinuxEpollLimits`: `the element size is the x86-64 packed struct`, `the cap is exactly the largest count whose byte extent fits in int32` |
 | which socket triples can be created | `TestSocketCreation` against `socketMatrix/{linux,darwin}.tsv` — the one table that *is* checked in as data, because its answers are privilege-dependent and no single machine can measure both columns |
+| `accept(2)`'s error matrix — EAGAIN / EINVAL / EOPNOTSUPP / ENOTSOCK / EBADF and their check ordering, on which the kernels agree in classification and differ only in numbering | `sourcesPure/SocketAccept.cs` (PAL codes, differential), `sourcesImpure/SocketAccept{Linux,Darwin}.cs` (raw numbers) |
+| `ENOTSOCK` from a socket syscall on a non-socket descriptor, measured per entry point (`accept`/`bind`/`listen`/`getsockname` × file/event port/pipe) | the same three guests: `SocketAccept.cs` rows 35-40, `SocketAccept{Linux,Darwin}.cs` rows 19-27 |
 | environment entries a real `environ` can hold | `TestEnvironmentEntryInvariant`: `the entry rule accepts what a real environ can hold`, `the entry rule names what is wrong` |
 
 ## The envelope those measurements were taken in
