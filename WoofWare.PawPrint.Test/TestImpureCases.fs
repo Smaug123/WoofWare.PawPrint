@@ -279,6 +279,42 @@ module TestImpureCases =
                 name "d", SeedEntry.directory Map.empty
             ]
 
+    /// Shared by the two `mkdir` wiring guests, so that the only thing that
+    /// differs between them is the flavour.
+    let private mkDirWiringSeed : Map<FileName, SeedEntry> =
+        let name (s : string) = FileName.parseOrFail "test seed" s
+        let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
+
+        let mode (raw : int) =
+            PermissionBits.parseOrFail "test seed" raw
+
+        Map.ofList
+            [
+                name "f", SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                name "d", SeedEntry.directory Map.empty
+                name "lf", SeedEntry.Symlink (target "f")
+                name "ld", SeedEntry.Symlink (target "d")
+                // The link whose target Darwin creates and Linux does not.
+                // "nx" is deliberately absent.
+                name "dang", SeedEntry.Symlink (target "nx")
+                name "cyc", SeedEntry.Symlink (target "cyc")
+                // A parent carrying S_ISGID, which only Linux passes on. Seeded
+                // rather than chmod'ed into place: there is no `SystemNative_ChMod`,
+                // and on a real host a non-root `chmod` would drop the bit anyway.
+                name "sg", SeedEntry.Directory (Map.empty, mode 0o2777)
+                // Searchable but not writable, and holding a child: the child
+                // answers EEXIST while a free name beside it answers EACCES,
+                // which is what puts the write check *below* the EEXIST arm.
+                name "nowrite",
+                SeedEntry.Directory (Map.ofList [ name "kid", SeedEntry.directory Map.empty ], mode 0o555)
+                // Unsearchable, and holding a child: looking the final name up
+                // needs the search bit, so this answers EACCES where "nowrite"
+                // — which can be searched but not written — answers EEXIST for
+                // the same shape.
+                name "nosearch",
+                SeedEntry.Directory (Map.ofList [ name "kid", SeedEntry.directory Map.empty ], mode 0o666)
+            ]
+
     let cases : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
@@ -833,6 +869,62 @@ module TestImpureCases =
                                 SeedEntry.file (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
 
                             Map.ofList [ name "f", file "one" ; name "g", file "two" ; name "h", file "three" ]
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `mkdir`'s flavour-dependent facts under a **Linux** kernel:
+                // what a trailing separator costs, which mode bits survive, and
+                // set-group-ID inheritance. Paired with the Darwin case below,
+                // and neither alone can catch a handler that hardcodes one
+                // platform's answers.
+                //
+                // The umask and the uid are set away from `KernelConfig`'s
+                // defaults deliberately: a unit test hands the rules in by hand,
+                // so only a guest can see that the handler reads
+                // `Kernel.Umask` and `Kernel.UserId` rather than a constant.
+                FileName = "MkDirWiringLinuxSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        Umask = PermissionBits.parseOrFail "test" 0o027
+                        UserId = 1000u
+                        FileSystem = mkDirWiringSeed
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The same checks in the same order under the Darwin flavour,
+                // where a trailing separator reaches past the final component --
+                // including the row that creates a dangling link's target.
+                FileName = "MkDirWiringDarwinSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        Umask = PermissionBits.parseOrFail "test" 0o027
+                        UserId = 1000u
+                        FileSystem = mkDirWiringSeed
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `mkdir`'s permission rule from the other side: uid 0, where
+                // the 0o555 directory the two wiring guests are refused by lets
+                // root bind a name. Between them the three cases make the
+                // `privileged` argument falsifiable in both directions.
+                FileName = "MkDirPrivilegedSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UserId = 0u
+                        FileSystem = mkDirWiringSeed
                     }
                 AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false

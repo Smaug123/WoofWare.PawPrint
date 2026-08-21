@@ -261,6 +261,19 @@ module TestPureCases =
                     // SEEK_CUR, the portable pair) succeeds.
                     name "d", SeedEntry.directory (Map.ofList [ name "g", file "nested" ])
                 ]
+            "MkDirSeeded.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    name "d", SeedEntry.directory (Map.ofList [ name "g", file "nested" ])
+                    name "lf", SeedEntry.Symlink (target "f")
+                    name "ld", SeedEntry.Symlink (target "d")
+                    // A dangling link and a cyclic one: `mkdir` answers EEXIST
+                    // for both, which is what says it never dereferences the
+                    // name it is about to bind.
+                    name "dang", SeedEntry.Symlink (target "nx")
+                    name "cyc", SeedEntry.Symlink (target "cyc")
+                ]
             "FlockContentionSeeded.cs",
             Map.ofList
                 [
