@@ -342,3 +342,74 @@ module TestEmulatedKernelSockets =
         observedSockets |> shouldBeGreaterThan 500
         observedSocketCloses |> shouldBeGreaterThan 50
         observedDups |> shouldBeGreaterThan 100
+
+    // --- socketEventRegistrationCouldFire ---
+
+    /// The one target whose events are ruled out: a listening stream socket.
+    /// Its readiness needs a backlog entry, and nothing can produce one until
+    /// `SystemNative_Connect` lands.
+    [<Test>]
+    let ``a listening stream socket's registration cannot fire`` () : unit =
+        let kernel =
+            forge
+                [ 3, OpenFileDescriptionId 10L, OpenFileTarget.Socket (SocketId 0L) ]
+                [
+                    0L,
+                    { someSocket with
+                        IsListening = true
+                    }
+                ]
+                1L
+
+        EmulatedKernel.socketEventRegistrationCouldFire (OpenFileDescriptionId 10L) kernel
+        |> shouldEqual false
+
+    /// A non-listening stream socket is `EPOLLOUT|EPOLLHUP` the moment a real
+    /// kernel adds it, so its registration could fire.
+    [<Test>]
+    let ``a non-listening stream socket's registration could fire`` () : unit =
+        let kernel =
+            forge [ 3, OpenFileDescriptionId 10L, OpenFileTarget.Socket (SocketId 0L) ] [ 0L, someSocket ] 1L
+
+        EmulatedKernel.socketEventRegistrationCouldFire (OpenFileDescriptionId 10L) kernel
+        |> shouldEqual true
+
+    /// A datagram socket is writable immediately, listening being no part of
+    /// its life at all.
+    [<Test>]
+    let ``a datagram socket's registration could fire`` () : unit =
+        let kernel =
+            forge
+                [ 3, OpenFileDescriptionId 10L, OpenFileTarget.Socket (SocketId 0L) ]
+                [
+                    0L,
+                    { someSocket with
+                        Kind = SocketKind.Datagram
+                        Protocol = SocketProtocol.Udp
+                    }
+                ]
+                1L
+
+        EmulatedKernel.socketEventRegistrationCouldFire (OpenFileDescriptionId 10L) kernel
+        |> shouldEqual true
+
+    /// A pipe end's readiness depends on peer state PawPrint does not model,
+    /// so it is never ruled out. The ids are `initial`'s standard streams.
+    [<Test>]
+    let ``a standard stream's registration could fire`` () : unit =
+        for id in 0L .. 2L do
+            EmulatedKernel.socketEventRegistrationCouldFire (OpenFileDescriptionId id) EmulatedKernel.initial
+            |> shouldEqual true
+
+    /// Registrations reference live descriptions (`close` sweeps), so a
+    /// dangling id must be reported as the interpreter bug it is rather than
+    /// answered either way.
+    [<Test>]
+    let ``a dangling registration target crashes rather than answering`` () : unit =
+        let exc =
+            Assert.Throws<System.Exception> (fun () ->
+                EmulatedKernel.socketEventRegistrationCouldFire (OpenFileDescriptionId 99L) EmulatedKernel.initial
+                |> ignore
+            )
+
+        exc.Message |> shouldContainText "names no live open file description"

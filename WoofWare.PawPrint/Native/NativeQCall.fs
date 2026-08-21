@@ -52,6 +52,7 @@ module NativeQCall =
             "ModuleHandle_GetMDStreamVersion", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetMDStreamVersion"
             "ModuleHandle_GetPEKind", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetPEKind"
             "ModuleHandle_GetDynamicMethod", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetDynamicMethod"
+            "RuntimeModule_GetTypes", NativeRuntimeModule.tryExecuteQCall "RuntimeModule_GetTypes"
             "Delegate_BindToMethodInfo", NativeDelegate.tryExecuteQCall "Delegate_BindToMethodInfo"
             "Delegate_FindMethodHandle", NativeDelegate.tryExecuteQCall "Delegate_FindMethodHandle"
             "ModuleHandle_ResolveType", NativeRuntimeType.tryExecuteQCall "ModuleHandle_ResolveType"

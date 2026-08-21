@@ -3804,6 +3804,51 @@ module EmulatedKernel =
             failwith
                 $"EmulatedKernel.socket: %O{socketId} names no socket in this kernel's socket table. Every SocketId reachable by a caller comes from an open file description, and EmulatedKernelDefect.DanglingSocket exists to make that unreachable, so this is an interpreter bug rather than anything a guest did."
 
+    /// Whether PawPrint can rule out the socket-event registration targeting
+    /// `targetId` ever producing an epoll event — `false` exactly when it can.
+    ///
+    /// The guard for the not-yet-built readiness delivery. A parked
+    /// `SystemNative_WaitForSocketEvents` is woken by nothing, so parking is
+    /// faithful only while every registration on the port is one no modelled
+    /// operation can make ready; and admitting a fresh registration past a
+    /// parked waiter makes the same claim. A **listening stream socket** is
+    /// the one target that qualifies: its only read-readiness is a backlog
+    /// entry, which nothing can produce until `SystemNative_Connect` lands; a
+    /// listening socket is never write-ready; and no modelled operation can
+    /// put one into an error or hangup state (closing it sweeps the
+    /// registration away first, and a target close delivers no event).
+    /// Everything else answers `true`: a real kernel reports readiness on most
+    /// of it immediately — an unconnected stream socket is `EPOLLOUT|EPOLLHUP`
+    /// the moment it is added, a datagram socket is writable, a pipe end
+    /// depends on peer state PawPrint does not model — so callers must refuse
+    /// loudly rather than let a wait sleep through an event a real kernel
+    /// would deliver.
+    ///
+    /// Deliberately ignores the registration's interest mask: `EPOLLERR` and
+    /// `EPOLLHUP` are reported regardless of the mask, so a narrowed interest
+    /// rules nothing out.
+    ///
+    /// Partial in `targetId`: every interest table references only live
+    /// descriptions (`FileDescriptorRegistry.close` sweeps, and
+    /// `checkInvariants` states it), so a dangling id is an interpreter bug.
+    let socketEventRegistrationCouldFire (targetId : OpenFileDescriptionId) (kernel : EmulatedKernel) : bool =
+        match Map.tryFind targetId (FileDescriptorRegistry.descriptions kernel.FileDescriptors) with
+        | None ->
+            failwith
+                $"socketEventRegistrationCouldFire: %O{targetId} names no live open file description. FileDescriptorRegistry.close sweeps destroyed descriptions out of every interest table, so this is an interpreter bug."
+        | Some description ->
+
+        match description.Target with
+        | OpenFileTarget.Socket socketId ->
+            let target = socket socketId kernel
+            not (target.Kind = SocketKind.Stream && target.IsListening)
+        | OpenFileTarget.StandardStream _ -> true
+        // Neither can be registered through `epoll_ctl` — a file target is
+        // EPERM and a port target is refused — but "cannot prove" is the safe
+        // total answer.
+        | OpenFileTarget.File _ -> true
+        | OpenFileTarget.SocketEventPort _ -> true
+
     /// Mirrors `socket(2)`: allocate a fresh socket, and a fresh descriptor onto
     /// it.
     ///
@@ -3863,7 +3908,7 @@ module EmulatedKernel =
                     match description.Target with
                     | OpenFileTarget.Socket socketId -> Map.remove socketId kernel.Sockets
                     | OpenFileTarget.StandardStream _
-                    | OpenFileTarget.SocketEventPort
+                    | OpenFileTarget.SocketEventPort _
                     | OpenFileTarget.File _ -> kernel.Sockets
                 | None -> kernel.Sockets
 
@@ -3884,7 +3929,7 @@ module EmulatedKernel =
             |> List.choose (fun (id, description) ->
                 match description.Target with
                 | OpenFileTarget.StandardStream _
-                | OpenFileTarget.SocketEventPort
+                | OpenFileTarget.SocketEventPort _
                 | OpenFileTarget.File _ -> None
                 | OpenFileTarget.Socket socketId -> Some (id, socketId)
             )

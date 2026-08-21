@@ -1273,7 +1273,7 @@ module TestFileDescriptorRegistry =
         match FileDescriptorRegistry.tryFindTarget fd registry with
         | None -> failwith $"fd %d{fd} is not live"
         | Some (OpenFileTarget.StandardStream _)
-        | Some OpenFileTarget.SocketEventPort
+        | Some (OpenFileTarget.SocketEventPort _)
         | Some (OpenFileTarget.Socket _) -> None
         | Some (OpenFileTarget.File (_, offset)) -> Some offset
 
@@ -1720,3 +1720,209 @@ module TestFileDescriptorRegistry =
 
         let registry = FileDescriptorRegistry.setNonBlocking portFd false registry
         nonBlockingOf portFd registry |> shouldEqual false
+
+    // --- socket event registrations ---
+
+    /// The interest table of the port `portFd` names. Fails on anything else, so
+    /// a test cannot silently assert about the wrong descriptor.
+    let private registrationsOf
+        (portFd : int)
+        (registry : FileDescriptorRegistry)
+        : Map<int * OpenFileDescriptionId, SocketEventRegistration>
+        =
+        match FileDescriptorRegistry.tryFindTarget portFd registry with
+        | Some (OpenFileTarget.SocketEventPort registrations) -> registrations
+        | other -> failwith $"fd %d{portFd} is not a socket event port: %O{other}"
+
+    let private readWrite : SocketEventInterest =
+        {
+            Read = true
+            Write = true
+            ReadClose = false
+            Close = false
+            Error = false
+        }
+
+    let private change
+        (portFd : int)
+        (targetFd : int)
+        (change : SocketEventRegistrationChange)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistry
+        =
+        match FileDescriptorRegistry.changeSocketEventRegistration portFd targetFd change registry with
+        | Ok registry -> registry
+        | Error error -> failwith $"changeSocketEventRegistration failed: %O{error}"
+
+    /// No guest can observe the stored *values* yet — delivering them is the
+    /// readiness wake, which has no producer until `SystemNative_Connect`
+    /// lands — so the write-back is pinned here: a handler recording zeroes
+    /// would survive every guest row (their observers are only EEXIST/ENOENT,
+    /// i.e. presence) and fail this.
+    [<Test>]
+    let ``a registration records the interest and data it was given, and Modify replaces both`` () : unit =
+        let portFd, registry =
+            FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
+
+        let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
+
+        let sockId =
+            match FileDescriptorRegistry.tryFindId sockFd registry with
+            | Some id -> id
+            | None -> failwith "socket fd not live"
+
+        let registry =
+            change portFd sockFd (SocketEventRegistrationChange.Add (readWrite, 0xABCDUL)) registry
+
+        registrationsOf portFd registry
+        |> shouldEqual (
+            Map.ofList
+                [
+                    (sockFd, sockId),
+                    {
+                        Interest = readWrite
+                        Data = 0xABCDUL
+                    }
+                ]
+        )
+
+        let readOnly =
+            { readWrite with
+                Write = false
+            }
+
+        let registry =
+            change portFd sockFd (SocketEventRegistrationChange.Modify (readOnly, 77UL)) registry
+
+        registrationsOf portFd registry
+        |> shouldEqual (
+            Map.ofList
+                [
+                    (sockFd, sockId),
+                    {
+                        Interest = readOnly
+                        Data = 77UL
+                    }
+                ]
+        )
+
+        let registry = change portFd sockFd SocketEventRegistrationChange.Remove registry
+        registrationsOf portFd registry |> shouldEqual Map.empty
+        FileDescriptorRegistry.assertInvariants "after remove" registry |> ignore
+
+    /// The registration key is the (fd, description) *pair*, exactly as epoll
+    /// keys it: a `dup` of the target admits a second registration, and a
+    /// `dup` of the port operates on the one shared table.
+    [<Test>]
+    let ``dup of the target is a second key; dup of the port is the same table`` () : unit =
+        let portFd, registry =
+            FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
+
+        let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
+
+        let dupFd, registry =
+            match FileDescriptorRegistry.dup sockFd registry with
+            | Ok result -> result
+            | Error error -> failwith $"dup failed: %O{error}"
+
+        let registry =
+            change portFd sockFd (SocketEventRegistrationChange.Add (readWrite, 1UL)) registry
+
+        let registry =
+            change portFd dupFd (SocketEventRegistrationChange.Add (readWrite, 2UL)) registry
+
+        (registrationsOf portFd registry).Count |> shouldEqual 2
+
+        // The port's dup reaches the same table: a re-Add through it answers
+        // AlreadyRegistered, and a Remove through it is visible via the
+        // original port fd.
+        let dupPortFd, registry =
+            match FileDescriptorRegistry.dup portFd registry with
+            | Ok result -> result
+            | Error error -> failwith $"dup failed: %O{error}"
+
+        FileDescriptorRegistry.changeSocketEventRegistration
+            dupPortFd
+            sockFd
+            (SocketEventRegistrationChange.Add (readWrite, 3UL))
+            registry
+        |> shouldEqual (Error SocketEventRegistrationError.AlreadyRegistered)
+
+        let registry = change dupPortFd sockFd SocketEventRegistrationChange.Remove registry
+        (registrationsOf portFd registry).Count |> shouldEqual 1
+
+    /// Linux removes a destroyed description's registrations at file-release
+    /// time (`eventpoll_release`); PawPrint's `close` does the same sweep. No
+    /// syscall can see the difference — the dead key can never be probed again
+    /// — so this is the only observer, and it is what keeps the future
+    /// readiness wake from delivering out of a corpse.
+    [<Test>]
+    let ``closing the target's last descriptor sweeps its registrations; a surviving dup keeps them`` () : unit =
+        let portFd, registry =
+            FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
+
+        let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
+
+        let dupFd, registry =
+            match FileDescriptorRegistry.dup sockFd registry with
+            | Ok result -> result
+            | Error error -> failwith $"dup failed: %O{error}"
+
+        let registry =
+            change portFd sockFd (SocketEventRegistrationChange.Add (readWrite, 1UL)) registry
+
+        // Closing `sockFd` leaves the description alive through the dup, so
+        // the registration — keyed on the now-dead fd number — survives, which
+        // is Linux's own (notorious) behaviour.
+        let registry =
+            match closeOnly sockFd registry with
+            | Ok registry -> registry
+            | Error error -> failwith $"close failed: %O{error}"
+
+        (registrationsOf portFd registry).Count |> shouldEqual 1
+        FileDescriptorRegistry.assertInvariants "dup still live" registry |> ignore
+
+        // Closing the last descriptor destroys the description and sweeps.
+        let registry =
+            match closeOnly dupFd registry with
+            | Ok registry -> registry
+            | Error error -> failwith $"close failed: %O{error}"
+
+        registrationsOf portFd registry |> shouldEqual Map.empty
+        FileDescriptorRegistry.assertInvariants "after sweep" registry |> ignore
+
+    [<Test>]
+    let ``checkInvariants rejects a registration naming a dead description`` () : unit =
+        let portId = OpenFileDescriptionId 0L
+        let deadId = OpenFileDescriptionId 99L
+
+        let registry =
+            FileDescriptorRegistry.Unchecked.ofParts
+                (Map.ofList [ 3, portId ])
+                (Map.ofList
+                    [
+                        portId,
+                        {
+                            Target =
+                                OpenFileTarget.SocketEventPort (
+                                    Map.ofList
+                                        [
+                                            (4, deadId),
+                                            {
+                                                Interest = readWrite
+                                                Data = 0UL
+                                            }
+                                        ]
+                                )
+                            AccessMode = FileAccessMode.ReadWrite
+                            NonBlocking = false
+                            Flock = None
+                        }
+                    ])
+                (OpenFileDescriptionId 100L)
+
+        FileDescriptorRegistry.checkInvariants registry
+        |> shouldEqual
+            [
+                FileDescriptorRegistryDefect.SocketEventRegistrationTargetDead (portId, deadId)
+            ]

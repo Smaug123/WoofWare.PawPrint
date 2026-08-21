@@ -173,6 +173,12 @@ module NativeSystemNative =
                 System.Int32.MinValue
             else
                 int value
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
+            // `IntPtr.Zero` can arrive spelled as the null managed pointer
+            // rather than as `Verbatim 0L`; the guest-level value is the
+            // integer zero either way, and zero is a legitimate descriptor
+            // number — fd 0 is stdin.
+            0
         | CliType.Numeric (CliNumericType.NativeInt source) ->
             failwith
                 $"%s{operation}: expected verbatim IntPtr file descriptor, got tagged native-int source %O{source} (fd integers should arrive as plain numeric values across the SystemNative boundary)"
@@ -580,7 +586,7 @@ module NativeSystemNative =
                 failwith
                     $"%s{operation}: fd %d{fd} is a Unix-domain socket, which binds a *path* in the emulated filesystem rather than a transport endpoint. That belongs with the filesystem work, not here."
         | OpenFileTarget.StandardStream _
-        | OpenFileTarget.SocketEventPort
+        | OpenFileTarget.SocketEventPort _
         | OpenFileTarget.File _ -> Error UnixError.ENOTSOCK
 
     /// `IsInBounds(sockAddr, socketAddressLen, &sockAddr->sa_family,
@@ -2838,7 +2844,7 @@ module NativeSystemNative =
 
             match description.Target with
             | OpenFileTarget.StandardStream _
-            | OpenFileTarget.SocketEventPort
+            | OpenFileTarget.SocketEventPort _
             | OpenFileTarget.Socket _ ->
                 // EINVAL on both platforms for every object that is not a regular
                 // file: measured on a pipe (either end), an INET socket, a UNIX
@@ -3246,7 +3252,7 @@ module NativeSystemNative =
                 | SimulatedUnixFlavour.Darwin when not readable -> fail UnixError.EBADF
                 | SimulatedUnixFlavour.Darwin
                 | SimulatedUnixFlavour.Linux -> fail UnixError.ESPIPE
-            | OpenFileTarget.SocketEventPort ->
+            | OpenFileTarget.SocketEventPort _ ->
                 // Unseekable on both platforms, with no tie to break: a port is
                 // open for reading (`ReadWrite`), so Darwin's unreadability arm
                 // above cannot apply. Measured, `pread(port, buf, 8, 0)` and
@@ -3448,7 +3454,7 @@ module NativeSystemNative =
                 | SimulatedUnixFlavour.Darwin when not writable -> fail UnixError.EBADF
                 | SimulatedUnixFlavour.Darwin
                 | SimulatedUnixFlavour.Linux -> fail UnixError.ESPIPE
-            | OpenFileTarget.SocketEventPort ->
+            | OpenFileTarget.SocketEventPort _ ->
                 // A port is unseekable on both platforms, and — unlike a
                 // standard stream — there is no tie to break, because it is open
                 // for writing (`ReadWrite`, see
@@ -3594,7 +3600,7 @@ module NativeSystemNative =
                 | OpenFileTarget.StandardStream role ->
                     failwith
                         $"%s{operation}: fd %d{fd} names standard stream %O{role}, whose access mode permits reading. PawPrint models the output streams as the write ends of pipes, so only stdin is readable (this is an interpreter bug)."
-                | OpenFileTarget.SocketEventPort ->
+                | OpenFileTarget.SocketEventPort _ ->
                     // An epoll instance has no read operation, so the read is
                     // refused for the *kind* of object rather than for the
                     // access mode — which is why the port is `ReadWrite` and
@@ -3801,7 +3807,7 @@ module NativeSystemNative =
                     // reads back to decide `CanSeek`, so it is on the BCL's own
                     // path rather than a corner.
                     Some DescriptorFault.NotSeekable
-                | Some OpenFileTarget.SocketEventPort ->
+                | Some (OpenFileTarget.SocketEventPort _) ->
                     // The one target whose *seekability* depends on the
                     // platform, rather than merely the errno or the ordering.
                     // Measured: Darwin refuses `lseek` on a kqueue with ESPIPE,
@@ -3868,7 +3874,7 @@ module NativeSystemNative =
             // syscall's own `whence <= SEEK_MAX` guard still applies and has
             // already run, so whence 5 and above were rejected as EINVAL.
             match target with
-            | Some OpenFileTarget.SocketEventPort ->
+            | Some (OpenFileTarget.SocketEventPort _) ->
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 (Int64Source.Verbatim 0L)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -4329,7 +4335,7 @@ module NativeSystemNative =
                 // here.
                 failwith
                     $"%s{operation}: fd %d{fd} is the standard stream %O{role}, which PawPrint models as a pipe, and no modelled stream transfer consults O_NONBLOCK; storing it would silently keep blocking semantics. Decide what a non-blocking stream read does before accepting this."
-            | Some OpenFileTarget.SocketEventPort ->
+            | Some (OpenFileTarget.SocketEventPort _) ->
                 // Store first, report second: measured, the platforms agree that
                 // the bit toggles and disagree on the answer — Linux succeeds
                 // where Darwin reports -1/ENOTTY *with the bit toggled anyway*.
@@ -5498,6 +5504,188 @@ module NativeSystemNative =
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_TryChangeSocketEventRegistration",
+          [ ConcreteIntPtr state.ConcreteTypes ; ConcreteIntPtr state.ConcreteTypes ; _ ; _ ; _ ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            // `int32_t SystemNative_TryChangeSocketEventRegistration(intptr_t
+            // port, intptr_t socket, int32_t currentEvents, int32_t newEvents,
+            // uintptr_t data)` (pal_networking.c:3471):
+            //
+            //     const int32_t SupportedEvents = SA_READ | SA_WRITE | SA_READCLOSE | SA_CLOSE | SA_ERROR;
+            //     if ((currentEvents & ~SupportedEvents) != 0 || (newEvents & ~SupportedEvents) != 0)
+            //         return Error_EINVAL;
+            //     if (currentEvents == newEvents) return Error_SUCCESS;
+            //     return TryChangeSocketEventRegistrationInner(portFd, socketFd, ..., data);
+            //
+            // The event arguments are matched with wildcards: CoreLib declares
+            // them as its `SocketEvents` enum, a guest hand-rolling the
+            // P/Invoke writes `int`, and both arrive as the same four-byte
+            // cell — the reason `SystemNative_Socket`'s enums match loosely.
+            // `data` likewise: CoreLib says `IntPtr`, a guest may say `void*`.
+            let operation = "SystemNative_TryChangeSocketEventRegistration"
+
+            let currentEvents = NativeCall.int32Argument operation instruction.Arguments.[2]
+            let newEvents = NativeCall.int32Argument operation instruction.Arguments.[3]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            // The wrapper's two screens. Both answer in user space having run
+            // no syscall — errno keeps whatever it held — and both precede any
+            // *use* of the descriptor arguments (`ToFileDescriptor` is a cast,
+            // not a lookup), so the fds are decoded only past them: a guest
+            // may pass a pointer as `port` beside equal masks, and the real
+            // wrapper truncates it unread.
+            let supportedEvents = 0x1F
+
+            if
+                currentEvents &&& ~~~supportedEvents <> 0
+                || newEvents &&& ~~~supportedEvents <> 0
+            then
+                complete (UnixError.toPal UnixError.EINVAL) state
+            elif currentEvents = newEvents then
+                complete UnixError.palSuccess state
+            else
+
+            // Past the wrapper: the call consults its descriptors now.
+            let portFd = fdArgument operation instruction.Arguments.[0]
+            let targetFd = fdArgument operation instruction.Arguments.[1]
+
+            match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+            | SimulatedUnixFlavour.Darwin ->
+                // The wrapper's screens above are portable and already
+                // answered; this is the kernel boundary, where kqueue's model
+                // is *structurally* different — registration is per
+                // (ident, filter), a re-ADD silently replaces where epoll
+                // answers EEXIST, a regular file registers where epoll answers
+                // EPERM, and a DEL of a dead target answers ENOENT where epoll
+                // answers EBADF (each measured only far enough to know it
+                // diverges). `SystemNative_FLock` refuses Darwin for the same
+                // reason: the return codes alone are not a model of the state
+                // the call leaves behind.
+                failwith
+                    $"%s{operation}: the simulated platform is Darwin, whose kqueue registration semantics (per-filter state, silent-replace ADD, file targets succeeding) are unmeasured beyond the fact that they diverge from epoll's. Measure them before answering; PawPrint models the Linux flavour only."
+            | SimulatedUnixFlavour.Linux ->
+
+            // `uintptr_t data`, held verbatim for delivery in
+            // `SocketEvent.Data` when an event fires; CoreLib passes
+            // `SocketAsyncContext.GlobalContextIndex`, a small integer, and a
+            // hand-rolled `void*` import arrives as a runtime pointer whose
+            // verbatim bit pattern is just as storable. Decoded *leniently*:
+            // `epoll_ctl` treats `data` as opaque and its failures never read
+            // it, so an undecodable value — one with provenance PawPrint
+            // cannot materialise to eight bytes — must not abort a call that
+            // was going to answer EBADF/EPERM/EEXIST/ENOENT anyway. The
+            // `Error` here aborts below, only once the registration is known
+            // to commit.
+            let data : Result<uint64, string> =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[4] with
+                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim value)) -> Ok (uint64 value)
+                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
+                    Ok 0UL
+                | CliType.RuntimePointer (CliRuntimePointer.Verbatim value) -> Ok (uint64 value)
+                | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> Ok 0UL
+                | other ->
+                    Error
+                        $"%s{operation}: `data` is %O{other}, which is not a verbatim bit pattern. The stored value is delivered back verbatim in SocketEvent.Data when an event fires, and PawPrint cannot materialise a provenance-tracked value to the eight bytes a real kernel would hold. Pass an integer-valued IntPtr."
+
+            // The op is derived from the caller's *claims*, not from the
+            // table: ADD iff the claimed current set is NONE, DEL iff the new
+            // set is NONE, MOD otherwise. (Both NONE cannot reach here — the
+            // equal-mask screen took it.) An undecodable `data` flows in as a
+            // zero placeholder: it can never be stored, because the commit
+            // path below aborts on `Error` before the new table escapes.
+            let change =
+                if newEvents = 0 then
+                    SocketEventRegistrationChange.Remove
+                else
+                    let interest = SocketEventInterest.ofBits operation newEvents
+
+                    let placeholder =
+                        match data with
+                        | Ok value -> value
+                        | Error _ -> 0UL
+
+                    if currentEvents = 0 then
+                        SocketEventRegistrationChange.Add (interest, placeholder)
+                    else
+                        SocketEventRegistrationChange.Modify (interest, placeholder)
+
+            match
+                FileDescriptorRegistry.changeSocketEventRegistration portFd targetFd change state.Kernel.FileDescriptors
+            with
+            | Ok registry ->
+                match change, data with
+                | SocketEventRegistrationChange.Add _, Error message
+                | SocketEventRegistrationChange.Modify _, Error message ->
+                    // The registration would commit, so the real kernel would
+                    // now store the caller's bits; this is the first point at
+                    // which the value matters, and the zero placeholder above
+                    // must not survive into the table.
+                    failwith message
+                | SocketEventRegistrationChange.Remove, Error _
+                | _, Ok _ ->
+
+                // A waiter already parked on this port is woken by nothing, so
+                // a registration that could fire must refuse rather than
+                // strand it in a sleep a real kernel would end — the ADD of a
+                // ready target queues an edge and wakes `epoll_wait`. The
+                // mirror of the guard in `SystemNative_WaitForSocketEvents`'s
+                // park, for the parked-first order; with no waiter, that
+                // park-time guard covers any later wait.
+                (match change with
+                 | SocketEventRegistrationChange.Remove -> ()
+                 | SocketEventRegistrationChange.Add _
+                 | SocketEventRegistrationChange.Modify _ ->
+                     let portId =
+                         match FileDescriptorRegistry.tryFindId portFd state.Kernel.FileDescriptors with
+                         | Some id -> id
+                         | None ->
+                             failwith
+                                 $"%s{operation}: port fd %d{portFd} was live for changeSocketEventRegistration just above (this is an interpreter bug)."
+
+                     let parked =
+                         state.ThreadState
+                         |> Map.exists (fun _ threadState ->
+                             threadState.Status = ThreadStatus.BlockedOnSocketEvents portId
+                         )
+
+                     if parked then
+                         let targetId =
+                             match FileDescriptorRegistry.tryFindId targetFd state.Kernel.FileDescriptors with
+                             | Some id -> id
+                             | None ->
+                                 failwith
+                                     $"%s{operation}: target fd %d{targetFd} was live for changeSocketEventRegistration just above (this is an interpreter bug)."
+
+                         if EmulatedKernel.socketEventRegistrationCouldFire targetId state.Kernel then
+                             failwith
+                                 $"%s{operation}: a thread is parked in SystemNative_WaitForSocketEvents on this port, and fd %d{targetFd}'s readiness cannot be ruled out — a real kernel can deliver an event for this registration and wake the waiter, and no delivery machinery exists. Implement readiness delivery (it arrives with SystemNative_Connect) before registering such a target past a parked waiter.")
+
+                // A successful `epoll_ctl` leaves errno alone.
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        FileDescriptors = registry
+                    }
+                )
+                |> complete UnixError.palSuccess
+            | Error error ->
+                let unixError =
+                    match error with
+                    | SocketEventRegistrationError.BadPortFd
+                    | SocketEventRegistrationError.BadTargetFd -> UnixError.EBADF
+                    | SocketEventRegistrationError.TargetNotPollable -> UnixError.EPERM
+                    | SocketEventRegistrationError.NotAnEventPort -> UnixError.EINVAL
+                    | SocketEventRegistrationError.AlreadyRegistered -> UnixError.EEXIST
+                    | SocketEventRegistrationError.NotRegistered -> UnixError.ENOENT
+
+                // The syscall failed, so it set errno on the way past. All five
+                // numbers are portable, but only Linux reaches here anyway.
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno unixError))
+                |> complete (UnixError.toPal unixError)
         | Some "SystemNative_WaitForSocketEvents",
           [ ConcreteIntPtr state.ConcreteTypes
             ConcretePointer _
@@ -5626,14 +5814,27 @@ module NativeSystemNative =
             // `buffer` — rather than the wake having to reach into a frame it does
             // not own from some other thread's step.
             //
-            // Nothing wakes it today, and that is faithful rather than a stub: no
-            // descriptor can be registered with a port yet
-            // (`SystemNative_TryChangeSocketEventRegistration` is deliberately
-            // still unimplemented), and both PAL implementations carry the comment
-            // that with an infinite timeout the wait blocks until a descriptor is
-            // added *and* an event occurs on it. `SocketAsyncEngine.EventLoop`'s
-            // thread does exactly this in a process that never opens a socket.
-            let park (port : OpenFileDescriptionId) : NativeHandlerResult option =
+            // Nothing wakes it today, so parking is faithful only while PawPrint
+            // can prove no registration on this port will ever fire — both PAL
+            // implementations carry the comment that with an infinite timeout
+            // the wait blocks until a descriptor is added *and* an event occurs
+            // on it, and for a listening stream socket no modelled operation
+            // can produce that event until `SystemNative_Connect` lands. Any
+            // other registration must refuse here rather than strand the
+            // waiter in a sleep a real kernel would end: an unconnected stream
+            // socket, for one, is `EPOLLOUT|EPOLLHUP` the moment it is added.
+            // The registration handler applies the mirror guard for the
+            // parked-first order.
+            let park
+                (port : OpenFileDescriptionId)
+                (registrations : Map<int * OpenFileDescriptionId, SocketEventRegistration>)
+                : NativeHandlerResult option
+                =
+                for KeyValue ((targetFd, targetId), _) in registrations do
+                    if EmulatedKernel.socketEventRegistrationCouldFire targetId state.Kernel then
+                        failwith
+                            $"%s{operation}: the port holds a registration for fd %d{targetFd} (open file description %O{targetId}) whose readiness PawPrint cannot rule out — a real kernel can deliver an event for it, and no delivery machinery exists to wake this wait. Implement readiness delivery (it arrives with SystemNative_Connect) before waiting on such a registration."
+
                 Scheduler.blockOnSocketEvents ctx.Thread port state
                 |> NativeHandlerResult.blockedRetainingFrame
                 |> Some
@@ -5685,7 +5886,7 @@ module NativeSystemNative =
                     // EINVAL, and EFAULT still wins ahead of it for an
                     // unmappable buffer.
                     failFromSyscall UnixError.EINVAL
-                | OpenFileTarget.SocketEventPort -> park port
+                | OpenFileTarget.SocketEventPort registrations -> park port registrations
             | SimulatedUnixFlavour.Darwin ->
                 // Measured on 25.6.0, and flatter: `kevent` resolves the descriptor
                 // before its `nevents == 0` early return, has no "wrong kind of
@@ -5704,7 +5905,7 @@ module NativeSystemNative =
                     // into "bad descriptor". Measured on a socket too, and for
                     // both a zero and a non-zero event count.
                     failFromSyscall UnixError.EBADF
-                | OpenFileTarget.SocketEventPort ->
+                | OpenFileTarget.SocketEventPort registrations ->
 
                 if requestedCount = 0 then
                     // The one input on which the flavours disagree about whether
@@ -5730,7 +5931,12 @@ module NativeSystemNative =
                 // No buffer screen, so an unmappable buffer parks here rather than
                 // faulting: `UserBufferCheck.AtCopyTime` is Darwin's answer, and a
                 // wait that never delivers an event never copies anything.
-                park port
+                //
+                // The registration guard inside `park` is vacuous under this
+                // flavour — the Darwin registration arm refuses, so the table
+                // is always empty — but running it keeps the two arms honest
+                // about the same claim.
+                park port registrations
         | Some "SystemNative_IsATty",
           [ ConcreteIntPtr state.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
@@ -5829,7 +6035,7 @@ module NativeSystemNative =
                         -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
                     | Some description ->
                         match description.Target with
-                        | OpenFileTarget.SocketEventPort ->
+                        | OpenFileTarget.SocketEventPort _ ->
                             // An epoll instance has no write operation, so the
                             // refusal is for the *kind* of object rather than
                             // for the access mode — the port permits writing

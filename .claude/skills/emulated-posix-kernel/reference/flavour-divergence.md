@@ -25,6 +25,7 @@ To change what PawPrint answers, change the test first.
 | which socket triples can be created | `TestSocketCreation` against `socketMatrix/{linux,darwin}.tsv` — the one table that *is* checked in as data, because its answers are privilege-dependent and no single machine can measure both columns |
 | `accept(2)`'s error matrix — EAGAIN / EINVAL / EOPNOTSUPP / ENOTSOCK / EBADF and their check ordering, on which the kernels agree in classification and differ only in numbering | `sourcesPure/SocketAccept.cs` (PAL codes, differential), `sourcesImpure/SocketAccept{Linux,Darwin}.cs` (raw numbers) |
 | `ENOTSOCK` from a socket syscall on a non-socket descriptor, measured per entry point (`accept`/`bind`/`listen`/`getsockname` × file/event port/pipe) | the same three guests: `SocketAccept.cs` rows 35-40, `SocketAccept{Linux,Darwin}.cs` rows 19-27 |
+| `epoll_ctl`'s error matrix and check ordering — EBADF / EPERM / EINVAL / EEXIST / ENOENT, the (fd, description) registration key, and where kqueue diverges (silent-replace ADD, file targets succeeding, dead-target DEL answering ENOENT not EBADF) | `sourcesPure/SocketEventRegistration.cs` (the rows the flavours agree on, differential), `sourcesImpure/SocketEventRegistrationLinux.cs` (the epoll-only rows; the Darwin kernel arm is a refusal, so no Darwin twin exists) |
 | environment entries a real `environ` can hold | `TestEnvironmentEntryInvariant`: `the entry rule accepts what a real environ can hold`, `the entry rule names what is wrong` |
 
 ## The envelope those measurements were taken in

@@ -679,6 +679,24 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The epoll-only rows of
+                // `SystemNative_TryChangeSocketEventRegistration`: EEXIST, the
+                // (fd, description) registration key, EPERM for a file target,
+                // EINVAL for a non-epoll port, and the check orderings —
+                // everything kqueue answers differently, measured with a C
+                // probe on Linux 6.18.5 and the guest itself on real Linux
+                // .NET. The flavour-agreement rows live differentially in
+                // sourcesPure/SocketEventRegistration.cs. No Darwin twin: the
+                // Darwin arm is a refusal, which no exit-code guest can
+                // observe.
+                FileName = "SocketEventRegistrationLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The bytes `SocketAddressPal` lays a `sockaddr_in` and
                 // `sockaddr_in6` out in, under the Linux flavour. Not
                 // differential: the family field is two bytes at offset 0 here
