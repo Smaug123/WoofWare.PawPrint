@@ -65,11 +65,7 @@ module TestVirtualMethodSlots =
             ImmutableArray.Empty
             ImmutableArray.Empty
 
-    let private vtable
-        (state : IlMachineState)
-        (handle : ConcreteTypeHandle)
-        : IlMachineState * VirtualSlotLayout.VtableSlot list
-        =
+    let private vtable (state : IlMachineState) (handle : ConcreteTypeHandle) : IlMachineState * VtableSlot list =
         VirtualSlotLayout.vtableOfClosed loggerFactory bct "test" state handle
 
     /// Closes a generic corelib type definition at the given corelib type arguments.
@@ -296,7 +292,7 @@ module TestVirtualMethodSlots =
         |> List.ofArray
 
     /// The same list for PawPrint: each slot's occupant named by its MethodDef token.
-    let private pawPrintSlotLayout (slots : VirtualSlotLayout.VtableSlot list) : int list =
+    let private pawPrintSlotLayout (slots : VtableSlot list) : int list =
         slots
         |> List.map (fun slot ->
             match fst slot.Method.IdentityKey with

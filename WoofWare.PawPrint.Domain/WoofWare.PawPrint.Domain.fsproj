@@ -62,6 +62,9 @@
         <Compile Include="AttributeFormatting.fs" />
         <Compile Include="IlDumpRendering.fs" />
         <Compile Include="TypeConcretisation.fs" />
+        <!-- After TypeConcretisation.fs, for `SubstitutionContext`, and before IlMachineStateModel
+             in the main project, which memoises the walks that produce these. -->
+        <Compile Include="VtableSlot.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
 
