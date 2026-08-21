@@ -90,6 +90,33 @@ module TestImpureCases =
                 )
         }
 
+    /// Build one registration of `ProcessPathConfigured.cs`. The guest echoes
+    /// the executable path it observed to stdout, so the assertion is that the
+    /// bytes it printed are the UTF-8 of the path we configured — which pins the
+    /// whole chain (`KernelConfig.ProcessPath` -> `withProcessPath` ->
+    /// `SystemNative_GetProcessPath` -> CoreLib's `Utf8StringMarshaller` ->
+    /// `Environment.ProcessPath`) to an exact value rather than a shape.
+    ///
+    /// Registered under more than one path below, so that a handler answering a
+    /// constant instead of reading `Kernel.ProcessPath` cannot satisfy them all.
+    let private processPathCase (path : string) : EndToEndTestCase =
+        {
+            FileName = "ProcessPathConfigured.cs"
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    ProcessPath = Some (AbsoluteUnixPath.parseOrFail "test process path" path)
+                }
+            AppContext = AppContextProperties.empty
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                    |> Seq.toArray
+                    |> shouldEqual (Text.Encoding.UTF8.GetBytes path)
+                )
+        }
+
     /// A directory whose UTF-8 encoding exceeds the 256 bytes CoreLib's
     /// `Interop.Sys.GetCwd()` stackallocs, so that the first `SystemNative_GetCwd`
     /// must fail with ERANGE and the guest must take its ArrayPool
@@ -349,6 +376,29 @@ module TestImpureCases =
             // fails a test that says so.
             currentDirectoryCase "/"
             currentDirectoryCase "/home/pawprint/work"
+            // Two distinct executable paths, so a handler that answered a
+            // constant rather than reading `Kernel.ProcessPath` fails one of
+            // them. An apphost-shaped path and a muxer-shaped one, which are the
+            // two things a real `Environment.ProcessPath` actually reports.
+            processPathCase "/home/pawprint/work/Guest"
+            processPathCase "/usr/share/dotnet/dotnet"
+            // A path whose UTF-8 encoding is longer than its character count, so
+            // that a handler measuring the wrong one truncates visibly.
+            processPathCase "/héllo/中文/🐶/Guest"
+            {
+                // PawPrint's *default*: a process with no executable path at
+                // all, which the entry point reports as NULL with errno ENOENT.
+                // That default is part of the replay contract, so it is
+                // registered explicitly rather than left implicit in the cases
+                // above — a change to `defaultProcessPath` must fail a test that
+                // says so.
+                FileName = "ProcessPathAbsent.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
             // Root, which is the identity `defaultUserId` deliberately avoids:
             // `Environment.IsPrivilegedProcess` is exactly `GetEUid() == 0`, so
             // this is the only case in the suite that observes a guest taking
