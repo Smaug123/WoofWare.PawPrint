@@ -1805,17 +1805,6 @@ module VirtualFileSystem =
 
     // ------------------------------------------------------------ resolution
 
-    /// The directory ".." names from `directory`. The root is its own parent.
-    /// Fails loudly rather than guessing when the graph does not say: a walk
-    /// that reached `directory` has already established it is a directory, so
-    /// a missing `Parent` is a broken graph rather than a guest error.
-    let private parentOf (directory : InodeNumber) (vfs : VirtualFileSystem) : InodeNumber =
-        match tryGetDirectory directory vfs with
-        | Some content -> content.Parent
-        | None ->
-            failwith
-                $"VirtualFileSystem: resolving \"..\" from inode %O{directory}, which the walk had already established was a directory, but it is now absent or not a directory. The inode graph is inconsistent; run VirtualFileSystem.checkInvariants."
-
     /// Resolve `path` against `startDirectory`, which is where a *relative*
     /// path begins; a rooted path ignores it and starts at the root.
     ///
@@ -1835,6 +1824,7 @@ module VirtualFileSystem =
     /// caller; see `TrailingSeparatorPolicy`.
     let resolveFull
         (limits : PathLimits)
+        (privilege : CallerPrivilege)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
@@ -1886,6 +1876,13 @@ module VirtualFileSystem =
             match PathCursor.next remaining with
             // Reached when the path has no name left to look up: after a "." or
             // "..", or immediately for a path that named no component at all.
+            //
+            // Deliberately *before* the search check below, and that is what
+            // makes `lstat("p")` and `lstat("p/")` succeed on an unsearchable
+            // `p`: this walk never looks inside it. Measured on both kernels,
+            // and `lstat("p/.")` is EACCES beside them -- one more place where
+            // a trailing separator is not "/." and must not be desugared into
+            // one.
             | None ->
                 Ok
                     {
@@ -1893,11 +1890,54 @@ module VirtualFileSystem =
                         TrailingSeparatorDemanded = trailing
                         FinalSymlinkFollowed = finalSymlinkFollowed
                     }
-            | Some (PathComponent.Current, rest) ->
+            | Some (nextComponent, rest) ->
+
+            // Consuming *any* component from `directory` -- a name, "." or ".."
+            // alike -- is a lookup, and a lookup needs the directory's search
+            // bit. Checked here, above the dispatch on which kind of component
+            // it is, because all three need it: measured on both kernels,
+            // `lstat("p/.")` and `lstat("p/..")` are EACCES exactly as
+            // `lstat("p/kid")` is.
+            //
+            // Everything else this walk can refuse sits below this point, which
+            // is what reproduces the measured precedence without encoding it:
+            // against an unsearchable holding directory, a missing name, an
+            // over-long one, a symlink cycle and (on Linux) a creating open's
+            // trailing separator all report EACCES rather than the ENOENT,
+            // ENAMETOOLONG, ELOOP or EISDIR the same call earns under a
+            // searchable one.
+            //
+            // Only the *owner* triple can ever apply: `stat` reports
+            // `Kernel.UserId` as every inode's `st_uid`, so the emulated process
+            // owns everything it can see. Measured, and a corpus of ordinary
+            // modes cannot show it: a 0o677 directory is EACCES to its owner
+            // though group and other may search it, while 0o100 is searchable
+            // though nobody else may.
+            let searchBit = 0o100
+
+            let directoryContent =
+                match tryGetDirectory directory vfs with
+                | Some content -> content
+                | None ->
+                    failwith
+                        $"VirtualFileSystem: about to consume a component from inode %O{directory}, which the walk had already established was a directory, but it is now absent or not a directory. The inode graph is inconsistent; run VirtualFileSystem.checkInvariants."
+
+            let maySearch =
+                match privilege with
+                | CallerPrivilege.Privileged -> true
+                | CallerPrivilege.Unprivileged ->
+                    PermissionBits.toInt directoryContent.Permissions &&& searchBit = searchBit
+
+            if not maySearch then
+                Error UnixError.EACCES
+            else
+
+            match nextComponent with
+            | PathComponent.Current ->
                 walk directory rest trailing finalSymlinkFollowed FinalNavigation.Current symlinks
-            | Some (PathComponent.Parent, rest) ->
-                walk (parentOf directory vfs) rest trailing finalSymlinkFollowed FinalNavigation.Parent symlinks
-            | Some (PathComponent.Name name, rest) ->
+            | PathComponent.Parent ->
+                walk directoryContent.Parent rest trailing finalSymlinkFollowed FinalNavigation.Parent symlinks
+            | PathComponent.Name name ->
 
             // Before the length check, before the lookup, and before any symlink
             // this component names is traversed -- which is the whole content of
@@ -1927,12 +1967,7 @@ module VirtualFileSystem =
                 Error UnixError.ENAMETOOLONG
             else
 
-            let entries =
-                match tryGetDirectory directory vfs with
-                | Some content -> content.Entries
-                | None ->
-                    failwith
-                        $"VirtualFileSystem: looking up \"%s{FileName.toString name}\" in inode %O{directory}, which the walk had already established was a directory, but it is now absent or not a directory. The inode graph is inconsistent; run VirtualFileSystem.checkInvariants."
+            let entries = directoryContent.Entries
 
             let finish (target : ResolvedTarget) : Result<Resolution, UnixError> =
                 Ok
@@ -2091,13 +2126,14 @@ module VirtualFileSystem =
     /// them.
     let resolve
         (limits : PathLimits)
+        (privilege : CallerPrivilege)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
         : Result<ResolvedTarget, UnixError>
         =
-        resolveFull limits startDirectory policy TrailingSeparatorPolicy.Demand path vfs
+        resolveFull limits privilege startDirectory policy TrailingSeparatorPolicy.Demand path vfs
         |> Result.map (fun resolution -> resolution.Target)
 
     /// The inode a resolved target names. Turns a free final name into ENOENT,
@@ -2114,13 +2150,15 @@ module VirtualFileSystem =
     /// want: `resolve` followed by `existingOf`.
     let resolveExisting
         (limits : PathLimits)
+        (privilege : CallerPrivilege)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
         : Result<InodeNumber, UnixError>
         =
-        resolve limits startDirectory policy path vfs |> Result.bind existingOf
+        resolve limits privilege startDirectory policy path vfs
+        |> Result.bind existingOf
 
     // ------------------------------------------------------------ inspection
 

@@ -1038,9 +1038,16 @@ module CreatingOpenRules =
     ///  * A path that consumed no component at all — "/" — is whatever
     ///    `RootNavigation` says, which is Darwin's EEXIST.
     ///  * A creating open landing on an existing directory is EISDIR on Linux.
-    ///  * Binding a name needs *both* write and search on the directory that
-    ///    will hold it: measured at uid 1000, 0o333 and 0o300 succeed while
-    ///    0o644, 0o555 and 0o111 are all EACCES. Root bypasses it.
+    ///  * Binding a name needs the *write* bit on the directory that will hold
+    ///    it: measured at uid 1000, 0o333 and 0o300 succeed while 0o644 and
+    ///    0o555 are EACCES. Root bypasses it.
+    ///
+    ///    Binding needs the directory's *search* bit too — 0o111 is EACCES on
+    ///    both kernels — but that half is not checked here: no resolution can
+    ///    reach this function without it, because the walk refuses an
+    ///    unsearchable directory before it looks a component up at all. See
+    ///    `VirtualFileSystem.resolveFull`, which is also where the rows that
+    ///    pin it live.
     ///
     /// A freshly created inode is deliberately *not* screened against the mode
     /// it was just given — measured unanimously, `open(free, O_CREAT|O_RDWR, 0)`
@@ -1090,10 +1097,11 @@ module CreatingOpenRules =
                 CreatingOpenVerdict.OpenExisting inode
         | ResolvedTarget.Entry (directory, name, None) ->
 
-        // Only the owner triple can ever apply: `stat` reports `Kernel.UserId`
-        // as every inode's `st_uid`, so the emulated process owns everything it
-        // can see.
-        let bindBits = 0o300
+        // Write alone: the search half of the rule is the walk's, and a
+        // resolution that reached here has already passed it. Only the owner
+        // triple can ever apply, since `stat` reports `Kernel.UserId` as every
+        // inode's `st_uid`.
+        let bindBits = 0o200
 
         let parentBits =
             match VirtualFileSystem.tryGet directory vfs with
@@ -1197,62 +1205,34 @@ module MkDirRules =
     ///  * A path that consumed no component at all — "/", ".", ".." — is
     ///    EEXIST, whichever `FinalNavigation` it was. `mkdir` does not
     ///    distinguish them, where `rmdir` owes all three different errnos.
-    ///  * The holding directory's *search* bit is needed to look the final name
-    ///    up at all, so its absence beats even EEXIST: measured on both, an
-    ///    existing child of a 0o666 directory is EACCES, and of a 0o200 one too,
-    ///    while the same child of a 0o100 directory is EEXIST.
-    ///  * An existing final name is then EEXIST: a file, a directory, or a
-    ///    symlink, dangling or cyclic or not.
-    ///  * EEXIST in turn beats the *write* bit. Measured on both: an existing
-    ///    child of a 0o555 directory is EEXIST, where a free name there is
-    ///    EACCES.
-    ///  * Binding a new name needs write as well, so the pair is 0o300:
-    ///    measured, 0o333 and 0o300 succeed while 0o555, 0o100, 0o666 and 0o644
-    ///    are EACCES. Root bypasses both bits.
+    ///  * An existing final name is EEXIST: a file, a directory, or a symlink,
+    ///    dangling or cyclic or not.
+    ///  * EEXIST beats the *write* bit. Measured on both: an existing child of a
+    ///    0o555 directory is EEXIST, where a free name there is EACCES.
+    ///  * Binding a new name needs write on the directory that will hold it:
+    ///    measured, 0o333 and 0o300 succeed while 0o555 and 0o644 are EACCES.
+    ///    Root bypasses it.
+    ///
+    /// The holding directory's *search* bit is needed as well — and needed
+    /// earlier, since without it the final name cannot be looked up at all, so
+    /// its absence beats even EEXIST. That check is the walk's
+    /// (`VirtualFileSystem.resolveFull`), which refuses before this function is
+    /// reached; the rows that pin it live there.
     ///
     /// A *free* final name carrying a trailing separator creates, on both
     /// platforms — `mkdir("nx/")` succeeds. This is the one place `mkdir` and a
     /// creating `open` disagree about a resolution of the same shape: `open`
     /// owes it ENOENT on Darwin.
     ///
-    /// The search rule above is enforced *after* the walk, which is not where a
-    /// kernel enforces it, and the difference is visible. A real kernel checks
-    /// the bit as it steps into the directory, before it looks at the final
-    /// component at all; this check runs only once the walk has already
-    /// succeeded. So every row whose final component fails *inside* the walk
-    /// reports the walk's errno where both real kernels report EACCES. Measured
-    /// at uid 1000/501 with a 0o666 holding directory, against the same rows
-    /// under a 0o755 one:
-    ///
-    /// | final component | 0o666 parent | 0o755 parent |
-    /// | --- | --- | --- |
-    /// | a 300-byte name | EACCES | ENAMETOOLONG |
-    /// | "f/" (a file) | EACCES | ENOTDIR / EEXIST |
-    /// | "cyc/" (a cyclic link) | EACCES | ELOOP / EEXIST |
-    /// | "kid/" (a directory) | EACCES | EEXIST |
-    ///
-    /// (The second column's pairs are Darwin / Linux; the first column does not
-    /// diverge.) The rows this check *does* get right — a free name, and an
-    /// existing one — are the ones the walk completes.
-    ///
-    /// The same limit, one component further out, is why permissions on the
-    /// directories the walk *passed through* are not checked either: a `mkdir`
-    /// through an unsearchable intermediate is EACCES on both real kernels and
-    /// succeeds here, and so is a path that consumed no component at all
-    /// (`mkdir("p/.")` needs search on `p` to resolve). All of it is one missing
-    /// rule in the resolver, shared with `stat`, `open` and `readlink` —
-    /// `lstat` through an unsearchable intermediate is EACCES too — so it is a
-    /// change to the walk rather than to `mkdir`, and no corpus here contains
-    /// such a row.
     let verdict (privilege : CallerPrivilege) (resolution : Resolution) (vfs : VirtualFileSystem) : MkDirVerdict =
         match resolution.Target with
         | ResolvedTarget.Directory _ -> MkDirVerdict.Refuse UnixError.EEXIST
         | ResolvedTarget.Entry (directory, name, existing) ->
 
-        // Only the owner triple can ever apply: `stat` reports `Kernel.UserId`
-        // as every inode's `st_uid`, so the emulated process owns everything it
-        // can see.
-        let search = 0o100
+        // Write alone: the search half of the rule is the walk's, and a
+        // resolution that reached here has already passed it. Only the owner
+        // triple can ever apply, since `stat` reports `Kernel.UserId` as every
+        // inode's `st_uid`.
         let write = 0o200
 
         let parentPermissions =
@@ -1271,10 +1251,6 @@ module MkDirRules =
             match privilege with
             | CallerPrivilege.Privileged -> false
             | CallerPrivilege.Unprivileged -> PermissionBits.toInt parentPermissions &&& bit <> bit
-
-        if lacks search then
-            MkDirVerdict.Refuse UnixError.EACCES
-        else
 
         match existing with
         | Some _ -> MkDirVerdict.Refuse UnixError.EEXIST
