@@ -25,8 +25,9 @@ using System.Runtime.InteropServices;
 // errno capture is not modelled under PawPrint, and the raw numbers differ
 // between the platforms anyway.
 //
-// The exit code is the index of the first check that failed; 0 means all
-// passed. Kept below 128, since an exit code is eight bits.
+// The exit code names the first check that failed (each check has its own
+// code, though not in file order); 0 means all passed. Kept below 128, since
+// an exit code is eight bits.
 class Program
 {
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_Socket")]
@@ -40,6 +41,12 @@ class Program
 
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_FcntlSetIsNonBlocking")]
     static extern int SetIsNonBlocking(IntPtr fd, int isNonBlocking);
+
+    // The same entry point through the other shape a hand-rolled P/Invoke
+    // plausibly declares: a `bool` marshals as a four-byte BOOL by default,
+    // so the C sees the same int32_t either way.
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_FcntlSetIsNonBlocking")]
+    static extern int SetIsNonBlockingBool(IntPtr fd, bool isNonBlocking);
 
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_FcntlGetIsNonBlocking")]
     static extern unsafe int GetIsNonBlocking(IntPtr fd, int* isNonBlocking);
@@ -83,9 +90,21 @@ class Program
         if (GetIsNonBlocking(fd, &flag) != 0) return 15;
         if (flag != 0) return 16;
 
+        // The `bool` declaration round-trips like the `int` one.
+        if (SetIsNonBlockingBool(fd, true) != 0) return 26;
+        if (GetIsNonBlocking(fd, &flag) != 0) return 27;
+        if (flag != 1) return 28;
+        if (SetIsNonBlockingBool(fd, false) != 0) return 29;
+        if (GetIsNonBlocking(fd, &flag) != 0) return 30;
+        if (flag != 0) return 31;
+
         // NULL out-pointer: the shim's own screen, ahead of any fcntl, and it
         // answers with the PAL enum value rather than -1.
         if (GetIsNonBlocking(fd, null) != PAL_EFAULT) return 17;
+
+        // The NULL screen also precedes any look at the descriptor: a pointer
+        // masquerading as the fd never reaches an fcntl.
+        if (GetIsNonBlocking((IntPtr)(&flag), null) != PAL_EFAULT) return 33;
 
         if (Close(duplicated) != 0) return 18;
 
@@ -103,6 +122,10 @@ class Program
         flag = 7;
         if (GetIsNonBlocking(fd, &flag) != -1) return 24;
         if (flag != 0) return 25;
+
+        // On a dead fd the NULL screen and the descriptor lookup disagree
+        // (EFAULT against -1), and the screen's precedence says EFAULT.
+        if (GetIsNonBlocking(fd, null) != PAL_EFAULT) return 32;
 
         return 0;
     }

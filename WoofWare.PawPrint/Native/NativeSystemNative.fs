@@ -4212,12 +4212,15 @@ module NativeSystemNative =
             //
             // The second parameter is matched loosely for the reason
             // `SystemNative_Socket`'s enums are: CoreLib declares it `int`
-            // while a guest hand-rolling the P/Invoke may write `bool`.
+            // while a guest hand-rolling the P/Invoke may write `bool`, whose
+            // default marshalling is the same four-byte cell.
             let operation = "SystemNative_FcntlSetIsNonBlocking"
             let fd = fdArgument operation instruction.Arguments.[0]
 
             let isNonBlocking =
-                NativeCall.int32Argument operation instruction.Arguments.[1] <> 0
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.Bool b -> b <> 0uy
+                | _ -> NativeCall.int32Argument operation instruction.Arguments.[1] <> 0
 
             let complete (code : int) (state : IlMachineState) : NativeHandlerResult option =
                 state
@@ -4264,7 +4267,6 @@ module NativeSystemNative =
             // Reads for every target kind, where the setter refuses some:
             // `false` is the truth for a target the setter will not flag.
             let operation = "SystemNative_FcntlGetIsNonBlocking"
-            let fd = fdArgument operation instruction.Arguments.[0]
 
             let outArgument =
                 bufferPointerArgument operation "isNonBlocking" instruction.Arguments.[1]
@@ -4275,10 +4277,14 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
+            // The NULL screen precedes everything, including any look at `fd`:
+            // the C tests the pointer before its first `fcntl`, so a null
+            // pointer with a nonsensical descriptor is EFAULT, not EBADF.
             match outArgument with
             | BufferPointer.RawAddress 0UL -> complete (UnixError.toPal UnixError.EFAULT) state
             | _ ->
 
+            let fd = fdArgument operation instruction.Arguments.[0]
             let outCell = requireStorage operation "isNonBlocking" outArgument
 
             let store (value : int) (state : IlMachineState) : IlMachineState =
