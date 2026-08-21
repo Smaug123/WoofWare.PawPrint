@@ -801,24 +801,18 @@ module NativeSystemNative =
                 $"%s{operation}: the guest's path did not survive parsing: %s{UnixPath.describe error}. This is an interpreter bug: the value was decoded from a NUL-terminated byte string, so it cannot contain an embedded NUL and cannot be null."
         | Ok path -> Ok path
 
-    /// The inode a path names, or the errno the lookup owes the guest.
+    /// The resolution of a guest path, or the errno the lookup owes the guest.
     ///
-    /// A relative path resolves against the simulated process's current
-    /// directory, which — unlike a real kernel's, which is an inode the process
-    /// holds open — is configuration, and so might name nothing in the seeded
-    /// filesystem. That is a host mistake rather than anything a guest did, and
-    /// it has no honest errno: ENOENT would blame the guest's path, and any
-    /// other answer would invent a directory. Crash, naming both knobs.
-    ///
-    /// The common case never reaches it: CoreLib `Path.GetFullPath`s
-    /// before every `Stat`/`LStat`, so the path arriving here is normally
-    /// already absolute and the current directory is not consulted at all.
+    /// A relative path resolves against `EmulatedKernel.CurrentDirectoryInode`,
+    /// the directory the simulated process holds open — so this function cannot
+    /// fail for a reason that is the *host's* fault. Whether the configured
+    /// current directory names anything is settled once, when the kernel is
+    /// built, which is where the crash for a host that misconfigured it lives.
     ///
     /// `trailingSeparatorPolicy` is the caller's, not the path's: a *creating*
     /// open refuses a trailing separator on Linux where every lookup merely
     /// records the demand. See `TrailingSeparatorPolicy`.
     let private resolveGuestPathFull
-        (operation : string)
         (policy : SymlinkPolicy)
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
         (kernel : EmulatedKernel)
@@ -826,52 +820,26 @@ module NativeSystemNative =
         : Result<Resolution, UnixError>
         =
         let vfs = kernel.FileSystem
-        let root = VirtualFileSystem.root vfs
         let limits = SimulatedUnixPlatform.pathLimits kernel.UnixPlatform
 
         let startDirectory =
             if UnixPath.isRooted path then
-                root
+                VirtualFileSystem.root vfs
             else
-
-            let cwd = UnixPath.ofAbsolute kernel.CurrentDirectory
-
-            // Resolved as though privileged, which is not a claim about the
-            // guest's uid: a real process holds its current directory as an open
-            // reference and does not re-walk it from the root, so no lookup —
-            // and therefore no permission check — happens here at all. Measured
-            // on both kernels: with the cwd at `outer/inner` and `outer`
-            // unsearchable, a relative `lstat("target")` succeeds while
-            // `lstat("../inner/target")` is EACCES.
-            //
-            // "As privileged" and "without checks" coincide only because search
-            // is the one privilege-gated fact in resolution today; a second such
-            // rule would break the equivalence silently, so this is spelled out
-            // rather than left to be inferred.
-            //
-            // The cwd *itself* is not exempt: the walk below starts there and
-            // checks its search bit the moment it consumes a component, which is
-            // what makes `lstat("target")` EACCES when the cwd itself is
-            // unsearchable — also measured on both.
-            //
-            // The re-walk is an artefact of modelling the cwd as a path rather
-            // than as a held inode. Storing the inode when the kernel is built
-            // would make this exemption unnecessary; nothing can observe the
-            // difference until a syscall can rename or remove a directory
-            // mid-run.
-            match
-                VirtualFileSystem.resolveExisting limits CallerPrivilege.Privileged root SymlinkPolicy.Follow cwd vfs
-            with
-            | Ok inode -> inode
-            | Error UnixError.ENAMETOOLONG ->
-                // Distinguished because the remedy is different, and the
-                // message below would send the reader looking for a missing
-                // directory that is in fact present.
-                failwith
-                    $"%s{operation}: the configured current directory \"%s{AbsoluteUnixPath.toString kernel.CurrentDirectory}\" contains a component longer than %O{SimulatedUnixPlatform.flavour kernel.UnixPlatform}'s NAME_MAX, so no process could have been started in it. Shorten KernelConfig.CurrentDirectory."
-            | Error error ->
-                failwith
-                    $"%s{operation}: the guest passed the relative path \"%s{UnixPath.toString path}\", but the configured current directory \"%s{AbsoluteUnixPath.toString kernel.CurrentDirectory}\" does not resolve in the seeded filesystem (%O{error}). A process cannot be started in a directory that does not exist; make KernelConfig.FileSystem contain KernelConfig.CurrentDirectory."
+                // The held inode, not a re-walk of `kernel.CurrentDirectory`: a
+                // real process reaches its current directory through a reference
+                // it already holds, so no component of that directory's own path
+                // is looked up here and none of their permission bits are
+                // consulted. Measured on both kernels — with the cwd at
+                // `outer/inner` and `outer` unsearchable, a relative
+                // `lstat("target")` succeeds while `lstat("../inner/target")` is
+                // EACCES.
+                //
+                // The cwd *itself* is not exempt: the walk below starts there and
+                // checks its search bit the moment it consumes a component, which
+                // is what makes `lstat("target")` EACCES when the cwd itself is
+                // unsearchable — also measured on both.
+                kernel.CurrentDirectoryInode
 
         VirtualFileSystem.resolveFull
             limits
@@ -887,13 +855,12 @@ module NativeSystemNative =
     /// `VirtualFileSystem.existingOf`'s free-name-is-ENOENT rule, rather than
     /// re-deciding either here.
     let private resolveGuestPath
-        (operation : string)
         (policy : SymlinkPolicy)
         (kernel : EmulatedKernel)
         (path : UnixPath)
         : Result<InodeNumber, UnixError>
         =
-        resolveGuestPathFull operation policy TrailingSeparatorPolicy.Demand kernel path
+        resolveGuestPathFull policy TrailingSeparatorPolicy.Demand kernel path
         |> Result.bind (fun resolution -> VirtualFileSystem.existingOf resolution.Target)
 
     /// `sizeof(FileStatus)`: four 32-bit fields, then twelve 64-bit ones, then
@@ -1091,7 +1058,7 @@ module NativeSystemNative =
         | Error error -> fail error
         | Ok path ->
 
-        match resolveGuestPath operation policy state.Kernel path with
+        match resolveGuestPath policy state.Kernel path with
         | Error error -> fail error
         | Ok inode ->
 
@@ -2559,7 +2526,7 @@ module NativeSystemNative =
             | Error error -> fail error
             | Ok path ->
 
-            match resolveGuestPathFull operation policy trailingSeparatorPolicy state.Kernel path with
+            match resolveGuestPathFull policy trailingSeparatorPolicy state.Kernel path with
             | Error error -> fail error
             | Ok resolution ->
 
@@ -2796,9 +2763,7 @@ module NativeSystemNative =
             // dangles, points at a file, or points at itself. The trailing
             // separator is the only thing that can reach past it, and only on
             // Darwin -- see `MkDirRules.TrailingSeparator`.
-            match
-                resolveGuestPathFull operation SymlinkPolicy.NoFollowFinal rules.TrailingSeparator state.Kernel path
-            with
+            match resolveGuestPathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator state.Kernel path with
             | Error error -> fail error
             | Ok resolution ->
 
@@ -4162,7 +4127,7 @@ module NativeSystemNative =
             // the thing being read, not something to step through. A trailing
             // separator still overrides that — "lf/" demands that `lf` be a
             // directory — and the resolver owns that rule, answering ENOTDIR.
-            match resolveGuestPath operation SymlinkPolicy.NoFollowFinal state.Kernel path with
+            match resolveGuestPath SymlinkPolicy.NoFollowFinal state.Kernel path with
             | Error error -> fail error
             | Ok inode ->
 

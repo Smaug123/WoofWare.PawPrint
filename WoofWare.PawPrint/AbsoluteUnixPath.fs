@@ -156,7 +156,8 @@ module AbsoluteUnixPath =
     /// if it is not.
     ///
     /// Only for boundaries that accept an `AbsoluteUnixPath` from outside the
-    /// library — today, `EmulatedKernel.withCurrentDirectory`. The only value
+    /// library — today, `EmulatedKernel.withFileSystemAndCurrentDirectory`
+    /// and `withProcessPath`. The only value
     /// this can reject is `Unchecked.defaultof` / C# `default` (see the type's
     /// doc comment); catching it here turns a null-reference failure deep in
     /// the first `SystemNative_GetCwd` into a configuration-time error that

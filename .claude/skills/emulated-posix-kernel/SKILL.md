@@ -47,7 +47,12 @@ Two traps when adding a `KernelConfig` field:
   in `applyTo`.
 - **Do not write a setter that reads `kernel.UnixPlatform`.** That makes two
   `with` functions order-dependent. Take the platform as a parameter instead;
-  `withUnixPlatformAndFileSystemType` fuses the pair for exactly this reason.
+  `withUnixPlatformAndFileSystemType` fuses the pair for exactly this reason,
+  and `withFileSystemAndCurrentDirectory` takes the platform *and* the clock as
+  arguments for it. Fuse two knobs into one setter when neither answer is
+  well-formed without the other — a current directory is an inode of *this*
+  filesystem, and a new filesystem invalidates every inode number the previous
+  one handed out.
 
 ## 2. Per-thread state: field or map?
 

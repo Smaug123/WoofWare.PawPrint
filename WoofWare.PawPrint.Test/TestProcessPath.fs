@@ -56,7 +56,7 @@ module TestProcessPath =
         // can produce is a defaulted one. The setter is where that stops, and it
         // must name the knob rather than failing as a null reference inside the
         // first `SystemNative_GetProcessPath` — the same boundary
-        // `withCurrentDirectory` draws.
+        // `withFileSystemAndCurrentDirectory` draws for the current directory.
         let exn =
             Assert.Throws<Exception> (fun () ->
                 EmulatedKernel.initial

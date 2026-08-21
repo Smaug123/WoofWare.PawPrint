@@ -11,13 +11,13 @@ using System.Runtime.InteropServices;
 // root, so the ancestors' modes never come into it — but climbing back out
 // through one is an ordinary lookup and needs the bit like any other.
 //
-// PawPrint models the cwd as a *path* and re-resolves it on every relative
-// lookup, so it has to resolve that path as privileged for this to work. This
-// guest is the only thing that sees that: every unit test hands the walk a start
-// directory directly, and the host oracle has no cwd concept at all. Remove the
-// exemption and `resolveGuestPathFull` does not merely answer differently — it
-// `failwith`s, because a cwd that will not resolve is a host misconfiguration
-// rather than a guest error.
+// PawPrint holds the cwd as `EmulatedKernel.CurrentDirectoryInode`, resolved
+// once when the kernel is built, so a relative path starts there without any
+// lookup at all. This guest is the only thing that sees that: every unit test
+// hands the walk a start directory directly, and the host oracle has no cwd
+// concept at all. Start a relative path anywhere but that held inode and the
+// first check below fails; resolve the inode itself unprivileged when the
+// kernel is built and it never starts at all, because `outer` is 0o666.
 //
 // The exit code is the index of the first check that failed; 0 means all
 // passed. Kept below 128, since an exit code is eight bits.

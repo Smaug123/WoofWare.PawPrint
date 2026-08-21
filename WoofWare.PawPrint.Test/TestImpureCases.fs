@@ -66,12 +66,29 @@ module TestImpureCases =
                 )
         }
 
+    /// A seed holding exactly the chain of directories `path` names, so that a
+    /// process really can be started there. The kernel resolves its current
+    /// directory when it is built, so a case configuring one must seed it —
+    /// no process is ever started in a directory that does not exist.
+    let private directoryChain (path : string) : Map<FileName, SeedEntry> =
+        path.Split '/'
+        |> Array.filter (fun segment -> segment <> "")
+        |> Array.rev
+        |> Array.fold
+            (fun contents segment ->
+                Map.ofList
+                    [
+                        FileName.parseOrFail "test current directory" segment, SeedEntry.directory contents
+                    ]
+            )
+            FileSystemSeed.empty
+
     /// Build one registration of `CurrentDirectoryConfigured.cs`. The guest
     /// echoes the directory it observed to stdout, so the assertion is
     /// that the bytes it printed are the UTF-8 of the path we configured —
     /// which pins the whole chain (`KernelConfig.CurrentDirectory` ->
-    /// `withCurrentDirectory` -> `SystemNative_GetCwd` -> CoreLib's buffer
-    /// dance -> `Marshal.PtrToStringUTF8`) to an exact value, not a shape.
+    /// `withFileSystemAndCurrentDirectory` -> `SystemNative_GetCwd` -> CoreLib's
+    /// buffer dance -> `Marshal.PtrToStringUTF8`) to an exact value, not a shape.
     let private currentDirectoryCase (dir : string) : EndToEndTestCase =
         {
             FileName = "CurrentDirectoryConfigured.cs"
@@ -79,6 +96,7 @@ module TestImpureCases =
             KernelConfig =
                 { KernelConfig.Default with
                     CurrentDirectory = AbsoluteUnixPath.parseOrFail "test current directory" dir
+                    FileSystem = directoryChain dir
                 }
             AppContext = AppContextProperties.empty
             ExpectsUnhandledException = false
