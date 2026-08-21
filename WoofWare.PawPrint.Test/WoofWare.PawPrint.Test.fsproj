@@ -87,6 +87,7 @@
     <Compile Include="TestSwitchIlOp.fs" />
     <Compile Include="TestUnaryConstIlOp.fs" />
     <Compile Include="TestUnaryMetadataIlOp.fs" />
+    <Compile Include="TestMetadataTokenValidity.fs" />
     <Compile Include="TestMethodTableProjection.fs" />
     <Compile Include="TestElementOffsetOverflow.fs" />
     <Compile Include="TestSzArrayInterfaceDispatch.fs" />
