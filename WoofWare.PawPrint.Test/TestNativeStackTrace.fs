@@ -877,3 +877,47 @@ public static class Entry
         match MethodHandleRegistry.resolveMethodFromId ids.Head state.MethodHandles with
         | Some (MethodHandle.FromDynamic handle) -> handle.GetRegistryId () |> shouldEqual expectedId
         | other -> failwith $"expected the frame's handle to resolve to a dynamic method, got %O{other}"
+
+    [<Test>]
+    let ``an all-false capture clears any foreign-frame flags the helper already held`` () =
+        // CoreCLR writes an explicit null here rather than leaving the field alone
+        // (debugdebugger.cpp:416-418), so a reused helper cannot present a previous capture's
+        // flags — or an array of the wrong length — as this capture's answer. No CoreLib caller
+        // reuses a helper, so this is the only place that can observe it.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let prepared = prepareGuest loggerFactory
+        let baseClassTypes = prepared.BaseClassTypes
+        let state = prepared.State
+
+        let state = deepenStack prepared.EntryThread 2 state
+        let helperAddr, state = allocateHelper loggerFactory baseClassTypes 0 state
+
+        // Stand in for what a previous exception-sourced capture would have left: a longer array,
+        // every entry true, so both staleness and a length mismatch are in play.
+        let state, booleanHandle =
+            concretizeCorelibClass loggerFactory baseClassTypes "System" "Boolean" state
+
+        let staleArrayAddr, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero booleanHandle)
+                (fun () -> CliType.ofBool true)
+                9
+                state
+
+        let state =
+            IlMachineState.setOwnInstanceField
+                helperAddr
+                "rgiLastFrameFromForeignExceptionStackTrace"
+                (CliType.ObjectRef (Some staleArrayAddr))
+                state
+
+        // The fixture is only meaningful if the stale array is really there to begin with.
+        readArrayField state helperAddr "rgiLastFrameFromForeignExceptionStackTrace"
+        |> Option.isSome
+        |> shouldEqual true
+
+        // A current-thread capture has no foreign frames at all, so this is the all-false branch.
+        let state = invoke loggerFactory prepared false helperAddr None state
+
+        readArrayField state helperAddr "rgiLastFrameFromForeignExceptionStackTrace"
+        |> shouldEqual None

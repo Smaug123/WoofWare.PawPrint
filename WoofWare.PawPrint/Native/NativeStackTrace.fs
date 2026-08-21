@@ -323,5 +323,17 @@ module NativeStackTrace =
                 |> NativeHandlerResult.completed
                 |> Some
             else
-                NativeHandlerResult.completed state |> Some
+                // Explicitly null rather than merely left alone, which is what CoreCLR writes here
+                // (debugdebugger.cpp:416-418). It matters if a helper is ever reused: a previous
+                // capture's flags would otherwise survive into this one, as an array that is both
+                // stale and possibly the wrong length. No CoreLib caller reuses one — every one
+                // allocates a helper immediately before calling — so this is about the handler's
+                // answer being a function of its arguments rather than of what came before.
+                IlMachineState.setOwnInstanceField
+                    helperAddr
+                    "rgiLastFrameFromForeignExceptionStackTrace"
+                    (CliType.ObjectRef None)
+                    state
+                |> NativeHandlerResult.completed
+                |> Some
         | _ -> None
