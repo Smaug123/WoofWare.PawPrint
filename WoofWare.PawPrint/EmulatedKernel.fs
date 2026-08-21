@@ -1604,6 +1604,30 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> localRoutes |> List.exists (Ipv4Prefix.contains address)
         | SimulatedUnixFlavour.Darwin -> false
 
+    /// Whether `bind(2)` has something to say about the address itself, as
+    /// opposed to about the length, the family, or another socket. Callers rank
+    /// this against the other faults in `bindFaultOrder`, at
+    /// `BindFault.AddressNotLocal`.
+    ///
+    /// That is `EADDRNOTAVAIL` in every case PawPrint answers. A broadcast or
+    /// multicast address faults here too, and its caller refuses it outright
+    /// rather than reporting an errno — which is why this is not simply
+    /// `not isBindableAddress`. Such an address is not necessarily *unbindable*:
+    /// Linux binds `224.0.0.1` on a stream socket quite happily. It is one
+    /// PawPrint declines to answer for, and a host that listed it in
+    /// `LocalAddresses`, or covered it with a `LocalRoutes` prefix, would
+    /// otherwise silence the refusal and record a multicast binding that nothing
+    /// downstream can honour.
+    let bindAddressFaults
+        (platform : SimulatedUnixPlatform)
+        (localAddresses : uint32 list)
+        (localRoutes : Ipv4Prefix list)
+        (address : uint32)
+        : bool
+        =
+        isBroadcastOrMulticast address
+        || not (isBindableAddress platform localAddresses localRoutes address)
+
     /// Does a bind of `candidate` collide with the socket already bound at
     /// `existing`?
     ///
@@ -1651,6 +1675,26 @@ module SimulatedUnixPlatform =
         // `listen(2)` bound implicitly carries no flag at all, and a later
         // reuse-carrying bind to a specific address on its port still succeeds.
         | SimulatedUnixFlavour.Darwin -> existing.Endpoint.Address = candidate.Endpoint.Address || not candidateReuse
+
+    /// Whether `listen(2)` on a socket that is *already bound* asks the port
+    /// admission question again, so that a binding admitted earlier can still be
+    /// refused a listen.
+    ///
+    /// The flavours differ, and not merely in strictness. Linux's
+    /// `inet_csk_listen_start` calls `get_port` a second time, which is why two
+    /// sockets carrying SO_REUSEADDR may share an endpoint right up until one of
+    /// them listens; Darwin's `tcp_usr_listen` binds only when the socket has no
+    /// port yet, so an already-bound listen consults nothing. Both measured.
+    ///
+    /// This is not a strictness knob that could be left on for safety. Darwin's
+    /// bind rule is asymmetric in SO_REUSEADDR -- it keys on the *candidate's*
+    /// flag alone -- so re-asking it at listen time asks with the roles swapped,
+    /// and a pair admitted at bind time answers the other way. Re-checking there
+    /// would invent an EADDRINUSE, not merely tighten one.
+    let listenRescreensBinding (platform : SimulatedUnixPlatform) : bool =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> true
+        | SimulatedUnixFlavour.Darwin -> false
 
     let sockaddrFamilyField (platform : SimulatedUnixPlatform) : SockaddrFamilyField =
         match flavour platform with

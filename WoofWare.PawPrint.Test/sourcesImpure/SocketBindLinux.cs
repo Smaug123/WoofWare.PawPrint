@@ -396,6 +396,36 @@ class SocketBindLinux
             Close(s);
         }
 
+        // 18. Linux's `listen(2)` re-runs the port admission rule even for a
+        //     socket that is already bound, so a wildcard and a specific address
+        //     that coexist while neither listens stop coexisting the moment one
+        //     of them does. Section 11 shows the same for an exact duplicate;
+        //     this is the wildcard clause of the rule, and it is the row Darwin
+        //     inverts -- there the already-bound listen asks nothing at all. See
+        //     `SocketBindDarwin.cs`.
+        {
+            IntPtr wildcard = Make();
+            if (wildcard == (IntPtr) (-1)) return 102;
+            if (!Address(blob, 0u, 0)) return 103;
+            if (Bind(wildcard, PT_TCP, blob, V4Size) != PAL_SUCCESS) return 104;
+
+            int len = V4Size;
+            if (GetSockName(wildcard, readBack, &len) != PAL_SUCCESS) return 105;
+            ushort port = 0;
+            if (GetPort(readBack, V4Size, &port) != PAL_SUCCESS) return 106;
+
+            // Both carry SO_REUSEADDR, which is what Linux needs on both sides.
+            IntPtr specific = Make();
+            if (specific == (IntPtr) (-1)) return 107;
+            if (!Address(blob, Loopback, port)) return 108;
+            if (Bind(specific, PT_TCP, blob, V4Size) != PAL_SUCCESS) return 109;
+
+            if (Listen(wildcard, 8) != PAL_SUCCESS) return 110;
+            if (Listen(specific, 8) != PAL_EADDRINUSE) return 111;
+            Close(wildcard);
+            Close(specific);
+        }
+
         return 0;
     }
 }

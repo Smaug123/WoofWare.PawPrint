@@ -363,6 +363,42 @@ class SocketBindDarwin
             Close(s);
         }
 
+        // 18. Darwin's `listen(2)` on an *already-bound* socket does not re-run
+        //     the bind admission rule. That matters because the rule is
+        //     asymmetric: the wildcard below was admitted alongside the specific
+        //     address because the *candidate* carried SO_REUSEADDR, and asking
+        //     the same question with the roles swapped -- which is what a listen
+        //     re-check would do -- answers the other way. Measured: Darwin
+        //     returns success here, because `tcp_usr_listen` binds only when the
+        //     socket has no port yet. Linux does re-check, and says EADDRINUSE
+        //     for the mirror of this; see `SocketBindLinux.cs`.
+        {
+            // PT_UNSPECIFIED, so no SO_REUSEADDR: this is the socket whose flag
+            // a re-check would consult as the candidate's.
+            IntPtr wildcard = Make();
+            if (wildcard == (IntPtr) (-1)) return 102;
+            if (!Address(blob, 0u, 0)) return 103;
+            if (Bind(wildcard, PT_UNSPECIFIED, blob, V4Size) != PAL_SUCCESS) return 104;
+
+            int len = V4Size;
+            if (GetSockName(wildcard, readBack, &len) != PAL_SUCCESS) return 105;
+            ushort port = 0;
+            if (GetPort(readBack, V4Size, &port) != PAL_SUCCESS) return 106;
+
+            // Admitted: the addresses differ and the candidate carries the flag.
+            IntPtr specific = Make();
+            if (specific == (IntPtr) (-1)) return 107;
+            if (!Address(blob, Loopback, port)) return 108;
+            if (Bind(specific, PT_TCP, blob, V4Size) != PAL_SUCCESS) return 109;
+
+            // The roles are now reversed, and Darwin does not ask again.
+            if (Listen(wildcard, 8) != PAL_SUCCESS) return 110;
+            // Nor for the other one, which is already listening's neighbour.
+            if (Listen(specific, 8) != PAL_SUCCESS) return 111;
+            Close(wildcard);
+            Close(specific);
+        }
+
         return 0;
     }
 }

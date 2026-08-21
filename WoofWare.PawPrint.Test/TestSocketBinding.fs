@@ -197,6 +197,77 @@ module TestSocketBinding =
         bindable SimulatedUnixPlatform.linuxX64 0x7F090909u |> shouldEqual true
         bindable SimulatedUnixPlatform.macOsArm64 0x7F090909u |> shouldEqual false
 
+    /// A multicast or broadcast address is one PawPrint refuses rather than
+    /// answers, and the refusal is placed at the fault position where the
+    /// address itself is judged. The classifier that puts it there must not be
+    /// silenced by a host that lists such an address as one this machine holds,
+    /// or covers it with a local route — otherwise the bind is *recorded*, and a
+    /// guest holds a multicast binding nothing downstream can honour.
+    [<Test>]
+    let ``a multicast address faults however the host configures the machine`` () : unit =
+        let multicast = 0xE0000001u // 224.0.0.1
+        let broadcast = System.UInt32.MaxValue // 255.255.255.255
+
+        let hostile =
+            [
+                "listed among this machine's addresses", [ multicast ; broadcast ], []
+                "covered by a local route", [], [ Ipv4Prefix.create 0xE0000000u 4 ; Ipv4Prefix.create 0u 0 ]
+                "both", [ multicast ; broadcast ], [ Ipv4Prefix.create 0u 0 ]
+            ]
+
+        for name, addresses, routes in hostile do
+            for platform in platforms do
+                for address in [ multicast ; broadcast ] do
+                    // The classifier this one wraps is *not* asserted false here:
+                    // it answers a different question, and on Linux a local route
+                    // covering the address makes it genuinely bindable.
+                    SimulatedUnixPlatform.bindAddressFaults platform addresses routes address
+                    |> fun actual ->
+                        if not actual then
+                            failwith
+                                $"%s{name}: %s{InternetEndpoint.toString (endpoint address 0us)} stopped faulting, so the refusal is silenced"
+
+        // ...while an address the host really does hold still binds, so the
+        // above is not passing by refusing everything.
+        for platform in platforms do
+            SimulatedUnixPlatform.bindAddressFaults platform [ loopback ] [] loopback
+            |> shouldEqual false
+
+            SimulatedUnixPlatform.bindAddressFaults platform [ loopback ] [] 0x08080808u
+            |> shouldEqual true
+
+    /// Whether `listen(2)` re-runs the port admission rule for a socket that is
+    /// already bound. Measured on both kernels; the Linux answer is what makes
+    /// two SO_REUSEADDR sockets stop coexisting when one listens, and the Darwin
+    /// answer is why re-checking there would *invent* an EADDRINUSE rather than
+    /// tighten one — its bind rule keys on the candidate's flag alone, so asking
+    /// it again reverses the roles it was answered under. The guests hold the
+    /// end-to-end rows: `SocketBindLinux.cs` and `SocketBindDarwin.cs`, both
+    /// section 18.
+    [<Test>]
+    let ``only Linux re-screens an already-bound listen`` () : unit =
+        SimulatedUnixPlatform.listenRescreensBinding SimulatedUnixPlatform.linuxX64
+        |> shouldEqual true
+
+        SimulatedUnixPlatform.listenRescreensBinding SimulatedUnixPlatform.macOsArm64
+        |> shouldEqual false
+
+        // The pair the flavours answer oppositely, as the relation the listen
+        // re-check would consult: a wildcard admitted alongside a specific
+        // address, asked again with the roles swapped. Darwin says "conflict",
+        // which is precisely why it must not be asked.
+        let wildcardBinding = binding wildcard 40000us
+        let specificBinding = binding loopback 40000us
+
+        SimulatedUnixPlatform.bindConflict
+            SimulatedUnixPlatform.macOsArm64
+            specificBinding
+            true
+            false
+            wildcardBinding
+            false
+        |> shouldEqual true
+
     [<Test>]
     let ``an ephemeral port is in range, free, and a function of the kernel alone`` () : unit =
         let property (NonNegativeInt seed : NonNegativeInt) : bool =

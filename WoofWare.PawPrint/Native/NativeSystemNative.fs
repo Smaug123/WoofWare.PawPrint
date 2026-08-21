@@ -4408,6 +4408,29 @@ module NativeSystemNative =
                 |> complete (UnixError.toPal UnixError.EFAULT)
             | _ ->
 
+            // The other half of the same question, and gated on the same
+            // decision so the two cannot drift: a pointer naming *no* storage is
+            // the EFAULT above, and one naming *too little* is this. `bind(2)`
+            // copies the caller's whole declared length, not merely the fields
+            // this handler goes on to parse out of it, so a blob shorter than
+            // that length is one a real kernel reads past. Whether that faults
+            // depends on which pages happen to be mapped beyond the object,
+            // which PawPrint does not model: measured, a 128-byte declared
+            // length over a 64-byte stack buffer succeeds on Linux, because the
+            // stack below it is mapped. Refusing is the honest answer to a
+            // question whose real one is not a property of the program.
+            //
+            // Gated on `copiesFromPointer` rather than on the length being a
+            // *legal* sockaddr length, because the copy comes first: a declared
+            // length of 8 is far too short to be a `sockaddr_in`, and is still
+            // EFAULT rather than EINVAL when the pointer is unmapped. It also
+            // has to run before the family and address reads below, which are
+            // bounded by the declared length and so would otherwise read off the
+            // end of the managed object.
+            match resolvedBlob with
+            | Some blob when copiesFromPointer ->
+                requireBufferRoom ctx operation BufferTransfer.OutOf blob declaredLength state
+            | _ -> ()
 
             // Every fault this bind could report, computed together; which one is
             // *reported* is the platform's own order (`bindFaultOrder`), because
@@ -4476,20 +4499,6 @@ module NativeSystemNative =
 
             let lengthFault = lengthVerdict <> BindLengthVerdict.Accepted
 
-            // `bind(2)` copies the caller's whole declared length, not merely the
-            // fields this handler parses out of it — so an allocation shorter
-            // than the declared length is one a real kernel reads past. Whether
-            // that faults depends on which pages happen to be mapped beyond the
-            // object, which PawPrint does not model: measured, a 128-byte
-            // declared length over a 64-byte stack buffer succeeds on Linux
-            // because the stack below it is mapped. Refusing is the honest answer
-            // to a question whose real one is not a property of the program.
-            match resolvedBlob with
-            | Some blob when lengthVerdict = BindLengthVerdict.Accepted ->
-                requireBufferRoom ctx operation BufferTransfer.OutOf blob declaredLength state
-            | _ -> ()
-
-
             let candidate =
                 endpoint
                 |> Option.map (fun endpoint ->
@@ -4502,13 +4511,11 @@ module NativeSystemNative =
                 match endpoint with
                 | None -> false
                 | Some endpoint ->
-                    not (
-                        SimulatedUnixPlatform.isBindableAddress
-                            platform
-                            state.Kernel.LocalAddresses
-                            state.Kernel.LocalRoutes
-                            endpoint.Address
-                    )
+                    SimulatedUnixPlatform.bindAddressFaults
+                        platform
+                        state.Kernel.LocalAddresses
+                        state.Kernel.LocalRoutes
+                        endpoint.Address
 
             let privilegedPortFault =
                 match endpoint with
@@ -4570,7 +4577,10 @@ module NativeSystemNative =
             // and refused *here* rather than above: a fault this platform ranks
             // ahead of the address is one PawPrint does know the answer to, and
             // reporting it is better than refusing. Only when the address itself
-            // is what the platform would rule on does the gap bite.
+            // is what the platform would rule on does the gap bite — which is
+            // why `bindAddressFaults`, and not `isBindableAddress`, is what puts
+            // such an address in the fault set: it has to arrive here even when
+            // the configured local addresses would have made it bindable.
             match SimulatedUnixPlatform.firstBindFault platform faults, endpoint with
             | Some BindFault.AddressNotLocal, Some endpoint when
                 SimulatedUnixPlatform.isBroadcastOrMulticast endpoint.Address
@@ -4689,12 +4699,11 @@ module NativeSystemNative =
                     $"%s{operation}: fd %d{fd} is a %O{socket.Kind} socket. Whether `listen(2)` accepts one is unmeasured — SOCK_SEQPACKET connections on both, SOCK_RAW plausibly EOPNOTSUPP — so measure it rather than guessing."
             | SocketKind.Stream ->
 
-            // A socket that is already bound may still be refused a listen: on
-            // Linux two sockets carrying SO_REUSEADDR may share an endpoint until
-            // one of them listens, and the second `listen(2)` is then
-            // EADDRINUSE. Measured, and it is the same relation `bind(2)` uses —
-            // "does another socket's binding conflict with mine" — so there is
-            // one rule rather than two.
+            // The relation `bind(2)` uses — "does another socket's binding
+            // conflict with mine" — asked again. Which callers below may ask it
+            // is the subtle part: the *implicit* bind always may, but an
+            // already-bound socket only on a flavour whose `listen(2)` re-runs
+            // the admission rule.
             let conflictsWith (binding : SocketBinding) : bool =
                 state.Kernel.Sockets
                 |> Map.exists (fun otherId (other : SocketDescription) ->
@@ -4715,8 +4724,17 @@ module NativeSystemNative =
                             socket.ReuseAddress
                 )
 
+            // On Linux two sockets carrying SO_REUSEADDR may share an endpoint
+            // until one of them listens, and the second `listen(2)` is then
+            // EADDRINUSE. Darwin asks nothing of a socket that already has a
+            // port; see `listenRescreensBinding` for why that is not a
+            // strictness difference PawPrint could round in the safe direction.
             match socket.Binding with
-            | Some binding when conflictsWith binding -> failFromSyscall UnixError.EADDRINUSE state
+            | Some binding when
+                SimulatedUnixPlatform.listenRescreensBinding state.Kernel.UnixPlatform
+                && conflictsWith binding
+                ->
+                failFromSyscall UnixError.EADDRINUSE state
             | _ ->
 
             let bound, kernel =
