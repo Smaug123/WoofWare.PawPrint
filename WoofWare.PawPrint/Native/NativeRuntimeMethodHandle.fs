@@ -455,17 +455,18 @@ module NativeRuntimeMethodHandle =
     /// The declaring type of a metadata method handle, narrowed to a closed instantiation.
     ///
     /// For consumers that can only work under a concrete instantiation. An open generic type
-    /// definition is refused rather than approximated: resolving a signature or binding an
-    /// invocation under `G&lt;&gt;` needs a formal type context — the definition's own type
-    /// variables — and `ConcreteTypeHandle` cannot express one. Consumers that need only the
-    /// *layout* of a definition should ask `VirtualSlotLayout.slotTableOfDefinition`, which
-    /// carries a formal context of its own.
+    /// definition is refused rather than approximated: binding an invocation under `G&lt;&gt;`
+    /// needs a formal type context — the definition's own type variables — and
+    /// `ConcreteTypeHandle` cannot express one. Consumers that need only the *layout* of a
+    /// definition should ask `VirtualSlotLayout.slotTableOfDefinition`, and those that need the
+    /// types a definition's signature *reflects as* should ask
+    /// `NativeRuntimeTypeHelpers.reflectedTypeTarget`; both carry a formal context of their own.
     let requireClosedDeclaringType (operation : string) (identity : MetadataMethodIdentity) : ConcreteTypeHandle =
         match identity.GetDeclaringType () with
         | RuntimeTypeHandleTarget.Closed handle -> handle
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringIdentity ->
             failwith
-                $"TODO: %s{operation} on a method declared by open generic type definition %O{declaringIdentity}; this needs the definition's own type variables as a substitution context, which ConcreteTypeHandle cannot express -- the same capability RuntimeTypeHandle.GetNumVirtuals lacks for an open definition"
+                $"TODO: %s{operation} on a method declared by open generic type definition %O{declaringIdentity}; this needs the definition's own type variables as a substitution context, which ConcreteTypeHandle cannot express -- reflection over such a definition names them with RuntimeTypeHandleTarget.GenericParameter instead, which no runtime type can stand in for here"
         | other ->
             // `MethodHandleRegistry` admits only `Closed` and `OpenGenericTypeDefinition` when
             // minting, so any other shape here means a handle was built outside that chokepoint.
