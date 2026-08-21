@@ -225,6 +225,7 @@
     <Compile Include="TestClockJitterFindsBugs.fs" />
     <Compile Include="TestScheduleFork.fs" />
     <Compile Include="TestBoxedAllocationParity.fs" />
+    <Compile Include="TestInstantiationArg0.fs" />
     <Compile Include="TestCalliSuspensionOutcome.fs" />
     <Compile Include="TestStepEffectStreaming.fs" />
     <Compile Include="TestFinallyChain.fs" />
