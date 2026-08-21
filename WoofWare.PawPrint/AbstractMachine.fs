@@ -277,6 +277,50 @@ module AbstractMachine =
             | ReturnFrameResult.DispatchException _ -> failwith "unexpected exception dispatch from delegate frame pop"
             | ReturnFrameResult.NormalReturn state ->
 
+            // Both failures below happen *after* the delegate's synthetic `Invoke` frame is popped,
+            // and with the caller's program counter put back to its call site: the `callvirt Invoke`
+            // advanced past it, and exception dispatch reads that offset both to decide which of the
+            // caller's `try` regions cover the throw and to name the frame.
+            //
+            // Popping first costs a frame in the guest's trace, which real .NET shows and PawPrint
+            // does not: both failures happen while CoreCLR is preparing to enter the target, so the
+            // target is on its stack. That is a deliberate trade rather than an oversight — leaving
+            // the stub frame up instead puts a `System.Action.Invoke` frame in the trace that real
+            // .NET never shows, whose absence `sourcesPure/DelegateCctorFailureTraceHasNoStubFrame.cs`
+            // pins. See docs/divergences.md, "A delegate invocation that fails before entering its
+            // target names no frame for it", for what closing it would take: neither failure has a
+            // frame available to name, so the fix is to push one that has executed nothing, and the
+            // existing machinery for that (`MethodState.PendingTypeInit`) carries a type to
+            // initialise and would run its `.cctor`.
+            let raiseFromPoppedStub
+                (exceptionType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+                (message : string option)
+                (state : IlMachineState)
+                : ExecutionResult
+                =
+                let state =
+                    match originalCallSitePC with
+                    | None -> state
+                    | Some pc ->
+                        let threadState = state.ThreadState.[thread]
+
+                        state
+                        |> IlMachineState.mapFrame
+                            thread
+                            threadState.ActiveMethodState
+                            (MethodState.setProgramCounter pc)
+
+                let state, _whatWeDid =
+                    IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                        loggerFactory
+                        baseClassTypes
+                        exceptionType
+                        message
+                        thread
+                        state
+
+                ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
+
             match methodPtr with
             | Error (exceptionType, why) ->
                 // The target could not be compiled: measured on real .NET as an
@@ -297,29 +341,34 @@ module AbstractMachine =
                 // whose own clauses are therefore out of scope", which is exactly this situation.
                 logger.LogWarning ("delegate invocation refused a dynamic target: {Reason}", why)
 
-                let state =
-                    match originalCallSitePC with
-                    | None -> state
-                    | Some pc ->
-                        let threadState = state.ThreadState.[thread]
-
-                        state
-                        |> IlMachineState.mapFrame
-                            thread
-                            threadState.ActiveMethodState
-                            (MethodState.setProgramCounter pc)
-
-                let state, _whatWeDid =
-                    IlMachineStateExecution.raiseRuntimeExceptionWithMessage
-                        loggerFactory
-                        baseClassTypes
-                        exceptionType
-                        (DynamicScopeOperand.clrMessageFor baseClassTypes exceptionType)
-                        thread
-                        state
-
-                ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
+                raiseFromPoppedStub exceptionType (DynamicScopeOperand.clrMessageFor baseClassTypes exceptionType) state
             | Ok methodPtr ->
+
+            // An abstract target has no body to run. Reachable only through
+            // `Delegate.CreateDelegate` closed over a *null* receiver: a non-null receiver's runtime
+            // type is necessarily a subclass of the abstract declaring type, so binding virtualises
+            // to a concrete override, and the open shape is refused by
+            // `Delegate_BindToMethodInfo` (see `sourcesPure/DelegateBindOpenVirtual.cs`).
+            //
+            // Real .NET builds that delegate and fails only here, with a catchable
+            // `BadImageFormatException` whose HResult is `COR_E_BADIMAGEFORMAT`. The message is
+            // measured rather than derived, because it is the CLR's HRESULT text and not the
+            // parameterless constructor's — which is a different string with no HRESULT in it. Its
+            // prose is localisable, so only the numeral is a machine-independent fact and only the
+            // numeral is asserted; this reproduces the invariant-culture wording.
+            //
+            // Both an abstract class's method and an interface's behave identically, which
+            // `sourcesPure/DelegateToAbstractMethodOverNull.cs` pins.
+            match methodPtr.Body with
+            | MethodBody.Abstract ->
+                raiseFromPoppedStub
+                    baseClassTypes.BadImageFormatException
+                    (Some "An attempt was made to load a program with an incorrect format.\n (0x8007000B)")
+                    state
+            | MethodBody.Il _
+            | MethodBody.InternalCall
+            | MethodBody.PInvoke
+            | MethodBody.RuntimeProvided _ ->
 
             // Rebuild the stack in normal instance-call shape: the bound argument below the real
             // ones, so it ends up at the bottom.
@@ -405,7 +454,7 @@ module AbstractMachine =
                 $"BUG: reached executeOneStep for {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name} which is runtime-provided but unclassified ({name}); add explicit handling"
         | MethodBody.Abstract ->
             failwith
-                $"BUG: reached executeOneStep for abstract method {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name}; virtual dispatch should have resolved to a concrete override"
+                $"BUG: reached executeOneStep for abstract method {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name}; virtual dispatch should have resolved to a concrete override, and a delegate over an abstract target raises BadImageFormatException before calling it"
         | MethodBody.InternalCall
         | MethodBody.PInvoke -> dispatchNative ()
         | MethodBody.Il instructions ->
