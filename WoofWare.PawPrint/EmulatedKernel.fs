@@ -2082,6 +2082,27 @@ module SimulatedUnixPlatform =
             Ok (SocketDomain.Unix, SocketKind.SeqPacket, SocketProtocol.Unspecified)
         | _, _, _ -> Error SocketCreationRefusal.Unmodelled
 
+/// One TCP connection, as the emulated kernel's connection table holds it.
+///
+/// Keyed by `ConnectionId` and holding only the two endpoints' addresses.
+/// Deliberately no references back to the sockets on its ends: a connection
+/// outlives the client that opened it (measured: close the client while its
+/// connection sits in an accept queue, and `accept(2)` still returns it), and
+/// the server end has no socket at all until that accept, so an end-to-socket
+/// field would spend most of its life dangling or `None`. Cleanup instead
+/// scans the socket table for references, which `EmulatedKernel.closeFd`
+/// does.
+type TcpConnection =
+    {
+        /// The connecting side's address — what `accept(2)` reports as the
+        /// peer.
+        ClientAddress : InternetEndpoint
+        /// The accepted side's address: the destination the client connected
+        /// to, with a wildcard destination already rewritten to loopback. The
+        /// accepted socket's own `getsockname(2)` reports this.
+        ServerAddress : InternetEndpoint
+    }
+
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
 /// syscall-emulation state: the per-thread last-error registers, the native
 /// heap pool backing `Marshal.AllocHGlobal`, the Unix file-descriptor table,
@@ -2133,16 +2154,23 @@ type EmulatedKernel =
         FileDescriptors : FileDescriptorRegistry
         /// Every socket the simulated process owns, by identity.
         ///
-        /// Separate from `FileDescriptors` because a socket's lifetime is not a
-        /// descriptor's: `SystemNative_Accept` completes a connection into a
-        /// listening socket's backlog, where it is a socket no descriptor names
-        /// until the guest accepts it. An `OpenFileTarget.Socket` therefore
-        /// holds only the `SocketId`, and this is what it names.
-        ///
-        /// Today every entry does have exactly one description naming it, and
-        /// `EmulatedKernel.checkInvariants` enforces that; the backlog is what
-        /// will relax it.
+        /// Separate from `FileDescriptors` because a socket's lifetime is not
+        /// a descriptor's: an `OpenFileTarget.Socket` holds only the
+        /// `SocketId`, and this is what it names. Every entry does have
+        /// exactly one description naming it, and
+        /// `EmulatedKernel.checkInvariants` enforces that — a connection
+        /// awaiting `accept(2)` is a `TcpConnection` in `Connections`, not a
+        /// socket, precisely so this rule can stay strict.
         Sockets : Map<SocketId, SocketDescription>
+        /// Every TCP connection the simulated kernel holds: established ends
+        /// referenced from a socket's `SocketPhase`, and completed
+        /// connections waiting in some listener's accept queue. An entry is
+        /// removed when nothing references it any more (`closeFd`).
+        Connections : Map<ConnectionId, TcpConnection>
+        /// The identity the next completed connect will allocate. Monotonic
+        /// and never reused, for the same replay-trace reason as
+        /// `NextSocketId`.
+        NextConnectionId : ConnectionId
         /// The port a `bind(2)` of port 0 will try first.
         ///
         /// A counter rather than a draw from the seeded PRNG. Which port an
@@ -2156,6 +2184,12 @@ type EmulatedKernel =
         /// Range `NextEphemeralPort` sweeps, inclusive at both ends. Host
         /// configuration; see `EmulatedKernel.defaultEphemeralPortRange`.
         EphemeralPortRange : uint16 * uint16
+        /// The value of the `somaxconn` sysctl (`net.core.somaxconn` on
+        /// Linux, `kern.ipc.somaxconn` on Darwin): the ceiling `listen(2)`
+        /// clamps its backlog to before the accept-queue capacity is derived.
+        /// Host configuration with a per-flavour default; see
+        /// `EmulatedKernel.withSoMaxConn` for the measured clamp rules.
+        SoMaxConn : int
         /// The IPv4 addresses this machine holds. Host configuration; see
         /// `EmulatedKernel.defaultLocalAddresses`.
         LocalAddresses : uint32 list
@@ -2545,16 +2579,36 @@ type EmulatedKernelDefect =
     | DanglingSocket of description : OpenFileDescriptionId * socket : SocketId
     /// The socket table holds a socket no live description names.
     ///
-    /// A leak today, and deliberately a defect rather than a tolerated state:
-    /// `SystemNative_Socket` is the only way to make a socket and it hands back
-    /// a descriptor at once, so an unreferenced socket means a close forgot to
-    /// clean up. `SystemNative_Accept` is what will make this legal, by putting
-    /// completed connections in a listening socket's backlog; the rule relaxes
-    /// then, to "named by a description or held in some backlog".
+    /// A leak, and deliberately a defect rather than a tolerated state: every
+    /// way to make a socket — `SystemNative_Socket`, or `SystemNative_Accept`
+    /// materialising a queued connection — hands back a descriptor at once,
+    /// so an unreferenced socket means a close forgot to clean up. A
+    /// connection awaiting accept is a `TcpConnection`, not a socket, which
+    /// is what lets this rule stay strict.
     | UnreferencedSocket of socket : SocketId
     /// A socket in the table has an identity at or above the next one to
     /// allocate, so a future `socket(2)` would mint a duplicate.
     | NextSocketIdNotFresh of nextSocketId : SocketId * existing : SocketId
+    /// A socket's phase references a connection the connection table does not
+    /// hold.
+    | DanglingConnection of socket : SocketId * connection : ConnectionId
+    /// A listener's accept queue references a connection the connection table
+    /// does not hold.
+    | DanglingQueuedConnection of listener : SocketId * connection : ConnectionId
+    /// The connection table holds a connection no socket phase and no accept
+    /// queue references — a leak `closeFd`'s sweep should have caught.
+    | OrphanConnection of connection : ConnectionId
+    /// One connection sits in two accept-queue slots (in one queue or two),
+    /// so accepting it twice would materialise two sockets onto one
+    /// connection.
+    | DuplicateQueuedConnection of connection : ConnectionId
+    /// A socket's phase is one its kind cannot enter: a datagram socket
+    /// listening or holding a stream connection, or a non-datagram socket
+    /// holding a datagram peer.
+    | SocketPhaseKindMismatch of socket : SocketId * kind : SocketKind * phase : SocketPhase
+    /// A connection in the table has an identity at or above the next one to
+    /// allocate, so a future connect would mint a duplicate.
+    | NextConnectionIdNotFresh of nextConnectionId : ConnectionId * existing : ConnectionId
 
 [<RequireQualifiedAccess>]
 module EmulatedKernel =
@@ -2740,6 +2794,15 @@ module EmulatedKernel =
     /// `defaultUnixPlatform`.
     let defaultEphemeralPortRange : uint16 * uint16 = 32768us, 60999us
 
+    /// The `somaxconn` sysctl's default on each flavour, measured on the
+    /// probe machines (2026-08-21): `net.core.somaxconn` reads 4096 on the
+    /// Linux 6.18 container (the kernel default since 5.4) and
+    /// `kern.ipc.somaxconn` reads 128 on macOS 26.
+    let defaultSoMaxConn (flavour : SimulatedUnixFlavour) : int =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> 4096
+        | SimulatedUnixFlavour.Darwin -> 128
+
     /// Ports a process may bind only as root.
     ///
     /// Measured as 1024 on both: binding 1023 is `EACCES` for an unprivileged
@@ -2795,9 +2858,14 @@ module EmulatedKernel =
             NativeMemoryPool = NativeMemoryPool.empty
             FileDescriptors = FileDescriptorRegistry.initial
             Sockets = Map.empty
+            Connections = Map.empty
+            NextConnectionId = ConnectionId 0L
             NextSocketId = SocketId 0L
             NextEphemeralPort = fst defaultEphemeralPortRange
             EphemeralPortRange = defaultEphemeralPortRange
+            // The Linux default, matching `defaultUnixPlatform`;
+            // `KernelConfig.applyTo` re-resolves it beside the platform.
+            SoMaxConn = defaultSoMaxConn SimulatedUnixFlavour.Linux
             LocalAddresses = defaultLocalAddresses
             LocalRoutes = defaultLocalRoutes
             LowLevelMonitors = Map.empty
@@ -3509,6 +3577,36 @@ module EmulatedKernel =
     /// one — which is what lets every reader of the table treat its names as
     /// ones a real process could hold. Failing here rather than at the first read
     /// means a host learns at configuration time, before any guest code runs.
+    /// Set the `somaxconn` sysctl. Takes the platform as a parameter rather
+    /// than reading `kernel.UnixPlatform`, so that this and the platform
+    /// setter cannot become order-dependent; `KernelConfig.applyTo` passes
+    /// the same platform to both.
+    ///
+    /// `None` takes the flavour's measured default. The clamp this feeds
+    /// (`connectSocket`'s capacity rule) was measured with the sysctl set to
+    /// 3 on Linux and at the default 128 on Darwin, so a configured value is
+    /// on measured ground, but it must be positive: no kernel was measured
+    /// with a non-positive somaxconn.
+    let withSoMaxConn
+        (platform : SimulatedUnixPlatform)
+        (value : int option)
+        (kernel : EmulatedKernel)
+        : EmulatedKernel
+        =
+        let resolved =
+            match value with
+            | None -> defaultSoMaxConn (SimulatedUnixPlatform.flavour platform)
+            | Some value ->
+                if value < 1 then
+                    failwith
+                        $"EmulatedKernel.SoMaxConn: %d{value} is not positive, and no kernel was measured with a non-positive somaxconn — the accept-queue capacity it would imply is a guess. Configure a positive value, or None for the flavour's default."
+
+                value
+
+        { kernel with
+            SoMaxConn = resolved
+        }
+
     /// Sets the ephemeral range, and rewinds the cursor into it: a cursor left
     /// outside the range would hand out its first port from wherever the previous
     /// range had reached.
@@ -3627,11 +3725,21 @@ module EmulatedKernel =
     /// faithful only while every registration on the port is one no modelled
     /// operation can make ready; and admitting a fresh registration past a
     /// parked waiter makes the same claim. A **listening stream socket** is
-    /// the one target that qualifies: its only read-readiness is a backlog
-    /// entry, which nothing can produce until `SystemNative_Connect` lands; a
-    /// listening socket is never write-ready; and no modelled operation can
-    /// put one into an error or hangup state (closing it sweeps the
+    /// the one target that qualifies: its only read-readiness is an entry in
+    /// its accept queue; it is never write-ready; and no modelled operation
+    /// can put one into an error or hangup state (closing it sweeps the
     /// registration away first, and a target close delivers no event).
+    ///
+    /// `SystemNative_Connect` *can* produce accept-queue entries, so the
+    /// empty-queue premise is maintained by two refusal sites rather than by
+    /// unreachability: `connectSocket` refuses to push onto a listener that
+    /// is registered with any event port, and the registration handler
+    /// refuses an Add/Modify of a listener whose queue is already nonempty.
+    /// Together they mean a *recorded* listening registration has had an
+    /// empty queue for its whole registered window, so no edge-triggered
+    /// event has ever been pending on it. Weakening either refusal without
+    /// building the delivery re-opens the silent-deadlock divergence this
+    /// classifier exists to prevent.
     /// Everything else answers `true`: a real kernel reports readiness on most
     /// of it immediately — an unconnected stream socket is `EPOLLOUT|EPOLLHUP`
     /// the moment it is added, a datagram socket is writable, a pipe end
@@ -3656,7 +3764,10 @@ module EmulatedKernel =
         match description.Target with
         | OpenFileTarget.Socket socketId ->
             let target = socket socketId kernel
-            not (target.Kind = SocketKind.Stream && target.IsListening)
+
+            match target.Phase with
+            | SocketPhase.Listening _ -> false
+            | _ -> true
         | OpenFileTarget.StandardStream _ -> true
         // Neither can be registered through `epoll_ctl` — a file target is
         // EPERM and a port target is refused — but "cannot prove" is the safe
@@ -3698,9 +3809,9 @@ module EmulatedKernel =
                         Domain = domain
                         Kind = kind
                         Protocol = protocol
-                        // `socket(2)` binds nothing and listens for nothing.
+                        // `socket(2)` binds nothing and connects nothing.
                         Binding = None
-                        IsListening = false
+                        Phase = SocketPhase.Idle
                         ReuseAddress = false
                     }
                     kernel.Sockets
@@ -3717,21 +3828,849 @@ module EmulatedKernel =
         match FileDescriptorRegistry.close fd kernel.FileDescriptors with
         | Error e -> Error e
         | Ok (registry, destroyed) ->
-            let sockets =
+            let sockets, connections =
                 match destroyed with
                 | Some description ->
                     match description.Target with
-                    | OpenFileTarget.Socket socketId -> Map.remove socketId kernel.Sockets
+                    | OpenFileTarget.Socket socketId ->
+                        let dying =
+                            match Map.tryFind socketId kernel.Sockets with
+                            | Some socket -> socket
+                            | None ->
+                                failwith
+                                    $"EmulatedKernel.closeFd: fd %d{fd}'s description names socket %O{socketId}, which the socket table does not hold. EmulatedKernelDefect.DanglingSocket exists to make this unreachable, so this is an interpreter bug."
+
+                        let sockets = Map.remove socketId kernel.Sockets
+
+                        // A connection lives while any socket phase or accept
+                        // queue references it. The dying socket may have been
+                        // the last such reference — directly, or by being the
+                        // listener whose queue held it (the queue dies with
+                        // the listener, as Linux's inet_csk_listen_stop
+                        // discards a closed listener's accept queue).
+                        let candidates =
+                            match dying.Phase with
+                            | SocketPhase.Established connection
+                            | SocketPhase.EstablishedPendingReport connection -> [ connection ]
+                            | SocketPhase.Listening listenState -> listenState.Queue
+                            | SocketPhase.Idle
+                            | SocketPhase.RefusedPendingDelivery
+                            | SocketPhase.Dead
+                            | SocketPhase.DatagramPeer _ -> []
+
+                        let stillReferenced (connection : ConnectionId) : bool =
+                            sockets
+                            |> Map.exists (fun _ survivor ->
+                                match survivor.Phase with
+                                | SocketPhase.Established c
+                                | SocketPhase.EstablishedPendingReport c -> c = connection
+                                | SocketPhase.Listening listenState -> List.contains connection listenState.Queue
+                                | SocketPhase.Idle
+                                | SocketPhase.RefusedPendingDelivery
+                                | SocketPhase.Dead
+                                | SocketPhase.DatagramPeer _ -> false
+                            )
+
+                        let connections =
+                            (kernel.Connections, candidates)
+                            ||> List.fold (fun connections connection ->
+                                if stillReferenced connection then
+                                    connections
+                                else
+                                    Map.remove connection connections
+                            )
+
+                        sockets, connections
                     | OpenFileTarget.StandardStream _
                     | OpenFileTarget.SocketEventPort _
-                    | OpenFileTarget.File _ -> kernel.Sockets
-                | None -> kernel.Sockets
+                    | OpenFileTarget.File _ -> kernel.Sockets, kernel.Connections
+                | None -> kernel.Sockets, kernel.Connections
 
             Ok
                 { kernel with
                     FileDescriptors = registry
                     Sockets = sockets
+                    Connections = connections
                 }
+
+    /// The connection `connectionId` names.
+    ///
+    /// Total, and loudly partial rather than an option: every `ConnectionId` a
+    /// caller can hold came out of a socket phase or an accept queue, and
+    /// `checkInvariants` rejects a kernel in which one of those dangles.
+    let connection (connectionId : ConnectionId) (kernel : EmulatedKernel) : TcpConnection =
+        match Map.tryFind connectionId kernel.Connections with
+        | Some connection -> connection
+        | None ->
+            failwith
+                $"EmulatedKernel.connection: %O{connectionId} names no connection in this kernel's connection table. EmulatedKernelDefect.DanglingConnection and DanglingQueuedConnection exist to make this unreachable, so this is an interpreter bug."
+
+    /// Whether any socket event port holds a registration targeting the open
+    /// file description that names `socketId`.
+    ///
+    /// One half of the empty-queue premise `socketEventRegistrationCouldFire`
+    /// documents: `connectSocket` consults this before pushing onto a
+    /// listener's accept queue, because a real kernel would queue an
+    /// edge-triggered readiness event on such a push and PawPrint has nowhere
+    /// to record one.
+    let socketIsRegisteredWithAnyEventPort (socketId : SocketId) (kernel : EmulatedKernel) : bool =
+        let descriptions = FileDescriptorRegistry.descriptions kernel.FileDescriptors
+
+        let namingDescriptions =
+            descriptions
+            |> Map.toSeq
+            |> Seq.choose (fun (descriptionId, description) ->
+                match description.Target with
+                | OpenFileTarget.Socket target when target = socketId -> Some descriptionId
+                | _ -> None
+            )
+            |> Set.ofSeq
+
+        descriptions
+        |> Map.exists (fun _ description ->
+            match description.Target with
+            | OpenFileTarget.SocketEventPort registrations ->
+                registrations
+                |> Map.exists (fun (_, targetId) _ -> Set.contains targetId namingDescriptions)
+            | _ -> false
+        )
+
+    /// One `connect(2)` call's answer: PAL SUCCESS, or a failure carrying the
+    /// error the syscall left in errno. EINPROGRESS is a `Failed` like any
+    /// other — the wrapper maps it to a PAL return and errno just the same —
+    /// and the outcome it defers is already latched on the socket's phase.
+    [<RequireQualifiedAccess>]
+    type ConnectOutcome =
+        | Completed
+        | Failed of UnixError
+
+    /// `connect(2)` past the wrapper's screens and the copy-in faults, which
+    /// stay with the caller (they are about guest memory, which this module
+    /// cannot see): the per-flavour ladder over the socket's phase, the
+    /// declared length, the sockaddr family, and the destination.
+    ///
+    /// `family` (the *platform* family number) and `destination` are `None`
+    /// when the declared length does not reach the field — this function only
+    /// ever answers for an unreadable field, never reads one.
+    ///
+    /// Every answered row is measured (`connect_probe.c` and successors,
+    /// 2026-08-21; docs/plans/2026-08-21-socket-connect.md holds the table);
+    /// the failwiths name the unmeasured or unmodellable inputs.
+    let connectSocket
+        (socketId : SocketId)
+        (nonBlocking : bool)
+        (declaredLength : int)
+        (family : int option)
+        (destination : InternetEndpoint option)
+        (kernel : EmulatedKernel)
+        : ConnectOutcome * EmulatedKernel
+        =
+        let sock = socket socketId kernel
+        let platform = kernel.UnixPlatform
+        let flavour = SimulatedUnixPlatform.flavour platform
+        let exactSize = (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
+
+        // connect(2) copies the sockaddr in through the same helpers bind(2)
+        // uses (Linux's move_addr_to_kernel, Darwin's getsockaddr), and the
+        // measured lengths agree with bind's rule exactly: Linux takes 16
+        // through 128 and answers EINVAL outside, Darwin takes exactly 16,
+        // EINVAL otherwise and ENAMETOOLONG past 255. So the verdict function
+        // is shared.
+        let lengthVerdict =
+            SimulatedUnixPlatform.bindAddressLength platform exactSize declaredLength
+
+        let fail (error : UnixError) : ConnectOutcome * EmulatedKernel = ConnectOutcome.Failed error, kernel
+
+        let withPhase (phase : SocketPhase) (kernel : EmulatedKernel) : EmulatedKernel =
+            { kernel with
+                Sockets =
+                    Map.add
+                        socketId
+                        { sock with
+                            Phase = phase
+                        }
+                        kernel.Sockets
+            }
+
+        let destinationIsLocal (address : uint32) : bool =
+            List.contains address kernel.LocalAddresses
+            || kernel.LocalRoutes |> List.exists (Ipv4Prefix.contains address)
+
+        // What a refusal delivery leaves in the socket's binding. Measured
+        // for all three provenances (implicit, bind(2) to 127.0.0.1, bind(2)
+        // to 0.0.0.0): Darwin keeps the resolved source; Linux's reset
+        // reverts the address to whatever bind(2) locked — the wildcard when
+        // the address only ever came from source resolution — while keeping
+        // the port.
+        let bindingAfterRefusalDelivery (flavour : SimulatedUnixFlavour) (binding : SocketBinding) : SocketBinding =
+            match flavour with
+            | SimulatedUnixFlavour.Darwin -> binding
+            | SimulatedUnixFlavour.Linux ->
+                { binding with
+                    Endpoint =
+                        { binding.Endpoint with
+                            Address = binding.LockedAddress |> Option.defaultValue InternetEndpoint.WildcardAddress
+                        }
+                }
+
+        // connect(2)'s implicit bind, when the socket has no local address
+        // yet: loopback source, ephemeral port, the same conflict rule as
+        // bind(2)'s own port-0 path. The source address for a non-loopback
+        // destination is the route's preferred source, which is unmeasured,
+        // so that input is refused.
+        let ensureBound (dest : InternetEndpoint) (kernel : EmulatedKernel) : SocketBinding * EmulatedKernel =
+            match sock.Binding with
+            | Some binding when binding.Endpoint.Address <> InternetEndpoint.WildcardAddress -> binding, kernel
+            | Some binding ->
+                // A client bound to the wildcard gets a concrete source
+                // address at connect — measured on both kernels, TCP and UDP
+                // alike: the address becomes 127.0.0.1 for a loopback
+                // destination and the port is kept, and getsockname reports
+                // the rewrite afterwards, so the *binding* itself changes
+                // rather than merely the connection's record of it. Which
+                // source a kernel picks for any other destination is
+                // unmeasured.
+                if dest.Address <> InternetEndpoint.LoopbackAddress then
+                    failwith
+                        $"SystemNative_Connect: a socket bound to the wildcard is connecting to %s{InternetEndpoint.toString dest}, and which source address a kernel resolves the wildcard to for a destination other than 127.0.0.1 is unmeasured. Bind to a concrete address first, or connect to 127.0.0.1."
+
+                { binding with
+                    Endpoint =
+                        { binding.Endpoint with
+                            Address = InternetEndpoint.LoopbackAddress
+                        }
+                },
+                kernel
+            | None ->
+
+            if dest.Address <> InternetEndpoint.LoopbackAddress then
+                failwith
+                    $"SystemNative_Connect: an unbound socket is connecting to %s{InternetEndpoint.toString dest}, and which source address a kernel picks for a destination other than 127.0.0.1 is unmeasured. Bind the socket first, or connect to 127.0.0.1."
+
+            let candidate (port : uint16) : SocketBinding =
+                {
+                    Endpoint = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+                    // No bind(2) ran: a Linux refusal delivery reverts the
+                    // address all the way to the wildcard.
+                    LockedAddress = None
+                }
+
+            let acceptable (port : uint16) : bool =
+                not (
+                    kernel.Sockets
+                    |> Map.exists (fun otherId other ->
+                        if otherId = socketId then
+                            false
+                        else
+
+                        match other.Binding with
+                        | None -> false
+                        | Some existing ->
+                            other.Kind = sock.Kind
+                            && SimulatedUnixPlatform.bindConflict
+                                platform
+                                existing
+                                other.ReuseAddress
+                                (SocketPhase.isListening other.Phase)
+                                (candidate port)
+                                sock.ReuseAddress
+                    )
+                )
+
+            match allocateEphemeralPort acceptable kernel with
+            | Some (port, kernel) -> candidate port, kernel
+            | None ->
+                let low, high = kernel.EphemeralPortRange
+
+                failwith
+                    $"SystemNative_Connect: every port in the ephemeral range %d{low}-%d{high} is taken, so this implicit bind has no answer. Widen KernelConfig.EphemeralPortRange, or measure what a real kernel says here."
+
+        // The established/refused attempt, shared by both flavours once the
+        // per-flavour screens have let an idle stream socket through.
+        let attemptStream (dest : InternetEndpoint) : ConnectOutcome * EmulatedKernel =
+            // A wildcard destination means loopback: measured on both,
+            // connect to 0.0.0.0:port reaches a loopback listener.
+            let dest =
+                if dest.Address = InternetEndpoint.WildcardAddress then
+                    { dest with
+                        Address = InternetEndpoint.LoopbackAddress
+                    }
+                else
+                    dest
+
+            if not (destinationIsLocal dest.Address) then
+                failwith
+                    $"SystemNative_Connect: destination %s{InternetEndpoint.toString dest} is not a local address of this simulated machine, and PawPrint models no network to carry a SYN anywhere else. Add the address to the kernel's LocalAddresses/LocalRoutes if it should be local, or connect to loopback."
+
+            let listeners =
+                kernel.Sockets
+                |> Map.toList
+                |> List.choose (fun (otherId, other) ->
+                    match other.Phase with
+                    | SocketPhase.Listening listenState ->
+                        match other.Binding with
+                        | Some binding when
+                            other.Kind = SocketKind.Stream
+                            && binding.Endpoint.Port = dest.Port
+                            && (binding.Endpoint.Address = dest.Address
+                                || InternetEndpoint.isWildcard binding.Endpoint)
+                            ->
+                            Some (otherId, other, listenState, binding)
+                        | _ -> None
+                    | _ -> None
+                )
+
+            // A specific-address listener beats the wildcard — both kernels'
+            // documented most-specific-match rule. The pair can only coexist
+            // under SO_REUSEADDR, which no current guest exercises, so the
+            // preference has no observer today and is recorded for when it
+            // does.
+            let listener =
+                match
+                    listeners
+                    |> List.tryFind (fun (_, _, _, binding) -> not (InternetEndpoint.isWildcard binding.Endpoint))
+                with
+                | Some found -> Some found
+                | None -> List.tryHead listeners
+
+            match listener with
+            | Some (listenerId, listenerSocket, listenState, _) ->
+                // Int64, so that the Linux `+ 1` cannot wrap when the
+                // configured somaxconn is itself Int32.MaxValue.
+                let capacity : int64 =
+                    match flavour with
+                    | SimulatedUnixFlavour.Linux ->
+                        // Measured, with the sysctl set to 3 to bring the
+                        // boundary in reach: listen(0) admits 1, listen(1)
+                        // admits 2, listen(5) admits 6, and listen(-1) and
+                        // listen(INT_MAX) both admit somaxconn + 1 — the
+                        // kernel compares the backlog *unsigned* against
+                        // somaxconn and clamps, and the queue then admits
+                        // one more than the clamped value. The clamp also
+                        // keeps the `+ 1` from overflowing on the
+                        // Int32.MaxValue a parameterless Socket.Listen()
+                        // passes.
+                        let clamped =
+                            if listenState.Backlog < 0 || listenState.Backlog > kernel.SoMaxConn then
+                                kernel.SoMaxConn
+                            else
+                                listenState.Backlog
+
+                        int64 clamped + 1L
+                    | SimulatedUnixFlavour.Darwin ->
+                        // Measured at the default sysctl of 128: listen(1)
+                        // admits 1, listen(5) admits 5, and listen(0),
+                        // listen(-1) and listen(INT_MAX) all admit exactly
+                        // somaxconn — a non-positive or over-large backlog
+                        // clamps to somaxconn, and the queue admits exactly
+                        // the clamped value.
+                        if listenState.Backlog <= 0 || listenState.Backlog > kernel.SoMaxConn then
+                            int64 kernel.SoMaxConn
+                        else
+                            int64 listenState.Backlog
+
+                if int64 (List.length listenState.Queue) >= capacity then
+                    failwith
+                        $"SystemNative_Connect: the accept queue of the listener at %s{InternetEndpoint.toString dest} already holds %d{List.length listenState.Queue} connections, its measured capacity. A real kernel leaves this SYN unanswered and the client retries on a timer — timing PawPrint cannot honour deterministically — so this connect has no faithful answer. Accept from the listener before connecting again, or listen with a larger backlog."
+
+                if socketIsRegisteredWithAnyEventPort listenerId kernel then
+                    failwith
+                        $"SystemNative_Connect: the listener at %s{InternetEndpoint.toString dest} is registered with a socket event port, so a real kernel would queue an edge-triggered readiness event for this connection — an event PawPrint has nowhere to record and no delivery to wake (socketEventRegistrationCouldFire documents the premise). Implement the readiness delivery before letting a connect target a registered listener."
+
+                let clientBinding, kernel = ensureBound dest kernel
+
+                let connectionId = kernel.NextConnectionId
+                let (ConnectionId rawConnectionId) = connectionId
+
+                let tcpConnection =
+                    {
+                        ClientAddress = clientBinding.Endpoint
+                        ServerAddress = dest
+                    }
+
+                let clientPhase =
+                    if not nonBlocking then
+                        SocketPhase.Established connectionId
+                    else
+                        match flavour with
+                        | SimulatedUnixFlavour.Linux ->
+                            // The next connect reports the completion with
+                            // one SUCCESS (measured), which is what this
+                            // phase defers.
+                            SocketPhase.EstablishedPendingReport connectionId
+                        | SimulatedUnixFlavour.Darwin ->
+                            // Darwin's retry answers EISCONN directly
+                            // (measured), so nothing is deferred.
+                            SocketPhase.Established connectionId
+
+                let kernel =
+                    { kernel with
+                        Sockets =
+                            kernel.Sockets
+                            |> Map.add
+                                socketId
+                                { sock with
+                                    Binding = Some clientBinding
+                                    Phase = clientPhase
+                                }
+                            |> Map.add
+                                listenerId
+                                { listenerSocket with
+                                    Phase =
+                                        SocketPhase.Listening
+                                            { listenState with
+                                                // Oldest first: accept(2)
+                                                // dequeues the head.
+                                                Queue = listenState.Queue @ [ connectionId ]
+                                            }
+                                }
+                        Connections = Map.add connectionId tcpConnection kernel.Connections
+                        NextConnectionId = ConnectionId (rawConnectionId + 1L)
+                    }
+
+                if nonBlocking then
+                    // The syscall itself still answers EINPROGRESS —
+                    // measured on both kernels, even on loopback — and the
+                    // completion is what the phase above latches.
+                    ConnectOutcome.Failed UnixError.EINPROGRESS, kernel
+                else
+                    ConnectOutcome.Completed, kernel
+            | None ->
+                // The client's own endpoint with no listener behind it is
+                // TCP simultaneous open: a real kernel can complete it,
+                // connecting the socket to itself. Unmodelled.
+                match sock.Binding with
+                | Some binding when
+                    binding.Endpoint.Port = dest.Port
+                    && InternetEndpoint.addressesOverlap binding.Endpoint dest
+                    ->
+                    failwith
+                        $"SystemNative_Connect: destination %s{InternetEndpoint.toString dest} is this socket's own bound address and nothing is listening there. A real kernel can complete this as a TCP simultaneous open — connecting the socket to itself — which PawPrint does not model."
+                | _ ->
+
+                match flavour with
+                | SimulatedUnixFlavour.Darwin when
+                    kernel.Sockets
+                    |> Map.exists (fun otherId other ->
+                        otherId <> socketId
+                        && other.Kind = SocketKind.Stream
+                        // Only a bound-but-unconnected socket makes Darwin
+                        // drop the SYN. A port held by established ends
+                        // (their pcbs are keyed by the full peer tuple) or
+                        // by a refused socket answers RST — measured, both
+                        // refuse like a closed port.
+                        && (
+                            match other.Phase with
+                            | SocketPhase.Idle -> true
+                            | _ -> false
+                        )
+                        && (
+                            match other.Binding with
+                            | Some binding ->
+                                binding.Endpoint.Port = dest.Port
+                                && InternetEndpoint.addressesOverlap binding.Endpoint dest
+                            | None -> false
+                        )
+                    )
+                    ->
+                    failwith
+                        $"SystemNative_Connect: destination %s{InternetEndpoint.toString dest} is bound but nothing is listening there, and Darwin *drops* such a SYN rather than answering RST: the connect pends on the client's retransmission schedule (a blocking one was measured to stall into ETIMEDOUT), which PawPrint cannot honour deterministically. Listen on the destination socket, or connect to a fully closed port."
+                | _ ->
+
+                // The implicit bind happens before the SYN, so a refused
+                // socket has a concrete local endpoint too — measured,
+                // getsockname reports 127.0.0.1 and a nonzero port while the
+                // refusal is pending, on both kernels.
+                let binding, kernel = ensureBound dest kernel
+
+                if not nonBlocking then
+                    // The refusal is delivered inline, and the socket's fate
+                    // diverges by flavour exactly as for the deferred
+                    // delivery below: measured, a Linux retry is a fresh
+                    // attempt and a Darwin one answers EINVAL forever.
+                    let phase =
+                        match flavour with
+                        | SimulatedUnixFlavour.Linux -> SocketPhase.Idle
+                        | SimulatedUnixFlavour.Darwin -> SocketPhase.Dead
+
+                    let kernel =
+                        { kernel with
+                            Sockets =
+                                Map.add
+                                    socketId
+                                    { sock with
+                                        Binding = Some (bindingAfterRefusalDelivery flavour binding)
+                                        Phase = phase
+                                    }
+                                    kernel.Sockets
+                        }
+
+                    ConnectOutcome.Failed UnixError.ECONNREFUSED, kernel
+                else
+                    // EINPROGRESS now; the first later connect delivers
+                    // ECONNREFUSED. Measured on both — with no SO_ERROR read
+                    // in between, which would consume the pending error and
+                    // change these answers; GetSocketErrorOption is not
+                    // modelled yet, so only this path is reachable.
+                    let kernel =
+                        { kernel with
+                            Sockets =
+                                Map.add
+                                    socketId
+                                    { sock with
+                                        Binding = Some binding
+                                        Phase = SocketPhase.RefusedPendingDelivery
+                                    }
+                                    kernel.Sockets
+                        }
+
+                    ConnectOutcome.Failed UnixError.EINPROGRESS, kernel
+
+        match sock.Kind with
+        | SocketKind.Raw
+        | SocketKind.SeqPacket ->
+            failwith
+                $"SystemNative_Connect: socket %O{socketId} is a %O{sock.Kind} socket, and what connect(2) does for one is unmeasured, so measure it rather than guessing."
+        | SocketKind.Stream ->
+            // The copy layer answers before any socket state on both
+            // flavours: Linux's move_addr_to_kernel rejects an oversized
+            // sockaddr and Darwin's getsockaddr rejects both bounds, each in
+            // the syscall layer ahead of the protocol's own checks.
+            match lengthVerdict with
+            | BindLengthVerdict.RejectedBeforeCopy error -> fail error
+            | BindLengthVerdict.Accepted
+            | BindLengthVerdict.Invalid ->
+
+            match family with
+            | None ->
+                // Too short to carry the family: EINVAL on both — Linux in
+                // inet_stream_connect's first screen, Darwin in getsockaddr.
+                fail UnixError.EINVAL
+            | Some family ->
+
+            match flavour with
+            | SimulatedUnixFlavour.Linux ->
+                // inet_stream_connect's order: the AF_UNSPEC branch, then
+                // the state machine, then tcp_v4_connect's length and family
+                // checks. Measured where a guest reaches it; the state arms'
+                // precedence over the argument checks is the pinned source's.
+                if family = 0 then
+                    match sock.Phase with
+                    | SocketPhase.Idle ->
+                        // Measured: an accepted no-op, and the socket stays
+                        // usable.
+                        ConnectOutcome.Completed, kernel
+                    | phase ->
+                        failwith
+                            $"SystemNative_Connect: AF_UNSPEC on a stream socket in %A{phase} under Linux runs tcp_disconnect, whose consequences for this phase (a connected socket's peer, a listener's queue) are unmeasured and unmodelled."
+                else
+
+                match sock.Phase with
+                | SocketPhase.EstablishedPendingReport connectionId ->
+                    // The one completion-reporting SUCCESS (measured). The
+                    // destination is ignored, as the state transition is.
+                    ConnectOutcome.Completed, withPhase (SocketPhase.Established connectionId) kernel
+                | SocketPhase.RefusedPendingDelivery ->
+                    // Deliver the latched refusal once, then reset: the next
+                    // connect is a fresh attempt, and the source address the
+                    // pending attempt resolved reverts to whatever bind(2)
+                    // locked (both measured).
+                    let kernel =
+                        { kernel with
+                            Sockets =
+                                Map.add
+                                    socketId
+                                    { sock with
+                                        Binding =
+                                            sock.Binding
+                                            |> Option.map (bindingAfterRefusalDelivery SimulatedUnixFlavour.Linux)
+                                        Phase = SocketPhase.Idle
+                                    }
+                                    kernel.Sockets
+                        }
+
+                    ConnectOutcome.Failed UnixError.ECONNREFUSED, kernel
+                | SocketPhase.Dead ->
+                    failwith
+                        "SystemNative_Connect: a stream socket is in SocketPhase.Dead under the Linux flavour, which only Darwin's refusal delivery produces. This is an interpreter bug."
+                | SocketPhase.Established _ -> fail UnixError.EISCONN
+                | SocketPhase.Listening _ ->
+                    // Measured: Linux answers a connect on the listening
+                    // socket itself with EISCONN, where Darwin answers
+                    // EOPNOTSUPP.
+                    fail UnixError.EISCONN
+                | SocketPhase.DatagramPeer _ ->
+                    failwith
+                        "SystemNative_Connect: a stream socket holds SocketPhase.DatagramPeer. EmulatedKernelDefect.SocketPhaseKindMismatch exists to make this unreachable, so this is an interpreter bug."
+                | SocketPhase.Idle ->
+
+                match lengthVerdict with
+                | BindLengthVerdict.Invalid -> fail UnixError.EINVAL
+                | BindLengthVerdict.RejectedBeforeCopy _
+                | BindLengthVerdict.Accepted ->
+
+                if family <> SimulatedUnixPlatform.internetAddressFamily then
+                    fail UnixError.EAFNOSUPPORT
+                else
+
+                match destination with
+                | Some dest -> attemptStream dest
+                | None ->
+                    failwith
+                        "SystemNative_Connect: the declared length passed the AF_INET verdict but the destination was not supplied; the caller reads it whenever the length reaches it. This is an interpreter bug."
+            | SimulatedUnixFlavour.Darwin ->
+                // The state arms answer first — measured three ways: the
+                // dead latch beats a good destination, EISCONN beats
+                // AF_UNSPEC, and the refusal delivery beats a changed
+                // destination.
+                match sock.Phase with
+                | SocketPhase.EstablishedPendingReport _ ->
+                    failwith
+                        "SystemNative_Connect: a stream socket is in SocketPhase.EstablishedPendingReport under the Darwin flavour, which never constructs it (its retry answers EISCONN directly). This is an interpreter bug."
+                | SocketPhase.RefusedPendingDelivery ->
+                    // Deliver once; the socket is then dead (measured).
+                    ConnectOutcome.Failed UnixError.ECONNREFUSED, withPhase SocketPhase.Dead kernel
+                | SocketPhase.Dead ->
+                    // Measured, whatever the destination.
+                    fail UnixError.EINVAL
+                | SocketPhase.Established _ ->
+                    // Measured, including against an AF_UNSPEC destination.
+                    fail UnixError.EISCONN
+                | SocketPhase.Listening _ ->
+                    if family = 0 then
+                        failwith
+                            "SystemNative_Connect: AF_UNSPEC on a listening stream socket under Darwin is unmeasured (the measured EOPNOTSUPP row used an AF_INET destination), so measure it rather than extrapolating."
+                    else
+                        // Measured: EOPNOTSUPP, where Linux answers EISCONN.
+                        fail UnixError.EOPNOTSUPP
+                | SocketPhase.DatagramPeer _ ->
+                    failwith
+                        "SystemNative_Connect: a stream socket holds SocketPhase.DatagramPeer. EmulatedKernelDefect.SocketPhaseKindMismatch exists to make this unreachable, so this is an interpreter bug."
+                | SocketPhase.Idle ->
+
+                if family = 0 then
+                    // Measured at the exact sockaddr_in length:
+                    // EADDRNOTAVAIL, and the socket stays usable. Other
+                    // lengths are unmeasured.
+                    if declaredLength <> exactSize then
+                        failwith
+                            $"SystemNative_Connect: AF_UNSPEC with a declared length of %d{declaredLength} on an idle Darwin stream socket is unmeasured (only %d{exactSize} is), so measure it rather than guessing."
+                    else
+                        fail UnixError.EADDRNOTAVAIL
+                else
+
+                match lengthVerdict with
+                | BindLengthVerdict.Invalid -> fail UnixError.EINVAL
+                | BindLengthVerdict.RejectedBeforeCopy _
+                | BindLengthVerdict.Accepted ->
+
+                if family <> SimulatedUnixPlatform.internetAddressFamily then
+                    fail UnixError.EAFNOSUPPORT
+                else
+
+                match destination with
+                | Some dest -> attemptStream dest
+                | None ->
+                    failwith
+                        "SystemNative_Connect: the declared length passed the AF_INET verdict but the destination was not supplied; the caller reads it whenever the length reaches it. This is an interpreter bug."
+        | SocketKind.Datagram ->
+            match lengthVerdict with
+            | BindLengthVerdict.RejectedBeforeCopy error -> fail error
+            | BindLengthVerdict.Accepted
+            | BindLengthVerdict.Invalid ->
+
+            match family with
+            | None -> fail UnixError.EINVAL
+            | Some family ->
+
+            match sock.Phase with
+            | SocketPhase.Idle
+            | SocketPhase.DatagramPeer _ -> ()
+            | phase ->
+                failwith
+                    $"SystemNative_Connect: a datagram socket holds %A{phase}. EmulatedKernelDefect.SocketPhaseKindMismatch exists to make this unreachable, so this is an interpreter bug."
+
+            if family = 0 then
+                match flavour with
+                | SimulatedUnixFlavour.Linux ->
+                    if declaredLength < exactSize then
+                        failwith
+                            $"SystemNative_Connect: AF_UNSPEC with a declared length of %d{declaredLength} on a Linux datagram socket is unmeasured (only %d{exactSize} and above are), so measure it rather than guessing."
+                    else
+
+                    // Measured with and without a peer set: dissolves the
+                    // filter and answers SUCCESS. The dissolve also unbinds
+                    // what connect resolved — unlike TCP's reset, the *port*
+                    // is dropped too (probe8: getsockname reads 0.0.0.0:0
+                    // afterwards for an implicitly bound socket and for one
+                    // whose bind(2) gave the wildcard), so a socket with no
+                    // locked concrete address ends up fully unbound and the
+                    // next connect binds afresh. A locked concrete address
+                    // was measured to survive with the port zeroed —
+                    // 127.0.0.1:0 — but whether a bind(2)-chosen port would
+                    // also drop, and how such a half-bound socket rebinds,
+                    // is unmeasured, so that provenance is refused.
+                    match sock.Phase with
+                    | SocketPhase.DatagramPeer _ ->
+                        let binding =
+                            match sock.Binding with
+                            | None ->
+                                failwith
+                                    "SystemNative_Connect: a datagram socket holds a peer but no binding; connect binds before it records the peer, so this is an interpreter bug."
+                            | Some binding ->
+                                match binding.LockedAddress with
+                                | None -> None
+                                | Some locked when locked = InternetEndpoint.WildcardAddress -> None
+                                | Some _ ->
+                                    failwith
+                                        $"SystemNative_Connect: AF_UNSPEC on a datagram socket whose bind(2) locked %s{InternetEndpoint.toString binding.Endpoint}'s address is only measured for a kernel-chosen port (the address survives, the port zeroes); what survives a bind(2)-chosen port, and how the half-bound socket rebinds, is unmeasured. Measure it rather than guessing."
+
+                        ConnectOutcome.Completed,
+                        { kernel with
+                            Sockets =
+                                Map.add
+                                    socketId
+                                    { sock with
+                                        Binding = binding
+                                        Phase = SocketPhase.Idle
+                                    }
+                                    kernel.Sockets
+                        }
+                    | _ ->
+
+                    match sock.Binding with
+                    | None ->
+                        // No peer to dissolve and nothing bound: the
+                        // accepted no-op (measured).
+                        ConnectOutcome.Completed, kernel
+                    | Some _ ->
+                        failwith
+                            "SystemNative_Connect: AF_UNSPEC on a bound but unconnected Linux datagram socket is unmeasured (whether the dissolve drops the binding as it does for a connected one), so measure it rather than guessing."
+                | SimulatedUnixFlavour.Darwin ->
+                    if declaredLength <> exactSize then
+                        failwith
+                            $"SystemNative_Connect: AF_UNSPEC with a declared length of %d{declaredLength} on a Darwin datagram socket is unmeasured (only %d{exactSize} is), so measure it rather than guessing."
+                    else
+                        // Measured with and without a peer set.
+                        fail UnixError.EAFNOSUPPORT
+            else
+
+            match lengthVerdict with
+            | BindLengthVerdict.Invalid -> fail UnixError.EINVAL
+            | BindLengthVerdict.RejectedBeforeCopy _
+            | BindLengthVerdict.Accepted ->
+
+            if family <> SimulatedUnixPlatform.internetAddressFamily then
+                fail UnixError.EAFNOSUPPORT
+            else
+
+            match destination with
+            | None ->
+                failwith
+                    "SystemNative_Connect: the declared length passed the AF_INET verdict but the destination was not supplied; the caller reads it whenever the length reaches it. This is an interpreter bug."
+            | Some dest ->
+
+            if dest.Address = InternetEndpoint.WildcardAddress then
+                failwith
+                    "SystemNative_Connect: a datagram connect to 0.0.0.0 is unmeasured (the kernels remap it, but which address the peer filter then holds was not probed), so measure it rather than guessing."
+            elif not (destinationIsLocal dest.Address) then
+                failwith
+                    $"SystemNative_Connect: destination %s{InternetEndpoint.toString dest} is not a local address of this simulated machine, and PawPrint models no network to carry a datagram anywhere else. Add the address to the kernel's LocalAddresses/LocalRoutes if it should be local, or connect to loopback."
+            else
+
+            // A datagram connect is a peer filter, not a handshake: it
+            // succeeds with nothing at the destination and a re-connect
+            // re-targets, both measured. It binds implicitly just as a
+            // stream connect does.
+            let binding, kernel = ensureBound dest kernel
+
+            let kernel =
+                { kernel with
+                    Sockets =
+                        Map.add
+                            socketId
+                            { sock with
+                                Binding = Some binding
+                                Phase = SocketPhase.DatagramPeer dest
+                            }
+                            kernel.Sockets
+                }
+
+            ConnectOutcome.Completed, kernel
+
+    /// Dequeue the oldest completed connection from `socketId`'s accept queue
+    /// and materialise the server-side socket onto it: a fresh socket, bound
+    /// at the connection's server address, on a fresh (blocking) descriptor.
+    /// Answers the new fd and the connection, whose `ClientAddress` is what
+    /// `accept(2)` reports as the peer.
+    ///
+    /// Partial: the caller has already answered EAGAIN (or refused to park)
+    /// for an empty queue, and EINVAL/EOPNOTSUPP for a socket that is not a
+    /// listening stream socket, so reaching this in any other state is an
+    /// interpreter bug.
+    let acceptConnection (socketId : SocketId) (kernel : EmulatedKernel) : int * TcpConnection * EmulatedKernel =
+        let listener = socket socketId kernel
+
+        match listener.Phase with
+        | SocketPhase.Listening ({
+                                     Queue = connectionId :: rest
+                                 } as listenState) ->
+            let tcpConnection = connection connectionId kernel
+            let acceptedId = kernel.NextSocketId
+            let (SocketId rawAcceptedId) = acceptedId
+
+            let fd, registry =
+                FileDescriptorRegistry.createSocket acceptedId kernel.FileDescriptors
+
+            let accepted =
+                {
+                    Domain = listener.Domain
+                    Kind = SocketKind.Stream
+                    Protocol = listener.Protocol
+                    Binding =
+                        Some
+                            {
+                                Endpoint = tcpConnection.ServerAddress
+                                // Nothing reads this on an accepted socket:
+                                // its phase is Established for life, so no
+                                // refusal delivery can ever revert it.
+                                LockedAddress = None
+                            }
+                    // Both kernels copy the listener's socket options onto
+                    // the accepted socket (inet_csk_clone_lock; sonewconn),
+                    // and this flag's one modelled effect is bind-conflict
+                    // admission. No current guest observes the inheritance.
+                    ReuseAddress = listener.ReuseAddress
+                    Phase = SocketPhase.Established connectionId
+                }
+
+            let kernel =
+                { kernel with
+                    FileDescriptors = registry
+                    Sockets =
+                        kernel.Sockets
+                        |> Map.add acceptedId accepted
+                        |> Map.add
+                            socketId
+                            { listener with
+                                Phase =
+                                    SocketPhase.Listening
+                                        { listenState with
+                                            Queue = rest
+                                        }
+                            }
+                    NextSocketId = SocketId (rawAcceptedId + 1L)
+                }
+
+            fd, tcpConnection, kernel
+        | SocketPhase.Listening {
+                                    Queue = []
+                                } ->
+            failwith
+                "EmulatedKernel.acceptConnection: the accept queue is empty; the caller answers EAGAIN (or refuses to park) before reaching this. This is an interpreter bug."
+        | phase ->
+            failwith
+                $"EmulatedKernel.acceptConnection: socket %O{socketId} is in %A{phase}, not listening; the caller screens this. This is an interpreter bug."
 
     /// Every way this kernel's socket table and its descriptor table disagree.
     ///
@@ -3773,7 +4712,88 @@ module EmulatedKernel =
             |> List.filter (fun socketId -> socketId >= kernel.NextSocketId)
             |> List.map (fun socketId -> EmulatedKernelDefect.NextSocketIdNotFresh (kernel.NextSocketId, socketId))
 
-        dangling @ unreferenced @ freshness
+        // Every reference any socket makes to a connection, with whether it
+        // came through an accept queue (which has its own defect case and its
+        // own no-duplicates rule).
+        let connectionReferences =
+            kernel.Sockets
+            |> Map.toList
+            |> List.collect (fun (socketId, socket) ->
+                match socket.Phase with
+                | SocketPhase.Established connection
+                | SocketPhase.EstablishedPendingReport connection -> [ socketId, connection, false ]
+                | SocketPhase.Listening listenState ->
+                    listenState.Queue |> List.map (fun connection -> socketId, connection, true)
+                | SocketPhase.Idle
+                | SocketPhase.RefusedPendingDelivery
+                | SocketPhase.Dead
+                | SocketPhase.DatagramPeer _ -> []
+            )
+
+        let danglingConnections =
+            connectionReferences
+            |> List.filter (fun (_, connection, _) -> not (Map.containsKey connection kernel.Connections))
+            |> List.map (fun (socketId, connection, queued) ->
+                if queued then
+                    EmulatedKernelDefect.DanglingQueuedConnection (socketId, connection)
+                else
+                    EmulatedKernelDefect.DanglingConnection (socketId, connection)
+            )
+
+        let referencedConnections =
+            connectionReferences
+            |> List.map (fun (_, connection, _) -> connection)
+            |> Set.ofList
+
+        let orphanConnections =
+            kernel.Connections
+            |> Map.toList
+            |> List.map fst
+            |> List.filter (fun connection -> not (Set.contains connection referencedConnections))
+            |> List.map EmulatedKernelDefect.OrphanConnection
+
+        let duplicateQueued =
+            connectionReferences
+            |> List.choose (fun (_, connection, queued) -> if queued then Some connection else None)
+            |> List.countBy id
+            |> List.filter (fun (_, count) -> count > 1)
+            |> List.map (fun (connection, _) -> EmulatedKernelDefect.DuplicateQueuedConnection connection)
+
+        let phaseKindMismatches =
+            kernel.Sockets
+            |> Map.toList
+            |> List.choose (fun (socketId, socket) ->
+                let mismatched =
+                    match socket.Kind, socket.Phase with
+                    | SocketKind.Datagram, SocketPhase.Idle
+                    | SocketKind.Datagram, SocketPhase.DatagramPeer _ -> false
+                    | SocketKind.Datagram, _ -> true
+                    | _, SocketPhase.DatagramPeer _ -> true
+                    | _, _ -> false
+
+                if mismatched then
+                    Some (EmulatedKernelDefect.SocketPhaseKindMismatch (socketId, socket.Kind, socket.Phase))
+                else
+                    None
+            )
+
+        let connectionFreshness =
+            kernel.Connections
+            |> Map.toList
+            |> List.map fst
+            |> List.filter (fun connection -> connection >= kernel.NextConnectionId)
+            |> List.map (fun connection ->
+                EmulatedKernelDefect.NextConnectionIdNotFresh (kernel.NextConnectionId, connection)
+            )
+
+        dangling
+        @ unreferenced
+        @ freshness
+        @ danglingConnections
+        @ orphanConnections
+        @ duplicateQueued
+        @ phaseKindMismatches
+        @ connectionFreshness
 
 /// Host-supplied configuration for the simulated process's kernel, applied by
 /// `Program.prepare` before any guest code runs.
@@ -3902,6 +4922,10 @@ type KernelConfig =
         /// exceed the high end, and neither may be zero, since port 0 is the
         /// request rather than an answer.
         EphemeralPortRange : uint16 * uint16
+        /// The `somaxconn` sysctl, or `None` for the flavour's measured
+        /// default (4096 on Linux, 128 on Darwin): the ceiling `listen(2)`
+        /// clamps its backlog to. See `EmulatedKernel.withSoMaxConn`.
+        SoMaxConn : int option
         /// The IPv4 addresses this machine holds, as prefixes. See
         /// `EmulatedKernel.defaultLocalAddresses`, and note the flavours read one
         /// list differently.
@@ -3932,6 +4956,7 @@ type KernelConfig =
             Umask = EmulatedKernel.defaultUmask
             FileSystemType = None
             EphemeralPortRange = EmulatedKernel.defaultEphemeralPortRange
+            SoMaxConn = None
             LocalAddresses = EmulatedKernel.defaultLocalAddresses
             LocalRoutes = EmulatedKernel.defaultLocalRoutes
         }
@@ -3958,5 +4983,6 @@ module KernelConfig =
             config.FileSystem
         |> EmulatedKernel.withUserAndGroupId config.UserId config.GroupId
         |> EmulatedKernel.withEphemeralPortRange config.EphemeralPortRange
+        |> EmulatedKernel.withSoMaxConn config.UnixPlatform config.SoMaxConn
         |> EmulatedKernel.withLocalAddresses config.LocalAddresses config.LocalRoutes
         |> EmulatedKernel.withUmask config.Umask

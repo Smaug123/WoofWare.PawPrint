@@ -2,9 +2,9 @@ using System;
 using System.Runtime.InteropServices;
 
 // `SystemNative_Accept` (pal_networking.c:1705) reached by hand-rolled
-// P/Invoke. No modelled operation can put a connection into a backlog --
-// `SystemNative_Connect` does not exist -- so every row here is an error
-// answer; the success path is exercised nowhere until `Connect` lands.
+// P/Invoke. Every row here is an error answer against accept queues this
+// guest keeps empty (nothing in it connects); the success path lives in
+// `SocketConnect.cs`, beside the connects that feed it.
 //
 // Differential, so PAL return codes and out-pointer effects only: every row
 // was measured to answer identically on macOS 26 and Linux 6.18 (the raw

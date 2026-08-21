@@ -23,6 +23,7 @@ module TestSocketBinding =
     let private binding (address : uint32) (port : uint16) : SocketBinding =
         {
             Endpoint = endpoint address port
+            LockedAddress = None
         }
 
     let private loopback = InternetEndpoint.LoopbackAddress
