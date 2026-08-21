@@ -13,6 +13,26 @@ open WoofWare.PawPrint
 ///
 /// These cases mirror the terminal `WoofWare.PawPrint.RunOutcome` cases that a real process can
 /// actually reach, so that the oracle is comparable against PawPrint.
+/// What the real runtime's stderr reveals about *which* fatal error killed the guest.
+///
+/// Strictly less than PawPrint's own <c>FatalErrorCode</c>, and deliberately a different type so
+/// the two are not mistaken for the same fact. PawPrint knows which fatal error it raised because
+/// it raised it; the oracle can only read what the process printed, and CoreCLR derives the banner
+/// from the <c>COR_E_*</c> code with a single equality test — <c>exitCode == COR_E_FAILFAST</c>
+/// (eepolicy.cpp:374-383) — so stderr separates <c>COR_E_FAILFAST</c> from everything else and
+/// nothing finer. The exit status adds nothing either: on Unix the process aborts to 134 whatever
+/// the code was.
+[<RequireQualifiedAccess>]
+type ObservedFatalError =
+    /// Banner <c>Process terminated.</c>, so the code was <c>COR_E_FAILFAST</c>: the guest called
+    /// <c>Environment.FailFast</c>.
+    | FailFast
+    /// Banner <c>Fatal error.</c>, so the code was one of the others — <c>COR_E_EXECUTIONENGINE</c>,
+    /// <c>COR_E_STACKOVERFLOW</c>, and so on. Which is not recoverable from what the process
+    /// printed; a test that needs to know reads the report, whose message is the runtime's own and
+    /// does identify the situation even though it does not identify the code.
+    | Other
+
 type RealRuntimeResult =
     /// The program terminated with this exit code: by returning from `Main`, by falling off the end
     /// of a `void` entry point, or by calling `Environment.Exit`.
@@ -27,9 +47,8 @@ type RealRuntimeResult =
     /// runtime's own stderr report, which names the exception type and carries its stack trace.
     | UnhandledException of report : string
     /// A fatal error tore the program down: `Environment.FailFast`, or a refusal the runtime
-    /// itself raised. `code` is which, read back from the banner CoreCLR chose; the payload is the
-    /// runtime's stderr report, banner included.
-    | Aborted of code : FatalErrorCode * report : string
+    /// itself raised. The payload is the runtime's stderr report, banner included.
+    | Aborted of observed : ObservedFatalError * report : string
 
 [<RequireQualifiedAccess>]
 module RealRuntime =
@@ -50,7 +69,8 @@ module RealRuntime =
     /// above (eepolicy.cpp:374-383) -- so a guest whose runtime refused to continue prints this
     /// one and exits 134, exactly as `Environment.FailFast` does. Without this the two are
     /// indistinguishable from the exit code alone, and a runtime-raised abort would be classified
-    /// as an ordinary `NormalExit 134`.
+    /// as an ordinary `NormalExit 134`. It says only "not `COR_E_FAILFAST`": see
+    /// `ObservedFatalError.Other`.
     [<Literal>]
     let private FatalErrorBanner = "Fatal error."
 
@@ -227,17 +247,17 @@ module RealRuntime =
         // a guest that prints the banner itself on the normal path. A guest that does both at once
         // would be misclassified, but it's either impossible or extremely hard to repair that.
         //
-        // The two fatal-error banners are tried in the order CoreCLR chooses between them
-        // (eepolicy.cpp:374-383): `Process terminated.` exactly when the code was `COR_E_FAILFAST`,
-        // `Fatal error.` for every other code. They are disjoint strings, so the order is for
-        // readability rather than correctness.
+        // The two fatal-error banners are the two sides of the single equality test CoreCLR makes
+        // on the `COR_E_*` code (eepolicy.cpp:374-383), so that is exactly what they distinguish
+        // and `ObservedFatalError` says no more than that. They are disjoint strings, so the order
+        // between them is for readability rather than correctness.
         let result =
             if exitCode <> 0 && errorText.Contains UnhandledExceptionBanner then
                 RealRuntimeResult.UnhandledException (errorText.Trim ())
             elif exitCode <> 0 && errorText.Contains FailFastBanner then
-                RealRuntimeResult.Aborted (FatalErrorCode.FailFast, errorText.Trim ())
+                RealRuntimeResult.Aborted (ObservedFatalError.FailFast, errorText.Trim ())
             elif exitCode <> 0 && errorText.Contains FatalErrorBanner then
-                RealRuntimeResult.Aborted (FatalErrorCode.ExecutionEngine, errorText.Trim ())
+                RealRuntimeResult.Aborted (ObservedFatalError.Other, errorText.Trim ())
             else
                 RealRuntimeResult.NormalExit exitCode
 

@@ -149,7 +149,7 @@ public static class Program
             guest """    public static int Main() { Environment.FailFast("nope"); return 0; }"""
 
         match RealRuntime.executeWithRealRuntime [||] image with
-        | RealRuntimeResult.Aborted (FatalErrorCode.FailFast, report) ->
+        | RealRuntimeResult.Aborted (ObservedFatalError.FailFast, report) ->
             if not (report.Contains "nope") then
                 failwith $"expected the FailFast report to carry the message, got: %s{report}"
         | other -> failwith $"expected FailFast to be reported as such, got %O{other}"
@@ -195,10 +195,15 @@ public static class Program
                 ]
 
         match RealRuntime.executeWithRealRuntime [||] image with
-        | RealRuntimeResult.Aborted (FatalErrorCode.ExecutionEngine, report) ->
+        | RealRuntimeResult.Aborted (ObservedFatalError.Other, report) ->
+            // The *code* is not assertable here: the banner separates `COR_E_FAILFAST` from
+            // everything else and nothing finer. The message is, and it is what identifies this
+            // particular refusal -- a hardcoded wide literal in the runtime rather than a
+            // localisable resource (dllimportcallback.cpp:176-178).
             if not (report.Contains "UnmanagedCallersOnly") then
                 failwith $"expected the abort report to carry the runtime's message, got: %s{report}"
-        | other -> failwith $"expected a runtime-raised fatal error to be reported as ExecutionEngine, got %O{other}"
+        | other ->
+            failwith $"expected a runtime-raised fatal error to be reported as a non-FailFast abort, got %O{other}"
 
     [<Test>]
     let ``a guest that never terminates is killed and reported`` () : unit =

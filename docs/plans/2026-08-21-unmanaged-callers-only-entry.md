@@ -134,9 +134,16 @@ them print "Guest called Environment.FailFast" in prose that would otherwise sil
 
 `RealRuntime` (RealRuntime.fs:29-30, 44, 221) currently knows only the `Process terminated.`
 banner, so a real-runtime `Fatal error.` death is classified `NormalExit 134` — silently wrong, and
-it would make PR 2's differential test vacuous. Its `FailFast` case becomes `FatalError` carrying
-the same `FatalErrorCode`, classified by banner, so the oracle's own diagnostics stay as truthful
-as PawPrint's.
+it would make PR 2's differential test vacuous. It learns the second banner in the same change.
+
+It does *not* learn a `FatalErrorCode` from it. CoreCLR picks the banner with one equality test on
+the code, so stderr separates `COR_E_FAILFAST` from everything else and nothing finer, and on Unix
+the exit status is 134 whatever the code was — labelling the second banner `ExecutionEngine` would
+mislabel a stack overflow, the third code named in the table above. The oracle therefore gets its
+own two-valued `ObservedFatalError`, deliberately a *different type* from `FatalErrorCode` so that
+what PawPrint knows it raised is never silently compared against what the oracle merely observed. A
+test that needs to identify a particular non-FailFast abort reads the report: the runtime's message
+is a hardcoded literal and identifies the situation even though it does not identify the code.
 
 ## 1b. An IL step can raise one
 
@@ -186,7 +193,8 @@ the emitted invoke stub, whose `OpCodes.Call` is an ordinary `call`.
 2. The App's exit-code and banner derivation, per kind, against the eepolicy.cpp table above.
    Unit-level: both kinds give 134 on Unix and their own HRESULT on Windows.
 3. `RealRuntime` classifies a guest that calls `Environment.FailFast` as `Aborted FailFast`, and
-   one that dies with `Fatal error.` as `Aborted ExecutionEngine`. The second needs a guest that
+   one that dies with `Fatal error.` as `Aborted Other` with a report naming the refusal. The
+   second needs a guest that
    provokes a runtime fatal error on real .NET without PawPrint having to run it; the UCO guest is
    exactly that, so it lands here as an oracle-only fixture. Written before the fix and observed
    failing with `NormalExit 134` — the silent misclassification the plan predicted.
