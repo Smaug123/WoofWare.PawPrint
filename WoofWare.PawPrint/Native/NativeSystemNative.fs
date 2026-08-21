@@ -836,7 +836,32 @@ module NativeSystemNative =
 
             let cwd = UnixPath.ofAbsolute kernel.CurrentDirectory
 
-            match VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow cwd vfs with
+            // Resolved as though privileged, which is not a claim about the
+            // guest's uid: a real process holds its current directory as an open
+            // reference and does not re-walk it from the root, so no lookup —
+            // and therefore no permission check — happens here at all. Measured
+            // on both kernels: with the cwd at `outer/inner` and `outer`
+            // unsearchable, a relative `lstat("target")` succeeds while
+            // `lstat("../inner/target")` is EACCES.
+            //
+            // "As privileged" and "without checks" coincide only because search
+            // is the one privilege-gated fact in resolution today; a second such
+            // rule would break the equivalence silently, so this is spelled out
+            // rather than left to be inferred.
+            //
+            // The cwd *itself* is not exempt: the walk below starts there and
+            // checks its search bit the moment it consumes a component, which is
+            // what makes `lstat("target")` EACCES when the cwd itself is
+            // unsearchable — also measured on both.
+            //
+            // The re-walk is an artefact of modelling the cwd as a path rather
+            // than as a held inode. Storing the inode when the kernel is built
+            // would make this exemption unnecessary; nothing can observe the
+            // difference until a syscall can rename or remove a directory
+            // mid-run.
+            match
+                VirtualFileSystem.resolveExisting limits CallerPrivilege.Privileged root SymlinkPolicy.Follow cwd vfs
+            with
             | Ok inode -> inode
             | Error UnixError.ENAMETOOLONG ->
                 // Distinguished because the remedy is different, and the
@@ -848,7 +873,14 @@ module NativeSystemNative =
                 failwith
                     $"%s{operation}: the guest passed the relative path \"%s{UnixPath.toString path}\", but the configured current directory \"%s{AbsoluteUnixPath.toString kernel.CurrentDirectory}\" does not resolve in the seeded filesystem (%O{error}). A process cannot be started in a directory that does not exist; make KernelConfig.FileSystem contain KernelConfig.CurrentDirectory."
 
-        VirtualFileSystem.resolveFull limits startDirectory policy trailingSeparatorPolicy path vfs
+        VirtualFileSystem.resolveFull
+            limits
+            (EmulatedKernel.callerPrivilege kernel)
+            startDirectory
+            policy
+            trailingSeparatorPolicy
+            path
+            vfs
 
     /// The inode a path names, or the errno the lookup owes the guest — what
     /// every non-creating caller wants. Shares `resolveGuestPathFull`'s walk and
@@ -2682,21 +2714,6 @@ module NativeSystemNative =
             if lacksNeededBits then
                 fail UnixError.EACCES
             else
-
-            // The *search* half of the permission rule is still missing from the
-            // walk, and belongs in the resolver rather than here: every component
-            // of every path needs it, so `Stat`, `LStat` and `ReadLink` all owe
-            // the same answer. Until it lands, a seed can describe a directory
-            // whose owner-search bit is clear and PawPrint will walk through it
-            // anyway.
-            //
-            // The creation arm above does check search on the one directory it
-            // binds into, so the two halves are deliberately asymmetric today:
-            // `open("nosearch/existing", O_RDONLY)` succeeds under PawPrint where
-            // a kernel answers EACCES, while `open("nosearch/new", O_CREAT)`
-            // correctly fails. That is a complete rule about the binding
-            // directory rather than half of the walk's rule, which is why it does
-            // not wait for the resolver's.
 
             // Only now, with every refusal discharged: measured, a refused open
             // leaves the bytes alone, and specifically `O_CREAT | O_EXCL | O_TRUNC`

@@ -74,7 +74,7 @@ module TestFileSystemSeed =
         let root = VirtualFileSystem.root vfs
 
         let contentAt (p : string) (policy : SymlinkPolicy) : InodeContent =
-            match VirtualFileSystem.resolveExisting limits root policy (path p) vfs with
+            match VirtualFileSystem.resolveExisting limits CallerPrivilege.Privileged root policy (path p) vfs with
             | Error error -> failwith $"%s{p} did not resolve: %O{error}"
             | Ok inode ->
 
@@ -102,7 +102,13 @@ module TestFileSystemSeed =
         | other -> failwith $"expected a directory, got %A{other}"
 
         // ...and nothing the seed did not describe exists.
-        VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow (path "/etc/passwd") vfs
+        VirtualFileSystem.resolveExisting
+            limits
+            CallerPrivilege.Privileged
+            root
+            SymlinkPolicy.Follow
+            (path "/etc/passwd")
+            vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
     [<Test>]
@@ -120,10 +126,30 @@ module TestFileSystemSeed =
         let vfs = realise seed
         let root = VirtualFileSystem.root vfs
 
-        VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow (path "/a/b/..") vfs
-        |> shouldEqual (VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow (path "/a") vfs)
+        VirtualFileSystem.resolveExisting
+            limits
+            CallerPrivilege.Privileged
+            root
+            SymlinkPolicy.Follow
+            (path "/a/b/..")
+            vfs
+        |> shouldEqual (
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                root
+                SymlinkPolicy.Follow
+                (path "/a")
+                vfs
+        )
 
-        VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow (path "/a/b/../..") vfs
+        VirtualFileSystem.resolveExisting
+            limits
+            CallerPrivilege.Privileged
+            root
+            SymlinkPolicy.Follow
+            (path "/a/b/../..")
+            vfs
         |> shouldEqual (Ok root)
 
     [<Test>]
@@ -207,6 +233,7 @@ module TestFileSystemSeed =
                     match
                         VirtualFileSystem.resolveExisting
                             limits
+                            CallerPrivilege.Privileged
                             root
                             SymlinkPolicy.NoFollowFinal
                             (path declaredPath)
@@ -320,7 +347,15 @@ module TestFileSystemSeed =
         let root = VirtualFileSystem.root vfs
 
         let permissionsAt (p : string) : InodePermissions =
-            match VirtualFileSystem.resolveExisting limits root SymlinkPolicy.NoFollowFinal (path p) vfs with
+            match
+                VirtualFileSystem.resolveExisting
+                    limits
+                    CallerPrivilege.Privileged
+                    root
+                    SymlinkPolicy.NoFollowFinal
+                    (path p)
+                    vfs
+            with
             | Error error -> failwith $"%s{p} did not resolve: %O{error}"
             | Ok inode ->
 
