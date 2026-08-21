@@ -742,7 +742,7 @@ type TrailingSeparatorPolicy =
     /// traverses it and answers EISDIR.
     ///
     /// So this stays one-dimensional, and `unlink` selects it here on Linux
-    /// while enforcing the demand itself. See `UnlinkRules.linuxVerdict`.
+    /// while enforcing the demand itself. See `UnlinkRules.verdict`.
     | Ignore
 
 /// Which component a resolution last consumed, for the paths that end without

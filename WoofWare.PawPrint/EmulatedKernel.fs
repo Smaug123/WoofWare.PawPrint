@@ -1325,10 +1325,11 @@ type UnlinkVerdict =
     /// Remove `name` from `directory`, and — if that was the last name the
     /// inode had and no open file description holds it — free the inode.
     ///
-    /// Deliberately does not carry the inode the name currently binds, though
-    /// the verdict read it to decide: whether it is still bound to the same
-    /// inode is the removing code's business, and handing it a stale answer
-    /// would let a future caller unbind a name after something else changed it.
+    /// Carries no inode, though the verdict read one to decide. The removing
+    /// code gets it from `VirtualFileSystem.unbind`, which answers the inode it
+    /// actually unbound — so there is one source for "which inode lost a name",
+    /// and it is the one the removal performed rather than the one a lookup saw
+    /// beforehand.
     | Remove of directory : InodeNumber * name : FileName
 
 [<RequireQualifiedAccess>]
@@ -1379,7 +1380,7 @@ module UnlinkRules =
                 $"UnlinkRules: the walk resolved a name to inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
 
     /// Linux's `unlink(2)`, transcribed from the measured ordering. Each arm
-    /// beats the ones below it, and each arrow below is a row:
+    /// beats the ones below it, and each bullet is a measured row:
     ///
     ///  * A path that consumed no component — "/", ".", "..", and any symlink
     ///    expansion of them — is EISDIR, whichever `FinalNavigation` it was and
@@ -1404,7 +1405,12 @@ module UnlinkRules =
     /// EISDIR here is privilege-independent: measured at uid 0, Linux still
     /// refuses to `unlink` a directory. `CallerPrivilege` gates the write bit
     /// and nothing else.
-    let linuxVerdict (privilege : CallerPrivilege) (resolution : Resolution) (vfs : VirtualFileSystem) : UnlinkVerdict =
+    let private linuxVerdict
+        (privilege : CallerPrivilege)
+        (resolution : Resolution)
+        (vfs : VirtualFileSystem)
+        : UnlinkVerdict
+        =
         match resolution.Target with
         | ResolvedTarget.Directory _ -> UnlinkVerdict.Refuse UnixError.EISDIR
         | ResolvedTarget.Entry (directory, name, existing) ->
@@ -1456,7 +1462,7 @@ module UnlinkRules =
     /// or reached by following a final symlink (`unlink("ld/")`) — both EPERM,
     /// from the arm below, which is why the destructive divergence
     /// `Resolution.FinalSymlinkFollowed` warns about costs `unlink` nothing.
-    let darwinVerdict
+    let private darwinVerdict
         (privilege : CallerPrivilege)
         (resolution : Resolution)
         (vfs : VirtualFileSystem)
