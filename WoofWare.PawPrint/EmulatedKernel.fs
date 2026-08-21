@@ -2643,7 +2643,35 @@ type EmulatedKernel =
         /// by record-copy after startup: PawPrint models no `chdir(2)`, so
         /// within a run the cwd is immutable and a guest must not be able to
         /// observe it changing under it.
+        ///
+        /// The **physical** path: every symlink resolved away, which is what
+        /// `getcwd(3)` reports and so not necessarily the spelling
+        /// `KernelConfig.CurrentDirectory` used. Derived from
+        /// `CurrentDirectoryInode` when the kernel is built, so the two cannot
+        /// describe a process no Unix could produce.
         CurrentDirectory : AbsoluteUnixPath
+        /// The directory relative paths resolve against: the inode the
+        /// simulated process holds its current directory *open on*, which is
+        /// what a real process holds rather than a name it re-walks.
+        ///
+        /// Derived when the kernel is built, by the one setter that takes the
+        /// current directory and the filesystem together — so this is not a
+        /// second, independent knob a host may set. It is nonetheless the
+        /// *identity* half of the pair, and the two answer
+        /// different questions once a guest can delete a directory: this one
+        /// says where a relative path starts, and `CurrentDirectory` says what
+        /// the process would be told if it asked. A real kernel splits them the
+        /// same way, which is why `getcwd` can fail while relative lookups
+        /// still work.
+        ///
+        /// Holding the inode is also what makes the resolution of a relative
+        /// path *not* a lookup: no component of the current directory's own
+        /// path is walked, so none of its permission bits are consulted, and no
+        /// intermediate symlink is re-traversed. Measured on both kernels: with
+        /// the cwd at `outer/inner` and `outer` unsearchable, a relative
+        /// `lstat("target")` succeeds while `lstat("../inner/target")` is
+        /// EACCES.
+        CurrentDirectoryInode : InodeNumber
         /// Path to the executable that started the simulated process, as
         /// observed through `SystemNative_GetProcessPath` and hence
         /// `Environment.ProcessPath`.
@@ -2745,6 +2773,21 @@ type EmulatedKernelDefect =
     /// A socket in the table has an identity at or above the next one to
     /// allocate, so a future `socket(2)` would mint a duplicate.
     | NextSocketIdNotFresh of nextSocketId : SocketId * existing : SocketId
+    /// `CurrentDirectoryInode` names something the filesystem does not hold, or
+    /// holds as something other than a directory — so every relative path a
+    /// guest passes would resolve from a place that is not a directory.
+    ///
+    /// Deliberately *not* "the inode is reachable from the root": a real process
+    /// keeps its current directory alive after the last name for it has gone,
+    /// and PawPrint's held inode is what expresses that.
+    | CurrentDirectoryIsNotADirectory of inode : InodeNumber
+    /// `CurrentDirectory` is not the path that reaches `CurrentDirectoryInode`,
+    /// so `getcwd` would report a directory the process is not in.
+    ///
+    /// Only raised while the inode still *has* a path: one held open after its
+    /// last name has gone has none, and a real `getcwd` fails there rather than
+    /// answering.
+    | CurrentDirectoryPathDisagrees of stored : AbsoluteUnixPath * physical : AbsoluteUnixPath
 
 [<RequireQualifiedAccess>]
 module EmulatedKernel =
@@ -2995,6 +3038,10 @@ module EmulatedKernel =
     let simulatedDeviceId : int64 = 0x1000001L
 
     let initial : EmulatedKernel =
+        // Bound once so that `CurrentDirectoryInode` is the root of *this*
+        // filesystem rather than of a second one that merely looks like it.
+        let filesystem = VirtualFileSystem.empty (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
+
         {
             InstructionCostTicks = defaultInstructionCostTicks
             LastPInvokeError = Map.empty
@@ -3027,14 +3074,79 @@ module EmulatedKernel =
             OptimalMaxSpinWaitsPerSpinIteration = defaultOptimalMaxSpinWaitsPerSpinIteration
             UnixPlatform = defaultUnixPlatform
             CurrentDirectory = defaultCurrentDirectory
+            // The default current directory is the root, which every filesystem
+            // has and no operation can remove, so the pair starts consistent
+            // whatever else a host goes on to set.
+            CurrentDirectoryInode = VirtualFileSystem.root filesystem
             ProcessPath = defaultProcessPath
-            FileSystem = VirtualFileSystem.empty (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
+            FileSystem = filesystem
             FileSystemType = EmulatedFileSystemType.defaultFor (SimulatedUnixPlatform.flavour defaultUnixPlatform)
             UserId = defaultUserId
             GroupId = defaultGroupId
             Umask = defaultUmask
             Signals = SignalState.empty
         }
+
+    /// The directory `directory` names in this kernel's filesystem, as the
+    /// moment a process is started resolves it — which is the only moment
+    /// PawPrint resolves it, because after that the process holds the directory
+    /// rather than the name.
+    ///
+    /// Answers the inode *and* the path `getcwd` owes for it, which is not
+    /// always the path that was asked for: `getcwd(3)` reports the **physical**
+    /// path, with every symlink resolved away. Measured on both kernels —
+    /// `chdir("outer/lnk")` with `lnk -> inner` is followed by
+    /// `getcwd() == ".../outer/inner"`. Deriving both here is what stops the
+    /// pair describing a process no Unix could produce.
+    ///
+    /// Privileged and symlink-following, deliberately: this is the host saying
+    /// where its guest was launched, not a guest looking anything up, and a
+    /// process is launched into a directory its parent had already reached. A
+    /// failure here is therefore a host mistake with no honest errno — ENOENT
+    /// would blame a guest path that does not exist yet — so it crashes, naming
+    /// the two knobs that have to agree.
+    let private currentDirectoryOf
+        (directory : AbsoluteUnixPath)
+        (platform : SimulatedUnixPlatform)
+        (filesystem : VirtualFileSystem)
+        : InodeNumber * AbsoluteUnixPath
+        =
+        let limits = SimulatedUnixPlatform.pathLimits platform
+        let root = VirtualFileSystem.root filesystem
+
+        match
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                root
+                SymlinkPolicy.Follow
+                (UnixPath.ofAbsolute directory)
+                filesystem
+        with
+        | Ok inode ->
+            match VirtualFileSystem.tryGetContent inode filesystem with
+            | Some (InodeContent.Directory _) ->
+                match VirtualFileSystem.pathOfDirectory inode filesystem with
+                | Some physical -> inode, physical
+                | None ->
+                    failwith
+                        $"EmulatedKernel.CurrentDirectory: \"%s{AbsoluteUnixPath.toString directory}\" resolved to inode %O{inode}, but no path from the root reaches it. Run VirtualFileSystem.checkInvariants."
+            | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.Symlink _) ->
+                failwith
+                    $"EmulatedKernel.CurrentDirectory: \"%s{AbsoluteUnixPath.toString directory}\" resolves in KernelConfig.FileSystem, but not to a directory. No process can be started anywhere else; point KernelConfig.CurrentDirectory at a directory the seed contains."
+            | None ->
+                failwith
+                    $"EmulatedKernel.CurrentDirectory: resolving \"%s{AbsoluteUnixPath.toString directory}\" gave inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
+        | Error UnixError.ENAMETOOLONG ->
+            // Distinguished because the remedy is different, and the message
+            // below would send the reader looking for a missing directory that
+            // is in fact present.
+            failwith
+                $"EmulatedKernel.CurrentDirectory: \"%s{AbsoluteUnixPath.toString directory}\" contains a component longer than %O{SimulatedUnixPlatform.flavour platform}'s NAME_MAX, so no process could have been started in it. Shorten KernelConfig.CurrentDirectory."
+        | Error error ->
+            failwith
+                $"EmulatedKernel.CurrentDirectory: \"%s{AbsoluteUnixPath.toString directory}\" does not resolve in KernelConfig.FileSystem (%O{error}). A process cannot be started in a directory that does not exist; make KernelConfig.FileSystem contain KernelConfig.CurrentDirectory."
 
     /// Set the Unix platform identity the simulated process reports, together
     /// with the filesystem its mount claims to be. `None` takes the flavour's
@@ -3081,12 +3193,6 @@ module EmulatedKernel =
             FileSystemType = resolved
         }
 
-    /// Set the simulated process's current working directory.
-    let withCurrentDirectory (dir : AbsoluteUnixPath) (kernel : EmulatedKernel) : EmulatedKernel =
-        { kernel with
-            CurrentDirectory = AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory" dir
-        }
-
     /// Set the path to the executable that started the simulated process, or
     /// `None` to report that it has none. `None` is preserved rather than
     /// defaulted; see `EmulatedKernel.ProcessPath`.
@@ -3095,22 +3201,49 @@ module EmulatedKernel =
             ProcessPath = path |> Option.map (AbsoluteUnixPath.assertValid "EmulatedKernel.ProcessPath")
         }
 
-    /// Realise a host's filesystem seed, with every inode created at
-    /// `createdAt`.
+    /// Set the filesystem the guest sees, and the directory the simulated
+    /// process starts in, together.
     ///
-    /// Takes the moment explicitly rather than reading `kernel.WallClockEpochMs`
-    /// so that the result does not depend on whether the caller happened to set
-    /// the clock before or after the filesystem — an ordering dependence between
+    /// One setter rather than two because neither answer is well-formed without
+    /// the other: a current directory is an inode of *this* filesystem, and a
+    /// filesystem replaces every inode number the previous one handed out. The
+    /// same reason `withUnixPlatformAndFileSystemType` is one setter.
+    ///
+    /// Takes the moment and the platform explicitly rather than reading
+    /// `kernel.WallClockEpochMs` and `kernel.UnixPlatform`, so that the result
+    /// does not depend on whether the caller happened to set the clock or the
+    /// flavour before or after the filesystem — an ordering dependence between
     /// two `with` functions is exactly the kind of thing that works until
     /// someone reorders `KernelConfig.applyTo`.
-    let withFileSystem
+    ///
+    /// The platform is here because its `NAME_MAX` decides whether the *path
+    /// the host wrote* is one a process on that flavour could name at all: 255
+    /// CJK characters is a legal directory name on Darwin and too long on
+    /// Linux. It is a check on that path and not on the graph — the seed itself
+    /// is realised without consulting any limit, so a filesystem may perfectly
+    /// well contain a directory whose name the current directory could not
+    /// spell.
+    let withFileSystemAndCurrentDirectory
+        (platform : SimulatedUnixPlatform)
         (createdAt : UnixTimestamp)
         (seed : Map<FileName, SeedEntry>)
+        (directory : AbsoluteUnixPath)
         (kernel : EmulatedKernel)
         : EmulatedKernel
         =
+        let platform =
+            SimulatedUnixPlatform.assertValid "EmulatedKernel.UnixPlatform" platform
+
+        let directory =
+            AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory" directory
+
+        let filesystem = FileSystemSeed.toVirtualFileSystem createdAt seed
+        let inode, physical = currentDirectoryOf directory platform filesystem
+
         { kernel with
-            FileSystem = FileSystemSeed.toVirtualFileSystem createdAt seed
+            FileSystem = filesystem
+            CurrentDirectory = physical
+            CurrentDirectoryInode = inode
         }
 
     /// Set the effective user and group IDs the simulated process runs as.
@@ -3995,7 +4128,27 @@ module EmulatedKernel =
             |> List.filter (fun socketId -> socketId >= kernel.NextSocketId)
             |> List.map (fun socketId -> EmulatedKernelDefect.NextSocketIdNotFresh (kernel.NextSocketId, socketId))
 
-        dangling @ unreferenced @ freshness
+        let currentDirectory =
+            match VirtualFileSystem.tryGetContent kernel.CurrentDirectoryInode kernel.FileSystem with
+            | Some (InodeContent.Directory _) ->
+                // Only when some path still reaches it: an inode a process
+                // holds open after its last name has gone has no path, and
+                // `getcwd` on a real system fails rather than lying.
+                match VirtualFileSystem.pathOfDirectory kernel.CurrentDirectoryInode kernel.FileSystem with
+                | Some physical when physical <> kernel.CurrentDirectory ->
+                    [
+                        EmulatedKernelDefect.CurrentDirectoryPathDisagrees (kernel.CurrentDirectory, physical)
+                    ]
+                | Some _
+                | None -> []
+            | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.Symlink _)
+            | None ->
+                [
+                    EmulatedKernelDefect.CurrentDirectoryIsNotADirectory kernel.CurrentDirectoryInode
+                ]
+
+        dangling @ unreferenced @ freshness @ currentDirectory
 
 /// Host-supplied configuration for the simulated process's kernel, applied by
 /// `Program.prepare` before any guest code runs.
@@ -4192,11 +4345,12 @@ module KernelConfig =
         |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
         |> EmulatedKernel.withUnixPlatformAndFileSystemType config.UnixPlatform config.FileSystemType
-        |> EmulatedKernel.withCurrentDirectory config.CurrentDirectory
         |> EmulatedKernel.withProcessPath config.ProcessPath
-        |> EmulatedKernel.withFileSystem
+        |> EmulatedKernel.withFileSystemAndCurrentDirectory
+            config.UnixPlatform
             (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)
             config.FileSystem
+            config.CurrentDirectory
         |> EmulatedKernel.withUserAndGroupId config.UserId config.GroupId
         |> EmulatedKernel.withEphemeralPortRange config.EphemeralPortRange
         |> EmulatedKernel.withLocalAddresses config.LocalAddresses config.LocalRoutes

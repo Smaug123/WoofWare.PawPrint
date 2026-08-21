@@ -257,7 +257,11 @@ module TestAbsoluteUnixPath =
         let exn =
             Assert.Throws<Exception> (fun () ->
                 EmulatedKernel.initial
-                |> EmulatedKernel.withCurrentDirectory Unchecked.defaultof<AbsoluteUnixPath>
+                |> EmulatedKernel.withFileSystemAndCurrentDirectory
+                    SimulatedUnixPlatform.linuxX64
+                    (UnixTimestamp.ofSeconds 0L)
+                    FileSystemSeed.empty
+                    Unchecked.defaultof<AbsoluteUnixPath>
                 |> ignore<EmulatedKernel>
             )
 
