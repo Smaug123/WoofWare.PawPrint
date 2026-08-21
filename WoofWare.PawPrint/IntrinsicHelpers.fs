@@ -475,6 +475,12 @@ module internal IntrinsicHelpers =
     // scalar profile has no implementation of the SIMD ops a `true` answer would commit us to.
     // New ISAs landing in CoreLib must be added to this set.
     //
+    // The fixed-width wrappers `System.Runtime.Intrinsics.Vector{64,128,256,512}\`1` must NOT
+    // be listed here: their `IsSupported` is an element-type query, not a capability query,
+    // and `ThrowHelper.ThrowForUnsupportedIntrinsicsVectorNNNBaseType` raises
+    // NotSupportedException on paths that are live under a scalar profile whenever it is
+    // false. Their honest IL bodies are allowlisted in `safeIntrinsics` instead.
+    //
     // Coverage source: src/libraries/System.Private.CoreLib/src/System/Runtime/Intrinsics
     // (and System/Numerics for `Vector\`1`) in the dotnet/runtime tree. Listing
     // harmless-but-unmatched names is fine; the lookup is keyed off the fully qualified
