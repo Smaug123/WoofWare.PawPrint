@@ -200,3 +200,67 @@ module TestStackFrameCapture =
         frames
         |> List.forall (fun frame -> frame.Method.Name = ".ctor")
         |> shouldEqual true
+
+    [<Test>]
+    let ``a capture refuses while a first-pass search is suspended in a filter`` () =
+        // `ExceptionDispatching.firstPass` moves the active frame outward to the frame hosting the
+        // filter and leaves every frame inner to it live — it is a search, not an unwind. Those
+        // frames are not on the host's return chain, so a walk from the host would report a trace
+        // with the throw missing from it. Real .NET includes them (measured), so answering
+        // partially would be wrong rather than merely incomplete.
+        let thread = threadWithChain [ 40, 30 ; 20, 10 ; 5, 0 ]
+
+        let filterRegion : ExceptionFilterRegion =
+            {
+                FilterOffset = 3
+                HandlerOffset =
+                    {
+                        TryOffset = 0
+                        TryLength = 4
+                        HandlerOffset = 10
+                        HandlerLength = 1
+                    }
+            }
+
+        let continuationFrame : ExceptionContinuationFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
+            {
+                Scope = ExceptionContinuationScope.FilterHandler filterRegion
+                Continuation =
+                    ExceptionContinuation.ResumeAfterFilter
+                        {
+                            CurrentFilter = filterRegion
+                            Search =
+                                {
+                                    Exception =
+                                        {
+                                            ExceptionObject = ManagedHeapAddress 1
+                                            StackTrace = []
+                                        }
+                                    ExceptionType = ConcreteTypeHandle.Concrete 0
+                                    StartFrame = thread.ActiveMethodState
+                                    StartPC = 0
+                                    Frame = thread.ActiveMethodState
+                                    SearchPC = 0
+                                    SkippedFilters = []
+                                }
+                        }
+            }
+
+        let withFilter =
+            ThreadState.mapFrame
+                thread.ActiveMethodState
+                (fun frame ->
+                    { frame with
+                        ExceptionContinuations = [ continuationFrame ]
+                    }
+                )
+                thread
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> StackFrameCapture.ofThread withFilter |> ignore)
+
+        exn.Message |> shouldContainText "suspended in a filter"
+
+        // Without the continuation the same chain walks fine, so the refusal is caused by the
+        // filter state rather than by anything else about the fixture.
+        StackFrameCapture.ofThread thread |> List.length |> shouldEqual 3

@@ -57,6 +57,11 @@ module StackFrameCapture =
     /// rather than stepped back onto a blocking call, because this walk answers a QCall the thread
     /// is itself executing, so it is never parked when asked.
     /// </para>
+    /// <para>
+    /// Refuses while a first-pass handler search is suspended in a filter. The active frame is then
+    /// the one hosting the filter, and the frames inner to it are still live but are not on its
+    /// return chain, so walking outward from it would silently omit them.
+    /// </para>
     /// </remarks>
     let ofThread
         (thread : ThreadState)
@@ -91,6 +96,35 @@ module StackFrameCapture =
             if remaining < 0 then
                 failwith
                     $"StackFrameCapture.ofThread: walked more than %d{thread.MethodStates.Count} frames, the number live, without reaching one that has no caller; the return chain from frame %O{thread.ActiveMethodState} does not terminate. This is an interpreter bug."
+
+            // A filter body runs during the *search* pass, so the frames between the throw and this
+            // one have not been unwound: `ExceptionDispatching.firstPass` moves the active frame
+            // outward to the filter's host and leaves them live. They are not on this frame's
+            // return chain, though, so continuing the walk would report the filter, its callers,
+            // and nothing of the throw — measured on .NET 10, a capture from inside a filter
+            // reports the filter, its host, the runtime's two dispatch frames, and then the whole
+            // still-live throwing stack (`P.Thrower` / `P.Middle` / `P.Main`).
+            //
+            // The inputs a fix would need are right here: the suspended `ExceptionSearchState`
+            // carries `StartFrame` and `StartPC`, the frame and offset the raise began at, so the
+            // throwing chain can be walked from there. What it does not settle is the shape of the
+            // answer — real .NET reports the filter's host frame *twice*, once as the filter's host
+            // and again as part of the throwing stack, and interposes two `System.Runtime.EH`
+            // frames PawPrint has no analogue of. That is a dispatch-shaped decision rather than a
+            // capture-shaped one.
+            //
+            // Until it is made, this refuses: a trace missing the frames that explain the exception
+            // being filtered is a wrong answer presented as a right one. Nothing is lost today —
+            // every non-empty capture already stops earlier, at `IsTypicalMethodDefinition`.
+            frame.ExceptionContinuations
+            |> List.iter (fun continuation ->
+                match continuation.Continuation with
+                | ExceptionContinuation.ResumeAfterFilter _ ->
+                    failwith
+                        $"StackFrameCapture.ofThread: cannot capture a stack trace while a first-pass handler search is suspended in a filter of %s{frame.ExecutingMethod.Name}. The frames inner to it are still live but are not on its return chain, so this walk would report a trace missing the throw that is being filtered. Splicing them in means walking from the suspended search's StartFrame/StartPC, and deciding how to present the filter host, which appears twice in real .NET's answer."
+                | ExceptionContinuation.ResumeAfterFinally _
+                | ExceptionContinuation.PropagatingException _ -> ()
+            )
 
             let acc =
                 if isDelegateInvokeStub frame then
