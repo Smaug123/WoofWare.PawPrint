@@ -4191,6 +4191,107 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim resultCode)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_FcntlSetIsNonBlocking",
+          [ ConcreteIntPtr state.ConcreteTypes ; _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_FcntlSetIsNonBlocking(intptr_t fd,
+            // int32_t isNonBlocking)` (pal_io.c:655): `fcntl(F_GETFL)`, toggle
+            // `O_NONBLOCK`, `fcntl(F_SETFL)`. Returns 0, or -1-and-errno; any
+            // nonzero second argument sets. The only errno the modelled targets
+            // can draw is EBADF, from `F_GETFL` on a dead descriptor.
+            //
+            // The flag lands on the open file description
+            // (`OpenFileDescription.NonBlocking`), where POSIX keeps the status
+            // flags — but only for the targets whose every modelled transfer
+            // honours it: a socket (no transfer syscall exists yet, and each
+            // one that lands must consult the flag, `SystemNative_Accept`
+            // first), and a regular file (both kernels give `O_NONBLOCK` no
+            // effect there, so handlers that never look are right not to). The
+            // targets whose modelled transfers would *ignore* a stored flag are
+            // refused below rather than silently diverging.
+            //
+            // The second parameter is matched loosely for the reason
+            // `SystemNative_Socket`'s enums are: CoreLib declares it `int`
+            // while a guest hand-rolling the P/Invoke may write `bool`.
+            let operation = "SystemNative_FcntlSetIsNonBlocking"
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            let isNonBlocking =
+                NativeCall.int32Argument operation instruction.Arguments.[1] <> 0
+
+            let complete (code : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim code)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match FileDescriptorRegistry.tryFindTarget fd state.Kernel.FileDescriptors with
+            | None ->
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EBADF))
+                |> complete (-1)
+            | Some (OpenFileTarget.StandardStream role) when isNonBlocking ->
+                // A real pipe honours O_NONBLOCK — an empty read becomes EAGAIN
+                // — but no modelled stream transfer consults the flag, so
+                // recording it would keep blocking semantics silently. Teach
+                // the stream read/write handlers to consult it, then accept it
+                // here.
+                failwith
+                    $"%s{operation}: fd %d{fd} is the standard stream %O{role}, which PawPrint models as a pipe, and no modelled stream transfer consults O_NONBLOCK; storing it would silently keep blocking semantics. Decide what a non-blocking stream read does before accepting this."
+            | Some OpenFileTarget.SocketEventPort when isNonBlocking ->
+                failwith
+                    $"%s{operation}: fd %d{fd} is a socket event port, and PawPrint has not decided what O_NONBLOCK on an epoll or kqueue descriptor even means — no modelled wait consults it, and neither platform's semantics have been measured here. Decide, with a measurement, before accepting this."
+            | Some (OpenFileTarget.StandardStream _)
+            | Some OpenFileTarget.SocketEventPort
+            | Some (OpenFileTarget.File _)
+            | Some (OpenFileTarget.Socket _) ->
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        FileDescriptors = FileDescriptorRegistry.setNonBlocking fd isNonBlocking kernel.FileDescriptors
+                    }
+                )
+                |> complete 0
+        | Some "SystemNative_FcntlGetIsNonBlocking",
+          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_FcntlGetIsNonBlocking(intptr_t fd,
+            // int32_t* isNonBlocking)` (pal_io.c:677). A NULL out-pointer is
+            // answered with `Error_EFAULT` — the PAL *enum* value, from a
+            // function whose other answers are 0 or -1-and-errno; faithful to
+            // the C, odd as it is. On failure the C stores 0 through the
+            // pointer before returning -1, and the only failure the modelled
+            // targets can produce is EBADF.
+            //
+            // Reads for every target kind, where the setter refuses some:
+            // `false` is the truth for a target the setter will not flag.
+            let operation = "SystemNative_FcntlGetIsNonBlocking"
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            let outArgument =
+                bufferPointerArgument operation "isNonBlocking" instruction.Arguments.[1]
+
+            let complete (code : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim code)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match outArgument with
+            | BufferPointer.RawAddress 0UL -> complete (UnixError.toPal UnixError.EFAULT) state
+            | _ ->
+
+            let outCell = requireStorage operation "isNonBlocking" outArgument
+
+            let store (value : int) (state : IlMachineState) : IlMachineState =
+                let bytes = Array.zeroCreate<byte> 4
+                BinaryPrimitives.WriteInt32LittleEndian (System.Span<byte> bytes, value)
+                writeBytesThrough ctx operation outCell (ImmutableArray.CreateRange bytes) state
+
+            match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+            | None ->
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EBADF))
+                |> store 0
+                |> complete (-1)
+            | Some description -> state |> store (if description.NonBlocking then 1 else 0) |> complete 0
         // `int32_t SystemNative_Socket(int32_t addressFamily, int32_t socketType,
         // int32_t protocolType, intptr_t* createdSocket)` (pal_networking.c:2812).
         //

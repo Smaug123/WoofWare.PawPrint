@@ -34,6 +34,7 @@ module TestEmulatedKernelSockets =
                      {
                          Target = target
                          AccessMode = FileAccessMode.ReadWrite
+                         NonBlocking = false
                          Flock = None
                      }
                  )

@@ -25,6 +25,7 @@ module TestFileDescriptorRegistry =
                 | FileDescriptorRole.StandardInput -> FileAccessMode.ReadOnly
                 | FileDescriptorRole.StandardOutput
                 | FileDescriptorRole.StandardError -> FileAccessMode.WriteOnly
+            NonBlocking = false
             Flock = None
         }
 
@@ -32,6 +33,7 @@ module TestFileDescriptorRegistry =
         {
             Target = OpenFileTarget.File (inode, 0L)
             AccessMode = FileAccessMode.ReadOnly
+            NonBlocking = false
             Flock = None
         }
 
@@ -370,8 +372,8 @@ module TestFileDescriptorRegistry =
 
     /// `dup(2)` shares the description, and the access mode lives on the
     /// description — so a `dup` of a write-only descriptor is write-only too.
-    /// There is no `fcntl(F_SETFL)` that could change one afterwards, and POSIX
-    /// gives no other way, so this is the whole of the access mode's lifecycle.
+    /// `fcntl(F_SETFL)` ignores the access-mode bits, and POSIX gives no other
+    /// way to change one, so this is the whole of the access mode's lifecycle.
     [<Test>]
     let ``openFile records the access mode it was given, and dup shares it`` () : unit =
         for mode in
@@ -1035,6 +1037,7 @@ module TestFileDescriptorRegistry =
             {
                 Target = OpenFileTarget.File (someInode, 0L)
                 AccessMode = FileAccessMode.ReadOnly
+                NonBlocking = false
                 Flock = Some mode
             }
 
@@ -1073,6 +1076,7 @@ module TestFileDescriptorRegistry =
             {
                 Target = OpenFileTarget.File (inode, 0L)
                 AccessMode = FileAccessMode.ReadOnly
+                NonBlocking = false
                 Flock = Some FlockMode.Exclusive
             }
 
@@ -1407,6 +1411,7 @@ module TestFileDescriptorRegistry =
         {
             Target = OpenFileTarget.Socket (SocketId socketId)
             AccessMode = FileAccessMode.ReadWrite
+            NonBlocking = false
             Flock = None
         }
 
@@ -1584,6 +1589,7 @@ module TestFileDescriptorRegistry =
                         {
                             Target = OpenFileTarget.File (someInode, offset)
                             AccessMode = FileAccessMode.ReadOnly
+                            NonBlocking = false
                             Flock = None
                         }
                     ])
@@ -1598,3 +1604,112 @@ module TestFileDescriptorRegistry =
 
         FileDescriptorRegistry.checkInvariants (table System.Int64.MaxValue)
         |> shouldEqual []
+
+    let private nonBlockingOf (fd : int) (registry : FileDescriptorRegistry) : bool =
+        match FileDescriptorRegistry.tryFind fd registry with
+        | Some description -> description.NonBlocking
+        | None -> failwith $"fd %d{fd} should be live"
+
+    [<Test>]
+    let ``every creator starts its description blocking`` () : unit =
+        // The three inherited streams...
+        for fd in [ 0 ; 1 ; 2 ] do
+            nonBlockingOf fd FileDescriptorRegistry.initial |> shouldEqual false
+
+        // ...and each of the three creators: `SystemNative_Open` accepts no
+        // O_NONBLOCK bit, `socket(2)` is given no SOCK_NONBLOCK, and an event
+        // port is handed out as `epoll_create1`/`kqueue` make it.
+        let fd, registry =
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
+
+        nonBlockingOf fd registry |> shouldEqual false
+
+        let fd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
+        nonBlockingOf fd registry |> shouldEqual false
+
+        let fd, registry = FileDescriptorRegistry.createSocketEventPort registry
+        nonBlockingOf fd registry |> shouldEqual false
+
+    [<Test>]
+    let ``setNonBlocking round-trips on a socket and on a file`` () : unit =
+        let socketFd, registry =
+            FileDescriptorRegistry.createSocket (SocketId 0L) FileDescriptorRegistry.initial
+
+        let fileFd, registry =
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadWrite registry
+
+        for fd in [ socketFd ; fileFd ] do
+            let registry = FileDescriptorRegistry.setNonBlocking fd true registry
+            nonBlockingOf fd registry |> shouldEqual true
+
+            // Setting is idempotent, and clearing restores the blank state.
+            let registry = FileDescriptorRegistry.setNonBlocking fd true registry
+            nonBlockingOf fd registry |> shouldEqual true
+
+            let registry = FileDescriptorRegistry.setNonBlocking fd false registry
+            nonBlockingOf fd registry |> shouldEqual false
+
+            FileDescriptorRegistry.assertInvariants "setNonBlocking round-trip" registry
+            |> ignore<FileDescriptorRegistry>
+
+    [<Test>]
+    let ``setNonBlocking on one descriptor of a dup pair is visible through the other`` () : unit =
+        let fd, registry =
+            FileDescriptorRegistry.createSocket (SocketId 0L) FileDescriptorRegistry.initial
+
+        let duplicated, registry =
+            match FileDescriptorRegistry.dup fd registry with
+            | Ok result -> result
+            | Error e -> failwith $"expected dup to succeed, got %O{e}"
+
+        // Set through the original, read through the duplicate...
+        let registry = FileDescriptorRegistry.setNonBlocking fd true registry
+        nonBlockingOf duplicated registry |> shouldEqual true
+
+        // ...clear through the duplicate, read through the original.
+        let registry = FileDescriptorRegistry.setNonBlocking duplicated false registry
+        nonBlockingOf fd registry |> shouldEqual false
+
+        // Closing one half does not disturb the survivor's flag.
+        let registry = FileDescriptorRegistry.setNonBlocking fd true registry
+
+        let registry =
+            match FileDescriptorRegistry.close duplicated registry with
+            | Ok (registry, destroyed) ->
+                // The original still names the description, so nothing died.
+                destroyed |> shouldEqual None
+                registry
+            | Error e -> failwith $"expected close to succeed, got %O{e}"
+
+        nonBlockingOf fd registry |> shouldEqual true
+
+    [<Test>]
+    let ``setNonBlocking refuses a dead fd, and refuses to flag a stream or an event port`` () : unit =
+        // A dead fd is the caller's EBADF to answer, not this module's.
+        (fun () ->
+            FileDescriptorRegistry.setNonBlocking 99 true FileDescriptorRegistry.initial
+            |> ignore
+        )
+        |> shouldFail<exn>
+
+        // Setting on a standard stream would store a flag no modelled stream
+        // transfer consults; the backstop refuses even when the handler screen
+        // is bypassed. Clearing is a no-op statement of the truth, so it is
+        // permitted on the same targets.
+        (fun () ->
+            FileDescriptorRegistry.setNonBlocking 0 true FileDescriptorRegistry.initial
+            |> ignore
+        )
+        |> shouldFail<exn>
+
+        nonBlockingOf 0 (FileDescriptorRegistry.setNonBlocking 0 false FileDescriptorRegistry.initial)
+        |> shouldEqual false
+
+        let portFd, registry =
+            FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
+
+        (fun () -> FileDescriptorRegistry.setNonBlocking portFd true registry |> ignore)
+        |> shouldFail<exn>
+
+        nonBlockingOf portFd (FileDescriptorRegistry.setNonBlocking portFd false registry)
+        |> shouldEqual false

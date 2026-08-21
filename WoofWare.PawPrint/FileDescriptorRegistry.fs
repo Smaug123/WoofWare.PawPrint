@@ -300,9 +300,9 @@ module FileAccessMode =
 /// description". Everything shared between file descriptors that `dup(2)`
 /// produced belongs here.
 ///
-/// The status flags (`O_APPEND`, `O_NONBLOCK`) are absent: no modelled syscall
-/// can make them differ, `SystemNative_Open` accepting neither bit and
-/// `SystemNative_FCntl` not existing.
+/// Of the status flags, only `O_NONBLOCK` is present: `O_APPEND` is absent
+/// because no modelled syscall can set it, `SystemNative_Open` accepting
+/// neither bit.
 type OpenFileDescription =
     {
         /// What this description refers to, and where in it.
@@ -310,6 +310,15 @@ type OpenFileDescription =
         /// Which transfers this description permits, from the access mode
         /// `open(2)` was given.
         AccessMode : FileAccessMode
+        /// Whether `O_NONBLOCK` is set. On the description, not the
+        /// descriptor — that is where POSIX keeps the status flags, and why a
+        /// `dup(2)` pair shares them. Set through
+        /// `SystemNative_FcntlSetIsNonBlocking` (`fcntl(F_SETFL)`).
+        ///
+        /// `true` is recorded only against a target whose every modelled
+        /// transfer honours it — see `setNonBlocking` — so a handler that
+        /// consults this may trust it rather than re-checking the target kind.
+        NonBlocking : bool
         /// The `flock(2)` lock this description holds, if any.
         ///
         /// On the description, not on the inode: that is where POSIX puts it,
@@ -488,6 +497,7 @@ module FileDescriptorRegistry =
                     {
                         Target = OpenFileTarget.StandardStream role
                         AccessMode = accessMode
+                        NonBlocking = false
                         Flock = None
                     }
 
@@ -683,6 +693,9 @@ module FileDescriptorRegistry =
                     {
                         Target = OpenFileTarget.File (inode, 0L)
                         AccessMode = accessMode
+                        // `SystemNative_Open` accepts no `O_NONBLOCK` bit, so
+                        // every modelled open starts blocking.
+                        NonBlocking = false
                         // `open(2)` never takes a lock; `FileStream` issues a
                         // separate `flock` immediately afterwards, which is
                         // why `FileShare` is not atomic with opening on Unix
@@ -723,6 +736,7 @@ module FileDescriptorRegistry =
                     {
                         Target = OpenFileTarget.SocketEventPort
                         AccessMode = FileAccessMode.ReadWrite
+                        NonBlocking = false
                         Flock = None
                     }
                     registry.Descriptions
@@ -765,6 +779,10 @@ module FileDescriptorRegistry =
                     {
                         Target = OpenFileTarget.Socket socketId
                         AccessMode = FileAccessMode.ReadWrite
+                        // No `SOCK_NONBLOCK`: the shim's type conversion adds
+                        // `SOCK_CLOEXEC` only, and CoreLib switches a socket to
+                        // non-blocking through a separate fcntl afterwards.
+                        NonBlocking = false
                         // `socket(2)` takes no lock, exactly as `open(2)` does not.
                         Flock = None
                     }
@@ -923,6 +941,55 @@ module FileDescriptorRegistry =
                     id
                     { description with
                         Target = OpenFileTarget.File (inode, offset)
+                    }
+                    registry.Descriptions
+        }
+
+    /// Mirrors the `O_NONBLOCK` half of `fcntl(F_SETFL)`: record whether this
+    /// description's transfers should refuse to block. On the description, so
+    /// shared with every descriptor `dup(2)` has produced for it.
+    ///
+    /// Like `setOffset`, *partial* in the descriptor: the caller
+    /// (`SystemNative_FcntlSetIsNonBlocking`) has already answered `EBADF` for
+    /// a dead fd. It has also refused to *set* the flag on the targets whose
+    /// modelled transfers do not consult it — a standard stream (modelled as a
+    /// pipe, whose reads a real kernel's `O_NONBLOCK` turns into `EAGAIN`
+    /// while PawPrint's stream handlers would block regardless) and a socket
+    /// event port. Storing `true` against either would be a divergence nothing
+    /// could see coming, so that is an interpreter bug here; clearing is
+    /// always honest and always permitted.
+    let setNonBlocking (fd : int) (value : bool) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
+        match Map.tryFind fd registry.Fds with
+        | None ->
+            failwith
+                $"setNonBlocking: fd %d{fd} is not a live file descriptor, so there is no description to flag (this is an interpreter bug: the caller should have answered EBADF)."
+        | Some id ->
+
+        let description =
+            match Map.tryFind id registry.Descriptions with
+            | Some description -> description
+            | None ->
+                failwith
+                    $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is an interpreter bug)"
+
+        match description.Target, value with
+        | OpenFileTarget.StandardStream role, true ->
+            failwith
+                $"setNonBlocking: fd %d{fd} names standard stream %O{role}, and no modelled stream transfer consults O_NONBLOCK, so a stored `true` would silently keep blocking semantics (this is an interpreter bug: the caller should have refused)."
+        | OpenFileTarget.SocketEventPort, true ->
+            failwith
+                $"setNonBlocking: fd %d{fd} names a socket event port, and PawPrint has not decided what O_NONBLOCK on an epoll or kqueue descriptor even means (this is an interpreter bug: the caller should have refused)."
+        | OpenFileTarget.StandardStream _, false
+        | OpenFileTarget.SocketEventPort, false
+        | OpenFileTarget.File _, _
+        | OpenFileTarget.Socket _, _ ->
+
+        { registry with
+            Descriptions =
+                Map.add
+                    id
+                    { description with
+                        NonBlocking = value
                     }
                     registry.Descriptions
         }
