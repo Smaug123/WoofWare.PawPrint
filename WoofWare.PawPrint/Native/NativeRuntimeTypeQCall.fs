@@ -993,6 +993,24 @@ module NativeRuntimeTypeQCall =
                     }
                 )
 
+            // A token naming a row this module does not have. CoreCLR's
+            // `ClassLoader::LoadTypeDefOrRefOrSpecThrowing` throws for one, and the managed
+            // wrapper `ModuleHandle.ResolveTypeHandle` catches *that* and asks
+            // `MetadataImport.IsValidToken` whether the token was the problem; when it says no,
+            // the guest gets an `ArgumentOutOfRangeException` naming `typeToken`
+            // (RuntimeHandles.cs:1851-1857). So the exception raised here is not the one the guest
+            // sees, and deliberately so: only CoreLib can attach that `paramName`.
+            //
+            // Screened with the same predicate the `IsValidToken` FCall answers from, rather than a
+            // separate `ContainsKey` test per arm. The two must agree — if this raised while
+            // `IsValidToken` called the token valid, the managed wrapper would rethrow and the
+            // guest would see an `ArgumentException` instead — and sharing the predicate is what
+            // makes that structural rather than a coincidence of two tests over the same data.
+            if not (NativeMetadataImport.isValidToken operation assembly typeToken) then
+                NativeHandlerResult.raiseException ctx.BaseClassTypes.BadImageFormatException state
+                |> Some
+            else
+
             // The C# wrapper validates the token kind (TypeDef/TypeSpec/TypeRef, and not the
             // global TypeDef token) before reaching this QCall, so any other kind here is a
             // contract violation rather than user error.
