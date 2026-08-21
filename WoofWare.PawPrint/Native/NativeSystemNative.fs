@@ -2798,6 +2798,92 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        // `int32_t SystemNative_Unlink(const char* path)` (pal_io.c:368), an
+        // EINTR-retrying `unlink(2)` and nothing else. CoreLib declares it as
+        // `int Unlink(string)` under UTF-8 marshalling, so the argument that
+        // arrives here is the same NUL-terminated byte pointer
+        // `SystemNative_MkDir` takes.
+        | Some "SystemNative_Unlink",
+          [ ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_Unlink"
+
+            let fail (error : UnixError) : NativeHandlerResult option =
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            let rules = SimulatedUnixPlatform.unlinkRules state.Kernel.UnixPlatform
+
+            match
+                bufferPointerArgument operation "path" instruction.Arguments.[0]
+                |> BufferPointer.dereferenceable
+            with
+            | None -> fail UnixError.EFAULT
+            | Some pathPtr ->
+
+            let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
+
+            let bytes =
+                NativeCall.readNullTerminatedBytesWithin
+                    operation
+                    ctx.BaseClassTypes
+                    state
+                    pathPtr
+                    (PathLimits.pathMaxBytes limits)
+
+            match parseGuestPathBytes operation limits bytes with
+            | Error error -> fail error
+            | Ok path ->
+
+            // `NoFollowFinal` on both platforms -- `unlink` removes the name it
+            // was given, never what that name points at. The trailing separator
+            // is the only thing that can reach past a final symlink, and only on
+            // Darwin; see `UnlinkRules.TrailingSeparator`.
+            match resolveGuestPathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator state.Kernel path with
+            | Error error -> fail error
+            | Ok resolution ->
+
+            match
+                UnlinkRules.verdict
+                    (SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform)
+                    (EmulatedKernel.callerPrivilege state.Kernel)
+                    resolution
+                    state.Kernel.FileSystem
+            with
+            | UnlinkVerdict.Refuse error -> fail error
+            | UnlinkVerdict.Remove (directory, name) ->
+
+            let now = EmulatedKernel.fileTimestamp state.Kernel
+
+            match VirtualFileSystem.unbind directory name now state.Kernel.FileSystem with
+            | Error error ->
+                // `unbind` refuses a directory it does not hold and a name that
+                // directory does not bind. The walk has just established both,
+                // so either is a broken graph rather than something the guest
+                // did.
+                failwith
+                    $"%s{operation}: removing \"%s{FileName.toString name}\" from inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and holds that name (this is an interpreter bug)."
+            | Ok (target, filesystem) ->
+
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    FileSystem = filesystem
+                }
+                // The name is gone; whether the *inode* is depends on whether
+                // any other name or any open descriptor still holds it. A real
+                // `unlink` of a file something has open leaves it readable
+                // through that descriptor until the last one closes.
+                |> EmulatedKernel.forgetIfUnheld target
+            )
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_GetFileSystemType",
           [ ConcreteIntPtr state.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->

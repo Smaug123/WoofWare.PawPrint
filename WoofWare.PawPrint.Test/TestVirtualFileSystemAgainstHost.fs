@@ -52,6 +52,9 @@ module TestVirtualFileSystemAgainstHost =
     extern int private mkdir(string path, uint32 mode)
 
     [<DllImport("libc", SetLastError = true)>]
+    extern int private unlink(string path)
+
+    [<DllImport("libc", SetLastError = true)>]
     extern int private ftruncate(int fd, int64 length)
 
     [<DllImport("libc", SetLastError = true)>]
@@ -290,6 +293,16 @@ module TestVirtualFileSystemAgainstHost =
             "cls677/kid"
             "cls500"
             "cls500/kid"
+            // 0o500 is searchable and not writable, and `kid` inside it is a
+            // *directory* — which is what separates the two orderings a deletion
+            // can have. Measured: `unlink("cls500/kid")` is EACCES on Linux and
+            // EPERM on Darwin, and adding the trailing separator moves Linux to
+            // EISDIR while leaving Darwin where it was. Nothing else in this
+            // corpus tells those two arms apart.
+            "cls500/kid/"
+            // ...and a free name in that same unwritable directory, which is
+            // ENOENT on both: the missing-name check beats the permission one.
+            "cls500/nx"
         ]
 
     // ------------------------------------------------------------ the host side
@@ -1539,6 +1552,286 @@ module TestVirtualFileSystemAgainstHost =
             |> shouldEqual (List.length mkDirModeProbes)
         finally
             removeHostTree root
+
+    // -------------------------------------------------------------- unlink
+
+    /// What an `unlink(2)` did, in terms both worlds can express.
+    ///
+    /// The success case carries *which* paths went, not merely that the call
+    /// returned 0. `unlink` is the first comparison here that destroys
+    /// something, and an errno-only comparison cannot see a model that removed
+    /// the wrong object: `rmdir("ld/")` on Darwin removes the link's target
+    /// rather than the link, and `unlink` reaches resolutions of exactly that
+    /// shape.
+    ///
+    /// It doubles as this fixture's containment guarantee. One `unlink` removes
+    /// at most one name, so a call that succeeded while the row's own tree is
+    /// unchanged deleted something *outside* it — and that is a failure of the
+    /// test, not of the model. No lexical path reasoning is involved, which
+    /// matters because `Path.GetFullPath` does not traverse intermediate
+    /// symlinks and would call "lroot/.." contained when the kernel resolves it
+    /// to the machine's root.
+    [<RequireQualifiedAccess>]
+    type private UnlinkOutcome =
+        /// The call removed exactly these paths, relative to the tree root.
+        | Removed of gone : string list
+        /// The call failed with this errno, and removed nothing.
+        | Failed of errno : int
+
+    /// Every path the corpus builds, which is what both worlds hold before any
+    /// row runs. Stated rather than walked, so that a "before" listing cannot
+    /// itself be wrong in the same way the "after" one might be.
+    let private corpusPaths : string list =
+        (directories @ files @ List.map fst symlinks) |> List.sort
+
+    /// Every path under `root` on the host, symlinks included and never
+    /// followed.
+    let private hostListing (root : string) : string list =
+        let rec walk (prefix : string) (directory : string) : string list =
+            DirectoryInfo(directory).EnumerateFileSystemInfos ()
+            |> Seq.collect (fun entry ->
+                let relative =
+                    if prefix = "" then
+                        entry.Name
+                    else
+                        prefix + "/" + entry.Name
+
+                match entry with
+                // `LinkTarget` is null for anything that is not a symlink; a
+                // symlink to a directory must not be descended into, or the
+                // listing would report the target's contents under two names.
+                | :? DirectoryInfo as sub when isNull entry.LinkTarget ->
+                    relative :: List.ofSeq (walk relative sub.FullName)
+                | _ -> [ relative ]
+            )
+            |> List.ofSeq
+
+        walk "" root |> List.sort
+
+    /// The same, for the model.
+    let private modelListing (vfs : VirtualFileSystem) : string list =
+        let rec walk (prefix : string) (inode : InodeNumber) : string list =
+            match VirtualFileSystem.tryGetContent inode vfs with
+            | Some (InodeContent.Directory content) ->
+                content.Entries
+                |> Map.toList
+                |> List.collect (fun (entry, child) ->
+                    let relative =
+                        if prefix = "" then
+                            FileName.toString entry
+                        else
+                            prefix + "/" + FileName.toString entry
+
+                    relative :: walk relative child
+                )
+            | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.Symlink _)
+            | None -> []
+
+        walk "" (VirtualFileSystem.root vfs) |> List.sort
+
+    let private hostUnlinkOutcome (root : string) (relative : string) : UnlinkOutcome =
+        let result = unlink (hostPath root relative)
+        let failure = errno ()
+
+        // Widened before listing: three corpus directories cannot be
+        // enumerated as they stand, and narrowing is what the permission rows
+        // are about, so it cannot be done earlier.
+        for name, _ in narrowedDirectories do
+            trySetMode (Path.Combine (root, name)) 0o755 |> ignore<bool>
+
+        let after = hostListing root
+        let gone = corpusPaths |> List.filter (fun p -> not (List.contains p after))
+
+        if result = 0 then
+            if List.isEmpty gone then
+                failwith
+                    $"unlink(%s{relative}) succeeded on this kernel but removed nothing inside the row's own tree, so it removed something outside it. This fixture's paths are all relative names of corpus objects; one of them is escaping."
+
+            UnlinkOutcome.Removed gone
+        else
+
+        if not (List.isEmpty gone) then
+            failwith $"unlink(%s{relative}) failed with errno %d{failure} on this kernel and yet removed %A{gone}."
+
+        UnlinkOutcome.Failed failure
+
+    let private modelUnlinkOutcome (vfs : VirtualFileSystem) (relative : string) : UnlinkOutcome =
+        let rules = SimulatedUnixPlatform.unlinkRules (hostPlatform ())
+
+        match
+            VirtualFileSystem.resolveFull
+                (limits ())
+                (hostPrivilege ())
+                (VirtualFileSystem.root vfs)
+                SymlinkPolicy.NoFollowFinal
+                rules.TrailingSeparator
+                (UnixPath.parseOrFail "test" relative)
+                vfs
+        with
+        | Error error -> UnlinkOutcome.Failed (hostErrno error)
+        | Ok resolution ->
+
+        match
+            UnlinkRules.verdict (SimulatedUnixPlatform.flavour (hostPlatform ())) (hostPrivilege ()) resolution vfs
+        with
+        | UnlinkVerdict.Refuse error -> UnlinkOutcome.Failed (hostErrno error)
+        | UnlinkVerdict.Remove (directory, name) ->
+
+        let removed =
+            VirtualFileSystem.unbind directory name buildTime vfs
+            |> function
+                | Ok (_, updated) -> updated
+                | Error error ->
+                    failwith $"the model's verdict said to remove %s{relative} and then could not: %O{error}"
+
+        let after = modelListing removed
+        UnlinkOutcome.Removed (corpusPaths |> List.filter (fun p -> not (List.contains p after)))
+
+    /// The paths whose *model* resolution ends at the model's own root.
+    ///
+    /// Excluded, because the two worlds are not being asked the same question
+    /// there: `hostPath` prefixes every path with the row's temporary directory,
+    /// so the host's stand-in root is an ordinary directory with a real parent
+    /// while the model's is a genuine filesystem root. Measured, Darwin answers
+    /// EBUSY for the root reached by "." and EPERM for any other directory, so
+    /// the rows below would compare an EBUSY against an EPERM and be a fixture
+    /// artefact either way.
+    ///
+    /// `mkDirProbePaths` excludes "/" for the containment half of the same
+    /// reason, and the corpus comment above refuses "/.." for the mirror image.
+    /// ``the excluded paths are exactly the ones that reach the model's root``
+    /// keeps this list honest as the corpus grows.
+    let private rootReachingPaths : string list = [ "/" ; "." ; "d/.." ; "ns/.." ]
+
+    let private unlinkProbePaths =
+        probePaths
+        |> List.filter (fun path -> not (List.contains path rootReachingPaths))
+
+    /// Run one `unlink` through both worlds, each built fresh — `unlink`
+    /// destroys, so no two rows may share a tree.
+    let private compareUnlink (relative : string) : UnlinkOutcome * UnlinkOutcome =
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-unlink-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            buildHostTree root
+            let vfs = buildModel ()
+            hostUnlinkOutcome root relative, modelUnlinkOutcome vfs relative
+        finally
+            removeHostTree root
+
+    [<Test>]
+    let ``the excluded paths are exactly the ones that reach the model's root`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        let vfs = buildModel ()
+        let root = VirtualFileSystem.root vfs
+
+        // Asked privileged, which is the worst case: an unsearchable directory
+        // would otherwise hide a `..` that climbs out of it, and a root test
+        // host really does resolve those.
+        let reachesRoot (relative : string) : bool =
+            match
+                VirtualFileSystem.resolveFull
+                    (limits ())
+                    CallerPrivilege.Privileged
+                    root
+                    SymlinkPolicy.NoFollowFinal
+                    (SimulatedUnixPlatform.unlinkRules (hostPlatform ())).TrailingSeparator
+                    (UnixPath.parseOrFail "test" relative)
+                    vfs
+            with
+            | Ok resolution ->
+                match resolution.Target with
+                | ResolvedTarget.Directory (inode, _) -> inode = root
+                | ResolvedTarget.Entry _ -> false
+            | Error _ -> false
+
+        probePaths
+        |> List.filter reachesRoot
+        |> List.sort
+        |> shouldEqual (List.sort rootReachingPaths)
+
+    [<Test>]
+    let ``unlink decides exactly as this kernel does, and destroys the same thing`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // The rows the two kernels answer differently are all trailing-separator
+        // ones: "ld/", "dang/" and "cycleA/" are ENOTDIR on Linux — whose
+        // deletion never resolves the last component — and EPERM, ENOENT and
+        // ELOOP on Darwin. macOS locally and Linux in CI each falsify their own
+        // column.
+        let mismatches =
+            [
+                for relative in unlinkProbePaths do
+                    let expected, actual = compareUnlink relative
+
+                    if expected <> actual then
+                        yield $"unlink %s{relative}: kernel said %A{expected}, model said %A{actual}"
+            ]
+
+        if not (List.isEmpty mismatches) then
+            let rendered = String.Join (Environment.NewLine, mismatches)
+
+            failwith $"The model disagrees with this kernel about unlink:%s{Environment.NewLine}%s{rendered}"
+
+    [<Test>]
+    let ``the unlink corpus reaches every verdict this kernel can give`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // Without this the comparison above could pass by never removing
+        // anything, or by never provoking a refusal. Stated against the
+        // *kernel's* answers rather than the model's, so it cannot be satisfied
+        // by the model agreeing with itself.
+        let observed =
+            unlinkProbePaths
+            |> List.map (fun relative -> fst (compareUnlink relative))
+            |> List.distinct
+
+        // Something really was removed, and exactly one thing each time.
+        let removals =
+            observed
+            |> List.choose (fun outcome ->
+                match outcome with
+                | UnlinkOutcome.Removed gone -> Some gone
+                | UnlinkOutcome.Failed _ -> None
+            )
+
+        removals |> List.isEmpty |> shouldEqual false
+
+        for gone in removals do
+            gone |> List.length |> shouldEqual 1
+
+        let failedWith (error : UnixError) : bool =
+            observed |> List.contains (UnlinkOutcome.Failed (hostErrno error))
+
+        failedWith UnixError.ENOENT |> shouldEqual true
+        failedWith UnixError.ENOTDIR |> shouldEqual true
+
+        // The permission rows, which a root test host cannot reach: it ignores
+        // every mode bit, and `hostPrivilege` asks the model the same way, so
+        // they go vacuous rather than red.
+        if geteuid () <> 0u then
+            failedWith UnixError.EACCES |> shouldEqual true
+
+        // The divergent verdicts, asserted per flavour so that the corpus cannot
+        // quietly lose the rows which separate the two kernels.
+        if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
+            // Darwin's own vocabulary: a directory is EPERM, and its walk
+            // resolves a trailing separator, so it alone reaches ELOOP (through
+            // "cycleA/").
+            failedWith UnixError.EPERM |> shouldEqual true
+            failedWith UnixError.ELOOP |> shouldEqual true
+        else
+            // Linux answers EISDIR for every directory target, however reached,
+            // and never reaches ELOOP here because it never traverses.
+            failedWith UnixError.EISDIR |> shouldEqual true
 
     let private requireRuntimeSrc () : string =
         match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with

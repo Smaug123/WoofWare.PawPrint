@@ -90,7 +90,7 @@ module TestVirtualFileSystem =
 
     [<Test>]
     let ``empty is a sound filesystem containing only the root`` () : unit =
-        VirtualFileSystem.checkInvariants emptyFs |> shouldEqual []
+        VirtualFileSystem.checkInvariants Set.empty emptyFs |> shouldEqual []
 
         VirtualFileSystem.inodes emptyFs |> Map.count |> shouldEqual 1
 
@@ -935,7 +935,7 @@ module TestVirtualFileSystem =
 
         // ...but hard-linking a file is fine, and both names reach one inode.
         let linked = VirtualFileSystem.hardLink root (name "f2") file buildTime vfs |> ok
-        VirtualFileSystem.checkInvariants linked |> shouldEqual []
+        VirtualFileSystem.checkInvariants Set.empty linked |> shouldEqual []
 
         VirtualFileSystem.resolveExisting
             limits
@@ -974,7 +974,7 @@ module TestVirtualFileSystem =
         | Error _ ->
             // The burnt inode number is unobservable, since numbers are never
             // reused; what matters is that the original is untouched and sound.
-            VirtualFileSystem.checkInvariants vfs |> shouldEqual []
+            VirtualFileSystem.checkInvariants Set.empty vfs |> shouldEqual []
 
     [<Test>]
     let ``inode numbers are never reused`` () : unit =
@@ -1058,7 +1058,7 @@ module TestVirtualFileSystem =
     /// which accidentally builds a *differently* broken graph fails rather than
     /// passing on the wrong defect.
     let private shouldHaveDefects (expected : VirtualFileSystemDefect list) (vfs : VirtualFileSystem) : unit =
-        VirtualFileSystem.checkInvariants vfs |> shouldEqual expected
+        VirtualFileSystem.checkInvariants Set.empty vfs |> shouldEqual expected
 
     [<Test>]
     let ``RootMissing`` () : unit =
@@ -1354,7 +1354,7 @@ module TestVirtualFileSystem =
     [<Test>]
     let ``any sequence of builder operations leaves a sound filesystem`` () : unit =
         let property (vfs : VirtualFileSystem) : unit =
-            VirtualFileSystem.checkInvariants vfs |> shouldEqual []
+            VirtualFileSystem.checkInvariants Set.empty vfs |> shouldEqual []
 
         Check.One (config, Prop.forAll (Arb.fromGen filesystemGen) property)
 
@@ -2192,6 +2192,334 @@ module TestVirtualFileSystem =
         // regressions they guard against, so anything below those minima discriminates.
         observedLateModification |> shouldBeGreaterThan 1000
         observedCtimeAheadOfMtime |> shouldBeGreaterThan 50
+
+    // ------------------------------------------------------ unbind and forget
+
+    /// The inode a path names, resolved privileged so that a permission bit can
+    /// never be why a fixture could not find its own object.
+    let private inodeAt (p : string) (vfs : VirtualFileSystem) : InodeNumber =
+        VirtualFileSystem.resolveExisting
+            limits
+            CallerPrivilege.Privileged
+            (rootOf vfs)
+            SymlinkPolicy.Follow
+            (path p)
+            vfs
+        |> ok
+
+    let private unbindTime : UnixTimestamp =
+        UnixTimestamp.createOrFail "test" 1_700_009_000L 11
+
+    [<Test>]
+    let ``unbind removes the name and answers the inode it named`` () : unit =
+        let vfs =
+            build [ mkdir (rootOf emptyFs) "d" ; fun v -> mkfile (inodeAt "/d" v) "f" v ]
+
+        let directory = inodeAt "/d" vfs
+        let file = inodeAt "/d/f" vfs
+
+        let target, after =
+            VirtualFileSystem.unbind directory (name "f") unbindTime vfs |> ok
+
+        target |> shouldEqual file
+
+        // The name is gone...
+        VirtualFileSystem.resolveExisting
+            limits
+            CallerPrivilege.Privileged
+            (rootOf after)
+            SymlinkPolicy.Follow
+            (path "/d/f")
+            after
+        |> shouldEqual (Error UnixError.ENOENT)
+
+        // ...and the inode is not. Removing the last name is not what frees an
+        // inode; see `VirtualFileSystem.forget`.
+        VirtualFileSystem.tryGet file after |> Option.isSome |> shouldEqual true
+        VirtualFileSystem.bindingCount file after |> shouldEqual 0
+
+        // Which is exactly the state `checkInvariants` wants told about.
+        VirtualFileSystem.checkInvariants Set.empty after
+        |> shouldEqual [ VirtualFileSystemDefect.UnreachableFromRoot file ]
+
+    [<Test>]
+    let ``unbind moves the directory's mtime and ctime and only the target's ctime`` () : unit =
+        // Measured on both platforms, watching the survivor through a held
+        // descriptor's `fstat`: after `unlink`, the parent's mtime and ctime have
+        // moved and the target's ctime has, while no atime and no mtime of the
+        // target has. Identical for an inode that still has links left and for
+        // one dropping to zero, which is why one primitive covers both.
+        let vfs =
+            build
+                [
+                    mkfile (rootOf emptyFs) "f"
+                    fun v ->
+                        VirtualFileSystem.hardLink (rootOf v) (name "f2") (inodeAt "/f" v) buildTime v
+                        |> ok
+                ]
+
+        let file = inodeAt "/f" vfs
+        let before = timesOf file vfs
+
+        let _, after =
+            VirtualFileSystem.unbind (rootOf vfs) (name "f2") unbindTime vfs |> ok
+
+        let directoryTimes = timesOf (rootOf after) after
+        directoryTimes.Modification |> shouldEqual unbindTime
+        directoryTimes.StatusChange |> shouldEqual unbindTime
+        directoryTimes.Access |> shouldEqual (timesOf (rootOf vfs) vfs).Access
+
+        let targetTimes = timesOf file after
+        targetTimes.StatusChange |> shouldEqual unbindTime
+        targetTimes.Modification |> shouldEqual before.Modification
+        targetTimes.Access |> shouldEqual before.Access
+        targetTimes.Birth |> shouldEqual before.Birth
+
+    [<Test>]
+    let ``unbind refuses what it cannot name`` () : unit =
+        let vfs = build [ mkdir (rootOf emptyFs) "d" ; mkfile (rootOf emptyFs) "f" ]
+
+        // A name the directory does not hold.
+        VirtualFileSystem.unbind (rootOf vfs) (name "nx") unbindTime vfs
+        |> shouldEqual (Error UnixError.ENOENT)
+
+        // A directory the graph does not hold.
+        VirtualFileSystem.unbind (VirtualFileSystem.nextInode vfs) (name "d") unbindTime vfs
+        |> shouldEqual (Error UnixError.ENOENT)
+
+        // Something that is not a directory, which cannot hold a name at all.
+        VirtualFileSystem.unbind (inodeAt "/f" vfs) (name "x") unbindTime vfs
+        |> shouldEqual (Error UnixError.ENOTDIR)
+
+    [<Test>]
+    let ``unbind of a symlink's own inode is ENOTDIR`` () : unit =
+        let vfs = build [ mkdir (rootOf emptyFs) "d" ; mklink (rootOf emptyFs) "ld" "d" ]
+
+        // `resolveExisting` under `NoFollowFinal` gives the link itself.
+        let link =
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.NoFollowFinal
+                (path "/ld")
+                vfs
+            |> ok
+
+        VirtualFileSystem.unbind link (name "x") unbindTime vfs
+        |> shouldEqual (Error UnixError.ENOTDIR)
+
+    [<Test>]
+    let ``a rejected unbind leaves the filesystem untouched`` () : unit =
+        let vfs = build [ mkdir (rootOf emptyFs) "d" ]
+
+        VirtualFileSystem.unbind (rootOf vfs) (name "nx") unbindTime vfs
+        |> Result.isError
+        |> shouldEqual true
+
+        // Including the timestamps: a refusal that had already stamped the
+        // directory would be invisible to a test comparing only the entries.
+        timesOf (rootOf vfs) vfs |> shouldEqual (InodeTimes.createdAt buildTime)
+
+    [<Test>]
+    let ``unbind can orphan a populated directory`` () : unit =
+        // `rename(2)` moves a directory by unbinding and rebinding it, and the
+        // subtree is legitimately unreachable in between — so this primitive
+        // must not refuse a directory that holds entries, and must not recurse.
+        let vfs =
+            build [ mkdir (rootOf emptyFs) "d" ; fun v -> mkfile (inodeAt "/d" v) "kid" v ]
+
+        let directory = inodeAt "/d" vfs
+        let kid = inodeAt "/d/kid" vfs
+
+        let target, after =
+            VirtualFileSystem.unbind (rootOf vfs) (name "d") unbindTime vfs |> ok
+
+        target |> shouldEqual directory
+
+        // The subtree is intact; only its attachment to the root has gone.
+        VirtualFileSystem.bindingCount kid after |> shouldEqual 1
+        VirtualFileSystem.tryGet kid after |> Option.isSome |> shouldEqual true
+
+        VirtualFileSystem.checkInvariants Set.empty after
+        |> shouldEqual
+            [
+                VirtualFileSystemDefect.UnreachableFromRoot directory
+                VirtualFileSystemDefect.UnreachableFromRoot kid
+            ]
+
+    [<Test>]
+    let ``unbind rejects a forged default name`` () : unit =
+        // The chokepoint argument `bind` makes: `Unchecked.defaultof<FileName>`
+        // matches no parsed name, so an unchecked unbind would silently remove
+        // nothing and report ENOENT for a name the caller believed in.
+        let vfs = build [ mkfile (rootOf emptyFs) "f" ]
+
+        let thrown =
+            Assert.Throws<Exception> (fun () ->
+                VirtualFileSystem.unbind (rootOf vfs) Unchecked.defaultof<FileName> unbindTime vfs
+                |> ignore<Result<InodeNumber * VirtualFileSystem, UnixError>>
+            )
+
+        thrown.Message |> shouldContainText "Unchecked.defaultof"
+
+    // ----------------------------------------------------------- bindingCount
+
+    [<Test>]
+    let ``bindingCount counts every name and no other reference`` () : unit =
+        let vfs =
+            build
+                [
+                    mkdir (rootOf emptyFs) "d"
+                    mkfile (rootOf emptyFs) "f"
+                    fun v ->
+                        VirtualFileSystem.hardLink (rootOf v) (name "f2") (inodeAt "/f" v) buildTime v
+                        |> ok
+                    fun v ->
+                        VirtualFileSystem.hardLink (inodeAt "/d" v) (name "f3") (inodeAt "/f" v) buildTime v
+                        |> ok
+                    mklink (rootOf emptyFs) "ld" "d"
+                ]
+
+        // Three names, one of them in another directory.
+        VirtualFileSystem.bindingCount (inodeAt "/f" vfs) vfs |> shouldEqual 3
+
+        // A symlink pointing at `d` is not a name *for* `d`: it is an inode of
+        // its own holding a string, and resolving it is a lookup rather than a
+        // link. A count that walked symlink targets would say 2 here.
+        VirtualFileSystem.bindingCount (inodeAt "/d" vfs) vfs |> shouldEqual 1
+
+        // The root has no incoming entry at all, by construction.
+        VirtualFileSystem.bindingCount (rootOf vfs) vfs |> shouldEqual 0
+
+        // Nor does an inode the graph has never heard of.
+        VirtualFileSystem.bindingCount (VirtualFileSystem.nextInode vfs) vfs
+        |> shouldEqual 0
+
+    [<Test>]
+    let ``bindingCount follows unbind down`` () : unit =
+        let vfs =
+            build
+                [
+                    mkfile (rootOf emptyFs) "f"
+                    fun v ->
+                        VirtualFileSystem.hardLink (rootOf v) (name "f2") (inodeAt "/f" v) buildTime v
+                        |> ok
+                ]
+
+        let file = inodeAt "/f" vfs
+        VirtualFileSystem.bindingCount file vfs |> shouldEqual 2
+
+        let _, once = VirtualFileSystem.unbind (rootOf vfs) (name "f2") unbindTime vfs |> ok
+        VirtualFileSystem.bindingCount file once |> shouldEqual 1
+
+        let _, twice =
+            VirtualFileSystem.unbind (rootOf once) (name "f") unbindTime once |> ok
+
+        VirtualFileSystem.bindingCount file twice |> shouldEqual 0
+
+    // ---------------------------------------------------------------- forget
+
+    [<Test>]
+    let ``forget removes an unbound inode and leaves the graph sound`` () : unit =
+        let vfs = build [ mkfile (rootOf emptyFs) "f" ]
+        let file = inodeAt "/f" vfs
+
+        let _, orphaned =
+            VirtualFileSystem.unbind (rootOf vfs) (name "f") unbindTime vfs |> ok
+
+        let forgotten = VirtualFileSystem.forget file orphaned
+
+        VirtualFileSystem.tryGet file forgotten |> shouldEqual None
+        VirtualFileSystem.checkInvariants Set.empty forgotten |> shouldEqual []
+
+        // The number is not handed back out; a stale comparison must never be
+        // able to say "same file" about a different one.
+        VirtualFileSystem.nextInode forgotten
+        |> shouldEqual (VirtualFileSystem.nextInode vfs)
+
+    [<Test>]
+    let ``forget refuses an inode something still names`` () : unit =
+        let vfs = build [ mkfile (rootOf emptyFs) "f" ]
+
+        let thrown =
+            Assert.Throws<Exception> (fun () ->
+                VirtualFileSystem.forget (inodeAt "/f" vfs) vfs |> ignore<VirtualFileSystem>
+            )
+
+        thrown.Message |> shouldContainText "still named by 1"
+
+    [<Test>]
+    let ``forget refuses the root and an absent inode`` () : unit =
+        // Both are interpreter bugs rather than anything a guest can cause, and
+        // both are silently catastrophic if allowed: forgetting the root leaves
+        // no filesystem, and forgetting an absent inode hides the double-free
+        // that produced the call.
+        let root =
+            Assert.Throws<Exception> (fun () ->
+                VirtualFileSystem.forget (rootOf emptyFs) emptyFs |> ignore<VirtualFileSystem>
+            )
+
+        root.Message |> shouldContainText "root cannot be forgotten"
+
+        let absent =
+            Assert.Throws<Exception> (fun () ->
+                VirtualFileSystem.forget (VirtualFileSystem.nextInode emptyFs) emptyFs
+                |> ignore<VirtualFileSystem>
+            )
+
+        absent.Message |> shouldContainText "not in the graph"
+
+    // ------------------------------------------------- the pinned-inode excuse
+
+    [<Test>]
+    let ``a pinned inode is excused unreachability and an unpinned one is not`` () : unit =
+        let vfs = build [ mkfile (rootOf emptyFs) "f" ]
+        let file = inodeAt "/f" vfs
+
+        let _, orphaned =
+            VirtualFileSystem.unbind (rootOf vfs) (name "f") unbindTime vfs |> ok
+
+        VirtualFileSystem.checkInvariants Set.empty orphaned
+        |> shouldEqual [ VirtualFileSystemDefect.UnreachableFromRoot file ]
+
+        VirtualFileSystem.checkInvariants (Set.singleton file) orphaned
+        |> shouldEqual []
+
+        // Pinning some *other* inode does not excuse this one: an excuse that
+        // fired for a non-empty set rather than for the named member would pass
+        // the row above.
+        VirtualFileSystem.checkInvariants (Set.singleton (VirtualFileSystem.nextInode orphaned)) orphaned
+        |> shouldEqual [ VirtualFileSystemDefect.UnreachableFromRoot file ]
+
+    [<Test>]
+    let ``pinning a reachable inode changes nothing`` () : unit =
+        // The overwhelmingly common case — a descriptor on a file that still has
+        // its name — so the set must excuse unreachability rather than assert it.
+        let vfs = build [ mkfile (rootOf emptyFs) "f" ]
+
+        VirtualFileSystem.checkInvariants (Set.singleton (inodeAt "/f" vfs)) vfs
+        |> shouldEqual []
+
+    [<Test>]
+    let ``pinning does not excuse any other defect`` () : unit =
+        // The orphaned pair from the reachability tests, with both pinned: the
+        // graph is still a graph no kernel could produce, because the two hold
+        // each other rather than being held by a descriptor apiece. Only the
+        // *unreachability* rule takes the set.
+        let vfs =
+            VirtualFileSystem.Unchecked.ofParts
+                (Map.ofList [ one, dir one [ "a", two ] ; two, dir one [] ; three, regularFileInode ])
+                one
+                (InodeNumber 4L)
+
+        // `three` is unreachable and pinned, so excused; `two` records `one` as
+        // its parent, which is true, so the graph's only remaining complaint
+        // would be about `three`.
+        VirtualFileSystem.checkInvariants (Set.singleton three) vfs |> shouldEqual []
+
+        VirtualFileSystem.checkInvariants Set.empty vfs
+        |> shouldEqual [ VirtualFileSystemDefect.UnreachableFromRoot three ]
 
     // ------------------------------------------- symlink splice length limits
 

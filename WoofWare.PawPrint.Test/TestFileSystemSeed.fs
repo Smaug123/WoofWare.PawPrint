@@ -52,7 +52,7 @@ module TestFileSystemSeed =
         let vfs = realise FileSystemSeed.empty
 
         VirtualFileSystem.inodes vfs |> Map.count |> shouldEqual 1
-        VirtualFileSystem.checkInvariants vfs |> shouldEqual []
+        VirtualFileSystem.checkInvariants Set.empty vfs |> shouldEqual []
 
     [<Test>]
     let ``a seed's contents are reachable at the paths it describes`` () : unit =
@@ -277,7 +277,7 @@ module TestFileSystemSeed =
     [<Test>]
     let ``a realised seed is always a filesystem a kernel could produce`` () : unit =
         let property (seed : Map<FileName, SeedEntry>) : unit =
-            VirtualFileSystem.checkInvariants (realise seed) |> shouldEqual []
+            VirtualFileSystem.checkInvariants Set.empty (realise seed) |> shouldEqual []
 
         Check.One (config, Prop.forAll (Arb.fromGen seedGen) property)
 

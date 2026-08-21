@@ -79,6 +79,7 @@
     <Compile Include="TestVirtualFileSystem.fs" />
     <Compile Include="TestFileSystemSeed.fs" />
     <Compile Include="TestRealRuntimeCleanup.fs" />
+    <Compile Include="TestUnlinkRules.fs" />
     <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
     <Compile Include="TestFileSystemType.fs" />
     <Compile Include="TestGuestPathBytes.fs" />
@@ -144,6 +145,7 @@
     <Compile Include="TestSocketCreation.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />
     <Compile Include="TestEmulatedKernelCurrentDirectory.fs" />
+    <Compile Include="TestEmulatedKernelInodeLifetime.fs" />
     <Compile Include="TestEmulatedKernelSockets.fs" />
     <Compile Include="TestSocketBinding.fs" />
     <Compile Include="TestFlockBlocking.fs" />

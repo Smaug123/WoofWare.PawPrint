@@ -360,6 +360,96 @@ module TestImpureCases =
                 SeedEntry.Directory (Map.ofList [ name "kid", SeedEntry.directory Map.empty ], mode 0o666)
             ]
 
+    /// Shared by the two `unlink` wiring guests, so that the only thing that
+    /// differs between them is the configured flavour and the constants each
+    /// expects.
+    let private unlinkWiringSeed : Map<FileName, SeedEntry> =
+        let name (s : string) = FileName.parseOrFail "test seed" s
+        let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
+
+        let mode (raw : int) =
+            PermissionBits.parseOrFail "test seed" raw
+
+        Map.ofList
+            [
+                name "f", SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                name "d", SeedEntry.directory Map.empty
+                name "ld", SeedEntry.Symlink (target "d")
+                name "dang", SeedEntry.Symlink (target "nx")
+                name "cyc", SeedEntry.Symlink (target "cyc")
+                // The row that separates the two walks: with a trailing
+                // separator, Darwin follows this to the root and answers EISDIR
+                // where Linux never looks and answers ENOTDIR.
+                name "lroot", SeedEntry.Symlink (target "/")
+                // Searchable but not writable, holding one of each kind: the
+                // directory is EACCES on Linux and EPERM on Darwin, which is the
+                // pair of orderings the two guests exist to tell apart.
+                name "nowrite",
+                SeedEntry.Directory (
+                    Map.ofList
+                        [
+                            name "kdir", SeedEntry.directory Map.empty
+                            name "kid",
+                            SeedEntry.file (Text.Encoding.UTF8.GetBytes "inside" |> ImmutableArray.CreateRange)
+                        ],
+                    mode 0o555
+                )
+            ]
+
+    /// The two files `UnlinkReapSeeded.cs` opens, one of which it closes.
+    let private unlinkReapSeed : Map<FileName, SeedEntry> =
+        let name (s : string) = FileName.parseOrFail "test seed" s
+
+        let file (contents : string) =
+            SeedEntry.file (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
+
+        Map.ofList
+            [
+                name "held", file "payload"
+                name "kept", file "kept-bytes"
+                // Never opened, so the `unlink` itself has to free it.
+                name "plain", file "never opened"
+            ]
+
+    /// `UnlinkReapSeeded.cs` has removed the last name of three inodes: one it
+    /// never opened, one it opened and closed, and one it still holds. The first
+    /// two must be gone — freed by the `unlink` and by the `close` respectively,
+    /// which are the two halves of the rule — and the third must not be, excused
+    /// its unreachability by being pinned.
+    ///
+    /// This is the only place either half of `EmulatedKernel.forgetIfUnheld` is
+    /// visible: freeing an inode is not something a guest can observe, and
+    /// failing to free one shows up only as a filesystem that grows without
+    /// bound.
+    let private assertUnlinkReapedExactlyOne (state : IlMachineState) : unit =
+        let kernel = state.Kernel
+        let filesystem = kernel.FileSystem
+        let pinned = EmulatedKernel.pinnedInodes kernel
+
+        let survivors =
+            VirtualFileSystem.inodes filesystem
+            |> Map.toList
+            |> List.map fst
+            |> List.filter (fun inode -> inode <> VirtualFileSystem.root filesystem)
+
+        match survivors with
+        | [ kept ] ->
+            // Held open, so unreachable and legitimately so.
+            VirtualFileSystem.bindingCount kept filesystem |> shouldEqual 0
+            Set.contains kept pinned |> shouldEqual true
+
+            VirtualFileSystem.checkInvariants pinned filesystem |> shouldEqual []
+
+            // ...and the pin is what excuses it, rather than the rule having
+            // gone quiet: without it, this is a defect.
+            VirtualFileSystem.checkInvariants Set.empty filesystem
+            |> shouldEqual [ VirtualFileSystemDefect.UnreachableFromRoot kept ]
+
+            EmulatedKernel.checkInvariants kernel |> shouldEqual []
+        | other ->
+            failwith
+                $"expected exactly one inode besides the root to survive the run -- the one the guest still holds open -- but %d{other.Length} did: %A{other}. The guest unlinks three files: one it never opened (so the unlink must free it), one it opened and closed (so the close must), and one it still holds. A survivor beyond the third means one of those two halves did not reap; none means something reaped an inode a descriptor still names."
+
     /// Shared by the two search-permission wiring guests, so that the only thing
     /// that differs between them is the uid.
     let private searchPermissionSeed : Map<FileName, SeedEntry> =
@@ -1036,6 +1126,58 @@ module TestImpureCases =
                 AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
+            }
+            {
+                // `unlink`'s flavour-dependent facts under a **Linux** kernel:
+                // which errno each refusal carries, and whether a trailing
+                // separator reaches past a final symlink. Paired with the Darwin
+                // case below, and neither alone can catch a handler that
+                // hardcodes one platform's answers.
+                //
+                // The uid is set away from privileged deliberately: the two
+                // orderings only differ on a directory whose parent the caller
+                // may not write, so a privileged guest could not tell them apart.
+                FileName = "UnlinkWiringLinuxSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UserId = 1000u
+                        FileSystem = unlinkWiringSeed
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The same checks in the same order under the Darwin flavour,
+                // where a trailing separator resolves the final symlink --
+                // including the row that follows a link to the root and answers
+                // EISDIR where Linux says ENOTDIR.
+                FileName = "UnlinkWiringDarwinSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        UserId = 1000u
+                        FileSystem = unlinkWiringSeed
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // What becomes of an inode whose last name has gone: freed if
+                // nothing holds it, kept if something does. Not a fact any guest
+                // can read, so the assertion is on the terminal state.
+                FileName = "UnlinkReapSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        FileSystem = unlinkReapSeed
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertUnlinkReapedExactlyOne
             }
             {
                 // The directory search bit at an unprivileged uid, and its uid-0
