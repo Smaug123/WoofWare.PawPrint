@@ -146,6 +146,10 @@
     <Compile Include="Native\NativeRuntimeTypeQCall.fs" />
     <Compile Include="Native\NativeRuntimeTypeFCall.fs" />
     <Compile Include="Native\NativeRuntimeType.fs" />
+    <!-- After NativeRuntimeTypeHelpers.fs: the ValueType QCall consults that module's
+         `canCompareBitsOrUseFastGetHashCode` and `overridesValueTypeMethod`, which are the same
+         two predicates CoreCLR's GetHashCodeStrategy walk consults. -->
+    <Compile Include="Native\NativeValueType.fs" />
     <Compile Include="Native\NativeArray.fs" />
     <Compile Include="Native\NativeEnum.fs" />
     <Compile Include="Native\NativeKernel32.fs" />
