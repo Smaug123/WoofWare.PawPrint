@@ -1302,6 +1302,21 @@ module IntrinsicMethodKeys =
                 "System.Runtime.CompilerServices.Unsafe"
                 "IsAddressGreaterThanOrEqualTo"
                 [ IntrinsicParameterPattern.Byref ; IntrinsicParameterPattern.Byref ]
+            // Vector{64,128,256,512}<T>.IsSupported asks whether T is a valid vector
+            // *element type*, not whether the hardware can accelerate the width: real .NET
+            // answers true for the twelve primitive element types even on hardware with no
+            // SIMD at all, and ThrowHelper.ThrowForUnsupportedIntrinsicsVectorNNNBaseType
+            // relies on the true answer to no-op on paths that are live under a scalar
+            // profile (folding these to false raises NotSupportedException where real .NET
+            // proceeds). The body is an honest terminating chain of twelve
+            // `typeof(T) == typeof(X)` checks — ldtoken / GetTypeFromHandle / op_Equality
+            // throughout, all modelled boundaries — which the JIT merely constant-folds.
+            // All four widths share the same body shape.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Runtime/Intrinsics/Vector256_1.cs#L78-L97
+            pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector64`1" "get_IsSupported" []
+            pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector128`1" "get_IsSupported" []
+            pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector256`1" "get_IsSupported" []
+            pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector512`1" "get_IsSupported" []
         ]
 
     let isSafeIntrinsic (key : IntrinsicMethodKey) : bool =
