@@ -55,6 +55,69 @@ currently loads — leave the handle null". So this slice is adding three more a
 question the tree has already answered once, which is what makes the sharing question
 below worth asking rather than obvious.
 
+## Should the ALC strategy be decided first?
+
+Asked before choosing between the options, because if the answer were yes the options
+would be the wrong question. It is no, and the census that settles it is worth recording
+because it also changes *why* Option B is right.
+
+**There is no ALC surface at all to be consistent with.** Every entry point is missing:
+`GetLoadContextForAssembly`, `GetLoadedAssemblies`, `InitializeAssemblyLoadContext`,
+`LoadFromPath`, `LoadFromStream`, `PrepareForAssemblyLoadContextRelease`, and
+`AssemblyNative_InternalLoad`. So a guest cannot load an assembly at runtime by *any*
+route — `Assembly.Load` included. Measured, not inferred: a guest asking
+`AssemblyLoadContext.GetLoadContext(typeof(Program).Assembly)` stops at
+`AssemblyNative_GetLoadContextForAssembly`. "One context" is therefore not an assumption
+that might be silently wrong; it is a consequence of there being no way to make a second.
+
+**Collectibility enters CoreCLR through exactly one door, and it is one of those missing
+natives.** `m_IsCollectible` is assigned in one place (loaderallocator.cpp:80), and the
+only caller that passes `true` is `AssemblyNative_InitializeAssemblyLoadContext`'s
+`fIsCollectible` branch (assemblynative.cpp:1194-1197), which constructs the
+`AssemblyLoaderAllocator`. Everything else shares the process's `GlobalLoaderAllocator`,
+which is non-collectible. So `true` is unreachable *by construction* rather than by
+accident, and that native is the natural trip-wire.
+
+**Nothing wants multiple contexts.** No plan, no parked test, no roadmap item: the
+ASP.NET critical path's Phases 0-4 mention ALCs, dynamic loading, plugins and Razor
+exactly zero times, and rungs B/F/G pass without touching any of it. The 24 parked tests
+in `unimplemented` contain no load-context entry. Deciding the strategy now would be
+designing against no requirement.
+
+**And the decision is far larger than these three handlers.** The real question is not
+"how do we model contexts" but "may a type's identity include its load context". Today it
+may not: `ResolvedTypeIdentity` is `(assembly display name, TypeDef handle)`
+(TypeIdentity.fs:43-61), and the equality, hashing and ordering of *every* type in the
+system are over that pair — so two contexts holding one identity would make two different
+types compare equal. `LoadedAssemblies` is one flat `ImmutableDictionary<string,
+DumpedAssembly>` keyed on that same string (Assembly.fs:799-806), with roughly **165
+lookup sites across ~45 files**, and `_VirtualSlotTables` is keyed on
+`ResolvedTypeIdentity` with a docstring resting on there being no unloading
+(IlMachineStateModel.fs:62-63). Answering the ALC question means changing type identity
+itself. That is not a decision taken to unblock three one-line handlers.
+
+**The assumption is already machine-enforced, and loudly.**
+`LoadedAssemblies.Canonicalise` (Assembly.fs:859-885) crashes if two distinct images
+claim one definition identity — "Refusing to guess which one %s refers to". So the
+failure mode of the current model is a crash rather than silent corruption, which is the
+right way round and removes the urgency argument.
+
+**What the instinct is right about.** PawPrint already asserts "no collectible loader
+allocator" in six independent places — `GetLoaderAllocatorInternal`
+(NativeRuntimeMethodHandle.fs:1526), `MethodHandleRegistry.fs:470`,
+`NativeDelegate.fs:644`, `NativeRuntimeFieldHandle.fs:136`, and two plan docs — each
+having worked the reasoning out again. That scattering is the real cost, and it is what
+this slice should fix. So the up-front work worth doing is not an ALC design; it is
+naming the fact once, which is Option B — chosen on this evidence rather than on taste.
+
+What a future ALC decision will have to settle, recorded so the deferral is informed
+rather than blank: whether a load context is part of type identity; whether binding
+becomes per-context (today `TypeResolution.directoryLoader` binds by *simple name only*,
+ignoring version, culture and public key token — TypeResolution.fs:22-27); whether
+context identity is guest-visible (it is: `AssemblyLoadContext.Default` reference
+identity, `.Name`, and `AssemblyLoadContext.All`, all measured); and what unloading means
+for a deterministic replay.
+
 ## Options
 
 `false` is the *correct* answer, not a documented divergence, so "refuse loudly" is not a
