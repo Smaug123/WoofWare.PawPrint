@@ -219,9 +219,12 @@ module MethodHandleRegistry =
             failwith
                 $"cannot mint a RuntimeMethodHandle for %O{method}: it is synthesised by the runtime and has no MethodDef token"
 
-    /// Build a `MethodHandle` describing the canonical identity of a concretised method.
-    let private makeMethodHandle
+    /// Build a `MethodHandle` for a concretised method, binding `methodGenerics` as its
+    /// method-generic arguments. The declaring type's own instantiation is taken from the method
+    /// either way.
+    let private makeConcreteMethodHandle
         (allConcreteTypes : AllConcreteTypes)
+        (methodGenerics : ConcreteTypeHandle list)
         (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         : MethodHandle
         =
@@ -239,9 +242,34 @@ module MethodHandleRegistry =
                     failwith $"declaring type for method %O{method} was not found in ConcreteTypes"
                 )
                 |> RuntimeTypeHandleTarget.Closed
-            MethodGenerics = method.Generics |> Seq.toList
+            MethodGenerics = methodGenerics
         }
         |> MethodHandle.FromMetadata
+
+    /// Build a `MethodHandle` describing the canonical identity of a concretised method.
+    let private makeMethodHandle
+        (allConcreteTypes : AllConcreteTypes)
+        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : MethodHandle
+        =
+        makeConcreteMethodHandle allConcreteTypes (method.Generics |> Seq.toList) method
+
+    /// Look up `handle`'s registry id, minting a fresh one if this is the first time it has been
+    /// asked for.
+    let private idOfHandle (handle : MethodHandle) (reg : MethodHandleRegistry) : int64 * MethodHandleRegistry =
+        match Map.tryFind handle reg.MethodHandleToId with
+        | Some existing -> existing, reg
+        | None ->
+            let newId = reg.NextHandle
+
+            let reg =
+                { reg with
+                    MethodHandleToId = reg.MethodHandleToId |> Map.add handle newId
+                    IdToMethodHandle = reg.IdToMethodHandle |> Map.add newId handle
+                    NextHandle = reg.NextHandle + 1L
+                }
+
+            newId, reg
 
     /// Build a CliValueType representing a `System.RuntimeMethodHandleInternal` whose `m_handle`
     /// field carries the given verbatim CliType. Callers pass either a `MethodRegistryHandle id`
@@ -349,20 +377,7 @@ module MethodHandleRegistry =
                 declaringType
                 method
 
-        let registryId, reg =
-            match Map.tryFind handle reg.MethodHandleToId with
-            | Some existingId -> existingId, reg
-            | None ->
-                let newId = reg.NextHandle
-
-                let reg =
-                    { reg with
-                        MethodHandleToId = reg.MethodHandleToId |> Map.add handle newId
-                        IdToMethodHandle = reg.IdToMethodHandle |> Map.add newId handle
-                        NextHandle = reg.NextHandle + 1L
-                    }
-
-                newId, reg
+        let registryId, reg = idOfHandle handle reg
 
         let mHandle =
             CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle registryId)
@@ -421,26 +436,35 @@ module MethodHandleRegistry =
         : CliValueType * MethodHandleRegistry
         =
         let handle = makeMethodHandle allConcreteTypes method
-
-        let registryId, reg =
-            match Map.tryFind handle reg.MethodHandleToId with
-            | Some existing -> existing, reg
-            | None ->
-                let newId = reg.NextHandle
-
-                let reg =
-                    { reg with
-                        MethodHandleToId = reg.MethodHandleToId |> Map.add handle newId
-                        IdToMethodHandle = reg.IdToMethodHandle |> Map.add newId handle
-                        NextHandle = reg.NextHandle + 1L
-                    }
-
-                newId, reg
+        let registryId, reg = idOfHandle handle reg
 
         let mHandle =
             CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle registryId)
 
         buildRuntimeMethodHandleInternal baseClassTypes allConcreteTypes mHandle, reg
+
+    /// Mint (or reuse) a registry id naming the *typical definition* of `method`: the same
+    /// declaring type, but with the method's own generic arguments stripped.
+    ///
+    /// This is the identity a captured stack frame reports. CoreCLR applies
+    /// `StripMethodInstantiation()` to each frame's `MethodDesc` and leaves the class
+    /// instantiation alone (debugdebugger.cpp:449-452), commenting that "the managed stacktrace
+    /// classes always return typical method definition"; a frame in `Foo<int>.Bar<string>` is
+    /// therefore reported as `Foo<int>.Bar<T>`.
+    ///
+    /// Returns the bare id rather than a `RuntimeMethodHandleInternal`, because the consumer is an
+    /// `IntPtr[]` cell rather than a struct field.
+    let getOrAllocateDefinitionId
+        (allConcreteTypes : AllConcreteTypes)
+        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (reg : MethodHandleRegistry)
+        : int64 * MethodHandleRegistry
+        =
+        // Refuses a runtime-synthesised method, which has no MethodDef row to name. Callers that
+        // may hold one must classify it first: a dynamic method already carries a registry id and
+        // needs no minting, and the remaining kinds have no identity to mint (see
+        // `NativeStackTrace.methodHandleIdOfFrame`).
+        idOfHandle (makeConcreteMethodHandle allConcreteTypes [] method) reg
 
     let rec private isReferenceShaped (typeDefn : TypeDefn) : bool =
         match typeDefn with
@@ -651,22 +675,9 @@ module MethodHandleRegistry =
         =
         let handle = makeMethodHandle allConcreteTypes method
 
-        // Reuse an existing registry id for this method if one was minted earlier (e.g., via
-        // `getOrAllocateInternalHandle` while iterating introduced methods); otherwise mint a new one.
-        let registryId, reg =
-            match Map.tryFind handle reg.MethodHandleToId with
-            | Some existing -> existing, reg
-            | None ->
-                let newId = reg.NextHandle
-
-                let reg =
-                    { reg with
-                        MethodHandleToId = reg.MethodHandleToId |> Map.add handle newId
-                        IdToMethodHandle = reg.IdToMethodHandle |> Map.add newId handle
-                        NextHandle = reg.NextHandle + 1L
-                    }
-
-                newId, reg
+        // Reuses an existing registry id for this method if one was minted earlier (e.g., via
+        // `getOrAllocateInternalHandle` while iterating introduced methods).
+        let registryId, reg = idOfHandle handle reg
 
         let runtimeMethodHandleInternal =
             let mHandle =

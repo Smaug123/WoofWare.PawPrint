@@ -161,6 +161,8 @@
     <Compile Include="TestCliValueTypeCoerceFrom.fs" />
     <Compile Include="TestExceptionHResults.fs" />
     <Compile Include="TestFaultHandlers.fs" />
+    <Compile Include="TestStackFrameCapture.fs" />
+    <Compile Include="TestNativeStackTrace.fs" />
     <Compile Include="TestPrologueExceptionScope.fs" />
     <Compile Include="TestJsonLinesLogging.fs" />
     <Compile Include="TestHardwareIntrinsicsProfile.fs" />

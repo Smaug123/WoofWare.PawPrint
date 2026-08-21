@@ -578,6 +578,41 @@ of a declaring type — see "An open delegate stores no shuffle thunk" for why a
 method has none, and `sourcesImpure/DynamicMethodStackTrace.cs`, which asserts only the
 cross-runtime facts for exactly this reason.
 
+## A captured stack frame has no native offset
+
+**CoreCLR**: `StackFrame.GetNativeOffset()` answers the byte offset of the frame's return address
+within the JITted machine code of its method — a real quantity, and `StackTrace_GetStackFramesInternal`
+fills `StackFrameHelper.rgiOffset` with it for every captured frame (`debugdebugger.cpp:461-463`).
+Measured on .NET 10, a three-frame capture reported 136, 52 and 96.
+
+**PawPrint**: there is no machine code, so there is no such offset, and every frame reports
+`StackFrame.OFFSET_UNKNOWN` (`-1`, `StackFrame.cs:133`) instead. `StackFrame.ToString()` renders that
+as the literal `<offset unknown>` (`StackFrame.cs:241-243`) where real .NET prints a number, so the
+divergence is visible in text as well as through the accessor.
+
+**Spec status**: Outside ECMA-335, which has no notion of a native code offset.
+
+**Why we chose this**: the alternatives were `0` and the frame's IL offset. `-1` is CoreLib's own
+word for "this offset is not known", so a guest that checks for it — as `StackFrame.ToString` does
+— takes the branch written for exactly this situation. Reporting the IL offset instead would answer
+a different question from the one asked, and would be indistinguishable from a real native offset
+to a guest that only reads the number; the IL offset is separately and faithfully available through
+`GetILOffset()`. Nothing in the common rendering path depends on this: `StackTrace.ToString` reads
+only `GetILOffset()` (`StackTrace.cs:335`).
+
+**A related case in the same handler**: a frame whose method has *no IL body* — an InternalCall,
+QCall or P/Invoke — reports `OFFSET_UNKNOWN` for its **IL** offset too, because it has no IL to be
+at an offset within. That matches CoreCLR, which distinguishes the two ways an IL offset can be
+missing (`InitPass2`, `debugdebugger.cpp:1543-1607`): a valid jitted method whose debug info yields
+no mapping reports `0`, but a frame with no managed code information at all falls through to
+`(DWORD)-1`. PawPrint keeps frames for such methods (a real trace does name them), and a
+`MethodState` for one carries the synthetic program counter `0`, so reporting that would present a
+placeholder as a position in the first instruction. Not academic: the innermost frame of every
+current-thread capture is the P/Invoke stub of this very QCall.
+
+**Where this lives in code**: `NativeStackTrace.tryExecuteQCall`, the `rgiOffset` and `rgiILOffset`
+arrays.
+
 ## An unhandled exception is reported after its cleanup runs, not before
 
 **CoreCLR**: when the first pass of exception dispatch finds no handler on the thread, the runtime
