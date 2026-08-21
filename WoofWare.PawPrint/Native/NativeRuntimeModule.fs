@@ -155,4 +155,68 @@ module NativeRuntimeModule =
                     (CliType.ObjectRef (Some arrayAddr))
 
             NativeHandlerResult.completed state |> Some
+        | "RuntimeModule_GetScopeName",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeModule",
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", qCallModuleGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "StringHandleOnStack",
+                                             stringHandleGenerics) ],
+          MethodReturnType.Void when qCallModuleGenerics.IsEmpty && stringHandleGenerics.IsEmpty ->
+            // `RuntimeModule_GetScopeName` (coreclr/vm/commodule.cpp:604), behind
+            // `Module.ScopeName` and so `Module.ToString()`. CoreCLR answers
+            // `GetMDImport()->GetScopeProps(&szName, 0)`, which is the `Name` column of the
+            // module's own `Module` metadata row.
+            let operation = "RuntimeModule_GetScopeName"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let retString =
+                NativeCall.stringHandleOnStackTarget operation state "retString" instruction.Arguments.[1]
+
+            let assembly =
+                state.LoadedAssembly assemblyFullName
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: module's assembly %s{assemblyFullName} is not loaded"
+                )
+
+            // CoreCLR's leading `IsValidToken(GetModuleFromScope())` guard, which reports
+            // `COR_E_BADIMAGEFORMAT` for an image whose `Module` table is empty, is absent here:
+            // that table is mandatory and has exactly one row, and an image lacking it would have
+            // failed when its metadata was first read rather than reaching a QCall.
+            // Reported verbatim, including an empty string. CoreCLR performs no emptiness check
+            // here -- it hands `GetScopeProps`'s name straight to `retString.Set` -- so an image
+            // whose Module row names the empty string is one whose `ScopeName` really is "".
+            // Unlike `AssemblyNative_GetSimpleName`, which does refuse: that reads the *Assembly*
+            // row, where CoreCLR's own `_ASSERTE` treats an empty name as a corrupted image.
+            let scopeName = assembly.ScopeName
+
+            let nameAddr, state =
+                if System.String.IsNullOrEmpty scopeName then
+                    // `StringObject::NewString` returns the shared empty-string instance for a
+                    // zero-length string (object.cpp:651), so an empty scope name is
+                    // reference-equal to `string.Empty` and to itself across reads.
+                    IlMachineState.internCanonicalEmptyString ctx.LoggerFactory ctx.BaseClassTypes state
+                else
+                    // Allocated afresh per call otherwise: CoreCLR does not intern a QCall's
+                    // string result, so two reads of a non-empty `ScopeName` are
+                    // reference-distinct.
+                    IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes scopeName state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retString
+                    (CliType.ObjectRef (Some nameAddr))
+
+            NativeHandlerResult.completed state |> Some
         | _ -> None

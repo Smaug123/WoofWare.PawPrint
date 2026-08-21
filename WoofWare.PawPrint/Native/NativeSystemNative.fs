@@ -695,11 +695,7 @@ module NativeSystemNative =
         // disagree only about `S_ISGID` on a file that is not group-executable.
         let rule = SimulatedUnixPlatform.setGroupIdOnWrite state.Kernel.UnixPlatform
 
-        let privilege =
-            if EmulatedKernel.isPrivileged state.Kernel then
-                WritePrivilege.Privileged
-            else
-                WritePrivilege.Unprivileged
+        let privilege = EmulatedKernel.callerPrivilege state.Kernel
 
         match VirtualFileSystem.writeFile inode offset bytes rule privilege now state.Kernel.FileSystem with
         | Ok filesystem ->
@@ -732,11 +728,7 @@ module NativeSystemNative =
         let now = EmulatedKernel.fileTimestamp state.Kernel
         let rule = SimulatedUnixPlatform.setIdBitsOnTruncation state.Kernel.UnixPlatform
 
-        let privilege =
-            if EmulatedKernel.isPrivileged state.Kernel then
-                WritePrivilege.Privileged
-            else
-                WritePrivilege.Unprivileged
+        let privilege = EmulatedKernel.callerPrivilege state.Kernel
 
         match VirtualFileSystem.truncateFile inode length rule privilege now state.Kernel.FileSystem with
         | Ok filesystem ->
@@ -844,7 +836,32 @@ module NativeSystemNative =
 
             let cwd = UnixPath.ofAbsolute kernel.CurrentDirectory
 
-            match VirtualFileSystem.resolveExisting limits root SymlinkPolicy.Follow cwd vfs with
+            // Resolved as though privileged, which is not a claim about the
+            // guest's uid: a real process holds its current directory as an open
+            // reference and does not re-walk it from the root, so no lookup —
+            // and therefore no permission check — happens here at all. Measured
+            // on both kernels: with the cwd at `outer/inner` and `outer`
+            // unsearchable, a relative `lstat("target")` succeeds while
+            // `lstat("../inner/target")` is EACCES.
+            //
+            // "As privileged" and "without checks" coincide only because search
+            // is the one privilege-gated fact in resolution today; a second such
+            // rule would break the equivalence silently, so this is spelled out
+            // rather than left to be inferred.
+            //
+            // The cwd *itself* is not exempt: the walk below starts there and
+            // checks its search bit the moment it consumes a component, which is
+            // what makes `lstat("target")` EACCES when the cwd itself is
+            // unsearchable — also measured on both.
+            //
+            // The re-walk is an artefact of modelling the cwd as a path rather
+            // than as a held inode. Storing the inode when the kernel is built
+            // would make this exemption unnecessary; nothing can observe the
+            // difference until a syscall can rename or remove a directory
+            // mid-run.
+            match
+                VirtualFileSystem.resolveExisting limits CallerPrivilege.Privileged root SymlinkPolicy.Follow cwd vfs
+            with
             | Ok inode -> inode
             | Error UnixError.ENAMETOOLONG ->
                 // Distinguished because the remedy is different, and the
@@ -856,7 +873,14 @@ module NativeSystemNative =
                 failwith
                     $"%s{operation}: the guest passed the relative path \"%s{UnixPath.toString path}\", but the configured current directory \"%s{AbsoluteUnixPath.toString kernel.CurrentDirectory}\" does not resolve in the seeded filesystem (%O{error}). A process cannot be started in a directory that does not exist; make KernelConfig.FileSystem contain KernelConfig.CurrentDirectory."
 
-        VirtualFileSystem.resolveFull limits startDirectory policy trailingSeparatorPolicy path vfs
+        VirtualFileSystem.resolveFull
+            limits
+            (EmulatedKernel.callerPrivilege kernel)
+            startDirectory
+            policy
+            trailingSeparatorPolicy
+            path
+            vfs
 
     /// The inode a path names, or the errno the lookup owes the guest — what
     /// every non-creating caller wants. Shares `resolveGuestPathFull`'s walk and
@@ -2172,6 +2196,70 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_GetProcessPath", [], MethodReturnType.Returns (ConcretePointer _) ->
+            // `char* SystemNative_GetProcessPath(void)` (pal_process.c:898-901) has
+            // no body of its own: it is `return minipal_getexepath();`, so
+            // `src/native/minipal/getexepath.h` is the whole specification.
+            // There, both arms PawPrint models end in `realpath(..., NULL)` —
+            // macOS on the buffer `_NSGetExecutablePath` filled, Linux on
+            // `/proc/self/exe` and then on `AT_EXECFN` — which means the
+            // result is `malloc`'d, canonical, and only produced at all if the
+            // path resolved. (Arms PawPrint does not model differ: FreeBSD and
+            // wasm `strdup` instead, so they promise ownership but not
+            // resolution.) Ownership makes this a native-heap block base, as
+            // for `GetUnixRelease` above: CoreLib reaches it through a
+            // `StringMarshalling.Utf8` `LibraryImport` whose wrapper ends in
+            // `Utf8StringMarshaller.Free` -> `SystemNative_Free`, which refuses
+            // a byref into a managed array.
+            //
+            // The pointee type is matched loosely (`ConcretePointer _`) for the
+            // same reason `GetUnixRelease` does so: name plus zero parameters
+            // already pins the call, and a guest hand-rolling the import as
+            // `void*`-returning means the same thing.
+            match state.Kernel.ProcessPath with
+            | None ->
+                // No executable path. Answered the way both flavours answer a
+                // process whose executable no longer resolves — NULL, errno
+                // ENOENT — since that is the state PawPrint is genuinely in: it
+                // models no `exec(2)`, so no file started this process. Measured
+                // on macOS arm64 and Linux arm64 by having a guest unlink its own
+                // executable before its first read; both give errno 2 and a null
+                // `Environment.ProcessPath`.
+                //
+                // Not macOS's `errno = EINVAL` branch, which fires only when
+                // `_NSGetExecutablePath` itself fails: that is "the dyld query
+                // broke", a state with no analogue here, and one Linux never
+                // reports. Not a `failwith` either — the flavours agree on an
+                // answer, `Interop.Sys.GetProcessPath` is declared `string?`, and
+                // `Environment.ProcessPath` handles null by design.
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.ENOENT))
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ManagedPointerSource.Null) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Some path ->
+                // A fresh allocation per call, because the guest owns and frees
+                // each one. errno is left untouched, as on the C's success path.
+                // (Measured, real .NET: macOS leaves a pre-set errno alone here
+                // while Linux clobbers it with EINVAL, so no cross-flavour claim
+                // is available and nothing may test it. CoreLib cannot see the
+                // difference: its `SetLastError = true` stub zeroes errno before
+                // the call and overwrites it after.)
+                //
+                // `Kernel.ProcessPath` is reported verbatim, and specifically is
+                // *not* resolved against `Kernel.FileSystem` — see
+                // `EmulatedKernel.ProcessPath` and docs/divergences.md, and note
+                // `SystemNative_GetCwd` already answers `Kernel.CurrentDirectory`
+                // the same way.
+                let ptr, state =
+                    NativeCall.allocateNativeHeapNullTerminatedUtf8
+                        "SystemNative_GetProcessPath"
+                        (AbsoluteUnixPath.toString path)
+                        state
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
         | Some "SystemNative_GetCwd",
           [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
@@ -2482,7 +2570,7 @@ module NativeSystemNative =
             match
                 CreatingOpenRules.verdict
                     rules
-                    (EmulatedKernel.isPrivileged state.Kernel)
+                    (EmulatedKernel.callerPrivilege state.Kernel)
                     creating
                     exclusive
                     resolution
@@ -2618,26 +2706,14 @@ module NativeSystemNative =
             // Root gets read and write whatever the mode says — measured on Linux
             // as uid 0, where a mode-0000 file opens for writing. (Only *execute*
             // still needs a bit set for root, and `open` never asks for it.)
-            let privileged = EmulatedKernel.isPrivileged state.Kernel
+            let lacksNeededBits =
+                match EmulatedKernel.callerPrivilege state.Kernel with
+                | CallerPrivilege.Privileged -> false
+                | CallerPrivilege.Unprivileged -> permissionBits &&& neededBits <> neededBits
 
-            if not privileged && permissionBits &&& neededBits <> neededBits then
+            if lacksNeededBits then
                 fail UnixError.EACCES
             else
-
-            // The *search* half of the permission rule is still missing from the
-            // walk, and belongs in the resolver rather than here: every component
-            // of every path needs it, so `Stat`, `LStat` and `ReadLink` all owe
-            // the same answer. Until it lands, a seed can describe a directory
-            // whose owner-search bit is clear and PawPrint will walk through it
-            // anyway.
-            //
-            // The creation arm above does check search on the one directory it
-            // binds into, so the two halves are deliberately asymmetric today:
-            // `open("nosearch/existing", O_RDONLY)` succeeds under PawPrint where
-            // a kernel answers EACCES, while `open("nosearch/new", O_CREAT)`
-            // correctly fails. That is a complete rule about the binding
-            // directory rather than half of the walk's rule, which is why it does
-            // not wait for the resolver's.
 
             // Only now, with every refusal discharged: measured, a refused open
             // leaves the bytes alone, and specifically `O_CREAT | O_EXCL | O_TRUNC`
@@ -2726,7 +2802,9 @@ module NativeSystemNative =
             | Error error -> fail error
             | Ok resolution ->
 
-            match MkDirRules.verdict (EmulatedKernel.isPrivileged state.Kernel) resolution state.Kernel.FileSystem with
+            match
+                MkDirRules.verdict (EmulatedKernel.callerPrivilege state.Kernel) resolution state.Kernel.FileSystem
+            with
             | MkDirVerdict.Refuse error -> fail error
             | MkDirVerdict.Create (directory, name, parentPermissions) ->
 

@@ -637,6 +637,42 @@ module NativeRuntimeAssembly =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 flags)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
+        | "AssemblyNative_GetIsCollectible",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", qCallAssemblyGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
+            qCallAssemblyGenerics.IsEmpty && boolGenerics.IsEmpty
+            ->
+            let operation = "AssemblyNative_GetIsCollectible"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            // CoreCLR is `pAssembly->GetAssembly()->IsCollectible()`. The assembly is resolved
+            // rather than ignored so that a handle naming something unloaded is a loud failure
+            // here as it is in the rest of this family, even though PawPrint's answer does not
+            // depend on which assembly it is: with one loader allocator it cannot.
+            let assemblyFullName =
+                instruction.Arguments.[0]
+                |> NativeCall.qCallAssemblyToAssemblyFullName operation state
+
+            state.LoadedAssembly assemblyFullName
+            |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+            |> ignore<DumpedAssembly>
+
+            // Interop.BOOL is int-backed with FALSE = 0 and TRUE = 1.
+            let state =
+                let ret =
+                    if LoaderAllocator.isCollectible LoaderAllocator.Global then
+                        1
+                    else
+                        0
+
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
         | "AssemblyNative_GetHashAlgorithm",
           "System.Private.CoreLib",
           "System.Reflection",

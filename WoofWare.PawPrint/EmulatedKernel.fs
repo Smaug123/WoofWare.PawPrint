@@ -1038,9 +1038,16 @@ module CreatingOpenRules =
     ///  * A path that consumed no component at all — "/" — is whatever
     ///    `RootNavigation` says, which is Darwin's EEXIST.
     ///  * A creating open landing on an existing directory is EISDIR on Linux.
-    ///  * Binding a name needs *both* write and search on the directory that
-    ///    will hold it: measured at uid 1000, 0o333 and 0o300 succeed while
-    ///    0o644, 0o555 and 0o111 are all EACCES. Root bypasses it.
+    ///  * Binding a name needs the *write* bit on the directory that will hold
+    ///    it: measured at uid 1000, 0o333 and 0o300 succeed while 0o644 and
+    ///    0o555 are EACCES. Root bypasses it.
+    ///
+    ///    Binding needs the directory's *search* bit too — 0o111 is EACCES on
+    ///    both kernels — but that half is not checked here: no resolution can
+    ///    reach this function without it, because the walk refuses an
+    ///    unsearchable directory before it looks a component up at all. See
+    ///    `VirtualFileSystem.resolveFull`, which is also where the rows that
+    ///    pin it live.
     ///
     /// A freshly created inode is deliberately *not* screened against the mode
     /// it was just given — measured unanimously, `open(free, O_CREAT|O_RDWR, 0)`
@@ -1049,7 +1056,7 @@ module CreatingOpenRules =
     /// rather than a step before it.
     let verdict
         (rules : CreatingOpenRules)
-        (privileged : bool)
+        (privilege : CallerPrivilege)
         (creating : bool)
         (exclusive : bool)
         (resolution : Resolution)
@@ -1090,10 +1097,11 @@ module CreatingOpenRules =
                 CreatingOpenVerdict.OpenExisting inode
         | ResolvedTarget.Entry (directory, name, None) ->
 
-        // Only the owner triple can ever apply: `stat` reports `Kernel.UserId`
-        // as every inode's `st_uid`, so the emulated process owns everything it
-        // can see.
-        let bindBits = 0o300
+        // Write alone: the search half of the rule is the walk's, and a
+        // resolution that reached here has already passed it. Only the owner
+        // triple can ever apply, since `stat` reports `Kernel.UserId` as every
+        // inode's `st_uid`.
+        let bindBits = 0o200
 
         let parentBits =
             match VirtualFileSystem.tryGet directory vfs with
@@ -1107,7 +1115,12 @@ module CreatingOpenRules =
                 failwith
                     $"CreatingOpenRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{FileName.toString name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
 
-        if not privileged && parentBits &&& bindBits <> bindBits then
+        let lacksBindBits =
+            match privilege with
+            | CallerPrivilege.Privileged -> false
+            | CallerPrivilege.Unprivileged -> parentBits &&& bindBits <> bindBits
+
+        if lacksBindBits then
             CreatingOpenVerdict.Refuse UnixError.EACCES
         else
             CreatingOpenVerdict.Create (directory, name)
@@ -1192,62 +1205,34 @@ module MkDirRules =
     ///  * A path that consumed no component at all — "/", ".", ".." — is
     ///    EEXIST, whichever `FinalNavigation` it was. `mkdir` does not
     ///    distinguish them, where `rmdir` owes all three different errnos.
-    ///  * The holding directory's *search* bit is needed to look the final name
-    ///    up at all, so its absence beats even EEXIST: measured on both, an
-    ///    existing child of a 0o666 directory is EACCES, and of a 0o200 one too,
-    ///    while the same child of a 0o100 directory is EEXIST.
-    ///  * An existing final name is then EEXIST: a file, a directory, or a
-    ///    symlink, dangling or cyclic or not.
-    ///  * EEXIST in turn beats the *write* bit. Measured on both: an existing
-    ///    child of a 0o555 directory is EEXIST, where a free name there is
-    ///    EACCES.
-    ///  * Binding a new name needs write as well, so the pair is 0o300:
-    ///    measured, 0o333 and 0o300 succeed while 0o555, 0o100, 0o666 and 0o644
-    ///    are EACCES. Root bypasses both bits.
+    ///  * An existing final name is EEXIST: a file, a directory, or a symlink,
+    ///    dangling or cyclic or not.
+    ///  * EEXIST beats the *write* bit. Measured on both: an existing child of a
+    ///    0o555 directory is EEXIST, where a free name there is EACCES.
+    ///  * Binding a new name needs write on the directory that will hold it:
+    ///    measured, 0o333 and 0o300 succeed while 0o555 and 0o644 are EACCES.
+    ///    Root bypasses it.
+    ///
+    /// The holding directory's *search* bit is needed as well — and needed
+    /// earlier, since without it the final name cannot be looked up at all, so
+    /// its absence beats even EEXIST. That check is the walk's
+    /// (`VirtualFileSystem.resolveFull`), which refuses before this function is
+    /// reached; the rows that pin it live there.
     ///
     /// A *free* final name carrying a trailing separator creates, on both
     /// platforms — `mkdir("nx/")` succeeds. This is the one place `mkdir` and a
     /// creating `open` disagree about a resolution of the same shape: `open`
     /// owes it ENOENT on Darwin.
     ///
-    /// The search rule above is enforced *after* the walk, which is not where a
-    /// kernel enforces it, and the difference is visible. A real kernel checks
-    /// the bit as it steps into the directory, before it looks at the final
-    /// component at all; this check runs only once the walk has already
-    /// succeeded. So every row whose final component fails *inside* the walk
-    /// reports the walk's errno where both real kernels report EACCES. Measured
-    /// at uid 1000/501 with a 0o666 holding directory, against the same rows
-    /// under a 0o755 one:
-    ///
-    /// | final component | 0o666 parent | 0o755 parent |
-    /// | --- | --- | --- |
-    /// | a 300-byte name | EACCES | ENAMETOOLONG |
-    /// | "f/" (a file) | EACCES | ENOTDIR / EEXIST |
-    /// | "cyc/" (a cyclic link) | EACCES | ELOOP / EEXIST |
-    /// | "kid/" (a directory) | EACCES | EEXIST |
-    ///
-    /// (The second column's pairs are Darwin / Linux; the first column does not
-    /// diverge.) The rows this check *does* get right — a free name, and an
-    /// existing one — are the ones the walk completes.
-    ///
-    /// The same limit, one component further out, is why permissions on the
-    /// directories the walk *passed through* are not checked either: a `mkdir`
-    /// through an unsearchable intermediate is EACCES on both real kernels and
-    /// succeeds here, and so is a path that consumed no component at all
-    /// (`mkdir("p/.")` needs search on `p` to resolve). All of it is one missing
-    /// rule in the resolver, shared with `stat`, `open` and `readlink` —
-    /// `lstat` through an unsearchable intermediate is EACCES too — so it is a
-    /// change to the walk rather than to `mkdir`, and no corpus here contains
-    /// such a row.
-    let verdict (privileged : bool) (resolution : Resolution) (vfs : VirtualFileSystem) : MkDirVerdict =
+    let verdict (privilege : CallerPrivilege) (resolution : Resolution) (vfs : VirtualFileSystem) : MkDirVerdict =
         match resolution.Target with
         | ResolvedTarget.Directory _ -> MkDirVerdict.Refuse UnixError.EEXIST
         | ResolvedTarget.Entry (directory, name, existing) ->
 
-        // Only the owner triple can ever apply: `stat` reports `Kernel.UserId`
-        // as every inode's `st_uid`, so the emulated process owns everything it
-        // can see.
-        let search = 0o100
+        // Write alone: the search half of the rule is the walk's, and a
+        // resolution that reached here has already passed it. Only the owner
+        // triple can ever apply, since `stat` reports `Kernel.UserId` as every
+        // inode's `st_uid`.
         let write = 0o200
 
         let parentPermissions =
@@ -1263,11 +1248,9 @@ module MkDirRules =
                     $"MkDirRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{FileName.toString name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
 
         let lacks (bit : int) : bool =
-            not privileged && PermissionBits.toInt parentPermissions &&& bit <> bit
-
-        if lacks search then
-            MkDirVerdict.Refuse UnixError.EACCES
-        else
+            match privilege with
+            | CallerPrivilege.Privileged -> false
+            | CallerPrivilege.Unprivileged -> PermissionBits.toInt parentPermissions &&& bit <> bit
 
         match existing with
         | Some _ -> MkDirVerdict.Refuse UnixError.EEXIST
@@ -2661,6 +2644,28 @@ type EmulatedKernel =
         /// within a run the cwd is immutable and a guest must not be able to
         /// observe it changing under it.
         CurrentDirectory : AbsoluteUnixPath
+        /// Path to the executable that started the simulated process, as
+        /// observed through `SystemNative_GetProcessPath` and hence
+        /// `Environment.ProcessPath`.
+        ///
+        /// `None` is an *answer*, not a request for a default: it says this
+        /// process has no executable path, which the entry point reports the way
+        /// both Unix flavours do — a null return with errno `ENOENT`. That is
+        /// the truth about a PawPrint guest by default, because PawPrint models
+        /// no `exec(2)`: nothing started this process from a file, and the
+        /// emulated filesystem contains no image of it. Contrast
+        /// `FileSystemType`, whose `None` *does* mean "derive one in `applyTo`".
+        ///
+        /// Not resolved against `FileSystem`. Real `realpath` succeeds only if
+        /// every component resolves, so a host that wants
+        /// `File.Exists(Environment.ProcessPath)` to hold must seed the file
+        /// itself; see docs/divergences.md. The same is already true of
+        /// `CurrentDirectory`.
+        ///
+        /// CoreLib latches this on first read — `Environment.ProcessPath` caches
+        /// under an `Interlocked.CompareExchange` — so hosts must set it via
+        /// `KernelConfig` rather than by record-copy after startup.
+        ProcessPath : AbsoluteUnixPath option
         /// The simulated process's filesystem: every inode a guest can reach
         /// through the `SystemNative_*` path calls.
         ///
@@ -2906,6 +2911,23 @@ module EmulatedKernel =
     /// guest to see a particular directory set `KernelConfig.CurrentDirectory`.
     let defaultCurrentDirectory : AbsoluteUnixPath = AbsoluteUnixPath.root
 
+    /// Executable path a freshly-minted simulated process reports: none at all.
+    ///
+    /// PawPrint models no `exec(2)`, so there is no file that started this
+    /// process, and the emulated filesystem holds no image of one. `None` is
+    /// therefore the only true answer, and it is a *modelled* Unix state rather
+    /// than an invention: both flavours report exactly this — NULL from
+    /// `minipal_getexepath`, errno `ENOENT` — for a live process whose
+    /// executable no longer resolves, because each of them reaches the path
+    /// through `realpath`. Measured on both, by having a guest unlink its own
+    /// executable before its first read.
+    ///
+    /// Synthesising a plausible path instead was rejected for the same reason
+    /// `Assembly.Location` reports the empty string: nothing would be there, so
+    /// the guest could not act on it. Hosts that want the guest to see a
+    /// particular executable set `KernelConfig.ProcessPath`.
+    let defaultProcessPath : AbsoluteUnixPath option = None
+
     /// Effective user ID a freshly-minted simulated process runs as.
     ///
     /// 1000 rather than 0: `Environment.IsPrivilegedProcess` is literally
@@ -3005,6 +3027,7 @@ module EmulatedKernel =
             OptimalMaxSpinWaitsPerSpinIteration = defaultOptimalMaxSpinWaitsPerSpinIteration
             UnixPlatform = defaultUnixPlatform
             CurrentDirectory = defaultCurrentDirectory
+            ProcessPath = defaultProcessPath
             FileSystem = VirtualFileSystem.empty (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
             FileSystemType = EmulatedFileSystemType.defaultFor (SimulatedUnixPlatform.flavour defaultUnixPlatform)
             UserId = defaultUserId
@@ -3062,6 +3085,14 @@ module EmulatedKernel =
     let withCurrentDirectory (dir : AbsoluteUnixPath) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
             CurrentDirectory = AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory" dir
+        }
+
+    /// Set the path to the executable that started the simulated process, or
+    /// `None` to report that it has none. `None` is preserved rather than
+    /// defaulted; see `EmulatedKernel.ProcessPath`.
+    let withProcessPath (path : AbsoluteUnixPath option) (kernel : EmulatedKernel) : EmulatedKernel =
+        { kernel with
+            ProcessPath = path |> Option.map (AbsoluteUnixPath.assertValid "EmulatedKernel.ProcessPath")
         }
 
     /// Realise a host's filesystem seed, with every inode created at
@@ -3243,12 +3274,18 @@ module EmulatedKernel =
     /// answer *different* questions from the same fact — whether `open` may ignore
     /// a mode that forbids the access it was asked for, and whether a write keeps
     /// a file's set-user-ID bits — and they must not be able to drift apart about
-    /// who root is.
+    /// who root is. `CallerPrivilege` rather than a `bool` for the same reason:
+    /// the answer travels through several signatures before it is used, and a
+    /// bare flag arrives at them saying nothing about which fact it is.
     ///
     /// `EmulatedKernel.defaultUserId` is deliberately not 0: `Environment.IsPrivilegedProcess`
     /// is literally `GetEUid() == 0`, so a guest run as root skips its own
     /// privilege guards.
-    let isPrivileged (kernel : EmulatedKernel) : bool = kernel.UserId = 0u
+    let callerPrivilege (kernel : EmulatedKernel) : CallerPrivilege =
+        if kernel.UserId = 0u then
+            CallerPrivilege.Privileged
+        else
+            CallerPrivilege.Unprivileged
 
     /// The moment the emulated kernel stamps on an inode it changes now, in the
     /// `struct timespec` an inode's timestamps are kept in.
@@ -4045,6 +4082,23 @@ type KernelConfig =
         /// `getcwd(3)` read, and note that whatever a host picks here becomes
         /// part of that run's replay contract.
         CurrentDirectory : AbsoluteUnixPath
+        /// Path to the executable that started the simulated process, observed
+        /// via `Environment.ProcessPath`. Obtain one with `AbsoluteUnixPath.parse`.
+        ///
+        /// `None` — the default — is an answer rather than a request for one: it
+        /// reports that this process has no executable path, which is what
+        /// PawPrint modelling no `exec(2)` actually means, and which both Unix
+        /// flavours express as a null return with errno `ENOENT`. Contrast
+        /// `FileSystemType` above, whose `None` asks `applyTo` to pick a value.
+        ///
+        /// Not resolved against `FileSystem`: a host that wants
+        /// `File.Exists(Environment.ProcessPath)` to hold — which is true on
+        /// every real Unix, since `realpath` only succeeds if the path resolves
+        /// — must seed that file too. See `EmulatedKernel.ProcessPath` for why
+        /// this is simulated kernel state rather than a read of where PawPrint's
+        /// own binary sits, and note that whatever a host picks here becomes
+        /// part of that run's replay contract.
+        ProcessPath : AbsoluteUnixPath option
         /// The filesystem the guest sees, as the entries of its root directory.
         /// A tree rather than a list of paths; see `SeedEntry`. Every inode is
         /// created at `WallClockEpochMs`, so a guest reading an mtime sees the
@@ -4111,6 +4165,7 @@ type KernelConfig =
             WallClockEpochMs = 0L
             UnixPlatform = EmulatedKernel.defaultUnixPlatform
             CurrentDirectory = EmulatedKernel.defaultCurrentDirectory
+            ProcessPath = EmulatedKernel.defaultProcessPath
             FileSystem = FileSystemSeed.empty
             UserId = EmulatedKernel.defaultUserId
             GroupId = EmulatedKernel.defaultGroupId
@@ -4138,6 +4193,7 @@ module KernelConfig =
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
         |> EmulatedKernel.withUnixPlatformAndFileSystemType config.UnixPlatform config.FileSystemType
         |> EmulatedKernel.withCurrentDirectory config.CurrentDirectory
+        |> EmulatedKernel.withProcessPath config.ProcessPath
         |> EmulatedKernel.withFileSystem
             (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)
             config.FileSystem

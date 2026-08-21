@@ -11,6 +11,8 @@ module NativeQCall =
             "RuntimeFieldHandle_SetValue", NativeRuntimeFieldHandle.tryExecuteQCall "RuntimeFieldHandle_SetValue"
             "RuntimeMethodHandle_IsCAVisibleFromDecoratedType",
             NativeRuntimeMethodHandle.tryExecuteQCall "RuntimeMethodHandle_IsCAVisibleFromDecoratedType"
+            "RuntimeMethodHandle_GetIsCollectible",
+            NativeRuntimeMethodHandle.tryExecuteQCall "RuntimeMethodHandle_GetIsCollectible"
             "RuntimeMethodHandle_GetMethodInstantiation",
             NativeRuntimeMethodHandle.tryExecuteQCall "RuntimeMethodHandle_GetMethodInstantiation"
             "RuntimeMethodHandle_GetStubIfNeededSlow",
@@ -48,11 +50,13 @@ module NativeQCall =
             NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetGenericTypeDefinition"
             "RuntimeTypeHandle_GetInstantiation", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetInstantiation"
             "RuntimeTypeHandle_GetInterfaces", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetInterfaces"
+            "RuntimeTypeHandle_IsCollectible", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_IsCollectible"
             "RuntimeTypeHandle_Instantiate", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_Instantiate"
             "ModuleHandle_GetMDStreamVersion", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetMDStreamVersion"
             "ModuleHandle_GetPEKind", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetPEKind"
             "ModuleHandle_GetDynamicMethod", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetDynamicMethod"
             "RuntimeModule_GetTypes", NativeRuntimeModule.tryExecuteQCall "RuntimeModule_GetTypes"
+            "RuntimeModule_GetScopeName", NativeRuntimeModule.tryExecuteQCall "RuntimeModule_GetScopeName"
             "Delegate_BindToMethodInfo", NativeDelegate.tryExecuteQCall "Delegate_BindToMethodInfo"
             "Delegate_FindMethodHandle", NativeDelegate.tryExecuteQCall "Delegate_FindMethodHandle"
             "ModuleHandle_ResolveType", NativeRuntimeType.tryExecuteQCall "ModuleHandle_ResolveType"
@@ -115,6 +119,7 @@ module NativeQCall =
             "AssemblyNative_GetCodeBase", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetCodeBase"
             "AssemblyNative_GetEntryAssembly", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetEntryAssembly"
             "AssemblyNative_GetFlags", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetFlags"
+            "AssemblyNative_GetIsCollectible", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetIsCollectible"
             "AssemblyNative_GetHashAlgorithm", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetHashAlgorithm"
             "AssemblyNative_GetLocale", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetLocale"
             "AssemblyNative_GetLocation", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetLocation"

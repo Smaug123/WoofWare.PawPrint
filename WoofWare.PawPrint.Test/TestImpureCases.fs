@@ -90,6 +90,33 @@ module TestImpureCases =
                 )
         }
 
+    /// Build one registration of `ProcessPathConfigured.cs`. The guest echoes
+    /// the executable path it observed to stdout, so the assertion is that the
+    /// bytes it printed are the UTF-8 of the path we configured — which pins the
+    /// whole chain (`KernelConfig.ProcessPath` -> `withProcessPath` ->
+    /// `SystemNative_GetProcessPath` -> CoreLib's `Utf8StringMarshaller` ->
+    /// `Environment.ProcessPath`) to an exact value rather than a shape.
+    ///
+    /// Registered under more than one path below, so that a handler answering a
+    /// constant instead of reading `Kernel.ProcessPath` cannot satisfy them all.
+    let private processPathCase (path : string) : EndToEndTestCase =
+        {
+            FileName = "ProcessPathConfigured.cs"
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    ProcessPath = Some (AbsoluteUnixPath.parseOrFail "test process path" path)
+                }
+            AppContext = AppContextProperties.empty
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                    |> Seq.toArray
+                    |> shouldEqual (Text.Encoding.UTF8.GetBytes path)
+                )
+        }
+
     /// A directory whose UTF-8 encoding exceeds the 256 bytes CoreLib's
     /// `Interop.Sys.GetCwd()` stackallocs, so that the first `SystemNative_GetCwd`
     /// must fail with ERANGE and the guest must take its ArrayPool
@@ -315,6 +342,61 @@ module TestImpureCases =
                 SeedEntry.Directory (Map.ofList [ name "kid", SeedEntry.directory Map.empty ], mode 0o666)
             ]
 
+    /// Shared by the two search-permission wiring guests, so that the only thing
+    /// that differs between them is the uid.
+    let private searchPermissionSeed : Map<FileName, SeedEntry> =
+        let name (s : string) = FileName.parseOrFail "test seed" s
+        let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
+
+        let mode (raw : int) =
+            PermissionBits.parseOrFail "test seed" raw
+
+        let file (contents : string) =
+            SeedEntry.file (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
+
+        Map.ofList
+            [
+                // Readable but not searchable, and holding things worth reaching:
+                // a directory, a file, and (by absence) a name that is not there.
+                name "ns",
+                SeedEntry.Directory (
+                    Map.ofList [ name "kid", SeedEntry.directory Map.empty ; name "f", file "hello" ],
+                    mode 0o666
+                )
+                // The control: the same shape, searchable.
+                name "open", SeedEntry.Directory (Map.ofList [ name "kid", SeedEntry.directory Map.empty ], mode 0o755)
+                // A component spliced in from a symlink target is looked up like
+                // any other, so this earns the same answer "ns/kid" does.
+                name "lns", SeedEntry.Symlink (target "ns")
+            ]
+
+    /// An unsearchable directory holding the current directory, for the guest
+    /// that pins how a relative path is resolved.
+    let private searchPermissionCwdSeed : Map<FileName, SeedEntry> =
+        let name (s : string) = FileName.parseOrFail "test seed" s
+
+        let mode (raw : int) =
+            PermissionBits.parseOrFail "test seed" raw
+
+        let file (contents : string) =
+            SeedEntry.file (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
+
+        Map.ofList
+            [
+                name "outer",
+                SeedEntry.Directory (
+                    Map.ofList
+                        [
+                            name "inner",
+                            SeedEntry.Directory (
+                                Map.ofList [ name "target", file "hello" ; name "sub", SeedEntry.directory Map.empty ],
+                                mode 0o755
+                            )
+                        ],
+                    mode 0o666
+                )
+            ]
+
     let cases : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
@@ -349,6 +431,29 @@ module TestImpureCases =
             // fails a test that says so.
             currentDirectoryCase "/"
             currentDirectoryCase "/home/pawprint/work"
+            // Two distinct executable paths, so a handler that answered a
+            // constant rather than reading `Kernel.ProcessPath` fails one of
+            // them. An apphost-shaped path and a muxer-shaped one, which are the
+            // two things a real `Environment.ProcessPath` actually reports.
+            processPathCase "/home/pawprint/work/Guest"
+            processPathCase "/usr/share/dotnet/dotnet"
+            // A path whose UTF-8 encoding is longer than its character count, so
+            // that a handler measuring the wrong one truncates visibly.
+            processPathCase "/héllo/中文/🐶/Guest"
+            {
+                // PawPrint's *default*: a process with no executable path at
+                // all, which the entry point reports as NULL with errno ENOENT.
+                // That default is part of the replay contract, so it is
+                // registered explicitly rather than left implicit in the cases
+                // above — a change to `defaultProcessPath` must fail a test that
+                // says so.
+                FileName = "ProcessPathAbsent.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
             // Root, which is the identity `defaultUserId` deliberately avoids:
             // `Environment.IsPrivilegedProcess` is exactly `GetEUid() == 0`, so
             // this is the only case in the suite that observes a guest taking
@@ -909,6 +1014,51 @@ module TestImpureCases =
                         Umask = PermissionBits.parseOrFail "test" 0o027
                         UserId = 1000u
                         FileSystem = mkDirWiringSeed
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The directory search bit at an unprivileged uid, and its uid-0
+                // twin below. Between them the handler's privilege argument is
+                // falsifiable in both directions; a unit test hands the walk its
+                // privilege directly and so cannot see the wiring at all.
+                FileName = "SearchPermissionSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UserId = 1000u
+                        FileSystem = searchPermissionSeed
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                FileName = "SearchPermissionRootSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UserId = 0u
+                        FileSystem = searchPermissionSeed
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // How a *relative* path is resolved: from the cwd's inode, not
+                // by re-walking the cwd's own path under the guest's privilege.
+                // Only a guest can see this; remove the exemption and the
+                // interpreter fails loudly rather than answering differently.
+                FileName = "SearchPermissionCwdSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UserId = 1000u
+                        CurrentDirectory = AbsoluteUnixPath.parseOrFail "test" "/outer/inner"
+                        FileSystem = searchPermissionCwdSeed
                     }
                 AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false

@@ -39,7 +39,7 @@
       dotnet-runtime-src = pkgs.fetchgit {
         url = "https://github.com/dotnet/runtime";
         rev = "7706f546bac1a99b3d891afe3591dc88c67f0cc4"; # v10.0.7 (tree self-reports 10.0.6; see above)
-        hash = "sha256-vDIXH6/gQMh5xQI5WSG+HhJ6La44QsQBgRjGq4XyPjc=";
+        hash = "sha256-c1dVfl47a163mSGgRkrLUM/is3NvIISmU6NdvhmcYK0=";
         sparseCheckout = [
           "src/coreclr"
           "src/libraries/System.Private.CoreLib"
@@ -63,9 +63,13 @@
           #    conversion that `SystemNative_ConvertErrorPlatformToPal` is a one-line wrapper
           #    around, and `pal_io_common.h` has the `Common_Read`/`Common_Write` bodies that
           #    `UnixError.fs` cites for their negative-size ERANGE contract.
+          #  - `native/minipal` is where several of those `.c` files keep their *entire* body:
+          #    `SystemNative_GetProcessPath` is `return minipal_getexepath();` and nothing else,
+          #    so `getexepath.h` is the only statement of which errno each failure reports.
           "src/libraries/Common/src/Interop/Unix"
           "src/native/libs/System.Native"
           "src/native/libs/Common"
+          "src/native/minipal"
           "eng"
         ];
       };
