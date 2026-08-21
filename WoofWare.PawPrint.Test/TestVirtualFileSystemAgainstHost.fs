@@ -49,6 +49,9 @@ module TestVirtualFileSystemAgainstHost =
     extern int private close(int fd)
 
     [<DllImport("libc", SetLastError = true)>]
+    extern int private mkdir(string path, uint32 mode)
+
+    [<DllImport("libc", SetLastError = true)>]
     extern int private ftruncate(int fd, int64 length)
 
     [<DllImport("libc", SetLastError = true)>]
@@ -219,6 +222,11 @@ module TestVirtualFileSystemAgainstHost =
             "ldslash/sub"
             "up"
             "cycleA"
+            // A cyclic link with a trailing separator. Every lookup traverses it
+            // and gives ELOOP, as does Darwin's `mkdir`; Linux's `mkdir` never
+            // dereferences it and gives EEXIST, which is the row that separates
+            // `TrailingSeparatorPolicy.Ignore` from `Demand`.
+            "cycleA/"
             "selfext"
             // readlink(2) does not follow a *final* symlink, so a cycle only
             // shows up as ELOOP when it sits part-way along a path. Without
@@ -807,10 +815,10 @@ module TestVirtualFileSystemAgainstHost =
         | Error error -> CreatingOutcome.Failed (hostErrno error)
         | Ok resolution ->
 
-        // `privileged = false`: no directory in the corpus has its owner write
-        // or search bit clear, so the EACCES arm is unreachable here and the two
-        // worlds cannot disagree about it even if this test runs as root.
-        match CreatingOpenRules.verdict rules false true exclusive resolution vfs with
+        // Unprivileged: no directory in the corpus has its owner write or search
+        // bit clear, so the EACCES arm is unreachable here and the two worlds
+        // cannot disagree about it even if this test runs as root.
+        match CreatingOpenRules.verdict rules CallerPrivilege.Unprivileged true exclusive resolution vfs with
         | CreatingOpenVerdict.Refuse error -> CreatingOutcome.Failed (hostErrno error)
         | CreatingOpenVerdict.Create _ -> CreatingOutcome.Created
         | CreatingOpenVerdict.OpenExisting _ -> CreatingOutcome.Opened
@@ -999,9 +1007,9 @@ module TestVirtualFileSystemAgainstHost =
 
         let privilege =
             if geteuid () = 0u then
-                WritePrivilege.Privileged
+                CallerPrivilege.Privileged
             else
-                WritePrivilege.Unprivileged
+                CallerPrivilege.Unprivileged
 
         let mutable compared = 0
 
@@ -1053,9 +1061,9 @@ module TestVirtualFileSystemAgainstHost =
 
         let privilege =
             if geteuid () = 0u then
-                WritePrivilege.Privileged
+                CallerPrivilege.Privileged
             else
-                WritePrivilege.Unprivileged
+                CallerPrivilege.Unprivileged
 
         let mutable compared = 0
 
@@ -1191,6 +1199,257 @@ module TestVirtualFileSystemAgainstHost =
     /// The pinned runtime source only exists inside the Nix devshell, so a plain
     /// `dotnet test` in a non-Nix checkout skips rather than fails. Same shape
     /// as `TestUnixError.requireRuntimeSrc`, which is private to its own module.
+    // --------------------------------------------------------------- mkdir
+
+    /// What a `mkdir(2)` did, in terms both worlds can express.
+    [<RequireQualifiedAccess>]
+    type private MkDirOutcome =
+        /// The call bound a new directory. *Which* name it bound is not recorded
+        /// here — on Darwin `mkdir("dang/")` binds the link's target rather than
+        /// anything the path names — because the host side cannot say. That
+        /// identity is pinned instead by `MkDirRules.verdict`'s unit rows, which
+        /// see the bound name directly, and by the Darwin wiring guest, which
+        /// looks for the target afterwards.
+        | Created
+        /// The call failed with this errno.
+        | Failed of errno : int
+
+    let private hostMkDirOutcome (root : string) (relative : string) : MkDirOutcome =
+        if mkdir (hostPath root relative, 0o777u) = 0 then
+            MkDirOutcome.Created
+        else
+            MkDirOutcome.Failed (errno ())
+
+    let private modelMkDirOutcome (vfs : VirtualFileSystem) (relative : string) : MkDirOutcome =
+        let rules = SimulatedUnixPlatform.mkDirRules (hostPlatform ())
+
+        match
+            VirtualFileSystem.resolveFull
+                (limits ())
+                (VirtualFileSystem.root vfs)
+                SymlinkPolicy.NoFollowFinal
+                rules.TrailingSeparator
+                (UnixPath.parseOrFail "test" relative)
+                vfs
+        with
+        | Error error -> MkDirOutcome.Failed (hostErrno error)
+        | Ok resolution ->
+
+        // Unprivileged: every directory in the corpus has its owner write and
+        // search bits set, so the EACCES arm is unreachable here and the two
+        // worlds cannot disagree about it even if this test runs as root. The
+        // EACCES rows live in the wiring guests, whose uid the suite chooses.
+        match MkDirRules.verdict CallerPrivilege.Unprivileged resolution vfs with
+        | MkDirVerdict.Refuse error -> MkDirOutcome.Failed (hostErrno error)
+        | MkDirVerdict.Create _ -> MkDirOutcome.Created
+
+    /// `probePaths`, less the one path this comparison structurally cannot make.
+    ///
+    /// "/" is the host's real root here, since every other path is prefixed with
+    /// the temporary directory; `mkdir("/")` would be asking the machine's root
+    /// rather than the corpus's. The model's answer for a path that consumed no
+    /// component at all is pinned in `TestVirtualFileSystem` instead, against
+    /// the measurement (EEXIST on both).
+    let private mkDirProbePaths = probePaths |> List.filter (fun path -> path <> "/")
+
+    /// Run one `mkdir` through both worlds, each built fresh — `mkdir` mutates,
+    /// so no two rows may share a tree.
+    let private compareMkDir (relative : string) : MkDirOutcome * MkDirOutcome =
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-mkdir-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            buildHostTree root
+            let vfs = buildModel ()
+            hostMkDirOutcome root relative, modelMkDirOutcome vfs relative
+        finally
+            try
+                Directory.Delete (root, true)
+            with _ ->
+                ()
+
+    [<Test>]
+    let ``mkdir decides exactly as this kernel does`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // The rows that matter most here are the ones the two kernels answer
+        // differently, and they are all trailing-separator rows: "f/", "lf/",
+        // "dang/" and "cycleA/" are EEXIST on Linux — whose creating lookup
+        // never dereferences the last component — and ENOTDIR, ENOTDIR, a
+        // *creation*, and ELOOP on Darwin. macOS locally and Linux in CI each
+        // falsify their own column.
+        let mismatches =
+            [
+                for relative in mkDirProbePaths do
+                    let expected, actual = compareMkDir relative
+
+                    if expected <> actual then
+                        yield $"mkdir %s{relative}: kernel said %A{expected}, model said %A{actual}"
+            ]
+
+        if not (List.isEmpty mismatches) then
+            let rendered = String.Join (Environment.NewLine, mismatches)
+
+            failwith $"The model disagrees with this kernel about mkdir:%s{Environment.NewLine}%s{rendered}"
+
+    [<Test>]
+    let ``the mkdir corpus reaches every verdict this kernel can give`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // Without this the comparison above could pass by never creating
+        // anything, or by never provoking a refusal. Stated against the
+        // *kernel's* answers rather than the model's, so it cannot be satisfied
+        // by the model agreeing with itself.
+        let observed =
+            mkDirProbePaths
+            |> List.map (fun relative -> fst (compareMkDir relative))
+            |> List.distinct
+
+        observed |> List.contains MkDirOutcome.Created |> shouldEqual true
+
+        observed
+        |> List.contains (MkDirOutcome.Failed (hostErrno UnixError.EEXIST))
+        |> shouldEqual true
+
+        observed
+        |> List.contains (MkDirOutcome.Failed (hostErrno UnixError.ENOENT))
+        |> shouldEqual true
+
+        // The divergent verdicts, asserted per flavour so that the corpus cannot
+        // quietly lose the rows which separate the two kernels. Darwin resolves
+        // a trailing separator as a lookup would, so it alone reaches ENOTDIR
+        // (through "f/" and "lf/") and ELOOP (through "cycleA/"); Linux answers
+        // EEXIST for all three, which the shared assertion above already covers.
+        if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
+            observed
+            |> List.contains (MkDirOutcome.Failed (hostErrno UnixError.ENOTDIR))
+            |> shouldEqual true
+
+            observed
+            |> List.contains (MkDirOutcome.Failed (hostErrno UnixError.ELOOP))
+            |> shouldEqual true
+        else
+            // Linux's own ENOTDIR row: a path *through* a regular file, where the
+            // walk fails before the last component and the creating lookup never
+            // gets a say.
+            observed
+            |> List.contains (MkDirOutcome.Failed (hostErrno UnixError.ENOTDIR))
+            |> shouldEqual true
+
+    /// The umask this test host is actually running under, measured rather than
+    /// asked for: `umask(2)` is process-global, and reading it means setting it,
+    /// which would race every other fixture. A directory created with mode 0o777
+    /// comes back with exactly the bits the umask left, so the complement of
+    /// what a fresh one reports *is* the umask.
+    let private observedUmask (root : string) : PermissionBits =
+        let path = Path.Combine (root, "umask-probe")
+
+        if mkdir (path, 0o777u) <> 0 then
+            failwith $"mkdir(%s{path}, 0o777) failed: errno %d{errno ()}"
+
+        0o777 &&& ~~~(rawModeOf (File.GetUnixFileMode path))
+        |> PermissionBits.parseOrFail "test"
+
+    /// Creates a directory at each mode inside `parent` and compares what the
+    /// kernel left behind against `MkDirRules.createdPermissions`. Returns how
+    /// many rows were compared.
+    let private compareMkDirModes (root : string) (parent : string) (modes : int list) : int =
+        let rules = SimulatedUnixPlatform.mkDirRules (hostPlatform ())
+        let umask = observedUmask root
+
+        let parentBits =
+            rawModeOf (File.GetUnixFileMode parent) |> PermissionBits.parseOrFail "test"
+
+        let mutable compared = 0
+
+        for mode in modes do
+            let path = Path.Combine (parent, $"m%04o{mode}")
+
+            if mkdir (path, uint32 mode) <> 0 then
+                failwith $"mkdir(%s{path}, 0o%04o{mode}) failed: errno %d{errno ()}"
+
+            let kernelSaid = rawModeOf (File.GetUnixFileMode path)
+
+            let modelSaid =
+                MkDirRules.createdPermissions rules parentBits umask mode
+                |> PermissionBits.toInt
+
+            if kernelSaid <> modelSaid then
+                failwith
+                    $"mkdir at mode 0o%05o{mode} inside a 0o%04o{PermissionBits.toInt parentBits} directory: this kernel made it 0o%04o{kernelSaid} but MkDirRules.createdPermissions says 0o%04o{modelSaid} under umask 0o%04o{PermissionBits.toInt umask}."
+
+            compared <- compared + 1
+
+        compared
+
+    /// Every mode worth asking about: the ordinary one CoreLib passes, the three
+    /// upper bits one at a time, all of them at once, one above the permission
+    /// word, and zero.
+    let private mkDirModeProbes : int list =
+        [ 0o777 ; 0o7777 ; 0o1777 ; 0o2777 ; 0o4777 ; 0o10777 ; 0o666 ; 0o000 ]
+
+    [<Test>]
+    let ``a new directory keeps exactly the mode bits this kernel keeps`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-mkdir-mode-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            // The whole point of the row set: `mkdir`'s mask is not `open`'s.
+            // Linux keeps the sticky bit and drops both set-ID bits, so 0o7777
+            // lands as 0o1755 here where a creating open lands 0o7755.
+            compareMkDirModes root root mkDirModeProbes
+            |> shouldEqual (List.length mkDirModeProbes)
+        finally
+            try
+                Directory.Delete (root, true)
+            with _ ->
+                ()
+
+    [<Test>]
+    let ``a new directory inherits set-group-ID exactly as this kernel does`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-mkdir-sgid-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            let parent = Path.Combine (root, "sgid")
+
+            if mkdir (parent, 0o777u) <> 0 then
+                failwith $"mkdir(%s{parent}) failed: errno %d{errno ()}"
+
+            // Hand it to a group we are in, or `chmod` will drop S_ISGID —
+            // silently, which is exactly how a probe of this shape reads as
+            // "unsupported on this platform" when it is nothing of the kind.
+            if chown (parent, 0xFFFFFFFFu, getegid ()) <> 0 then
+                failwith $"chown(%s{parent}) failed: errno %d{errno ()}"
+
+            if not (trySetMode parent 0o2777) then
+                // A sandbox may refuse the chmod outright. Skipping is honest:
+                // the alternative is measuring a parent that never carried the
+                // bit and concluding the platform does not inherit it.
+                Assert.Ignore "This host would not let the test set S_ISGID on a directory."
+
+            compareMkDirModes root parent mkDirModeProbes
+            |> shouldEqual (List.length mkDirModeProbes)
+        finally
+            try
+                Directory.Delete (root, true)
+            with _ ->
+                ()
+
     let private requireRuntimeSrc () : string =
         match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with
         | null

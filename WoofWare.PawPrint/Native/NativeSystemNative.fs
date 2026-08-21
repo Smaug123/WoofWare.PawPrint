@@ -695,11 +695,7 @@ module NativeSystemNative =
         // disagree only about `S_ISGID` on a file that is not group-executable.
         let rule = SimulatedUnixPlatform.setGroupIdOnWrite state.Kernel.UnixPlatform
 
-        let privilege =
-            if EmulatedKernel.isPrivileged state.Kernel then
-                WritePrivilege.Privileged
-            else
-                WritePrivilege.Unprivileged
+        let privilege = EmulatedKernel.callerPrivilege state.Kernel
 
         match VirtualFileSystem.writeFile inode offset bytes rule privilege now state.Kernel.FileSystem with
         | Ok filesystem ->
@@ -732,11 +728,7 @@ module NativeSystemNative =
         let now = EmulatedKernel.fileTimestamp state.Kernel
         let rule = SimulatedUnixPlatform.setIdBitsOnTruncation state.Kernel.UnixPlatform
 
-        let privilege =
-            if EmulatedKernel.isPrivileged state.Kernel then
-                WritePrivilege.Privileged
-            else
-                WritePrivilege.Unprivileged
+        let privilege = EmulatedKernel.callerPrivilege state.Kernel
 
         match VirtualFileSystem.truncateFile inode length rule privilege now state.Kernel.FileSystem with
         | Ok filesystem ->
@@ -2172,6 +2164,70 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_GetProcessPath", [], MethodReturnType.Returns (ConcretePointer _) ->
+            // `char* SystemNative_GetProcessPath(void)` (pal_process.c:898-901) has
+            // no body of its own: it is `return minipal_getexepath();`, so
+            // `src/native/minipal/getexepath.h` is the whole specification.
+            // There, both arms PawPrint models end in `realpath(..., NULL)` —
+            // macOS on the buffer `_NSGetExecutablePath` filled, Linux on
+            // `/proc/self/exe` and then on `AT_EXECFN` — which means the
+            // result is `malloc`'d, canonical, and only produced at all if the
+            // path resolved. (Arms PawPrint does not model differ: FreeBSD and
+            // wasm `strdup` instead, so they promise ownership but not
+            // resolution.) Ownership makes this a native-heap block base, as
+            // for `GetUnixRelease` above: CoreLib reaches it through a
+            // `StringMarshalling.Utf8` `LibraryImport` whose wrapper ends in
+            // `Utf8StringMarshaller.Free` -> `SystemNative_Free`, which refuses
+            // a byref into a managed array.
+            //
+            // The pointee type is matched loosely (`ConcretePointer _`) for the
+            // same reason `GetUnixRelease` does so: name plus zero parameters
+            // already pins the call, and a guest hand-rolling the import as
+            // `void*`-returning means the same thing.
+            match state.Kernel.ProcessPath with
+            | None ->
+                // No executable path. Answered the way both flavours answer a
+                // process whose executable no longer resolves — NULL, errno
+                // ENOENT — since that is the state PawPrint is genuinely in: it
+                // models no `exec(2)`, so no file started this process. Measured
+                // on macOS arm64 and Linux arm64 by having a guest unlink its own
+                // executable before its first read; both give errno 2 and a null
+                // `Environment.ProcessPath`.
+                //
+                // Not macOS's `errno = EINVAL` branch, which fires only when
+                // `_NSGetExecutablePath` itself fails: that is "the dyld query
+                // broke", a state with no analogue here, and one Linux never
+                // reports. Not a `failwith` either — the flavours agree on an
+                // answer, `Interop.Sys.GetProcessPath` is declared `string?`, and
+                // `Environment.ProcessPath` handles null by design.
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.ENOENT))
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ManagedPointerSource.Null) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Some path ->
+                // A fresh allocation per call, because the guest owns and frees
+                // each one. errno is left untouched, as on the C's success path.
+                // (Measured, real .NET: macOS leaves a pre-set errno alone here
+                // while Linux clobbers it with EINVAL, so no cross-flavour claim
+                // is available and nothing may test it. CoreLib cannot see the
+                // difference: its `SetLastError = true` stub zeroes errno before
+                // the call and overwrites it after.)
+                //
+                // `Kernel.ProcessPath` is reported verbatim, and specifically is
+                // *not* resolved against `Kernel.FileSystem` — see
+                // `EmulatedKernel.ProcessPath` and docs/divergences.md, and note
+                // `SystemNative_GetCwd` already answers `Kernel.CurrentDirectory`
+                // the same way.
+                let ptr, state =
+                    NativeCall.allocateNativeHeapNullTerminatedUtf8
+                        "SystemNative_GetProcessPath"
+                        (AbsoluteUnixPath.toString path)
+                        state
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
         | Some "SystemNative_GetCwd",
           [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
@@ -2482,7 +2538,7 @@ module NativeSystemNative =
             match
                 CreatingOpenRules.verdict
                     rules
-                    (EmulatedKernel.isPrivileged state.Kernel)
+                    (EmulatedKernel.callerPrivilege state.Kernel)
                     creating
                     exclusive
                     resolution
@@ -2618,9 +2674,12 @@ module NativeSystemNative =
             // Root gets read and write whatever the mode says — measured on Linux
             // as uid 0, where a mode-0000 file opens for writing. (Only *execute*
             // still needs a bit set for root, and `open` never asks for it.)
-            let privileged = EmulatedKernel.isPrivileged state.Kernel
+            let lacksNeededBits =
+                match EmulatedKernel.callerPrivilege state.Kernel with
+                | CallerPrivilege.Privileged -> false
+                | CallerPrivilege.Unprivileged -> permissionBits &&& neededBits <> neededBits
 
-            if not privileged && permissionBits &&& neededBits <> neededBits then
+            if lacksNeededBits then
                 fail UnixError.EACCES
             else
 
@@ -2668,6 +2727,93 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack'
                 (EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64 fd)))
                 ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        // `int32_t SystemNative_MkDir(const char* path, int32_t mode)`
+        // (pal_io.c:696), an EINTR-retrying `mkdir(2)` and nothing else. The mode
+        // parameter is matched loosely for the same reason `SystemNative_Open`'s
+        // flags are: CoreLib declares it as `(int)UnixFileMode` while a guest
+        // hand-rolling the P/Invoke writes `int`. Unlike `open`'s flags it is a
+        // *raw* mode rather than a PAL value -- the C passes it straight to
+        // `mkdir`.
+        | Some "SystemNative_MkDir",
+          [ ConcretePointer _ ; _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_MkDir"
+
+            let fail (error : UnixError) : NativeHandlerResult option =
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            let rules = SimulatedUnixPlatform.mkDirRules state.Kernel.UnixPlatform
+
+            match
+                bufferPointerArgument operation "path" instruction.Arguments.[0]
+                |> BufferPointer.dereferenceable
+            with
+            | None -> fail UnixError.EFAULT
+            | Some pathPtr ->
+
+            let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
+
+            let bytes =
+                NativeCall.readNullTerminatedBytesWithin
+                    operation
+                    ctx.BaseClassTypes
+                    state
+                    pathPtr
+                    (PathLimits.pathMaxBytes limits)
+
+            match parseGuestPathBytes operation limits bytes with
+            | Error error -> fail error
+            | Ok path ->
+
+            // `NoFollowFinal` on both platforms: `mkdir` never dereferences the
+            // name it is about to bind, so an existing link is EEXIST whether it
+            // dangles, points at a file, or points at itself. The trailing
+            // separator is the only thing that can reach past it, and only on
+            // Darwin -- see `MkDirRules.TrailingSeparator`.
+            match
+                resolveGuestPathFull operation SymlinkPolicy.NoFollowFinal rules.TrailingSeparator state.Kernel path
+            with
+            | Error error -> fail error
+            | Ok resolution ->
+
+            match
+                MkDirRules.verdict (EmulatedKernel.callerPrivilege state.Kernel) resolution state.Kernel.FileSystem
+            with
+            | MkDirVerdict.Refuse error -> fail error
+            | MkDirVerdict.Create (directory, name, parentPermissions) ->
+
+            let mode = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            let permissions =
+                MkDirRules.createdPermissions rules parentPermissions state.Kernel.Umask mode
+
+            let now = EmulatedKernel.fileTimestamp state.Kernel
+
+            match VirtualFileSystem.createDirectory directory name permissions now state.Kernel.FileSystem with
+            | Error error ->
+                // `createDirectory` refuses a name the directory already holds,
+                // and a parent that is not a directory. The walk has just
+                // established neither is the case, so either is a broken graph
+                // rather than something the guest did.
+                failwith
+                    $"%s{operation}: creating \"%s{FileName.toString name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is an interpreter bug)."
+            | Ok (_, filesystem) ->
+
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    FileSystem = filesystem
+                }
+            )
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_GetFileSystemType",

@@ -161,6 +161,43 @@ module NativeRuntimeTypeQCall =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
+        | "RuntimeTypeHandle_IsCollectible",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "IsCollectible",
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
+            qCallGenerics.IsEmpty && boolGenerics.IsEmpty
+            ->
+            let operation = "RuntimeTypeHandle.IsCollectible"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            // CoreCLR is `pTypeHandle.AsTypeHandle().GetLoaderAllocator()->IsCollectible()`
+            // (runtimehandles.cpp:1094). The target is decoded rather than ignored so that a
+            // malformed handle fails here rather than being reported as non-collectible; the
+            // decoded value is not consulted, because with one loader allocator the answer cannot
+            // depend on it. Deliberately no walk from the target to an assembly: it would have to
+            // handle every structural and synthetic shape -- `int[]`, `int&`, a function pointer,
+            // the dynamic-methods class -- and could fail on one, where the answer cannot.
+            instruction.Arguments.[0]
+            |> EvalStackValue.ofCliType
+            |> NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state
+            |> ignore<RuntimeTypeHandleTarget>
+
+            // Interop.BOOL is int-backed with FALSE = 0 and TRUE = 1.
+            let state =
+                let ret =
+                    if LoaderAllocator.isCollectible LoaderAllocator.Global then
+                        1
+                    else
+                        0
+
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
         | "RuntimeTypeHandle_Instantiate",
           "System.Private.CoreLib",
           "System",
