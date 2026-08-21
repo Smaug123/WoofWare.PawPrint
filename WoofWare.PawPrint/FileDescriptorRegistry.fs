@@ -40,6 +40,23 @@ type SocketId =
         match this with
         | SocketId value -> string<int64> value
 
+/// Identity of one TCP connection — the kernel object a completed loopback
+/// handshake creates. Never guest-visible.
+///
+/// Distinct from either endpoint's `SocketId` because a connection outlives
+/// the sockets that made it: measured, a client closed while its connection
+/// sits in a listener's accept queue leaves the connection acceptable, and
+/// `accept(2)` then returns a working descriptor onto it. The server side has
+/// no socket at all until that accept. The connection table itself lives on
+/// `EmulatedKernel`, beside the socket table.
+[<Struct>]
+type ConnectionId =
+    | ConnectionId of value : int64
+
+    override this.ToString () : string =
+        match this with
+        | ConnectionId value -> string<int64> value
+
 /// The communication domain of a socket PawPrint can create, as the PAL numbers
 /// it (`AddressFamily` in `pal_networking.h`).
 ///
@@ -94,9 +111,87 @@ type SocketProtocol =
 /// bind — has given it one.
 type SocketBinding =
     {
-        /// Where the socket is bound.
+        /// Where the socket is bound, with any source-address resolution a
+        /// connect performed already applied: a wildcard-bound or unbound
+        /// socket that connects over loopback reads back 127.0.0.1 here.
         Endpoint : InternetEndpoint
+        /// The address the guest's own `bind(2)` gave the socket, or `None`
+        /// when the binding arose implicitly (a connect or listen minted it).
+        /// The kernel state Linux calls SOCK_BINDADDR_LOCK: a Linux refusal
+        /// delivery reverts `Endpoint`'s address to this (the wildcard when
+        /// `None`) while keeping the port — measured for all three
+        /// provenances — where Darwin keeps the resolved address.
+        LockedAddress : uint32 option
     }
+
+/// What `listen(2)` gave a socket: the number it was called with, and the
+/// queue of completed connections `accept(2)` drains.
+type ListenState =
+    {
+        /// The backlog argument `listen(2)` recorded, verbatim. Its one reader
+        /// is the accept-queue capacity check in `EmulatedKernel.connectStream`,
+        /// which derives the flavour's admission bound from it — measured,
+        /// Linux admits `backlog + 1` completed connections and Darwin exactly
+        /// `backlog` — so this stores the input to that rule rather than a
+        /// pre-computed capacity that would bake one flavour's arithmetic in.
+        Backlog : int
+        /// Completed connections not yet accepted, oldest first: `accept(2)`
+        /// dequeues from the head. Measured on both flavours: accept returns
+        /// connections in the order the connects completed.
+        Queue : ConnectionId list
+    }
+
+/// Where a socket is in its connection lifecycle. One value, rather than an
+/// `IsListening` flag beside a connection field, because the states are
+/// mutually exclusive in the kernel being modelled: a listening socket cannot
+/// also be connected, and two fields would represent that conjunction only to
+/// forbid it by invariant.
+///
+/// The refusal-delivery transitions (`RefusedPendingDelivery` → `Idle` on
+/// Linux, → `Dead` on Darwin) are measured, `probe3.c`/`probe4.c` 2026-08-21;
+/// see docs/plans/2026-08-21-socket-connect.md for the full table.
+[<RequireQualifiedAccess>]
+type SocketPhase =
+    /// Fresh from `socket(2)`, dissolved by a Linux `AF_UNSPEC` connect, or
+    /// reset by a Linux refusal delivery. Bound or not is `Binding`'s
+    /// business, not this one's.
+    | Idle
+    /// `listen(2)` has been called.
+    | Listening of ListenState
+    /// A non-blocking connect completed, and no later connect has reported
+    /// that completion yet: the next `connect(2)` answers SUCCESS exactly
+    /// once (Linux; Darwin never enters this state — its retry answers
+    /// EISCONN directly, so its non-blocking completion goes straight to
+    /// `Established`).
+    | EstablishedPendingReport of connection : ConnectionId
+    /// Connected. `connect(2)` answers EISCONN.
+    | Established of connection : ConnectionId
+    /// A non-blocking connect was refused and no later connect has delivered
+    /// the pending ECONNREFUSED yet. The delivering connect transitions to
+    /// `Idle` (Linux) or `Dead` (Darwin).
+    | RefusedPendingDelivery
+    /// Darwin's post-refusal latch: every later `connect(2)` answers EINVAL,
+    /// whatever the destination. Unreachable under the Linux flavour.
+    | Dead
+    /// A datagram socket's default peer, set by `connect(2)` on it. Filters
+    /// nothing yet — no receive path exists — but re-connect re-targets it
+    /// and a Linux `AF_UNSPEC` connect dissolves it back to `Idle`, both
+    /// guest-visible through the return codes.
+    | DatagramPeer of peer : InternetEndpoint
+
+[<RequireQualifiedAccess>]
+module SocketPhase =
+    /// Whether `listen(2)` has been called: the reading `bind(2)`'s conflict
+    /// rule takes.
+    let isListening (phase : SocketPhase) : bool =
+        match phase with
+        | SocketPhase.Listening _ -> true
+        | SocketPhase.Idle
+        | SocketPhase.EstablishedPendingReport _
+        | SocketPhase.Established _
+        | SocketPhase.RefusedPendingDelivery
+        | SocketPhase.Dead
+        | SocketPhase.DatagramPeer _ -> false
 
 /// A socket, as the emulated kernel's socket table holds it.
 ///
@@ -129,17 +224,13 @@ type SocketDescription =
         /// `SO_REUSEPORT` where that exists (`pal_networking.c:2274`). Its whole
         /// observable effect is which later binds and listens are refused.
         ReuseAddress : bool
-        /// Whether `listen(2)` has been called on this socket.
+        /// Where this socket is in its connection lifecycle: idle, listening
+        /// (with the accept queue), connected, or latched by a refusal.
         ///
-        /// A flag rather than the backlog, because nothing this slice implements
-        /// can read a backlog: its only observer is the depth of the queue
-        /// `accept(2)` drains, and storing a number nothing reads is state no
-        /// test can cover. `Accept` adds it together with that queue.
-        ///
-        /// Load-bearing for `bind(2)` all the same: a listening socket's address
+        /// Load-bearing for `bind(2)` too: a listening socket's address
         /// conflicts with a second bind on both flavours, where a merely-bound
         /// one may not.
-        IsListening : bool
+        Phase : SocketPhase
     }
 
 /// What an open file description refers to — the kernel object on the far side
