@@ -51,6 +51,9 @@ module TestEmulatedKernelSockets =
             Domain = SocketDomain.InterNetwork
             Kind = SocketKind.Stream
             Protocol = SocketProtocol.Tcp
+            Binding = None
+            IsListening = false
+            ReuseAddress = false
         }
 
     /// The triple a socket is created with, asserted per field because nothing

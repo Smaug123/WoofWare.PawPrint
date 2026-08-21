@@ -242,6 +242,50 @@ type UnixError =
     /// number is free on the other platform — raw 93 is `ENOATTR` on Darwin and
     /// raw 43 is `EIDRM` on Linux.
     | EPROTONOSUPPORT
+    /// `EADDRINUSE` — Address already in use.
+    ///
+    /// Reported by `bind(2)` when another socket already holds a conflicting
+    /// local address. Which pairs conflict is not a property of the address
+    /// alone: it depends on both sockets' `SO_REUSEADDR`, on whether either is
+    /// listening, and on the flavour, which relax the rule in opposite
+    /// directions. See `SimulatedUnixPlatform.bindConflict`.
+    ///
+    /// Platform-dependent, and neither number is free on the other platform.
+    /// Measured from both `strerror` tables: Linux numbers this 98, where Darwin
+    /// reads 98 as "No STREAM resources"; Darwin numbers it 48, where Linux reads
+    /// 48 as "Link number out of range".
+    | EADDRINUSE
+    /// `EADDRNOTAVAIL` — Cannot assign requested address.
+    ///
+    /// Reported by `bind(2)` for an address no local interface holds. What
+    /// counts as local is a per-flavour rule over the configured prefixes: Linux
+    /// accepts anything inside a local prefix (so the whole of `127.0.0.0/8`),
+    /// Darwin only an address a prefix *is*.
+    ///
+    /// Platform-dependent, and neither number is free on the other platform.
+    /// Measured: Linux numbers this 99, where Darwin reads 99 as "Not a STREAM";
+    /// Darwin numbers it 49, where Linux reads 49 as "Protocol driver not
+    /// attached".
+    | EADDRNOTAVAIL
+    /// `EOPNOTSUPP` — Operation not supported on socket.
+    ///
+    /// Reported by `listen(2)` on a socket whose type does not accept
+    /// connections — a datagram socket, measured on both.
+    ///
+    /// The PAL folds this together with `ENOTSUP` (`Error_EOPNOTSUPP =
+    /// Error_ENOTSUP`), so CoreLib's managed `Interop.Error` carries this name
+    /// only as an alias and both conditions present the same value to a guest
+    /// switching on it. The *raw* errnos are not folded, and that is measured:
+    /// `listen(2)` on a datagram socket sets 95 on Linux and **102** on Darwin,
+    /// while `flock` on a socket sets Darwin's `ENOTSUP`, 45. This case carries
+    /// `EOPNOTSUPP`'s numbering; a caller meaning `ENOTSUP` needs its own case
+    /// rather than this one, or a Darwin guest reading `errno` sees 102 where the
+    /// kernel set 45.
+    ///
+    /// Neither number is free on the other platform: Darwin reads 95 as
+    /// "EMULTIHOP (Reserved)" and Linux reads 102 as "Network dropped connection
+    /// on reset".
+    | EOPNOTSUPP
 
 /// The raw and PAL numbering of one `UnixError`.
 type UnixErrorNumbering =
@@ -317,6 +361,9 @@ module UnixError =
             UnixError.EAFNOSUPPORT
             UnixError.EPROTOTYPE
             UnixError.EPROTONOSUPPORT
+            UnixError.EADDRINUSE
+            UnixError.EADDRNOTAVAIL
+            UnixError.EOPNOTSUPP
         ]
 
     let private portable (pal : int) (raw : int) : UnixErrorNumbering =
@@ -392,6 +439,9 @@ module UnixError =
         // Likewise: raw 93 is EPROTONOSUPPORT on Linux and ENOATTR on Darwin,
         // while raw 43 is EPROTONOSUPPORT on Darwin and EIDRM on Linux.
         | UnixError.EPROTONOSUPPORT -> platformDependent 0x10045 93 43
+        | UnixError.EADDRINUSE -> platformDependent 0x10003 98 48
+        | UnixError.EADDRNOTAVAIL -> platformDependent 0x10004 99 49
+        | UnixError.EOPNOTSUPP -> platformDependent 0x1003D 95 102
 
     /// The `Interop.Error` value CoreLib switches on. Total: the PAL numbering is
     /// platform-independent, so it is always answerable.
