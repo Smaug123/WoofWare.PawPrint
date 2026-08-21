@@ -56,6 +56,57 @@ module NativeStackTrace =
 
         state, CliType.ObjectRef (Some arrayAddr)
 
+    /// The registry id naming `frame`'s method, as `rgMethodHandle` carries it.
+    ///
+    /// A dynamic method is *not* metadata-backed but is still perfectly nameable: its
+    /// `DynamicMethodHandle` already carries a registry id, minted when `Reflection.Emit` built it,
+    /// and `MethodHandleRegistry` maps that id to a `MethodHandle.FromDynamic`. So the id is read
+    /// off the frame rather than minted, exactly as CoreCLR writes the frame's existing
+    /// `DynamicMethodDesc*` for an LCG method. Such frames really do appear in traces — an
+    /// exception thrown out of a `DynamicMethod` carries one.
+    ///
+    /// The other synthesised kinds have no handle of any sort and are refused. That refusal is
+    /// deliberate rather than an omission: writing `IntPtr.Zero` would make `GetMethodBase` answer
+    /// null, and `CalculateFramesToSkip` counts a null-method frame as skippable (its namespace
+    /// tests sit inside `if (mb != null)` while the `iRetVal++` after them is unconditional,
+    /// StackTrace.CoreCLR.cs:26-41), so the frame would vanish from the trace silently rather than
+    /// visibly.
+    let private methodHandleIdOfFrame
+        (operation : string)
+        (state : IlMachineState)
+        (frame : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : IlMachineState * int64
+        =
+        match frame.Method.SynthesisedKind with
+        | None ->
+            let id, registry =
+                MethodHandleRegistry.getOrAllocateDefinitionId state.ConcreteTypes frame.Method state.MethodHandles
+
+            { state with
+                MethodHandles = registry
+            },
+            id
+        | Some (SynthesisedMethod.DynamicMethod handle) -> state, handle.GetRegistryId ()
+        | Some SynthesisedMethod.EntryPointPlaceholder ->
+            // The frame the entry thread carries while startup runs class initialisers, before
+            // `Main` is installed. It is shaped like the entry point but deliberately carries no
+            // MethodDef handle, so that nothing resolves its IL offsets against the real `Main`'s
+            // debug information and reports source lines for code that has not executed
+            // (`SynthesisedMethod.EntryPointPlaceholder`).
+            //
+            // Real .NET has no equivalent moment — its class initialisers are lazy, so the closest
+            // scenario, an entry type whose initialiser runs from `Main`'s first static access,
+            // does have a real `Main` frame and reports it (measured). Answering that here means
+            // naming the placeholder as `Main`, which reintroduces exactly the hazard that
+            // docstring exists to prevent: the placeholder's own body is a bare `ret`, so its
+            // offset 0 is a real position in `Main` that a consumer could map to a source line.
+            // Deciding between those is not this handler's to make, so it says so instead.
+            failwith
+                $"%s{operation}: a captured frame is the entry-point placeholder for %s{frame.Method.Name}, which carries no method handle by construction. This is reachable from a class initialiser that captures a stack trace during startup, before Main is installed. Deciding what such a frame should report — the entry point's own handle, or no frame at all — needs the question in SynthesisedMethod.EntryPointPlaceholder's docstring settled first."
+        | Some kind ->
+            failwith
+                $"%s{operation}: a captured frame runs the synthesised method %s{frame.Method.Name} (%O{kind}), which has no MethodDef row and no registry id to name it. Reporting a null handle instead is not an option: CalculateFramesToSkip counts a null-method frame as skippable, so the frame would silently vanish from the guest's trace."
+
     /// The frames a capture should report.
     ///
     /// `NumFramesRequested` bounds only the current-thread walk: CoreCLR consults it in
@@ -185,16 +236,7 @@ module NativeStackTrace =
             let state, methodHandles =
                 ((state, []), frames)
                 ||> List.fold (fun (state, acc) frame ->
-                    let id, registry =
-                        MethodHandleRegistry.getOrAllocateDefinitionId
-                            state.ConcreteTypes
-                            frame.Method
-                            state.MethodHandles
-
-                    let state =
-                        { state with
-                            MethodHandles = registry
-                        }
+                    let state, id = methodHandleIdOfFrame operation state frame
 
                     state,
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodHandlePtr id))

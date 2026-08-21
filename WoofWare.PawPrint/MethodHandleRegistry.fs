@@ -460,13 +460,10 @@ module MethodHandleRegistry =
         (reg : MethodHandleRegistry)
         : int64 * MethodHandleRegistry
         =
-        // Refuses a runtime-synthesised method, which has no MethodDef row to name. That refusal
-        // is the intended answer for a captured frame too: writing `IntPtr.Zero` instead would
-        // make `GetMethodBase` return null, and `CalculateFramesToSkip` counts a null-method frame
-        // as skippable (its namespace tests sit inside `if (mb != null)` while the `iRetVal++`
-        // after them is unconditional, StackTrace.CoreCLR.cs:26-41) — so the frame would vanish
-        // from the trace silently. A delegate-`Invoke` stub, the one synthesised frame known to
-        // reach a capture, is dropped before this by `StackFrameCapture.isDelegateInvokeStub`.
+        // Refuses a runtime-synthesised method, which has no MethodDef row to name. Callers that
+        // may hold one must classify it first: a dynamic method already carries a registry id and
+        // needs no minting, and the remaining kinds have no identity to mint (see
+        // `NativeStackTrace.methodHandleIdOfFrame`).
         idOfHandle (makeConcreteMethodHandle allConcreteTypes [] method) reg
 
     let rec private isReferenceShaped (typeDefn : TypeDefn) : bool =

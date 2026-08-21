@@ -216,9 +216,19 @@ spellings of a method handle: `CliRuntimePointer.MethodRegistryHandle id` and
 accepts both. Store `NativeIntSource.MethodHandlePtr id` — the `IntPtr`-shaped spelling, which is
 what `EvalStack`'s rewrap rules produce for a value that has travelled through an `IntPtr` cell.
 
-The open question is a frame whose method is runtime-synthesised. It has no MethodDef token, and
-`MethodHandleRegistry` refuses to mint a handle for one by design ("reaching here with one means
-some path handed a runtime-supplied method to reflection, which is a bug in that path").
+The open question is a frame whose method is runtime-synthesised. "Synthesised" is not one thing,
+though, and the first version of this decision wrongly treated it as one:
+
+* a **dynamic method** has no MethodDef token but *is* nameable — its `DynamicMethodHandle` carries
+  a registry id, minted when `Reflection.Emit` built it, which `MethodHandleRegistry` maps to a
+  `MethodHandle.FromDynamic`. So its id is read off the frame, not minted, exactly as CoreCLR
+  writes the existing `DynamicMethodDesc*` for an LCG method. These frames really do occur: an
+  exception thrown out of a `DynamicMethod` carries one.
+* the **entry-point placeholder** and the **struct-marshal stub** have no handle of any kind.
+
+The rest of this decision is about that second group. `MethodHandleRegistry` refuses to mint a
+handle for one by design ("reaching here with one means some path handed a runtime-supplied method
+to reflection, which is a bug in that path").
 
 * (a) Write a zero handle, so `GetMethodBase` returns null.
 * (b) Omit synthesised frames from the walk, as `ExceptionDispatching.isDelegateInvokeStub` already
@@ -236,8 +246,19 @@ riding on a defensive check.
 
 (b) trades the silent skip for a silent omission — better, but still a wrong answer. (c) matches
 the project's stated preference for crashing over documented divergence, and is cheap to relax: if
-a real guest turns out to put a synthesised frame on a captured stack, the refusal names it, and we
+a real guest turns out to put one of these frames on a captured stack, the refusal names it, and we
 then choose (a) or (b) with an actual example in hand rather than a guess.
+
+The entry-point placeholder is the case most likely to need that, and it has its own refusal
+message because the answer is not obvious. It is the frame the entry thread carries while startup
+runs class initialisers, shaped like the entry point but deliberately carrying no MethodDef handle
+so that nothing resolves its IL offsets against the real `Main`'s debug information. Real .NET has
+no equivalent moment — its initialisers are lazy — and in the closest scenario, an entry type whose
+initialiser runs from `Main`'s first static access, it does report a real `Main` frame (measured:
+`P.Init` / `P..cctor` / two `InitHelpers` frames / `P.Main`). Answering that here means naming the
+placeholder as `Main`, which reintroduces the hazard its docstring exists to prevent: its body is a
+bare `ret`, so offset 0 is a real position in `Main` that a consumer could map to a source line.
+Settling that is a question about the placeholder, not about this handler, so the handler says so.
 
 If (a) or (b) is ever adopted, the zero cell must be spelled `NativeIntSource.Verbatim 0L`, not
 `MethodHandlePtr 0L`: the latter decodes as `Some 0L` in

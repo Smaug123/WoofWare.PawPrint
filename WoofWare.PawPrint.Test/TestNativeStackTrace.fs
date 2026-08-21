@@ -197,6 +197,111 @@ public static class Entry
             }
         )
 
+    /// Mint a real `Reflection.Emit` method and push a frame running it.
+    ///
+    /// A dynamic method has no MethodDef row, so it is `SynthesisedMethod.DynamicMethod` — but it
+    /// is nameable, its `DynamicMethodHandle` carrying the registry id minted here. Returns that
+    /// id, which is what `rgMethodHandle` must report for the frame.
+    let private pushDynamicMethodFrame
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState * int64
+        =
+        // `static void ()`: default calling convention, no parameters, void return.
+        let signature = ImmutableArray.Create (0x00uy, 0x00uy, 0x01uy)
+
+        let body =
+            MintedDynamicMethodBody.make [ IlOp.Nullary NullaryIlOp.Ret, 0 ] None ImmutableArray.Empty
+
+        // `mintDynamicMethod` allocates the `RuntimeMethodInfoStub` through the caller's allocator,
+        // so the machine state threads through as the allocation state.
+        let stubAddr, registry, state =
+            MethodHandleRegistry.mintDynamicMethod
+                baseClassTypes
+                state.ConcreteTypes
+                state
+                (fun fields state ->
+                    IlMachineState.allocateManagedObject
+                        (AllConcreteTypes.getRequiredNonGenericHandle
+                            state.ConcreteTypes
+                            baseClassTypes.RuntimeMethodInfoStub)
+                        fields
+                        state
+                )
+                "Thrower"
+                signature
+                baseClassTypes.Corelib.DefinitionFullName
+                None
+                body
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = registry
+            }
+
+        // The minted id is only reported through the `RuntimeMethodInfoStub` the registry
+        // allocated, so read it back from there rather than guessing at the registry's counter.
+        let handle =
+            let stub = ManagedHeap.get stubAddr state.ManagedHeap
+
+            AllocatedNonArrayObject.DereferenceField "m_value" stub
+            |> NativeCall.methodHandleIdOfRuntimeMethodHandleInternal "pushDynamicMethodFrame"
+            |> Option.defaultWith (fun () -> failwith "the minted stub carried no method-registry id")
+            |> DynamicMethodHandle.ofRegistryId
+
+        let state, method =
+            ExecutionConcretization.concretizeDynamicMethod
+                loggerFactory
+                baseClassTypes
+                "pushDynamicMethodFrame"
+                handle
+                false
+                state
+
+        // The point of the frame.
+        match method.SynthesisedKind with
+        | Some (SynthesisedMethod.DynamicMethod _) -> ()
+        | other -> failwith $"expected a dynamic method, got %O{other}"
+
+        let threadState = state.ThreadState.[thread]
+
+        let returnState : MethodReturnState =
+            {
+                JumpTo = threadState.ActiveMethodState
+                WasInitialisingType = None
+                Constructing = ConstructionState.NotConstructing
+                CallSiteIlOpIndex = 0
+                ReturnValueDisposition = ReturnValueDisposition.PushToCaller
+                WrapExceptionInTargetInvocation = false
+            }
+
+        let frame =
+            match
+                MethodState.Empty
+                    state.ConcreteTypes
+                    baseClassTypes
+                    state._LoadedAssemblies
+                    baseClassTypes.Corelib
+                    method
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+                    (Some returnState)
+            with
+            | Ok frame -> frame
+            | Error missing ->
+                failwith $"unexpected missing assembly references building a dynamic-method frame: %O{missing}"
+
+        let frameId, threadState = ThreadState.appendFrame frame threadState
+        let threadState = ThreadState.setActiveFrame frameId threadState
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add thread threadState
+        },
+        handle.GetRegistryId ()
+
     /// Push a frame whose method has no IL body — this very QCall, which is `MethodBody.PInvoke`.
     ///
     /// Not a contrived shape: the innermost frame of every real current-thread capture is exactly
@@ -738,3 +843,37 @@ public static class Entry
         |> Option.get
         |> int32Elements state
         |> shouldEqual (expected |> List.map (fun _ -> -1))
+
+    [<Test>]
+    let ``a dynamic method's frame reports the registry id it already carries`` () =
+        // A `Reflection.Emit` method is synthesised — no MethodDef row — but it is not nameless: its
+        // `DynamicMethodHandle` carries a registry id, and the handler must report that rather than
+        // try to mint a metadata identity it has none of. Such frames do reach captures: an
+        // exception thrown out of a `DynamicMethod` carries one in its frozen trace.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let prepared = prepareGuest loggerFactory
+        let baseClassTypes = prepared.BaseClassTypes
+        let state = prepared.State
+
+        let state, expectedId =
+            pushDynamicMethodFrame loggerFactory baseClassTypes prepared.EntryThread state
+
+        let expected = StackFrameCapture.ofThread state.ThreadState.[prepared.EntryThread]
+
+        let helperAddr, state = allocateHelper loggerFactory baseClassTypes 0 state
+        let state = invoke loggerFactory prepared false helperAddr None state
+
+        let ids =
+            readArrayField state helperAddr "rgMethodHandle"
+            |> Option.get
+            |> methodHandleElements state
+
+        ids |> List.length |> shouldEqual expected.Length
+
+        // Innermost first, so the dynamic method is the head.
+        ids.Head |> shouldEqual expectedId
+
+        // And it resolves back to a dynamic method, not to a fabricated metadata one.
+        match MethodHandleRegistry.resolveMethodFromId ids.Head state.MethodHandles with
+        | Some (MethodHandle.FromDynamic handle) -> handle.GetRegistryId () |> shouldEqual expectedId
+        | other -> failwith $"expected the frame's handle to resolve to a dynamic method, got %O{other}"
