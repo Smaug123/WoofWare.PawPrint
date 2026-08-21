@@ -36,6 +36,87 @@ module NativeMetadataImport =
     let private metadataReaderOf (assembly : DumpedAssembly) : System.Reflection.Metadata.MetadataReader =
         System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader assembly.PeReader
 
+    let private tableRowCount
+        (assembly : DumpedAssembly)
+        (table : System.Reflection.Metadata.Ecma335.TableIndex)
+        : int
+        =
+        System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetTableRowCount (metadataReaderOf assembly, table)
+
+    /// <summary>
+    /// Does <paramref name="assembly"/> have a row for <paramref name="token"/>? This is the
+    /// question <c>MetadataImport.IsValidToken</c> answers, and callers use it to tell "the guest
+    /// named a row that is not there" from "the row is there and something else went wrong".
+    /// </summary>
+    /// <remarks>
+    /// Answers <c>false</c>, rather than failing, for a token naming no table at all and for one
+    /// naming a table this check does not admit — see below for which. Fails only for a user-string
+    /// token, whose answer PawPrint cannot yet compute.
+    /// </remarks>
+    let isValidToken (operation : string) (assembly : DumpedAssembly) (token : int32) : bool =
+        let rid = token &&& 0x00FFFFFF
+
+        // CoreCLR's `MDInternalRO::IsValidToken` (md/runtime/mdinternalro.cpp:3078) rejects rid 0
+        // — the nil token of every table — before looking at the table code at all.
+        if rid = 0 then
+            false
+        else
+
+        // Deliberately switching on the raw table byte rather than going through
+        // `MetadataToken.ofInt`, which is a *parser*: it fails for a `ModuleDefinition` or
+        // `AssemblyDefinition` token whose row is not 1, and for a table code it does not know.
+        // Both of those are questions this function has to answer with `false`, and a guest can
+        // ask them — `RuntimeModule.ResolveField` puts the caller's raw token through
+        // `IsValidToken` before screening its kind, so `ResolveField(0x00000005)` arrives here.
+        let table = (token >>> 24) &&& 0xFF
+
+        // The tables `MDInternalRO::IsValidToken` admits, as `mdt*` codes from `inc/corhdr.h`.
+        // Deliberately *not* every table that exists: the switch omits MethodImpl (0x19),
+        // NestedClass (0x29), GenericParam (0x2A), GenericParamConstraint (0x2C) and Constant
+        // (0x0B) among others, and its `default` is `FALSE` — so a token naming one of those is
+        // "invalid" however well-formed it is, and a guest can observe the difference. Note the
+        // sibling `CMiniMdRO::_IsValidTokenBase` (md/inc/metamodel.h:1987) *does* list GenericParam
+        // and GenericParamConstraint; it is not the function the FCall reaches.
+        let tableIndex : System.Reflection.Metadata.Ecma335.TableIndex option =
+            match table with
+            | 0x00 -> Some System.Reflection.Metadata.Ecma335.TableIndex.Module
+            | 0x01 -> Some System.Reflection.Metadata.Ecma335.TableIndex.TypeRef
+            | 0x02 -> Some System.Reflection.Metadata.Ecma335.TableIndex.TypeDef
+            | 0x04 -> Some System.Reflection.Metadata.Ecma335.TableIndex.Field
+            | 0x06 -> Some System.Reflection.Metadata.Ecma335.TableIndex.MethodDef
+            | 0x08 -> Some System.Reflection.Metadata.Ecma335.TableIndex.Param
+            | 0x09 -> Some System.Reflection.Metadata.Ecma335.TableIndex.InterfaceImpl
+            | 0x0A -> Some System.Reflection.Metadata.Ecma335.TableIndex.MemberRef
+            | 0x0C -> Some System.Reflection.Metadata.Ecma335.TableIndex.CustomAttribute
+            | 0x0E -> Some System.Reflection.Metadata.Ecma335.TableIndex.DeclSecurity
+            | 0x11 -> Some System.Reflection.Metadata.Ecma335.TableIndex.StandAloneSig
+            | 0x14 -> Some System.Reflection.Metadata.Ecma335.TableIndex.Event
+            | 0x17 -> Some System.Reflection.Metadata.Ecma335.TableIndex.Property
+            | 0x1A -> Some System.Reflection.Metadata.Ecma335.TableIndex.ModuleRef
+            | 0x1B -> Some System.Reflection.Metadata.Ecma335.TableIndex.TypeSpec
+            | 0x20 -> Some System.Reflection.Metadata.Ecma335.TableIndex.Assembly
+            | 0x23 -> Some System.Reflection.Metadata.Ecma335.TableIndex.AssemblyRef
+            | 0x26 -> Some System.Reflection.Metadata.Ecma335.TableIndex.File
+            | 0x27 -> Some System.Reflection.Metadata.Ecma335.TableIndex.ExportedType
+            | 0x28 -> Some System.Reflection.Metadata.Ecma335.TableIndex.ManifestResource
+            | 0x2B -> Some System.Reflection.Metadata.Ecma335.TableIndex.MethodSpec
+            // mdtString. CoreCLR answers this one from the `#US` heap rather than a table —
+            // `m_UserStringHeap.IsValidIndex(rid)`, where the rid is a byte offset into the heap
+            // and not a row number — and that reduces to `StgBlobPoolReadOnly::IsValidCookie`,
+            // which is not in the pinned runtime's sparse checkout, so what makes an offset valid
+            // (a bounds check alone, or also a well-formed blob header) is not something PawPrint
+            // can currently reproduce rather than guess. No `ResolveType` path can present a
+            // string token: `RuntimeModule.ResolveType` screens for TypeDef/TypeRef/TypeSpec
+            // first. `ResolveField` and `ResolveString` can.
+            | 0x70 ->
+                failwith
+                    $"%s{operation}: user-string token 0x%08x{token} reached the token-validity check. CoreCLR answers this from the #US heap (MDInternalRO::IsValidToken, md/runtime/mdinternalro.cpp:3133) via StgBlobPoolReadOnly::IsValidCookie, which is not in the pinned runtime source's sparse checkout, so the predicate would have to be guessed. Widen `sparseCheckout` in flake.nix and implement it if a guest needs Module.ResolveString or a string token through Module.ResolveField."
+            | _ -> None
+
+        match tableIndex with
+        | None -> false
+        | Some table -> rid <= tableRowCount assembly table
+
     let private metadataTokenOfFieldDefinitionHandle
         (fieldHandle : System.Reflection.Metadata.FieldDefinitionHandle)
         : int32
@@ -1739,6 +1820,36 @@ module NativeMetadataImport =
 
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System.Reflection",
+          "MetadataImport",
+          "IsValidToken",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
+            // `MetaDataImport::IsValidToken` (coreclr/vm/managedmdimport.cpp:124), which is
+            // `pScope->IsValidToken(tk)`. CoreLib asks this to decide whether a token the guest
+            // handed it names a row at all: `ModuleHandle.Resolve{Type,Method,Field}Handle` ask it
+            // from inside a `catch` around the resolving QCall, and `RuntimeModule.ResolveField`
+            // and friends ask it up front. A `false` answer becomes an
+            // `ArgumentOutOfRangeException`; a `true` one lets the original failure through.
+            let operation = "MetadataImport.IsValidToken"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
+            let assembly = metadataImportAssembly operation state assemblyFullName
+
+            let token =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.Numeric (CliNumericType.Int32 token) -> token
+                | other -> failwith $"%s{operation}: expected Int32 token argument, got %O{other}"
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ofBool (isValidToken operation assembly token)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
