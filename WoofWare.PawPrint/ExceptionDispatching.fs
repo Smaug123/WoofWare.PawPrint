@@ -510,24 +510,6 @@ module ExceptionDispatching =
 
         state, framesAlreadyPresent () |> markLastFrameAsForeign |> Some
 
-    /// True iff a frame boundary crossing into `caller` appends no stack-trace frame.
-    ///
-    /// A delegate's `Invoke` is a stub, not a managed method: real .NET has no frame for it, and
-    /// an exception crossing a delegate call reports the target and then whoever called `Invoke`.
-    /// PawPrint's ordinary delegate path gets that for free, because `dispatchDelegateInvoke`
-    /// pops its synthetic frame before calling the target — so the frame is already gone by the
-    /// time anything can throw. The exception is class initialisation, which runs
-    /// *while* that frame is still active so the instruction can be retried after the `.cctor`
-    /// returns; without this, a `.cctor` that throws would report a `System.Action.Invoke` frame
-    /// that no real trace contains.
-    ///
-    /// Only `DelegateInvoke` is suppressed, not runtime-provided frames at large: an InternalCall
-    /// or QCall *is* a managed method by name and real traces do show it.
-    let private isDelegateInvokeStub (caller : MethodState) : bool =
-        match caller.ExecutingMethod.Body with
-        | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke -> true
-        | _ -> false
-
     /// Append the caller's frame to a raise's trace as the first pass crosses into it, consuming
     /// any pending foreign-raise flag in the process.
     ///
@@ -542,7 +524,7 @@ module ExceptionDispatching =
         (state : IlMachineState)
         : IlMachineState * CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         =
-        if isDelegateInvokeStub caller then
+        if StackFrameCapture.isDelegateInvokeStub caller then
             state, cliException
         else
 
