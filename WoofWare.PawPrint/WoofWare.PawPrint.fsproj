@@ -160,6 +160,9 @@
     <Compile Include="Native\NativeCustomAttribute.fs" />
     <Compile Include="Native\NativeMdUtf8String.fs" />
     <Compile Include="Native\NativeModuleHandle.fs" />
+    <!-- After NativeRuntimeTypeHelpers.fs: RuntimeModule_GetTypes builds its result array out
+         of that module's `concretizeNonGenericCorelibType`. -->
+    <Compile Include="Native\NativeRuntimeModule.fs" />
     <!-- After NativeRuntimeTypeHelpers.fs: the CastHelpers QCall formats CoreCLR's
          InvalidCastException message with that module's type-name renderer. -->
     <Compile Include="Native\NativeDelegate.fs" />
