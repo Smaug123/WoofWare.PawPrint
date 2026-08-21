@@ -2664,6 +2664,91 @@ module NativeSystemNative =
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        // `int32_t SystemNative_MkDir(const char* path, int32_t mode)`
+        // (pal_io.c:696), an EINTR-retrying `mkdir(2)` and nothing else. The mode
+        // parameter is matched loosely for the same reason `SystemNative_Open`'s
+        // flags are: CoreLib declares it as `(int)UnixFileMode` while a guest
+        // hand-rolling the P/Invoke writes `int`. Unlike `open`'s flags it is a
+        // *raw* mode rather than a PAL value -- the C passes it straight to
+        // `mkdir`.
+        | Some "SystemNative_MkDir",
+          [ ConcretePointer _ ; _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_MkDir"
+
+            let fail (error : UnixError) : NativeHandlerResult option =
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            let rules = SimulatedUnixPlatform.mkDirRules state.Kernel.UnixPlatform
+
+            match
+                bufferPointerArgument operation "path" instruction.Arguments.[0]
+                |> BufferPointer.dereferenceable
+            with
+            | None -> fail UnixError.EFAULT
+            | Some pathPtr ->
+
+            let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
+
+            let bytes =
+                NativeCall.readNullTerminatedBytesWithin
+                    operation
+                    ctx.BaseClassTypes
+                    state
+                    pathPtr
+                    (PathLimits.pathMaxBytes limits)
+
+            match parseGuestPathBytes operation limits bytes with
+            | Error error -> fail error
+            | Ok path ->
+
+            // `NoFollowFinal` on both platforms: `mkdir` never dereferences the
+            // name it is about to bind, so an existing link is EEXIST whether it
+            // dangles, points at a file, or points at itself. The trailing
+            // separator is the only thing that can reach past it, and only on
+            // Darwin -- see `MkDirRules.TrailingSeparator`.
+            match
+                resolveGuestPathFull operation SymlinkPolicy.NoFollowFinal rules.TrailingSeparator state.Kernel path
+            with
+            | Error error -> fail error
+            | Ok resolution ->
+
+            match MkDirRules.verdict (EmulatedKernel.isPrivileged state.Kernel) resolution state.Kernel.FileSystem with
+            | MkDirVerdict.Refuse error -> fail error
+            | MkDirVerdict.Create (directory, name, parentPermissions) ->
+
+            let mode = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            let permissions =
+                MkDirRules.createdPermissions rules parentPermissions state.Kernel.Umask mode
+
+            let now = EmulatedKernel.fileTimestamp state.Kernel
+
+            match VirtualFileSystem.createDirectory directory name permissions now state.Kernel.FileSystem with
+            | Error error ->
+                // `createDirectory` refuses a name the directory already holds,
+                // and a parent that is not a directory. The walk has just
+                // established neither is the case, so either is a broken graph
+                // rather than something the guest did.
+                failwith
+                    $"%s{operation}: creating \"%s{FileName.toString name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is an interpreter bug)."
+            | Ok (_, filesystem) ->
+
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    FileSystem = filesystem
+                }
+            )
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_GetFileSystemType",
           [ ConcreteIntPtr state.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->
