@@ -70,13 +70,20 @@ route — `Assembly.Load` included. Measured, not inferred: a guest asking
 `AssemblyNative_GetLoadContextForAssembly`. "One context" is therefore not an assumption
 that might be silently wrong; it is a consequence of there being no way to make a second.
 
-**Collectibility enters CoreCLR through exactly one door, and it is one of those missing
-natives.** `m_IsCollectible` is assigned in one place (loaderallocator.cpp:80), and the
-only caller that passes `true` is `AssemblyNative_InitializeAssemblyLoadContext`'s
-`fIsCollectible` branch (assemblynative.cpp:1194-1197), which constructs the
-`AssemblyLoaderAllocator`. Everything else shares the process's `GlobalLoaderAllocator`,
-which is non-collectible. So `true` is unreachable *by construction* rather than by
-accident, and that native is the natural trip-wire.
+**Collectibility enters CoreCLR through exactly two doors, and both are missing natives.**
+Every collectible arena is an `AssemblyLoaderAllocator`, whose constructor is the only
+thing passing `true` (`LoaderAllocator(true)`, loaderallocator.hpp:942), and it is
+constructed in exactly two places: `AssemblyNative_InitializeAssemblyLoadContext`'s
+collectible branch (assemblynative.cpp:1197), and `Assembly::CreateDynamic`
+(assembly.cpp:458) for `DefineDynamicAssembly` with `RunAndCollect`, reached through
+`AppDomain_CreateDynamicAssembly`. Neither is implemented. Everything else shares the
+process's `GlobalLoaderAllocator`, which is non-collectible. So `true` is unreachable *by
+construction* rather than by accident, and those two natives are the trip-wires.
+
+(The first revision of this plan named only the `AssemblyLoadContext` door. The
+`DefineDynamicAssembly` one surfaced while reading what a reviewer had searched, which is
+worth recording: a trip-wire comment that names one of two triggers is worse than useless,
+because it reads as exhaustive.)
 
 **Nothing wants multiple contexts.** No plan, no parked test, no roadmap item: the
 ASP.NET critical path's Phases 0-4 mention ALCs, dynamic loading, plugins and Razor
@@ -190,3 +197,42 @@ is implemented only for a `Reflection.Emit`-minted method. That is the last one 
 `Expression.Compile()` completes, and it is a bigger question than these three — it is
 about what a delegate over an interpreter-resolved method means when the BCL expected a
 dynamic one.
+
+## Outcome
+
+Implemented as Option B. `WoofWare.PawPrint/LoaderAllocator.fs` holds a one-case DU and
+`isCollectible`; the three handlers ask it. Measured rather than predicted:
+
+- all 18 checks of `ReflectionIsCollectible.cs` pass under the interpreter, and the file
+  exits 0 on real .NET;
+- five mutants died. `answers-true` fails at check 1. **Each of the three entry points was
+  unregistered in turn, and the file went red on each**, naming that entry point — which is
+  the specific risk the test plan called out, since one unimplemented handler could
+  otherwise hide behind another's earlier failure.
+
+Two things the plan did not anticipate, both found by running it:
+
+- **`MakeByRefType()` is not available.** `RuntimeTypeHandle_MakeByRef` is unimplemented, and
+  it has nothing to do with collectibility, so the byref shape is reached as a reflected
+  `ref int` parameter type instead. `typeof(int*)` needs no such native and is used directly.
+  Implementing `MakeByRef` to keep the original spelling would have been a second feature.
+- **The `Interop.BOOL` return type is spelled `("", "BOOL")`** — the global namespace — not
+  `("System", "Boolean")`, which is what the pattern in each handler had to match.
+
+The single-case DU earns its place beyond documentation: adding a second arena makes
+`isCollectible`'s match non-exhaustive, so the compiler enumerates the sites to revisit
+rather than leaving them to a grep. `AssemblyNative_InitializeAssemblyLoadContext` is named
+in its docstring as the one native whose arrival would require that.
+
+Deliberately not done, and why the handlers still resolve their argument before ignoring it:
+each one decodes its handle so that a malformed handle fails by name rather than being
+reported as non-collectible. That validation is unreachable from a guest, so no test covers
+it; the same shape and the same reasoning are one screen away in
+`RuntimeMethodHandle.GetLoaderAllocatorInternal`, which resolves and discards for exactly
+this reason.
+
+The type handler does **not** walk from its target to an assembly. It would have to handle
+every structural and synthetic shape — `int[]`, `int&`, a function pointer, the
+dynamic-methods class — and could fail on one, where the answer cannot. Note in particular
+that `DynamicMethodsClass` is *not* refused here: collectibility is not a metadata query, and
+CoreCLR answers it from the module's allocator without reading a row.

@@ -18,6 +18,7 @@
   <ItemGroup>
     <Compile Include="AssemblyInfo.fs" />
     <Compile Include="EmulatedRuntime.fs" />
+    <Compile Include="LoaderAllocator.fs" />
     <Compile Include="Tuple.fs" />
     <Compile Include="List.fs" />
     <Compile Include="ImmutableArray.fs" />
