@@ -317,3 +317,192 @@ module TestElementOffsetOverflow =
             |> List.tryLast
             |> shouldEqual (Some (ByrefProjection.ReinterpretAs int64View))
         | other -> failwith $"expected a byte-view byref into the array, got %O{other}"
+
+    /// Uniform over the whole int64 range, with extra weight on the values where two's-complement
+    /// arithmetic behaves differently from the integers. `Int64.MinValue` is the one whose negation
+    /// is not itself representable, which is exactly what `Unsafe.Subtract` forms.
+    let private genFullRangeInt64 : Gen<int64> =
+        Gen.frequency
+            [
+                3, Gen.choose64 (System.Int64.MinValue, System.Int64.MaxValue)
+                1,
+                Gen.elements
+                    [
+                        System.Int64.MinValue
+                        System.Int64.MinValue + 1L
+                        -4294967296L
+                        -2147483649L
+                        -1L
+                        0L
+                        1L
+                        2147483648L
+                        4294967296L
+                        System.Int64.MaxValue - 1L
+                        System.Int64.MaxValue
+                    ]
+            ]
+
+    /// Element sizes that scale the offset differently: one byte does not scale it at all, four is
+    /// narrower than a machine word, and eight is one.
+    let private genElementSize : Gen<int> = Gen.elements [ 1 ; 4 ; 8 ]
+
+    /// `(start + offset * size) mod 2^64`, read back as a signed int64. Computed in `bigint` so the
+    /// oracle cannot share a wrap with the implementation it is checking.
+    let private wrappedAddress (start : int64) (offset : int64) (size : int) : int64 =
+        let modulus = bigint 1 <<< 64
+
+        let raw =
+            (((bigint start + bigint offset * bigint size) % modulus) + modulus) % modulus
+
+        if raw >= (bigint 1 <<< 63) then
+            int64 (raw - modulus)
+        else
+            int64 raw
+
+    [<Test>]
+    let ``bit-pattern walk is exact modulo 2^64 for every native-width offset`` () : unit =
+        // A bit-pattern byref carries its whole address in an int64 and has no int32 root to
+        // overflow, so this branch answers rather than refusing however far the walk goes. Its
+        // arithmetic is therefore the only place a native-width element offset is *used* rather
+        // than rejected, and `Unsafe.Add`/`Unsafe.Subtract` reach it with offsets of any
+        // magnitude now that they no longer narrow to int32 first.
+        //
+        // Real IL wraps here: `mul` and `add`/`sub` are two's-complement at native width, so
+        // wrapping is the answer rather than a modelling limit. Hence the `bigint` oracle: an
+        // implementation that threw on overflow, or that carried the sum in a wider type, would
+        // never produce a *wrong* wrap and so could only be caught by an oracle computed outside
+        // the arithmetic under test.
+        let handleOfSize (size : int) : ConcreteTypeHandle =
+            match size with
+            | 1 -> handleFor bct.Byte
+            | 4 -> int32Handle
+            | 8 -> int64Handle
+            | other -> failwith $"no element handle of size %d{other} in this fixture"
+
+        // The property is only about wrapping if it actually wraps. Count it rather than assume.
+        let mutable wrapped = 0
+        let mutable total = 0
+
+        // One machine state for the whole property: a bit-pattern walk allocates nothing, so
+        // there is nothing to keep fresh between iterations, and `state ()` builds a logger
+        // factory that outlives the call.
+        let st = state ()
+
+        let property ((start, offset, size) : int64 * int64 * int) : unit =
+            total <- total + 1
+            let expected = wrappedAddress start offset size
+
+            // A walk whose exact (unwrapped) answer differs from the modular one is a wrap.
+            if bigint expected <> bigint start + bigint offset * bigint size then
+                wrapped <- wrapped + 1
+
+            let result =
+                IntrinsicHelpers.offsetManagedPointerByElements
+                    bct
+                    st
+                    (handleOfSize size)
+                    offset
+                    (EvalStackValue.ManagedPointer (ManagedPointerSource.ofBitPattern start))
+                |> fst
+
+            match result with
+            | EvalStackValue.ManagedPointer ptr ->
+                ManagedPointerSource.tryBitPatternBits ptr |> shouldEqual (ValueSome expected)
+            | other -> failwith $"expected a bit-pattern byref, got %O{other}"
+
+        let genCase =
+            gen {
+                let! start = genFullRangeInt64
+                let! offset = genFullRangeInt64
+                let! size = genElementSize
+                return start, offset, size
+            }
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genCase) property)
+
+        // Two uniform int64 draws put the great majority of the mass outside the range where the
+        // sum fits, so a generator that had quietly reverted to a size-bounded default would fail
+        // this outright and the property would be asserting nothing about wrapping.
+        if wrapped * 2 < total then
+            failwith
+                $"generator produced too few wrapping walks: %d{wrapped} of %d{total}, so the modular arithmetic is not being exercised"
+
+    [<Test>]
+    let ``bit-pattern walk and its negation return to the start`` () : unit =
+        // `Unsafe.Subtract(ref p, n)` is `Unsafe.Add(ref p, -n)`, and PawPrint implements it by
+        // negating at int64 width. Negating `Int64.MinValue` wraps it back to itself, so the
+        // composition is what settles whether that is faithful: examining the negated offset alone
+        // could not tell a correct wrap from a lost sign.
+        let st = state ()
+
+        let property ((start, offset) : int64 * int64) : unit =
+            let walk (offset : int64) (src : EvalStackValue) : EvalStackValue =
+                IntrinsicHelpers.offsetManagedPointerByElements bct st int32Handle offset src
+                |> fst
+
+            let src = EvalStackValue.ManagedPointer (ManagedPointerSource.ofBitPattern start)
+
+            // Away and back: `-offset` is formed exactly as the `Unsafe.Subtract` arm forms it.
+            walk -offset (walk offset src) |> shouldEqual src
+
+        let genCase =
+            gen {
+                let! start = genFullRangeInt64
+                let! offset = genFullRangeInt64
+                return start, offset
+            }
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genCase) property)
+
+    [<Test>]
+    let ``element offset argument reads its bits at native width`` () : unit =
+        // `UnsafeIntrinsics.EmitAdd`/`EmitSubtract` generate one IL body per member, shared by the
+        // int32, IntPtr and nuint overloads: the declared parameter's signedness never reaches the
+        // arithmetic, only its bits do. So a `nuint` offset above `Int64.MaxValue` must arrive as
+        // the negative int64 sharing its bits, and an int32 one must be sign-extended rather than
+        // zero-extended.
+        let read (value : EvalStackValue) : int64 =
+            Intrinsics.elementOffsetArgument "test" value
+
+        read (EvalStackValue.Int32 (Int32Source.Verbatim -5)) |> shouldEqual -5L
+
+        read (EvalStackValue.Int32 (Int32Source.Verbatim System.Int32.MinValue))
+        |> shouldEqual -2147483648L
+
+        read (EvalStackValue.NativeInt (NativeIntSource.Verbatim 3000000000L))
+        |> shouldEqual 3000000000L
+
+        // `unchecked((nuint)(-1))`, i.e. 2^64-1: one element *forwards* under Subtract.
+        read (EvalStackValue.NativeInt (NativeIntSource.Verbatim -1L))
+        |> shouldEqual -1L
+
+        read (EvalStackValue.NativeInt (NativeIntSource.Verbatim System.Int64.MinValue))
+        |> shouldEqual System.Int64.MinValue
+
+        // The int32 overload does not narrow its caller's stack value either, so these must not
+        // come back as the int32 they would truncate to. Measured on real .NET with a
+        // `DynamicMethod` that emits `ldarg.0; ldc.i8 <bits>; conv.i; call Add<int>(ref int,
+        // int32)` and returns the byte delta: 0x100000001 walks 17179869188 bytes rather than the
+        // 4 a narrowed `1` would give, and 0xFFFFFFFF walks forwards by 4294967295 elements rather
+        // than back by one. The substituted body runs before argument coercion, so there is no
+        // narrowing step for the declared int32 width to drive.
+        read (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0x100000001L))
+        |> shouldEqual 4294967297L
+
+        read (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0xFFFFFFFFL))
+        |> shouldEqual 4294967295L
+
+    [<Test>]
+    let ``element offset argument refuses a pointer whose bits are not modelled`` () : unit =
+        // An anchored byref has no numeric offset to report, and synthesising one would register a
+        // pointer identity for a value the offset arithmetic would then multiply.
+        let arr, _ = allocateIntArray 4 (state ())
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                Intrinsics.elementOffsetArgument "Unsafe.Subtract" (elementByref arr 0)
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "refusing to read"
+        ex.Message |> shouldContainText "element offset"

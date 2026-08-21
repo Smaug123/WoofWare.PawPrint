@@ -95,6 +95,39 @@ module Intrinsics =
             failwith
                 $"%s{operation}: refusing to report the bit pattern of %O{value}; PawPrint does not model its bits, and synthesising them would register a pointer identity for a value whose bits the guest is asking about"
 
+    /// The element offset of `Unsafe.Add<T>` / `Unsafe.Subtract<T>`, as the 64 bits the IL
+    /// multiplies by `sizeof(T)`. All three byref overloads share this rule, so a `UIntPtr`
+    /// offset above `Int64.MaxValue` comes back as the negative int64 sharing its bits, and an
+    /// int32 offset comes back sign-extended.
+    ///
+    /// Refuses a pointer whose bits PawPrint does not model, rather than synthesising them.
+    /// Says nothing about whether the destination is representable: only
+    /// `offsetManagedPointerByElements` can answer that, because it depends on the shape of the
+    /// byref being walked.
+    let internal elementOffsetArgument (operation : string) (value : EvalStackValue) : int64 =
+        // `UnsafeIntrinsics.EmitAdd`/`EmitSubtract` generate one IL body per member, shared by
+        // every overload: `ldarg.1; sizeof !!T; conv.i; mul; add`/`sub`. `mul` and `sub` are
+        // two's-complement, so the declared parameter's signedness never enters the arithmetic —
+        // only its bits do — and the int32 overload's sign extension into that width is the CLI's
+        // own implicit coercion at the call boundary. Both are what `tryExactIntegerBits` reports.
+        //
+        // The int32 overload gets no narrowing either, which is measured rather than assumed. A
+        // `DynamicMethod` emitting `ldarg.0; ldc.i8 0x100000001; conv.i; call Add<int>(ref int,
+        // int32)` and returning the byte delta answers 17179869188 on real .NET: the whole 64-bit
+        // count scaled by `sizeof(int)`, not the 4 bytes a narrowed `1` would give. `0xFFFFFFFF`
+        // likewise walks forwards by 4294967295 elements rather than back by one. The substituted
+        // body runs before any argument coercion, so the caller's stack value reaches `mul` at its
+        // full width whichever overload was named.
+        //
+        // That makes this mechanically `bitPatternValueArgument`. It is a separate function for
+        // its refusal message alone: there, the guest is asking about the bits, and synthesising
+        // them would answer a question wrongly; here they are about to be multiplied.
+        match EvalStackValue.tryExactIntegerBits value with
+        | ValueSome bits -> bits
+        | ValueNone ->
+            failwith
+                $"%s{operation}: refusing to read %O{value} as an element offset; PawPrint does not model its bits, and synthesising them would register a pointer identity for a value the offset arithmetic would then multiply"
+
     open IntrinsicHelpers
 
     let call
@@ -2524,24 +2557,9 @@ module Intrinsics =
             let offset, state = IlMachineState.popEvalStack currentThread state
             let src, state = IlMachineState.popEvalStack currentThread state
 
-            // `conv.i` / `conv.u` produce `EvalStackValue.NativeInt (Verbatim ...)`;
-            // the IntPtr/UIntPtr overloads feed us one of those. The int32 overload
-            // produces `EvalStackValue.Int32` directly. Both narrow safely to int
-            // so long as the verbatim value fits; on a 64-bit host the C# compiler
-            // never emits an out-of-range native-int offset for array arithmetic.
-            let offset =
-                match offset with
-                | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
-                | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
-                    if i < int64<int> System.Int32.MinValue || i > int64<int> System.Int32.MaxValue then
-                        failwith
-                            $"TODO: Unsafe.Add: native-int offset %d{i} does not fit in Int32; byte-level arithmetic on array byrefs is not modelled"
+            let offset = elementOffsetArgument "Unsafe.Add" offset
 
-                    int32<int64> i
-                | _ -> failwith $"TODO: Unsafe.Add: expected Int32 or Verbatim NativeInt offset, got %O{offset}"
-
-            let ptr, state =
-                offsetManagedPointerByElements baseClassTypes state t (int64<int> offset) src
+            let ptr, state = offsetManagedPointerByElements baseClassTypes state t offset src
 
             state
             |> IlMachineState.pushToEvalStack' ptr currentThread
@@ -2559,30 +2577,35 @@ module Intrinsics =
                 | [ t ] -> t
                 | _ -> failwith "bad generics Unsafe.Subtract"
 
-            // Only the `(ref T, int32)` overload. `(ref T, IntPtr)`, `(ref T, nuint)` and
-            // `(void*, int32)` are separate JIT intrinsics; the `nuint` one in particular cannot
-            // share this arm, because its element offset is *unsigned* and so does not negate the
-            // way a signed one does.
+            // The three byref overloads `(ref T, int32)`, `(ref T, IntPtr)` and `(ref T, nuint)`
+            // share a single generated IL body, so they share this arm; `elementOffsetArgument`
+            // is where the reasoning about the declared parameter's width and signedness lives.
+            // `(void*, int32)` is excluded because its first argument is a pointer rather than a
+            // byref, which is a different walk; `Unsafe.Add` does not implement it either.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteByref tFromParam ; ConcreteInt32 state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteByref tFromRet)
+            | [ ConcreteByref tFromParam ; ConcreteIntPtr state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteByref tFromRet)
+            | [ ConcreteByref tFromParam ; ConcreteUIntPtr state.ConcreteTypes ],
               MethodReturnType.Returns (ConcreteByref tFromRet) when tFromParam = t && tFromRet = t -> ()
             | _ ->
                 failwith
-                    $"TODO: Unsafe.Subtract: only the (ref T, int32) overload is implemented; got params %A{methodToCall.Signature.ParameterTypes} and return %A{methodToCall.Signature.ReturnType}"
+                    $"TODO: Unsafe.Subtract: only the (ref T, int32), (ref T, IntPtr), and (ref T, UIntPtr) overloads are implemented; got params %A{methodToCall.Signature.ParameterTypes} and return %A{methodToCall.Signature.ReturnType}"
 
             let offset, state = IlMachineState.popEvalStack currentThread state
             let src, state = IlMachineState.popEvalStack currentThread state
 
-            let offset = int32ValueArgument "Unsafe.Subtract" offset
+            let offset = elementOffsetArgument "Unsafe.Subtract" offset
 
             // Negate at native-int width, which is where the IL's `mul`/`sub` happen. Doing it in
             // int32 would wrap `Int32.MinValue` back to itself and move the byref 2^32 elements the
-            // wrong way; and narrowing the result would refuse walks the element walk can represent
-            // perfectly well (`Subtract(ref a[-1], Int32.MinValue)` lands on `Int32.MaxValue`).
+            // wrong way. Negation of `Int64.MinValue` wraps to itself, and that is faithful rather
+            // than a defect: two's-complement negation commutes with the wrapping multiply the IL
+            // performs, so `(-offset) * sizeof(T)` and `-(offset * sizeof(T))` agree on all 64 bits.
             // Whether the destination is representable depends on the source byref's shape, so that
             // judgement belongs to `offsetManagedPointerByElements`, which can see it.
-            let ptr, state =
-                offsetManagedPointerByElements baseClassTypes state t (-(int64<int32> offset)) src
+            let ptr, state = offsetManagedPointerByElements baseClassTypes state t (-offset) src
 
             state
             |> IlMachineState.pushToEvalStack' ptr currentThread
