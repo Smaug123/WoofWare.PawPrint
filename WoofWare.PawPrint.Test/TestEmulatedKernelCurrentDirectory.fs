@@ -92,17 +92,30 @@ module TestEmulatedKernelCurrentDirectory =
         EmulatedKernel.checkInvariants kernel |> shouldEqual []
 
     [<Test>]
-    let ``a symlinked current directory is held as its target`` () : unit =
+    let ``a symlinked current directory is canonicalised`` () : unit =
         // A process launched into `outer/lnk` is launched into the directory
-        // that link names; nothing afterwards can tell it went through a link.
+        // that link names, and afterwards nothing can tell it went through a
+        // link: `getcwd(3)` reports the *physical* path. Measured on both
+        // kernels -- `chdir(".../outer/lnk")` with `lnk -> inner` is followed by
+        // `getcwd() == ".../outer/inner"`.
         let kernel = seededAt "/outer/lnk"
 
         kernel.CurrentDirectoryInode |> shouldEqual (inodeOf kernel "/outer/inner")
+        kernel.CurrentDirectory |> shouldEqual (absolute "/outer/inner")
+        EmulatedKernel.checkInvariants kernel |> shouldEqual []
 
-        // The path is *not* rewritten to the physical one: it is what the
-        // process would be told it is, which is a separate question from where
-        // its relative paths start.
-        kernel.CurrentDirectory |> shouldEqual (absolute "/outer/lnk")
+    [<Test>]
+    let ``checkInvariants rejects a path that does not reach the held inode`` () : unit =
+        let kernel = seededAt "/outer/inner"
+
+        { kernel with
+            CurrentDirectory = absolute "/outer"
+        }
+        |> EmulatedKernel.checkInvariants
+        |> shouldEqual
+            [
+                EmulatedKernelDefect.CurrentDirectoryPathDisagrees (absolute "/outer", absolute "/outer/inner")
+            ]
 
     // ------------------------------------------------------ order-independence
 

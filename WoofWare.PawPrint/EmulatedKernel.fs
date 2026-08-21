@@ -2643,6 +2643,12 @@ type EmulatedKernel =
         /// by record-copy after startup: PawPrint models no `chdir(2)`, so
         /// within a run the cwd is immutable and a guest must not be able to
         /// observe it changing under it.
+        ///
+        /// The **physical** path: every symlink resolved away, which is what
+        /// `getcwd(3)` reports and so not necessarily the spelling
+        /// `KernelConfig.CurrentDirectory` used. Derived from
+        /// `CurrentDirectoryInode` when the kernel is built, so the two cannot
+        /// describe a process no Unix could produce.
         CurrentDirectory : AbsoluteUnixPath
         /// The directory relative paths resolve against: the inode the
         /// simulated process holds its current directory *open on*, which is
@@ -2775,6 +2781,13 @@ type EmulatedKernelDefect =
     /// keeps its current directory alive after the last name for it has gone,
     /// and PawPrint's held inode is what expresses that.
     | CurrentDirectoryIsNotADirectory of inode : InodeNumber
+    /// `CurrentDirectory` is not the path that reaches `CurrentDirectoryInode`,
+    /// so `getcwd` would report a directory the process is not in.
+    ///
+    /// Only raised while the inode still *has* a path: one held open after its
+    /// last name has gone has none, and a real `getcwd` fails there rather than
+    /// answering.
+    | CurrentDirectoryPathDisagrees of stored : AbsoluteUnixPath * physical : AbsoluteUnixPath
 
 [<RequireQualifiedAccess>]
 module EmulatedKernel =
@@ -3074,10 +3087,17 @@ module EmulatedKernel =
             Signals = SignalState.empty
         }
 
-    /// The inode `directory` names in this kernel's filesystem, as the moment a
-    /// process is started resolves it — which is the only moment PawPrint
-    /// resolves it, because after that the process holds the directory rather
-    /// than the name.
+    /// The directory `directory` names in this kernel's filesystem, as the
+    /// moment a process is started resolves it — which is the only moment
+    /// PawPrint resolves it, because after that the process holds the directory
+    /// rather than the name.
+    ///
+    /// Answers the inode *and* the path `getcwd` owes for it, which is not
+    /// always the path that was asked for: `getcwd(3)` reports the **physical**
+    /// path, with every symlink resolved away. Measured on both kernels —
+    /// `chdir("outer/lnk")` with `lnk -> inner` is followed by
+    /// `getcwd() == ".../outer/inner"`. Deriving both here is what stops the
+    /// pair describing a process no Unix could produce.
     ///
     /// Privileged and symlink-following, deliberately: this is the host saying
     /// where its guest was launched, not a guest looking anything up, and a
@@ -3085,11 +3105,11 @@ module EmulatedKernel =
     /// failure here is therefore a host mistake with no honest errno — ENOENT
     /// would blame a guest path that does not exist yet — so it crashes, naming
     /// the two knobs that have to agree.
-    let private currentDirectoryInodeOf
+    let private currentDirectoryOf
         (directory : AbsoluteUnixPath)
         (platform : SimulatedUnixPlatform)
         (filesystem : VirtualFileSystem)
-        : InodeNumber
+        : InodeNumber * AbsoluteUnixPath
         =
         let limits = SimulatedUnixPlatform.pathLimits platform
         let root = VirtualFileSystem.root filesystem
@@ -3105,7 +3125,12 @@ module EmulatedKernel =
         with
         | Ok inode ->
             match VirtualFileSystem.tryGetContent inode filesystem with
-            | Some (InodeContent.Directory _) -> inode
+            | Some (InodeContent.Directory _) ->
+                match VirtualFileSystem.pathOfDirectory inode filesystem with
+                | Some physical -> inode, physical
+                | None ->
+                    failwith
+                        $"EmulatedKernel.CurrentDirectory: \"%s{AbsoluteUnixPath.toString directory}\" resolved to inode %O{inode}, but no path from the root reaches it. Run VirtualFileSystem.checkInvariants."
             | Some (InodeContent.RegularFile _)
             | Some (InodeContent.Symlink _) ->
                 failwith
@@ -3213,11 +3238,12 @@ module EmulatedKernel =
             AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory" directory
 
         let filesystem = FileSystemSeed.toVirtualFileSystem createdAt seed
+        let inode, physical = currentDirectoryOf directory platform filesystem
 
         { kernel with
             FileSystem = filesystem
-            CurrentDirectory = directory
-            CurrentDirectoryInode = currentDirectoryInodeOf directory platform filesystem
+            CurrentDirectory = physical
+            CurrentDirectoryInode = inode
         }
 
     /// Set the effective user and group IDs the simulated process runs as.
@@ -4104,7 +4130,17 @@ module EmulatedKernel =
 
         let currentDirectory =
             match VirtualFileSystem.tryGetContent kernel.CurrentDirectoryInode kernel.FileSystem with
-            | Some (InodeContent.Directory _) -> []
+            | Some (InodeContent.Directory _) ->
+                // Only when some path still reaches it: an inode a process
+                // holds open after its last name has gone has no path, and
+                // `getcwd` on a real system fails rather than lying.
+                match VirtualFileSystem.pathOfDirectory kernel.CurrentDirectoryInode kernel.FileSystem with
+                | Some physical when physical <> kernel.CurrentDirectory ->
+                    [
+                        EmulatedKernelDefect.CurrentDirectoryPathDisagrees (kernel.CurrentDirectory, physical)
+                    ]
+                | Some _
+                | None -> []
             | Some (InodeContent.RegularFile _)
             | Some (InodeContent.Symlink _)
             | None ->
