@@ -434,12 +434,13 @@ The managed observables agree with CoreCLR for every shape a dynamic method can 
 * `Delegate.Target` is `_methodPtrAux == IntPtr.Zero ? _target : null` (`Delegate.CoreCLR.cs:553`). Open: CoreCLR returns null because the aux field is set; PawPrint returns null because `_target` is. Closed: both return the bound object.
 * `Delegate.GetHashCode` (`Delegate.CoreCLR.cs:152`) branches on the same field, and both branches reduce to `GetType().GetHashCode()` for an open delegate under either representation.
 * `Delegate.Equals` (`Delegate.CoreCLR.cs:88`) compares all three fields optimistically and then falls back to `_methodBase`. Two delegates over the same dynamic method agree in every field under both representations; two over different dynamic methods disagree in `_methodPtr` under both.
-* `Delegate.Method` reaches the runtime through the QCall `Delegate_FindMethodHandle`, whose `COMDelegate::GetMethodDesc` (`comdelegate.cpp:1815`) reads `_methodPtrAux` for an open delegate and `_methodPtr` for a closed one. Both name the target method and PawPrint's `_methodPtr` names it for either shape, so the two agree. `sourcesPure/DelegateMethodInfo.cs` exercises both halves: every static method group in it (`Func<int, int> f = Twice`) is an *open* delegate, because `Invoke` supplies each of the target's arguments, and each instance method group is a closed one. The one shape it cannot reach is an open delegate over an *instance* method, where `Invoke` supplies the receiver — C# has no syntax for it, and the two routes that do build one are `Delegate.CreateDelegate(Type, MethodInfo)`, which `Delegate_BindToMethodInfo` refuses, and raw `ldnull; ldftn; newobj` IL, which the C# test harness cannot emit. That shape is the one place the missing `_methodPtrAux` is not merely representational: `Delegate.GetMethodImpl` reads a zero one as "closed" and dereferences `_target` to walk the base chain when the declaring type is generic (`Delegate.CoreCLR.cs:189`), so `Delegate_FindMethodHandle` refuses it by name rather than letting CoreLib raise a `NullReferenceException`.
+* `Delegate.Method` reaches the runtime through the QCall `Delegate_FindMethodHandle`, whose `COMDelegate::GetMethodDesc` (`comdelegate.cpp:1815`) reads `_methodPtrAux` for an open delegate and `_methodPtr` for a closed one. Both name the target method and PawPrint's `_methodPtr` names it for either shape, so the two agree. `sourcesPure/DelegateMethodInfo.cs` exercises both halves: every static method group in it (`Func<int, int> f = Twice`) is an *open* delegate, because `Invoke` supplies each of the target's arguments, and each instance method group is a closed one. The shape it cannot reach is an open delegate over an *instance* method, where `Invoke` supplies the receiver — C# has no method-group syntax for it, so the routes are raw `ldnull; ldftn; newobj` IL, which the C# test harness cannot emit, and `Delegate.CreateDelegate(Type, MethodInfo)`. That second route is now live: `Delegate_BindToMethodInfo` binds a metadata method, so the shape is buildable and `sourcesPure/DelegateBindToMetadataMethod.cs` builds and invokes it. It is the one place the missing `_methodPtrAux` is not merely representational: `Delegate.GetMethodImpl` reads a zero one as "closed" and dereferences `_target` to walk the base chain when the declaring type is generic (`Delegate.CoreCLR.cs:189`), so `Delegate_FindMethodHandle` refuses that combination by name rather than letting CoreLib raise a `NullReferenceException` — parked as `sourcesPure/DelegateFindMethodHandleOpenInstanceGeneric.cs`, with the non-generic declaring type served. The *open over a virtual method* shape is refused at binding for the same reason, since CoreCLR resolves it at invocation through the aux field (`sourcesPure/DelegateBindOpenVirtual.cs`).
 
 **What this costs later**: two things, both of which have to be paid by the slices that make them reachable rather than here.
 
 1. **Openness is no longer recoverable from the fields.** A delegate closed over `null` and an open delegate are both `(_target = null, _methodPtrAux = 0)` here, where CoreCLR distinguishes them by the aux field. So whoever makes a dynamic method *executable* must derive the shuffle from the arity — the delegate's `Invoke` parameter count against the target's — and not from whether `_target` is null. `sourcesImpure/DynamicMethodDelegateBinding.cs` pins the closed-over-null case existing.
 2. **Multicast (issue #959) must revisit this.** `MulticastDelegate.Equals` has a whole branch keyed on `_invocationCount != 0` for wrapper delegates and unmanaged function pointers, both of which read `_methodPtrAux`; and `Delegate.GetMulticastInvoke`/`GetInvokeMethod` are what would populate it. That work has to decide what `_methodPtrAux` means before it can use it.
+3. **Two shapes are refused at binding rather than served**, both because the aux field is where CoreCLR would have put the answer: an open delegate over a virtual method on a reference type, and one over a static abstract interface method. Each is parked with its measured refusal.
 
 **Observable example**:
 
@@ -451,6 +452,56 @@ The managed observables agree with CoreCLR for every shape a dynamic method can 
 ```
 
 **Where this lives in code**: `IlMachineRuntimeMetadata.executeDelegateConstructor` for the `newobj` path, `NativeDelegate.tryExecuteQCall` for the `CreateDelegate` path, and `AbstractMachine.dispatchDelegateInvoke` for the consumer that makes the convention work.
+
+## A delegate invocation that fails before entering its target names no frame for it
+
+**CoreCLR**: when invoking a delegate fails *because of the target itself*, the failure happens
+inside the machinery that is preparing to enter that target, so the target is on the stack when the
+exception is raised and appears as the top frame of its `StackTrace` and as its `TargetSite`.
+Measured on .NET 10 for an abstract target closed over a null receiver: `StackTrace` begins
+`at Ab4.M()` and `TargetSite` is `System.String M()`.
+
+**PawPrint**: the delegate's synthetic `Invoke` frame is popped first and the exception is then
+raised into the *caller*, so the trace begins at whatever called `Invoke` and the target is named
+nowhere. `TargetSite` is unreachable for a different reason — `ExceptionNative_GetMethodFromStackTrace`
+is unimplemented, so reading it stops the guest rather than answering wrongly.
+
+**Spec status**: outside ECMA-335, which does not specify stack-trace contents.
+
+**Why we chose this**: the frame ordering is deliberate and is the *other* half of a fidelity
+trade. A stub frame still on the stack when the exception is raised lands in the guest's trace as a
+`System.Action.Invoke` frame that real .NET never shows, which
+`sourcesPure/DelegateCctorFailureTraceHasNoStubFrame.cs` pins the absence of. So the choice is
+between one frame too many (the stub) and one too few (the target); popping first picks the latter,
+which is the smaller lie because the missing frame is a method that genuinely never ran.
+
+Both delegate-invocation failures have this shape: a `Reflection.Emit` target that could not be
+compiled, and an abstract target. Neither has a frame available to name — the first because PawPrint
+refused to build the method, the second because an abstract method has no body to enter.
+
+**What it would take to close**: push the target's frame anyway and fail in its prologue, which is
+what a failed `.cctor` already does. The machinery is `MethodState.PendingTypeInit` and
+`ExceptionDispatching.hasNotStarted`: a frame that is on the stack, has executed nothing, and whose
+own clauses are therefore out of scope. It cannot be reused as it stands, because `PendingTypeInit`
+carries the handle of a type to initialise and `AbstractMachine`'s driver runs that initialiser on
+the next step — so a frame parked there for another reason would run a `.cctor` that nothing asked
+for. Closing this means generalising that field into a reason DU, which is a change to
+`MethodState` and to exception dispatch and so is its own slice; it would fix both failures at once.
+
+**Observable example**:
+
+```csharp
+abstract class A { public abstract string M(); }
+var f = (Func<string>)typeof(A).GetMethod("M").CreateDelegate(typeof(Func<string>), null);
+try { f(); }
+catch (BadImageFormatException e) { Console.WriteLine(e.StackTrace); }
+// CoreCLR:  first line is "   at A.M()"
+// PawPrint: first line is the caller of Invoke; A.M() appears nowhere.
+```
+
+**Where this lives in code**: `AbstractMachine.dispatchDelegateInvoke`, whose `raiseFromPoppedStub`
+is the shared ordering both failures use. `sourcesPure/DelegateToAbstractMethodOverNull.cs` pins the
+exception itself, which is faithful; only the trace is not.
 
 ## Simulated time advances per retired instruction
 
@@ -577,6 +628,41 @@ should be made together. Note the *name* half of such a frame is faithful, inclu
 of a declaring type — see "An open delegate stores no shuffle thunk" for why a `Reflection.Emit`
 method has none, and `sourcesImpure/DynamicMethodStackTrace.cs`, which asserts only the
 cross-runtime facts for exactly this reason.
+
+## A captured stack frame has no native offset
+
+**CoreCLR**: `StackFrame.GetNativeOffset()` answers the byte offset of the frame's return address
+within the JITted machine code of its method — a real quantity, and `StackTrace_GetStackFramesInternal`
+fills `StackFrameHelper.rgiOffset` with it for every captured frame (`debugdebugger.cpp:461-463`).
+Measured on .NET 10, a three-frame capture reported 136, 52 and 96.
+
+**PawPrint**: there is no machine code, so there is no such offset, and every frame reports
+`StackFrame.OFFSET_UNKNOWN` (`-1`, `StackFrame.cs:133`) instead. `StackFrame.ToString()` renders that
+as the literal `<offset unknown>` (`StackFrame.cs:241-243`) where real .NET prints a number, so the
+divergence is visible in text as well as through the accessor.
+
+**Spec status**: Outside ECMA-335, which has no notion of a native code offset.
+
+**Why we chose this**: the alternatives were `0` and the frame's IL offset. `-1` is CoreLib's own
+word for "this offset is not known", so a guest that checks for it — as `StackFrame.ToString` does
+— takes the branch written for exactly this situation. Reporting the IL offset instead would answer
+a different question from the one asked, and would be indistinguishable from a real native offset
+to a guest that only reads the number; the IL offset is separately and faithfully available through
+`GetILOffset()`. Nothing in the common rendering path depends on this: `StackTrace.ToString` reads
+only `GetILOffset()` (`StackTrace.cs:335`).
+
+**A related case in the same handler**: a frame whose method has *no IL body* — an InternalCall,
+QCall or P/Invoke — reports `OFFSET_UNKNOWN` for its **IL** offset too, because it has no IL to be
+at an offset within. That matches CoreCLR, which distinguishes the two ways an IL offset can be
+missing (`InitPass2`, `debugdebugger.cpp:1543-1607`): a valid jitted method whose debug info yields
+no mapping reports `0`, but a frame with no managed code information at all falls through to
+`(DWORD)-1`. PawPrint keeps frames for such methods (a real trace does name them), and a
+`MethodState` for one carries the synthetic program counter `0`, so reporting that would present a
+placeholder as a position in the first instruction. Not academic: the innermost frame of every
+current-thread capture is the P/Invoke stub of this very QCall.
+
+**Where this lives in code**: `NativeStackTrace.tryExecuteQCall`, the `rgiOffset` and `rgiILOffset`
+arrays.
 
 ## An unhandled exception is reported after its cleanup runs, not before
 

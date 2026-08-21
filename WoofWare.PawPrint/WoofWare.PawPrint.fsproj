@@ -65,6 +65,7 @@
     <Compile Include="MemoryPools.fs" />
     <Compile Include="MethodState.fs" />
     <Compile Include="ThreadState.fs" />
+    <Compile Include="StackFrameCapture.fs" />
     <Compile Include="TypeResolution.fs" />
     <Compile Include="HardwareIntrinsicsProfile.fs" />
     <Compile Include="DebuggerState.fs" />
@@ -172,6 +173,7 @@
          InvalidCastException message with that module's type-name renderer. -->
     <Compile Include="Native\NativeDelegate.fs" />
     <Compile Include="Native\NativeCastHelpers.fs" />
+    <Compile Include="Native\NativeStackTrace.fs" />
     <Compile Include="Native\NativeQCall.fs" />
     <Compile Include="Native\NativeType.fs" />
     <Compile Include="Native\NativeString.fs" />
