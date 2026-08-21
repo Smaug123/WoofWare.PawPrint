@@ -4,11 +4,9 @@ using System;
 // names the declaration whose slot the most-derived override occupies, so the correct answer is that
 // override in each case.
 //
-// These shapes were extracted from `VirtualDispatchGenericDefinitionSlots.cs` when that file was
-// parked, being the half PawPrint answered correctly at the time. Both files now pass, dispatch
-// reading the slot table rather than reconstructing the slot from declarations, so this one is no
-// longer guarding an exclusion -- it is a narrower case of its sibling, kept because a regression that
-// broke only the slots an override *did* take would fail here first and so name itself more precisely.
+// A narrower case of `VirtualDispatchGenericDefinitionSlots.cs`, kept separate because a regression
+// that broke only the slots an override *did* take would fail here first and so name itself more
+// precisely.
 //
 // What it pins about generics specifically: slots are laid out on the generic *definition*, where
 // `A3<T>.M(T)` and `B3<T>.M(string)` are distinct declarations owning distinct slots. Closing them at
