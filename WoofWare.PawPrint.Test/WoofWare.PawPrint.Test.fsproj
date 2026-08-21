@@ -182,6 +182,7 @@
     <Compile Include="TestSocketEventBuffer.fs" />
     <Compile Include="TestEffectiveProcessorCount.fs" />
     <Compile Include="TestEnvironmentEntryInvariant.fs" />
+    <Compile Include="TestProcessPath.fs" />
     <Compile Include="TestSystemTimeAsTicks.fs" />
     <Compile Include="TestMonotonicTimestamp.fs" />
     <Compile Include="TestCpuPlacement.fs" />

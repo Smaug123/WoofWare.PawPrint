@@ -2661,6 +2661,28 @@ type EmulatedKernel =
         /// within a run the cwd is immutable and a guest must not be able to
         /// observe it changing under it.
         CurrentDirectory : AbsoluteUnixPath
+        /// Path to the executable that started the simulated process, as
+        /// observed through `SystemNative_GetProcessPath` and hence
+        /// `Environment.ProcessPath`.
+        ///
+        /// `None` is an *answer*, not a request for a default: it says this
+        /// process has no executable path, which the entry point reports the way
+        /// both Unix flavours do — a null return with errno `ENOENT`. That is
+        /// the truth about a PawPrint guest by default, because PawPrint models
+        /// no `exec(2)`: nothing started this process from a file, and the
+        /// emulated filesystem contains no image of it. Contrast
+        /// `FileSystemType`, whose `None` *does* mean "derive one in `applyTo`".
+        ///
+        /// Not resolved against `FileSystem`. Real `realpath` succeeds only if
+        /// every component resolves, so a host that wants
+        /// `File.Exists(Environment.ProcessPath)` to hold must seed the file
+        /// itself; see docs/divergences.md. The same is already true of
+        /// `CurrentDirectory`.
+        ///
+        /// CoreLib latches this on first read — `Environment.ProcessPath` caches
+        /// under an `Interlocked.CompareExchange` — so hosts must set it via
+        /// `KernelConfig` rather than by record-copy after startup.
+        ProcessPath : AbsoluteUnixPath option
         /// The simulated process's filesystem: every inode a guest can reach
         /// through the `SystemNative_*` path calls.
         ///
@@ -2906,6 +2928,23 @@ module EmulatedKernel =
     /// guest to see a particular directory set `KernelConfig.CurrentDirectory`.
     let defaultCurrentDirectory : AbsoluteUnixPath = AbsoluteUnixPath.root
 
+    /// Executable path a freshly-minted simulated process reports: none at all.
+    ///
+    /// PawPrint models no `exec(2)`, so there is no file that started this
+    /// process, and the emulated filesystem holds no image of one. `None` is
+    /// therefore the only true answer, and it is a *modelled* Unix state rather
+    /// than an invention: both flavours report exactly this — NULL from
+    /// `minipal_getexepath`, errno `ENOENT` — for a live process whose
+    /// executable no longer resolves, because each of them reaches the path
+    /// through `realpath`. Measured on both, by having a guest unlink its own
+    /// executable before its first read.
+    ///
+    /// Synthesising a plausible path instead was rejected for the same reason
+    /// `Assembly.Location` reports the empty string: nothing would be there, so
+    /// the guest could not act on it. Hosts that want the guest to see a
+    /// particular executable set `KernelConfig.ProcessPath`.
+    let defaultProcessPath : AbsoluteUnixPath option = None
+
     /// Effective user ID a freshly-minted simulated process runs as.
     ///
     /// 1000 rather than 0: `Environment.IsPrivilegedProcess` is literally
@@ -3005,6 +3044,7 @@ module EmulatedKernel =
             OptimalMaxSpinWaitsPerSpinIteration = defaultOptimalMaxSpinWaitsPerSpinIteration
             UnixPlatform = defaultUnixPlatform
             CurrentDirectory = defaultCurrentDirectory
+            ProcessPath = defaultProcessPath
             FileSystem = VirtualFileSystem.empty (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
             FileSystemType = EmulatedFileSystemType.defaultFor (SimulatedUnixPlatform.flavour defaultUnixPlatform)
             UserId = defaultUserId
@@ -3062,6 +3102,14 @@ module EmulatedKernel =
     let withCurrentDirectory (dir : AbsoluteUnixPath) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
             CurrentDirectory = AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory" dir
+        }
+
+    /// Set the path to the executable that started the simulated process, or
+    /// `None` to report that it has none. `None` is preserved rather than
+    /// defaulted; see `EmulatedKernel.ProcessPath`.
+    let withProcessPath (path : AbsoluteUnixPath option) (kernel : EmulatedKernel) : EmulatedKernel =
+        { kernel with
+            ProcessPath = path |> Option.map (AbsoluteUnixPath.assertValid "EmulatedKernel.ProcessPath")
         }
 
     /// Realise a host's filesystem seed, with every inode created at
@@ -4045,6 +4093,23 @@ type KernelConfig =
         /// `getcwd(3)` read, and note that whatever a host picks here becomes
         /// part of that run's replay contract.
         CurrentDirectory : AbsoluteUnixPath
+        /// Path to the executable that started the simulated process, observed
+        /// via `Environment.ProcessPath`. Obtain one with `AbsoluteUnixPath.parse`.
+        ///
+        /// `None` — the default — is an answer rather than a request for one: it
+        /// reports that this process has no executable path, which is what
+        /// PawPrint modelling no `exec(2)` actually means, and which both Unix
+        /// flavours express as a null return with errno `ENOENT`. Contrast
+        /// `FileSystemType` above, whose `None` asks `applyTo` to pick a value.
+        ///
+        /// Not resolved against `FileSystem`: a host that wants
+        /// `File.Exists(Environment.ProcessPath)` to hold — which is true on
+        /// every real Unix, since `realpath` only succeeds if the path resolves
+        /// — must seed that file too. See `EmulatedKernel.ProcessPath` for why
+        /// this is simulated kernel state rather than a read of where PawPrint's
+        /// own binary sits, and note that whatever a host picks here becomes
+        /// part of that run's replay contract.
+        ProcessPath : AbsoluteUnixPath option
         /// The filesystem the guest sees, as the entries of its root directory.
         /// A tree rather than a list of paths; see `SeedEntry`. Every inode is
         /// created at `WallClockEpochMs`, so a guest reading an mtime sees the
@@ -4111,6 +4176,7 @@ type KernelConfig =
             WallClockEpochMs = 0L
             UnixPlatform = EmulatedKernel.defaultUnixPlatform
             CurrentDirectory = EmulatedKernel.defaultCurrentDirectory
+            ProcessPath = EmulatedKernel.defaultProcessPath
             FileSystem = FileSystemSeed.empty
             UserId = EmulatedKernel.defaultUserId
             GroupId = EmulatedKernel.defaultGroupId
@@ -4138,6 +4204,7 @@ module KernelConfig =
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
         |> EmulatedKernel.withUnixPlatformAndFileSystemType config.UnixPlatform config.FileSystemType
         |> EmulatedKernel.withCurrentDirectory config.CurrentDirectory
+        |> EmulatedKernel.withProcessPath config.ProcessPath
         |> EmulatedKernel.withFileSystem
             (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)
             config.FileSystem

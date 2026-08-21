@@ -2172,6 +2172,70 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_GetProcessPath", [], MethodReturnType.Returns (ConcretePointer _) ->
+            // `char* SystemNative_GetProcessPath(void)` (pal_process.c:898-901) has
+            // no body of its own: it is `return minipal_getexepath();`, so
+            // `src/native/minipal/getexepath.h` is the whole specification.
+            // There, both arms PawPrint models end in `realpath(..., NULL)` —
+            // macOS on the buffer `_NSGetExecutablePath` filled, Linux on
+            // `/proc/self/exe` and then on `AT_EXECFN` — which means the
+            // result is `malloc`'d, canonical, and only produced at all if the
+            // path resolved. (Arms PawPrint does not model differ: FreeBSD and
+            // wasm `strdup` instead, so they promise ownership but not
+            // resolution.) Ownership makes this a native-heap block base, as
+            // for `GetUnixRelease` above: CoreLib reaches it through a
+            // `StringMarshalling.Utf8` `LibraryImport` whose wrapper ends in
+            // `Utf8StringMarshaller.Free` -> `SystemNative_Free`, which refuses
+            // a byref into a managed array.
+            //
+            // The pointee type is matched loosely (`ConcretePointer _`) for the
+            // same reason `GetUnixRelease` does so: name plus zero parameters
+            // already pins the call, and a guest hand-rolling the import as
+            // `void*`-returning means the same thing.
+            match state.Kernel.ProcessPath with
+            | None ->
+                // No executable path. Answered the way both flavours answer a
+                // process whose executable no longer resolves — NULL, errno
+                // ENOENT — since that is the state PawPrint is genuinely in: it
+                // models no `exec(2)`, so no file started this process. Measured
+                // on macOS arm64 and Linux arm64 by having a guest unlink its own
+                // executable before its first read; both give errno 2 and a null
+                // `Environment.ProcessPath`.
+                //
+                // Not macOS's `errno = EINVAL` branch, which fires only when
+                // `_NSGetExecutablePath` itself fails: that is "the dyld query
+                // broke", a state with no analogue here, and one Linux never
+                // reports. Not a `failwith` either — the flavours agree on an
+                // answer, `Interop.Sys.GetProcessPath` is declared `string?`, and
+                // `Environment.ProcessPath` handles null by design.
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.ENOENT))
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ManagedPointerSource.Null) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Some path ->
+                // A fresh allocation per call, because the guest owns and frees
+                // each one. errno is left untouched, as on the C's success path.
+                // (Measured, real .NET: macOS leaves a pre-set errno alone here
+                // while Linux clobbers it with EINVAL, so no cross-flavour claim
+                // is available and nothing may test it. CoreLib cannot see the
+                // difference: its `SetLastError = true` stub zeroes errno before
+                // the call and overwrites it after.)
+                //
+                // `Kernel.ProcessPath` is reported verbatim, and specifically is
+                // *not* resolved against `Kernel.FileSystem` — see
+                // `EmulatedKernel.ProcessPath` and docs/divergences.md, and note
+                // `SystemNative_GetCwd` already answers `Kernel.CurrentDirectory`
+                // the same way.
+                let ptr, state =
+                    NativeCall.allocateNativeHeapNullTerminatedUtf8
+                        "SystemNative_GetProcessPath"
+                        (AbsoluteUnixPath.toString path)
+                        state
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
         | Some "SystemNative_GetCwd",
           [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
