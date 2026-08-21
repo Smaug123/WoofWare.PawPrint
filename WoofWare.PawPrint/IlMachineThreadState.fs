@@ -319,6 +319,7 @@ module IlMachineThreadState =
         let state =
             {
                 ConcreteTypes = AllConcreteTypes.Empty
+                _VirtualSlotTables = Map.empty
                 Logger = logger
                 LoggerFactory = lf
                 NextThreadId = 0

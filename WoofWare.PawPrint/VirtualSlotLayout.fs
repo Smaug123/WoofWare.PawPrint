@@ -12,21 +12,17 @@ open Microsoft.Extensions.Logging
 /// because virtual dispatch asks them too and compiles well before those QCalls do.
 module VirtualSlotLayout =
 
-    /// The type a vtable slot's occupant was read from, reduced to what deciding the layout needs:
-    /// the token space its signature is spelled in, the identity that orders ties by derivation, and
-    /// the substitution its `!i` are read against. The base chain's entries carry a different
-    /// substitution from the derived type's -- which is the whole difficulty of matching an override
-    /// against the slot it fills.
-    type SlotOwner =
-        {
-            AssemblyFullName : string
-            Identity : ResolvedTypeIdentity
-            Substitution : TypeConcretization.SubstitutionContext
-            /// How to name this type in a diagnostic. Held rather than derived, because the walk that
-            /// builds it knows whether it is looking at an instantiation or at a definition and the
-            /// identity alone does not carry a name.
-            Description : string
-        }
+    /// `SlotOwner` and `VtableSlot` were nested in this module before they moved to the namespace, so
+    /// that `IlMachineState` -- which compiles well before this file and memoises the walks below --
+    /// could name them. Both are public API of a shipped package, so these keep
+    /// `VirtualSlotLayout.SlotOwner` and `VirtualSlotLayout.VtableSlot` resolving for existing source.
+    ///
+    /// An abbreviation is not a distinct CLR type, so this restores *source* compatibility only: a
+    /// consumer compiled against the previous package binds to nested types that no longer exist and
+    /// must be recompiled.
+    type SlotOwner = WoofWare.PawPrint.SlotOwner
+
+    type VtableSlot = WoofWare.PawPrint.VtableSlot
 
     /// The owner of a slot read from a closed type.
     let private slotOwnerOfClosed (concreteType : ConcreteType<ConcreteTypeHandle>) : SlotOwner =
@@ -35,14 +31,6 @@ module VirtualSlotLayout =
             SlotOwner.Identity = concreteType.Identity
             SlotOwner.Substitution = TypeConcretization.SubstitutionContext.ofClosed concreteType.Generics
             SlotOwner.Description = string concreteType
-        }
-
-    /// One entry of a type's instance vtable: the method currently occupying the slot, together
-    /// with the type it was read from.
-    type VtableSlot =
-        {
-            Method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
-            DeclaredBy : SlotOwner
         }
 
     /// Does `candidate`, a non-newslot instance virtual declared on some derived type, fill the
@@ -1358,7 +1346,7 @@ module VirtualSlotLayout =
         (operation : string)
         (state : IlMachineState)
         (concreteType : ConcreteTypeHandle)
-        : IlMachineState * ((VtableSlot * int) list * VtableSlot list) option
+        : IlMachineState * DispatchTable option
         =
         match concreteType with
         | ConcreteTypeHandle.Byref _
@@ -1382,6 +1370,13 @@ module VirtualSlotLayout =
                     failwith $"%s{operation}: concrete type handle was not registered: %O{concreteType}"
                 )
 
+            // Keyed on the definition, which every instantiation of it shares -- the same reason the
+            // walk itself is defined on the definition. See `_VirtualSlotTables` for why a memo is
+            // sound here and why it has to live on the state rather than beside this walk.
+            match Map.tryFind concreteTypeInfo.Identity state._VirtualSlotTables with
+            | Some cached -> state, Some cached
+            | None ->
+
             let state, table =
                 ownerOfDefinition operation state concreteTypeInfo.Identity
                 |> placeVirtualMethodsOfDefinitionOwner loggerFactory baseClassTypes operation state
@@ -1389,7 +1384,26 @@ module VirtualSlotLayout =
             let state, content =
                 contentOfDefinitionOwner loggerFactory baseClassTypes operation state table
 
-            state, Some (table.Placed, content |> List.map (fun entry -> entry.Occupant))
+            // Indexed here rather than at each use: the memo is built once per definition and read
+            // once per `callvirt`, so the cost belongs on the build.
+            //
+            // A declaration appears at most once, every method being placed by exactly one type, so
+            // `Add` cannot collide -- and if it somehow did, throwing beats silently keeping one.
+            let byDeclaration =
+                (ImmutableDictionary.CreateBuilder<_, _> (), table.Placed)
+                ||> List.fold (fun acc (slot, index) ->
+                    acc.Add ((slot.DeclaredBy.AssemblyFullName, slot.Method.IdentityKey), index)
+                    acc
+                )
+
+            let computed =
+                {
+                    DispatchTable.SlotOfDeclaration = byDeclaration.ToImmutable ()
+                    DispatchTable.Occupants =
+                        content |> List.map (fun entry -> entry.Occupant) |> ImmutableArray.CreateRange
+                }
+
+            state.WithVirtualSlotTable concreteTypeInfo.Identity computed, Some computed
 
 
     /// The slot each declaration in a definition's chain owns, base-first: `MethodDesc::GetSlot()`
