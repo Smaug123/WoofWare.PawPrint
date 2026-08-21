@@ -196,6 +196,63 @@ type FlockMode =
     /// shared or exclusive.
     | Exclusive
 
+/// Which readiness conditions one registration with a socket event port
+/// watches, as the PAL names them (`SocketEvents`, pal_networking.h).
+///
+/// The epoll mask a real kernel stores is a bijection of these five bits
+/// (`GetEPollEvents`, pal_networking.c) plus an unconditional `EPOLLET`, so
+/// edge-triggering is a constant of the wrapper rather than state here.
+type SocketEventInterest =
+    {
+        /// `SA_READ` (0x01); `EPOLLIN`.
+        Read : bool
+        /// `SA_WRITE` (0x02); `EPOLLOUT`.
+        Write : bool
+        /// `SA_READCLOSE` (0x04); `EPOLLRDHUP`.
+        ReadClose : bool
+        /// `SA_CLOSE` (0x08); `EPOLLHUP`.
+        Close : bool
+        /// `SA_ERROR` (0x10); `EPOLLERR`.
+        Error : bool
+    }
+
+[<RequireQualifiedAccess>]
+module SocketEventInterest =
+    /// Parse a PAL `SocketEvents` mask the wrapper has already screened.
+    /// Partial: `SystemNative_TryChangeSocketEventRegistration` answers EINVAL
+    /// for bits outside 0x1F before any state is touched, so receiving one
+    /// here is an interpreter bug rather than a guest error.
+    let ofBits (context : string) (bits : int) : SocketEventInterest =
+        if bits &&& ~~~0x1F <> 0 then
+            failwith
+                $"%s{context}: SocketEvents mask 0x%x{bits} has bits outside READ|WRITE|READCLOSE|CLOSE|ERROR (0x1F); the wrapper's EINVAL screen should have refused it before any registration was attempted (this is an interpreter bug)."
+
+        {
+            Read = bits &&& 0x01 <> 0
+            Write = bits &&& 0x02 <> 0
+            ReadClose = bits &&& 0x04 <> 0
+            Close = bits &&& 0x08 <> 0
+            Error = bits &&& 0x10 <> 0
+        }
+
+/// One registration held by a socket event port: what
+/// `SystemNative_TryChangeSocketEventRegistration` recorded for one target.
+///
+/// Nothing delivers from this yet — an event fires only when a registered
+/// descriptor becomes ready, and no modelled operation can make one so until
+/// `SystemNative_Connect` lands — so both fields are written and never read.
+/// Their presence is still guest-visible: a second ADD of the same key answers
+/// EEXIST, and a MOD or DEL of an absent key answers ENOENT.
+type SocketEventRegistration =
+    {
+        /// Which conditions this registration watches.
+        Interest : SocketEventInterest
+        /// The caller's `uintptr_t data`, held verbatim for delivery in
+        /// `SocketEvent.Data` when an event fires. CoreLib passes
+        /// `SocketAsyncContext.GlobalContextIndex`, a small integer.
+        Data : uint64
+    }
+
 /// What an open file description refers to, together with the state that only
 /// that kind of object carries.
 ///
@@ -232,11 +289,15 @@ type OpenFileTarget =
     /// Darwin refuses with `ESPIPE`. So there is no position for a caller to
     /// move or read.
     ///
-    /// No interest list either: registering a descriptor with a port is
-    /// `SystemNative_TryChangeSocketEventRegistration`, and observing the
-    /// resulting readiness is `SystemNative_WaitForSocketEvents`. Neither
-    /// exists yet, so a registration stored here would be state nothing reads.
-    | SocketEventPort
+    /// Carries the port's interest table, keyed exactly as epoll keys a
+    /// registration: the **(fd number, open file description) pair** of the
+    /// target. Both halves are measured — an ADD through a `dup` of a
+    /// registered target succeeds and creates a second registration, while an
+    /// ADD through a `dup` of the *port* answers EEXIST for an
+    /// already-registered target, because the `dup` pair shares this
+    /// description and so this table. `changeSocketEventRegistration` is the
+    /// only writer.
+    | SocketEventPort of registrations : Map<int * OpenFileDescriptionId, SocketEventRegistration>
     /// A socket, handed out by `SystemNative_Socket`.
     ///
     /// No offset, because neither kernel maintains one: measured, `lseek` on a
@@ -350,7 +411,7 @@ module OpenFileDescription =
         // Every socket event port collapses to one object, because on Linux
         // every anon-inode file shares one inode and so they all contend under
         // `flock`. See `OpenFileObject.AnonymousInode`.
-        | OpenFileTarget.SocketEventPort -> OpenFileObject.AnonymousInode
+        | OpenFileTarget.SocketEventPort _ -> OpenFileObject.AnonymousInode
         // Each socket is its own object, unlike the ports above: measured, two
         // sockets do not contend under `flock`. See `OpenFileObject.Socket`.
         | OpenFileTarget.Socket socketId -> OpenFileObject.Socket socketId
@@ -423,6 +484,49 @@ type FlockRequest =
     /// `LOCK_UN`. Succeeds whether or not a lock was held, as `flock(2)` does.
     | Release
 
+/// What `SystemNative_TryChangeSocketEventRegistration` asked a port to do,
+/// once the wrapper has derived the op from the caller's *claims* — ADD when
+/// the claimed current set is NONE, DEL when the new set is NONE, MOD
+/// otherwise. The claims are never checked against the table; the table's own
+/// answers (`AlreadyRegistered`, `NotRegistered`) are what happens when a
+/// caller lies.
+[<RequireQualifiedAccess>]
+type SocketEventRegistrationChange =
+    /// `EPOLL_CTL_ADD`: record a fresh registration.
+    | Add of interest : SocketEventInterest * data : uint64
+    /// `EPOLL_CTL_MOD`: replace an existing registration's interest *and*
+    /// data — the kernel rebuilds the whole `epoll_event` from the new call.
+    | Modify of interest : SocketEventInterest * data : uint64
+    /// `EPOLL_CTL_DEL`: remove a registration. Carries no payload; the real
+    /// wrapper's `data` is never consulted on this path.
+    | Remove
+
+/// Why `FileDescriptorRegistry.changeSocketEventRegistration` refused, in the
+/// order Linux's `epoll_ctl(2)` decides them — measured on 6.18.5, each
+/// adjacent pair pinned by an input that provokes exactly one of the two.
+[<RequireQualifiedAccess>]
+type SocketEventRegistrationError =
+    /// The port fd is not a live descriptor; `EBADF`. First of everything.
+    | BadPortFd
+    /// The target fd is not a live descriptor; `EBADF`. Ahead of the
+    /// not-a-port check: a dead target through a socket "port" is EBADF, not
+    /// EINVAL.
+    | BadTargetFd
+    /// The target is a regular file, which supports no poll; `EPERM`. Ahead of
+    /// the not-a-port check (a file as both port and target is EPERM, not
+    /// EINVAL) and of the per-op table checks (MOD and DEL of a file are
+    /// EPERM, not ENOENT).
+    | TargetNotPollable
+    /// The port is not a socket event port, or port and target name the same
+    /// open file *description* — one kernel test, `f.file == tf.file ||
+    /// !is_file_epoll(f.file)`, so one case; `EINVAL`. Description equality is
+    /// measured: a `dup` of the port as target answers this, not success.
+    | NotAnEventPort
+    /// `Add`, but the (fd, description) pair is already registered; `EEXIST`.
+    | AlreadyRegistered
+    /// `Modify` or `Remove`, but the pair is not registered; `ENOENT`.
+    | NotRegistered
+
 [<RequireQualifiedAccess>]
 type FlockError =
     /// The supplied fd is not a live entry in the table; `EBADF`.
@@ -466,6 +570,12 @@ type FileDescriptorRegistryDefect =
     /// than copying it — and it would be guest-visible through `flock`, which
     /// contends between descriptions naming one object but not within one.
     | DuplicateSocketId of first : OpenFileDescriptionId * second : OpenFileDescriptionId * socket : SocketId
+    /// A socket event port's interest table registers an open file description
+    /// that no longer exists. Linux removes these at file-release time, which
+    /// is `close`'s sweep here, so a survivor is a leak — invisible to every
+    /// syscall (no fd can name the dead description again) but exactly what
+    /// the readiness wake must never deliver from.
+    | SocketEventRegistrationTargetDead of port : OpenFileDescriptionId * target : OpenFileDescriptionId
 
 [<RequireQualifiedAccess>]
 module FileDescriptorRegistry =
@@ -641,10 +751,33 @@ module FileDescriptorRegistry =
             // description, so the lookup that found `id` above proves this one.
             let destroyed = Map.find id registry.Descriptions
 
+            // A destroyed description also vanishes from every socket event
+            // port's interest table, which is what Linux does at file-release
+            // time (`eventpoll_release`). No syscall can tell the difference —
+            // the dead pair's key can never be probed again, since no fd names
+            // the description — but the readiness wake, when it lands, must
+            // not deliver from a corpse, so the tables stay truthful now and
+            // `checkInvariants` states it.
+            let descriptions =
+                Map.remove id registry.Descriptions
+                |> Map.map (fun _ description ->
+                    match description.Target with
+                    | OpenFileTarget.SocketEventPort registrations ->
+                        { description with
+                            Target =
+                                registrations
+                                |> Map.filter (fun (_, target) _ -> target <> id)
+                                |> OpenFileTarget.SocketEventPort
+                        }
+                    | OpenFileTarget.StandardStream _
+                    | OpenFileTarget.File _
+                    | OpenFileTarget.Socket _ -> description
+                )
+
             Ok (
                 { registry with
                     Fds = fds
-                    Descriptions = Map.remove id registry.Descriptions
+                    Descriptions = descriptions
                 },
                 Some destroyed
             )
@@ -734,7 +867,9 @@ module FileDescriptorRegistry =
                 Map.add
                     id
                     {
-                        Target = OpenFileTarget.SocketEventPort
+                        // Fresh instance, empty interest table: nothing is
+                        // registered with a port at creation.
+                        Target = OpenFileTarget.SocketEventPort Map.empty
                         AccessMode = FileAccessMode.ReadWrite
                         NonBlocking = false
                         Flock = None
@@ -927,7 +1062,7 @@ module FileDescriptorRegistry =
         | OpenFileTarget.StandardStream role ->
             failwith
                 $"setOffset: fd %d{fd} names standard stream %O{role}, which PawPrint models as a pipe and so has no file offset (this is an interpreter bug: the caller should have answered ESPIPE)."
-        | OpenFileTarget.SocketEventPort ->
+        | OpenFileTarget.SocketEventPort _ ->
             failwith
                 $"setOffset: fd %d{fd} names a socket event port, which holds no file offset on either platform — Linux's lseek on one is noop_llseek and Darwin's is ESPIPE (this is an interpreter bug: the caller should have answered without moving a position)."
         | OpenFileTarget.Socket socketId ->
@@ -981,7 +1116,7 @@ module FileDescriptorRegistry =
             failwith
                 $"setNonBlocking: fd %d{fd} names standard stream %O{role}, and no modelled stream transfer consults O_NONBLOCK, so a stored `true` would silently keep blocking semantics (this is an interpreter bug: the caller should have refused)."
         | OpenFileTarget.StandardStream _, false
-        | OpenFileTarget.SocketEventPort, _
+        | OpenFileTarget.SocketEventPort _, _
         | OpenFileTarget.File _, _
         | OpenFileTarget.Socket _, _ ->
 
@@ -994,6 +1129,122 @@ module FileDescriptorRegistry =
                     }
                     registry.Descriptions
         }
+
+    /// Mirrors Linux's `epoll_ctl(2)` as
+    /// `SystemNative_TryChangeSocketEventRegistration` reaches it: apply
+    /// `change` to the interest table of the port `portFd` names, for the
+    /// target `targetFd` names.
+    ///
+    /// The registration key is the (fd number, open file description) pair,
+    /// which is epoll's own key: an ADD through a `dup` of a registered target
+    /// creates a second registration, while a `dup` of the *port* operates on
+    /// the same table because the pair shares one description.
+    ///
+    /// This is Linux's mechanism, exactly as `flock` above is: kqueue registers
+    /// per-(ident, filter) with answers that differ on most rows, and deciding
+    /// what a Darwin-flavoured kernel does is the handler's job (it currently
+    /// refuses; see `SystemNative_TryChangeSocketEventRegistration` in
+    /// `NativeSystemNative.fs`).
+    ///
+    /// Refuses (a failwith, not an error) an `Add` whose target is another
+    /// socket event port: the simple case measures as success, but epoll's ADD
+    /// also runs whole-graph loop and reachable-path checks (`ELOOP`, a depth
+    /// cap) that are unmeasured, and recording the nested port would answer
+    /// success on cycle inputs where Linux refuses. No managed caller
+    /// registers a port. `Modify` and `Remove` of one flow through honestly:
+    /// the table cannot hold a port, so they answer `NotRegistered`, which is
+    /// what an unregistered target answers.
+    let changeSocketEventRegistration
+        (portFd : int)
+        (targetFd : int)
+        (change : SocketEventRegistrationChange)
+        (registry : FileDescriptorRegistry)
+        : Result<FileDescriptorRegistry, SocketEventRegistrationError>
+        =
+        match tryFindWithId portFd registry with
+        | None -> Error SocketEventRegistrationError.BadPortFd
+        | Some (portId, portDescription) ->
+
+        match tryFindWithId targetFd registry with
+        | None -> Error SocketEventRegistrationError.BadTargetFd
+        | Some (targetId, targetDescription) ->
+
+        match targetDescription.Target with
+        | OpenFileTarget.File _ -> Error SocketEventRegistrationError.TargetNotPollable
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.SocketEventPort _
+        | OpenFileTarget.Socket _ ->
+
+        if portId = targetId then
+            Error SocketEventRegistrationError.NotAnEventPort
+        else
+
+        match portDescription.Target with
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.File _
+        | OpenFileTarget.Socket _ -> Error SocketEventRegistrationError.NotAnEventPort
+        | OpenFileTarget.SocketEventPort registrations ->
+
+        let key = targetFd, targetId
+
+        let withRegistrations
+            (registrations : Map<int * OpenFileDescriptionId, SocketEventRegistration>)
+            : FileDescriptorRegistry
+            =
+            { registry with
+                Descriptions =
+                    Map.add
+                        portId
+                        { portDescription with
+                            Target = OpenFileTarget.SocketEventPort registrations
+                        }
+                        registry.Descriptions
+            }
+
+        match change with
+        | SocketEventRegistrationChange.Add (interest, data) ->
+            match targetDescription.Target with
+            | OpenFileTarget.SocketEventPort _ ->
+                failwith
+                    $"changeSocketEventRegistration: fd %d{targetFd} is itself a socket event port. Registering one port with another passes epoll's loop and reachable-path checks (ELOOP, a depth cap), which are unmeasured, and recording it would answer success on cycle inputs where Linux refuses. Measure those rules before recording a nested port."
+            | OpenFileTarget.StandardStream _
+            | OpenFileTarget.File _
+            | OpenFileTarget.Socket _ ->
+
+            if Map.containsKey key registrations then
+                Error SocketEventRegistrationError.AlreadyRegistered
+            else
+                Ok (
+                    withRegistrations (
+                        Map.add
+                            key
+                            {
+                                Interest = interest
+                                Data = data
+                            }
+                            registrations
+                    )
+                )
+        | SocketEventRegistrationChange.Modify (interest, data) ->
+            if Map.containsKey key registrations then
+                Ok (
+                    withRegistrations (
+                        Map.add
+                            key
+                            {
+                                Interest = interest
+                                Data = data
+                            }
+                            registrations
+                    )
+                )
+            else
+                Error SocketEventRegistrationError.NotRegistered
+        | SocketEventRegistrationChange.Remove ->
+            if Map.containsKey key registrations then
+                Ok (withRegistrations (Map.remove key registrations))
+            else
+                Error SocketEventRegistrationError.NotRegistered
 
     /// Every way in which `registry` fails to be a descriptor table a kernel
     /// could produce. Empty for any registry built out of `initial`, `dup` and
@@ -1027,7 +1278,7 @@ module FileDescriptorRegistry =
             |> List.choose (fun (id, description) ->
                 match description.Target with
                 | OpenFileTarget.StandardStream _
-                | OpenFileTarget.SocketEventPort
+                | OpenFileTarget.SocketEventPort _
                 | OpenFileTarget.Socket _ -> None
                 | OpenFileTarget.File (_, offset) ->
                     if offset < 0L then
@@ -1068,7 +1319,7 @@ module FileDescriptorRegistry =
             |> List.choose (fun (id, description) ->
                 match description.Target with
                 | OpenFileTarget.StandardStream _
-                | OpenFileTarget.SocketEventPort
+                | OpenFileTarget.SocketEventPort _
                 | OpenFileTarget.File _ -> None
                 | OpenFileTarget.Socket socketId -> Some (id, socketId)
             )
@@ -1088,12 +1339,32 @@ module FileDescriptorRegistry =
                 )
             )
 
+        let deadRegistrations =
+            registry.Descriptions
+            |> Map.toList
+            |> List.collect (fun (portId, description) ->
+                match description.Target with
+                | OpenFileTarget.StandardStream _
+                | OpenFileTarget.File _
+                | OpenFileTarget.Socket _ -> []
+                | OpenFileTarget.SocketEventPort registrations ->
+                    registrations
+                    |> Map.toList
+                    |> List.choose (fun ((_, targetId), _) ->
+                        if Map.containsKey targetId registry.Descriptions then
+                            None
+                        else
+                            Some (FileDescriptorRegistryDefect.SocketEventRegistrationTargetDead (portId, targetId))
+                    )
+            )
+
         dangling
         @ unreferenced
         @ freshness
         @ negativeOffsets
         @ conflicting
         @ duplicateSockets
+        @ deadRegistrations
 
     /// Fail loudly if `registry` is not sound, naming `context`.
     let assertInvariants (context : string) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
