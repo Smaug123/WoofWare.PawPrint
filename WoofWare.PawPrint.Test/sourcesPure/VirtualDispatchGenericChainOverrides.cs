@@ -4,17 +4,13 @@ using System;
 // names the declaration whose slot the most-derived override occupies, so the correct answer is that
 // override in each case.
 //
-// These shapes are the half of `VirtualDispatchGenericDefinitionSlots.cs` that PawPrint answers
-// correctly, extracted so that they are actively guarded. What they guard is
-// `tryResolveByOverrideChain`'s refusal to serve a chain containing a generic definition: serving one
-// needs each ancestor's signature read in its own type variables, because at `T = string` a closed
-// comparison cannot tell `A3<T>.M(T)` from `B3<T>.M(string)`.
+// A narrower case of `VirtualDispatchGenericDefinitionSlots.cs`, kept separate because a regression
+// that broke only the slots an override *did* take would fail here first and so name itself more
+// precisely.
 //
-// The refusal is checked rather than assumed. Removing it makes this file fail with "Signature
-// comparison ... reached generic type parameter !0, but the declaring type's instantiation supplies
-// only 0 argument(s)" -- measured -- because the override relation compares signatures under an empty
-// substitution context, which is a detected misuse rather than a wrong answer. So the exclusion keeps
-// these calls on the pre-existing walk, and the comparison itself is the backstop if it ever fails to.
+// What it pins about generics specifically: slots are laid out on the generic *definition*, where
+// `A3<T>.M(T)` and `B3<T>.M(string)` are distinct declarations owning distinct slots. Closing them at
+// `T = string` first makes them coincide, and an override of one then appears to fill the other.
 //
 // Exit code is the index of the first failing check, so a failure names itself.
 
