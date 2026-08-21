@@ -281,6 +281,17 @@ module AbstractMachine =
             // and with the caller's program counter put back to its call site: the `callvirt Invoke`
             // advanced past it, and exception dispatch reads that offset both to decide which of the
             // caller's `try` regions cover the throw and to name the frame.
+            //
+            // Popping first costs a frame in the guest's trace, which real .NET shows and PawPrint
+            // does not: both failures happen while CoreCLR is preparing to enter the target, so the
+            // target is on its stack. That is a deliberate trade rather than an oversight — leaving
+            // the stub frame up instead puts a `System.Action.Invoke` frame in the trace that real
+            // .NET never shows, whose absence `sourcesPure/DelegateCctorFailureTraceHasNoStubFrame.cs`
+            // pins. See docs/divergences.md, "A delegate invocation that fails before entering its
+            // target names no frame for it", for what closing it would take: neither failure has a
+            // frame available to name, so the fix is to push one that has executed nothing, and the
+            // existing machinery for that (`MethodState.PendingTypeInit`) carries a type to
+            // initialise and would run its `.cctor`.
             let raiseFromPoppedStub
                 (exceptionType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
                 (message : string option)

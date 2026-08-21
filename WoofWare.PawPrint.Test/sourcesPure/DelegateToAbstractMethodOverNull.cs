@@ -10,6 +10,13 @@ using System.Reflection;
 // subclass of the abstract declaring type, so binding virtualises to a concrete override, and the
 // open shape is refused (`DelegateBindOpenVirtual.cs`).
 //
+// The exception is faithful; its *trace* is not. Real .NET names the abstract target as the top
+// frame, because the failure happens while it is preparing to enter it; PawPrint pops the
+// delegate's synthetic frame first, so the trace starts at the caller. Nothing here asserts the
+// trace, because that would pin a known divergence as though it were the intended answer — see
+// docs/divergences.md, "A delegate invocation that fails before entering its target names no frame
+// for it".
+//
 // Returns 0 on success, or the number of the first check that failed.
 
 public abstract class AbstractBase

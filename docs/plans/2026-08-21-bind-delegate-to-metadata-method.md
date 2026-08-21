@@ -419,3 +419,33 @@ exception type (check 2), and using the parameterless constructor's message inst
 Two comments were falsified by this and are part of the diff: `MethodBody.Abstract`'s docstring said
 an abstract body is "reachable only via mis-resolved `callvirt`", and the `BUG:` message said virtual
 dispatch was the only thing that should have prevented it.
+
+### Second review round: the stack trace, and one falsified divergence entry
+
+Codex's follow-up found that the `BadImageFormatException` above carries the wrong *metadata*: real
+.NET names the abstract target as the top frame of `StackTrace` and as `TargetSite`, and PawPrint
+names neither. Both halves measured:
+
+* `TargetSite` is out of reach for an unrelated reason — reading it calls
+  `ExceptionNative_GetMethodFromStackTrace`, an unimplemented QCall, so the guest stops rather than
+  answering wrongly. Not something this slice could fix, and not a regression it introduced.
+* `StackTrace` really does differ, and the control confirms PawPrint's traces are otherwise
+  faithful: a delegate whose *body* throws reports all three frames correctly, so the missing frame
+  is specific to failing before entry.
+
+Not fixed here, and the reason is not cost. The frame ordering is a deliberate trade already made
+for the sibling failure: leaving the stub frame up instead puts a `System.Action.Invoke` frame in
+the trace that real .NET never shows, whose absence `DelegateCctorFailureTraceHasNoStubFrame.cs`
+pins. The real fix — push a frame that has executed nothing — needs
+`MethodState.PendingTypeInit`, which cannot be reused as it stands: it carries a *type to
+initialise*, and `AbstractMachine`'s driver runs that initialiser on the next step, so a frame
+parked there for a different reason would run a `.cctor` nothing asked for. Generalising it into a
+reason DU is a change to `MethodState` and to exception dispatch, and it would fix both delegate
+failures at once — which makes it a slice, not a patch. Documented in `docs/divergences.md` with
+what closing it would take, cross-referenced from the code, and flagged in the test as deliberately
+unasserted.
+
+Reading around that entry also turned up a divergence-doc claim this branch falsifies:
+`divergences.md` said an open delegate over an instance method was unreachable because its two
+routes were raw IL "and `Delegate.CreateDelegate(Type, MethodInfo)`, which `Delegate_BindToMethodInfo`
+refuses". That route is now live. Corrected, together with the two refusals this slice adds.
