@@ -492,6 +492,20 @@ module NativeRuntimeTypeHelpers =
                 failwith
                     $"MethodTable_CanCompareBitsOrUseFastGetHashCode: expected value-type MethodTable, got %s{typeInfo.Namespace}.%s{typeInfo.Name}"
 
+            // CoreCLR gives an `[InlineArray]` type two different answers, and PawPrint can give
+            // neither: the QCall throws `NotSupportedException`
+            // (`NotSupported_InlineArrayEqualsGetHashCode`, comutilnative.cpp:1678) before this
+            // walk runs at all, while the internal recursion a *field* of one reaches answers
+            // `FALSE` (:1614). PawPrint would answer from expanded storage slots — N repeats of
+            // the one declared field (`InlineArrayStorage.expand`) — which is neither. Both of
+            // this predicate's callers, `ValueType.Equals` and `ValueType.GetHashCode`, would
+            // then diverge silently, so refuse.
+            match InlineArrayStorage.effectiveLength true typeInfo.InlineArrayLength with
+            | Some length ->
+                failwith
+                    $"TODO: MethodTable_CanCompareBitsOrUseFastGetHashCode was asked about the `[InlineArray(%d{length})]` type %s{typeInfo.Namespace}.%s{typeInfo.Name}. CoreCLR throws NotSupportedException here and answers FALSE for a field of one; PawPrint models neither, and answering from the expanded storage slots would make ValueType.Equals and ValueType.GetHashCode disagree with real .NET silently"
+            | None -> ()
+
             let zero, state =
                 IlMachineState.cliTypeZeroOfHandle state baseClassTypes methodTableFor
 

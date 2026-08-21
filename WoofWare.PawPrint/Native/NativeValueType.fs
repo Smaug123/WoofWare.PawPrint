@@ -43,38 +43,13 @@ module NativeValueType =
         | Bits
         | NestedValueType
 
-    /// `[InlineArray(N)]` expands to N storage slots in PawPrint (`InlineArrayStorage.expand`)
-    /// where CoreCLR's `ApproxFieldDescIterator` still sees the one declared field, so the walk
-    /// below would examine slot 1 after skipping a null slot 0 where CoreCLR would stop. The
-    /// deeper problem is that the predicate the walk consults for a nested value type,
-    /// `canCompareBitsOrUseFastGetHashCode`, models neither of CoreCLR's inline-array answers —
-    /// `FALSE` from the internal recursion (`vm/comutilnative.cpp:1614`) nor the
-    /// `NotSupportedException` the sibling `MethodTable_CanCompareBitsOrUseFastGetHashCode` QCall
-    /// throws (`:1678`) — so an answer derived from it would be silently wrong rather than
-    /// merely absent. Refuse instead.
-    let private refuseInlineArray
-        (operation : string)
-        (state : IlMachineState)
-        (methodTable : ConcreteTypeHandle)
-        : unit
-        =
-        match IlMachineState.tryGetConcreteTypeInfo state methodTable with
-        | None -> ()
-        | Some (_, typeInfo) ->
-            // `isValueType = true`: both callers hand over a value type — the receiver's own
-            // MethodTable, or a field the classifier has already put in `NestedValueType`.
-            match InlineArrayStorage.effectiveLength true typeInfo.InlineArrayLength with
-            | None -> ()
-            | Some length ->
-                failwith
-                    $"TODO: %s{operation} reached the `[InlineArray(%d{length})]` type %s{typeInfo.Namespace}.%s{typeInfo.Name}. CoreCLR reports such a type as never bit-comparable and throws NotSupportedException (NotSupported_InlineArrayEqualsGetHashCode) from MethodTable_CanCompareBitsOrUseFastGetHashCode; PawPrint's canCompareBitsOrUseFastGetHashCode models neither, so there is no trustworthy answer to derive here"
-
     let private classifyField
         (operation : string)
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (fieldType : ConcreteTypeHandle)
-        : FieldClass
+        : IlMachineState * FieldClass
         =
         let ofPrimitive (primitive : PrimitiveType) : FieldClass =
             match primitive with
@@ -104,11 +79,11 @@ module NativeValueType =
                     $"%s{operation}: field of type System.TypedReference; only a ByRefLike type may declare one, and such a type cannot be boxed, so ValueType.GetHashCode is unreachable for it"
 
         match fieldType with
-        | ConcretePrimitive state.ConcreteTypes primitive -> ofPrimitive primitive
+        | ConcretePrimitive state.ConcreteTypes primitive -> state, ofPrimitive primitive
         | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _ -> FieldClass.ObjectReference
+        | ConcreteTypeHandle.Array _ -> state, FieldClass.ObjectReference
         | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ -> FieldClass.Bits
+        | ConcreteTypeHandle.FunctionPointer _ -> state, FieldClass.Bits
         | ConcreteTypeHandle.Byref _ ->
             // A byref field exists only in a `ByRefLike` type, which cannot be boxed, so
             // `ValueType.GetHashCode` — which boxes its receiver on the way in — cannot be
@@ -117,7 +92,19 @@ module NativeValueType =
                 $"%s{operation}: field of byref type %O{fieldType}; only a ByRefLike type may declare one, and such a type cannot be boxed, so ValueType.GetHashCode is unreachable for it"
         | ConcreteTypeHandle.Concrete _ ->
             if IlMachineState.isReferenceTypeHandle baseClassTypes operation state fieldType then
-                FieldClass.ObjectReference
+                state, FieldClass.ObjectReference
+            else
+
+            // Nominally: a CLR enum is a value type whose immediate base is `System.Enum`, and
+            // nothing else is. Asking instead whether the type happens to hold one primitive field
+            // called `value__` would catch `struct Fake { long value__; }`, which is a legal
+            // ordinary struct that CoreCLR reports as `ELEMENT_TYPE_VALUETYPE` — so a `Fake` that
+            // overrides `GetHashCode` must reach the override, not be hashed as a raw `long`.
+            let state, isEnum =
+                IlMachineState.isEnumValueType loggerFactory baseClassTypes state fieldType
+
+            if not isEnum then
+                state, FieldClass.NestedValueType
             else
 
             let _, typeInfo =
@@ -140,8 +127,13 @@ module NativeValueType =
             // leaves every test green. Kept because it is what CoreCLR does, and because the
             // coincidence rests on that second divergence rather than on anything structural.
             match enumUnderlyingPrimitive operation typeInfo with
-            | Some primitive -> ofPrimitive primitive
-            | None -> FieldClass.NestedValueType
+            | Some primitive -> state, ofPrimitive primitive
+            | None ->
+                // An enum declares exactly one instance field, `value__`, of integer type
+                // (ECMA-335 II.14.3); CoreCLR asserts as much before reading it
+                // (`vm/methodtablebuilder.cpp:4320`).
+                failwith
+                    $"%s{operation}: %s{typeInfo.Namespace}.%s{typeInfo.Name} derives from System.Enum but declares no primitive `value__` instance field"
 
     /// CoreCLR's `GetHashCodeStrategy` (`vm/comutilnative.cpp:1696`). Walks the instance fields of
     /// `methodTable` in *metadata declaration* order — which auto layout reorders, so it is not
@@ -164,8 +156,6 @@ module NativeValueType =
         (state : IlMachineState)
         : IlMachineState * HashCodeStrategy
         =
-        refuseInlineArray operation state methodTable
-
         let state, fields =
             IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state methodTable
 
@@ -178,7 +168,10 @@ module NativeValueType =
                 let fieldOffset, fieldSize = CliValueType.GetFieldLayoutById field.Id contents
                 let offset = accumulatedOffset + fieldOffset
 
-                match classifyField operation baseClassTypes state field.Type with
+                let state, fieldClass =
+                    classifyField operation loggerFactory baseClassTypes state field.Type
+
+                match fieldClass with
                 | FieldClass.ObjectReference ->
                     match CliValueType.DereferenceFieldById field.Id contents with
                     | CliType.ObjectRef None -> step rest state
@@ -190,8 +183,6 @@ module NativeValueType =
                 | FieldClass.R4 -> state, HashCodeStrategy.SingleField offset
                 | FieldClass.Bits -> state, HashCodeStrategy.FastGetHashCode (offset, fieldSize)
                 | FieldClass.NestedValueType ->
-                    refuseInlineArray operation state field.Type
-
                     let state, canCompare =
                         canCompareBitsOrUseFastGetHashCode loggerFactory baseClassTypes thread field.Type state
 
