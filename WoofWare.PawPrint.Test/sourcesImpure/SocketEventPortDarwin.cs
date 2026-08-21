@@ -31,10 +31,17 @@ class Program
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_LSeek", SetLastError = true)]
     static extern long LSeek(IntPtr fd, long offset, int whence);
 
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_FcntlSetIsNonBlocking", SetLastError = true)]
+    static extern int SetIsNonBlocking(IntPtr fd, int isNonBlocking);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_FcntlGetIsNonBlocking", SetLastError = true)]
+    static extern unsafe int GetIsNonBlocking(IntPtr fd, int* isNonBlocking);
+
     const int PAL_SUCCESS = 0;
 
     // Darwin's numbering, which is what the macOS preset reports.
     const int ENXIO = 6;
+    const int ENOTTY = 25;
     const int ESPIPE = 29;
 
     static unsafe long Create()
@@ -96,6 +103,34 @@ class Program
         if (LSeek((IntPtr)p, -1, 99) != -1) return check;
         check = 15;
         if (Marshal.GetLastSystemError() != ESPIPE) return check;
+
+        // ---- fcntl(F_SETFL): -1/ENOTTY on a kqueue -- and yet the bit
+        // toggles. Measured through the real shim on macOS 26: set(1) answers
+        // -1 errno 25, and a subsequent get reports the flag set; clearing
+        // behaves the same way in the other direction. The get itself
+        // succeeds throughout, where Linux's epoll answers 0 for the whole
+        // sequence (the sibling file's rows).
+        check = 16;
+        int flag = 9;
+        if (GetIsNonBlocking((IntPtr)p, &flag) != 0) return check;
+        check = 17;
+        if (flag != 0) return check;
+        check = 18;
+        if (SetIsNonBlocking((IntPtr)p, 1) != -1) return check;
+        check = 19;
+        if (Marshal.GetLastSystemError() != ENOTTY) return check;
+        check = 20;
+        if (GetIsNonBlocking((IntPtr)p, &flag) != 0) return check;
+        check = 21;
+        if (flag != 1) return check;
+        check = 22;
+        if (SetIsNonBlocking((IntPtr)p, 0) != -1) return check;
+        check = 23;
+        if (Marshal.GetLastSystemError() != ENOTTY) return check;
+        check = 24;
+        if (GetIsNonBlocking((IntPtr)p, &flag) != 0) return check;
+        check = 25;
+        if (flag != 0) return check;
 
         return 0;
     }

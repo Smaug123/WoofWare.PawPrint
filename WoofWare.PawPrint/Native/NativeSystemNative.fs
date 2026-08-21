@@ -4191,6 +4191,130 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim resultCode)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_FcntlSetIsNonBlocking",
+          [ ConcreteIntPtr state.ConcreteTypes ; _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_FcntlSetIsNonBlocking(intptr_t fd,
+            // int32_t isNonBlocking)` (pal_io.c:655): `fcntl(F_GETFL)`, toggle
+            // `O_NONBLOCK`, `fcntl(F_SETFL)`. Returns 0, or -1-and-errno; any
+            // nonzero second argument sets. The modelled targets draw two
+            // errnos: EBADF from `F_GETFL` on a dead descriptor, and Darwin's
+            // ENOTTY from `F_SETFL` on a kqueue.
+            //
+            // The flag lands on the open file description
+            // (`OpenFileDescription.NonBlocking`), where POSIX keeps the status
+            // flags — but only for the targets whose every modelled operation
+            // honours it: a socket (no transfer syscall exists yet, and each
+            // one that lands must consult the flag, `SystemNative_Accept`
+            // first), a regular file (both kernels give `O_NONBLOCK` no effect
+            // there, so handlers that never look are right not to), and a
+            // socket event port (whose waits block per their own timeout
+            // argument, never per this flag). The one target whose modelled
+            // transfers would *ignore* a stored flag — a standard stream — is
+            // refused below rather than silently diverging.
+            //
+            // The second parameter is matched loosely for the reason
+            // `SystemNative_Socket`'s enums are: CoreLib declares it `int`
+            // while a guest hand-rolling the P/Invoke may write `bool`, whose
+            // default marshalling is the same four-byte cell.
+            let operation = "SystemNative_FcntlSetIsNonBlocking"
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            let isNonBlocking =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.Bool b -> b <> 0uy
+                | _ -> NativeCall.int32Argument operation instruction.Arguments.[1] <> 0
+
+            let complete (code : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim code)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match FileDescriptorRegistry.tryFindTarget fd state.Kernel.FileDescriptors with
+            | None ->
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EBADF))
+                |> complete (-1)
+            | Some (OpenFileTarget.StandardStream role) when isNonBlocking ->
+                // A real pipe honours O_NONBLOCK — an empty read becomes EAGAIN
+                // — but no modelled stream transfer consults the flag, so
+                // recording it would keep blocking semantics silently. Teach
+                // the stream read/write handlers to consult it, then accept it
+                // here.
+                failwith
+                    $"%s{operation}: fd %d{fd} is the standard stream %O{role}, which PawPrint models as a pipe, and no modelled stream transfer consults O_NONBLOCK; storing it would silently keep blocking semantics. Decide what a non-blocking stream read does before accepting this."
+            | Some OpenFileTarget.SocketEventPort ->
+                // Store first, report second: measured, the platforms agree that
+                // the bit toggles and disagree on the answer — Linux succeeds
+                // where Darwin reports -1/ENOTTY *with the bit toggled anyway*.
+                // See `SimulatedUnixPlatform.eventPortSetStatusFlagsError`.
+                let state =
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            FileDescriptors =
+                                FileDescriptorRegistry.setNonBlocking fd isNonBlocking kernel.FileDescriptors
+                        }
+                    )
+
+                match SimulatedUnixPlatform.eventPortSetStatusFlagsError state.Kernel.UnixPlatform with
+                | None -> complete 0 state
+                | Some error ->
+                    state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
+                    |> complete (-1)
+            | Some (OpenFileTarget.StandardStream _)
+            | Some (OpenFileTarget.File _)
+            | Some (OpenFileTarget.Socket _) ->
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        FileDescriptors = FileDescriptorRegistry.setNonBlocking fd isNonBlocking kernel.FileDescriptors
+                    }
+                )
+                |> complete 0
+        | Some "SystemNative_FcntlGetIsNonBlocking",
+          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_FcntlGetIsNonBlocking(intptr_t fd,
+            // int32_t* isNonBlocking)` (pal_io.c:677). A NULL out-pointer is
+            // answered with `Error_EFAULT` — the PAL *enum* value, from a
+            // function whose other answers are 0 or -1-and-errno; faithful to
+            // the C, odd as it is. On failure the C stores 0 through the
+            // pointer before returning -1, and the only failure the modelled
+            // targets can produce is EBADF.
+            //
+            // Reads for every target kind, where the setter refuses some:
+            // `false` is the truth for a target the setter will not flag.
+            let operation = "SystemNative_FcntlGetIsNonBlocking"
+
+            let outArgument =
+                bufferPointerArgument operation "isNonBlocking" instruction.Arguments.[1]
+
+            let complete (code : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim code)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            // The NULL screen precedes everything, including any look at `fd`:
+            // the C tests the pointer before its first `fcntl`, so a null
+            // pointer with a nonsensical descriptor is EFAULT, not EBADF.
+            match outArgument with
+            | BufferPointer.RawAddress 0UL -> complete (UnixError.toPal UnixError.EFAULT) state
+            | _ ->
+
+            let fd = fdArgument operation instruction.Arguments.[0]
+            let outCell = requireStorage operation "isNonBlocking" outArgument
+
+            let store (value : int) (state : IlMachineState) : IlMachineState =
+                let bytes = Array.zeroCreate<byte> 4
+                BinaryPrimitives.WriteInt32LittleEndian (System.Span<byte> bytes, value)
+                writeBytesThrough ctx operation outCell (ImmutableArray.CreateRange bytes) state
+
+            match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+            | None ->
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EBADF))
+                |> store 0
+                |> complete (-1)
+            | Some description -> state |> store (if description.NonBlocking then 1 else 0) |> complete 0
         // `int32_t SystemNative_Socket(int32_t addressFamily, int32_t socketType,
         // int32_t protocolType, intptr_t* createdSocket)` (pal_networking.c:2812).
         //

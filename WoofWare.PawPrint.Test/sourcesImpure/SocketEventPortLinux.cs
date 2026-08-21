@@ -43,6 +43,12 @@ class Program
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_LSeek", SetLastError = true)]
     static extern long LSeek(IntPtr fd, long offset, int whence);
 
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_FcntlSetIsNonBlocking", SetLastError = true)]
+    static extern int SetIsNonBlocking(IntPtr fd, int isNonBlocking);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_FcntlGetIsNonBlocking", SetLastError = true)]
+    static extern unsafe int GetIsNonBlocking(IntPtr fd, int* isNonBlocking);
+
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_FLock", SetLastError = true)]
     static extern int FLock(IntPtr fd, int operation);
 
@@ -264,6 +270,28 @@ class Program
         check = 52;
         long t = Create();
         if (t != 3) return check;
+
+        // ---- fcntl(F_SETFL): on an epoll descriptor the call succeeds and
+        // O_NONBLOCK round-trips, where Darwin's kqueue answers -1/ENOTTY (with
+        // the bit toggled regardless -- the sibling file's rows). Measured on
+        // 6.18.5.
+        check = 53;
+        int flag = 9;
+        if (GetIsNonBlocking((IntPtr)t, &flag) != 0) return check;
+        check = 54;
+        if (flag != 0) return check;
+        check = 55;
+        if (SetIsNonBlocking((IntPtr)t, 1) != 0) return check;
+        check = 56;
+        if (GetIsNonBlocking((IntPtr)t, &flag) != 0) return check;
+        check = 57;
+        if (flag != 1) return check;
+        check = 58;
+        if (SetIsNonBlocking((IntPtr)t, 0) != 0) return check;
+        check = 59;
+        if (GetIsNonBlocking((IntPtr)t, &flag) != 0) return check;
+        check = 60;
+        if (flag != 0) return check;
 
         return 0;
     }
