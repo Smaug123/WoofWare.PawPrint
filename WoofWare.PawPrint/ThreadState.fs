@@ -218,10 +218,9 @@ type ThreadStatus =
     /// The port is identified by its open file description rather than by descriptor number
     /// because an epoll instance *is* an open file description: `SystemNative_CloseSocketEventPort`
     /// is `close(2)` on it, and a `dup`'d port descriptor waits on the same instance.
-    /// Nothing wakes a thread parked here — no readiness delivery exists — so both the parking
-    /// handler and `SystemNative_TryChangeSocketEventRegistration` refuse any combination in
-    /// which an event could actually be delivered; see
-    /// `EmulatedKernel.socketEventRegistrationCouldFire`.
+    /// The wake is `Program.fireSocketReadiness`, which flips this thread back to `Runnable`
+    /// once `EmulatedKernel.hasDeliverableSocketEvents` answers yes for the port; the handler
+    /// then re-enters (the park kept its frame) and performs the delivery itself.
     | BlockedOnSocketEvents of port : OpenFileDescriptionId
     /// This thread has executed its final `ret`; it will never run again. Its state is kept
     /// only so other threads can observe termination (e.g. to satisfy Join).
