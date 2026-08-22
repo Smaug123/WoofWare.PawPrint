@@ -4,6 +4,24 @@
     <TargetFramework>net10.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <OutputType>Exe</OutputType>
+    <!--
+      Host NUnit3TestAdapter inside this project's own executable, on Microsoft.Testing.Platform.
+      `dotnet test` launches that executable directly (the runner is chosen by the `test.runner`
+      setting in global.json, which applies to every test project in the repo), so this is also
+      the process that reads the RuntimeHostConfigurationOption below.
+    -->
+    <EnableNUnitRunner>true</EnableNUnitRunner>
+    <!--
+      Launch the tests through the `dotnet` muxer rather than through a generated apphost.
+      `dotnet test` runs whatever `RunCommand` names, and the apphost is a native binary copied
+      verbatim out of the runtime pack: it keeps the ELF interpreter and libc of whatever machine
+      built the pack, then dlopens the `libcoreclr.so` it resolves at runtime. Point it at the Nix
+      runtime and the two glibcs meet inside one process — Nix's `librt.so.1` wants a symbol
+      version the host's `libc.so.6` does not have, and CoreCLR never binds. Suppressing the
+      apphost makes `RunCommand` the `dotnet` muxer itself, which nixpkgs patches, so the devshell
+      and a system install both work.
+    -->
+    <UseAppHost>false</UseAppHost>
   </PropertyGroup>
 
   <ItemGroup>
@@ -238,16 +256,20 @@
   </ItemGroup>
   <ItemGroup>
     <!--
-      Bound the test host's GC heap to half of physical memory.
+      Bound the test process's GC heap to half of physical memory.
 
-      Unconstrained, this suite peaks around 21.8 GB RSS in the vstest test host: the live set is
-      small (the whole suite passes under an 8 GB cap) but the interpreter's allocation rate is high
-      enough that a Workstation GC with no ceiling just keeps expanding. GitHub-hosted runners are
-      4 vCPU / 16 GB, so the test host runs with no headroom there and is occasionally SIGKILLed by
-      the OOM killer mid-run — which surfaces as "Test host process crashed" with no stderr at all
-      and no indication of which test, or even that memory was the problem. Half of 16 GB is the
-      8 GB that was measured to be sufficient; capping also converts any future genuine blow-up from
-      a silent kill into an OutOfMemoryException with a stack trace.
+      Unconstrained, this suite peaks around 21.8 GB RSS: the live set is small (the whole suite
+      passes under an 8 GB cap) but the interpreter's allocation rate is high enough that a
+      Workstation GC with no ceiling just keeps expanding. GitHub-hosted runners are 4 vCPU / 16 GB,
+      so the test process runs with no headroom there and is occasionally SIGKILLed by the OOM
+      killer mid-run — which surfaces with no stderr at all and no indication of which test, or even
+      that memory was the problem. Half of 16 GB is the 8 GB that was measured to be sufficient;
+      capping also converts any future genuine blow-up from a silent kill into an
+      OutOfMemoryException with a stack trace.
+
+      Under Microsoft.Testing.Platform the tests run in this project's own executable, so this is
+      the process that reads the generated runtimeconfig.json — see TestGcHeapHardLimit.fs, which
+      asserts both that the property arrives and that the GC acted on it.
 
       This is a percentage rather than an absolute so it scales with the machine, and it lives in the
       project rather than in CI so `dotnet test`, `nix build`, and local runs all share the ceiling.
@@ -279,11 +301,10 @@
 
   <ItemGroup>
     <PackageReference Include="NUnit" Version="4.4.0"/>
-    <PackageReference Include="NUnit3TestAdapter" Version="5.1.0"/>
+    <PackageReference Include="NUnit3TestAdapter" Version="6.2.0"/>
     <PackageReference Include="FsUnit" Version="7.1.1"/>
     <PackageReference Include="FsCheck" Version="3.3.2" />
     <PackageReference Include="FsCheck.NUnit" Version="3.3.2" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1"/>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0"/>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.6" />
     <PackageReference Include="WoofWare.DotnetRuntimeLocator" Version="0.3.2"/>

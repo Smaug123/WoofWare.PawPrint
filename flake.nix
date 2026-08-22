@@ -162,6 +162,27 @@
           testProjectFile = "./WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj";
           nugetDeps = ./nix/deps.json; # `nix build .#default.fetch-deps && ./result nix/deps.json`
           doCheck = true;
+          # nixpkgs' dotnetCheckHook still speaks VSTest: it names the test project positionally
+          # and passes `--logger console;verbosity=normal`. The Microsoft.Testing.Platform
+          # `dotnet test` that global.json selects rejects both, so run it here instead.
+          #
+          # `--runtime` has to repeat what dotnetBuildHook built with: that hook passes the RID
+          # for every non-solution project, so the test binary is under
+          # bin/Release/net10.0/<rid>/, and a `--no-build` run without the RID looks in the
+          # RID-less directory and finds nothing to test.
+          checkPhase = ''
+            runHook preCheck
+
+            dotnet test \
+              --project ./WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj \
+              --configuration "$dotnetBuildType" \
+              --runtime ${pkgs.dotnetCorePackages.systemToDotnetRid system} \
+              --no-build \
+              --no-ansi \
+              --no-progress
+
+            runHook postCheck
+          '';
         };
       };
       checks = {
