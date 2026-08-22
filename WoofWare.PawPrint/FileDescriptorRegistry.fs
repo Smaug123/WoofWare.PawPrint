@@ -328,20 +328,42 @@ module SocketEventInterest =
 
 /// One registration held by a socket event port: what
 /// `SystemNative_TryChangeSocketEventRegistration` recorded for one target.
-///
-/// Nothing delivers from this yet — an event fires only when a registered
-/// descriptor becomes ready, and no modelled operation can make one so until
-/// `SystemNative_Connect` lands — so both fields are written and never read.
-/// Their presence is still guest-visible: a second ADD of the same key answers
-/// EEXIST, and a MOD or DEL of an absent key answers ENOENT.
 type SocketEventRegistration =
     {
-        /// Which conditions this registration watches.
+        /// Which conditions this registration watches. `EPOLLERR` and
+        /// `EPOLLHUP` are reported whether or not `Error`/`Close` are set,
+        /// exactly as epoll ignores those two bits in an interest set.
         Interest : SocketEventInterest
-        /// The caller's `uintptr_t data`, held verbatim for delivery in
+        /// The caller's `uintptr_t data`, delivered verbatim in
         /// `SocketEvent.Data` when an event fires. CoreLib passes
         /// `SocketAsyncContext.GlobalContextIndex`, a small integer.
         Data : uint64
+        /// When this registration's ADD committed, as an ordinal from the
+        /// kernel's counter. One signal can make several registrations of the
+        /// same socket pending at once (they share the socket's wait queue),
+        /// and the measured delivery order for that tie is newest-registered
+        /// first — the wait queue is LIFO. `Modify` preserves this: the wait
+        /// queue entry the order comes from is created at ADD and untouched
+        /// by MOD.
+        RegisteredAt : int64
+    }
+
+/// Everything one socket event port holds: its interest table, and the ready
+/// list `epoll_wait` drains.
+type SocketEventPortState =
+    {
+        /// The interest table, keyed exactly as epoll keys a registration:
+        /// the (fd number, open file description) pair of the target.
+        Registrations : Map<int * OpenFileDescriptionId, SocketEventRegistration>
+        /// The registrations with an edge outstanding, in delivery order.
+        /// A registration enters when the driver signals it and it is not
+        /// already here, or when an ADD/MOD finds its target ready; delivery
+        /// walks the prefix, re-polls each entry against the target's current
+        /// readiness, and removes what it walked — reporting the nonempty
+        /// re-polls and silently dropping the stale ones — leaving only what
+        /// batch truncation spared. Always a subset of `Registrations`, with
+        /// no duplicates (`checkInvariants` states both).
+        Ready : (int * OpenFileDescriptionId) list
     }
 
 /// What an open file description refers to, together with the state that only
@@ -380,15 +402,14 @@ type OpenFileTarget =
     /// Darwin refuses with `ESPIPE`. So there is no position for a caller to
     /// move or read.
     ///
-    /// Carries the port's interest table, keyed exactly as epoll keys a
-    /// registration: the **(fd number, open file description) pair** of the
-    /// target. Both halves are measured — an ADD through a `dup` of a
-    /// registered target succeeds and creates a second registration, while an
-    /// ADD through a `dup` of the *port* answers EEXIST for an
-    /// already-registered target, because the `dup` pair shares this
-    /// description and so this table. `changeSocketEventRegistration` is the
-    /// only writer.
-    | SocketEventPort of registrations : Map<int * OpenFileDescriptionId, SocketEventRegistration>
+    /// Carries the port's interest table and ready list. The registration
+    /// key is the **(fd number, open file description) pair** of the target;
+    /// both halves are measured — an ADD through a `dup` of a registered
+    /// target succeeds and creates a second registration, while an ADD
+    /// through a `dup` of the *port* answers EEXIST for an already-registered
+    /// target, because the `dup` pair shares this description and so this
+    /// table.
+    | SocketEventPort of state : SocketEventPortState
     /// A socket, handed out by `SystemNative_Socket`.
     ///
     /// No offset, because neither kernel maintains one: measured, `lseek` on a
@@ -667,6 +688,16 @@ type FileDescriptorRegistryDefect =
     /// syscall (no fd can name the dead description again) but exactly what
     /// the readiness wake must never deliver from.
     | SocketEventRegistrationTargetDead of port : OpenFileDescriptionId * target : OpenFileDescriptionId
+    /// A socket event port's ready list holds an entry its interest table does
+    /// not register. Every path that removes a registration (DEL, and close's
+    /// sweep) removes its pending entry in the same step, so a survivor would
+    /// deliver an event from a corpse.
+    | SocketEventReadyEntryUnregistered of port : OpenFileDescriptionId * key : int * target : OpenFileDescriptionId
+    /// A socket event port's ready list holds the same entry twice. A pending
+    /// registration keeps its place rather than being re-queued (measured:
+    /// a re-signal does not move it), so a duplicate would deliver one edge
+    /// twice.
+    | SocketEventReadyEntryDuplicated of port : OpenFileDescriptionId * key : int * target : OpenFileDescriptionId
 
 [<RequireQualifiedAccess>]
 module FileDescriptorRegistry =
@@ -853,12 +884,15 @@ module FileDescriptorRegistry =
                 Map.remove id registry.Descriptions
                 |> Map.map (fun _ description ->
                     match description.Target with
-                    | OpenFileTarget.SocketEventPort registrations ->
+                    | OpenFileTarget.SocketEventPort portState ->
                         { description with
                             Target =
-                                registrations
-                                |> Map.filter (fun (_, target) _ -> target <> id)
-                                |> OpenFileTarget.SocketEventPort
+                                OpenFileTarget.SocketEventPort
+                                    {
+                                        Registrations =
+                                            portState.Registrations |> Map.filter (fun (_, target) _ -> target <> id)
+                                        Ready = portState.Ready |> List.filter (fun (_, target) -> target <> id)
+                                    }
                         }
                     | OpenFileTarget.StandardStream _
                     | OpenFileTarget.File _
@@ -960,7 +994,12 @@ module FileDescriptorRegistry =
                     {
                         // Fresh instance, empty interest table: nothing is
                         // registered with a port at creation.
-                        Target = OpenFileTarget.SocketEventPort Map.empty
+                        Target =
+                            OpenFileTarget.SocketEventPort
+                                {
+                                    Registrations = Map.empty
+                                    Ready = []
+                                }
                         AccessMode = FileAccessMode.ReadWrite
                         NonBlocking = false
                         Flock = None
@@ -1248,6 +1287,7 @@ module FileDescriptorRegistry =
     let changeSocketEventRegistration
         (portFd : int)
         (targetFd : int)
+        (registeredAt : int64)
         (change : SocketEventRegistrationChange)
         (registry : FileDescriptorRegistry)
         : Result<FileDescriptorRegistry, SocketEventRegistrationError>
@@ -1274,20 +1314,17 @@ module FileDescriptorRegistry =
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
         | OpenFileTarget.Socket _ -> Error SocketEventRegistrationError.NotAnEventPort
-        | OpenFileTarget.SocketEventPort registrations ->
+        | OpenFileTarget.SocketEventPort portState ->
 
         let key = targetFd, targetId
 
-        let withRegistrations
-            (registrations : Map<int * OpenFileDescriptionId, SocketEventRegistration>)
-            : FileDescriptorRegistry
-            =
+        let withPortState (portState : SocketEventPortState) : FileDescriptorRegistry =
             { registry with
                 Descriptions =
                     Map.add
                         portId
                         { portDescription with
-                            Target = OpenFileTarget.SocketEventPort registrations
+                            Target = OpenFileTarget.SocketEventPort portState
                         }
                         registry.Descriptions
             }
@@ -1302,40 +1339,199 @@ module FileDescriptorRegistry =
             | OpenFileTarget.File _
             | OpenFileTarget.Socket _ ->
 
-            if Map.containsKey key registrations then
+            if Map.containsKey key portState.Registrations then
                 Error SocketEventRegistrationError.AlreadyRegistered
             else
                 Ok (
-                    withRegistrations (
-                        Map.add
-                            key
-                            {
-                                Interest = interest
-                                Data = data
-                            }
-                            registrations
-                    )
+                    withPortState
+                        { portState with
+                            Registrations =
+                                Map.add
+                                    key
+                                    {
+                                        Interest = interest
+                                        Data = data
+                                        RegisteredAt = registeredAt
+                                    }
+                                    portState.Registrations
+                        }
                 )
         | SocketEventRegistrationChange.Modify (interest, data) ->
-            if Map.containsKey key registrations then
+            match Map.tryFind key portState.Registrations with
+            | Some existing ->
+                // `RegisteredAt` survives: same-signal tie order comes from
+                // the socket's wait queue, whose entry MOD does not touch.
+                // An entry already on the ready list keeps its place there
+                // too, which is likewise measured (`order3.c` row L).
                 Ok (
-                    withRegistrations (
-                        Map.add
-                            key
-                            {
-                                Interest = interest
-                                Data = data
-                            }
-                            registrations
-                    )
+                    withPortState
+                        { portState with
+                            Registrations =
+                                Map.add
+                                    key
+                                    { existing with
+                                        Interest = interest
+                                        Data = data
+                                    }
+                                    portState.Registrations
+                        }
+                )
+            | None -> Error SocketEventRegistrationError.NotRegistered
+        | SocketEventRegistrationChange.Remove ->
+            if Map.containsKey key portState.Registrations then
+                Ok (
+                    withPortState
+                        {
+                            Registrations = Map.remove key portState.Registrations
+                            Ready = portState.Ready |> List.filter (fun k -> k <> key)
+                        }
                 )
             else
                 Error SocketEventRegistrationError.NotRegistered
-        | SocketEventRegistrationChange.Remove ->
-            if Map.containsKey key registrations then
-                Ok (withRegistrations (Map.remove key registrations))
-            else
-                Error SocketEventRegistrationError.NotRegistered
+
+    /// Append `key` to the ready list of the port `portId` names. The caller
+    /// has decided the entry belongs there (an ADD/MOD found the target ready,
+    /// or the driver signalled it); this only performs the append, and it is
+    /// loudly partial on a key that is not registered or is already pending —
+    /// both would mean the caller's decision was made against a different
+    /// table than the one being written.
+    let appendSocketEventReady
+        (portId : OpenFileDescriptionId)
+        (key : int * OpenFileDescriptionId)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistry
+        =
+        match Map.tryFind portId registry.Descriptions with
+        | None ->
+            failwith
+                $"appendSocketEventReady: %O{portId} names no live open file description; the caller resolved it moments ago, so this is an interpreter bug."
+        | Some description ->
+
+        match description.Target with
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.File _
+        | OpenFileTarget.Socket _ ->
+            failwith
+                $"appendSocketEventReady: %O{portId} is not a socket event port; the caller resolved it as one moments ago, so this is an interpreter bug."
+        | OpenFileTarget.SocketEventPort portState ->
+
+        if not (Map.containsKey key portState.Registrations) then
+            failwith
+                $"appendSocketEventReady: %A{key} is not registered with port %O{portId}, so it cannot become pending on it (this is an interpreter bug)."
+
+        if List.contains key portState.Ready then
+            failwith
+                $"appendSocketEventReady: %A{key} is already pending on port %O{portId}; a pending entry keeps its place rather than being re-queued, so the caller should not have asked (this is an interpreter bug)."
+
+        { registry with
+            Descriptions =
+                Map.add
+                    portId
+                    { description with
+                        Target =
+                            OpenFileTarget.SocketEventPort
+                                { portState with
+                                    Ready = portState.Ready @ [ key ]
+                                }
+                    }
+                    registry.Descriptions
+        }
+
+    /// Replace the ready list of the port `portId` names — delivery's
+    /// write-back once a walk has consumed a prefix. Loudly partial on a
+    /// dead or non-port description, on an entry the interest table does not
+    /// register, and on a duplicate: the caller derived `ready` from the
+    /// port's own state moments ago, so any of those means it wrote against
+    /// a different table than the one it read.
+    let setSocketEventReady
+        (portId : OpenFileDescriptionId)
+        (ready : (int * OpenFileDescriptionId) list)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistry
+        =
+        match Map.tryFind portId registry.Descriptions with
+        | None ->
+            failwith
+                $"setSocketEventReady: %O{portId} names no live open file description (this is an interpreter bug)."
+        | Some description ->
+
+        match description.Target with
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.File _
+        | OpenFileTarget.Socket _ ->
+            failwith $"setSocketEventReady: %O{portId} is not a socket event port (this is an interpreter bug)."
+        | OpenFileTarget.SocketEventPort portState ->
+
+        for key in ready do
+            if not (Map.containsKey key portState.Registrations) then
+                failwith
+                    $"setSocketEventReady: %A{key} is not registered with port %O{portId} (this is an interpreter bug)."
+
+        if List.length (List.distinct ready) <> List.length ready then
+            failwith
+                $"setSocketEventReady: the ready list for port %O{portId} repeats an entry (this is an interpreter bug)."
+
+        { registry with
+            Descriptions =
+                Map.add
+                    portId
+                    { description with
+                        Target =
+                            OpenFileTarget.SocketEventPort
+                                { portState with
+                                    Ready = ready
+                                }
+                    }
+                    registry.Descriptions
+        }
+
+    /// The driver signalled every description in `naming` (all of one
+    /// socket's descriptions): on every port, each registration targeting one
+    /// of them becomes pending unless it already is. When one signal makes
+    /// several registrations pending at once they enter newest-registered
+    /// first — the socket's wait queue is LIFO (measured, `order4.c`) — and a
+    /// registration already pending keeps its place (`order2.c` row H).
+    ///
+    /// Unconditional on readiness: delivery re-polls every pending entry and
+    /// silently drops the ones reporting nothing, so queueing an entry whose
+    /// mask turns out empty is indistinguishable from not queueing it.
+    let signalSocketEventPorts
+        (naming : Set<OpenFileDescriptionId>)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistry
+        =
+        let descriptions =
+            registry.Descriptions
+            |> Map.map (fun _ description ->
+                match description.Target with
+                | OpenFileTarget.StandardStream _
+                | OpenFileTarget.File _
+                | OpenFileTarget.Socket _ -> description
+                | OpenFileTarget.SocketEventPort portState ->
+                    let entering =
+                        portState.Registrations
+                        |> Map.toList
+                        |> List.filter (fun ((_, targetId as key), _) ->
+                            Set.contains targetId naming && not (List.contains key portState.Ready)
+                        )
+                        |> List.sortByDescending (fun (_, registration) -> registration.RegisteredAt)
+                        |> List.map fst
+
+                    match entering with
+                    | [] -> description
+                    | entering ->
+                        { description with
+                            Target =
+                                OpenFileTarget.SocketEventPort
+                                    { portState with
+                                        Ready = portState.Ready @ entering
+                                    }
+                        }
+            )
+
+        { registry with
+            Descriptions = descriptions
+        }
 
     /// Every way in which `registry` fails to be a descriptor table a kernel
     /// could produce. Empty for any registry built out of `initial`, `dup` and
@@ -1438,8 +1634,8 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Socket _ -> []
-                | OpenFileTarget.SocketEventPort registrations ->
-                    registrations
+                | OpenFileTarget.SocketEventPort portState ->
+                    portState.Registrations
                     |> Map.toList
                     |> List.choose (fun ((_, targetId), _) ->
                         if Map.containsKey targetId registry.Descriptions then
@@ -1449,6 +1645,49 @@ module FileDescriptorRegistry =
                     )
             )
 
+        let readyEntries =
+            registry.Descriptions
+            |> Map.toList
+            |> List.collect (fun (portId, description) ->
+                match description.Target with
+                | OpenFileTarget.StandardStream _
+                | OpenFileTarget.File _
+                | OpenFileTarget.Socket _ -> []
+                | OpenFileTarget.SocketEventPort portState ->
+                    let unregistered =
+                        portState.Ready
+                        |> List.choose (fun (fd, targetId as key) ->
+                            if Map.containsKey key portState.Registrations then
+                                None
+                            else
+                                Some (
+                                    FileDescriptorRegistryDefect.SocketEventReadyEntryUnregistered (
+                                        portId,
+                                        fd,
+                                        targetId
+                                    )
+                                )
+                        )
+
+                    let duplicated =
+                        portState.Ready
+                        |> List.countBy id
+                        |> List.choose (fun ((fd, targetId), count) ->
+                            if count > 1 then
+                                Some (
+                                    FileDescriptorRegistryDefect.SocketEventReadyEntryDuplicated (
+                                        portId,
+                                        fd,
+                                        targetId
+                                    )
+                                )
+                            else
+                                None
+                        )
+
+                    unregistered @ duplicated
+            )
+
         dangling
         @ unreferenced
         @ freshness
@@ -1456,6 +1695,7 @@ module FileDescriptorRegistry =
         @ conflicting
         @ duplicateSockets
         @ deadRegistrations
+        @ readyEntries
 
     /// Fail loudly if `registry` is not sound, naming `context`.
     let assertInvariants (context : string) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
@@ -1482,4 +1722,16 @@ module FileDescriptorRegistry =
                 Fds = fds
                 Descriptions = descriptions
                 NextId = nextId
+            }
+
+        /// Rewrite one description in place, however unsoundly. Partial: the
+        /// id must be live.
+        let mapDescription
+            (id : OpenFileDescriptionId)
+            (f : OpenFileDescription -> OpenFileDescription)
+            (registry : FileDescriptorRegistry)
+            : FileDescriptorRegistry
+            =
+            { registry with
+                Descriptions = Map.add id (f (Map.find id registry.Descriptions)) registry.Descriptions
             }

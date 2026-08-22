@@ -514,11 +514,9 @@ module Scheduler =
     ///
     /// Carries no deadline, unlike `blockOnJoin` and `blockOnSleep`: the wait
     /// cannot time out, so `Program.fireExpiredDeadlines` will never route a
-    /// thread out of this status and there is no `fire...Timeout` counterpart
-    /// below. Nothing else wakes it either, today — no descriptor can be
-    /// registered with a port yet, and upstream's own comment says the wait
-    /// blocks until one is *and* an event occurs on it, so parking forever is
-    /// this thread's faithful behaviour rather than a stub.
+    /// thread out of this status. The one wake is `Program`'s readiness
+    /// sweep, `wakeFromSocketEvents` below, once the port has something
+    /// deliverable.
     ///
     /// Unlike every other blocking helper here, the caller must *not* advance
     /// the program counter past the call site before parking: the wake has to
@@ -542,6 +540,28 @@ module Scheduler =
                         }
                     ))
         }
+
+    /// Wake a thread out of `BlockedOnSocketEvents`: the readiness sweep has
+    /// observed that the port it waits on would deliver at least one event.
+    /// The park kept the native frame and the caller's program counter, so
+    /// flipping the status is the whole wake — the re-entered
+    /// `SystemNative_WaitForSocketEvents` handler performs the delivery
+    /// itself, from the caller's own frame.
+    ///
+    /// Fails loud if `thread` is not actually parked there: the only caller
+    /// is `Program.fireSocketReadiness`, which enumerates the statuses
+    /// itself, so a miss means the sweep raced its own observation.
+    let wakeFromSocketEvents (thread : ThreadId) (state : IlMachineState) : IlMachineState =
+        match state.ThreadState |> Map.tryFind thread with
+        | None -> failwith $"Scheduler.wakeFromSocketEvents: thread %O{thread} has no ThreadState."
+        | Some ts ->
+            match ts.Status with
+            | ThreadStatus.BlockedOnSocketEvents _ -> ()
+            | other ->
+                failwith
+                    $"Scheduler.wakeFromSocketEvents: thread %O{thread} is not parked in BlockedOnSocketEvents (status: %O{other}); the readiness sweep observed a deliverable port against a thread that is not waiting on one."
+
+        setThreadStatus thread ThreadStatus.Runnable state
 
     /// Fire a `Thread.Sleep` timeout: the deadline-firing path has
     /// observed that `thread` is parked in `BlockedOnSleep (Some _)` and

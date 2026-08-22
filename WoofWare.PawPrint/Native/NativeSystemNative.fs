@@ -6099,10 +6099,8 @@ module NativeSystemNative =
                     else
                         SocketEventRegistrationChange.Modify (interest, placeholder)
 
-            match
-                FileDescriptorRegistry.changeSocketEventRegistration portFd targetFd change state.Kernel.FileDescriptors
-            with
-            | Ok registry ->
+            match EmulatedKernel.changeSocketEventRegistration portFd targetFd change state.Kernel with
+            | Ok kernel ->
                 match change, data with
                 | SocketEventRegistrationChange.Add _, Error message
                 | SocketEventRegistrationChange.Modify _, Error message ->
@@ -6114,72 +6112,12 @@ module NativeSystemNative =
                 | SocketEventRegistrationChange.Remove, Error _
                 | _, Ok _ ->
 
-                // A waiter already parked on this port is woken by nothing, so
-                // a registration that could fire must refuse rather than
-                // strand it in a sleep a real kernel would end — the ADD of a
-                // ready target queues an edge and wakes `epoll_wait`. The
-                // mirror of the guard in `SystemNative_WaitForSocketEvents`'s
-                // park, for the parked-first order; with no waiter, that
-                // park-time guard covers any later wait.
-                (match change with
-                 | SocketEventRegistrationChange.Remove -> ()
-                 | SocketEventRegistrationChange.Add _
-                 | SocketEventRegistrationChange.Modify _ ->
-                     // The other half of the empty-queue premise
-                     // `socketEventRegistrationCouldFire` documents: an
-                     // ADD/MOD of a listener whose accept queue is already
-                     // nonempty queues an edge-triggered event immediately,
-                     // and even with no waiter parked *now*, that pending
-                     // event outlives a later drain of the queue — state
-                     // PawPrint has nowhere to record. `SystemNative_Connect`
-                     // refuses the converse order (a push onto a registered
-                     // listener).
-                     (match FileDescriptorRegistry.tryFind targetFd state.Kernel.FileDescriptors with
-                      | Some description ->
-                          (match description.Target with
-                           | OpenFileTarget.Socket targetSocketId ->
-                               (match (EmulatedKernel.socket targetSocketId state.Kernel).Phase with
-                                | SocketPhase.Listening listenState when not (List.isEmpty listenState.Queue) ->
-                                    failwith
-                                        $"%s{operation}: fd %d{targetFd} is a listening socket whose accept queue already holds %d{List.length listenState.Queue} connections, so a real kernel would queue an edge-triggered readiness event at this registration — an event PawPrint has nowhere to record and no delivery to wake. Accept the queued connections before registering, or implement the readiness delivery."
-                                | _ -> ())
-                           | _ -> ())
-                      | None ->
-                          failwith
-                              $"%s{operation}: target fd %d{targetFd} was live for changeSocketEventRegistration just above (this is an interpreter bug).")
-
-                     let portId =
-                         match FileDescriptorRegistry.tryFindId portFd state.Kernel.FileDescriptors with
-                         | Some id -> id
-                         | None ->
-                             failwith
-                                 $"%s{operation}: port fd %d{portFd} was live for changeSocketEventRegistration just above (this is an interpreter bug)."
-
-                     let parked =
-                         state.ThreadState
-                         |> Map.exists (fun _ threadState ->
-                             threadState.Status = ThreadStatus.BlockedOnSocketEvents portId
-                         )
-
-                     if parked then
-                         let targetId =
-                             match FileDescriptorRegistry.tryFindId targetFd state.Kernel.FileDescriptors with
-                             | Some id -> id
-                             | None ->
-                                 failwith
-                                     $"%s{operation}: target fd %d{targetFd} was live for changeSocketEventRegistration just above (this is an interpreter bug)."
-
-                         if EmulatedKernel.socketEventRegistrationCouldFire targetId state.Kernel then
-                             failwith
-                                 $"%s{operation}: a thread is parked in SystemNative_WaitForSocketEvents on this port, and fd %d{targetFd}'s readiness cannot be ruled out — a real kernel can deliver an event for this registration and wake the waiter, and no delivery machinery exists. Implement the readiness delivery before registering such a target past a parked waiter.")
-
-                // A successful `epoll_ctl` leaves errno alone.
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        FileDescriptors = registry
-                    }
-                )
-                |> complete UnixError.palSuccess
+                // A successful `epoll_ctl` leaves errno alone. An ADD or MOD
+                // of an already-ready target has made the registration
+                // pending inside the kernel change, and if a waiter is
+                // parked on the port, `Program`'s readiness sweep wakes it
+                // before the next scheduling decision.
+                state.MapKernel (fun _ -> kernel) |> complete UnixError.palSuccess
             | Error error ->
                 let unixError =
                     match error with
@@ -6317,38 +6255,91 @@ module NativeSystemNative =
                 |> Some
 
             // Park re-entrantly: leave the native frame on the stack and the
-            // caller's program counter naming the call, so that a wake re-enters
-            // this handler and writes the event batch through the caller's own
-            // `buffer` — rather than the wake having to reach into a frame it does
-            // not own from some other thread's step.
-            //
-            // Nothing wakes it today, so parking is faithful only while PawPrint
-            // can prove no registration on this port will ever fire — both PAL
-            // implementations carry the comment that with an infinite timeout
-            // the wait blocks until a descriptor is added *and* an event occurs
-            // on it, and for a listening stream socket no such event has ever
-            // occurred: `SystemNative_Connect` refuses to push onto a
-            // registered listener and the registration handler refuses a
-            // nonempty-queue listener, so a recorded listening registration
-            // has an empty-queue history (`socketEventRegistrationCouldFire`
-            // documents the premise). Any other registration must refuse here
-            // rather than strand the waiter in a sleep a real kernel would
-            // end: an unconnected stream socket, for one, is
-            // `EPOLLOUT|EPOLLHUP` the moment it is added. The registration
-            // handler applies the mirror guard for the parked-first order.
-            let park
-                (port : OpenFileDescriptionId)
-                (registrations : Map<int * OpenFileDescriptionId, SocketEventRegistration>)
-                : NativeHandlerResult option
-                =
-                for KeyValue ((targetFd, targetId), _) in registrations do
-                    if EmulatedKernel.socketEventRegistrationCouldFire targetId state.Kernel then
-                        failwith
-                            $"%s{operation}: the port holds a registration for fd %d{targetFd} (open file description %O{targetId}) whose readiness PawPrint cannot rule out — a real kernel can deliver an event for it, and no delivery machinery exists to wake this wait. Implement the readiness delivery before waiting on such a registration."
-
+            // caller's program counter naming the call, so that a wake —
+            // `Program`'s readiness sweep flipping this thread back to
+            // Runnable once the port has something deliverable — re-enters
+            // this handler and writes the event batch through the caller's
+            // own `buffer`, rather than the wake having to reach into a
+            // frame it does not own from some other thread's step.
+            let park (port : OpenFileDescriptionId) (state : IlMachineState) : NativeHandlerResult option =
                 Scheduler.blockOnSocketEvents ctx.Thread port state
                 |> NativeHandlerResult.blockedRetainingFrame
                 |> Some
+
+            // What one `epoll_wait` returning does: drain up to
+            // `requestedCount` events from the port's ready list and convert
+            // each to the PAL's `SocketEvent` shape. The conversion is
+            // `ConvertEventEPollToSocketAsync`'s exactly: `EPOLLHUP` folds
+            // into `EPOLLIN|EPOLLOUT` and is dropped ("epoll does not play
+            // well with disconnected connection-oriented sockets" —
+            // pal_networking.c), so `SA_CLOSE` is never delivered under this
+            // flavour.
+            let deliver
+                (delivered : (uint64 * EpollReadiness) list)
+                (kernel : EmulatedKernel)
+                : NativeHandlerResult option
+                =
+                let bufferPointer =
+                    match BufferPointer.dereferenceable buffer with
+                    | Some pointer -> pointer
+                    | None ->
+                        failwith
+                            $"%s{operation}: the event buffer is %O{buffer}, which names no storage. A real epoll_wait passes access_ok at wait time and fails only when the copy-out faults (EFAULT with the consumed events lost), behaviour PawPrint does not model. Pass a real buffer."
+
+                let elementSize =
+                    SimulatedUnixPlatform.socketEventBufferElementSize state.Kernel.UnixPlatform
+
+                let bytes = Array.zeroCreate<byte> (List.length delivered * elementSize)
+
+                delivered
+                |> List.iteri (fun i (data, reported) ->
+                    let folded =
+                        if reported.Hup then
+                            { reported with
+                                Hup = false
+                                In = true
+                                Out = true
+                            }
+                        else
+                            reported
+
+                    let palEvents =
+                        (if folded.In then 0x01 else 0)
+                        ||| (if folded.Out then 0x02 else 0)
+                        ||| (if folded.RdHup then 0x04 else 0)
+                        ||| (if folded.Err then 0x10 else 0)
+
+                    BinaryPrimitives.WriteUInt64LittleEndian (Span<byte> (bytes, i * elementSize, 8), data)
+
+                    BinaryPrimitives.WriteInt32LittleEndian (Span<byte> (bytes, i * elementSize + 8, 4), palEvents)
+                // The trailing four bytes of each element are the struct's
+                // explicit padding, already zero.
+                )
+
+                let countBytes = Array.zeroCreate<byte> 4
+                BinaryPrimitives.WriteInt32LittleEndian (Span<byte> countBytes, List.length delivered)
+
+                // A successful wait leaves errno alone.
+                state.MapKernel (fun _ -> kernel)
+                |> writeBytesThrough ctx operation bufferPointer (ImmutableArray.CreateRange bytes)
+                |> writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange countBytes)
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (Int32Source.Verbatim UnixError.palSuccess))
+                    ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            // Walk the port as `epoll_wait` would: report the pending
+            // entries whose re-poll is nonempty, silently consuming the
+            // stale ones — so even a walk that delivers nothing may change
+            // the kernel, and that write-back happens before any park.
+            let deliverOrPark (port : OpenFileDescriptionId) : NativeHandlerResult option =
+                let delivered, kernel =
+                    EmulatedKernel.deliverSocketEvents port requestedCount state.Kernel
+
+                match delivered with
+                | [] -> park port (state.MapKernel (fun _ -> kernel))
+                | delivered -> deliver delivered kernel
 
             match flavour with
             | SimulatedUnixFlavour.Linux ->
@@ -6397,7 +6388,7 @@ module NativeSystemNative =
                     // EINVAL, and EFAULT still wins ahead of it for an
                     // unmappable buffer.
                     failFromSyscall UnixError.EINVAL
-                | OpenFileTarget.SocketEventPort registrations -> park port registrations
+                | OpenFileTarget.SocketEventPort _ -> deliverOrPark port
             | SimulatedUnixFlavour.Darwin ->
                 // Measured on 25.6.0, and flatter: `kevent` resolves the descriptor
                 // before its `nevents == 0` early return, has no "wrong kind of
@@ -6416,7 +6407,7 @@ module NativeSystemNative =
                     // into "bad descriptor". Measured on a socket too, and for
                     // both a zero and a non-zero event count.
                     failFromSyscall UnixError.EBADF
-                | OpenFileTarget.SocketEventPort registrations ->
+                | OpenFileTarget.SocketEventPort portState ->
 
                 if requestedCount = 0 then
                     // The one input on which the flavours disagree about whether
@@ -6443,11 +6434,16 @@ module NativeSystemNative =
                 // faulting: `UserBufferCheck.AtCopyTime` is Darwin's answer, and a
                 // wait that never delivers an event never copies anything.
                 //
-                // The registration guard inside `park` is vacuous under this
-                // flavour — the Darwin registration arm refuses, so the table
-                // is always empty — but running it keeps the two arms honest
-                // about the same claim.
-                park port registrations
+                // Parking unconditionally is faithful because the table is
+                // empty by construction — the Darwin registration arm
+                // refuses, so nothing can ever become deliverable on this
+                // port. The delivery path above is epoll's, so it must not
+                // run here; this assertion keeps the two facts tied.
+                if not (Map.isEmpty portState.Registrations) then
+                    failwith
+                        $"%s{operation}: a Darwin-flavoured kernel holds %d{Map.count portState.Registrations} socket event registrations, but the Darwin registration arm refuses every change — this is an interpreter bug."
+
+                park port state
         | Some "SystemNative_IsATty",
           [ ConcreteIntPtr state.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->

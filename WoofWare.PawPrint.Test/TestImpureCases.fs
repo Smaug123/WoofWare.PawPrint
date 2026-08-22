@@ -1052,6 +1052,25 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The readiness delivery's Linux-flavour rows: the exact
+                // `Events` masks the PAL's EPOLLHUP fold produces (an idle
+                // socket delivers READ|WRITE, a pending refusal 0x17 under
+                // full interest and 0x13 under READ-only), the refusal
+                // reset's re-signal, batch order (edge arrival; re-signal
+                // immobility; ADD-of-ready at ADD time; dup ties newest
+                // first), interest-filtered entries dropping silently,
+                // truncation with the buffer beyond the batch untouched, and
+                // MOD's re-arm. Expectations confirmed on real Linux .NET
+                // before the delivery existed; the flavour-portable rows
+                // live differentially in sourcesPure/SocketEventDelivery.cs.
+                FileName = "SocketEventDeliveryLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The same divergences under Darwin's answers: EOPNOTSUPP on
                 // the listening socket, EISCONN retries, the dead-socket
                 // latch after a refusal (EINVAL forever), AF_UNSPEC refused

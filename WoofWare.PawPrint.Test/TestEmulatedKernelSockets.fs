@@ -523,15 +523,13 @@ module TestEmulatedKernelSockets =
         // keeps its ancestors alive` and `the cascade stops at the root`.
         observedHeldOrphanDirectories |> shouldBeGreaterThan 50
 
-    // --- socketEventRegistrationCouldFire ---
+    // --- epollReadiness ---
 
-    /// The one target whose events are ruled out: a listening stream socket.
-    /// Its readiness needs an accept-queue entry, and the two refusal sites
-    /// the classifier's docstring names keep a *registered* listener's queue
-    /// empty.
+    /// A listening stream socket presents nothing while its queue is empty
+    /// and `EPOLLIN` once something is queued (measured, `masks.c` rows 3-5).
     [<Test>]
-    let ``a listening stream socket's registration cannot fire`` () : unit =
-        let kernel =
+    let ``a listening stream socket's readiness is its queue`` () : unit =
+        let listening (queue : ConnectionId list) =
             forge
                 [ 3, OpenFileDescriptionId 10L, OpenFileTarget.Socket (SocketId 0L) ]
                 [
@@ -541,29 +539,55 @@ module TestEmulatedKernelSockets =
                             SocketPhase.Listening
                                 {
                                     Backlog = 8
-                                    Queue = []
+                                    Queue = queue
                                 }
                     }
                 ]
                 1L
 
-        EmulatedKernel.socketEventRegistrationCouldFire (OpenFileDescriptionId 10L) kernel
-        |> shouldEqual false
+        EmulatedKernel.epollReadiness (SocketId 0L) (listening [])
+        |> shouldEqual EpollReadiness.none
 
-    /// A non-listening stream socket is `EPOLLOUT|EPOLLHUP` the moment a real
-    /// kernel adds it, so its registration could fire.
+        let queued =
+            let kernel = listening [ ConnectionId 0L ]
+
+            { kernel with
+                Connections =
+                    Map.ofList
+                        [
+                            ConnectionId 0L,
+                            {
+                                ClientAddress = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 5000us
+                                ServerAddress = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 6000us
+                            }
+                        ]
+                NextConnectionId = ConnectionId 1L
+            }
+
+        EmulatedKernel.epollReadiness (SocketId 0L) queued
+        |> shouldEqual
+            { EpollReadiness.none with
+                In = true
+            }
+
+    /// An idle stream socket is `EPOLLOUT|EPOLLHUP` (measured, `masks.c`
+    /// rows 1-2, bound or not).
     [<Test>]
-    let ``a non-listening stream socket's registration could fire`` () : unit =
+    let ``a non-listening stream socket presents OUT and HUP`` () : unit =
         let kernel =
             forge [ 3, OpenFileDescriptionId 10L, OpenFileTarget.Socket (SocketId 0L) ] [ 0L, someSocket ] 1L
 
-        EmulatedKernel.socketEventRegistrationCouldFire (OpenFileDescriptionId 10L) kernel
-        |> shouldEqual true
+        EmulatedKernel.epollReadiness (SocketId 0L) kernel
+        |> shouldEqual
+            { EpollReadiness.none with
+                Out = true
+                Hup = true
+            }
 
-    /// A datagram socket is writable immediately, listening being no part of
-    /// its life at all.
+    /// A datagram socket is `EPOLLOUT` alone — no HUP, unlike the idle
+    /// stream case (measured, `masks.c` rows 13-14).
     [<Test>]
-    let ``a datagram socket's registration could fire`` () : unit =
+    let ``a datagram socket presents OUT without HUP`` () : unit =
         let kernel =
             forge
                 [ 3, OpenFileDescriptionId 10L, OpenFileTarget.Socket (SocketId 0L) ]
@@ -576,25 +600,84 @@ module TestEmulatedKernelSockets =
                 ]
                 1L
 
-        EmulatedKernel.socketEventRegistrationCouldFire (OpenFileDescriptionId 10L) kernel
-        |> shouldEqual true
+        EmulatedKernel.epollReadiness (SocketId 0L) kernel
+        |> shouldEqual
+            { EpollReadiness.none with
+                Out = true
+            }
 
-    /// A pipe end's readiness depends on peer state PawPrint does not model,
-    /// so it is never ruled out. The ids are `initial`'s standard streams.
+    /// A pending refusal presents everything (measured, `masks.c` row 10:
+    /// 0x201d), and the interest filter keeps ERR and HUP whatever the mask
+    /// asks for (rows 16-17).
     [<Test>]
-    let ``a standard stream's registration could fire`` () : unit =
-        for id in 0L .. 2L do
-            EmulatedKernel.socketEventRegistrationCouldFire (OpenFileDescriptionId id) EmulatedKernel.initial
-            |> shouldEqual true
+    let ``a pending refusal presents every condition and survives a narrowed interest`` () : unit =
+        let kernel =
+            forge
+                [ 3, OpenFileDescriptionId 10L, OpenFileTarget.Socket (SocketId 0L) ]
+                [
+                    0L,
+                    { someSocket with
+                        Phase = SocketPhase.RefusedPendingDelivery
+                    }
+                ]
+                1L
+
+        let level = EmulatedKernel.epollReadiness (SocketId 0L) kernel
+
+        level
+        |> shouldEqual
+            {
+                In = true
+                Out = true
+                RdHup = true
+                Hup = true
+                Err = true
+            }
+
+        level
+        |> EpollReadiness.reportedUnder (SocketEventInterest.ofBits "test" 0)
+        |> shouldEqual
+            { EpollReadiness.none with
+                Hup = true
+                Err = true
+            }
+
+        level
+        |> EpollReadiness.reportedUnder (SocketEventInterest.ofBits "test" 0x01)
+        |> shouldEqual
+            { EpollReadiness.none with
+                In = true
+                Hup = true
+                Err = true
+            }
+
+    /// The standard streams' levels are constants of the launch shape
+    /// (measured, `pipes.c`): stdin is a read end whose writer is closed —
+    /// `EPOLLHUP` — and the output ends are writable. The ids are
+    /// `initial`'s standard streams.
+    [<Test>]
+    let ``the standard streams present their pipe-end levels`` () : unit =
+        EmulatedKernel.epollReadinessOfDescription (OpenFileDescriptionId 0L) EmulatedKernel.initial
+        |> shouldEqual
+            { EpollReadiness.none with
+                Hup = true
+            }
+
+        for id in 1L .. 2L do
+            EmulatedKernel.epollReadinessOfDescription (OpenFileDescriptionId id) EmulatedKernel.initial
+            |> shouldEqual
+                { EpollReadiness.none with
+                    Out = true
+                }
 
     /// Registrations reference live descriptions (`close` sweeps), so a
     /// dangling id must be reported as the interpreter bug it is rather than
     /// answered either way.
     [<Test>]
-    let ``a dangling registration target crashes rather than answering`` () : unit =
+    let ``a dangling readiness target crashes rather than answering`` () : unit =
         let exc =
             Assert.Throws<System.Exception> (fun () ->
-                EmulatedKernel.socketEventRegistrationCouldFire (OpenFileDescriptionId 99L) EmulatedKernel.initial
+                EmulatedKernel.epollReadinessOfDescription (OpenFileDescriptionId 99L) EmulatedKernel.initial
                 |> ignore
             )
 
@@ -850,15 +933,16 @@ module TestEmulatedKernelSockets =
 
         e.Message |> shouldContainText "its measured capacity"
 
-    /// The producer half of the empty-queue premise: a connect must not push
-    /// onto a listener that is registered with an event port. The refusal is
-    /// an abort no guest can assert, so it is pinned here.
+    /// The producer this slice exists for: a connect onto a registered
+    /// listener queues the accept-queue-push edge, so the port has something
+    /// to deliver.
     [<Test>]
-    let ``connect refuses to push onto a registered listener`` () : unit =
+    let ``connect onto a registered listener makes the registration pending and deliverable`` () : unit =
         let registration =
             {
                 Interest = SocketEventInterest.ofBits "test" 0x3
-                Data = 0UL
+                Data = 0xBEEFUL
+                RegisteredAt = 0L
             }
 
         let kernel =
@@ -868,7 +952,11 @@ module TestEmulatedKernelSockets =
                     4, OpenFileDescriptionId 11L, OpenFileTarget.Socket (SocketId 1L)
                     9,
                     OpenFileDescriptionId 50L,
-                    OpenFileTarget.SocketEventPort (Map.ofList [ (3, OpenFileDescriptionId 10L), registration ])
+                    OpenFileTarget.SocketEventPort
+                        {
+                            Registrations = Map.ofList [ (3, OpenFileDescriptionId 10L), registration ]
+                            Ready = []
+                        }
                 ]
                 [
                     0L,
@@ -890,10 +978,36 @@ module TestEmulatedKernelSockets =
                 ]
                 2L
 
-        let e =
-            Assert.Throws<System.Exception> (fun () -> connect (SocketId 1L) false (loopback 5000us) kernel |> ignore)
+        let kernel =
+            { kernel with
+                NextSocketEventRegistrationOrdinal = 1L
+            }
 
-        e.Message |> shouldContainText "registered with a socket event port"
+        EmulatedKernel.hasDeliverableSocketEvents (OpenFileDescriptionId 50L) kernel
+        |> shouldEqual false
+
+        let outcome, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
+
+        outcome |> shouldEqual EmulatedKernel.ConnectOutcome.Completed
+
+        EmulatedKernel.hasDeliverableSocketEvents (OpenFileDescriptionId 50L) kernel
+        |> shouldEqual true
+
+        let delivered, kernel =
+            EmulatedKernel.deliverSocketEvents (OpenFileDescriptionId 50L) 8 kernel
+
+        delivered
+        |> shouldEqual
+            [
+                0xBEEFUL,
+                { EpollReadiness.none with
+                    In = true
+                }
+            ]
+
+        // Consumed: nothing further until the next edge.
+        EmulatedKernel.hasDeliverableSocketEvents (OpenFileDescriptionId 50L) kernel
+        |> shouldEqual false
 
     [<Test>]
     let ``accept dequeues the head, materialises the server end, and inherits SO_REUSEADDR`` () : unit =

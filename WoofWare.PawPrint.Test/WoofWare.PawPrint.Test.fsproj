@@ -152,6 +152,7 @@
     <Compile Include="TestEmulatedKernelCurrentDirectory.fs" />
     <Compile Include="TestEmulatedKernelInodeLifetime.fs" />
     <Compile Include="TestEmulatedKernelSockets.fs" />
+    <Compile Include="TestSocketEventDelivery.fs" />
     <Compile Include="TestSocketBinding.fs" />
     <Compile Include="TestFlockBlocking.fs" />
     <Compile Include="TestPReadNegativeSize.fs" />

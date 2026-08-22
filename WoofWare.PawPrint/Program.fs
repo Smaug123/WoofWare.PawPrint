@@ -349,6 +349,35 @@ module Program =
             )
             state
 
+    /// Wake every thread parked in `SystemNative_WaitForSocketEvents` whose
+    /// port would deliver at least one event right now. The park is
+    /// re-entrant — the native frame stays and the caller's program counter
+    /// still names the call — so waking is exactly a flip to `Runnable`; the
+    /// re-entered handler asks `EmulatedKernel.deliverSocketEvents`, whose
+    /// walk is the same one `hasDeliverableSocketEvents` consulted here, so
+    /// the woken thread cannot find the port empty unless another thread
+    /// drained it first — in which case the handler parks it again.
+    ///
+    /// Runs every tick beside `fireExpiredDeadlines` rather than being
+    /// pushed by the producing syscalls: a sweep asks the same question of
+    /// the same state each time, so a new producer cannot forget to wake
+    /// anyone — where a push from each producer would fail silently, as a
+    /// deadlock, on the first one that did.
+    let private fireSocketReadiness (state : IlMachineState) : IlMachineState =
+        let woken =
+            state.ThreadState
+            |> Map.toList
+            |> List.choose (fun (tid, threadState) ->
+                match threadState.Status with
+                | ThreadStatus.BlockedOnSocketEvents port when
+                    EmulatedKernel.hasDeliverableSocketEvents port state.Kernel
+                    ->
+                    Some tid
+                | _ -> None
+            )
+
+        (state, woken) ||> List.fold (fun s tid -> Scheduler.wakeFromSocketEvents tid s)
+
     /// The minimum wait deadline among currently-blocked threads, or
     /// `None` if no thread is parked with a finite timeout. Used by the
     /// driver loop's jump-to-deadline fallback: if no thread is Runnable
@@ -527,6 +556,11 @@ module Program =
         // fires when the clock reaches it, even though B keeps the
         // scheduler from ever stalling.
         let state = fireExpiredDeadlines state
+
+        // Wake any socket-events waiter whose port has become deliverable
+        // since it parked. Before the jump-to-deadline fallback below, so a
+        // deliverable port is never mistaken for quiescence.
+        let state = fireSocketReadiness state
 
         // Drive the signal-dispatcher state machine before the scheduler
         // picks its next thread. If a pending signal is deliverable and
