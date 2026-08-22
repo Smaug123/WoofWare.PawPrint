@@ -433,6 +433,8 @@ module AbstractMachine =
             // already popped, so there is nothing to re-execute — but none can occur: a callee's
             // type initialiser runs in the callee frame's own prologue.
             match commitment with
+            | IlMachineStateExecution.CallCommitment.Aborted fatal ->
+                ExecutionResult.stepped (state, WhatWeDid.Aborted fatal)
             | IlMachineStateExecution.CallCommitment.Committed
             | IlMachineStateExecution.CallCommitment.Raised -> ExecutionResult.stepped (state, WhatWeDid.Executed)
 
@@ -542,6 +544,26 @@ module AbstractMachine =
             UnaryStringTokenIlOp.execute loggerFactory baseClassTypes unaryStringTokenIlOp stringHandle state thread
             |> ExecutionResult.stepped
 
+    /// Convert a step that tore the process down into the terminating outcome.
+    ///
+    /// This is the one translation the step protocol cannot perform for itself: `WhatWeDid` is
+    /// reported per-thread and so carries no `ThreadId`, while `ExecutionResult.Aborted` names the
+    /// thread that gave up. Applied at the single exit from `executeOneStep`, so nothing
+    /// downstream — the scheduler in particular — ever observes `WhatWeDid.Aborted`; a step that
+    /// aborted is not a step that retired, and `Scheduler.onStepOutcome` has no answer for one.
+    let internal surfaceAbort (thread : ThreadId) (result : ExecutionResult) : ExecutionResult =
+        match result with
+        | ExecutionResult.Stepped (state, WhatWeDid.Aborted fatal, StepEffect.NoEffect) ->
+            ExecutionResult.Aborted (state, thread, fatal)
+        | ExecutionResult.Stepped (_, WhatWeDid.Aborted fatal, effect) ->
+            // An aborting step did not finish whatever it was describing, so an effect here would
+            // be a write the driver is being asked to perform on behalf of a step that never
+            // completed. No producer does this today; fail loudly rather than silently choosing
+            // between dropping the effect and performing it.
+            failwith
+                $"logic error: thread %O{thread} aborted (%O{fatal.Code}) while also requesting the step effect %O{effect}; an aborting step must not emit one"
+        | _ -> result
+
     /// Execute one step of the given thread: its active frame's prologue if it still has one, and
     /// otherwise one IL instruction.
     ///
@@ -558,9 +580,13 @@ module AbstractMachine =
         let logger = logger loggerFactory
 
         match state.ThreadState.[thread].MethodState.PendingTypeInit with
-        | None -> executeOneStepInitialised loggerFactory baseClassTypes state thread logger
+        | None ->
+            executeOneStepInitialised loggerFactory baseClassTypes state thread logger
+            |> surfaceAbort thread
         | Some ty ->
 
         match runPendingTypeInit loggerFactory baseClassTypes state thread ty with
-        | Choice1Of2 result -> result
-        | Choice2Of2 state -> executeOneStepInitialised loggerFactory baseClassTypes state thread logger
+        | Choice1Of2 result -> result |> surfaceAbort thread
+        | Choice2Of2 state ->
+            executeOneStepInitialised loggerFactory baseClassTypes state thread logger
+            |> surfaceAbort thread

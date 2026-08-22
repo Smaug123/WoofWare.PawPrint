@@ -107,7 +107,7 @@ module TestConcurrencyBugs =
         /// than just a rendered string so the matcher can do precise type/message
         /// comparisons without scraping `sprintf` output.
         | UnhandledException of typeFullName : string * message : string option
-        | FailFast of message : string
+        | Aborted of code : FatalErrorCode * message : string
         | Signal of string
 
     let private assy = typeof<RunResult>.Assembly
@@ -174,7 +174,8 @@ module TestConcurrencyBugs =
             let typeName = exceptionTypeFullName state exn.ExceptionObject
             let message = exceptionMessage state exn.ExceptionObject
             RunSummary.UnhandledException (typeName, message)
-        | RunOutcome.FailFast (_, _, message) -> RunSummary.FailFast (Option.defaultValue "<no message>" message)
+        | RunOutcome.Aborted (_, _, fatal) ->
+            RunSummary.Aborted (fatal.Code, Option.defaultValue "<no message>" fatal.Message)
         | RunOutcome.SignalTerminated (_, signal) -> RunSummary.Signal (sprintf "%O" signal)
 
     /// Compute the part of a run that every seed in the sweep shares: everything
@@ -254,7 +255,10 @@ module TestConcurrencyBugs =
                     match message with
                     | None -> false
                     | Some actual -> substrings |> List.exists actual.Contains
-        | BadOutcome.FailFast, RunSummary.FailFast _ -> true
+        // Keyed on the code, not merely on "the process aborted": `BadOutcome.FailFast` names a
+        // guest thread calling `Environment.FailFast`, and a runtime-raised fatal error is a
+        // different thing that a detector asking for this one should not be satisfied by.
+        | BadOutcome.FailFast, RunSummary.Aborted (FatalErrorCode.FailFast, _) -> true
         | BadOutcome.ExitCode _, _
         | BadOutcome.Deadlock, _
         | BadOutcome.UnhandledException _, _

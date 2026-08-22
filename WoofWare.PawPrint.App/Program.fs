@@ -233,16 +233,19 @@ module AppProgram =
                 | RunOutcome.ProcessExit (state, thread) ->
                     drainRemaining state
                     exitCodeFromStack state thread
-                | RunOutcome.FailFast (state, _thread, message) ->
-                    // CoreCLR's Environment_FailFast calls HandleFatalError(COR_E_FAILFAST)
-                    // and on Windows terminates with 0x80131623; on Unix it aborts via
-                    // SIGABRT (exit code 128 + 6 = 134).
+                | RunOutcome.Aborted (state, _thread, fatal) ->
+                    // CoreCLR's `EEPolicy::HandleFatalError` ends in
+                    // `CrashDumpAndTerminateProcess(exitCode)` (eepolicy.cpp:62), where `exitCode`
+                    // is the `COR_E_*` value it was handed. On Unix that is `abort()`, so the
+                    // shell sees 128 + SIGABRT = 134 whichever fatal error it was; on Windows it
+                    // is `TerminateProcess` with the HRESULT itself, so the two differ there.
                     drainRemaining state
-                    let msg = message |> Option.defaultValue "<no message>"
-                    logger.LogCritical ("Guest called Environment.FailFast: {FailFastMessage}", msg)
+                    let msg = fatal.Message |> Option.defaultValue "<no message>"
+
+                    logger.LogCritical ("Guest aborted with {FatalErrorCode}: {FatalErrorMessage}", fatal.Code, msg)
 
                     if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
-                        -2146232797
+                        FatalErrorCode.toHResult fatal.Code
                     else
                         134
                 | RunOutcome.SignalTerminated (state, signal) ->

@@ -1648,6 +1648,12 @@ module IlMachineStateExecution =
         /// and dispatch follows. The calling instruction will not re-execute, and its arguments
         /// have already been consumed.
         | Raised
+        /// The call was refused in a way the guest cannot catch, and the process is going down.
+        /// No frame was pushed and nothing else will run on any thread.
+        ///
+        /// Distinct from `Raised` because there is no handler search to follow and no state the
+        /// caller could usefully continue from: every caller must propagate rather than carry on.
+        | Aborted of FatalError
 
     let rec callMethodWithCommitment
         (loggerFactory : ILoggerFactory)
@@ -2301,8 +2307,14 @@ module IlMachineStateExecution =
         },
         CallCommitment.Committed
 
-    /// `callMethodWithCommitment` for the callers that do not need to distinguish how the call
-    /// resolved — which is all of them except `calli`. See `CallCommitment` for why `calli` does.
+    /// `callMethodWithCommitment` for the callers that do not need to distinguish whether the call
+    /// committed by running or by raising: in both cases the returned state already reflects what
+    /// happened, so there is nothing left to decide.
+    ///
+    /// Only for a call site whose target cannot be *refused*. An abort has nowhere to go in this
+    /// return type, so it is a loud failure rather than a silently dropped outcome; a call site
+    /// that can name a refusable target must use `callMethodWithCommitment` and propagate
+    /// `CallCommitment.Aborted`, as `call`, `callvirt` and `calli` do.
     and callMethod
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -2337,7 +2349,19 @@ module IlMachineStateExecution =
             constructedObjectDisposition
             wrapExceptionInTargetInvocation
             state
-        |> fst
+        |> function
+            | state, CallCommitment.Committed
+            | state, CallCommitment.Raised -> state
+            | _, CallCommitment.Aborted fatal ->
+                // This wrapper's return type has nowhere to put an abort, and dropping one would
+                // let the caller carry on against a state whose process has already died. Its
+                // remaining callers all name a constructor or a specific non-refusable BCL method,
+                // none of which the chokepoint can refuse; a call site that gains a refusable
+                // target must use `callMethodWithCommitment` and propagate.
+                let message = fatal.Message |> Option.defaultValue "<no message>"
+
+                failwith
+                    $"logic error: a call made through `callMethod` aborted the process (%O{fatal.Code}: %s{message}); that wrapper discards the commitment, so a call site whose target can be refused must use `callMethodWithCommitment`"
 
     and loadClass
         (loggerFactory : ILoggerFactory)

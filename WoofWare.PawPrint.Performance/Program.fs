@@ -289,9 +289,9 @@ module private Harness =
             | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode
             | [] -> failwith "Expected PawPrint run to leave an int exit code, but the stack was empty"
             | head :: _ -> failwith $"Expected PawPrint run to leave an int exit code, but got %O{head}"
-        | RunOutcome.FailFast (_, _, message) ->
-            let m = message |> Option.defaultValue "<no message>"
-            failwith $"PawPrint guest called Environment.FailFast: %s{m}"
+        | RunOutcome.Aborted (_, _, fatal) ->
+            let m = fatal.Message |> Option.defaultValue "<no message>"
+            failwith $"PawPrint guest aborted (%O{fatal.Code}): %s{m}"
         | RunOutcome.SignalTerminated (_, signal) ->
             failwith $"PawPrint guest was terminated by POSIX signal %O{signal} during benchmark"
         | RunOutcome.GuestUnhandledException (_, _, exn) ->

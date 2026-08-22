@@ -766,6 +766,8 @@ module StructMarshalStub =
                     state
 
             match commitment with
+            | IlMachineStateExecution.CallCommitment.Aborted fatal ->
+                ExecutionResult.stepped (state, WhatWeDid.Aborted fatal)
             | IlMachineStateExecution.CallCommitment.Committed
             | IlMachineStateExecution.CallCommitment.Raised ->
                 // Either a callee frame or an exception constructor is now on top of us; in both

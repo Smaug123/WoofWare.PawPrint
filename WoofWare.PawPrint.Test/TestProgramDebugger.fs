@@ -21,7 +21,7 @@ module TestProgramDebugger =
     type private OutcomeSignature =
         | ExitCode of int
         | GuestUnhandledException
-        | FailFast of message : string option
+        | Aborted of code : FatalErrorCode * message : string option
         | SignalTerminated of Signal
 
     let private sourceForExitCode (exitCode : int) : string =
@@ -78,7 +78,7 @@ class Program
             match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
             | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> OutcomeSignature.ExitCode i
             | other -> failwith $"Expected int32 exit stack, got %O{other}"
-        | RunOutcome.FailFast (_, _, message) -> OutcomeSignature.FailFast message
+        | RunOutcome.Aborted (_, _, fatal) -> OutcomeSignature.Aborted (fatal.Code, fatal.Message)
         | RunOutcome.SignalTerminated (_, signal) -> OutcomeSignature.SignalTerminated signal
         | RunOutcome.GuestUnhandledException _ -> OutcomeSignature.GuestUnhandledException
 
