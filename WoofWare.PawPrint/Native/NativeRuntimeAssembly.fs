@@ -528,6 +528,85 @@ module NativeRuntimeAssembly =
                     (CliType.ObjectRef (Some runtimeAssemblyAddr))
 
             NativeHandlerResult.completed state |> Some
+        // Also declared on `Assembly` rather than on `RuntimeAssembly`: which assembly the answer
+        // names is what the stack crawl decides, so there is no assembly to hang the QCall off.
+        | "AssemblyNative_GetExecutingAssembly",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "Assembly",
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "StackCrawlMarkHandle",
+                                             stackMarkGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics) ],
+          MethodReturnType.Void when stackMarkGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            let operation = "AssemblyNative_GetExecutingAssembly"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let markPtr =
+                NativeCall.stackCrawlMarkHandleTarget operation state "stackMark" instruction.Arguments.[0]
+
+            let retAssembly =
+                NativeCall.objectHandleOnStackTarget operation state "retAssembly" instruction.Arguments.[1]
+
+            let threadState = state.ThreadState.[ctx.Thread]
+
+            // CoreCLR locates the marked frame by comparing the mark's address against each frame's
+            // stack pointer. PawPrint's byref names that frame outright — but only for the exact
+            // shape CoreLib constructs, `new StackCrawlMarkHandle(ref someLocal)`. A projected
+            // pointer, an argument slot, or another thread's frame all mean the handle did not come
+            // from there, and guessing which frame was meant would be worse than stopping.
+            let markFrame =
+                match markPtr with
+                | ManagedPointerSource.Byref (ByrefRoot.LocalVariable (sourceThread, markFrame, _), []) ->
+                    if sourceThread <> ctx.Thread then
+                        failwith
+                            $"%s{operation}: the stack-crawl mark is stored in a frame of %O{sourceThread}, but the QCall is executing on %O{ctx.Thread}. A stack crawl can only answer about the crawling thread."
+
+                    markFrame
+                | other ->
+                    failwith
+                        $"%s{operation}: expected StackCrawlMarkHandle._ptr to be an unprojected byref to a local variable, got %O{other}"
+
+            // Every mark CoreLib builds is a local of a frame this QCall was reached through, so a
+            // decoded frame that is not on the return chain means the handle was misread. Worth
+            // checking rather than trusting: on every input a guest can produce today, the frames
+            // between the mark and here are all skipped as reflection infrastructure, so a misread
+            // frame would still yield the right assembly and the mistake would not show up in a test.
+            if not (StackCrawlMark.isOnReturnChainOf markFrame threadState.ActiveMethodState threadState) then
+                failwith
+                    $"%s{operation}: the stack-crawl mark decoded to %O{markFrame}, which is not this QCall's frame nor one of its callers. This is an interpreter bug."
+
+            let mark =
+                match
+                    IlMachineState.readManagedByref ctx.BaseClassTypes state markPtr
+                    |> CliType.unwrapPrimitiveLikeDeep
+                with
+                | CliType.Numeric (CliNumericType.Int32 value) -> StackCrawlMark.ofInt32 operation value
+                | other -> failwith $"%s{operation}: expected StackCrawlMark storage to hold an Int32, got %O{other}"
+
+            let caller = StackCrawlMark.resolveCaller operation mark markFrame threadState
+
+            // `DeclaringAssemblyFullName` is total: a dynamic method answers with the assembly it is
+            // scoped to, which is what CoreCLR's `pFunc->GetModule()->GetAssembly()` reports for one.
+            let runtimeAssemblyAddr, state =
+                NativeRuntimeType.getOrAllocateRuntimeAssembly
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    caller.ExecutingMethod.DeclaringAssemblyFullName
+                    state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retAssembly
+                    (CliType.ObjectRef (Some runtimeAssemblyAddr))
+
+            NativeHandlerResult.completed state |> Some
         | "AssemblyNative_GetLocation",
           "System.Private.CoreLib",
           "System.Reflection",

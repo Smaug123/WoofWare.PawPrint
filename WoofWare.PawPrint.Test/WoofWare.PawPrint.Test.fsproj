@@ -98,6 +98,7 @@
     <Compile Include="TestArrayInterfaceMap.fs" />
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
     <Compile Include="TestCrossAssemblyCastclass.fs" />
+    <Compile Include="TestCrossAssemblyExecutingAssembly.fs" />
     <Compile Include="TestCrossAssemblyDispatch.fs" />
     <Compile Include="TestCrossAssemblyIsAssignableFrom.fs" />
     <Compile Include="TestCrossAssemblyLdsflda.fs" />

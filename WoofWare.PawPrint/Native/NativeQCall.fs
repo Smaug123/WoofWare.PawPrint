@@ -119,6 +119,8 @@ module NativeQCall =
             "MetadataImport_Enum", NativeMetadataImport.tryExecuteQCall "MetadataImport_Enum"
             "AssemblyNative_GetCodeBase", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetCodeBase"
             "AssemblyNative_GetEntryAssembly", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetEntryAssembly"
+            "AssemblyNative_GetExecutingAssembly",
+            NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetExecutingAssembly"
             "AssemblyNative_GetFlags", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetFlags"
             "AssemblyNative_GetIsCollectible", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetIsCollectible"
             "AssemblyNative_GetHashAlgorithm", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetHashAlgorithm"
