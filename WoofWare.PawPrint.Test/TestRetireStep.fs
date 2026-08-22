@@ -178,6 +178,48 @@ module TestRetireStep =
 
         Check.One (propertyConfig, property)
 
+    /// Absolute statement of the monotonicity rejection, deliberately not phrased against
+    /// `byComposition`.
+    ///
+    /// The oracle properties above cannot cover this. `byComposition` reaches the same shared
+    /// `validateVirtualClockTicks` that `retireStep` does, so deleting the monotonicity check
+    /// moves oracle and implementation together and they go on agreeing — a mutation battery
+    /// confirmed exactly that: with `if ticks < kernel.VirtualClockTicks then` replaced by
+    /// `if false then`, every comparison property stayed green. Only an assertion about what the
+    /// clock is *absolutely* required to do can catch it.
+    [<Test>]
+    let ``a negative instruction cost is rejected outright`` () =
+        let gen =
+            gen {
+                let! clock = Gen.choose64 (1L, 1_000_000L)
+                let! cost = Gen.choose64 (-1_000L, -1L)
+                return clock, cost
+            }
+
+        let property =
+            Prop.forAll
+                (Arb.fromGen gen)
+                (fun (clock, cost) ->
+                    match outcome (fun () -> EmulatedKernel.retireStep (kernelWith clock cost 0L)) with
+                    | Error () -> ()
+                    | Ok k ->
+                        failwith
+                            $"clock %d{clock} with cost %d{cost} was accepted, moving the clock to %d{k.VirtualClockTicks}; the virtual clock is monotonic by construction"
+                )
+
+        Check.One (propertyConfig, property)
+
+    /// The other half of the boundary, so the test above is not passing because `retireStep`
+    /// rejects everything. A zero cost leaves the clock exactly where it was, which monotonicity
+    /// permits — it is `InstructionCostTicks`' own "must be >= 1" that a zero violates, and that
+    /// is not this function's rule to enforce.
+    [<Test>]
+    let ``a zero instruction cost is accepted and freezes the clock`` () =
+        let actual = EmulatedKernel.retireStep (kernelWith 4_096L 0L 7L)
+
+        actual.VirtualClockTicks |> shouldEqual 4_096L
+        actual.StepCounter |> shouldEqual 8L
+
     /// Non-vacuity for the horizon property: the generator must actually straddle the boundary,
     /// or the test above passes by never reaching a rejection at all.
     [<Test>]
