@@ -90,7 +90,7 @@ refuses, so no Darwin readiness is reachable through an event port.
 | `EstablishedPendingReport` / `Established` (either end) | `EPOLLOUT` |
 | `RefusedPendingDelivery` | `EPOLLIN\|EPOLLOUT\|EPOLLERR\|EPOLLHUP\|EPOLLRDHUP` (0x201d) |
 | after the refusal delivery resets the socket | `EPOLLOUT\|EPOLLHUP`, i.e. exactly `Idle` again |
-| established, peer closed | `EPOLLIN\|EPOLLOUT\|EPOLLRDHUP` (0x2005) — state this slice cannot represent; see the refusal below |
+| established, peer closed | `EPOLLIN\|EPOLLOUT\|EPOLLRDHUP` (0x2005) — answered by deriving peer liveness from the connection table; see below |
 | pipe read end, empty, writer closed (PawPrint's stdin) | `EPOLLHUP` (`pipes.c`) |
 | pipe write end, space, reader open (PawPrint's stdout/stderr) | `EPOLLOUT` (`pipes.c`) |
 
@@ -129,6 +129,7 @@ runtime version) that shape delivery:
 | R | one edge, two registrations of the same socket (via `dup`) on one port | delivered in **reverse registration order** (the socket's wait-queue is LIFO), whichever fd is which |
 | S | as R, with a MOD of the first-registered entry before the edge | order unchanged — MOD does not move a registration's place in the tie (`order5.c`) |
 | T | an edge that misses a registration's interest entirely (IN at a WRITE-only entry), then a MOD to an interest the level meets | the missed edge queues **nothing**; the MOD enqueues fresh at MOD time, behind everything queued since (`order6.c`) — so the signal must filter by the registration's reported mask, not queue unconditionally |
+| U | one port watching both ends of a connect (client's idle edge pre-consumed) | batch `[client (OUT); listener (IN)]`, three runs of three — the client's completion enters the ready list before the listener's accept edge (`order7.c`), so `connectSocket` signals the client first |
 
 Rows N/O/P answer the chokepoint question from option 1 in the negative twice
 over: not only is there no single function through which `Sockets` writes pass
@@ -139,12 +140,15 @@ slice it is exactly three: the queue push onto a listener, the connect
 resolution on the client (completion or refusal, blocking or not), and the
 refusal delivery's reset (row M).
 
-Row Q is a producer this slice does not model — nothing marks an `Established`
-socket's peer as gone, and inventing the mask without the state would be a lie —
-so `closeFd` must refuse when the description being destroyed is the last onto a
-socket whose connection's *other* end is registered with any event port. With no
-registration there is no observer (no receive path exists yet), so the sweep in
-#1125's close path is otherwise unchanged.
+Row Q became fully modelled during review (a fourth Codex round observed the
+refusal was coarser than the measurements): peer liveness is *derived* — the
+connection object outlives its ends exactly as long as something references
+it — so `epollReadiness` answers the measured half-closed level for a
+peerless established socket, and `closeFd` signals the surviving end through
+the ordinary interest-filtered path instead of refusing. The one remaining
+close refusal on the socket side is a dying listener with a registered
+unaccepted client: the post-RST level is unmeasured, and an RST raises ERR,
+which no interest mask can hide.
 
 Two facts a Codex review round surfaced, then settled by reasoning about the
 in-flight syscall (each with its own oracle-validated observer):

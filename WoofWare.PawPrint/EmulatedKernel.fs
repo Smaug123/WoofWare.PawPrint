@@ -4749,13 +4749,8 @@ module EmulatedKernel =
         | SocketPhase.EstablishedPendingReport connectionId
         | SocketPhase.Established connectionId ->
             // With the peer alive and no receive path modelled, both ends
-            // are exactly write-ready. The measured level for a half-closed
-            // pair is IN|OUT|RDHUP instead, state this kernel cannot
-            // represent, so a peerless socket refuses here — which is the
-            // registration-time guard (`changeSocketEventRegistration`
-            // computes readiness on every committed ADD/MOD), while
-            // `closeFd` guards the other order by refusing to destroy the
-            // peer of an already-registered socket.
+            // are exactly write-ready; once the peer is gone, the level is
+            // the measured half-closed one.
             let peerAlive =
                 kernel.Sockets
                 |> Map.exists (fun otherId other ->
@@ -4772,13 +4767,23 @@ module EmulatedKernel =
                     )
                 )
 
-            if not peerAlive then
-                failwith
-                    $"EmulatedKernel.epollReadiness: socket %O{socketId} is established on connection %O{connectionId} whose other side no longer exists — the measured level for a half-closed pair is IN|OUT|RDHUP, which no socket phase can represent. Implement peer-close readiness before asking for this socket's."
+            if peerAlive then
+                { EpollReadiness.none with
+                    Out = true
+                }
+            else
+                // The measured half-closed level (`order3.c` row Q). Peer
+                // liveness is derived rather than stored: the connection
+                // object outlives its ends exactly as long as something
+                // references it, so the scan is the truth.
+                {
+                    In = true
+                    Out = true
+                    RdHup = true
+                    Hup = false
+                    Err = false
+                }
 
-            { EpollReadiness.none with
-                Out = true
-            }
         | SocketPhase.RefusedPendingDelivery ->
             {
                 In = true
@@ -5293,7 +5298,7 @@ module EmulatedKernel =
                   | OpenFileTarget.Socket _ -> ())
              | None -> ())
 
-            let sockets, connections =
+            let sockets, connections, establishedSurvivors =
                 match destroyed with
                 | Some description ->
                     match description.Target with
@@ -5336,41 +5341,62 @@ module EmulatedKernel =
                                 | SocketPhase.DatagramPeer _ -> false
                             )
 
-                        // This close signals every surviving socket whose
-                        // phase shares one of the dying socket's connections:
-                        // the peer of an established pair sees the FIN (its
-                        // level becomes IN|OUT|RDHUP, measured), and a
-                        // listener close RSTs its unaccepted queue entries'
-                        // clients. Neither level is representable — nothing
-                        // marks a peer as gone — so a *registered* survivor
-                        // would be woken with an invented mask, and this
-                        // refuses instead. An unregistered survivor has no
-                        // observer (no receive path exists, and `connect(2)`
-                        // on it answers EISCONN either way), so the sweep
-                        // proceeds.
-                        for candidate in candidates do
-                            let registeredSurvivors =
+                        // What this close does to the sockets sharing the
+                        // dying socket's connections splits by which end is
+                        // dying. The peer of an established pair sees the
+                        // FIN: its level becomes the measured half-closed
+                        // IN|OUT|RDHUP and the driver signals it (`order3.c`
+                        // row Q) — collected here and signalled below, once
+                        // the socket table reflects the close, so the level
+                        // the signal filters against is the survivor's new
+                        // one. A dying *listener* instead RSTs its unaccepted
+                        // queue entries' clients, whose resulting level is
+                        // unmeasured — that case refuses when a registration
+                        // could observe it, and an RST raises ERR, which no
+                        // interest mask can hide, so any registration could.
+                        let establishedSurvivors =
+                            match dying.Phase with
+                            | SocketPhase.Established _
+                            | SocketPhase.EstablishedPendingReport _ ->
                                 sockets
-                                |> Map.toSeq
-                                |> Seq.filter (fun (survivorId, survivor) ->
-                                    (match survivor.Phase with
-                                     | SocketPhase.Established c
-                                     | SocketPhase.EstablishedPendingReport c -> c = candidate
-                                     | SocketPhase.Listening _
-                                     | SocketPhase.Idle
-                                     | SocketPhase.RefusedPendingDelivery
-                                     | SocketPhase.Dead
-                                     | SocketPhase.DatagramPeer _ -> false)
-                                    && socketIsRegisteredWithAnyEventPort survivorId kernel
+                                |> Map.toList
+                                |> List.choose (fun (survivorId, survivor) ->
+                                    match survivor.Phase with
+                                    | SocketPhase.Established c
+                                    | SocketPhase.EstablishedPendingReport c when List.contains c candidates ->
+                                        Some survivorId
+                                    | _ -> None
                                 )
-                                |> Seq.map fst
-                                |> List.ofSeq
+                            | SocketPhase.Listening _ ->
+                                for candidate in candidates do
+                                    let registeredClients =
+                                        sockets
+                                        |> Map.toSeq
+                                        |> Seq.filter (fun (survivorId, survivor) ->
+                                            (match survivor.Phase with
+                                             | SocketPhase.Established c
+                                             | SocketPhase.EstablishedPendingReport c -> c = candidate
+                                             | SocketPhase.Listening _
+                                             | SocketPhase.Idle
+                                             | SocketPhase.RefusedPendingDelivery
+                                             | SocketPhase.Dead
+                                             | SocketPhase.DatagramPeer _ -> false)
+                                            && socketIsRegisteredWithAnyEventPort survivorId kernel
+                                        )
+                                        |> Seq.map fst
+                                        |> List.ofSeq
 
-                            match registeredSurvivors with
-                            | [] -> ()
-                            | survivor :: _ ->
-                                failwith
-                                    $"EmulatedKernel.closeFd: closing fd %d{fd} destroys socket %O{socketId}'s side of connection %O{candidate}, whose surviving end (socket %O{survivor}) is registered with a socket event port — a real kernel would deliver a readiness event for the half-closed pair (level IN|OUT|RDHUP, measured), and PawPrint has no state to answer that level from. Implement peer-close readiness before closing the peer of a registered established socket."
+                                    match registeredClients with
+                                    | [] -> ()
+                                    | survivor :: _ ->
+                                        failwith
+                                            $"EmulatedKernel.closeFd: closing fd %d{fd} destroys listening socket %O{socketId} while connection %O{candidate} sits unaccepted in its queue, and that connection's client (socket %O{survivor}) is registered with a socket event port. A real kernel RSTs the unaccepted client on listener close, whose resulting readiness level is unmeasured — and an RST raises ERR, which no interest mask can hide, so the registration would observe it. Measure the post-RST level before closing a listener out from under a registered queued client."
+
+                                []
+                            | SocketPhase.Idle
+                            | SocketPhase.RefusedPendingDelivery
+                            | SocketPhase.Dead
+                            | SocketPhase.DatagramPeer _ -> []
 
                         let connections =
                             (kernel.Connections, candidates)
@@ -5381,11 +5407,11 @@ module EmulatedKernel =
                                     Map.remove connection connections
                             )
 
-                        sockets, connections
+                        sockets, connections, establishedSurvivors
                     | OpenFileTarget.StandardStream _
                     | OpenFileTarget.SocketEventPort _
-                    | OpenFileTarget.File _ -> kernel.Sockets, kernel.Connections
-                | None -> kernel.Sockets, kernel.Connections
+                    | OpenFileTarget.File _ -> kernel.Sockets, kernel.Connections, []
+                | None -> kernel.Sockets, kernel.Connections, []
 
             let closed =
                 { kernel with
@@ -5393,6 +5419,14 @@ module EmulatedKernel =
                     Sockets = sockets
                     Connections = connections
                 }
+
+            // The FIN's edge, raised now that the survivor's level is the
+            // half-closed one. The signal filters by each registration's
+            // interest, so a survivor nobody watches — or one watched only
+            // for conditions the half-closed level does not meet — records
+            // nothing.
+            let closed =
+                (closed, establishedSurvivors) ||> List.fold (fun k s -> signalSocket s k)
 
             // The close may have been the last reference to an inode whose last
             // name went away earlier, which is what keeps `read` on an unlinked
@@ -5757,12 +5791,14 @@ module EmulatedKernel =
                         NextConnectionId = ConnectionId (rawConnectionId + 1L)
                     }
 
-                // The two edges this call raises: the accept-queue push
-                // signals the listener, and the connect resolution signals
-                // the client — the client's phase resolves in this call
-                // whether or not the syscall's own answer is deferred to
-                // EINPROGRESS.
-                let kernel = kernel |> signalSocket listenerId |> signalSocket socketId
+                // The two edges this call raises, in the measured order
+                // (`order7.c`, three runs): the client's completion enters
+                // the ready list *before* the listener's accept edge — the
+                // client processes the SYN-ACK and becomes writable before
+                // its final ACK puts the child on the accept queue. The
+                // client's phase resolves in this call whether or not the
+                // syscall's own answer is deferred to EINPROGRESS.
+                let kernel = kernel |> signalSocket socketId |> signalSocket listenerId
 
                 if nonBlocking then
                     // The syscall itself still answers EINPROGRESS —

@@ -545,30 +545,90 @@ module TestSocketEventDelivery =
 
         before |> shouldEqual kernel.NextSocketEventRegistrationOrdinal
 
-    // --- the peer-close boundary ---
+    // --- the peer-close edge ---
 
-    /// Closing the peer of a registered established socket refuses: the
-    /// survivor's level would become IN|OUT|RDHUP, which no phase represents.
+    /// The peer's FIN: closing the peer of a registered established socket
+    /// signals the survivor, whose level becomes the measured half-closed
+    /// IN|OUT|RDHUP (`order3.c` row Q).
     [<Test>]
-    let ``closing the peer of a registered established socket refuses`` () : unit =
-        let portFd, _, kernel = addPort EmulatedKernel.initial
+    let ``closing the peer signals the registered survivor with the half-closed level`` () : unit =
+        let portFd, portId, kernel = addPort EmulatedKernel.initial
         let _, listenerId, kernel = addListener 5000us kernel
         let clientFd, clientId, kernel = addStream kernel
         let _, kernel = connect clientId false (loopback 5000us) kernel
         let serverFd, _, kernel = EmulatedKernel.acceptConnection listenerId kernel
         let kernel = register portFd clientFd 5UL kernel
 
-        let exc =
-            Assert.Throws<System.Exception> (fun () -> EmulatedKernel.closeFd serverFd kernel |> ignore)
+        // Consume the ADD-of-ready edge (established, live peer: OUT).
+        let delivered, kernel = EmulatedKernel.deliverSocketEvents portId 8 kernel
 
-        exc.Message |> shouldContainText "peer-close readiness"
+        delivered
+        |> shouldEqual
+            [
+                5UL,
+                { EpollReadiness.none with
+                    Out = true
+                }
+            ]
 
-    /// With no registration there is no observer, so the same close proceeds —
-    /// and registering the survivor afterwards refuses instead, because its
-    /// level is already the one no phase represents.
+        let kernel =
+            match EmulatedKernel.closeFd serverFd kernel with
+            | Ok kernel -> kernel
+            | Error error -> failwith $"close failed: %O{error}"
+
+        let delivered, kernel = EmulatedKernel.deliverSocketEvents portId 8 kernel
+
+        delivered
+        |> shouldEqual
+            [
+                5UL,
+                { EpollReadiness.none with
+                    In = true
+                    Out = true
+                    RdHup = true
+                }
+            ]
+
+        assertSound kernel
+
+    /// A survivor watched only for conditions the half-closed level does not
+    /// meet records nothing — the FIN's edge misses a CLOSE|ERROR-only
+    /// interest, since the measured level carries neither HUP nor ERR.
     [<Test>]
-    let ``an unregistered peer close proceeds, and registering the survivor then refuses`` () : unit =
-        let portFd, _, kernel = addPort EmulatedKernel.initial
+    let ``a peer close misses a CLOSE-and-ERROR-only interest`` () : unit =
+        let portFd, portId, kernel = addPort EmulatedKernel.initial
+        let _, listenerId, kernel = addListener 5000us kernel
+        let clientFd, clientId, kernel = addStream kernel
+        let _, kernel = connect clientId false (loopback 5000us) kernel
+        let serverFd, _, kernel = EmulatedKernel.acceptConnection listenerId kernel
+
+        let kernel =
+            match
+                EmulatedKernel.changeSocketEventRegistration
+                    portFd
+                    clientFd
+                    (SocketEventRegistrationChange.Add (SocketEventInterest.ofBits "test" 0x18, 5UL))
+                    kernel
+            with
+            | Ok kernel -> kernel
+            | Error error -> failwith $"registration failed: %O{error}"
+
+        readyOf portId kernel |> shouldEqual []
+
+        let kernel =
+            match EmulatedKernel.closeFd serverFd kernel with
+            | Ok kernel -> kernel
+            | Error error -> failwith $"close failed: %O{error}"
+
+        readyOf portId kernel |> shouldEqual []
+        EmulatedKernel.hasDeliverableSocketEvents portId kernel |> shouldEqual false
+        assertSound kernel
+
+    /// An unregistered peer close proceeds, and a later ADD of the survivor
+    /// finds it ready at the half-closed level.
+    [<Test>]
+    let ``registering a survivor after an unwatched peer close pends the half-closed level`` () : unit =
+        let portFd, portId, kernel = addPort EmulatedKernel.initial
         let _, listenerId, kernel = addListener 5000us kernel
         let clientFd, clientId, kernel = addStream kernel
         let _, kernel = connect clientId false (loopback 5000us) kernel
@@ -581,10 +641,58 @@ module TestSocketEventDelivery =
 
         assertSound kernel
 
-        let exc =
-            Assert.Throws<System.Exception> (fun () -> register portFd clientFd 5UL kernel |> ignore)
+        let kernel = register portFd clientFd 5UL kernel
+        let delivered, kernel = EmulatedKernel.deliverSocketEvents portId 8 kernel
 
-        exc.Message |> shouldContainText "other side no longer exists"
+        delivered
+        |> shouldEqual
+            [
+                5UL,
+                { EpollReadiness.none with
+                    In = true
+                    Out = true
+                    RdHup = true
+                }
+            ]
+
+        assertSound kernel
+
+    /// A dying listener RSTs its unaccepted queue entries' clients, whose
+    /// post-RST level is unmeasured — refused when a registration could
+    /// observe it, and proceeding when none can.
+    [<Test>]
+    let ``closing a listener with a registered queued client refuses`` () : unit =
+        let portFd, _, kernel = addPort EmulatedKernel.initial
+        let listenerFd, _, kernel = addListener 5000us kernel
+        let clientFd, clientId, kernel = addStream kernel
+        let _, kernel = connect clientId false (loopback 5000us) kernel
+        let kernel = register portFd clientFd 5UL kernel
+
+        let exc =
+            Assert.Throws<System.Exception> (fun () -> EmulatedKernel.closeFd listenerFd kernel |> ignore)
+
+        exc.Message |> shouldContainText "post-RST level"
+
+    /// The connect's two edges enter in the measured order (`order7.c`): the
+    /// client's completion before the listener's accept edge.
+    [<Test>]
+    let ``a connect's edges enter client-first`` () : unit =
+        let portFd, portId, kernel = addPort EmulatedKernel.initial
+        let listenerFd, _, kernel = addListener 5000us kernel
+        let clientFd, clientId, kernel = addStream kernel
+        let kernel = register portFd listenerFd 2UL kernel
+        let kernel = register portFd clientFd 1UL kernel
+
+        // Consume the client's idle ADD-of-ready edge so only the connect's
+        // pair remains.
+        let delivered, kernel = EmulatedKernel.deliverSocketEvents portId 8 kernel
+        dataOf delivered |> shouldEqual [ 1UL ]
+
+        let _, kernel = connect clientId false (loopback 5000us) kernel
+
+        let delivered, kernel = EmulatedKernel.deliverSocketEvents portId 8 kernel
+        dataOf delivered |> shouldEqual [ 1UL ; 2UL ]
+        assertSound kernel
 
     /// The completion of a connect signals the client it resolved on
     /// (`order3.c` row N's "completion arrived" edge): a pre-registered,

@@ -27,7 +27,12 @@ using System.Runtime.InteropServices;
 //     while its neighbours still deliver;
 //   * `*count` truncates the batch, the remainder arrives on the next wait in
 //     order, and the buffer beyond the delivered events is untouched;
-//   * a MOD of a consumed, still-ready target re-arms it at MOD time.
+//   * a MOD of a consumed, still-ready target re-arms it at MOD time;
+//   * the peer's close signals a watching established survivor with the
+//     half-closed level, delivered as READ|WRITE|READCLOSE (no fold: the
+//     level carries no HUP);
+//   * one connect's two edges enter client-completion first, listener-accept
+//     second.
 //
 // The exit code is the index of the first check that failed; 0 means all
 // passed. Kept below 128, since an exit code is eight bits.
@@ -377,6 +382,58 @@ class SocketEventDeliveryLinux
             if (DataAt(buffer, 0) != 1UL) return 104;
             if (EventsAt(buffer, 0) != SA_READ) return 105;
             if (Close(l1) != PAL_SUCCESS || Close(port) != PAL_SUCCESS) return 106;
+        }
+
+        // --- the peer's close: the half-closed level, delivered ---
+        {
+            IntPtr port;
+            if (CreateSocketEventPort(&port) != PAL_SUCCESS) return 107;
+            byte* a1 = stackalloc byte[16];
+            IntPtr l1 = MakeListener(a1);
+            if (l1 == (IntPtr)(-1)) return 108;
+            IntPtr c = ConnectOne(a1);
+            if (c == (IntPtr)(-1)) return 109;
+            IntPtr srv;
+            int peerLen = 16;
+            byte* peer = stackalloc byte[16];
+            if (Accept(l1, peer, &peerLen, &srv) != PAL_SUCCESS) return 110;
+            if (TryChange(port, c, 0, SA_ALL, (IntPtr)1) != PAL_SUCCESS) return 111;
+            int count = 8;
+            // Consume the ADD-of-ready edge: established with a live peer is
+            // exactly write-ready, and the fold leaves plain WRITE alone.
+            if (WaitForSocketEvents(port, buffer, &count) != PAL_SUCCESS || count != 1) return 112;
+            if (EventsAt(buffer, 0) != SA_WRITE) return 113;
+            if (Close(srv) != PAL_SUCCESS) return 114;
+            count = 8;
+            if (WaitForSocketEvents(port, buffer, &count) != PAL_SUCCESS || count != 1) return 115;
+            if (EventsAt(buffer, 0) != (SA_READ | SA_WRITE | SA_READCLOSE)) return 116;
+            if (Close(c) != PAL_SUCCESS || Close(l1) != PAL_SUCCESS || Close(port) != PAL_SUCCESS) return 117;
+        }
+
+        // --- one connect, two edges: client completion first ---
+        {
+            IntPtr port;
+            if (CreateSocketEventPort(&port) != PAL_SUCCESS) return 118;
+            byte* a1 = stackalloc byte[16];
+            IntPtr l1 = MakeListener(a1);
+            if (l1 == (IntPtr)(-1)) return 119;
+            IntPtr c;
+            if (Socket(AF_INET, SOCK_STREAM, PT_TCP, &c) != PAL_SUCCESS) return 120;
+            if (SetIsNonBlocking(c, 1) != PAL_SUCCESS) return 121;
+            if (TryChange(port, c, 0, SA_READ | SA_WRITE, (IntPtr)1) != PAL_SUCCESS) return 122;
+            if (TryChange(port, l1, 0, SA_READ, (IntPtr)2) != PAL_SUCCESS) return 123;
+            int count = 8;
+            // Consume the client's idle ADD-of-ready edge.
+            if (WaitForSocketEvents(port, buffer, &count) != PAL_SUCCESS || count != 1) return 124;
+            if (DataAt(buffer, 0) != 1UL) return 125;
+            if (Connect(c, a1, 16) != PAL_EINPROGRESS) return 126;
+            count = 8;
+            // The last three checks share one exit code: eight bits are
+            // nearly spent, and 127 already means "the connect-order block's
+            // delivery was wrong".
+            if (WaitForSocketEvents(port, buffer, &count) != PAL_SUCCESS || count != 2) return 127;
+            if (DataAt(buffer, 0) != 1UL) return 127;
+            if (DataAt(buffer, 1) != 2UL) return 127;
         }
 
         return 0;
