@@ -1579,6 +1579,25 @@ module UnlinkRules =
 /// 1 past the length of the path that used to be there: a zero-length buffer is
 /// EINVAL everywhere (the shim's own guard, before `getcwd` is called at all),
 /// and everything else splits on the *first byte* only.
+/// What the PAL puts in `DirectoryEntry.NameLength`, which is a fact about the
+/// libc it was compiled against rather than about any directory.
+///
+/// `ConvertDirent` (`pal_io.c:497`) copies `d_namlen` under
+/// `HAVE_DIRENT_NAME_LEN` and writes `-1` otherwise, the sentinel meaning "walk
+/// to the NUL yourself". Established by compiling rather than by reading:
+/// glibc's `struct dirent` has no `d_namlen` member at all (`gcc` rejects
+/// `d.d_namlen`), while macOS's `sys/dirent.h` declares one.
+///
+/// Invisible to managed code — `DirectoryEntry.GetName` takes
+/// `CreateReadOnlySpanFromNullTerminated` for the sentinel and a plain span
+/// otherwise — so only a guest that hand-rolls the P/Invoke can tell.
+[<RequireQualifiedAccess>]
+type DirectoryEntryNameLength =
+    /// The name's length in bytes, as macOS reports it.
+    | Reported
+    /// `-1`, as every libc without `d_namlen` gets.
+    | WalkToTerminator
+
 [<RequireQualifiedAccess>]
 type GetCwdOrphanAnswer =
     /// ENOENT whatever the size. Linux's `sys_getcwd` builds the path, fails
@@ -1633,6 +1652,65 @@ type RmDirRules =
         /// `ctime` on both.
         RemovedDirectoryEffect : UnbindTargetEffect
     }
+
+/// What `opendir(3)` should do next, once its path has been resolved.
+[<RequireQualifiedAccess>]
+type OpenDirVerdict =
+    /// Answer the guest with this errno, and a NULL `DIR*`.
+    | Refuse of error : UnixError
+    /// Open a stream over this directory.
+    | Open of directory : InodeNumber
+
+[<RequireQualifiedAccess>]
+module OpenDirRules =
+    /// `opendir(3)`, transcribed from the measured ordering. Each arm beats the
+    /// ones below it, and each bullet is a row measured on **both** kernels —
+    /// there is no flavour parameter because there is no row they disagree on,
+    /// which is why this takes none rather than defaulting one:
+    ///
+    ///  * A name nothing binds is ENOENT, and so is a dangling symlink: the walk
+    ///    follows the final link, so there is nothing left to open.
+    ///  * A target that is not a directory is ENOTDIR, and that beats the
+    ///    permission check. The row proving it is a **mode-0000 regular file**,
+    ///    which is ENOTDIR rather than EACCES — with and without a trailing
+    ///    separator, and through a symlink to one. Pleasingly symmetric with
+    ///    `open`'s own measured "EISDIR beats EACCES".
+    ///  * A directory that refuses this caller the **read** bit is EACCES. Read,
+    ///    not search, and this is the first place in this codebase where the two
+    ///    come apart: a `0o111` directory (search, no read) is EACCES, while a
+    ///    `0o444` one (read, no search) opens and lists every name. Search on the
+    ///    *ancestors* is the walk's business and a resolution that got here has
+    ///    passed it.
+    ///
+    /// `Resolution.TrailingSeparatorDemanded` is never read, and does not need
+    /// to be: the demand is "the final component must be a directory", which
+    /// `opendir` owes anyway. Measured, every `X/` row answers what its `X` row
+    /// answers.
+    ///
+    /// There is no root-navigation arm either, and `rmdir`'s three are the
+    /// reason to say so rather than leave it implied: `opendir("/")`,
+    /// `opendir("d/.")` and `opendir("d/..")` all simply succeed, on both.
+    let verdict (privilege : CallerPrivilege) (resolution : Resolution) (vfs : VirtualFileSystem) : OpenDirVerdict =
+        match VirtualFileSystem.existingOf resolution.Target with
+        | Error error -> OpenDirVerdict.Refuse error
+        | Ok inode ->
+
+        match VirtualFileSystem.tryGetContent inode vfs with
+        | None ->
+            failwith
+                $"OpenDirRules.verdict: the walk resolved to inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
+        | Some (InodeContent.RegularFile _)
+        | Some (InodeContent.Symlink _) ->
+            // The symlink arm is unreachable through the resolver, which
+            // followed every final link and answered ENOENT for a dangling one.
+            // It is the same answer either way, so there is nothing to refuse.
+            OpenDirVerdict.Refuse UnixError.ENOTDIR
+        | Some (InodeContent.Directory content) ->
+
+        if PermissionBits.deniedTo privilege 0o400 content.Permissions then
+            OpenDirVerdict.Refuse UnixError.EACCES
+        else
+            OpenDirVerdict.Open inode
 
 /// What `rmdir(2)` should do next, once its path has been resolved.
 [<RequireQualifiedAccess>]
@@ -1951,6 +2029,13 @@ module SimulatedUnixPlatform =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> GetCwdOrphanAnswer.AlwaysDetached
         | SimulatedUnixFlavour.Darwin -> GetCwdOrphanAnswer.ShortestPathFirst
+
+    /// What this platform's PAL puts in `DirectoryEntry.NameLength`. See
+    /// `DirectoryEntryNameLength`.
+    let directoryEntryNameLength (platform : SimulatedUnixPlatform) : DirectoryEntryNameLength =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> DirectoryEntryNameLength.WalkToTerminator
+        | SimulatedUnixFlavour.Darwin -> DirectoryEntryNameLength.Reported
 
     /// Whether this platform's `stat` reports a creation time.
     ///
@@ -2858,6 +2943,29 @@ type ParkedSocketWait =
 /// Pulling them into a sub-record keeps `IlMachineState` from sprawling and
 /// makes it possible to swap the kernel implementation (e.g. for a Windows-
 /// shaped emulation) without disturbing the rest of the state model.
+/// One open directory stream: what `opendir(3)` returns and `readdir`/`closedir`
+/// consume.
+///
+/// Held in `EmulatedKernel.DirectoryStreams` rather than on the descriptor,
+/// because libc keeps a `DIR`'s buffer and position in userspace and the
+/// descriptor carries only the kernel's. The consequence is that two `opendir`s
+/// of one directory advance independently, and a `dup` of the descriptor would
+/// not share the cursor. Unobservable: `dirfd` appears nowhere in CoreLib or
+/// the PAL, so no managed caller can reach the descriptor to `dup` it.
+type DirectoryStream =
+    {
+        /// The descriptor `opendir` opened, closed again by `closedir`.
+        Fd : int
+        /// The directory being enumerated. Also reachable through `Fd`, but
+        /// held directly so that a guest which closed that descriptor behind the
+        /// stream's back — undefined behaviour on a real libc, and possible here
+        /// because fd numbers are guessable — does not turn into an interpreter
+        /// crash.
+        Inode : InodeNumber
+        /// How far through `Inode` this stream has read.
+        Cursor : DirectoryCursor
+    }
+
 type EmulatedKernel =
     {
         /// Per-thread value CoreCLR keeps in its `t_lastPInvokeError` thread-local and
@@ -3329,6 +3437,24 @@ type EmulatedKernel =
         /// a filesystem read from the host would make a replay depend on the
         /// machine that produced it, and guests branch on what they find.
         FileSystem : VirtualFileSystem
+        /// Every directory stream `SystemNative_OpenDir` has handed out and
+        /// `SystemNative_CloseDir` has not yet reclaimed, keyed by the native
+        /// block whose address the guest holds as its `DIR*`.
+        ///
+        /// A stream is *not* a descriptor kind. Measured on both kernels,
+        /// `opendir` consumes a file descriptor — an `open` either side of one
+        /// returned fds 3 and 5 — so the descriptor is an ordinary
+        /// `OpenFileTarget.File` on the directory, which is what pins the inode
+        /// through `heldInodes` and so makes a stream over an `rmdir`'d
+        /// directory behave. What cannot live there is the rest: the cursor and
+        /// the name buffer have no home in `File (inode, offset)`.
+        ///
+        /// An absent key is not a default and must never be read as one: it
+        /// means the guest passed a `DIR*` this kernel never issued, or one it
+        /// has already closed. `directoryStream` says so loudly rather than
+        /// inventing an errno, the way `EmulatedKernel.connection` does for a
+        /// `ConnectionId`.
+        DirectoryStreams : Map<NativeMemoryBlockId, DirectoryStream>
         /// The filesystem `FileSystem` claims to be, which is the whole of what
         /// `SystemNative_GetFileSystemType` reports for a file on it.
         ///
@@ -3415,6 +3541,16 @@ type EmulatedKernelDefect =
     /// rule, so a `VirtualFileSystem.forget` that fires too late is caught there
     /// and one that fires too early is caught here.
     | DanglingOpenInode of description : OpenFileDescriptionId * inode : InodeNumber
+    /// An open directory stream names an inode the filesystem no longer holds.
+    ///
+    /// Unreachable by construction — `heldInodes` counts a stream's inode among
+    /// the things pinning it, so `forgetIfUnheld` cannot free one out from under
+    /// a stream — which is exactly why a violation is an interpreter bug rather
+    /// than something a guest did. The next `readdir` would crash the
+    /// interpreter, and this names the cause instead.
+    | DanglingDirectoryStreamInode of block : NativeMemoryBlockId * inode : InodeNumber
+    /// An open directory stream names an inode that is not a directory.
+    | DirectoryStreamIsNotADirectory of block : NativeMemoryBlockId * inode : InodeNumber
     /// `CurrentDirectory` is not the path that reaches `CurrentDirectoryInode`,
     /// so `getcwd` would report a directory the process is not in.
     ///
@@ -3721,6 +3857,7 @@ module EmulatedKernel =
             LastSystemError = Map.empty
             NativeMemoryPool = NativeMemoryPool.empty
             FileDescriptors = FileDescriptorRegistry.initial
+            DirectoryStreams = Map.empty
             Sockets = Map.empty
             Connections = Map.empty
             NextConnectionId = ConnectionId 0L
@@ -5150,6 +5287,18 @@ module EmulatedKernel =
         )
         |> Set.ofSeq
         |> Set.add kernel.CurrentDirectoryInode
+        // An open directory stream holds its directory too. The descriptor it
+        // opened already does, so this adds nothing while the stream is intact
+        // — it is here for the guest that closes that descriptor out from under
+        // the stream, which is undefined behaviour on a real libc but a
+        // guessable fd number away here. Without it the next `readdir` would
+        // reach a reaped inode and crash the interpreter.
+        |> Set.union (
+            kernel.DirectoryStreams
+            |> Map.toSeq
+            |> Seq.map (fun (_, stream) -> stream.Inode)
+            |> Set.ofSeq
+        )
 
     /// Every inode that must not be freed: `heldInodes`, closed under
     /// `DirectoryContent.Parent`.
@@ -5451,6 +5600,57 @@ module EmulatedKernel =
                 | None -> closed
 
             Ok reaped
+
+    /// The stream `block` names.
+    ///
+    /// Total, and loudly partial rather than an option: every `DIR*` a guest can
+    /// legally hold came out of `SystemNative_OpenDir` and has not been closed,
+    /// and passing anything else to `readdir`/`closedir` is undefined behaviour
+    /// on a real libc rather than an error it reports. Inventing EBADF here
+    /// would answer a question no kernel answers.
+    let directoryStream (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : DirectoryStream =
+        match Map.tryFind block kernel.DirectoryStreams with
+        | Some stream -> stream
+        | None ->
+            failwith
+                $"EmulatedKernel.directoryStream: %O{block} names no open directory stream. The guest passed a DIR* this kernel never handed out, or one it has already closed — both are undefined behaviour on a real libc, which is why there is no errno to report."
+
+    /// Record a newly-opened stream against the block whose address is its
+    /// `DIR*`.
+    let withDirectoryStream
+        (block : NativeMemoryBlockId)
+        (stream : DirectoryStream)
+        (kernel : EmulatedKernel)
+        : EmulatedKernel
+        =
+        { kernel with
+            DirectoryStreams = Map.add block stream kernel.DirectoryStreams
+        }
+
+    /// Move a stream's cursor on, leaving everything else about it alone.
+    let withDirectoryCursor
+        (block : NativeMemoryBlockId)
+        (cursor : DirectoryCursor)
+        (kernel : EmulatedKernel)
+        : EmulatedKernel
+        =
+        let stream = directoryStream block kernel
+
+        withDirectoryStream
+            block
+            { stream with
+                Cursor = cursor
+            }
+            kernel
+
+    /// Forget a stream, which `SystemNative_CloseDir` does before closing the
+    /// descriptor under it — that order matters, because the close is what
+    /// reaps an orphaned directory and this entry is one of the things holding
+    /// it.
+    let withoutDirectoryStream (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : EmulatedKernel =
+        { kernel with
+            DirectoryStreams = Map.remove block kernel.DirectoryStreams
+        }
 
     /// The connection `connectionId` names.
     ///
@@ -6328,6 +6528,18 @@ module EmulatedKernel =
                 | OpenFileTarget.Socket _ -> None
             )
 
+        let danglingStreams =
+            kernel.DirectoryStreams
+            |> Map.toList
+            |> List.choose (fun (block, stream) ->
+                match VirtualFileSystem.tryGetContent stream.Inode kernel.FileSystem with
+                | Some (InodeContent.Directory _) -> None
+                | Some (InodeContent.RegularFile _)
+                | Some (InodeContent.Symlink _) ->
+                    Some (EmulatedKernelDefect.DirectoryStreamIsNotADirectory (block, stream.Inode))
+                | None -> Some (EmulatedKernelDefect.DanglingDirectoryStreamInode (block, stream.Inode))
+            )
+
         let currentDirectory =
             match VirtualFileSystem.tryGetContent kernel.CurrentDirectoryInode kernel.FileSystem with
             | Some (InodeContent.Directory _) ->
@@ -6460,6 +6672,7 @@ module EmulatedKernel =
         @ unreferenced
         @ freshness
         @ danglingInodes
+        @ danglingStreams
         @ currentDirectory
         @ danglingConnections
         @ orphanConnections

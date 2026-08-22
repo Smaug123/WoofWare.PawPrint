@@ -297,6 +297,31 @@ module TestPureCases =
                     // SEEK_CUR, the portable pair) succeeds.
                     name "d", SeedEntry.directory (Map.ofList [ name "g", file "nested" ])
                 ]
+            "EnumerateSeeded.cs",
+            Map.ofList
+                [
+                    name "d",
+                    SeedEntry.directory (
+                        Map.ofList
+                            [
+                                name "a", file "aaa"
+                                name "sub", SeedEntry.directory (Map.ofList [ name "z", file "zzz" ])
+                                name "ls", SeedEntry.Symlink (target "a")
+                            ]
+                    )
+                    name "f", file "hello"
+                    name "ld", SeedEntry.Symlink (target "d")
+                    name "dang", SeedEntry.Symlink (target "nx")
+                    name "gone", SeedEntry.directory Map.empty
+                    name "del",
+                    SeedEntry.directory (
+                        Map.ofList
+                            [
+                                name "x", file "xxx"
+                                name "inner", SeedEntry.directory (Map.ofList [ name "y", file "yyy" ])
+                            ]
+                    )
+                ]
             "MkDirSeeded.cs",
             Map.ofList
                 [
