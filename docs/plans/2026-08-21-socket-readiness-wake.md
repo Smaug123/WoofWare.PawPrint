@@ -130,6 +130,7 @@ runtime version) that shape delivery:
 | S | as R, with a MOD of the first-registered entry before the edge | order unchanged — MOD does not move a registration's place in the tie (`order5.c`) |
 | T | an edge that misses a registration's interest entirely (IN at a WRITE-only entry), then a MOD to an interest the level meets | the missed edge queues **nothing**; the MOD enqueues fresh at MOD time, behind everything queued since (`order6.c`) — so the signal must filter by the registration's reported mask, not queue unconditionally |
 | U | one port watching both ends of a connect (client's idle edge pre-consumed) | batch `[client (OUT); listener (IN)]`, three runs of three — the client's completion enters the ready list before the listener's accept edge (`order7.c`), so `connectSocket` signals the client first |
+| V | peer FIN at a registration whose interest the half-closed level misses (`EPOLLET`-only), then a fresh edge elsewhere, then a MOD widening the interest | the FIN leaves **no trace** — the post-FIN wait is empty and the MOD enqueues fresh at MOD time, behind the newer edge (`order8.c`, three runs of three). A sixth review round conjectured the FIN's wake is unkeyed, which would have retained a stale candidate at the FIN's position; the measurement refutes it, and the level-filtered signal stands |
 
 Rows N/O/P answer the chokepoint question from option 1 in the negative twice
 over: not only is there no single function through which `Sockets` writes pass

@@ -633,6 +633,29 @@ module TestSocketEventDelivery =
 
         readyOf portId kernel |> shouldEqual []
         EmulatedKernel.hasDeliverableSocketEvents portId kernel |> shouldEqual false
+
+        // The missed FIN leaves no trace at all (measured, `order8.c`): a
+        // newer edge elsewhere followed by a MOD widening the interest
+        // delivers the newer edge first — the MOD enqueues fresh, it does
+        // not resurface the FIN at its original position.
+        let listener2Fd, _, kernel = addListener 5001us kernel
+        let _, c2, kernel = addStream kernel
+        let kernel = register portFd listener2Fd 9UL kernel
+        let _, kernel = connect c2 false (loopback 5001us) kernel
+
+        let kernel =
+            match
+                EmulatedKernel.changeSocketEventRegistration
+                    portFd
+                    clientFd
+                    (SocketEventRegistrationChange.Modify (SocketEventInterest.ofBits "test" allInterest, 5UL))
+                    kernel
+            with
+            | Ok kernel -> kernel
+            | Error error -> failwith $"modify failed: %O{error}"
+
+        let delivered, kernel = EmulatedKernel.deliverSocketEvents portId 8 kernel
+        dataOf delivered |> shouldEqual [ 9UL ; 5UL ]
         assertSound kernel
 
     /// An unregistered peer close proceeds, and a later ADD of the survivor
