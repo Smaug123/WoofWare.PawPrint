@@ -181,3 +181,42 @@ module TestUnmanagedCallersOnlyEntry =
                 failwith
                     $"PawPrint ran the declaring type's static constructor before refusing the entry, so the gate sits after class initialisation; stderr was: %s{written}"
         | other -> failwith $"PawPrint did not refuse the managed entry: %O{other}"
+
+    /// Parked: the oracle half only.
+    ///
+    /// `call` and `callvirt` are the two managed call sites the gate covers that nothing above
+    /// reaches. Mutating each of the others to `Unmanaged` kills a guest apiece; mutating those two
+    /// kills nothing, and this records why rather than leaving it to be rediscovered.
+    ///
+    ///  - `callvirt` is unreachable for a permanent reason: `[UnmanagedCallersOnly]` is legal only
+    ///    on a static method, and `callvirt` takes an object reference, so no guest that compiles
+    ///    can put the two together. (Hand-written IL could apply the attribute to an instance
+    ///    method; whether CoreCLR would then honour it is unmeasured, and inventing an answer would
+    ///    be worse than having none.)
+    ///  - `call` is unreachable only for now. C# refuses a direct call (CS8901) and a method-group
+    ///    conversion (CS8902), so the route to it is IL the guest emits — which
+    ///    `UnmanagedCallersOnlyDynamicMethodCall.cs` does. PawPrint stops short of running that
+    ///    body: with dynamic code enabled it reaches "a dynamic method's Call names DynamicScope
+    ///    entry 2 (token 0x06000002), which holds a System.RuntimeMethodHandle rather than a
+    ///    method", an emit gap of its own. Measured, not assumed.
+    ///
+    /// So this asserts what is stable and true today: real .NET refuses a plain `call` to such a
+    /// method exactly as it refuses every other managed entry. When PawPrint can run an emitted
+    /// `call`, adding this guest to `cases` above turns it into the missing coverage.
+    ///
+    /// The same measurement also disposes of a claim `UnmanagedCallersOnlyForceEmitInvoke.cs`
+    /// might seem to make: with dynamic code enabled that guest, too, stops inside the emit
+    /// machinery rather than at the gate.
+    [<Test>]
+    let ``a plain call to such a method is refused by the real runtime`` () : unit =
+        let sourceName = "UnmanagedCallersOnlyDynamicMethodCall.cs"
+
+        let image = Roslyn.compile [ Assembly.getEmbeddedResourceAsString sourceName assy ]
+
+        match RealRuntime.executeWithRealRuntime [||] image with
+        | RealRuntimeResult.Aborted (ObservedFatalError.Other, report) ->
+            if not (report.Contains messageMarker) then
+                failwith $"%s{sourceName}: the real runtime aborted for some other reason:\n%s{report}"
+        | other ->
+            failwith
+                $"%s{sourceName}: the real runtime did not refuse a plain `call` to an UnmanagedCallersOnly method: %O{other}"

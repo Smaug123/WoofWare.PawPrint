@@ -7,9 +7,16 @@ using System.Runtime.InteropServices;
 // `Switch.System.Reflection.ForceEmitInvoke` before the first invoke caches a strategy
 // (`LocalAppContextSwitches.ForceEmitInvoke`, read by `MethodInvokerCommon`).
 //
-// This is a distinct guest because the emitted stub reaches its target through an ordinary `call`
-// in IL it generated, rather than through the interpreter's reflection path — a different arrival
-// at the same refusal, and one that a gate placed on the reflection path alone would miss.
+// On the *oracle* this is a distinct arrival: the emitted stub reaches its target through an
+// ordinary `call` in IL it generated, rather than through the runtime's interpreted invoke.
+//
+// Under PawPrint it is not, and that is measured rather than assumed: dynamic code is off by
+// default, so CoreLib falls back to the interpreted invoke and this guest takes the same route as
+// `UnmanagedCallersOnlyReflectionInvoke.cs` — mutating the reflection call site's convention kills
+// both. Turning `RuntimeFeature.IsDynamicCodeSupported` on does send it down the emit path, where
+// it stops at an unimplemented `ModuleHandle.ResolveMethod` for a method on a generic type, short
+// of reaching the gate at all. So the guest earns its place as an oracle-side route today, and
+// becomes a second interpreter-side arrival for free once PawPrint can emit.
 
 public static class Program
 {
