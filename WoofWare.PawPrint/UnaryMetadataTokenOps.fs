@@ -605,12 +605,10 @@ module internal UnaryMetadataTokenOps =
         // `sourcesPure/TypeOpenGenericDefinitionInGenericContext.cs` is the guest that binds them,
         // and it observes the `TypeSpecification` and `TypeDefinition` arms.
         //
-        // The `TypeReference` arm is *not* observed, and cannot be today: `typeof(List<>)` --
-        // cross-assembly, so a TypeReference token -- comes back closed at the enclosing
-        // instantiation rather than as the open definition, which is a divergence of its own,
-        // parked as `sourcesPure/TypeOpenGenericDefinitionCrossAssembly.cs`. So do not read this
-        // arm's `true` as tested; it is carried over unchanged, and un-parking that file is what
-        // would pin it.
+        // `sourcesPure/TypeOpenGenericDefinitionCrossAssembly.cs` is its cross-assembly twin and
+        // observes the `TypeReference` arm. That arm needed the twin because which arm a type
+        // reaches depends on where it is declared: `typeof(List<>)` is a TypeReference and
+        // `typeof(Box<>)` a TypeDefinition, so one guest cannot stand in for the other.
         let targetForTypeToken
             (declaringAssembly : DumpedAssembly)
             (allowOpenGenericDefinition : bool)
@@ -727,10 +725,8 @@ module internal UnaryMetadataTokenOps =
                 let sign = activeAssy.TypeSpecs.[h].Signature
                 targetForTypeToken activeAssy false sign state
             | MetadataToken.TypeReference h ->
-                let typeGenerics = currentMethod.DeclaringTypeGenerics
-
                 let state, typeDefn, assy =
-                    IlMachineState.lookupTypeRef loggerFactory baseClassTypes state activeAssy typeGenerics h
+                    IlMachineState.lookupTypeRef loggerFactory baseClassTypes state activeAssy h
 
                 targetForTypeToken assy true typeDefn state
             | MetadataToken.TypeDefinition h ->
