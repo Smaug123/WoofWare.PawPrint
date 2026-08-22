@@ -172,3 +172,117 @@ class WaitsOnADuplicatedPort
 
         stuck |> shouldContainText "BlockedOnSocketEvents (OpenFileDescriptionId 3L)"
         stuck |> shouldContainText "WaitForSocketEvents"
+
+    /// A waiter parked on a registered-but-unready listener, and an entry thread whose
+    /// 200 ms join resolves only through the jump-to-deadline fallback — which exists
+    /// exactly while the waiter *stays* parked.
+    let private quietWaiterSource : string =
+        """
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+class QuietParkedWaiter
+{
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_CreateSocketEventPort")]
+    static extern unsafe int CreateSocketEventPort(IntPtr* port);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Socket")]
+    static extern unsafe int Socket(int addressFamily, int socketType, int protocolType, IntPtr* createdSocket);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Bind")]
+    static extern unsafe int Bind(IntPtr socket, int protocolType, byte* socketAddress, int socketAddressLen);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Listen")]
+    static extern int Listen(IntPtr socket, int backlog);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_TryChangeSocketEventRegistration")]
+    static extern int TryChange(IntPtr port, IntPtr socket, int currentEvents, int newEvents, IntPtr data);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_WaitForSocketEvents")]
+    static extern unsafe int WaitForSocketEvents(IntPtr port, byte* buffer, int* count);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetAddressFamily")]
+    static extern unsafe int SetAddressFamily(byte* socketAddress, int socketAddressLen, int addressFamily);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetPort")]
+    static extern unsafe int SetPort(byte* socketAddress, int socketAddressLen, ushort port);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetIPv4Address")]
+    static extern unsafe int SetIPv4Address(byte* socketAddress, int socketAddressLen, uint address);
+
+    static IntPtr Port;
+
+    static unsafe void Waiter()
+    {
+        byte* buffer = stackalloc byte[32];
+        int count = 1;
+        WaitForSocketEvents(Port, buffer, &count);
+    }
+
+    static unsafe int Main()
+    {
+        IntPtr port;
+        if (CreateSocketEventPort(&port) != 0) return 1;
+        Port = port;
+        IntPtr listener;
+        if (Socket(2, 1, 6, &listener) != 0) return 2;
+        byte* addr = stackalloc byte[16];
+        for (int i = 0; i < 16; i++) addr[i] = 0;
+        SetAddressFamily(addr, 16, 2);
+        SetIPv4Address(addr, 16, 0x0100007F);
+        SetPort(addr, 16, 0);
+        if (Bind(listener, 6, addr, 16) != 0) return 3;
+        if (Listen(listener, 8) != 0) return 4;
+        if (TryChange(port, listener, 0, 0x3, (IntPtr)1) != 0) return 5;
+
+        Thread waiter = new Thread(Waiter);
+        waiter.IsBackground = true;
+        waiter.Start();
+
+        bool finished = waiter.Join(200);
+        return finished ? 6 : 0;
+    }
+}
+"""
+
+    /// The park has to be *quiet*: with nothing deliverable on the port, the waiter must
+    /// stay parked, because that is what lets the driver jump the clock straight to the
+    /// entry thread's join deadline. A readiness sweep that wakes on anything less than a
+    /// deliverable event puts the waiter through a Runnable/deliver-nothing/re-park cycle
+    /// every tick, which suppresses the jump and grinds the 200 ms join out in interpreted
+    /// steps — every wait in every guest slows by orders of magnitude, and no exit code
+    /// changes. The step counter is the observer wall clocks cannot be (measured: the
+    /// healthy run finishes at a kernel step counter of ~3.9k, where the cycling one
+    /// must grind through the join's two million virtual-clock ticks step by step).
+    [<Test>]
+    let ``a parked waiter with nothing deliverable costs no steps`` () : unit =
+        let image = Roslyn.compile [ quietWaiterSource ]
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "QuietParkedWaiter.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+
+        use peImage = new MemoryStream (image)
+
+        let outcome =
+            BoundedRun.runWith
+                loggerFactory
+                BoundedRun.defaultMaxSteps
+                "QuietParkedWaiter.cs"
+                (Some "QuietParkedWaiter.cs")
+                peImage
+                (HostConfig.Default dotnetRuntimes)
+
+        match outcome with
+        | RunOutcome.NormalExit (state, thread) ->
+            (match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
+             | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
+             | other -> failwith $"expected an int exit code, got %O{other}")
+
+            state.Kernel.StepCounter |> shouldBeSmallerThan 500_000L
+        | other -> failwith $"expected a normal exit, got %O{other}"
