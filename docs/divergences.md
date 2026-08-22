@@ -1042,3 +1042,48 @@ more expensive, but it differs only above the BMP and buys nothing a test could 
 listing sorts it first, and `TestVirtualFileSystemAgainstHost`'s
 `the model lists exactly the names this kernel lists` compares sets rather than sequences for
 exactly this reason.
+
+## A directory stream's descriptor keeps an offset of zero
+
+**CoreCLR (and any Unix)**: `opendir(3)` consumes a file descriptor, and `readdir(3)` advances that
+descriptor's offset — so `lseek(dirfd, 0, SEEK_CUR)` answers non-zero once enumeration has begun.
+The value is a *cookie*, not a count, and it is not derivable from anything PawPrint models.
+Measured on both, one entry at a time through libc:
+
+| directory | after `readdir` #1 | #2 | #3 |
+| --- | --- | --- | --- |
+| 3 entries, Linux/ext4 | `4096` | `4096` | `4096` |
+| 300 entries, Linux/ext4 | `8192` | `8192` | `8192` |
+| 3 entries, macOS/APFS | `2147483647` | `2147483647` | `2147483647` |
+| 300 entries, macOS/APFS | `4294967551` | `4294967551` | `4294967551` |
+
+Two things that table settles. The offset moves **once**, when libc's `getdents` buffer is filled,
+and then not at all as the guest consumes entries out of that buffer — so it does not track
+enumeration progress even in shape. And its value is the filesystem's own cookie scheme: a block
+boundary on ext4, something else entirely on APFS.
+
+**PawPrint**: the descriptor `opendir` opens is an ordinary `OpenFileTarget.File`, and its offset
+stays at zero for the stream's whole life. The enumeration position lives beside it, in
+`EmulatedKernel.DirectoryStreams`, as a *name* rather than an offset.
+
+**Spec status**: POSIX specifies neither the value nor that `readdir` moves the offset at all; it
+gives `telldir`/`seekdir` as the portable interface and says their values are meaningful only to
+`seekdir` on the same stream.
+
+**Why we chose this**: there is no value to give. An entry index is a number neither kernel
+produces and whose shape is wrong besides — it would move on every `readdir`, where a real one moves
+once. A block boundary would be inventing ext4's scheme on a filesystem that has no blocks. The
+alternative to inventing is refusing, and refusing costs more than it buys here: `lseek` on a
+directory descriptor is otherwise a legal operation that PawPrint answers correctly (it is zero at
+`opendir` on both kernels, which PawPrint matches), and refusing it would break the correct case to
+avoid a wrong answer in a case no managed code reaches.
+
+Nothing in CoreLib or the PAL calls `dirfd(3)`, so no managed caller can obtain this descriptor at
+all. A guest can only reach it by *inferring* the number — descriptors are handed out lowest-free,
+so an `open` immediately after an `opendir` returns one above it — which
+`WoofWare.PawPrint.Test/sourcesImpure/EnumerateClosedFdSeeded.cs` does deliberately, to check that
+the interpreter's own bookkeeping survives a guest closing it.
+
+**Where this lives in code**: the `SystemNative_OpenDir` arm of `Native/NativeSystemNative.fs`
+opens the descriptor; `SystemNative_ReadDir` advances `DirectoryStream.Cursor` and deliberately
+leaves the descriptor's offset alone.

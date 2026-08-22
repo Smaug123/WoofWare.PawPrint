@@ -3267,6 +3267,14 @@ module NativeSystemNative =
             // around the call and `Marshal.GetLastSystemError` reads what the C
             // left — zero. Without this, a guest that failed a syscall and then
             // enumerated a directory would still see the old errno.
+            // Note what this does *not* touch: the offset on the descriptor
+            // `opendir` opened. A real `readdir` moves it, but to a cookie
+            // PawPrint cannot produce — measured, it jumps once when libc's
+            // `getdents` buffer fills and then stays put as entries are consumed
+            // out of it, and its value is the filesystem's own (a block boundary
+            // on ext4, `2147483647` on APFS for a three-entry directory). An
+            // entry index would be wrong in shape as well as in value. See
+            // `docs/divergences.md`.
             let state = state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread 0)
 
             match VirtualFileSystem.nextDirectoryEntry stream.Inode stream.Cursor state.Kernel.FileSystem with
