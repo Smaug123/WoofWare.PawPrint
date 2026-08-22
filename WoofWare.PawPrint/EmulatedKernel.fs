@@ -3774,10 +3774,12 @@ module EmulatedKernel =
     let retireStep (kernel : EmulatedKernel) : EmulatedKernel =
         let ticks = kernel.VirtualClockTicks + kernel.InstructionCostTicks
 
-        // Through the same validation rather than trusting the arithmetic: `InstructionCostTicks`
-        // is documented "must be >= 1" but nothing enforces that at the field, so a zero or
-        // negative cost — a frozen or rewinding clock — reaches here and must be refused where
-        // the setter refused it.
+        // Through the same validation rather than trusting the arithmetic. `withInstructionCostTicks`
+        // rejects a cost below 1, and `KernelConfig.applyTo` is the only production path that sets
+        // the field, so a legally-assembled kernel cannot reach here with one — but a kernel built
+        // by record-copy bypasses that setter entirely, which is the same hole the monotonicity
+        // check below already exists to cover. Revalidating keeps this path's guarantee independent
+        // of how its caller's kernel was assembled.
         validateVirtualClockTicks ticks kernel
 
         { kernel with

@@ -15,9 +15,10 @@ open WoofWare.PawPrint
 /// that composition is the oracle here: bumping `StepCounter` by record-copy and then calling the
 /// validating setter `withVirtualClockTicks`. The properties below assert the two agree on the
 /// resulting kernel *and* on which inputs are rejected, because collapsing the copies must not
-/// quietly collapse the validation with it — `InstructionCostTicks` is documented as "must be
-/// >= 1" but nothing enforces it at the field, so the setter's monotonicity check is the only
-/// thing standing between a zero or negative cost and a frozen or rewinding clock.
+/// quietly collapse the validation with it. `EmulatedKernel.withInstructionCostTicks` rejects a
+/// cost below 1 and `KernelConfig.applyTo` is the only production path that writes the field, so
+/// the kernels below — assembled by record-copy, which bypasses that setter — are reaching the
+/// same hole `validateVirtualClockTicks`' own comment cites for its negative check.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestRetireStep =
@@ -113,9 +114,9 @@ module TestRetireStep =
                 VirtualClockTicks = 507L
             }
 
-    /// A cost of zero freezes the clock and a negative one rewinds it. Neither is enforced at the
-    /// field, so `retireStep` must reject them exactly where the validating setter did — this is
-    /// the property that fails if the fused copy skips validation.
+    /// A cost of zero freezes the clock and a negative one rewinds it. A record-copy can write
+    /// either past `withInstructionCostTicks`, so `retireStep` must answer them exactly as the
+    /// composition did — this is the property that fails if the fused copy skips validation.
     [<Test>]
     let ``rejects a non-advancing cost exactly as the composition does`` () =
         let gen =
@@ -211,8 +212,8 @@ module TestRetireStep =
 
     /// The other half of the boundary, so the test above is not passing because `retireStep`
     /// rejects everything. A zero cost leaves the clock exactly where it was, which monotonicity
-    /// permits — it is `InstructionCostTicks`' own "must be >= 1" that a zero violates, and that
-    /// is not this function's rule to enforce.
+    /// permits — it is `withInstructionCostTicks`' "must be >= 1" that a zero violates, and
+    /// re-enforcing that rule is not this function's job.
     [<Test>]
     let ``a zero instruction cost is accepted and freezes the clock`` () =
         let actual = EmulatedKernel.retireStep (kernelWith 4_096L 0L 7L)

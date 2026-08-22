@@ -440,6 +440,12 @@ module Program =
             | "virt" -> "Profile.VirtualDispatchHeavy.cs", GuestPrograms.virtualDispatchHeavy guestIterations
             | other -> failwith $"Unknown profile guest %s{other}; expected stack, refarg or virt"
 
+        // Rejected rather than tolerated: with `reps` at zero the loop below runs nothing and the
+        // division reports `Infinity`, which is a successful exit carrying a meaningless number —
+        // exactly the shape of result a profiling run must never produce quietly.
+        if reps < 1 then
+            failwith $"--profile needs at least one repetition to time; got %d{reps}"
+
         let image, expected, dirs = Harness.setUp sourceName source
         eprintfn $"[profile] warm-up done, expected exit code %d{expected}; running %d{reps} reps"
 
