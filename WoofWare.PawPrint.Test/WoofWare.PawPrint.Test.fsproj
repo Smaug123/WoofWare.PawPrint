@@ -129,6 +129,7 @@
     <Compile Include="TestDynamicMethodMintOutcome.fs" />
     <Compile Include="TestDynamicMethodTracing.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
+    <Compile Include="TestLdtokenMemberTokens.fs" />
     <Compile Include="TestNativeGetDynamicMethod.fs" />
     <Compile Include="TestMethodReturnType.fs" />
     <Compile Include="TestMethodSignatureComparison.fs" />

@@ -169,7 +169,6 @@ public class GenericHolder<T>
         IlMachineState.getOrAllocateField
             fixture.LoggerFactory
             fixture.BaseClassTypes
-            fixture.Assembly.DefinitionFullName
             declaringTarget
             field.Handle
             state
@@ -406,7 +405,6 @@ public class GenericHolder<T>
             IlMachineState.getOrAllocateField
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
-                fixture.Assembly.DefinitionFullName
                 openTarget
                 genericField.Handle
                 fixture.State
@@ -444,7 +442,6 @@ public class GenericHolder<T>
             IlMachineState.getOrAllocateField
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
-                fixture.Assembly.DefinitionFullName
                 closedTarget
                 genericField.Handle
                 state

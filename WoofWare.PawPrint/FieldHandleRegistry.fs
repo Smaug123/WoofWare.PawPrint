@@ -7,6 +7,9 @@ open System.Reflection.Metadata
 type FieldHandle =
     private
         {
+            /// The assembly that *defines* the field, which is the only assembly whose tables
+            /// <see cref="FieldHandle"/> indexes. Derived from <c>DeclaringType</c> at allocation
+            /// rather than supplied: see <c>FieldHandleRegistry.definingAssemblyOf</c>.
             AssemblyFullName : string
             /// The declaring type observed at allocation time. CoreCLR's
             /// `typeof(G&lt;int&gt;).GetField(...).FieldHandle` is observably *not*
@@ -68,6 +71,36 @@ module FieldHandleRegistry =
         | TypeDefn.GenericMethodParameter _
         | TypeDefn.Void -> false
 
+    /// The assembly that defines the field a handle with this declaring type would name.
+    ///
+    /// Derived rather than supplied by the caller, because a `FieldDefinitionHandle` indexes the
+    /// tables of the assembly that *defines* the field and both declaring-type arms `getOrAllocate`
+    /// permits already pin that assembly. A separately-supplied name could therefore only agree
+    /// with this or be a bug — and the wrong one is easy to reach, since a caller resolving a
+    /// `MemberReference` holds the *referencing* assembly, which is a different one. Supplying that
+    /// would mint a second registry id for a field the guest already holds a handle to, breaking
+    /// `ReferenceEquals(FieldInfo.GetFieldFromHandle(h), fi)`.
+    let private definingAssemblyOf
+        (allConcreteTypes : AllConcreteTypes)
+        (declaringType : RuntimeTypeHandleTarget)
+        : string
+        =
+        match declaringType with
+        | RuntimeTypeHandleTarget.Closed handle ->
+            match AllConcreteTypes.lookup handle allConcreteTypes with
+            | Some concrete -> concrete.AssemblyFullName
+            | None ->
+                // `lookup` answers `None` for the structural handles — byref, pointer, array — none
+                // of which declares a field with a `FieldDefinitionHandle`. Anything else is a
+                // handle that was never registered.
+                failwith
+                    $"FieldHandleRegistry: declaring type %O{handle} has no registered ConcreteType, so the field's defining assembly cannot be determined"
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> identity.AssemblyFullName
+        | other ->
+            // `getOrAllocate` refuses every other arm before reaching this.
+            failwith
+                $"BUG: FieldHandleRegistry.definingAssemblyOf reached %O{other}, which getOrAllocate is supposed to have refused"
+
     /// Returns a (struct) System.RuntimeFieldHandle, with its contents (reference type) freshly allocated if necessary.
     /// `declaringType` must be either `Closed` (a fully concrete declaring type — non-generic or
     /// a particular closed instantiation) or `OpenGenericTypeDefinition` (the open generic typedef,
@@ -79,7 +112,6 @@ module FieldHandleRegistry =
         (allConcreteTypes : AllConcreteTypes)
         (allocState : 'allocState)
         (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
-        (declaringAssyFullName : string)
         (declaringType : RuntimeTypeHandleTarget)
         (handle : FieldDefinitionHandle)
         (reg : FieldHandleRegistry)
@@ -126,7 +158,7 @@ module FieldHandleRegistry =
 
         let handle =
             {
-                AssemblyFullName = declaringAssyFullName
+                AssemblyFullName = definingAssemblyOf allConcreteTypes declaringType
                 FieldHandle = ComparableFieldDefinitionHandle.Make handle
                 DeclaringType = declaringType
             }
