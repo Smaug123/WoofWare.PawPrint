@@ -14,7 +14,22 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestEmulatedKernelSockets =
 
-    let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
+    // The soundness walk's coverage counters are sums over the whole run, so
+    // their spread relative to the mean shrinks as the case count grows. Over 40
+    // sampled runs the rarest of them ranged 18-47 at 500 cases — a threshold
+    // anywhere in that band is a coin toss — and 111-169 at 2000. Every
+    // threshold below is set at about half the minimum of 40 runs at this count.
+    let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 2000
+
+    /// The soundness walk's only input is a seed for its own `System.Random`, so
+    /// one draw is one walk and the seed's *magnitude* means nothing — nothing
+    /// is lost by having no shrinker, because a smaller seed is a different
+    /// walk rather than a simpler one. Drawing the seed here rather than
+    /// through `NonNegativeInt` is what makes the case count honest: FsCheck
+    /// sizes an integer generator, so at the default end size `NonNegativeInt`
+    /// yields values in [0, 100], and 500 cases were really ~85 distinct walks
+    /// resampled with replacement.
+    let private genWalkSeed : Gen<int> = Gen.choose (0, System.Int32.MaxValue)
 
     /// A kernel whose socket table and descriptor table are built by hand, so
     /// that `checkInvariants` has something unsound to reject. Every operation
@@ -289,7 +304,7 @@ module TestEmulatedKernelSockets =
         let mutable observedUnlinks = 0
         let mutable observedReaps = 0
 
-        let property (NonNegativeInt seed : NonNegativeInt) : unit =
+        let property (seed : int) : unit =
             let rng = System.Random (seed)
             let steps = rng.Next (1, 30)
 
@@ -472,21 +487,21 @@ module TestEmulatedKernelSockets =
                 VirtualFileSystem.checkInvariants (EmulatedKernel.pinnedInodes kernel) kernel.FileSystem
                 |> shouldEqual []
 
-        Check.One (propertyConfig, property)
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genWalkSeed) property)
 
         // Without these the run could be sound while never having exercised the
         // operations the clauses are about — a close that never fell on a socket
         // would leave the `UnreferencedSocket` clause untouched throughout.
-        observedSockets |> shouldBeGreaterThan 500
-        observedSocketCloses |> shouldBeGreaterThan 50
-        observedDups |> shouldBeGreaterThan 100
-        observedUnlinks |> shouldBeGreaterThan 100
+        observedSockets |> shouldBeGreaterThan 2500
+        observedSocketCloses |> shouldBeGreaterThan 500
+        observedDups |> shouldBeGreaterThan 2500
+        observedUnlinks |> shouldBeGreaterThan 1400
 
         // ...and a reap really happened, so the `DanglingOpenInode` and
         // `UnreachableFromRoot` clauses had something to be wrong about. An
         // unlink whose inode is still held reaps nothing, and a run of only
         // those would leave both clauses untouched.
-        observedReaps |> shouldBeGreaterThan 50
+        observedReaps |> shouldBeGreaterThan 1100
 
         // ...and specifically that a *directory* outlived its last name. Without
         // this the run could be sound while never producing an orphaned
@@ -498,12 +513,15 @@ module TestEmulatedKernelSockets =
         // `forgetIfUnheld`'s *cascade* is deliberately not guarded here.
         // Reaching it needs one four-step interleaving in a fixed order — open a
         // directory, unbind it, unbind its parent while the pin still holds,
-        // then close — which this generator produced not once in 500 runs of up
-        // to 60 steps. A threshold on it would be a flake waiting to happen; the
+        // then close — which an instrumented count of reaps of two inodes at
+        // once found not once in 80,000 walks at the case count above (nor in
+        // 500 walks of up to 60 steps, twice this one's length). Raising the
+        // case count chases a probability that is a product of four independent
+        // choices, so it does not concentrate the way the counters above do; the
         // cascade is pinned deterministically by
         // `TestEmulatedKernelInodeLifetime`'s `an orphan held by a descriptor
         // keeps its ancestors alive` and `the cascade stops at the root`.
-        observedHeldOrphanDirectories |> shouldBeGreaterThan 20
+        observedHeldOrphanDirectories |> shouldBeGreaterThan 50
 
     // --- socketEventRegistrationCouldFire ---
 
