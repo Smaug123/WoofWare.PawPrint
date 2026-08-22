@@ -155,10 +155,15 @@ in-flight syscall (each with its own oracle-validated observer):
   place of a re-read — pinned by `SocketEventWaitCountCapture.cs`, which
   overwrites the cell with the fatal-if-re-read 0 while the waiter is parked.
 - a real `close(2)` does not end an in-flight `epoll_wait`: the syscall holds
-  a file reference, so the port and its registrations stay alive for it and a
-  later edge can still complete the wait. PawPrint's close would sweep the
-  description and strand the waiter, so destroying the last descriptor of a
-  parked-on port refuses instead (retention is the unmodelled state).
+  a file reference, so a close through a `dup` changes nothing (measured on
+  real Linux .NET — `SocketEventWaitSurvivesCloseLinux.cs`, with the in-flight
+  call keyed by port *description* so the dead fd is never consulted again),
+  and even the last close leaves the wait completable — retention PawPrint
+  does not represent, so destroying the last descriptor of a parked-on port
+  refuses. **kevent is measured to differ**: the same guest on real macOS
+  exits 13 — the wait *ends with an error* when its fd closes — so under the
+  Darwin flavour any close of a descriptor onto an in-flight-waited port
+  refuses (the error itself, and the other-descriptor case, are unmeasured).
 
 ## Options considered
 

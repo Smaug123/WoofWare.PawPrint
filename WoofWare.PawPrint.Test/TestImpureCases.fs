@@ -1071,6 +1071,21 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // A blocked epoll_wait holds its port by file reference:
+                // closing the fd the wait went through, with a dup keeping
+                // the description alive, still delivers when the edge
+                // arrives. Linux-flavour because that is measured to be
+                // epoll's behaviour and not kevent's — the same guest on
+                // real macOS exits 13 (the wait ends with an error), which
+                // is why the Darwin-flavoured kernel refuses such a close.
+                FileName = "SocketEventWaitSurvivesCloseLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The same divergences under Darwin's answers: EOPNOTSUPP on
                 // the listening socket, EISCONN retries, the dead-socket
                 // latch after a refusal (EINVAL forever), AF_UNSPEC refused

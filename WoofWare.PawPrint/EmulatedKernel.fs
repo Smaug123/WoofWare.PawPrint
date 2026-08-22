@@ -2831,6 +2831,22 @@ type TcpConnection =
         ServerAddress : InternetEndpoint
     }
 
+/// One thread's in-flight `SystemNative_WaitForSocketEvents` call: the state
+/// the syscall captured when it was entered, which outlives anything the
+/// guest does to its arguments afterwards. The port is held by *description
+/// identity*, exactly as the real syscall holds a file reference — closing
+/// the fd the wait was called through changes nothing, because the fd is
+/// never consulted again.
+type ParkedSocketWait =
+    {
+        /// The open file description of the port being waited on.
+        Port : OpenFileDescriptionId
+        /// The `*count` read at entry. A real `epoll_wait` keeps using the
+        /// maxevents it was passed even if the guest overwrites the cell
+        /// mid-wait.
+        MaxEvents : int
+    }
+
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
 /// syscall-emulation state: the per-thread last-error registers, the native
 /// heap pool backing `Marshal.AllocHGlobal`, the Unix file-descriptor table,
@@ -2904,15 +2920,16 @@ type EmulatedKernel =
         /// commits, so a failed `epoll_ctl` leaves the kernel exactly as it
         /// found it.
         NextSocketEventRegistrationOrdinal : int64
-        /// The `maxevents` each thread parked in
-        /// `SystemNative_WaitForSocketEvents` entered its wait with. A real
-        /// `epoll_wait` keeps using the value it was passed even if the
-        /// guest overwrites the count cell mid-wait, so the woken handler
-        /// must consume this rather than re-read the cell. An entry exists
-        /// exactly while its thread's status is `BlockedOnSocketEvents`:
-        /// the handler stores it at park and removes it at delivery, so an
-        /// absent key means a first entry into the wait.
-        ParkedSocketWaitCounts : Map<ThreadId, int>
+        /// Each thread's in-flight `SystemNative_WaitForSocketEvents`
+        /// call, stored at park and removed at delivery — so an absent key
+        /// means a first entry into the wait, and a present one means the
+        /// handler is being re-entered and must use the captured state
+        /// instead of re-decoding its arguments. Present from the park
+        /// through the wake to the delivering re-entry, which is a strict
+        /// superset of the window `BlockedOnSocketEvents` covers: the
+        /// close-time retention check reads this, not the thread status,
+        /// so the woken-but-not-yet-run window is protected too.
+        ParkedSocketWaits : Map<ThreadId, ParkedSocketWait>
         /// The port a `bind(2)` of port 0 will try first.
         ///
         /// A counter rather than a draw from the seeded PRNG. Which port an
@@ -3708,7 +3725,7 @@ module EmulatedKernel =
             Connections = Map.empty
             NextConnectionId = ConnectionId 0L
             NextSocketEventRegistrationOrdinal = 0L
-            ParkedSocketWaitCounts = Map.empty
+            ParkedSocketWaits = Map.empty
             NextSocketId = SocketId 0L
             NextEphemeralPort = fst defaultEphemeralPortRange
             EphemeralPortRange = defaultEphemeralPortRange
@@ -5225,9 +5242,57 @@ module EmulatedKernel =
     /// still named is a question about the filesystem. Closing one of several
     /// descriptors onto a description destroys nothing, and so frees neither.
     let closeFd (fd : int) (kernel : EmulatedKernel) : Result<EmulatedKernel, FileDescriptorCloseError> =
+        // Resolved before the close so both refusals below can name what the
+        // fd referred to.
+        let closing = FileDescriptorRegistry.tryFindWithId fd kernel.FileDescriptors
+
         match FileDescriptorRegistry.close fd kernel.FileDescriptors with
         | Error e -> Error e
         | Ok (registry, destroyed) ->
+            // Closing a descriptor onto a port with an in-flight
+            // SystemNative_WaitForSocketEvents is where the flavours part,
+            // and each side is measured (SocketEventWaitSurvivesCloseLinux.cs
+            // and its macOS run):
+            //
+            //   * Linux's epoll_wait holds the port by file reference — a
+            //     close that leaves a dup changes nothing, and even the last
+            //     close leaves the in-flight syscall's registrations alive
+            //     for a later edge to complete. The dup case is modelled
+            //     (the description survives and the wait completes); the
+            //     last-close case would need retention this table does not
+            //     represent, so it refuses.
+            //   * Darwin's kevent *ends* with an error when the fd it was
+            //     entered through closes (measured; which error, and what a
+            //     close of a different descriptor onto the same kqueue does,
+            //     are not), so any such close refuses.
+            //
+            // Checked against the in-flight wait map rather than thread
+            // status, so the window between a wake and the woken thread's
+            // re-entry is covered too.
+            (match closing with
+             | Some (closingId, description) ->
+                 (match description.Target with
+                  | OpenFileTarget.SocketEventPort _ ->
+                      let waiter =
+                          kernel.ParkedSocketWaits
+                          |> Map.tryPick (fun thread wait -> if wait.Port = closingId then Some thread else None)
+
+                      match waiter with
+                      | None -> ()
+                      | Some thread ->
+                          match SimulatedUnixPlatform.flavour kernel.UnixPlatform with
+                          | SimulatedUnixFlavour.Linux ->
+                              if destroyed.IsSome then
+                                  failwith
+                                      $"EmulatedKernel.closeFd: fd %d{fd} was the last descriptor onto socket event port %O{closingId}, and thread %O{thread} has an in-flight SystemNative_WaitForSocketEvents on it. A real close leaves the in-flight epoll_wait holding the port — its registrations stay live and a later edge can still complete the wait — which PawPrint's descriptor table cannot represent. Implement port retention for in-flight waits before closing one out from under a waiter."
+                          | SimulatedUnixFlavour.Darwin ->
+                              failwith
+                                  $"EmulatedKernel.closeFd: fd %d{fd} names socket event port %O{closingId}, and thread %O{thread} has an in-flight SystemNative_WaitForSocketEvents on it. Measured, Darwin's kevent ends such a wait with an error when the fd it was entered through closes — an error PawPrint has not measured precisely, and closing a different descriptor onto the kqueue is unmeasured entirely. Measure what the woken wait reports before closing a kqueue out from under a waiter."
+                  | OpenFileTarget.StandardStream _
+                  | OpenFileTarget.File _
+                  | OpenFileTarget.Socket _ -> ())
+             | None -> ())
+
             let sockets, connections =
                 match destroyed with
                 | Some description ->

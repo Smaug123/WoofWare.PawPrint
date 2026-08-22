@@ -1482,16 +1482,6 @@ module FileDescriptorRegistry =
                     registry.Descriptions
         }
 
-    /// Whether closing `fd` would destroy its open file description — that
-    /// is, no other descriptor names it. `None` when `fd` is not live.
-    let closeWouldDestroy (fd : int) (registry : FileDescriptorRegistry) : bool option =
-        match Map.tryFind fd registry.Fds with
-        | None -> None
-        | Some id ->
-            registry.Fds
-            |> Map.forall (fun otherFd otherId -> otherFd = fd || otherId <> id)
-            |> Some
-
     /// Replace the ready list of the port `portId` names — delivery's
     /// write-back once a walk has consumed a prefix. Loudly partial on a
     /// dead or non-port description, on an entry the interest table does not

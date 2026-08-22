@@ -412,36 +412,6 @@ module NativeSystemNative =
 
         state
 
-    /// `close(2)` destroying a socket event port a thread is parked on is
-    /// unmodelled, so refuse before letting the close proceed. A real close
-    /// does not end an in-flight `epoll_wait`: the syscall entered holding a
-    /// file reference, so the port and its registrations stay alive for it,
-    /// and a later readiness edge can still complete the wait — retention
-    /// PawPrint's descriptor table does not represent (the close sweeps the
-    /// description away, which would strand the waiter in a sleep a real
-    /// kernel can end). No managed caller closes a port out from under its
-    /// own engine thread. Closing a `dup` while the description survives is
-    /// fine, as is destroying a port nothing waits on.
-    let private refuseDestroyingParkedPort (operation : string) (fd : int) (state : IlMachineState) : unit =
-        match FileDescriptorRegistry.tryFindWithId fd state.Kernel.FileDescriptors with
-        | None -> ()
-        | Some (portId, description) ->
-
-        match description.Target with
-        | OpenFileTarget.StandardStream _
-        | OpenFileTarget.File _
-        | OpenFileTarget.Socket _ -> ()
-        | OpenFileTarget.SocketEventPort _ ->
-
-        if FileDescriptorRegistry.closeWouldDestroy fd state.Kernel.FileDescriptors = Some true then
-            let parked =
-                state.ThreadState
-                |> Map.exists (fun _ ts -> ts.Status = ThreadStatus.BlockedOnSocketEvents portId)
-
-            if parked then
-                failwith
-                    $"%s{operation}: fd %d{fd} is the last descriptor onto socket event port %O{portId}, and a thread is parked in SystemNative_WaitForSocketEvents on it. A real close leaves the in-flight epoll_wait holding the port — its registrations stay live and a later edge can still complete the wait — which PawPrint's descriptor table cannot represent. Implement port retention for in-flight waits before closing one out from under a waiter."
-
     /// Drain `byteCount` bytes from a caller-supplied `byte*`: the mirror of
     /// `writeBytesThrough`, with the same room requirement and the same per-byte
     /// walk.
@@ -4576,8 +4546,6 @@ module NativeSystemNative =
             // here. Per Unix convention, errno is left untouched on success.
             let fd = fdArgument "SystemNative_Close" instruction.Arguments.[0]
 
-            refuseDestroyingParkedPort "SystemNative_Close" fd state
-
             let resultCode, state =
                 match EmulatedKernel.closeFd fd state.Kernel with
                 | Ok kernel -> 0, state.MapKernel (fun _ -> kernel)
@@ -5837,8 +5805,6 @@ module NativeSystemNative =
             // left untouched on success by the same Unix convention.
             let fd = fdArgument "SystemNative_CloseSocketEventPort" instruction.Arguments.[0]
 
-            refuseDestroyingParkedPort "SystemNative_CloseSocketEventPort" fd state
-
             let error, state =
                 match EmulatedKernel.closeFd fd state.Kernel with
                 | Ok kernel -> UnixError.palSuccess, state.MapKernel (fun _ -> kernel)
@@ -6244,35 +6210,6 @@ module NativeSystemNative =
                     failwith
                         $"%s{operation}: `count` is %O{countPointer}, which is not null but names no storage. The C wrapper dereferences it in user space, so a real run would fault; PawPrint does not model that fault. Pass a real in-out parameter."
 
-            // A woken thread re-enters this handler from the top, but its wait
-            // already captured `*count` at first entry, and a real in-flight
-            // `epoll_wait` keeps using the value it was passed even if the
-            // guest has overwritten the cell since. So a park leaves the
-            // captured count in the kernel, and a re-entry consumes it in
-            // place of a re-read — which also skips the wrapper's negative
-            // screen, a check the real syscall ran once and never again.
-            let captured = Map.tryFind ctx.Thread state.Kernel.ParkedSocketWaitCounts
-
-            let requestedCount =
-                match captured with
-                | Some count -> count
-                | None ->
-                    let bytes = readBytesThrough ctx operation countCell 4 state
-                    BinaryPrimitives.ReadInt32LittleEndian (bytes.AsSpan ())
-
-            if requestedCount < 0 then
-                // EFAULT, which is the wrapper's own choice and neither kernel's:
-                // `epoll_wait` answers EINVAL for a non-positive `maxevents`, and
-                // never sees this value. Unreachable on a re-entry: a captured
-                // count was screened before the park.
-                refuseBeforeSyscall ()
-            else
-
-            // Past the wrapper, so the call really does consult `port` now.
-            let fd = fdArgument operation instruction.Arguments.[0]
-
-            let openFile = FileDescriptorRegistry.tryFindWithId fd state.Kernel.FileDescriptors
-
             // A row the syscall reached and failed. Two consequences beyond the
             // returned PAL code: the inner function writes its flavour's sentinel
             // through `count`, and the syscall set `errno` on the way past — which
@@ -6308,12 +6245,25 @@ module NativeSystemNative =
             // this handler and writes the event batch through the caller's
             // own `buffer`, rather than the wake having to reach into a
             // frame it does not own from some other thread's step.
-            let park (port : OpenFileDescriptionId) (state : IlMachineState) : NativeHandlerResult option =
-                // The capture that survives the park: re-entry reads this
-                // instead of the (possibly since-overwritten) count cell.
+            let park
+                (port : OpenFileDescriptionId)
+                (requestedCount : int)
+                (state : IlMachineState)
+                : NativeHandlerResult option
+                =
+                // The capture that survives the park: what the syscall was
+                // entered with, consulted by the re-entry in place of the
+                // arguments the guest may have scribbled on since.
                 state.MapKernel (fun kernel ->
                     { kernel with
-                        ParkedSocketWaitCounts = Map.add ctx.Thread requestedCount kernel.ParkedSocketWaitCounts
+                        ParkedSocketWaits =
+                            Map.add
+                                ctx.Thread
+                                {
+                                    Port = port
+                                    MaxEvents = requestedCount
+                                }
+                                kernel.ParkedSocketWaits
                     }
                 )
                 |> Scheduler.blockOnSocketEvents ctx.Thread port
@@ -6374,10 +6324,11 @@ module NativeSystemNative =
                 BinaryPrimitives.WriteInt32LittleEndian (Span<byte> countBytes, List.length delivered)
 
                 // A successful wait leaves errno alone. The wait is over, so
-                // the captured count (if this was a re-entry) goes with it.
+                // the captured in-flight state (if this was a re-entry) goes
+                // with it.
                 state.MapKernel (fun _ ->
                     { kernel with
-                        ParkedSocketWaitCounts = Map.remove ctx.Thread kernel.ParkedSocketWaitCounts
+                        ParkedSocketWaits = Map.remove ctx.Thread kernel.ParkedSocketWaits
                     }
                 )
                 |> writeBytesThrough ctx operation bufferPointer (ImmutableArray.CreateRange bytes)
@@ -6392,13 +6343,42 @@ module NativeSystemNative =
             // entries whose re-poll is nonempty, silently consuming the
             // stale ones — so even a walk that delivers nothing may change
             // the kernel, and that write-back happens before any park.
-            let deliverOrPark (port : OpenFileDescriptionId) : NativeHandlerResult option =
+            let deliverOrPark (port : OpenFileDescriptionId) (requestedCount : int) : NativeHandlerResult option =
                 let delivered, kernel =
                     EmulatedKernel.deliverSocketEvents port requestedCount state.Kernel
 
                 match delivered with
-                | [] -> park port (state.MapKernel (fun _ -> kernel))
+                | [] -> park port requestedCount (state.MapKernel (fun _ -> kernel))
                 | delivered -> deliver delivered kernel
+
+            // A woken thread re-enters this handler from the top, but the
+            // syscall was already *entered*: the port identity and maxevents
+            // it captured outlive anything the guest has done to the
+            // arguments since — the count cell can be overwritten, and the
+            // fd the wait was called through can be closed (a dup keeps the
+            // description alive; `closeFd`'s retention refusal keeps the
+            // last descriptor from destroying it). So a re-entry consults no
+            // screen and no descriptor table: it delivers from the captured
+            // description, or parks again.
+            match Map.tryFind ctx.Thread state.Kernel.ParkedSocketWaits with
+            | Some inFlight -> deliverOrPark inFlight.Port inFlight.MaxEvents
+            | None ->
+
+            let requestedCount =
+                let bytes = readBytesThrough ctx operation countCell 4 state
+                BinaryPrimitives.ReadInt32LittleEndian (bytes.AsSpan ())
+
+            if requestedCount < 0 then
+                // EFAULT, which is the wrapper's own choice and neither kernel's:
+                // `epoll_wait` answers EINVAL for a non-positive `maxevents`, and
+                // never sees this value.
+                refuseBeforeSyscall ()
+            else
+
+            // Past the wrapper, so the call really does consult `port` now.
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            let openFile = FileDescriptorRegistry.tryFindWithId fd state.Kernel.FileDescriptors
 
             match flavour with
             | SimulatedUnixFlavour.Linux ->
@@ -6447,7 +6427,7 @@ module NativeSystemNative =
                     // EINVAL, and EFAULT still wins ahead of it for an
                     // unmappable buffer.
                     failFromSyscall UnixError.EINVAL
-                | OpenFileTarget.SocketEventPort _ -> deliverOrPark port
+                | OpenFileTarget.SocketEventPort _ -> deliverOrPark port requestedCount
             | SimulatedUnixFlavour.Darwin ->
                 // Measured on 25.6.0, and flatter: `kevent` resolves the descriptor
                 // before its `nevents == 0` early return, has no "wrong kind of
@@ -6502,7 +6482,7 @@ module NativeSystemNative =
                     failwith
                         $"%s{operation}: a Darwin-flavoured kernel holds %d{Map.count portState.Registrations} socket event registrations, but the Darwin registration arm refuses every change — this is an interpreter bug."
 
-                park port state
+                park port requestedCount state
         | Some "SystemNative_IsATty",
           [ ConcreteIntPtr state.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->

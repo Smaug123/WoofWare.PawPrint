@@ -763,6 +763,68 @@ module TestSocketEventDelivery =
         dataOf delivered |> shouldEqual [ 2UL ; 1UL ]
         assertSound kernel
 
+    /// The close-time retention rule, flavour by flavour (both measured, see
+    /// `SocketEventWaitSurvivesCloseLinux.cs`): under Linux a dup-survived
+    /// close of an in-flight-waited port proceeds — the wait holds the
+    /// description — and only destroying the description refuses; under
+    /// Darwin, where kevent ends the wait with an unmeasured error, any such
+    /// close refuses.
+    [<Test>]
+    let ``closing a descriptor of an in-flight-waited port follows the measured flavour split`` () : unit =
+        let build () =
+            let portFd, portId, kernel = addPort EmulatedKernel.initial
+
+            let dupFd, kernel =
+                match FileDescriptorRegistry.dup portFd kernel.FileDescriptors with
+                | Ok (fd, registry) ->
+                    fd,
+                    { kernel with
+                        FileDescriptors = registry
+                    }
+                | Error error -> failwith $"dup failed: %O{error}"
+
+            let kernel =
+                { kernel with
+                    ParkedSocketWaits =
+                        Map.ofList
+                            [
+                                ThreadId 1,
+                                {
+                                    Port = portId
+                                    MaxEvents = 8
+                                }
+                            ]
+                }
+
+            portFd, dupFd, kernel
+
+        // Linux: the dup-survived close proceeds...
+        let portFd, dupFd, kernel = build ()
+
+        let kernel =
+            match EmulatedKernel.closeFd dupFd kernel with
+            | Ok kernel -> kernel
+            | Error error -> failwith $"close failed: %O{error}"
+
+        // ...and destroying the description refuses.
+        let exc =
+            Assert.Throws<System.Exception> (fun () -> EmulatedKernel.closeFd portFd kernel |> ignore)
+
+        exc.Message |> shouldContainText "Implement port retention"
+
+        // Darwin: even the dup-survived close refuses.
+        let _, dupFd, kernel = build ()
+
+        let kernel =
+            { kernel with
+                UnixPlatform = SimulatedUnixPlatform.macOsArm64
+            }
+
+        let exc =
+            Assert.Throws<System.Exception> (fun () -> EmulatedKernel.closeFd dupFd kernel |> ignore)
+
+        exc.Message |> shouldContainText "closing a kqueue out from under a waiter"
+
     // --- forged invariants ---
 
     /// `checkInvariants` rejects an ordinal at or above the counter, and a
