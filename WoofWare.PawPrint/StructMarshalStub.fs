@@ -756,6 +756,7 @@ module StructMarshalStub =
                     false
                     false
                     false // this frame has no program counter to advance
+                    IlMachineStateExecution.CallSiteTransition.StaysCooperative
                     convertToNative.Generics
                     convertToNative
                     thread

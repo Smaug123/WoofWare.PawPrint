@@ -429,6 +429,18 @@ type MetadataMethodFacts =
         ImplAttributes : MethodImplAttributes
 
         NativeImport : NativeMethodImport option
+
+        /// <summary>
+        /// Does this method carry <c>[System.Runtime.InteropServices.UnmanagedCallersOnly]</c>?
+        /// </summary>
+        /// <remarks>
+        /// Such a method may be entered only from native code: CoreCLR compiles it with
+        /// <c>CORJIT_FLAG_REVERSE_PINVOKE</c>, whose prologue asserts preemptive GC mode, so any
+        /// managed entry is a fatal error rather than a catchable one. Derived from
+        /// <see cref="CustomAttributes"/>, and computed here so that the call path can ask without
+        /// re-walking metadata; the two are built together and so cannot drift apart.
+        /// </remarks>
+        IsUnmanagedCallersOnly : bool
     }
 
 /// <summary>
@@ -877,6 +889,17 @@ module MethodInfo =
         | MethodInfo.Metadata (_, facts) ->
             hasIntrinsicAttribute getMemberRefParentType methodDefs facts.CustomAttributes
 
+    /// May this method be entered only from native code — that is, does it carry
+    /// `[System.Runtime.InteropServices.UnmanagedCallersOnly]`?
+    ///
+    /// False for a synthesised method, on the same reasoning as `isJITIntrinsic`: there is no
+    /// MethodDef row for an attribute to hang off, so the answer for a method the runtime supplies
+    /// is simply "no".
+    let isUnmanagedCallersOnly (this : MethodInfo<'a, 'b, 'c>) : bool =
+        match this with
+        | MethodInfo.Synthesised _ -> false
+        | MethodInfo.Metadata (_, facts) -> facts.IsUnmanagedCallersOnly
+
     let mapTypeGenerics<'a, 'b, 'methodGen, 'vars>
         (f : 'a -> 'b)
         (m : MethodInfo<'a, 'methodGen, 'vars>)
@@ -1156,6 +1179,29 @@ module MethodInfo =
 
         result
 
+    /// Does this method carry `[System.Runtime.InteropServices.UnmanagedCallersOnly]`?
+    ///
+    /// Accepted risk, inherited from `CustomAttribute.constructorParentName` and consistent with
+    /// `FieldInfo`'s `[ThreadStatic]` check: the match is on namespace+name strings and does not
+    /// verify that the type resolves to corelib's `UnmanagedCallersOnlyAttribute`, so a guest
+    /// declaring its own attribute of that full name would be classified as carrying this one.
+    let private hasUnmanagedCallersOnlyAttribute
+        (metadataReader : MetadataReader)
+        (describeMethod : unit -> string)
+        (methodDef : MethodDefinition)
+        : bool
+        =
+        let describeTarget () = $"method %s{describeMethod ()}"
+
+        methodDef.GetCustomAttributes ()
+        |> Seq.exists (fun handle ->
+            let attr = metadataReader.GetCustomAttribute handle
+
+            match CustomAttribute.constructorParentName metadataReader describeTarget attr.Constructor with
+            | Some (ns, name) -> ns = "System.Runtime.InteropServices" && name = "UnmanagedCallersOnlyAttribute"
+            | None -> false
+        )
+
     let read
         (peReader : PEReader)
         (metadataReader : MetadataReader)
@@ -1257,6 +1303,12 @@ module MethodInfo =
             else
                 None
 
+        let isUnmanagedCallersOnly =
+            hasUnmanagedCallersOnlyAttribute
+                metadataReader
+                (fun () -> $"%s{assemblyName.Name}!%s{declaringTypeNamespace}.%s{declaringTypeName}::%s{methodName}")
+                methodDef
+
         let declaringType =
             ConcreteType.make
                 assemblyName
@@ -1294,6 +1346,7 @@ module MethodInfo =
                 CustomAttributes = attrs
                 ImplAttributes = implAttrs
                 NativeImport = nativeImport
+                IsUnmanagedCallersOnly = isUnmanagedCallersOnly
             }
         )
 

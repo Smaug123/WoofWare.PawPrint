@@ -55,6 +55,9 @@ module TestVirtualFileSystemAgainstHost =
     extern int private unlink(string path)
 
     [<DllImport("libc", SetLastError = true)>]
+    extern int private rmdir(string path)
+
+    [<DllImport("libc", SetLastError = true)>]
     extern int private ftruncate(int fd, int64 length)
 
     [<DllImport("libc", SetLastError = true)>]
@@ -217,6 +220,12 @@ module TestVirtualFileSystemAgainstHost =
             // from a symlink target is looked up like any other, so this must
             // earn the same EACCES that naming it directly does.
             "lns", "ns"
+            // To an *empty* directory, which `ld` is not. This is the row where
+            // Darwin's `rmdir` traverses the final link and removes what it
+            // named, and Linux's answers ENOTDIR — the destructive divergence,
+            // and the reason this fixture compares tree deltas rather than
+            // errnos.
+            "lsub", "d/sub"
         ]
 
     /// The paths resolved through both worlds.
@@ -267,6 +276,8 @@ module TestVirtualFileSystemAgainstHost =
             // dereferences it and gives EEXIST, which is the row that separates
             // `TrailingSeparatorPolicy.Ignore` from `Demand`.
             "cycleA/"
+            "lsub"
+            "lsub/"
             "selfext"
             // readlink(2) does not follow a *final* symlink, so a cycle only
             // shows up as ELOOP when it sits part-way along a path. Without
@@ -1689,7 +1700,7 @@ module TestVirtualFileSystemAgainstHost =
         | UnlinkVerdict.Remove (directory, name) ->
 
         let removed =
-            VirtualFileSystem.unbind directory name buildTime vfs
+            VirtualFileSystem.unbind UnbindTargetEffect.LostALink directory name buildTime vfs
             |> function
                 | Ok (_, updated) -> updated
                 | Error error ->
@@ -1842,6 +1853,162 @@ module TestVirtualFileSystemAgainstHost =
             // Linux answers EISDIR for every directory target, however reached,
             // and never reaches ELOOP here because it never traverses.
             failedWith UnixError.EISDIR |> shouldEqual true
+
+    // --------------------------------------------------------------- rmdir
+
+    let private hostRmDirOutcome (root : string) (relative : string) : UnlinkOutcome =
+        let result = rmdir (hostPath root relative)
+        let failure = errno ()
+
+        // Widened before listing, exactly as the `unlink` half does and for the
+        // same reason: three corpus directories cannot be enumerated as they
+        // stand, and narrowing is what the permission rows are about.
+        for name, _ in narrowedDirectories do
+            trySetMode (Path.Combine (root, name)) 0o755 |> ignore<bool>
+
+        let after = hostListing root
+        let gone = corpusPaths |> List.filter (fun p -> not (List.contains p after))
+
+        if result = 0 then
+            if List.isEmpty gone then
+                failwith
+                    $"rmdir(%s{relative}) succeeded on this kernel but removed nothing inside the row's own tree, so it removed something outside it. This fixture's paths are all relative names of corpus objects; one of them is escaping."
+
+            UnlinkOutcome.Removed gone
+        else
+
+        if not (List.isEmpty gone) then
+            failwith $"rmdir(%s{relative}) failed with errno %d{failure} on this kernel and yet removed %A{gone}."
+
+        UnlinkOutcome.Failed failure
+
+    let private modelRmDirOutcome (vfs : VirtualFileSystem) (relative : string) : UnlinkOutcome =
+        let rules = SimulatedUnixPlatform.rmDirRules (hostPlatform ())
+
+        match
+            VirtualFileSystem.resolveFull
+                (limits ())
+                (hostPrivilege ())
+                (VirtualFileSystem.root vfs)
+                SymlinkPolicy.NoFollowFinal
+                rules.TrailingSeparator
+                (UnixPath.parseOrFail "test" relative)
+                vfs
+        with
+        | Error error -> UnlinkOutcome.Failed (hostErrno error)
+        | Ok resolution ->
+
+        match
+            RmDirRules.verdict (SimulatedUnixPlatform.flavour (hostPlatform ())) (hostPrivilege ()) resolution vfs
+        with
+        | RmDirVerdict.Refuse error -> UnlinkOutcome.Failed (hostErrno error)
+        | RmDirVerdict.Remove (directory, name) ->
+
+        let removed =
+            VirtualFileSystem.unbind rules.RemovedDirectoryEffect directory name buildTime vfs
+            |> function
+                | Ok (_, updated) -> updated
+                | Error error ->
+                    failwith $"the model's verdict said to remove %s{relative} and then could not: %O{error}"
+
+        let after = modelListing removed
+        UnlinkOutcome.Removed (corpusPaths |> List.filter (fun p -> not (List.contains p after)))
+
+    let private rmDirProbePaths =
+        probePaths
+        |> List.filter (fun path -> not (List.contains path rootReachingPaths))
+
+    /// Run one `rmdir` through both worlds, each built fresh — `rmdir` destroys,
+    /// so no two rows may share a tree.
+    let private compareRmDir (relative : string) : UnlinkOutcome * UnlinkOutcome =
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-rmdir-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            buildHostTree root
+            let vfs = buildModel ()
+            hostRmDirOutcome root relative, modelRmDirOutcome vfs relative
+        finally
+            removeHostTree root
+
+    [<Test>]
+    let ``rmdir decides exactly as this kernel does, and destroys the same thing`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // The row this comparison exists for is "lsub/": Darwin's walk traverses
+        // the final symlink and removes `d/sub`, where Linux's cannot and
+        // answers ENOTDIR. An errno-only comparison would see the Darwin column
+        // succeed and never ask *what* it destroyed. macOS locally and Linux in
+        // CI each falsify their own column.
+        let mismatches =
+            [
+                for relative in rmDirProbePaths do
+                    let expected, actual = compareRmDir relative
+
+                    if expected <> actual then
+                        yield $"rmdir %s{relative}: kernel said %A{expected}, model said %A{actual}"
+            ]
+
+        if not (List.isEmpty mismatches) then
+            let rendered = String.Join (Environment.NewLine, mismatches)
+
+            failwith $"The model disagrees with this kernel about rmdir:%s{Environment.NewLine}%s{rendered}"
+
+    [<Test>]
+    let ``the rmdir corpus reaches every verdict this kernel can give`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // Without this the comparison above could pass by never removing
+        // anything, or by never provoking a refusal. Stated against the
+        // *kernel's* answers rather than the model's, so it cannot be satisfied
+        // by the model agreeing with itself.
+        let observed =
+            rmDirProbePaths
+            |> List.map (fun relative -> fst (compareRmDir relative))
+            |> List.distinct
+
+        let removals =
+            observed
+            |> List.choose (fun outcome ->
+                match outcome with
+                | UnlinkOutcome.Removed gone -> Some gone
+                | UnlinkOutcome.Failed _ -> None
+            )
+
+        removals |> List.isEmpty |> shouldEqual false
+
+        // One `rmdir` removes at most one name, and an empty directory has
+        // nothing beneath it — so exactly one path goes each time.
+        for gone in removals do
+            gone |> List.length |> shouldEqual 1
+
+        let failedWith (error : UnixError) : bool =
+            observed |> List.contains (UnlinkOutcome.Failed (hostErrno error))
+
+        failedWith UnixError.ENOENT |> shouldEqual true
+        failedWith UnixError.ENOTDIR |> shouldEqual true
+        failedWith UnixError.ENOTEMPTY |> shouldEqual true
+        failedWith UnixError.EINVAL |> shouldEqual true
+
+        // The permission rows, which a root test host cannot reach: it ignores
+        // every mode bit, and `hostPrivilege` asks the model the same way, so
+        // they go vacuous rather than red.
+        if geteuid () <> 0u then
+            failedWith UnixError.EACCES |> shouldEqual true
+
+        // The divergent verdicts, asserted per flavour so that the corpus cannot
+        // quietly lose the rows which separate the two kernels.
+        if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
+            // Darwin's walk resolves a trailing separator, so it alone reaches
+            // ELOOP (through "cycleA/") — and alone removes something through a
+            // final symlink.
+            failedWith UnixError.ELOOP |> shouldEqual true
+
+            removals |> List.concat |> List.contains "d/sub" |> shouldEqual true
 
     let private requireRuntimeSrc () : string =
         match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with

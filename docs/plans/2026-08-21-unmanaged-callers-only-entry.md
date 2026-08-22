@@ -242,14 +242,30 @@ Copy that. Note there is already a third attribute-name decoder at parse time
 (`tryReadAttributeTypeName`, MethodInfo.fs:1024, used for `[UnsafeAccessor]` at :1146-1157) — do
 not add a fourth.
 
-Point-of-use rather than precomputed onto `MetadataMethodFacts`. The first draft justified this by
-a parse-time cost that turns out already to be paid — `CustomAttributes` is materialised eagerly
-for every method (MethodInfo.fs:1230, 1294) and parse already runs a per-method attribute scan —
-so the real trade is: precomputing adds a name comparison inside a loop that already runs, while
-point-of-use pays a scan of an array that is empty for most methods, on a path that is now every
-call. Measure with `WoofWare.PawPrint.Performance` (`StackHeavyProgramBenchmarks`,
-`ReferenceArgProgramBenchmarks`, `VirtualDispatchProgramBenchmarks`) before and after, and put the
-numbers in the PR; if the point-of-use scan shows, precompute instead.
+Precomputed onto `MetadataMethodFacts`, as `IsUnmanagedCallersOnly`, rather than scanned at the
+point of use. This reverses the earlier draft, on three facts established while reading the code:
+
+- `CustomAttribute.Constructor` is a `MetadataToken`, not the `EntityHandle` that
+  `constructorParentName` takes. A point-of-use scan therefore cannot reuse the Domain's decoder
+  as-is: it would need either a fifth attribute-name decoder written against `DumpedAssembly`'s
+  parsed tables, or a refactor of the public one. Parse time has the `MetadataReader` in hand and
+  reuses `constructorParentName` verbatim.
+- `FieldInfo.IsThreadStatic` — the precedent the earlier draft named for the *classifier* — turns
+  out to precompute, for this reason stated in its own comment: "`[ThreadStatic]` is a custom
+  attribute rather than a `FieldAttributes` flag, so it is computed once here at parse time rather
+  than re-walking metadata at each access." Following the precedent means following that too.
+- `callMethodWithCommitment` is the hottest path in the interpreter, and the gate is unconditional
+  on it.
+
+`MetadataMethodFacts` has exactly one construction site (MethodInfo.fs), so the blast radius is a
+field addition rather than a sweep. It is a *derived* fact sitting beside the `CustomAttributes` it
+is derived from, which is a denormalisation; the same shape is already accepted for
+`FieldInfo.IsThreadStatic`, and the field is computed at the one place the array is built, so the
+two cannot drift apart. Note `WoofWare.PawPrint.Domain` is a published package, so this is a
+source-breaking addition for any external consumer constructing the record.
+
+Measure with `WoofWare.PawPrint.Performance` before and after anyway: precompute should be free on
+the call path, and a measurement is what says so.
 
 Accepted risk, precedented on `hasThreadStaticAttribute` (FieldInfo.fs:126-128) and stated in the
 code: the match is on namespace + name and does not verify the attribute type resolves to
@@ -296,3 +312,81 @@ Written first, observed failing, then mutation-tested.
   `FunctionPointerTarget.Managed` the gate would wrongly abort it. The gate's comment says so, and
   the classifier's contract is stated as "a *managed* entry aborts" so that host-initiated entries
   are exempt by construction.
+
+---
+
+# PR 2 — what actually happened
+
+Shipped as planned: one gate in `callMethodWithCommitment`, ahead of class initialisation, keyed on
+a `CallSiteConvention` the `calli` handler computes from its StandaloneSignature and every other
+caller passes as `Managed`.
+
+## Two departures from the plan
+
+**The classifier precomputes** (see the amended section above). The deciding facts were found while
+reading the code, not while planning.
+
+**The gate's reach is narrower than "all four routes" suggested, and mutation testing is what said
+so.** Mutating each managed call site's convention to `Unmanaged` in turn:
+
+| mutant | outcome |
+| --- | --- |
+| the gate never fires | killed — every refusal guest + the ordering guest |
+| the attribute predicate inverted | killed — control *and* every refusal guest |
+| the attribute classifier ignores the namespace | killed — control, via its decoy attribute |
+| `calli` reports its call site as cooperative | killed — control's legal `delegate* unmanaged` call |
+| delegate `Invoke` treated as transitioning | killed — delegate guest + ordering guest |
+| reflection's invoke treated as transitioning | killed — reflection guest **and ForceEmitInvoke** |
+| `call` treated as transitioning | **survived** |
+| `callvirt` treated as transitioning | **survived** |
+| abort reports `COR_E_FAILFAST` | killed — the kind assertion, not the exit code |
+| unmanaged convention classified as cooperative | killed — unit tests + control |
+| vararg classified as transitioning | killed — unit tests only |
+| the classifier reads the header only | killed — both modifier tests |
+| the modifier walk stops at the outermost | killed — the multi-modifier test |
+| the suppression modifier matched on name alone | killed — the fabricated decoy |
+
+The reflection mutant killing *both* reflection guests is the interesting one: under PawPrint's
+default, `Switch.System.Reflection.ForceEmitInvoke` changes nothing, because dynamic code is off and
+CoreLib falls back to the interpreted invoke. So that guest is a distinct arrival on the oracle
+only. Turning `IsDynamicCodeSupported` on does send it down the emit path, where it stops at an
+unimplemented `ModuleHandle.ResolveMethod` for a method on a generic type — measured, and recorded
+in the guest.
+
+## The hole review found
+
+Codex caught one, and it was real. `delegate* unmanaged[SuppressGCTransition]<int, int>` reaches
+such a method and real .NET refuses it with the same fatal error as any managed entry — measured —
+while the gate let it through. The suppression is *not* in the calling convention: both call sites
+carry header `0x09`, and C# puts `SuppressGCTransition` in a `modopt` on the return type, so the
+blobs are `09 01 08 08` against `09 01 20 49 08 08`. And the suppression is exactly what makes it
+fatal, because the caller never leaves cooperative mode for the callee's prologue to find it in.
+
+So the classifier had been asking the wrong question. `CallSiteConvention` became
+`CallSiteTransition = EntersPreemptive | StaysCooperative`. The alternative — keep the convention DU
+and add a separate suppression flag — was rejected because `CallSiteConvention.Unmanaged` would then
+no longer justify the operation its callers use it for, which is the failure the "keep the
+classifier truthful" rule exists to prevent.
+
+Neither survivor is closable here. `callvirt` never can be: the attribute is legal only on a static
+method and `callvirt` takes an object reference. `call` needs emitted IL, and the `DynamicMethod`
+guest written for it hits a second, unrelated emit gap ("a dynamic method's Call names DynamicScope
+entry 2 … which holds a System.RuntimeMethodHandle rather than a method"). Parked against the real
+runtime alone; adding it to `cases` is the whole of the work once PawPrint can run an emitted
+`call`.
+
+## Cost
+
+`StackHeavyProgramBenchmarks`, 20 iterations, interleaved base/gate/base/gate on one machine:
+
+| round | base | gate |
+| --- | --- | --- |
+| 1 | 342.7 ms ± 41.7 | 338.3 ms ± 35.6 |
+| 2 | 390.2 ms ± 45.4 | 396.8 ms ± 38.0 |
+
+No detectable difference: the within-round gap is ~1.5% either way against ±40 ms error bars and
+flips sign, while the *same base code* drifted 342 → 390 ms between rounds. Allocation was identical
+in every run (1.04 GB, 133000 Gen0/1000 ops), which is the deterministic quantity and the one that
+would move if the change did real per-call work. An earlier probe that *removed* the parse-time scan
+measured 432 ms — slower than either, with strictly less work — which is what established that this
+box cannot resolve a few percent.

@@ -901,3 +901,62 @@ arm in `Native/NativeRuntimeFieldHandle.fs`.
 `WoofWare.PawPrint.Test/sourcesPure/ReflectionFieldSetValueFailingCctor.cs` is the measured
 example, parked in `TestPureCases.unimplemented` so the real-runtime side keeps asserting what the
 answer should be.
+
+## `[UnmanagedCallersOnly]` declarations and unmanaged call sites are not validated
+
+**CoreCLR**: `COMDelegate::ThrowIfInvalidUnmanagedCallersOnlyUsage` (`vm/comdelegate.cpp:2029-2051`)
+validates the *declaration* before the reverse-P/Invoke prologue is ever installed, and throws a
+**catchable** `InvalidProgramException` for each way it can be wrong: a non-static method
+(`InvalidProgram_NonStaticMethod`), a generic one (`InvalidProgram_GenericMethod`), and one whose
+signature is not blittable (`InvalidProgram_NonBlittableTypes`). Only a *valid* declaration goes on
+to get the prologue whose failed transition is the uncatchable
+`EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE` that `ReversePInvokeBadTransition` raises.
+
+**PawPrint**: no such validation. The gate in `callMethodWithCommitment` asks only whether the
+method carries the attribute and whether the call site leaves cooperative mode, so an *invalid*
+declaration entered from managed code is reported as the transition failure — the wrong error, and
+uncatchable where CoreCLR's is catchable.
+
+**Spec status**: Unspecified. `UnmanagedCallersOnlyAttribute` is a runtime contract with no CLI
+counterpart, and ECMA-335 says nothing about it.
+
+The same gap has two further cases, both of which a guest *can* compile, and both measured:
+
+- A method carrying both `[DllImport]` and `[UnmanagedCallersOnly]`. Reached through a function
+  pointer (a direct call is CS8901), real .NET throws a catchable `NotSupportedException`: "Method
+  'Program.getpid' cannot be marked with both DllImportAttribute and UnmanagedCallersOnlyAttribute."
+  PawPrint dispatches the P/Invoke.
+- A call site naming two base calling conventions, `delegate* unmanaged[Cdecl, Stdcall]<int, int>`.
+  Real .NET throws a catchable `InvalidProgramException`: "Multiple unmanaged calling conventions
+  are specified. Only a single calling convention is supported." (`CallConvBuilder::AddTypeName`
+  refuses the second, callconvbuilder.cpp.) PawPrint runs the call. This one is not really about
+  the attribute at all — it is `calli` call-site validation, and it diverges the same way for an
+  ordinary target.
+
+**Why we chose this**: validating these is a coherent piece of work, and a different one from the
+transition rule. Every case here is a *catchable* exception raised before the transition is ever
+attempted, so the fix is declaration- and call-site-time checking that raises into the guest — the
+`raise-guest-exception` machinery — plus blittability analysis and calling-convention conflict
+detection. None of it shares code with the gate, which asks only whether a thread that has arrived
+at a valid target is still in cooperative mode.
+
+Doing *part* of it would be worse than none: a check covering staticness and genericity but not
+blittability, or one convention conflict but not another, leaves the divergence in place behind
+something that reads as complete. The one thing that is not deferred is honesty at the boundary —
+`callMethod`'s refusal says what it does not know rather than blaming the call site.
+
+Two further entries sit in the same bucket, both reachable only by an image PawPrint is handed
+rather than one compiled from C#:
+
+- An **entry point** carrying the attribute. `Program` installs `Main`'s frame directly, so the
+  refusal is not applied and PawPrint runs the entry type's static constructor and the method body.
+  Roslyn rejects the source (CS8899), so this needs hand-authored or post-processed metadata, and
+  CoreCLR's behaviour for such an image is unmeasured — which is why nothing is asserted here
+  rather than a guess being encoded.
+- The **timing** of the thread-entry refusal. `Thread.StartInternal` refuses while the QCall is
+  still executing, so the guest's `Start()` never returns; CoreCLR raises the fatal error when the
+  *worker* reaches the target prologue, which permits the parent to run first. PawPrint's choice is
+  *a* legal interleaving — the worker being scheduled immediately — but it is the only one PawPrint
+  will produce, so the schedules in which the parent proceeds before the abort are not explored.
+  Making that a pending worker-entry check, aborting when the worker is first scheduled, would
+  restore them.

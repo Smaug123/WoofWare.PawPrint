@@ -2219,7 +2219,8 @@ module TestVirtualFileSystem =
         let file = inodeAt "/d/f" vfs
 
         let target, after =
-            VirtualFileSystem.unbind directory (name "f") unbindTime vfs |> ok
+            VirtualFileSystem.unbind UnbindTargetEffect.LostALink directory (name "f") unbindTime vfs
+            |> ok
 
         target |> shouldEqual file
 
@@ -2262,7 +2263,8 @@ module TestVirtualFileSystem =
         let before = timesOf file vfs
 
         let _, after =
-            VirtualFileSystem.unbind (rootOf vfs) (name "f2") unbindTime vfs |> ok
+            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "f2") unbindTime vfs
+            |> ok
 
         let directoryTimes = timesOf (rootOf after) after
         directoryTimes.Modification |> shouldEqual unbindTime
@@ -2276,19 +2278,51 @@ module TestVirtualFileSystem =
         targetTimes.Birth |> shouldEqual before.Birth
 
     [<Test>]
+    let ``unbind under Untouched leaves the target's timestamps alone`` () : unit =
+        // Darwin's `rmdir`: measured through a descriptor held across the call
+        // and reproduced 3/3, the removed directory keeps `st_nlink` at 2 and
+        // its `ctime` does not move — where Linux drops the count to 0 and moves
+        // the stamp. One fact, not two: nothing about the Darwin inode changed.
+        //
+        // The *directory losing the entry* is stamped either way, which is what
+        // separates this from "unbind does nothing".
+        let vfs =
+            build [ mkdir (rootOf emptyFs) "d" ; fun v -> mkdir (inodeAt "/d" v) "sub" v ]
+
+        let directory = inodeAt "/d" vfs
+        let sub = inodeAt "/d/sub" vfs
+        let before = timesOf sub vfs
+
+        let _, after =
+            VirtualFileSystem.unbind UnbindTargetEffect.Untouched directory (name "sub") unbindTime vfs
+            |> ok
+
+        timesOf sub after |> shouldEqual before
+
+        let directoryTimes = timesOf directory after
+        directoryTimes.Modification |> shouldEqual unbindTime
+        directoryTimes.StatusChange |> shouldEqual unbindTime
+        directoryTimes.Access |> shouldEqual (timesOf directory vfs).Access
+
+    [<Test>]
     let ``unbind refuses what it cannot name`` () : unit =
         let vfs = build [ mkdir (rootOf emptyFs) "d" ; mkfile (rootOf emptyFs) "f" ]
 
         // A name the directory does not hold.
-        VirtualFileSystem.unbind (rootOf vfs) (name "nx") unbindTime vfs
+        VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "nx") unbindTime vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
         // A directory the graph does not hold.
-        VirtualFileSystem.unbind (VirtualFileSystem.nextInode vfs) (name "d") unbindTime vfs
+        VirtualFileSystem.unbind
+            UnbindTargetEffect.LostALink
+            (VirtualFileSystem.nextInode vfs)
+            (name "d")
+            unbindTime
+            vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
         // Something that is not a directory, which cannot hold a name at all.
-        VirtualFileSystem.unbind (inodeAt "/f" vfs) (name "x") unbindTime vfs
+        VirtualFileSystem.unbind UnbindTargetEffect.LostALink (inodeAt "/f" vfs) (name "x") unbindTime vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
     [<Test>]
@@ -2306,14 +2340,14 @@ module TestVirtualFileSystem =
                 vfs
             |> ok
 
-        VirtualFileSystem.unbind link (name "x") unbindTime vfs
+        VirtualFileSystem.unbind UnbindTargetEffect.LostALink link (name "x") unbindTime vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
     [<Test>]
     let ``a rejected unbind leaves the filesystem untouched`` () : unit =
         let vfs = build [ mkdir (rootOf emptyFs) "d" ]
 
-        VirtualFileSystem.unbind (rootOf vfs) (name "nx") unbindTime vfs
+        VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "nx") unbindTime vfs
         |> Result.isError
         |> shouldEqual true
 
@@ -2333,7 +2367,8 @@ module TestVirtualFileSystem =
         let kid = inodeAt "/d/kid" vfs
 
         let target, after =
-            VirtualFileSystem.unbind (rootOf vfs) (name "d") unbindTime vfs |> ok
+            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "d") unbindTime vfs
+            |> ok
 
         target |> shouldEqual directory
 
@@ -2357,7 +2392,12 @@ module TestVirtualFileSystem =
 
         let thrown =
             Assert.Throws<Exception> (fun () ->
-                VirtualFileSystem.unbind (rootOf vfs) Unchecked.defaultof<FileName> unbindTime vfs
+                VirtualFileSystem.unbind
+                    UnbindTargetEffect.LostALink
+                    (rootOf vfs)
+                    Unchecked.defaultof<FileName>
+                    unbindTime
+                    vfs
                 |> ignore<Result<InodeNumber * VirtualFileSystem, UnixError>>
             )
 
@@ -2410,11 +2450,15 @@ module TestVirtualFileSystem =
         let file = inodeAt "/f" vfs
         VirtualFileSystem.bindingCount file vfs |> shouldEqual 2
 
-        let _, once = VirtualFileSystem.unbind (rootOf vfs) (name "f2") unbindTime vfs |> ok
+        let _, once =
+            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "f2") unbindTime vfs
+            |> ok
+
         VirtualFileSystem.bindingCount file once |> shouldEqual 1
 
         let _, twice =
-            VirtualFileSystem.unbind (rootOf once) (name "f") unbindTime once |> ok
+            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf once) (name "f") unbindTime once
+            |> ok
 
         VirtualFileSystem.bindingCount file twice |> shouldEqual 0
 
@@ -2426,7 +2470,8 @@ module TestVirtualFileSystem =
         let file = inodeAt "/f" vfs
 
         let _, orphaned =
-            VirtualFileSystem.unbind (rootOf vfs) (name "f") unbindTime vfs |> ok
+            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "f") unbindTime vfs
+            |> ok
 
         let forgotten = VirtualFileSystem.forget file orphaned
 
@@ -2470,6 +2515,65 @@ module TestVirtualFileSystem =
 
         absent.Message |> shouldContainText "not in the graph"
 
+    // ----------------------------------------------------- isOrphanedDirectory
+
+    [<Test>]
+    let ``a directory whose last name has gone is orphaned`` () : unit =
+        // Measured on both flavours: from inside such a directory, `mkdir`,
+        // `open(O_CREAT)` and `symlink` are all ENOENT — at 0o755 as well as at
+        // 0o555, so the rule beats the write check rather than hiding behind it.
+        let vfs = build [ mkdir (rootOf emptyFs) "d" ]
+        let d = inodeAt "/d" vfs
+
+        VirtualFileSystem.isOrphanedDirectory d vfs |> shouldEqual false
+
+        let _, unbound =
+            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "d") unbindTime vfs
+            |> ok
+
+        VirtualFileSystem.isOrphanedDirectory d unbound |> shouldEqual true
+
+    [<Test>]
+    let ``the root is never orphaned`` () : unit =
+        // Nothing holds an entry naming the root, so its binding count is zero
+        // by construction: a predicate that consulted only the count would call
+        // the whole filesystem orphaned and refuse every creation in it.
+        VirtualFileSystem.isOrphanedDirectory (rootOf emptyFs) emptyFs
+        |> shouldEqual false
+
+        let vfs = build [ mkdir (rootOf emptyFs) "d" ; mkfile (rootOf emptyFs) "f" ]
+        VirtualFileSystem.isOrphanedDirectory (rootOf vfs) vfs |> shouldEqual false
+
+    [<Test>]
+    let ``only a directory is orphaned, and only one the graph contains`` () : unit =
+        // A nameless *file* is alive in the same sense, but nothing can be
+        // created inside it, so no caller has the question to ask; answering
+        // "true" would make the predicate mean two different things.
+        let vfs = build [ mkfile (rootOf emptyFs) "f" ; mklink (rootOf emptyFs) "l" "f" ]
+
+        let file = inodeAt "/f" vfs
+
+        let link =
+            VirtualFileSystem.resolveExisting
+                limits
+                CallerPrivilege.Privileged
+                (rootOf vfs)
+                SymlinkPolicy.NoFollowFinal
+                (path "/l")
+                vfs
+            |> ok
+
+        let _, unbound =
+            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "f") unbindTime vfs
+            |> ok
+
+        VirtualFileSystem.bindingCount file unbound |> shouldEqual 0
+        VirtualFileSystem.isOrphanedDirectory file unbound |> shouldEqual false
+        VirtualFileSystem.isOrphanedDirectory link unbound |> shouldEqual false
+
+        VirtualFileSystem.isOrphanedDirectory (VirtualFileSystem.nextInode vfs) vfs
+        |> shouldEqual false
+
     // ------------------------------------------------- the pinned-inode excuse
 
     [<Test>]
@@ -2478,7 +2582,8 @@ module TestVirtualFileSystem =
         let file = inodeAt "/f" vfs
 
         let _, orphaned =
-            VirtualFileSystem.unbind (rootOf vfs) (name "f") unbindTime vfs |> ok
+            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "f") unbindTime vfs
+            |> ok
 
         VirtualFileSystem.checkInvariants Set.empty orphaned
         |> shouldEqual [ VirtualFileSystemDefect.UnreachableFromRoot file ]
@@ -3708,8 +3813,8 @@ module TestMkDirRules =
     let ``a path that consumed no component is EEXIST on both kernels`` () : unit =
         // Measured: `mkdir("/")`, `mkdir(".")`, `mkdir("d/.")` and `mkdir("d/..")`
         // are all EEXIST on both. Unlike a creating `open`, which diverges here
-        // (Darwin EEXIST, Linux EISDIR), and unlike `rmdir`, which owes all three
-        // navigations *different* errnos. `TestVirtualFileSystemAgainstHost`
+        // (Darwin EEXIST, Linux EISDIR), and unlike `rmdir`, which gives each of
+        // the three navigations its own. `TestVirtualFileSystemAgainstHost`
         // cannot carry the "/" row: it prefixes every path with a temporary
         // directory, so the kernel never sees a path with no components.
         for rules in [ linux ; darwin ] do

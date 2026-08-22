@@ -181,6 +181,24 @@ module TestPureCases =
                     name "lg", SeedEntry.Symlink (target "g")
                     name "dang", SeedEntry.Symlink (target "nx")
                 ]
+            "RmDirSeeded.cs",
+            Map.ofList
+                [
+                    name "empty", SeedEntry.directory Map.empty
+                    name "full", SeedEntry.directory (Map.ofList [ name "x", file "inside" ])
+                    name "f", file "hello"
+                    // To a directory, so that following it would destroy `full`
+                    // rather than merely answering the wrong errno.
+                    name "ld", SeedEntry.Symlink (target "full")
+                    name "dang", SeedEntry.Symlink (target "nx")
+                    // Two levels, so that "nav/kid/." and "nav/kid/.." reach a
+                    // directory that is not the root -- the flavours agree there
+                    // and diverge at the root itself.
+                    name "nav", SeedEntry.directory (Map.ofList [ name "kid", SeedEntry.directory Map.empty ])
+                    // Opened before it is removed, which is the row that shows a
+                    // descriptor outliving the last name.
+                    name "held", SeedEntry.directory Map.empty
+                ]
             "SystemNativeOpen.cs", openSeed
             "OpenMissingFile.cs", openSeed
             "LinkTargetSeeded.cs",

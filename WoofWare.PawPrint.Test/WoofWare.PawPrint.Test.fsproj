@@ -82,6 +82,7 @@
     <Compile Include="TestFileSystemSeed.fs" />
     <Compile Include="TestRealRuntimeCleanup.fs" />
     <Compile Include="TestUnlinkRules.fs" />
+    <Compile Include="TestRmDirRules.fs" />
     <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
     <Compile Include="TestFileSystemType.fs" />
     <Compile Include="TestGuestPathBytes.fs" />
@@ -97,6 +98,7 @@
     <Compile Include="TestArrayInterfaceMap.fs" />
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
     <Compile Include="TestCrossAssemblyCastclass.fs" />
+    <Compile Include="TestCrossAssemblyExecutingAssembly.fs" />
     <Compile Include="TestCrossAssemblyDispatch.fs" />
     <Compile Include="TestCrossAssemblyIsAssignableFrom.fs" />
     <Compile Include="TestCrossAssemblyLdsflda.fs" />
@@ -225,6 +227,8 @@
     <Compile Include="TestFSharpPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
     <Compile Include="TestRaces.fs" />
+    <Compile Include="TestCallSiteTransition.fs" />
+    <Compile Include="TestUnmanagedCallersOnlyEntry.fs" />
     <Compile Include="TestConcurrencyBugs.fs" />
     <Compile Include="TestRetireStep.fs" />
     <Compile Include="TestClockJitter.fs" />
