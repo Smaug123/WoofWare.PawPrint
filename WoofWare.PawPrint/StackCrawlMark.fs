@@ -104,16 +104,25 @@ module StackCrawlMark =
     /// </para>
     /// </remarks>
     let isReflectionInvocation (frame : MethodState) : bool =
-        match frame.ExecutingMethod.TryDeclaringType with
-        | None ->
-            // A dynamic method. CoreCLR treats an LCG method as infrastructure exactly when it is
-            // one of the reflection invoke stubs, which it recognises by name prefix; every other
-            // dynamic method is guest code and answers with its scope assembly.
-            frame.ExecutingMethod.Name.StartsWith ("InvokeStub_", System.StringComparison.Ordinal)
-        | Some declaringType ->
-            declaringType.Generics.IsEmpty
-            && AssemblyDefinitionName.isNamed "System.Private.CoreLib" declaringType.AssemblyFullName
-            && reflectionInvocationTypes.Contains (declaringType.Namespace, declaringType.Name)
+        // CoreCLR's own first test, and it gates the dynamic-method arm as much as the nominal one:
+        // a guest is free to name a `DynamicMethod` `InvokeStub_Whatever`, and that must not make
+        // its frame invisible to a crawl. Upstream says as much where it recognises the prefix.
+        //
+        // No guest can reach the dynamic-method arm at all yet, in either direction: for a dynamic
+        // method's frame to be live during a crawl its body must call the QCall, and a body whose
+        // `Call` names a real method is refused when the method is minted ("holds a
+        // System.RuntimeMethodHandle rather than a method"). The arm is written from upstream
+        // rather than from what a test reaches, for the reason the list below is.
+        AssemblyDefinitionName.isNamed "System.Private.CoreLib" frame.ExecutingMethod.DeclaringAssemblyFullName
+        && match frame.ExecutingMethod.TryDeclaringType with
+           | None ->
+               // A dynamic method. CoreCLR treats an LCG method as infrastructure exactly when it is
+               // one of the reflection invoke stubs, which it recognises by name prefix; every other
+               // dynamic method is guest code and answers with its scope assembly.
+               frame.ExecutingMethod.Name.StartsWith ("InvokeStub_", System.StringComparison.Ordinal)
+           | Some declaringType ->
+               declaringType.Generics.IsEmpty
+               && reflectionInvocationTypes.Contains (declaringType.Namespace, declaringType.Name)
 
     /// <summary>
     /// The frame a stack crawl for <paramref name="mark" /> answers with, where
