@@ -372,3 +372,18 @@ test builds the row directly, as hand-written IL would spell it, by pointing an 
 at the MethodDef. Building it required loading the fixture through a transform: `WithLoadedAssembly`
 keeps whichever instance is already held for an identity, so handing a modified copy to a built state
 is silently a no-op. Mutating the guard away (M9) kills exactly that test.
+
+A second Codex pass found the same class of bug one step over: a `MemberReference` whose *parent* is
+a `TypeReference` naming a generic type — `G`1::M()`, uninstantiated. Such a parent carries no type
+arguments, so `resolveTargetTypeGenerics` reached for the executing frame's class generics.
+
+Fable had predicted this shape too, but predicted it would die with an `IndexOutOfRange`. Measured,
+it does not: `ldtoken List`1::get_Count()` from a frame on `Gen<string>` silently produced a handle
+for `List<System.String>`. Codex's diagnosis was the correct one, and the measurement is why the
+refusal is written where it is. Both the field and MethodSpec paths shared it; all three are refused
+now.
+
+The lesson for the plan's risk list: every one of these is the *same* risk — "a token kind that
+supplies no instantiation falls back to the frame's". The plan named it once, for `MethodDef`. It
+should have been stated as a property of the fallback itself and then checked against every arm that
+can reach it.

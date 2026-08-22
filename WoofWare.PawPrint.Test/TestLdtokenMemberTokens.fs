@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
 open System.Reflection.Metadata
@@ -575,6 +576,65 @@ public static class Caller
 
         exn.Message
         |> shouldContainText "names the typical instantiation of the declaring type"
+
+    [<Test>]
+    let ``MemberRef whose TypeReference parent is a generic definition is refused`` () : unit =
+        // A `MemberReference` whose parent is a `TypeReference` naming a *generic* type -- the
+        // uninstantiated form, `G`1::M()` rather than `G`1<int>::M()`. `resolveMember` extracts no
+        // type arguments from a TypeReference parent (there are none to extract), so the member is
+        // left with nothing to bind its declaring type's parameters, and the frame's own class
+        // generics are the wrong thing to reach for: the token means the typical instantiation.
+        //
+        // The frame here is `Gen<string>.Sweep<int>`, whose declaring type has arity 1 -- the same
+        // arity as `List`1` -- which is exactly the case where a fallback goes *unnoticed* rather
+        // than tripping over a length mismatch.
+        //
+        // No compiler emits this row, so it is built as hand-written IL would spell it: an existing
+        // `List`1<!0>::get_Count` reference, repointed from its TypeSpec parent to the bare
+        // `TypeReference` for `List`1`.
+        let mutable memberHandle = Unchecked.defaultof<MemberReferenceHandle>
+
+        let fixture =
+            loadFixtureWith (fun assembly ->
+                let listTypeRef =
+                    assembly.TypeRefs
+                    |> Seq.filter (fun (KeyValue (_, typeRef)) -> typeRef.Name = "List`1")
+                    |> Seq.map (fun (KeyValue (handle, _)) -> handle)
+                    |> Seq.toList
+                    |> List.exactlyOne
+
+                memberHandle <- memberRef assembly ParentKind.TypeSpec "get_Count"
+
+                let repointed =
+                    { assembly.Members.[memberHandle] with
+                        Parent = MetadataToken.TypeReference listTypeRef
+                    }
+
+                { assembly with
+                    Members =
+                        assembly.Members
+                        |> Seq.map (fun (KeyValue (handle, mem)) ->
+                            KeyValuePair (handle, (if handle = memberHandle then repointed else mem))
+                        )
+                        |> ImmutableDictionary.CreateRange
+                }
+            )
+
+        let loggerFactory, baseClassTypes, assembly, state, thread = sweepFrame fixture
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                executeLdtoken
+                    loggerFactory
+                    baseClassTypes
+                    assembly
+                    (MetadataToken.MemberReference memberHandle)
+                    thread
+                    state
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "names generic type definition"
 
     // ------------------------------------------------------------------------------------------
     // Identity.

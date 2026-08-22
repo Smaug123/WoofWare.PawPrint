@@ -37,6 +37,34 @@ type internal LdtokenTarget =
 
 [<RequireQualifiedAccess>]
 module internal UnaryMetadataTokenOps =
+    /// Refuse a `MemberReference` whose parent named a *generic type definition* without supplying
+    /// an instantiation -- `G`1::M()` rather than `G`1<int>::M()`.
+    ///
+    /// A `TypeReference` parent carries no type arguments, which is correct when the referenced
+    /// type is non-generic and means the *typical* instantiation when it is not. PawPrint cannot
+    /// name that: the handle registries hold `Closed` and `OpenGenericTypeDefinition` declaring
+    /// types, and building the latter for a member is the open-generic handle work this does not
+    /// do.
+    ///
+    /// Refused rather than left alone, because the fall-through is silent and wrong rather than
+    /// loud. With no arguments extracted, `resolveTargetTypeGenerics` reaches for the *executing
+    /// frame's* declaring-type generics, so a caller that happens to be a generic type of the same
+    /// arity receives a handle for its own instantiation. Measured: `ldtoken List`1::get_Count()`
+    /// from a frame on `Gen<string>` produced a handle for `List<System.String>`.
+    ///
+    /// No compiler emits this row -- C# reaches a generic type's member through a TypeSpec parent
+    /// that spells the instantiation out -- so this guards hand-written IL.
+    let private refuseTypicalDeclaringType
+        (opName : string)
+        (extractedTypeArgs : ImmutableArray<TypeDefn>)
+        (declaringTypeGenerics : ImmutableArray<TypeDefn>)
+        (describeMember : unit -> string)
+        : unit
+        =
+        if extractedTypeArgs.IsEmpty && not declaringTypeGenerics.IsEmpty then
+            failwith
+                $"TODO: %s{opName} of a MemberReference whose parent names generic type definition %s{describeMember ()} without an instantiation refers to the typical instantiation, which needs an open-generic declaring type; a TypeSpecification parent, which is what compilers emit, carries the instantiation instead"
+
     /// Resolve a `MemberReference` against the executing frame's generic context.
     ///
     /// Shared by `ldftn`/`ldvirtftn` and `ldtoken`, which is sound precisely because CoreCLR
@@ -80,6 +108,12 @@ module internal UnaryMetadataTokenOps =
             failwith
                 $"TODO: ldtoken/ldftn of a bare MemberReference to generic method %s{method.Name} names the typical instantiation, which needs open generic RuntimeMethodHandle support; got %O{method}"
         | Choice1Of2 method ->
+            refuseTypicalDeclaringType
+                "ldtoken/ldftn"
+                extractedTypeArgs
+                method.DeclaringTypeGenerics
+                (fun () -> $"%s{MethodOwner.describe method.Owner}::%s{method.Name}")
+
             // `extractedTypeArgs` are the parent TypeSpec's arguments, already substituted against
             // this frame. Handing them over explicitly is what keeps a member of `G<List<T>>`
             // resolving at `G<List<string>>` rather than at the frame's own `G<string>`:
@@ -97,6 +131,12 @@ module internal UnaryMetadataTokenOps =
 
             state, ResolvedMemberToken.Method (concretized, method)
         | Choice2Of2 field ->
+            refuseTypicalDeclaringType
+                "ldtoken"
+                extractedTypeArgs
+                field.DeclaringType.Generics
+                (fun () -> $"%s{field.DeclaringType.Name}::%s{field.Name}")
+
             // The same projection `UnaryMetadataFieldOps.resolveFieldToken` performs for
             // `ldfld`/`ldsfld`: `resolveMember` has already substituted the parent's instantiation
             // into `field.DeclaringType.Generics`, and this turns that into the declaring type's
@@ -195,6 +235,12 @@ module internal UnaryMetadataTokenOps =
                 failwith
                     $"%s{opName}: MethodSpecification %O{handle} names a MemberReference that resolves to a field, which is not a generic method"
             | Choice1Of2 method ->
+                refuseTypicalDeclaringType
+                    opName
+                    extractedTypeArgs
+                    method.DeclaringTypeGenerics
+                    (fun () -> $"%s{MethodOwner.describe method.Owner}::%s{method.Name}")
+
                 let state, concretized, _ =
                     ExecutionConcretization.concretizeMethodForExecutionWithConcreteMethodGenerics
                         loggerFactory
