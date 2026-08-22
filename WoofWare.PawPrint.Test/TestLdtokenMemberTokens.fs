@@ -84,7 +84,10 @@ public static class Caller
 }
 """
 
-    let private loadFixture () =
+    /// `transform` rewrites the guest assembly *before* the machine state is built, which is the
+    /// only point at which it can be: `WithLoadedAssembly` keeps whichever instance is already held
+    /// for an identity, so handing a modified copy to an already-built state is a no-op.
+    let private loadFixtureWith (transform : DumpedAssembly -> DumpedAssembly) =
         let image =
             Roslyn.compileAssembly
                 "LdtokenMemberTokensAssembly"
@@ -103,6 +106,7 @@ public static class Caller
 
         let assembly =
             global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None assemblyStream
+            |> transform
 
         let state : IlMachineState =
             let initialState =
@@ -115,6 +119,8 @@ public static class Caller
             }
 
         loggerFactory, baseClassTypes, corelib, assembly, state
+
+    let private loadFixture () = loadFixtureWith id
 
     let private findMethod
         (declaringTypeName : string)
@@ -520,6 +526,55 @@ public static class Caller
         |> shouldEqual [ "System.Int32" ]
 
         describeTarget state (handle.GetDeclaringType ()) |> shouldEqual "Caller"
+
+    [<Test>]
+    let ``MethodSpec over a MethodDef on a generic declaring type is refused`` () : unit =
+        // The spec binds the method's generics; nothing binds the declaring type's, and the token
+        // means the *typical* declaring type rather than the executing frame's instantiation. Left
+        // unguarded, `resolveTargetTypeGenerics` falls back to the frame's `DeclaringTypeGenerics`
+        // and produces a handle for `Gen<string>` -- a wrong answer, not a failure.
+        //
+        // No compiler emits this row: a generic method on a generic type is referenced through a
+        // MemberReference with a TypeSpec parent. So the row is built here, exactly as hand-written
+        // IL would spell it, by pointing an existing MethodSpec at `Gen<T>.Stat`'s MethodDef.
+        let mutable specHandle = Unchecked.defaultof<MethodSpecificationHandle>
+
+        let fixture =
+            loadFixtureWith (fun assembly ->
+                let statDef =
+                    (MethodInfo.requireMetadata "test" (assembly |> findMethod "Gen`1" "Stat")).Handle
+
+                // Any existing MethodSpec handle will do; only its row content is read.
+                specHandle <- methodSpec assembly "Ident"
+
+                let fabricated =
+                    {
+                        WoofWare.PawPrint.MethodSpec.Method = MetadataToken.MethodDef statDef
+                        WoofWare.PawPrint.MethodSpec.Signature =
+                            ImmutableArray.Create (TypeDefn.PrimitiveType PrimitiveType.Int32)
+                    }
+
+                { assembly with
+                    MethodSpecs = assembly.MethodSpecs.SetItem (specHandle, fabricated)
+                }
+            )
+
+        let loggerFactory, baseClassTypes, assembly, state, thread = sweepFrame fixture
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                executeLdtoken
+                    loggerFactory
+                    baseClassTypes
+                    assembly
+                    (MetadataToken.MethodSpecification specHandle)
+                    thread
+                    state
+                |> ignore
+            )
+
+        exn.Message
+        |> shouldContainText "names the typical instantiation of the declaring type"
 
     // ------------------------------------------------------------------------------------------
     // Identity.

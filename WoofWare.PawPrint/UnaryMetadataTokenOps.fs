@@ -134,6 +134,24 @@ module internal UnaryMetadataTokenOps =
                 activeAssy.Methods.[token]
                 |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
+            if not method.DeclaringTypeGenerics.IsEmpty then
+                // The spec binds the *method's* generics; nothing here binds the declaring type's.
+                // Passing `None` below would let `resolveTargetTypeGenerics` fall back to the
+                // executing frame's `DeclaringTypeGenerics`, which is not what the token means:
+                // CoreCLR takes the owning MethodTable from the MethodDef row via
+                // `MemberLoader::GetMethodDescFromMethodSpec` without applying the caller's class
+                // instantiation, so the declaring type is the typical one. The fallback would
+                // silently hand back a handle for *the caller's* instantiation — a wrong answer
+                // rather than a failure — or trip an arity error when the two disagree in length.
+                //
+                // No compiler emits this shape: a generic method on a generic type is referenced
+                // through a MemberReference with a TypeSpec parent (measured), which the arm below
+                // handles and which carries the instantiation explicitly. So this guards
+                // hand-written IL, and it is refused for the same reason the bare MethodDef arm in
+                // `executeLdtoken` is.
+                failwith
+                    $"TODO: %s{opName} of a MethodSpecification over a MethodDef declared on generic type %s{MethodOwner.describe method.Owner} names the typical instantiation of the declaring type, which needs open generic RuntimeMethodHandle support; got %O{method}"
+
             let state, concretized, _ =
                 ExecutionConcretization.concretizeMethodForExecution
                     loggerFactory

@@ -355,3 +355,20 @@ it, but every route from a `RuntimeFieldHandle` back to a `FieldInfo` runs `Runt
 which reaches the unimplemented `RuntimeFieldHandle.AcquiresContextFromThis` whenever the field
 handle is the first thing to materialise its declaring type. Measured to be independent of this
 change: a `FieldDefinition` `ldtoken` of a same-assembly static stops in the same place on `main`.
+
+## Review
+
+Codex raised one finding (P2), which is the same latent hazard Fable named when reviewing the plan:
+`MethodSpec(MethodDef)` whose MethodDef is declared on a *generic* type. The spec binds the method's
+generics and nothing binds the declaring type's, so `resolveTargetTypeGenerics` fell back to the
+executing frame's `DeclaringTypeGenerics` — producing a handle for *the caller's* instantiation where
+the token means the typical one. A wrong answer rather than a failure, so it is now refused, exactly
+as the adjacent bare-`MethodDef` arm is.
+
+The plan recorded this as "worth one line in the code" and then did not act on it; two independent
+reviewers finding it is what turned that into a fix. No compiler emits the shape — a generic method
+on a generic type is referenced through a MemberReference with a TypeSpec parent (dumped) — so the
+test builds the row directly, as hand-written IL would spell it, by pointing an existing MethodSpec
+at the MethodDef. Building it required loading the fixture through a transform: `WithLoadedAssembly`
+keeps whichever instance is already held for an identity, so handing a modified copy to a built state
+is silently a no-op. Mutating the guard away (M9) kills exactly that test.
