@@ -2916,6 +2916,22 @@ type TcpConnection =
         ServerAddress : InternetEndpoint
     }
 
+/// One thread's in-flight `SystemNative_WaitForSocketEvents` call: the state
+/// the syscall captured when it was entered, which outlives anything the
+/// guest does to its arguments afterwards. The port is held by *description
+/// identity*, exactly as the real syscall holds a file reference — closing
+/// the fd the wait was called through changes nothing, because the fd is
+/// never consulted again.
+type ParkedSocketWait =
+    {
+        /// The open file description of the port being waited on.
+        Port : OpenFileDescriptionId
+        /// The `*count` read at entry. A real `epoll_wait` keeps using the
+        /// maxevents it was passed even if the guest overwrites the cell
+        /// mid-wait.
+        MaxEvents : int
+    }
+
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
 /// syscall-emulation state: the per-thread last-error registers, the native
 /// heap pool backing `Marshal.AllocHGlobal`, the Unix file-descriptor table,
@@ -3007,6 +3023,21 @@ type EmulatedKernel =
         /// and never reused, for the same replay-trace reason as
         /// `NextSocketId`.
         NextConnectionId : ConnectionId
+        /// The ordinal the next committed socket event registration records
+        /// as its `RegisteredAt`. Monotonic, and bumped only when an ADD
+        /// commits, so a failed `epoll_ctl` leaves the kernel exactly as it
+        /// found it.
+        NextSocketEventRegistrationOrdinal : int64
+        /// Each thread's in-flight `SystemNative_WaitForSocketEvents`
+        /// call, stored at park and removed at delivery — so an absent key
+        /// means a first entry into the wait, and a present one means the
+        /// handler is being re-entered and must use the captured state
+        /// instead of re-decoding its arguments. Present from the park
+        /// through the wake to the delivering re-entry, which is a strict
+        /// superset of the window `BlockedOnSocketEvents` covers: the
+        /// close-time retention check reads this, not the thread status,
+        /// so the woken-but-not-yet-run window is protected too.
+        ParkedSocketWaits : Map<ThreadId, ParkedSocketWait>
         /// The port a `bind(2)` of port 0 will try first.
         ///
         /// A counter rather than a draw from the seeded PRNG. Which port an
@@ -3547,6 +3578,16 @@ type EmulatedKernelDefect =
     /// A connection in the table has an identity at or above the next one to
     /// allocate, so a future connect would mint a duplicate.
     | NextConnectionIdNotFresh of nextConnectionId : ConnectionId * existing : ConnectionId
+    /// A socket event registration records an ADD ordinal at or above the
+    /// next one to mint, so some future ADD would repeat it — and the
+    /// ordinal's whole job is to order same-signal ties, which a repeat
+    /// leaves unspecified.
+    | SocketEventRegistrationOrdinalNotFresh of next : int64 * port : OpenFileDescriptionId * registeredAt : int64
+    /// Two socket event registrations record the same ADD ordinal. Ordinals
+    /// are minted from one monotonic counter, so a duplicate means two ADDs
+    /// were stamped with one mint — and a same-signal tie between the pair
+    /// would have no measured order.
+    | DuplicateSocketEventRegistrationOrdinal of registeredAt : int64
 
 [<RequireQualifiedAccess>]
 module EmulatedKernel =
@@ -3820,6 +3861,8 @@ module EmulatedKernel =
             Sockets = Map.empty
             Connections = Map.empty
             NextConnectionId = ConnectionId 0L
+            NextSocketEventRegistrationOrdinal = 0L
+            ParkedSocketWaits = Map.empty
             NextSocketId = SocketId 0L
             NextEphemeralPort = fst defaultEphemeralPortRange
             EphemeralPortRange = defaultEphemeralPortRange
@@ -4807,63 +4850,373 @@ module EmulatedKernel =
             failwith
                 $"EmulatedKernel.socket: %O{socketId} names no socket in this kernel's socket table. Every SocketId reachable by a caller comes from an open file description, and EmulatedKernelDefect.DanglingSocket exists to make that unreachable, so this is an interpreter bug rather than anything a guest did."
 
-    /// Whether PawPrint can rule out the socket-event registration targeting
-    /// `targetId` ever producing an epoll event — `false` exactly when it can.
+    /// The epoll readiness a socket presents right now, before any interest
+    /// mask is applied. Every row is measured on Linux 6.18.5 (`masks.c`,
+    /// docs/plans/2026-08-21-socket-readiness-wake): level-triggered
+    /// `epoll_wait` with timeout 0 reports the current level directly, which
+    /// is what each row reads off. Darwin has no measured rows and needs
+    /// none: the registration handler refuses that flavour, so no readiness
+    /// question can be asked of a Darwin-flavoured kernel.
+    let epollReadiness (socketId : SocketId) (kernel : EmulatedKernel) : EpollReadiness =
+        let target = socket socketId kernel
+
+        match target.Phase with
+        | SocketPhase.Listening listenState ->
+            { EpollReadiness.none with
+                In = not (List.isEmpty listenState.Queue)
+            }
+        | SocketPhase.Idle
+        | SocketPhase.DatagramPeer _ ->
+            match target.Kind with
+            | SocketKind.Stream ->
+                // A datagram socket never enters `DatagramPeer` with a
+                // Stream kind, so this arm is `Idle` only.
+                { EpollReadiness.none with
+                    Out = true
+                    Hup = true
+                }
+            | SocketKind.Datagram ->
+                { EpollReadiness.none with
+                    Out = true
+                }
+            | SocketKind.Raw
+            | SocketKind.SeqPacket ->
+                failwith
+                    $"EmulatedKernel.epollReadiness: socket %O{socketId} is %O{target.Kind}, whose readiness is unmeasured (both kinds are reachable only in the AF_UNIX domain, whose connection model PawPrint does not implement). Measure what epoll reports for one before registering it delivers."
+        | SocketPhase.EstablishedPendingReport connectionId
+        | SocketPhase.Established connectionId ->
+            // With the peer alive and no receive path modelled, both ends
+            // are exactly write-ready; once the peer is gone, the level is
+            // the measured half-closed one.
+            let peerAlive =
+                kernel.Sockets
+                |> Map.exists (fun otherId other ->
+                    otherId <> socketId
+                    && (
+                        match other.Phase with
+                        | SocketPhase.Established c
+                        | SocketPhase.EstablishedPendingReport c -> c = connectionId
+                        | SocketPhase.Listening listenState -> List.contains connectionId listenState.Queue
+                        | SocketPhase.Idle
+                        | SocketPhase.RefusedPendingDelivery
+                        | SocketPhase.Dead
+                        | SocketPhase.DatagramPeer _ -> false
+                    )
+                )
+
+            if peerAlive then
+                { EpollReadiness.none with
+                    Out = true
+                }
+            else
+                // The measured half-closed level (`order3.c` row Q). Peer
+                // liveness is derived rather than stored: the connection
+                // object outlives its ends exactly as long as something
+                // references it, so the scan is the truth.
+                {
+                    In = true
+                    Out = true
+                    RdHup = true
+                    Hup = false
+                    Err = false
+                }
+
+        | SocketPhase.RefusedPendingDelivery ->
+            {
+                In = true
+                Out = true
+                RdHup = true
+                Hup = true
+                Err = true
+            }
+        | SocketPhase.Dead ->
+            failwith
+                $"EmulatedKernel.epollReadiness: socket %O{socketId} is in the Darwin-only Dead phase, but readiness is only ever computed for registrations and the registration handler refuses the Darwin flavour — this is an interpreter bug."
+
+    /// The epoll readiness of the descriptor `targetId` names, for computing
+    /// what a registration on it would report.
     ///
-    /// The guard for the not-yet-built readiness delivery. A parked
-    /// `SystemNative_WaitForSocketEvents` is woken by nothing, so parking is
-    /// faithful only while every registration on the port is one no modelled
-    /// operation can make ready; and admitting a fresh registration past a
-    /// parked waiter makes the same claim. A **listening stream socket** is
-    /// the one target that qualifies: its only read-readiness is an entry in
-    /// its accept queue; it is never write-ready; and no modelled operation
-    /// can put one into an error or hangup state (closing it sweeps the
-    /// registration away first, and a target close delivers no event).
-    ///
-    /// `SystemNative_Connect` *can* produce accept-queue entries, so the
-    /// empty-queue premise is maintained by two refusal sites rather than by
-    /// unreachability: `connectSocket` refuses to push onto a listener that
-    /// is registered with any event port, and the registration handler
-    /// refuses an Add/Modify of a listener whose queue is already nonempty.
-    /// Together they mean a *recorded* listening registration has had an
-    /// empty queue for its whole registered window, so no edge-triggered
-    /// event has ever been pending on it. Weakening either refusal without
-    /// building the delivery re-opens the silent-deadlock divergence this
-    /// classifier exists to prevent.
-    /// Everything else answers `true`: a real kernel reports readiness on most
-    /// of it immediately — an unconnected stream socket is `EPOLLOUT|EPOLLHUP`
-    /// the moment it is added, a datagram socket is writable, a pipe end
-    /// depends on peer state PawPrint does not model — so callers must refuse
-    /// loudly rather than let a wait sleep through an event a real kernel
-    /// would deliver.
-    ///
-    /// Deliberately ignores the registration's interest mask: `EPOLLERR` and
-    /// `EPOLLHUP` are reported regardless of the mask, so a narrowed interest
-    /// rules nothing out.
-    ///
-    /// Partial in `targetId`: every interest table references only live
-    /// descriptions (`FileDescriptorRegistry.close` sweeps, and
-    /// `checkInvariants` states it), so a dangling id is an interpreter bug.
-    let socketEventRegistrationCouldFire (targetId : OpenFileDescriptionId) (kernel : EmulatedKernel) : bool =
+    /// A standard stream's level is a constant of the launch shape PawPrint
+    /// models (measured, `pipes.c`): stdin is the read end of a pipe whose
+    /// write end the launcher closed — the same claim `SystemNative_Read`'s
+    /// immediate-EOF makes — which presents `EPOLLHUP`, and the output
+    /// streams are write ends with space and a live reader, which present
+    /// `EPOLLOUT`. No modelled operation changes either, so the streams need
+    /// no producer. A file or port target cannot reach here: the registry
+    /// answers EPERM for the one and refuses the other.
+    let epollReadinessOfDescription (targetId : OpenFileDescriptionId) (kernel : EmulatedKernel) : EpollReadiness =
         match Map.tryFind targetId (FileDescriptorRegistry.descriptions kernel.FileDescriptors) with
         | None ->
             failwith
-                $"socketEventRegistrationCouldFire: %O{targetId} names no live open file description. FileDescriptorRegistry.close sweeps destroyed descriptions out of every interest table, so this is an interpreter bug."
+                $"EmulatedKernel.epollReadinessOfDescription: %O{targetId} names no live open file description. FileDescriptorRegistry.close sweeps destroyed descriptions out of every interest table, so this is an interpreter bug."
         | Some description ->
 
         match description.Target with
-        | OpenFileTarget.Socket socketId ->
-            let target = socket socketId kernel
+        | OpenFileTarget.Socket socketId -> epollReadiness socketId kernel
+        | OpenFileTarget.StandardStream FileDescriptorRole.StandardInput ->
+            { EpollReadiness.none with
+                Hup = true
+            }
+        | OpenFileTarget.StandardStream FileDescriptorRole.StandardOutput
+        | OpenFileTarget.StandardStream FileDescriptorRole.StandardError ->
+            { EpollReadiness.none with
+                Out = true
+            }
+        | OpenFileTarget.File _ ->
+            failwith
+                $"EmulatedKernel.epollReadinessOfDescription: %O{targetId} is a regular file, which epoll_ctl answers EPERM for, so no registration can name it (this is an interpreter bug)."
+        | OpenFileTarget.SocketEventPort _ ->
+            failwith
+                $"EmulatedKernel.epollReadinessOfDescription: %O{targetId} is itself a socket event port; the registry refuses a nested-port registration, so no registration can name it (this is an interpreter bug)."
 
-            match target.Phase with
-            | SocketPhase.Listening _ -> false
-            | _ -> true
-        | OpenFileTarget.StandardStream _ -> true
-        // Neither can be registered through `epoll_ctl` — a file target is
-        // EPERM and a port target is refused — but "cannot prove" is the safe
-        // total answer.
-        | OpenFileTarget.File _ -> true
-        | OpenFileTarget.SocketEventPort _ -> true
+    /// Every live open file description naming `socketId`.
+    let private descriptionsNamingSocket (socketId : SocketId) (kernel : EmulatedKernel) : Set<OpenFileDescriptionId> =
+        FileDescriptorRegistry.descriptions kernel.FileDescriptors
+        |> Map.toSeq
+        |> Seq.choose (fun (descriptionId, description) ->
+            match description.Target with
+            | OpenFileTarget.Socket target when target = socketId -> Some descriptionId
+            | _ -> None
+        )
+        |> Set.ofSeq
+
+    /// Whether any socket event port holds a registration targeting an open
+    /// file description that names `socketId`.
+    ///
+    /// This is what makes a readiness change on the socket *observable*:
+    /// `closeFd` consults it before destroying the peer of an established
+    /// pair, because the survivor's level would change to one this kernel
+    /// cannot represent, and with no registration there is nothing that
+    /// could deliver the difference.
+    let socketIsRegisteredWithAnyEventPort (socketId : SocketId) (kernel : EmulatedKernel) : bool =
+        let namingDescriptions = descriptionsNamingSocket socketId kernel
+
+        FileDescriptorRegistry.descriptions kernel.FileDescriptors
+        |> Map.exists (fun _ description ->
+            match description.Target with
+            | OpenFileTarget.SocketEventPort portState ->
+                portState.Registrations
+                |> Map.exists (fun (_, targetId) _ -> Set.contains targetId namingDescriptions)
+            | _ -> false
+        )
+
+    /// A *data-ready* wake on `socketId` — the accept-queue push is the one
+    /// modelled producer. Keyed: the producer signals synchronously with the
+    /// state change, so the socket's new level is the signalled mask, and a
+    /// registration whose interest misses it entirely is never queued
+    /// (measured, `order6.c`). Lazy so the level is computed only when a
+    /// registration actually targets the socket.
+    ///
+    /// The producers are a measured set, not "anything that writes the
+    /// socket table": a datagram re-target or dissolve, `bind(2)`, and the
+    /// completion-reporting connect measurably signal nothing at all
+    /// (`order3.c` rows N, O, P).
+    let signalSocketDataReady (socketId : SocketId) (kernel : EmulatedKernel) : EmulatedKernel =
+        { kernel with
+            FileDescriptors =
+                FileDescriptorRegistry.signalSocketEventPorts
+                    (descriptionsNamingSocket socketId kernel)
+                    (Some (lazy (epollReadiness socketId kernel)))
+                    kernel.FileDescriptors
+        }
+
+    /// A *state-change* wake on `socketId` — a connect resolving (completion
+    /// or refusal), the refusal delivery's reset, a peer's FIN. Unkeyed:
+    /// measured (`order8.c`, `order9.c`), such a wake queues every
+    /// registration regardless of interest, the entry keeps the wake's
+    /// position through a later interest change, and delivery's re-poll does
+    /// the filtering.
+    let signalSocketStateChange (socketId : SocketId) (kernel : EmulatedKernel) : EmulatedKernel =
+        { kernel with
+            FileDescriptors =
+                FileDescriptorRegistry.signalSocketEventPorts
+                    (descriptionsNamingSocket socketId kernel)
+                    None
+                    kernel.FileDescriptors
+        }
+
+    /// Each pending entry of the port, in delivery order, with what it would
+    /// report if `epoll_wait` re-polled it right now: the target's current
+    /// level restricted to the registration's interest.
+    let private annotatedReady
+        (portState : SocketEventPortState)
+        (kernel : EmulatedKernel)
+        : ((int * OpenFileDescriptionId) * SocketEventRegistration * EpollReadiness) list
+        =
+        portState.Ready
+        |> List.map (fun (_, targetId as key) ->
+            let registration =
+                match Map.tryFind key portState.Registrations with
+                | Some registration -> registration
+                | None ->
+                    failwith
+                        $"EmulatedKernel.annotatedReady: pending entry %A{key} has no registration. FileDescriptorRegistryDefect.SocketEventReadyEntryUnregistered exists to make this unreachable, so this is an interpreter bug."
+
+            let reported =
+                epollReadinessOfDescription targetId kernel
+                |> EpollReadiness.reportedUnder registration.Interest
+
+            key, registration, reported
+        )
+
+    /// Whether an `epoll_wait` on the port `portId` names would return at
+    /// least one event right now — the readiness sweep's wake condition, and
+    /// by construction the same question `deliverSocketEvents` answers,
+    /// because both read the same annotated walk.
+    ///
+    /// Total in `portId`: a dead or non-port description answers `false`,
+    /// because a thread can park on a port whose last descriptor later
+    /// closes, and a real `epoll_wait` sleeps on regardless.
+    let hasDeliverableSocketEvents (portId : OpenFileDescriptionId) (kernel : EmulatedKernel) : bool =
+        match Map.tryFind portId (FileDescriptorRegistry.descriptions kernel.FileDescriptors) with
+        | None -> false
+        | Some description ->
+
+        match description.Target with
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.File _
+        | OpenFileTarget.Socket _ -> false
+        | OpenFileTarget.SocketEventPort portState ->
+            annotatedReady portState kernel
+            |> List.exists (fun (_, _, reported) -> not (EpollReadiness.isEmpty reported))
+
+    /// Drain the port as one `epoll_wait(maxevents = maxCount)` would: walk
+    /// the pending entries in order, re-polling each; report the ones whose
+    /// re-poll is nonempty, silently drop the stale ones, and stop once
+    /// `maxCount` events are reported — every walked entry is consumed, and
+    /// the entries the stop spared stay pending in order (measured,
+    /// `order2.c` row J).
+    ///
+    /// Returns the reported rows — each the registration's `Data` and the
+    /// reported readiness, in epoll's terms; the PAL-level conversion
+    /// (`EPOLLHUP` folding into `EPOLLIN|EPOLLOUT`) is the caller's — and
+    /// the kernel with the walked entries consumed.
+    ///
+    /// Loudly partial in `portId`: callers hold a live port description in
+    /// hand.
+    let deliverSocketEvents
+        (portId : OpenFileDescriptionId)
+        (maxCount : int)
+        (kernel : EmulatedKernel)
+        : (uint64 * EpollReadiness) list * EmulatedKernel
+        =
+        if maxCount <= 0 then
+            failwith
+                $"EmulatedKernel.deliverSocketEvents: maxCount %d{maxCount} is not positive; epoll answers EINVAL for it before reaching the ready list, so this is an interpreter bug."
+
+        match Map.tryFind portId (FileDescriptorRegistry.descriptions kernel.FileDescriptors) with
+        | None ->
+            failwith
+                $"EmulatedKernel.deliverSocketEvents: %O{portId} names no live open file description (this is an interpreter bug)."
+        | Some description ->
+
+        match description.Target with
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.File _
+        | OpenFileTarget.Socket _ ->
+            failwith
+                $"EmulatedKernel.deliverSocketEvents: %O{portId} is not a socket event port (this is an interpreter bug)."
+        | OpenFileTarget.SocketEventPort portState ->
+
+        let rec walk
+            (delivered : (uint64 * EpollReadiness) list)
+            (remaining : ((int * OpenFileDescriptionId) * SocketEventRegistration * EpollReadiness) list)
+            : (uint64 * EpollReadiness) list * (int * OpenFileDescriptionId) list
+            =
+            match remaining with
+            | [] -> List.rev delivered, []
+            | (_, registration, reported) :: rest ->
+                if List.length delivered = maxCount then
+                    List.rev delivered, remaining |> List.map (fun (key, _, _) -> key)
+                elif EpollReadiness.isEmpty reported then
+                    walk delivered rest
+                else
+                    walk ((registration.Data, reported) :: delivered) rest
+
+        let delivered, surviving = walk [] (annotatedReady portState kernel)
+
+        delivered,
+        { kernel with
+            FileDescriptors = FileDescriptorRegistry.setSocketEventReady portId surviving kernel.FileDescriptors
+        }
+
+    /// `SystemNative_TryChangeSocketEventRegistration` past the wrapper's
+    /// screens: apply `change` to the port's interest table, and bring the
+    /// ready list with it — an ADD or MOD whose target is ready under the
+    /// *new* interest makes the registration pending at that moment (measured
+    /// rows E, I and K: the entry enters at ADD/MOD time, and a MOD of an
+    /// entry already pending leaves its place alone, row L).
+    let changeSocketEventRegistration
+        (portFd : int)
+        (targetFd : int)
+        (change : SocketEventRegistrationChange)
+        (kernel : EmulatedKernel)
+        : Result<EmulatedKernel, SocketEventRegistrationError>
+        =
+        let ordinal = kernel.NextSocketEventRegistrationOrdinal
+
+        match
+            FileDescriptorRegistry.changeSocketEventRegistration portFd targetFd ordinal change kernel.FileDescriptors
+        with
+        | Error error -> Error error
+        | Ok registry ->
+
+        let kernel =
+            { kernel with
+                FileDescriptors = registry
+                NextSocketEventRegistrationOrdinal =
+                    match change with
+                    | SocketEventRegistrationChange.Add _ -> ordinal + 1L
+                    | SocketEventRegistrationChange.Modify _
+                    | SocketEventRegistrationChange.Remove -> ordinal
+            }
+
+        match change with
+        | SocketEventRegistrationChange.Remove -> Ok kernel
+        | SocketEventRegistrationChange.Add (interest, _)
+        | SocketEventRegistrationChange.Modify (interest, _) ->
+
+        // Both fds resolved a moment ago inside the registry change, so these
+        // lookups cannot miss.
+        let portId =
+            match FileDescriptorRegistry.tryFindId portFd kernel.FileDescriptors with
+            | Some id -> id
+            | None ->
+                failwith
+                    $"EmulatedKernel.changeSocketEventRegistration: port fd %d{portFd} was live moments ago (this is an interpreter bug)."
+
+        let key, targetId =
+            match FileDescriptorRegistry.tryFindId targetFd kernel.FileDescriptors with
+            | Some id -> (targetFd, id), id
+            | None ->
+                failwith
+                    $"EmulatedKernel.changeSocketEventRegistration: target fd %d{targetFd} was live moments ago (this is an interpreter bug)."
+
+        let alreadyPending =
+            match Map.tryFind portId (FileDescriptorRegistry.descriptions kernel.FileDescriptors) with
+            | Some description ->
+                match description.Target with
+                | OpenFileTarget.SocketEventPort portState -> List.contains key portState.Ready
+                | _ ->
+                    failwith
+                        $"EmulatedKernel.changeSocketEventRegistration: %O{portId} committed a registration change moments ago yet is not a socket event port (this is an interpreter bug)."
+            | None ->
+                failwith
+                    $"EmulatedKernel.changeSocketEventRegistration: %O{portId} was live moments ago (this is an interpreter bug)."
+
+        let readyNow =
+            epollReadinessOfDescription targetId kernel
+            |> EpollReadiness.reportedUnder interest
+            |> EpollReadiness.isEmpty
+            |> not
+
+        if readyNow && not alreadyPending then
+            Ok
+                { kernel with
+                    FileDescriptors = FileDescriptorRegistry.appendSocketEventReady portId key kernel.FileDescriptors
+                }
+        else
+            Ok kernel
 
     /// Mirrors `socket(2)`: allocate a fresh socket, and a fresh descriptor onto
     /// it.
@@ -5050,10 +5403,58 @@ module EmulatedKernel =
     /// still named is a question about the filesystem. Closing one of several
     /// descriptors onto a description destroys nothing, and so frees neither.
     let closeFd (fd : int) (kernel : EmulatedKernel) : Result<EmulatedKernel, FileDescriptorCloseError> =
+        // Resolved before the close so both refusals below can name what the
+        // fd referred to.
+        let closing = FileDescriptorRegistry.tryFindWithId fd kernel.FileDescriptors
+
         match FileDescriptorRegistry.close fd kernel.FileDescriptors with
         | Error e -> Error e
         | Ok (registry, destroyed) ->
-            let sockets, connections =
+            // Closing a descriptor onto a port with an in-flight
+            // SystemNative_WaitForSocketEvents is where the flavours part,
+            // and each side is measured (SocketEventWaitSurvivesCloseLinux.cs
+            // and its macOS run):
+            //
+            //   * Linux's epoll_wait holds the port by file reference — a
+            //     close that leaves a dup changes nothing, and even the last
+            //     close leaves the in-flight syscall's registrations alive
+            //     for a later edge to complete. The dup case is modelled
+            //     (the description survives and the wait completes); the
+            //     last-close case would need retention this table does not
+            //     represent, so it refuses.
+            //   * Darwin's kevent *ends* with an error when the fd it was
+            //     entered through closes (measured; which error, and what a
+            //     close of a different descriptor onto the same kqueue does,
+            //     are not), so any such close refuses.
+            //
+            // Checked against the in-flight wait map rather than thread
+            // status, so the window between a wake and the woken thread's
+            // re-entry is covered too.
+            (match closing with
+             | Some (closingId, description) ->
+                 (match description.Target with
+                  | OpenFileTarget.SocketEventPort _ ->
+                      let waiter =
+                          kernel.ParkedSocketWaits
+                          |> Map.tryPick (fun thread wait -> if wait.Port = closingId then Some thread else None)
+
+                      match waiter with
+                      | None -> ()
+                      | Some thread ->
+                          match SimulatedUnixPlatform.flavour kernel.UnixPlatform with
+                          | SimulatedUnixFlavour.Linux ->
+                              if destroyed.IsSome then
+                                  failwith
+                                      $"EmulatedKernel.closeFd: fd %d{fd} was the last descriptor onto socket event port %O{closingId}, and thread %O{thread} has an in-flight SystemNative_WaitForSocketEvents on it. A real close leaves the in-flight epoll_wait holding the port — its registrations stay live and a later edge can still complete the wait — which PawPrint's descriptor table cannot represent. Implement port retention for in-flight waits before closing one out from under a waiter."
+                          | SimulatedUnixFlavour.Darwin ->
+                              failwith
+                                  $"EmulatedKernel.closeFd: fd %d{fd} names socket event port %O{closingId}, and thread %O{thread} has an in-flight SystemNative_WaitForSocketEvents on it. Measured, Darwin's kevent ends such a wait with an error when the fd it was entered through closes — an error PawPrint has not measured precisely, and closing a different descriptor onto the kqueue is unmeasured entirely. Measure what the woken wait reports before closing a kqueue out from under a waiter."
+                  | OpenFileTarget.StandardStream _
+                  | OpenFileTarget.File _
+                  | OpenFileTarget.Socket _ -> ())
+             | None -> ())
+
+            let sockets, connections, establishedSurvivors =
                 match destroyed with
                 | Some description ->
                     match description.Target with
@@ -5096,6 +5497,62 @@ module EmulatedKernel =
                                 | SocketPhase.DatagramPeer _ -> false
                             )
 
+                        // What this close does to the sockets sharing the
+                        // dying socket's connections splits by which end is
+                        // dying. The peer of an established pair sees the
+                        // FIN: its level becomes the measured half-closed
+                        // IN|OUT|RDHUP and the driver signals it (`order3.c`
+                        // row Q) — collected here and signalled below, once
+                        // the socket table reflects the close, so the level
+                        // the signal filters against is the survivor's new
+                        // one. A dying *listener* instead RSTs its unaccepted
+                        // queue entries' clients, whose resulting level is
+                        // unmeasured — that case refuses when a registration
+                        // could observe it, and an RST raises ERR, which no
+                        // interest mask can hide, so any registration could.
+                        let establishedSurvivors =
+                            match dying.Phase with
+                            | SocketPhase.Established _
+                            | SocketPhase.EstablishedPendingReport _ ->
+                                sockets
+                                |> Map.toList
+                                |> List.choose (fun (survivorId, survivor) ->
+                                    match survivor.Phase with
+                                    | SocketPhase.Established c
+                                    | SocketPhase.EstablishedPendingReport c when List.contains c candidates ->
+                                        Some survivorId
+                                    | _ -> None
+                                )
+                            | SocketPhase.Listening _ ->
+                                for candidate in candidates do
+                                    let liveClients =
+                                        sockets
+                                        |> Map.toSeq
+                                        |> Seq.filter (fun (_, survivor) ->
+                                            match survivor.Phase with
+                                            | SocketPhase.Established c
+                                            | SocketPhase.EstablishedPendingReport c -> c = candidate
+                                            | SocketPhase.Listening _
+                                            | SocketPhase.Idle
+                                            | SocketPhase.RefusedPendingDelivery
+                                            | SocketPhase.Dead
+                                            | SocketPhase.DatagramPeer _ -> false
+                                        )
+                                        |> Seq.map fst
+                                        |> List.ofSeq
+
+                                    match liveClients with
+                                    | [] -> ()
+                                    | survivor :: _ ->
+                                        failwith
+                                            $"EmulatedKernel.closeFd: closing fd %d{fd} destroys listening socket %O{socketId} while connection %O{candidate} sits unaccepted in its queue, and that connection's client (socket %O{survivor}) is still open. A real kernel RSTs the unaccepted client on listener close, leaving it in a state PawPrint has not measured — its readiness level, and what connect(2) then answers, are both unknown, and the client would otherwise be indistinguishable from a cleanly FIN'd peer. Accept the connection or close the client before closing the listener."
+
+                                []
+                            | SocketPhase.Idle
+                            | SocketPhase.RefusedPendingDelivery
+                            | SocketPhase.Dead
+                            | SocketPhase.DatagramPeer _ -> []
+
                         let connections =
                             (kernel.Connections, candidates)
                             ||> List.fold (fun connections connection ->
@@ -5105,11 +5562,11 @@ module EmulatedKernel =
                                     Map.remove connection connections
                             )
 
-                        sockets, connections
+                        sockets, connections, establishedSurvivors
                     | OpenFileTarget.StandardStream _
                     | OpenFileTarget.SocketEventPort _
-                    | OpenFileTarget.File _ -> kernel.Sockets, kernel.Connections
-                | None -> kernel.Sockets, kernel.Connections
+                    | OpenFileTarget.File _ -> kernel.Sockets, kernel.Connections, []
+                | None -> kernel.Sockets, kernel.Connections, []
 
             let closed =
                 { kernel with
@@ -5117,6 +5574,15 @@ module EmulatedKernel =
                     Sockets = sockets
                     Connections = connections
                 }
+
+            // The FIN's edge, raised now that the survivor's level is the
+            // half-closed one. The signal filters by each registration's
+            // interest, so a survivor nobody watches — or one watched only
+            // for conditions the half-closed level does not meet — records
+            // nothing.
+            let closed =
+                (closed, establishedSurvivors)
+                ||> List.fold (fun k s -> signalSocketStateChange s k)
 
             // The close may have been the last reference to an inode whose last
             // name went away earlier, which is what keeps `read` on an unlinked
@@ -5197,36 +5663,6 @@ module EmulatedKernel =
         | None ->
             failwith
                 $"EmulatedKernel.connection: %O{connectionId} names no connection in this kernel's connection table. EmulatedKernelDefect.DanglingConnection and DanglingQueuedConnection exist to make this unreachable, so this is an interpreter bug."
-
-    /// Whether any socket event port holds a registration targeting the open
-    /// file description that names `socketId`.
-    ///
-    /// One half of the empty-queue premise `socketEventRegistrationCouldFire`
-    /// documents: `connectSocket` consults this before pushing onto a
-    /// listener's accept queue, because a real kernel would queue an
-    /// edge-triggered readiness event on such a push and PawPrint has nowhere
-    /// to record one.
-    let socketIsRegisteredWithAnyEventPort (socketId : SocketId) (kernel : EmulatedKernel) : bool =
-        let descriptions = FileDescriptorRegistry.descriptions kernel.FileDescriptors
-
-        let namingDescriptions =
-            descriptions
-            |> Map.toSeq
-            |> Seq.choose (fun (descriptionId, description) ->
-                match description.Target with
-                | OpenFileTarget.Socket target when target = socketId -> Some descriptionId
-                | _ -> None
-            )
-            |> Set.ofSeq
-
-        descriptions
-        |> Map.exists (fun _ description ->
-            match description.Target with
-            | OpenFileTarget.SocketEventPort registrations ->
-                registrations
-                |> Map.exists (fun (_, targetId) _ -> Set.contains targetId namingDescriptions)
-            | _ -> false
-        )
 
     /// One `connect(2)` call's answer: PAL SUCCESS, or a failure carrying the
     /// error the syscall left in errno. EINPROGRESS is a `Failed` like any
@@ -5481,10 +5917,6 @@ module EmulatedKernel =
                     failwith
                         $"SystemNative_Connect: the accept queue of the listener at %s{InternetEndpoint.toString dest} already holds %d{List.length listenState.Queue} connections, its measured capacity. A real kernel leaves this SYN unanswered and the client retries on a timer — timing PawPrint cannot honour deterministically — so this connect has no faithful answer. Accept from the listener before connecting again, or listen with a larger backlog."
 
-                if socketIsRegisteredWithAnyEventPort listenerId kernel then
-                    failwith
-                        $"SystemNative_Connect: the listener at %s{InternetEndpoint.toString dest} is registered with a socket event port, so a real kernel would queue an edge-triggered readiness event for this connection — an event PawPrint has nowhere to record and no delivery to wake (socketEventRegistrationCouldFire documents the premise). Implement the readiness delivery before letting a connect target a registered listener."
-
                 let clientBinding, kernel = ensureBound dest kernel
 
                 // Two corners a REUSEADDR-bound client can engineer, each
@@ -5566,6 +5998,16 @@ module EmulatedKernel =
                         NextConnectionId = ConnectionId (rawConnectionId + 1L)
                     }
 
+                // The two edges this call raises, in the measured order
+                // (`order7.c`, three runs): the client's completion enters
+                // the ready list *before* the listener's accept edge — the
+                // client processes the SYN-ACK and becomes writable before
+                // its final ACK puts the child on the accept queue. The
+                // client's phase resolves in this call whether or not the
+                // syscall's own answer is deferred to EINPROGRESS.
+                let kernel =
+                    kernel |> signalSocketStateChange socketId |> signalSocketDataReady listenerId
+
                 if nonBlocking then
                     // The syscall itself still answers EINPROGRESS —
                     // measured on both kernels, even on loopback — and the
@@ -5643,6 +6085,12 @@ module EmulatedKernel =
                                     kernel.Sockets
                         }
 
+                    // The error's arrival and its reset both signal
+                    // (measured separately for the deferred path, `order3.c`
+                    // row M); inline delivery collapses them into this one
+                    // state change, so one signal carries both.
+                    let kernel = signalSocketStateChange socketId kernel
+
                     ConnectOutcome.Failed UnixError.ECONNREFUSED, kernel
                 else
                     // EINPROGRESS now; the first later connect delivers
@@ -5661,6 +6109,10 @@ module EmulatedKernel =
                                     }
                                     kernel.Sockets
                         }
+
+                    // The error's arrival signals the client (measured,
+                    // `order3.c` row M: the 0x201d edge).
+                    let kernel = signalSocketStateChange socketId kernel
 
                     ConnectOutcome.Failed UnixError.EINPROGRESS, kernel
 
@@ -5726,6 +6178,11 @@ module EmulatedKernel =
                                     }
                                     kernel.Sockets
                         }
+
+                    // The reset signals: a registered client whose error edge
+                    // was already consumed sees a fresh OUT|HUP edge after
+                    // the delivering connect (measured, `order3.c` row M).
+                    let kernel = signalSocketStateChange socketId kernel
 
                     ConnectOutcome.Failed UnixError.ECONNREFUSED, kernel
                 | SocketPhase.Dead ->
@@ -6177,6 +6634,40 @@ module EmulatedKernel =
                 EmulatedKernelDefect.NextConnectionIdNotFresh (kernel.NextConnectionId, connection)
             )
 
+        let registrationOrdinals =
+            kernel.FileDescriptors
+            |> FileDescriptorRegistry.descriptions
+            |> Map.toList
+            |> List.collect (fun (portId, description) ->
+                match description.Target with
+                | OpenFileTarget.StandardStream _
+                | OpenFileTarget.File _
+                | OpenFileTarget.Socket _ -> []
+                | OpenFileTarget.SocketEventPort portState ->
+                    portState.Registrations
+                    |> Map.toList
+                    |> List.map (fun (_, registration) -> portId, registration.RegisteredAt)
+            )
+
+        let ordinalFreshness =
+            registrationOrdinals
+            |> List.filter (fun (_, registeredAt) -> registeredAt >= kernel.NextSocketEventRegistrationOrdinal)
+            |> List.map (fun (portId, registeredAt) ->
+                EmulatedKernelDefect.SocketEventRegistrationOrdinalNotFresh (
+                    kernel.NextSocketEventRegistrationOrdinal,
+                    portId,
+                    registeredAt
+                )
+            )
+
+        let ordinalDuplicates =
+            registrationOrdinals
+            |> List.countBy snd
+            |> List.filter (fun (_, count) -> count > 1)
+            |> List.map (fun (registeredAt, _) ->
+                EmulatedKernelDefect.DuplicateSocketEventRegistrationOrdinal registeredAt
+            )
+
         dangling
         @ unreferenced
         @ freshness
@@ -6188,6 +6679,8 @@ module EmulatedKernel =
         @ duplicateQueued
         @ phaseKindMismatches
         @ connectionFreshness
+        @ ordinalFreshness
+        @ ordinalDuplicates
 
 /// Host-supplied configuration for the simulated process's kernel, applied by
 /// `Program.prepare` before any guest code runs.

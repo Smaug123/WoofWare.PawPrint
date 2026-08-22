@@ -207,31 +207,30 @@ module IlMachineRuntimeMetadata =
         let defn = activeAssy.TypeDefs.[typeDef]
         state, DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies defn
 
+    /// Resolve a `TypeReference` token to the type it names.
+    ///
+    /// No generic context is taken, and none may be: a `TypeReference` row names a type and carries
+    /// no type arguments, so there is nothing for a caller to instantiate it with. `resolveTypeRef`
+    /// substitutes whatever it is handed into the *referenced type's own* formal parameters,
+    /// positionally (`Assembly.applyGenericArgs`), so passing the executing frame's generics binds
+    /// them into an unrelated type's slots whenever the arities happen to line up: `ldtoken List`1`
+    /// from a frame on `Holder<string>` came back as `List<string>`.
+    ///
+    /// A caller that does have arguments for the type is looking at a `TypeSpecification`, whose
+    /// signature spells them out and which resolves by a different route. Callers that need the
+    /// frame's context apply it downstream, when concretizing the `TypeDefn` this returns.
     let lookupTypeRef
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (activeAssy : DumpedAssembly)
-        typeGenerics
         (ref : TypeReferenceHandle)
         : IlMachineState * TypeDefn * DumpedAssembly
         =
         let ref = activeAssy.TypeRefs.[ref]
 
-        // Convert ConcreteTypeHandles back to TypeDefn for metadata operations
-        let typeGenerics =
-            typeGenerics
-            |> Seq.map (fun handle ->
-                Concretization.concreteHandleToTypeDefn
-                    baseClassTypes
-                    handle
-                    state.ConcreteTypes
-                    state._LoadedAssemblies
-            )
-            |> ImmutableArray.CreateRange
-
         let state, assy, resolved =
-            IlMachineTypeResolution.resolveTypeFromRef loggerFactory activeAssy ref typeGenerics state
+            IlMachineTypeResolution.resolveTypeFromRef loggerFactory activeAssy ref ImmutableArray.Empty state
 
         state, DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved, assy
 
@@ -1465,12 +1464,15 @@ module IlMachineRuntimeMetadata =
 
     /// Resolve a MetadataToken (TypeDefinition, TypeReference, or TypeSpecification) to a TypeDefn,
     /// together with the assembly the type was resolved in.
+    ///
+    /// Takes no generic context, for the reason `lookupTypeRef` gives: none of the three token
+    /// kinds carries one. A `TypeSpecification`'s signature is returned verbatim, `!0` and all,
+    /// for the caller to concretize against whatever context it means.
     let resolveTypeMetadataToken
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (activeAssy : DumpedAssembly)
-        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (token : MetadataToken)
         : IlMachineState * TypeDefn * DumpedAssembly
         =
@@ -1478,8 +1480,7 @@ module IlMachineRuntimeMetadata =
         | MetadataToken.TypeDefinition h ->
             let state, ty = lookupTypeDefn baseClassTypes state activeAssy h
             state, ty, activeAssy
-        | MetadataToken.TypeReference ref ->
-            lookupTypeRef loggerFactory baseClassTypes state activeAssy typeGenerics ref
+        | MetadataToken.TypeReference ref -> lookupTypeRef loggerFactory baseClassTypes state activeAssy ref
         | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
         | m -> failwith $"unexpected type metadata token {m}"
 
@@ -1909,13 +1910,7 @@ module IlMachineRuntimeMetadata =
                                 assy
 
                         let state, implTypeDefn, implResolvedAssy =
-                            resolveTypeMetadataToken
-                                loggerFactory
-                                baseClassTypes
-                                state
-                                implAssy
-                                ct.Generics
-                                impl.InterfaceHandle
+                            resolveTypeMetadataToken loggerFactory baseClassTypes state implAssy impl.InterfaceHandle
 
                         let state, implHandle =
                             IlMachineTypeResolution.concretizeType
@@ -2611,7 +2606,6 @@ module IlMachineRuntimeMetadata =
                                     baseClassTypes
                                     state
                                     implAssy
-                                    ImmutableArray.Empty
                                     impl.InterfaceHandle
 
                             tryEdge state implResolvedAssy implTypeDefn

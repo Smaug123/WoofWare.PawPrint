@@ -1131,6 +1131,40 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The readiness delivery's Linux-flavour rows: the exact
+                // `Events` masks the PAL's EPOLLHUP fold produces (an idle
+                // socket delivers READ|WRITE, a pending refusal 0x17 under
+                // full interest and 0x13 under READ-only), the refusal
+                // reset's re-signal, batch order (edge arrival; re-signal
+                // immobility; ADD-of-ready at ADD time; dup ties newest
+                // first), interest-filtered entries dropping silently,
+                // truncation with the buffer beyond the batch untouched, and
+                // MOD's re-arm. Expectations confirmed on real Linux .NET
+                // before the delivery existed; the flavour-portable rows
+                // live differentially in sourcesPure/SocketEventDelivery.cs.
+                FileName = "SocketEventDeliveryLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // A blocked epoll_wait holds its port by file reference:
+                // closing the fd the wait went through, with a dup keeping
+                // the description alive, still delivers when the edge
+                // arrives. Linux-flavour because that is measured to be
+                // epoll's behaviour and not kevent's — the same guest on
+                // real macOS exits 13 (the wait ends with an error), which
+                // is why the Darwin-flavoured kernel refuses such a close.
+                FileName = "SocketEventWaitSurvivesCloseLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The same divergences under Darwin's answers: EOPNOTSUPP on
                 // the listening socket, EISCONN retries, the dead-socket
                 // latch after a refusal (EINVAL forever), AF_UNSPEC refused

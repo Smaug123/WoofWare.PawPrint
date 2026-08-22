@@ -349,6 +349,58 @@ module Program =
             )
             state
 
+    /// Wake every thread parked in `SystemNative_WaitForSocketEvents` whose
+    /// port would deliver at least one event right now. The park is
+    /// re-entrant — the native frame stays and the caller's program counter
+    /// still names the call — so waking is exactly a flip to `Runnable`; the
+    /// re-entered handler asks `EmulatedKernel.deliverSocketEvents`, whose
+    /// walk is the same one `hasDeliverableSocketEvents` consulted here, so
+    /// the woken thread cannot find the port empty unless another thread
+    /// drained it first — in which case the handler parks it again.
+    ///
+    /// Runs every tick beside `fireExpiredDeadlines` rather than being
+    /// pushed by the producing syscalls: a sweep asks the same question of
+    /// the same state each time, so a new producer cannot forget to wake
+    /// anyone — where a push from each producer would fail silently, as a
+    /// deadlock, on the first one that did.
+    let private fireSocketReadiness (state : IlMachineState) : IlMachineState =
+        // Runs on every tick of every workload, so the no-waiter case must
+        // cost no allocation: a fold that accumulates only matches, rather
+        // than materialising the thread map.
+        let waiters =
+            (state.ThreadState, [])
+            ||> Map.foldBack (fun tid ts acc ->
+                match ts.Status with
+                | ThreadStatus.BlockedOnSocketEvents port -> (tid, port) :: acc
+                | _ -> acc
+            )
+
+        match waiters with
+        | [] -> state
+        | waiters ->
+
+        let deliverable =
+            waiters
+            |> List.filter (fun (_, port) -> EmulatedKernel.hasDeliverableSocketEvents port state.Kernel)
+
+        // An edge arriving with several threads parked on one port is
+        // unmodelled: `ep_poll` adds each waiter to the port's wait queue
+        // *exclusively*, so a real event wakes one of them — in an order
+        // PawPrint keeps no state to reproduce (the queue is park-order) and
+        // has not measured. No managed caller can reach this
+        // (`SocketAsyncEngine` dedicates one thread per port), so refuse
+        // loudly rather than wake every waiter and let the scheduler invent
+        // the winner.
+        for port, sharing in deliverable |> List.groupBy snd do
+            if List.length sharing > 1 then
+                let tids = sharing |> List.map (fun (tid, _) -> $"%O{tid}") |> String.concat ", "
+
+                failwith
+                    $"fireSocketReadiness: threads %s{tids} are all parked in SystemNative_WaitForSocketEvents on port %O{port}, which now has a deliverable event. epoll parks waiters exclusively, so a real kernel wakes exactly one of them, chosen by park order — state PawPrint does not record and semantics it has not measured. Implement the one-wakeup rule before parking several threads on one port."
+
+        (state, deliverable)
+        ||> List.fold (fun s (tid, _) -> Scheduler.wakeFromSocketEvents tid s)
+
     /// The minimum wait deadline among currently-blocked threads, or
     /// `None` if no thread is parked with a finite timeout. Used by the
     /// driver loop's jump-to-deadline fallback: if no thread is Runnable
@@ -527,6 +579,11 @@ module Program =
         // fires when the clock reaches it, even though B keeps the
         // scheduler from ever stalling.
         let state = fireExpiredDeadlines state
+
+        // Wake any socket-events waiter whose port has become deliverable
+        // since it parked. Before the jump-to-deadline fallback below, so a
+        // deliverable port is never mistaken for quiescence.
+        let state = fireSocketReadiness state
 
         // Drive the signal-dispatcher state machine before the scheduler
         // picks its next thread. If a pending signal is deliverable and
