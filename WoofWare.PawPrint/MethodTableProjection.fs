@@ -957,6 +957,42 @@ module internal MethodTableProjection =
         | ConcreteTypeHandle.Array _ ->
             failwith $"TODO: MethodTable::GetNumInstanceFieldBytes projection for array type %O{methodTableFor}"
 
+    /// CoreCLR's `MethodTableNative::InstantiationArg0` (comutilnative.cpp:1829), which is
+    /// `mt->GetInstantiation()[0].AsMethodTable()`: the MethodTable of a generic instantiation's
+    /// first type argument.
+    ///
+    /// Answers only for a closed instantiation, which is the whole domain its callers have.
+    /// `AsMethodTable` asserts the argument is not a TypeDesc, so an instantiation whose first
+    /// argument is a generic parameter has no answer in CoreCLR either; everything else here
+    /// simply has no instantiation to index.
+    let instantiationArg0 (state : IlMachineState) (methodTableFor : RuntimeTypeHandleTarget) : ConcreteTypeHandle =
+        match methodTableFor with
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
+            let concreteType, _ = concreteTypeInfoOrFail state handle
+
+            if concreteType.Generics.IsEmpty then
+                failwith
+                    $"MethodTable::InstantiationArg0 refused for %O{handle}: the type is not a generic instantiation, so it has no first type argument"
+            else
+                concreteType.Generics.[0]
+        | RuntimeTypeHandleTarget.Closed handle ->
+            // Arrays, byrefs, pointers and function pointers are parameterised in CoreCLR
+            // without being generic instantiations: `GetInstantiation()` is empty for all of
+            // them, so `[0]` reads off the end.
+            failwith
+                $"MethodTable::InstantiationArg0 refused for %O{handle}: only a generic instantiation has an instantiation to index"
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+        | RuntimeTypeHandleTarget.OpenConstructed _ ->
+            failwith
+                $"TODO: MethodTable::InstantiationArg0 for open type %O{methodTableFor}: its first argument may be a generic parameter, which is a TypeDesc and so has no MethodTable"
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+            failwith
+                $"MethodTable::InstantiationArg0 refused for TypeDesc target %O{methodTableFor}: generic parameters have no MethodTable in CoreCLR"
+        | RuntimeTypeHandleTarget.DynamicMethodsClass _ ->
+            failwith
+                $"MethodTable::InstantiationArg0 refused for %O{methodTableFor}: the dynamic-methods class is not generic, so it has no instantiation"
+
     let tryProjectFieldForRuntimeTypeHandleTarget
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1122,6 +1158,41 @@ module internal MethodTableProjection =
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                     failwith
                         $"MethodTable::PerInstInfo projection refused for TypeDesc target %O{methodTableFor}: generic parameters have no MethodTable in CoreCLR"
+            | "NullableValueAddrOffset" ->
+                // CoreCLR fills this in only for `Nullable`1` (methodtablebuilder.cpp:10485-10500,
+                // guarded by `GetCl() == g_pNullableClass->GetCl()`), from the offset of the
+                // second field, `value`. Its FieldOffset overlaps the InterfaceMap slot, so on any
+                // other MethodTable the same bytes are an unrelated pointer -- which is why this
+                // is gated rather than answered generally.
+                //
+                // The offset is PawPrint's own, not CoreCLR's: `Box_Nullable` adds it to a byref
+                // into a nullable that PawPrint laid out, so self-consistency with that layout is
+                // what makes the walk land on the payload.
+                let handle =
+                    match methodTableFor with
+                    | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) -> handle
+                    | _ ->
+                        failwith
+                            $"MethodTable::NullableValueAddrOffset projection refused for %O{methodTableFor}: only a closed System.Nullable`1 instantiation carries nullable details"
+
+                let concreteType, _ = concreteTypeInfoOrFail state handle
+
+                match InternalTypeKind.kind baseClassTypes concreteType with
+                | InternalTypeKind.Nullable -> ()
+                | _ ->
+                    failwith
+                        $"MethodTable::NullableValueAddrOffset projection refused for %O{handle}: the type is not a System.Nullable`1 instantiation, so CoreCLR leaves this union slot holding the interface map"
+
+                let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes handle
+
+                let offset =
+                    match zero with
+                    | CliType.ValueType cvt -> CliValueType.GetFieldLayout "value" cvt |> fst
+                    | other ->
+                        failwith
+                            $"MethodTable::NullableValueAddrOffset projection refused for %O{handle}: expected a value-type layout for a nullable, got %O{other}"
+
+                Some (uint32Field (uint32 offset), state)
             | _ ->
                 failwith
                     $"TODO: MethodTable field projection for System.Runtime.CompilerServices.MethodTable::{field.Name} on %O{methodTableFor}"
