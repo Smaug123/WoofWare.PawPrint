@@ -521,6 +521,19 @@ module InodeTimes =
             StatusChange = now
         }
 
+    /// Record a change to the inode itself, its contents untouched: `ctime`
+    /// moves and nothing else does. What gaining or losing a link does, since a
+    /// link count lives on the inode rather than in what the inode holds.
+    ///
+    /// Measured on both platforms through a held descriptor's `fstat`, which is
+    /// the only way to watch an inode whose last name has just gone: after
+    /// `unlink`, `ctime` has moved and `mtime` and `atime` have not — the same
+    /// for an inode that still has links left as for one that does not.
+    let statusChangedAt (now : UnixTimestamp) (times : InodeTimes) : InodeTimes =
+        { times with
+            StatusChange = now
+        }
+
 /// The contents of a directory: what it holds, and what contains it.
 ///
 /// `Entries` holds only *real* names. "." and ".." are genuine directory
@@ -647,10 +660,14 @@ type VirtualFileSystemDefect =
     /// directories precisely because they would make the graph a non-tree, and
     /// `Parent` could then name only one of them.
     | DirectoryMultiplyLinked of directory : InodeNumber * parents : (InodeNumber * FileName) list
-    /// An inode no path from the root can reach. Every inode is reachable in a
-    /// real filesystem unless a process holds it open after its last link went
-    /// away — which this model cannot yet express, because it has no open file
-    /// descriptions. This defect relaxes when it grows them.
+    /// An inode no path from the root can reach, and which the caller did not
+    /// declare pinned.
+    ///
+    /// Every inode in a real filesystem is reachable unless some process holds
+    /// it open after its last link went away — which is exactly what
+    /// `checkInvariants`'s `pinned` argument names. An unreachable inode nobody
+    /// holds is a leak: nothing can ever name it again, and nothing will free
+    /// it.
     | UnreachableFromRoot of inode : InodeNumber
     /// `NextInode` would hand out a number already in use.
     | NextInodeNotFresh of nextInode : InodeNumber * existing : InodeNumber
@@ -714,12 +731,18 @@ type TrailingSeparatorPolicy =
     /// "dang/") creates the link's target.
     ///
     /// The two suppressions co-occur here because Linux's creating lookup does
-    /// neither; they are *not* the same fact, and a Linux syscall is known that
-    /// wants one without the other -- `rmdir("f/")` and `rmdir("ld/")` are both
-    /// ENOTDIR there, which is no-follow *with* the directory demand. When the
-    /// deletion slice measures that, this DU wants to become a two-axis product
-    /// rather than to gain a fourth case; it is left one-dimensional until there
-    /// is a second inhabitant to shape it.
+    /// neither, and they are *not* the same fact. Linux's deletion wants
+    /// no-follow *with* the directory demand — `unlink("ld/")` and `unlink("f/")`
+    /// are both ENOTDIR there — which looks like a second axis, and is not one:
+    /// `do_unlinkat` takes a parent and a name and then inspects the byte after
+    /// the name, so the demand is enforced *after* the walk, by the verdict,
+    /// out of `Resolution.TrailingSeparatorDemanded`. Measured, and the row
+    /// that proves it is `unlink("lroot/")` with `lroot -> "/"`: ENOTDIR on
+    /// Linux, so the link was never traversed, where Darwin's `Demand` walk
+    /// traverses it and answers EISDIR.
+    ///
+    /// So this stays one-dimensional, and `unlink` selects it here on Linux
+    /// while enforcing the demand itself. See `UnlinkRules.verdict`.
     | Ignore
 
 /// Which component a resolution last consumed, for the paths that end without
@@ -796,8 +819,11 @@ type Resolution =
         /// (`SimulatedUnixPlatform.mkDirRules` picks the walk that reproduces
         /// each), and it never sees this flag set, because Linux's walk is
         /// `TrailingSeparatorPolicy.Ignore` and Darwin's acts on the following
-        /// rather than reporting it. `rmdir` and `unlink` are not measured yet
-        /// and still owe a loud failure.
+        /// rather than reporting it. `unlink` is measured on both and dispatches
+        /// the same way (`SimulatedUnixPlatform.unlinkRules`); it destroys
+        /// nothing when the pair is set, since Darwin answers EPERM for the
+        /// directory a followed link named and Linux never follows. `rmdir` is
+        /// not measured yet and still owes a loud failure.
         ///
         /// Lookup operations (`stat`, `lstat`) are unanimous and can ignore
         /// this.
@@ -1649,13 +1675,148 @@ module VirtualFileSystem =
                             Map.add
                                 target
                                 { existing with
-                                    Times =
-                                        { existing.Times with
-                                            StatusChange = now
-                                        }
+                                    Times = InodeTimes.statusChangedAt now existing.Times
                                 }
                                 bound.Inodes
                     }
+
+    /// Remove `name` from `directory`, answering the inode it named. Mirrors
+    /// the *naming* half of `unlink(2)` and `rmdir(2)`: ENOENT if `directory`
+    /// is absent or does not hold `name`, ENOTDIR if `directory` is not a
+    /// directory.
+    ///
+    /// Removing the last name an inode has does **not** remove the inode, and
+    /// this function deliberately cannot: a real kernel keeps an unlinked inode
+    /// alive for as long as any process holds it open, and whether one does is a
+    /// fact about the descriptor table rather than about this graph. The caller
+    /// that can see both decides, and calls `forget`. Until it does, the inode
+    /// is unreachable from the root, and the caller owes it to
+    /// `checkInvariants` as a pinned inode.
+    ///
+    /// Mechanical, and it makes no policy check of its own: whether the caller
+    /// was allowed to remove this name, and whether the name was one this
+    /// syscall may remove at all, are the verdict's business. In particular an
+    /// inode with entries of its own can be unbound — `rename(2)` moves a
+    /// populated directory by unbinding and rebinding it, and the subtree is
+    /// legitimately unreachable in between.
+    let unbind
+        (directory : InodeNumber)
+        (name : FileName)
+        (now : UnixTimestamp)
+        (vfs : VirtualFileSystem)
+        : Result<InodeNumber * VirtualFileSystem, UnixError>
+        =
+        // As in `bind`, so that a forged `default(FileName)` is stopped at the
+        // one chokepoint through which a directory ever loses an entry rather
+        // than silently matching nothing.
+        let name = FileName.assertValid "VirtualFileSystem: directory entry name" name
+
+        match Map.tryFind directory vfs.Inodes with
+        | None -> Error UnixError.ENOENT
+        | Some {
+                   Content = InodeContent.RegularFile _
+               }
+        | Some {
+                   Content = InodeContent.Symlink _
+               } -> Error UnixError.ENOTDIR
+        | Some ({
+                    Content = InodeContent.Directory content
+                } as existing) ->
+
+        match Map.tryFind name content.Entries with
+        | None -> Error UnixError.ENOENT
+        | Some target ->
+
+        // Losing an entry changes what the directory holds, so its `mtime`
+        // moves and with it the `ctime` of the inode describing it -- the exact
+        // mirror of `bind`, and measured to be so on both platforms.
+        let updated =
+            {
+                Content =
+                    InodeContent.Directory
+                        { content with
+                            Entries = Map.remove name content.Entries
+                        }
+                Times = InodeTimes.contentsChangedAt now existing.Times
+            }
+
+        let inodes = Map.add directory updated vfs.Inodes
+
+        // The target's own `ctime` moves as well, because its link count
+        // changed -- true whether names remain or this was the last one, and
+        // observable in the latter case through a descriptor still holding it.
+        // `mtime` does not move: its contents are untouched.
+        let inodes =
+            match Map.tryFind target inodes with
+            | Some node ->
+                Map.add
+                    target
+                    { node with
+                        Times = InodeTimes.statusChangedAt now node.Times
+                    }
+                    inodes
+            | None ->
+                failwith
+                    $"VirtualFileSystem.unbind: directory inode %O{directory} bound \"%s{FileName.toString name}\" to inode %O{target}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
+
+        Ok (
+            target,
+            { vfs with
+                Inodes = inodes
+            }
+        )
+
+    /// How many directory entries name `inode`.
+    ///
+    /// This is `st_nlink` as a *file* reports it. It is not what a directory
+    /// reports, which also counts its own "." and each child's ".."; those are
+    /// derived here rather than stored (see `DirectoryContent.Entries`), so
+    /// counting them would mean re-deriving them, and no syscall PawPrint models
+    /// reports the number anyway — `FileStatus` has no `nlink` field.
+    ///
+    /// Zero means the inode has no name: either it is the root, or its last link
+    /// has gone and only a descriptor is keeping it alive.
+    let bindingCount (inode : InodeNumber) (vfs : VirtualFileSystem) : int =
+        vfs.Inodes
+        |> Map.toSeq
+        |> Seq.sumBy (fun (_, node) ->
+            match node.Content with
+            | InodeContent.Directory directory ->
+                directory.Entries
+                |> Map.toSeq
+                |> Seq.filter (fun (_, target) -> target = inode)
+                |> Seq.length
+            | InodeContent.RegularFile _
+            | InodeContent.Symlink _ -> 0
+        )
+
+    /// Remove an inode from the graph, which is what a kernel does when the last
+    /// name for a file has gone *and* no open description is holding it.
+    ///
+    /// Partial, deliberately: the inode must be present and nothing may still
+    /// name it. Both are interpreter bugs rather than anything a guest can
+    /// cause — the caller has just unbound the last name and consulted the
+    /// descriptor table — and forgetting a still-bound inode would leave a
+    /// dangling entry that every later walk would trip over far from here.
+    ///
+    /// The number is not reused; see `VirtualFileSystem.NextInode`.
+    let forget (inode : InodeNumber) (vfs : VirtualFileSystem) : VirtualFileSystem =
+        if not (Map.containsKey inode vfs.Inodes) then
+            failwith
+                $"VirtualFileSystem.forget: inode %O{inode} is not in the graph, so it cannot be forgotten (this is an interpreter bug)."
+
+        if inode = vfs.Root then
+            failwith
+                "VirtualFileSystem.forget: the root cannot be forgotten; every path resolves from it (this is an interpreter bug)."
+
+        match bindingCount inode vfs with
+        | 0 ->
+            { vfs with
+                Inodes = Map.remove inode vfs.Inodes
+            }
+        | count ->
+            failwith
+                $"VirtualFileSystem.forget: inode %O{inode} is still named by %d{count} directory entry/entries, so forgetting it would leave the graph with a dangling entry (this is an interpreter bug)."
 
     /// Write `bytes` at `offset` into the regular file at `inode`, moving its
     /// `mtime` and `ctime` and — unless `privilege` says otherwise — stripping its
@@ -2231,12 +2392,29 @@ module VirtualFileSystem =
     /// produce, or the empty list if it is sound. Deterministic in order, so a
     /// failing test reports the same thing every run.
     ///
+    /// `pinned` names the inodes some process holds open. Deletion makes an
+    /// inode with no remaining name legitimate — a real kernel keeps one alive
+    /// for as long as a descriptor refers to it — but *only* while something
+    /// holds it, and whether anything does is a fact about a descriptor table
+    /// rather than about this graph. So the caller that can see both supplies
+    /// it, and every unreachable inode outside the set is still a defect. Pass
+    /// `Set.empty` for a graph no process has opened anything in.
+    ///
+    /// A pinned inode that is perfectly reachable is not an error: the
+    /// overwhelmingly common case is a descriptor on a file that still has its
+    /// name. The set excuses unreachability; it does not assert it.
+    ///
+    /// Nothing here checks that a pinned inode is *in* the graph. That is the
+    /// mirror-image defect — a descriptor naming an inode the filesystem has
+    /// forgotten — and it belongs to the layer holding the descriptor table:
+    /// `EmulatedKernelDefect.DanglingOpenInode`.
+    ///
     /// Together, the link-count and reachability rules make tree-ness a
     /// theorem rather than a further check: the root has no incoming entry
     /// link and every other directory has exactly one, so any cycle among
     /// reachable directories would force some directory to have two, and any
     /// cycle that avoids that is unreachable from the root and flagged as such.
-    let checkInvariants (vfs : VirtualFileSystem) : VirtualFileSystemDefect list =
+    let checkInvariants (pinned : Set<InodeNumber>) (vfs : VirtualFileSystem) : VirtualFileSystemDefect list =
         let bindings = allBindings vfs
 
         let rootDefects =
@@ -2343,6 +2521,7 @@ module VirtualFileSystem =
             |> Map.toList
             |> List.map fst
             |> List.filter (fun inode -> not (Set.contains inode reachable))
+            |> List.filter (fun inode -> not (Set.contains inode pinned))
             |> List.map VirtualFileSystemDefect.UnreachableFromRoot
 
         let freshness =
@@ -2363,7 +2542,10 @@ module VirtualFileSystem =
     /// that build a filesystem from host configuration, where a defect is a
     /// host bug rather than anything a guest could have caused.
     let assertInvariants (context : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        match checkInvariants vfs with
+        // Nothing pinned: these callers build a filesystem out of host
+        // configuration, before any guest exists to have opened anything, so an
+        // inode no path reaches is a bug in the builder every time.
+        match checkInvariants Set.empty vfs with
         | [] -> vfs
         | defects ->
             let rendered = defects |> List.map (sprintf "%A") |> String.concat "; "

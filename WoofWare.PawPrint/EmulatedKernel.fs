@@ -1288,6 +1288,236 @@ module MkDirRules =
         else
             masked
 
+/// Everything a kernel does differently when `unlink(2)` removes a name.
+///
+/// One field, and that is the whole record: unlike `mkdir`, whose divergence is
+/// spent entirely inside the walk, `unlink` diverges in the *order and
+/// vocabulary* of its refusals as well, and those live in
+/// `UnlinkRules.linuxVerdict` and `UnlinkRules.darwinVerdict` rather than in
+/// fields here. See `UnlinkRules.verdict` for why there are two functions
+/// rather than a table.
+///
+/// Measured on macOS 26.6/APFS at uid 501 and 0, and Linux 6.x arm64 at uid
+/// 1000 and 0, one fresh tree per row.
+type UnlinkRules =
+    {
+        /// The walk `unlink` resolves its path with, under
+        /// `SymlinkPolicy.NoFollowFinal` on both platforms.
+        ///
+        /// Linux's `do_unlinkat` takes a parent and a name and never resolves
+        /// the final component at all, so a trailing separator neither
+        /// dereferences a final symlink nor is enforced by the walk: it is
+        /// reported on `Resolution.TrailingSeparatorDemanded` and enforced by
+        /// `linuxVerdict`. Darwin's `namei` resolves it like any other lookup,
+        /// which is `Demand`.
+        ///
+        /// The row that separates them is `unlink("lroot/")` with `lroot -> "/"`:
+        /// ENOTDIR on Linux, which cannot have traversed the link, against
+        /// EISDIR on Darwin, which did.
+        TrailingSeparator : TrailingSeparatorPolicy
+    }
+
+/// What `unlink(2)` should do next, once its path has been resolved.
+[<RequireQualifiedAccess>]
+type UnlinkVerdict =
+    /// Answer the guest with this errno.
+    | Refuse of error : UnixError
+    /// Remove `name` from `directory`, and — if that was the last name the
+    /// inode had and no open file description holds it — free the inode.
+    ///
+    /// Carries no inode, though the verdict read one to decide. The removing
+    /// code gets it from `VirtualFileSystem.unbind`, which answers the inode it
+    /// actually unbound — so there is one source for "which inode lost a name",
+    /// and it is the one the removal performed rather than the one a lookup saw
+    /// beforehand.
+    | Remove of directory : InodeNumber * name : FileName
+
+[<RequireQualifiedAccess>]
+module UnlinkRules =
+    /// Whether the *holding* directory refuses this caller the write bit it
+    /// needs to remove a name from it.
+    ///
+    /// Write alone: the search half is the walk's, and a resolution that got
+    /// this far has passed it. Only the owner triple can ever apply, since
+    /// `stat` reports `Kernel.UserId` as every inode's `st_uid`, and the sticky
+    /// bit can never refuse for the same reason — POSIX permits the removal when
+    /// the caller owns the file *or* the directory, and one kernel-wide identity
+    /// owns both.
+    let private lacksWrite
+        (privilege : CallerPrivilege)
+        (directory : InodeNumber)
+        (name : FileName)
+        (vfs : VirtualFileSystem)
+        : bool
+        =
+        match privilege with
+        | CallerPrivilege.Privileged -> false
+        | CallerPrivilege.Unprivileged ->
+
+        let permissions =
+            match VirtualFileSystem.tryGet directory vfs with
+            | Some parent ->
+                match VirtualFileSystem.permissions parent with
+                | InodePermissions.Stored bits -> bits
+                | InodePermissions.PlatformSymlinkDefault ->
+                    failwith
+                        $"UnlinkRules: the walk resolved \"%s{FileName.toString name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
+            | None ->
+                failwith
+                    $"UnlinkRules: resolution named inode %O{directory} as the directory holding \"%s{FileName.toString name}\", but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
+
+        PermissionBits.toInt permissions &&& 0o200 <> 0o200
+
+    /// Whether the inode a name is bound to is a directory. Partial in the same
+    /// way `lacksWrite` is: the walk has just reported this inode.
+    let private isDirectory (inode : InodeNumber) (vfs : VirtualFileSystem) : bool =
+        match VirtualFileSystem.tryGetContent inode vfs with
+        | Some (InodeContent.Directory _) -> true
+        | Some (InodeContent.RegularFile _)
+        | Some (InodeContent.Symlink _) -> false
+        | None ->
+            failwith
+                $"UnlinkRules: the walk resolved a name to inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
+
+    /// Linux's `unlink(2)`, transcribed from the measured ordering. Each arm
+    /// beats the ones below it, and each bullet is a measured row:
+    ///
+    ///  * A path that consumed no component — "/", ".", "..", and any symlink
+    ///    expansion of them — is EISDIR, whichever `FinalNavigation` it was and
+    ///    whether or not the directory it reached is the root. Linux spends no
+    ///    errno distinguishing them, where `rmdir` owes all three different ones.
+    ///  * A free final name is ENOENT, and that beats every check below:
+    ///    `unlink("nowrite/nx/")` is ENOENT rather than the ENOTDIR the trailing
+    ///    separator would earn or the EACCES the parent would.
+    ///  * A trailing separator demands a directory, and reports what it found:
+    ///    EISDIR for a directory, ENOTDIR for anything else. This is the arm
+    ///    Linux's walk declines to make (`TrailingSeparatorPolicy.Ignore`), so
+    ///    it never traverses a final symlink to get here — `unlink("ld/")`,
+    ///    `unlink("dang/")`, `unlink("cyc/")` and `unlink("lroot/")` are all
+    ///    ENOTDIR, with no ELOOP and no chance of destroying a link's target.
+    ///  * Removing a name needs write on the directory holding it: EACCES.
+    ///  * The target being a directory is EISDIR — *below* the write check, and
+    ///    measured to be: `unlink("nowrite/kdir")` is EACCES where
+    ///    `unlink("nowrite/kdir/")` is EISDIR. That pair is the only thing
+    ///    separating this arm from the trailing-separator one, since they share
+    ///    an errno.
+    ///
+    /// EISDIR here is privilege-independent: measured at uid 0, Linux still
+    /// refuses to `unlink` a directory. `CallerPrivilege` gates the write bit
+    /// and nothing else.
+    let private linuxVerdict
+        (privilege : CallerPrivilege)
+        (resolution : Resolution)
+        (vfs : VirtualFileSystem)
+        : UnlinkVerdict
+        =
+        match resolution.Target with
+        | ResolvedTarget.Directory _ -> UnlinkVerdict.Refuse UnixError.EISDIR
+        | ResolvedTarget.Entry (directory, name, existing) ->
+
+        match existing with
+        | None -> UnlinkVerdict.Refuse UnixError.ENOENT
+        | Some target ->
+
+        if resolution.TrailingSeparatorDemanded then
+            if isDirectory target vfs then
+                UnlinkVerdict.Refuse UnixError.EISDIR
+            else
+                UnlinkVerdict.Refuse UnixError.ENOTDIR
+        elif lacksWrite privilege directory name vfs then
+            UnlinkVerdict.Refuse UnixError.EACCES
+        elif isDirectory target vfs then
+            UnlinkVerdict.Refuse UnixError.EISDIR
+        else
+            UnlinkVerdict.Remove (directory, name)
+
+    /// Darwin's `unlink(2)`, transcribed from the measured ordering. Each arm
+    /// beats the ones below it:
+    ///
+    ///  * A path that consumed no component at all — "/", or a symlink whose
+    ///    target was "/" — is EISDIR.
+    ///  * The root reached by "." or ".." is EBUSY, which is XNU's `unlink1`
+    ///    refusing a mount's root vnode (`vp->v_flag & VROOT`). PawPrint mounts
+    ///    one filesystem, so "the root of a mount" and "the root" are the same
+    ///    inode. Measured: `unlink("/.")`, `unlink("/..")` and — through
+    ///    `lroot -> "/"` — `unlink("lroot/.")` are EBUSY, where `unlink("d/.")`
+    ///    on an ordinary directory is EPERM.
+    ///  * Any other directory reached with no final name is EPERM.
+    ///  * A free final name is ENOENT.
+    ///  * The target being a directory is EPERM, and beats the write check:
+    ///    `unlink("nowrite/kdir")` is EPERM where `unlink("nowrite/kid")` is
+    ///    EACCES. This is the arm Linux orders the other way round.
+    ///  * Removing a name needs write on the directory holding it: EACCES.
+    ///
+    /// EPERM is privilege-independent — measured at uid 0, where `unlink("d")`
+    /// is still EPERM and `rmdir("d")` succeeds. The `unlink(2)` man page's "and
+    /// the effective user ID of the process is not the super-user" is stale
+    /// relative to modern XNU, which refuses unconditionally.
+    ///
+    /// Darwin's walk is `TrailingSeparatorPolicy.Demand`, so this function never
+    /// sees `TrailingSeparatorDemanded` against a non-directory: the walk has
+    /// already answered ENOTDIR (`unlink("f/")`, `unlink("lf/")`), ELOOP
+    /// (`unlink("cyc/")`) or ENOENT (`unlink("dang/")`). What does reach here is
+    /// a separator over a *directory*, whether named directly (`unlink("d/")`)
+    /// or reached by following a final symlink (`unlink("ld/")`) — both EPERM,
+    /// from the arm below, which is why the destructive divergence
+    /// `Resolution.FinalSymlinkFollowed` warns about costs `unlink` nothing.
+    let private darwinVerdict
+        (privilege : CallerPrivilege)
+        (resolution : Resolution)
+        (vfs : VirtualFileSystem)
+        : UnlinkVerdict
+        =
+        match resolution.Target with
+        | ResolvedTarget.Directory (inode, reachedBy) ->
+            match reachedBy with
+            | FinalNavigation.Root -> UnlinkVerdict.Refuse UnixError.EISDIR
+            | FinalNavigation.Current
+            | FinalNavigation.Parent ->
+                if inode = VirtualFileSystem.root vfs then
+                    UnlinkVerdict.Refuse UnixError.EBUSY
+                else
+                    UnlinkVerdict.Refuse UnixError.EPERM
+        | ResolvedTarget.Entry (directory, name, existing) ->
+
+        match existing with
+        | None -> UnlinkVerdict.Refuse UnixError.ENOENT
+        | Some target ->
+
+        if isDirectory target vfs then
+            UnlinkVerdict.Refuse UnixError.EPERM
+        elif lacksWrite privilege directory name vfs then
+            UnlinkVerdict.Refuse UnixError.EACCES
+        else
+            UnlinkVerdict.Remove (directory, name)
+
+    /// Decide what an `unlink(2)` owes, given how its path resolved.
+    ///
+    /// Two whole functions rather than one reading a rules record, against the
+    /// `MkDirRules.verdict` precedent, because what diverges here is the *order*
+    /// of the checks and the errno vocabulary rather than a constant they both
+    /// consult. A record spelling that as `{ DirectoryErrno; RootNavigationErrno;
+    /// TypeCheckPrecedesPermission : bool }` would make most of its inhabitants
+    /// describe a kernel nobody ships, and a boolean that reorders control flow
+    /// is exactly the illegal-state-representable shape this codebase avoids.
+    /// Each function above instead reads top-to-bottom against its own measured
+    /// column.
+    ///
+    /// The same argument rules out `SimulatedUnixPlatform.bindFaultOrder`'s
+    /// shape — compute the fault set, then pick the first by a per-flavour
+    /// order — which works there because both flavours agree on the faults and
+    /// on the errno each carries. Here they agree on neither.
+    let verdict
+        (flavour : SimulatedUnixFlavour)
+        (privilege : CallerPrivilege)
+        (resolution : Resolution)
+        (vfs : VirtualFileSystem)
+        : UnlinkVerdict
+        =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> linuxVerdict privilege resolution vfs
+        | SimulatedUnixFlavour.Darwin -> darwinVerdict privilege resolution vfs
+
 /// A reason `bind(2)` refuses, as one of the checks it makes rather than as an
 /// errno: which errno a fault becomes is fixed, but *which fault is reported*
 /// when several hold at once is per-flavour. See
@@ -1562,6 +1792,20 @@ module SimulatedUnixPlatform =
                 TrailingSeparator = TrailingSeparatorPolicy.Demand
                 ModeMask = PermissionBits.parseOrFail "SimulatedUnixPlatform.mkDirRules" 0o0777
                 InheritsSetGroupIdFromParent = false
+            }
+
+    /// Everything this platform's `unlink(2)` does differently. See
+    /// `UnlinkRules`, whose one field this picks; the rest of the divergence is
+    /// in `UnlinkRules.verdict`, which takes the flavour directly.
+    let unlinkRules (platform : SimulatedUnixPlatform) : UnlinkRules =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux ->
+            {
+                TrailingSeparator = TrailingSeparatorPolicy.Ignore
+            }
+        | SimulatedUnixFlavour.Darwin ->
+            {
+                TrailingSeparator = TrailingSeparatorPolicy.Demand
             }
 
     /// Whether this platform's kernel screens a read or write buffer before it
@@ -2781,6 +3025,15 @@ type EmulatedKernelDefect =
     /// keeps its current directory alive after the last name for it has gone,
     /// and PawPrint's held inode is what expresses that.
     | CurrentDirectoryIsNotADirectory of inode : InodeNumber
+    /// A live open file description names an inode the filesystem does not
+    /// hold, so reading or `fstat`ing that descriptor would fail.
+    ///
+    /// The mirror image of `VirtualFileSystemDefect.UnreachableFromRoot`: that
+    /// one catches an orphan nothing holds, and this one catches an inode freed
+    /// while something still held it. Between them they bracket the reaping
+    /// rule, so a `VirtualFileSystem.forget` that fires too late is caught there
+    /// and one that fires too early is caught here.
+    | DanglingOpenInode of description : OpenFileDescriptionId * inode : InodeNumber
     /// `CurrentDirectory` is not the path that reaches `CurrentDirectoryInode`,
     /// so `getcwd` would report a directory the process is not in.
     ///
@@ -4062,12 +4315,72 @@ module EmulatedKernel =
             NextSocketId = SocketId (raw + 1L)
         }
 
+    /// Every inode this kernel holds a reference to, independently of any name
+    /// the filesystem binds to it.
+    ///
+    /// A real kernel keeps an inode alive while any reference survives; this
+    /// enumerates the references PawPrint has. Every live open file description
+    /// onto a file is one, and so is the current directory — a process that has
+    /// `chdir`ed somewhere keeps that directory alive whether or not its name
+    /// outlives the call.
+    ///
+    /// This is the set `VirtualFileSystem.checkInvariants` takes as `pinned`,
+    /// and the check `EmulatedKernel.forgetIfUnheld` makes before freeing an
+    /// inode. Everything that can *create* a reference must appear here: an
+    /// omission makes a live inode look free, and freeing it leaves a
+    /// descriptor pointing at nothing.
+    let pinnedInodes (kernel : EmulatedKernel) : Set<InodeNumber> =
+        kernel.FileDescriptors
+        |> FileDescriptorRegistry.descriptions
+        |> Map.toSeq
+        |> Seq.choose (fun (_, description) ->
+            match description.Target with
+            | OpenFileTarget.File (inode, _) -> Some inode
+            | OpenFileTarget.StandardStream _
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.SocketEventPort _ -> None
+        )
+        |> Set.ofSeq
+        |> Set.add kernel.CurrentDirectoryInode
+
+    /// Free `inode` if the filesystem no longer names it and this kernel holds
+    /// no reference to it — what a real kernel does once the last link and the
+    /// last descriptor have both gone.
+    ///
+    /// Total and idempotent: an inode that still has a name, that something
+    /// still holds, or that is already gone, is left exactly as it was. Call it
+    /// after anything that can drop a reference of either kind — removing a
+    /// name, and closing a descriptor — because either may be the one that
+    /// finishes the job, and which one that is cannot be known from the call
+    /// site.
+    let forgetIfUnheld (inode : InodeNumber) (kernel : EmulatedKernel) : EmulatedKernel =
+        // The root is excluded explicitly rather than by the binding count,
+        // which is zero for it by construction: nothing holds an entry naming
+        // the root (`VirtualFileSystemDefect.RootHasIncomingLink` states that),
+        // so the count alone would free the filesystem out from under every
+        // path. A guest can reach here with it — `close(open("/"))` is an
+        // ordinary thing to do.
+        if inode = VirtualFileSystem.root kernel.FileSystem then
+            kernel
+        elif (VirtualFileSystem.tryGet inode kernel.FileSystem).IsNone then
+            kernel
+        elif VirtualFileSystem.bindingCount inode kernel.FileSystem <> 0 then
+            kernel
+        elif Set.contains inode (pinnedInodes kernel) then
+            kernel
+        else
+            { kernel with
+                FileSystem = VirtualFileSystem.forget inode kernel.FileSystem
+            }
+
     /// Mirrors `close(2)`, including the kernel objects a description was the
-    /// last reference to.
+    /// last reference to: the socket it named, or the inode whose last name had
+    /// already gone.
     ///
     /// `FileDescriptorRegistry.close` cannot do this itself: the socket table
-    /// lives here, in a file that compiles after it. Closing one of several
-    /// descriptors onto a description destroys nothing, and so frees no socket.
+    /// lives here, in a file that compiles after it, and whether an inode is
+    /// still named is a question about the filesystem. Closing one of several
+    /// descriptors onto a description destroys nothing, and so frees neither.
     let closeFd (fd : int) (kernel : EmulatedKernel) : Result<EmulatedKernel, FileDescriptorCloseError> =
         match FileDescriptorRegistry.close fd kernel.FileDescriptors with
         | Error e -> Error e
@@ -4082,16 +4395,38 @@ module EmulatedKernel =
                     | OpenFileTarget.File _ -> kernel.Sockets
                 | None -> kernel.Sockets
 
-            Ok
+            let closed =
                 { kernel with
                     FileDescriptors = registry
                     Sockets = sockets
                 }
 
-    /// Every way this kernel's socket table and its descriptor table disagree.
+            // The close may have been the last reference to an inode whose last
+            // name went away earlier, which is what keeps `read` on an unlinked
+            // descriptor working right up until the descriptor goes. Reaped
+            // against the *closed* kernel, so this description no longer counts
+            // as holding it.
+            let reaped =
+                match destroyed with
+                | Some description ->
+                    match description.Target with
+                    | OpenFileTarget.File (inode, _) -> forgetIfUnheld inode closed
+                    | OpenFileTarget.StandardStream _
+                    | OpenFileTarget.SocketEventPort _
+                    | OpenFileTarget.Socket _ -> closed
+                | None -> closed
+
+            Ok reaped
+
+    /// Every way this kernel's tables disagree with each other: the socket
+    /// table against the descriptor table, the descriptor table against the
+    /// filesystem, and the current directory against both.
     ///
     /// The descriptor table's own rules are `FileDescriptorRegistry.checkInvariants`,
-    /// which this does not repeat.
+    /// and the filesystem's are `VirtualFileSystem.checkInvariants`; this
+    /// repeats neither. The latter takes a `pinned` argument that only this
+    /// layer can supply, so a caller wanting the whole picture pairs this with
+    /// `VirtualFileSystem.checkInvariants (EmulatedKernel.pinnedInodes kernel)`.
     let checkInvariants (kernel : EmulatedKernel) : EmulatedKernelDefect list =
         let named =
             kernel.FileDescriptors.Descriptions
@@ -4128,6 +4463,22 @@ module EmulatedKernel =
             |> List.filter (fun socketId -> socketId >= kernel.NextSocketId)
             |> List.map (fun socketId -> EmulatedKernelDefect.NextSocketIdNotFresh (kernel.NextSocketId, socketId))
 
+        let danglingInodes =
+            kernel.FileDescriptors
+            |> FileDescriptorRegistry.descriptions
+            |> Map.toList
+            |> List.choose (fun (id, description) ->
+                match description.Target with
+                | OpenFileTarget.File (inode, _) ->
+                    if (VirtualFileSystem.tryGet inode kernel.FileSystem).IsNone then
+                        Some (EmulatedKernelDefect.DanglingOpenInode (id, inode))
+                    else
+                        None
+                | OpenFileTarget.StandardStream _
+                | OpenFileTarget.SocketEventPort _
+                | OpenFileTarget.Socket _ -> None
+            )
+
         let currentDirectory =
             match VirtualFileSystem.tryGetContent kernel.CurrentDirectoryInode kernel.FileSystem with
             | Some (InodeContent.Directory _) ->
@@ -4148,7 +4499,7 @@ module EmulatedKernel =
                     EmulatedKernelDefect.CurrentDirectoryIsNotADirectory kernel.CurrentDirectoryInode
                 ]
 
-        dangling @ unreferenced @ freshness @ currentDirectory
+        dangling @ unreferenced @ freshness @ danglingInodes @ currentDirectory
 
 /// Host-supplied configuration for the simulated process's kernel, applied by
 /// `Program.prepare` before any guest code runs.

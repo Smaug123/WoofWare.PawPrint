@@ -169,6 +169,17 @@ module TestPureCases =
             // one: the raw guest pins the syscall contract and the managed one
             // pins which exception each errno becomes, so a divergence between
             // them is a divergence about one filesystem rather than two.
+            "UnlinkSeeded.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    name "g", file "bye"
+                    name "held", file "payload"
+                    name "f2", file "two"
+                    name "d", SeedEntry.directory (Map.ofList [ name "g", file "nested" ])
+                    name "lg", SeedEntry.Symlink (target "g")
+                    name "dang", SeedEntry.Symlink (target "nx")
+                ]
             "SystemNativeOpen.cs", openSeed
             "OpenMissingFile.cs", openSeed
             "LinkTargetSeeded.cs",

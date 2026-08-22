@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open System.Collections.Immutable
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -234,22 +235,51 @@ module TestEmulatedKernelSockets =
 
         e.Message |> shouldContainText "names no socket in this kernel's socket table"
 
+    /// A handful of files to open and unlink, so the property below works on a
+    /// filesystem rather than on fabricated inode numbers. Names in one flat
+    /// directory: this property is about descriptor and inode *lifetime*, and a
+    /// deeper tree would add walking without adding a lifetime.
+    let private lifetimeSeed : Map<FileName, SeedEntry> =
+        [ "a" ; "b" ; "c" ; "d" ; "e" ]
+        |> List.map (fun n ->
+            FileName.parseOrFail "test seed" n,
+            SeedEntry.file (System.Text.Encoding.UTF8.GetBytes n |> ImmutableArray.CreateRange)
+        )
+        |> Map.ofList
+
     /// The allocating and closing operations interleaved at random must leave
-    /// *both* tables sound. This is what connects the hand-forged defects above
-    /// to the code paths that maintain them: a `closeFd` that forgot the socket
-    /// table shows up here as `UnreferencedSocket`, and a `createSocket` that
-    /// failed to advance the counter as `NextSocketIdNotFresh`.
+    /// *all three* tables sound. This is what connects the hand-forged defects
+    /// above to the code paths that maintain them: a `closeFd` that forgot the
+    /// socket table shows up here as `UnreferencedSocket`, a `createSocket` that
+    /// failed to advance the counter as `NextSocketIdNotFresh`, and a `close`
+    /// that reaped an inode a surviving descriptor still names as
+    /// `DanglingOpenInode`.
+    ///
+    /// The filesystem is seeded and every `openFile` names an inode that really
+    /// exists, which is what a real `open(2)` guarantees. Interleaving `unlink`
+    /// with `dup` and `close` is the point: whether an inode may be freed
+    /// depends on both tables at once, and no single-threaded sequence of
+    /// hand-written steps covers the orders in which the last name and the last
+    /// descriptor can go.
     [<Test>]
     let ``a random mix of allocations and closes keeps both tables sound`` () : unit =
         let mutable observedSockets = 0
         let mutable observedSocketCloses = 0
         let mutable observedDups = 0
+        let mutable observedUnlinks = 0
+        let mutable observedReaps = 0
 
         let property (NonNegativeInt seed : NonNegativeInt) : unit =
             let rng = System.Random (seed)
             let steps = rng.Next (1, 30)
 
-            let mutable kernel = EmulatedKernel.initial
+            let mutable kernel =
+                EmulatedKernel.initial
+                |> EmulatedKernel.withFileSystemAndCurrentDirectory
+                    SimulatedUnixPlatform.linuxX64
+                    (UnixTimestamp.createOrFail "test" 1_700_000_000L 0)
+                    lifetimeSeed
+                    AbsoluteUnixPath.root
 
             for _ in 1..steps do
                 let live =
@@ -291,16 +321,61 @@ module TestEmulatedKernelSockets =
                     | Error e -> failwith $"unexpected dup error: %O{e}"
                 | 4
                 | 5 ->
-                    let _, registry =
-                        FileDescriptorRegistry.openFile
-                            (InodeNumber (int64 (rng.Next 5)))
-                            FileAccessMode.ReadOnly
-                            kernel.FileDescriptors
+                    // An inode that really exists, chosen from whatever the
+                    // filesystem still holds: a descriptor onto an inode the
+                    // filesystem does not contain is a state `open(2)` cannot
+                    // produce, and `DanglingOpenInode` says so.
+                    let candidates =
+                        VirtualFileSystem.inodes kernel.FileSystem
+                        |> Map.toList
+                        |> List.map fst
+                        |> List.filter (fun inode -> inode <> VirtualFileSystem.root kernel.FileSystem)
 
-                    kernel <-
-                        { kernel with
-                            FileDescriptors = registry
-                        }
+                    if not (List.isEmpty candidates) then
+                        let _, registry =
+                            FileDescriptorRegistry.openFile
+                                candidates.[rng.Next candidates.Length]
+                                FileAccessMode.ReadOnly
+                                kernel.FileDescriptors
+
+                        kernel <-
+                            { kernel with
+                                FileDescriptors = registry
+                            }
+                | 7 ->
+                    // Remove a name at random, and reap if that was the last
+                    // reference. Interleaved with the closes above, so the two
+                    // orders — last name first, last descriptor first — both
+                    // occur.
+                    let root = VirtualFileSystem.root kernel.FileSystem
+
+                    let names =
+                        match VirtualFileSystem.tryGetContent root kernel.FileSystem with
+                        | Some (InodeContent.Directory content) -> content.Entries |> Map.toList |> List.map fst
+                        | Some (InodeContent.RegularFile _)
+                        | Some (InodeContent.Symlink _)
+                        | None -> []
+
+                    if not (List.isEmpty names) then
+                        let chosen = names.[rng.Next names.Length]
+
+                        match
+                            VirtualFileSystem.unbind root chosen (EmulatedKernel.fileTimestamp kernel) kernel.FileSystem
+                        with
+                        | Error e -> failwith $"unexpected unbind error: %O{e}"
+                        | Ok (inode, filesystem) ->
+                            let before = VirtualFileSystem.inodes filesystem |> Map.count
+
+                            kernel <-
+                                { kernel with
+                                    FileSystem = filesystem
+                                }
+                                |> EmulatedKernel.forgetIfUnheld inode
+
+                            observedUnlinks <- observedUnlinks + 1
+
+                            if VirtualFileSystem.inodes kernel.FileSystem |> Map.count < before then
+                                observedReaps <- observedReaps + 1
                 | 6 ->
                     let _, registry =
                         FileDescriptorRegistry.createSocketEventPort kernel.FileDescriptors
@@ -334,6 +409,9 @@ module TestEmulatedKernelSockets =
                 EmulatedKernel.checkInvariants kernel |> shouldEqual []
                 FileDescriptorRegistry.checkInvariants kernel.FileDescriptors |> shouldEqual []
 
+                VirtualFileSystem.checkInvariants (EmulatedKernel.pinnedInodes kernel) kernel.FileSystem
+                |> shouldEqual []
+
         Check.One (propertyConfig, property)
 
         // Without these the run could be sound while never having exercised the
@@ -342,6 +420,13 @@ module TestEmulatedKernelSockets =
         observedSockets |> shouldBeGreaterThan 500
         observedSocketCloses |> shouldBeGreaterThan 50
         observedDups |> shouldBeGreaterThan 100
+        observedUnlinks |> shouldBeGreaterThan 100
+
+        // ...and a reap really happened, so the `DanglingOpenInode` and
+        // `UnreachableFromRoot` clauses had something to be wrong about. An
+        // unlink whose inode is still held reaps nothing, and a run of only
+        // those would leave both clauses untouched.
+        observedReaps |> shouldBeGreaterThan 50
 
     // --- socketEventRegistrationCouldFire ---
 
