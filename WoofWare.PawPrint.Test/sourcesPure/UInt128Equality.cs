@@ -97,10 +97,12 @@ public class UInt128EqualityTests
 
     public static int TestEveryBitPosition()
     {
-        // One value per set bit of the 128, in both halves. Comparing each against itself
-        // and against its neighbour exercises every bit position without going quadratic:
-        // a comparison that masked off some bits would report a false match on the
-        // neighbouring pair that differs only in that bit.
+        // One value per set bit of the 128, in both halves. The comparison against zero is
+        // the one that pins each bit individually: a value with only bit i set differs from
+        // zero in exactly that bit, so a comparison ignoring bit i of that half reports a
+        // match. The neighbour comparisons alone would not catch it — a pair differing in
+        // bits i and i+1 still differs in bit i+1 once bit i is ignored — and neither would
+        // `lowerBit == upperBit`, which stays unequal on the strength of the *other* half.
         for (int i = 0; i < 64; i++)
         {
             ulong bit = 1ul << i;
@@ -114,6 +116,8 @@ public class UInt128EqualityTests
             if (lowerBit == upperBit) return 3;
             if (lowerBit == new UInt128(0, next)) return 4;
             if (upperBit == new UInt128(next, 0)) return 5;
+            if (lowerBit == default(UInt128)) return 6;
+            if (upperBit == default(UInt128)) return 7;
         }
 
         return 0;
