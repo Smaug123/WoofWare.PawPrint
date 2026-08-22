@@ -137,3 +137,138 @@ class Program
             ExpectedReturnCode = 0
         }
         |> CrossAssemblyHarness.runTest
+
+    [<Test>]
+    let ``a crawl out of a class initialiser names the frame that triggered it`` () : unit =
+        // Reading the static triggers the library's `.cctor` straight from `Main`, so the frame
+        // outside the `.cctor` belongs to a different assembly than the `.cctor` itself — which is
+        // what makes this case say anything about how a crawl crosses initialisation.
+        //
+        // Measured on the pinned .NET 10: the answer is the *entry* assembly. CoreCLR's crawl walks
+        // through the initialisation transition to the triggering frame rather than stopping at it,
+        // which is also what PawPrint's chain says, since a `.cctor` is pushed on top of the frame
+        // whose instruction triggered it.
+        {
+            Assemblies =
+                [
+                    CrossAssemblySpec.library
+                        "CctorCrawlCross.Lib"
+                        []
+                        [
+                            """
+namespace CctorCrawlCross;
+
+using System.Reflection;
+
+public static class Probe
+{
+    public static readonly Assembly CallerOfTheCctor;
+
+    static Probe()
+    {
+        CallerOfTheCctor = Assembly.GetCallingAssembly();
+    }
+}
+"""
+                        ]
+                    CrossAssemblySpec.entryPoint
+                        "CctorCrawlCross.Entry"
+                        [ "CctorCrawlCross.Lib" ]
+                        [
+                            """
+using System.Reflection;
+using CctorCrawlCross;
+
+class Program
+{
+    static int Main(string[] argv)
+    {
+        Assembly answer = Probe.CallerOfTheCctor;
+
+        if (answer == null) return 1;
+
+        if (!ReferenceEquals(answer, typeof(Program).Assembly)) return 2;
+
+        if (ReferenceEquals(answer, typeof(Probe).Assembly)) return 3;
+
+        return 0;
+    }
+}
+"""
+                        ]
+                ]
+            EntryAssemblyName = "CctorCrawlCross.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTest
+
+    [<Test>]
+    let ``a class initialiser triggered through a delegate is crawled the same way`` () : unit =
+        // As above, but the `.cctor` is triggered by a call through a delegate, which is the one
+        // shape where PawPrint keeps a synthetic frame for a delegate's `Invoke` alive across
+        // initialisation. Here the `.cctor` is triggered by the target's own prologue, after that
+        // frame has been popped, so the crawl's two candidates are the `.cctor` and the target —
+        // both in the library.
+        //
+        // Measured on the pinned .NET 10: the answer is the library, and PawPrint agrees.
+        {
+            Assemblies =
+                [
+                    CrossAssemblySpec.library
+                        "DelegateCctorCrawlCross.Lib"
+                        []
+                        [
+                            """
+namespace DelegateCctorCrawlCross;
+
+using System.Reflection;
+
+public static class Probe
+{
+    public static readonly Assembly CallerOfTheCctor;
+
+    static Probe()
+    {
+        CallerOfTheCctor = Assembly.GetCallingAssembly();
+    }
+
+    public static Assembly Touch()
+    {
+        return CallerOfTheCctor;
+    }
+}
+"""
+                        ]
+                    CrossAssemblySpec.entryPoint
+                        "DelegateCctorCrawlCross.Entry"
+                        [ "DelegateCctorCrawlCross.Lib" ]
+                        [
+                            """
+using System;
+using System.Reflection;
+using DelegateCctorCrawlCross;
+
+class Program
+{
+    static int Main(string[] argv)
+    {
+        Func<Assembly> f = Probe.Touch;
+
+        Assembly answer = f();
+
+        if (answer == null) return 1;
+
+        if (!ReferenceEquals(answer, typeof(Probe).Assembly)) return 2;
+
+        if (ReferenceEquals(answer, typeof(Program).Assembly)) return 3;
+
+        return 0;
+    }
+}
+"""
+                        ]
+                ]
+            EntryAssemblyName = "DelegateCctorCrawlCross.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTest
