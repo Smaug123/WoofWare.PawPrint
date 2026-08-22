@@ -1278,13 +1278,7 @@ module internal UnaryMetadataCallOps =
                 let state, ty = IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
                 state, ty, activeAssy
             | MetadataToken.TypeReference ref ->
-                IlMachineState.lookupTypeRef
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    activeAssy
-                    currentMethod.DeclaringTypeGenerics
-                    ref
+                IlMachineState.lookupTypeRef loggerFactory baseClassTypes state activeAssy ref
             | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
             | _ -> failwith $"unexpected token {metadataToken} in Constrained"
 

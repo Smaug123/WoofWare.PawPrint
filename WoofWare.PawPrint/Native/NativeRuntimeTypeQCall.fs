@@ -1036,13 +1036,7 @@ module NativeRuntimeTypeQCall =
                     // type/method instantiation. Caller context is reserved for TypeSpec generic
                     // substitution, applied below by runtimeTypeHandleTargetForTypeToken.
                     let state, typeDefn, declaringAssembly =
-                        IlMachineState.lookupTypeRef
-                            ctx.LoggerFactory
-                            ctx.BaseClassTypes
-                            state
-                            assembly
-                            ImmutableArray.Empty
-                            h
+                        IlMachineState.lookupTypeRef ctx.LoggerFactory ctx.BaseClassTypes state assembly h
 
                     IlMachineState.runtimeTypeHandleTargetForTypeToken
                         ctx.LoggerFactory
@@ -1550,7 +1544,6 @@ module NativeRuntimeTypeQCall =
                                         ctx.BaseClassTypes
                                         state
                                         implAssy
-                                        currentCt.Generics
                                         impl.InterfaceHandle
 
                                 let state, implHandle =
@@ -1595,7 +1588,6 @@ module NativeRuntimeTypeQCall =
                                     ctx.BaseClassTypes
                                     state
                                     implAssy
-                                    ImmutableArray.Empty
                                     impl.InterfaceHandle
 
                             if IlMachineState.containsAnyGenericParameter implTypeDefn then

@@ -156,13 +156,7 @@ module TestArrayInterfaceMap =
             ((state, Set.empty), typeInfo.ImplementedInterfaces)
             ||> Seq.fold (fun (state, acc) impl ->
                 let state, implTypeDefn, implAssy =
-                    IlMachineState.resolveTypeMetadataToken
-                        loggerFactory
-                        bct
-                        state
-                        corelib
-                        ImmutableArray.Empty
-                        impl.InterfaceHandle
+                    IlMachineState.resolveTypeMetadataToken loggerFactory bct state corelib impl.InterfaceHandle
 
                 let state, implHandle =
                     IlMachineState.concretizeType

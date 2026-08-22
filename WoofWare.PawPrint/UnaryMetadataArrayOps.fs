@@ -41,13 +41,7 @@ module internal UnaryMetadataArrayOps =
             | ResolvedTypeOperand.FromScope handle -> state, handle
             | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
                 let state, elementType, assy =
-                    IlMachineState.resolveTypeMetadataToken
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        activeAssy
-                        currentMethod.DeclaringTypeGenerics
-                        metadataToken
+                    IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy metadataToken
 
                 // `cliTypeZeroOf` split into its two halves (IlMachineTypeResolution.fs:586-607)
                 // so that the zero below is computed the same way for both universes.
@@ -265,7 +259,6 @@ module internal UnaryMetadataArrayOps =
                             baseClassTypes
                             state
                             activeAssy
-                            typeGenerics
                             metadataToken
 
                     // `cliTypeZeroOf` split into its two halves (IlMachineTypeResolution.fs:586-607).

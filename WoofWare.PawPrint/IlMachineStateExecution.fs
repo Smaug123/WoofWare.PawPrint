@@ -240,13 +240,7 @@ module IlMachineStateExecution =
             | None -> ownerAssy
 
         let state, implTypeDefn, implResolvedAssy =
-            IlMachineState.resolveTypeMetadataToken
-                loggerFactory
-                baseClassTypes
-                state
-                implAssy
-                ownerTy.Generics
-                impl.InterfaceHandle
+            IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state implAssy impl.InterfaceHandle
 
         let state, implHandle =
             IlMachineState.concretizeType

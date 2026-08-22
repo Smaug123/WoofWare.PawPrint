@@ -76,13 +76,7 @@ module internal UnaryMetadataObjectOps =
             | ResolvedTypeOperand.FromScope handle -> state, handle
             | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
                 let state, targetType, _targetAssy =
-                    IlMachineState.resolveTypeMetadataToken
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        activeAssy
-                        ImmutableArray.Empty
-                        metadataToken
+                    IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy metadataToken
 
                 IlMachineState.concretizeType
                     loggerFactory
@@ -520,13 +514,7 @@ module internal UnaryMetadataObjectOps =
                         let state, ty = IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
                         state, ty, activeAssy
                     | MetadataToken.TypeReference ref ->
-                        IlMachineState.lookupTypeRef
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            activeAssy
-                            currentMethod.DeclaringTypeGenerics
-                            ref
+                        IlMachineState.lookupTypeRef loggerFactory baseClassTypes state activeAssy ref
                     | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
                     | _ -> failwith $"unexpected token {metadataToken} in Box"
 
@@ -723,13 +711,7 @@ module internal UnaryMetadataObjectOps =
             | ResolvedTypeOperand.FromScope handle -> state, handle
             | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
                 let state, targetType, _targetAssy =
-                    IlMachineState.resolveTypeMetadataToken
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        activeAssy
-                        ImmutableArray.Empty
-                        metadataToken
+                    IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy metadataToken
 
                 IlMachineState.concretizeType
                     loggerFactory
@@ -858,13 +840,7 @@ module internal UnaryMetadataObjectOps =
             | ResolvedTypeOperand.FromScope handle -> state, handle
             | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
                 let state, targetType, _targetAssy =
-                    IlMachineState.resolveTypeMetadataToken
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        activeAssy
-                        ImmutableArray.Empty
-                        metadataToken
+                    IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy metadataToken
 
                 IlMachineState.concretizeType
                     loggerFactory
@@ -1073,13 +1049,7 @@ module internal UnaryMetadataObjectOps =
             | ResolvedTypeOperand.FromScope handle -> state, handle
             | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
                 let state, targetType, _targetAssy =
-                    IlMachineState.resolveTypeMetadataToken
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        activeAssy
-                        ImmutableArray.Empty
-                        metadataToken
+                    IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy metadataToken
 
                 IlMachineState.concretizeType
                     loggerFactory

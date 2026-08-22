@@ -1212,7 +1212,6 @@ module NativeSignature =
                             ctx.BaseClassTypes
                             state
                             assembly
-                            typeGenerics
                             token
 
                     let state, concreteHandle =
