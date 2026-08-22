@@ -104,6 +104,52 @@ module TestCallSiteTransition =
                 None
         )
 
+    /// A modifier that merely shares the simple name `CallConvSuppressGCTransition` must not be
+    /// mistaken for the real one. Fabricated rather than compiled, because C# has no way to emit a
+    /// custom modifier naming an arbitrary type — Roslyn only ever writes the `CallConv*` family
+    /// from `System.Runtime.CompilerServices` — so no guest can produce this shape and the
+    /// real-metadata tests above cannot reach it.
+    ///
+    /// The direction of the error matters: an unrecognised `modopt` is one the JIT ignores, so real
+    /// .NET would perform the transition and admit the call. Matching on the simple name alone
+    /// would have PawPrint abort a call the real runtime runs.
+    [<Test>]
+    let ``a modifier sharing only the simple name is not the suppression`` () : unit =
+        let modifierNamed (ns : string) : TypeDefn =
+            TypeDefn.FromReference (
+                {
+                    Handle = ComparableTypeReferenceHandle.Make (MetadataTokens.TypeReferenceHandle 1)
+                    Name = "CallConvSuppressGCTransition"
+                    Namespace = ns
+                    ResolutionScope = TypeRefResolutionScope.ModuleRef (MetadataTokens.ModuleReferenceHandle 1)
+                },
+                SignatureTypeKind.Class
+            )
+
+        let signatureModifiedBy (modifier : TypeDefn) : TypeMethodSignature<TypeDefn> =
+            { signatureReturningVoid SignatureCallingConvention.Unmanaged with
+                ReturnType =
+                    MethodReturnType.Returns (
+                        TypeDefn.Modified
+                            {
+                                Unmodified = TypeDefn.PrimitiveType PrimitiveType.Int32
+                                Modifier = modifier
+                                IsRequired = false
+                            }
+                    )
+            }
+
+        // The decoy leaves the classification alone...
+        signatureModifiedBy (modifierNamed "NotInterop")
+        |> IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature
+        |> shouldEqual IlMachineStateExecution.CallSiteTransition.EntersPreemptive
+
+        // ...and the genuine article, identical but for its namespace, does not. Both halves are
+        // here so that a classifier which simply answered `EntersPreemptive` cannot pass.
+        signatureModifiedBy (modifierNamed "System.Runtime.CompilerServices")
+        |> IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature
+        |> shouldEqual IlMachineStateExecution.CallSiteTransition.StaysCooperative
+
     /// The modifier axis, read off metadata Roslyn actually emitted rather than off a signature
     /// fabricated to match what this file believes the encoding to be. The guest's two call sites
     /// differ *only* in the suppression, so if the classifier could not see the `modopt` the two
