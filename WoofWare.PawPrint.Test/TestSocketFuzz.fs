@@ -43,6 +43,7 @@ module TestSocketFuzz =
         |> List.collect (fun name ->
             (readResource name).Split ('\n', StringSplitOptions.RemoveEmptyEntries)
             |> Array.toList
+            |> List.filter (fun line -> not (line.StartsWith ("#", StringComparison.Ordinal)))
             |> List.map (fun line ->
                 match line.TrimEnd('\r').Split '\t' with
                 | [| ops ; transcript |] -> name, ops, transcript
