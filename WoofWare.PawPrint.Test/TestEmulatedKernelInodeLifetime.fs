@@ -428,6 +428,95 @@ module TestEmulatedKernelInodeLifetime =
 
     // ------------------------------------------------------------- invariants
 
+    // ------------------------------------------------- open directory streams
+
+    /// A stream over `/outer/inner`, whose descriptor is the one `opendir`
+    /// would have opened, answering the block standing in for the `DIR*`.
+    let private streaming (kernel : EmulatedKernel) : NativeMemoryBlockId * InodeNumber * EmulatedKernel =
+        let inner = inodeOf kernel "/outer/inner"
+        let fd, kernel = opened inner kernel
+
+        let block, pool =
+            NativeMemoryPool.allocate MemoryBlockInitialization.ZeroInitialized 1024 kernel.NativeMemoryPool
+
+        block,
+        inner,
+        { kernel with
+            NativeMemoryPool = pool
+        }
+        |> EmulatedKernel.withDirectoryStream
+            block
+            {
+                Fd = fd
+                Inode = inner
+                Cursor = DirectoryCursor.Start
+            }
+
+    [<Test>]
+    let ``an open stream holds its directory even with its descriptor gone`` () : unit =
+        // The descriptor already holds it, so this adds nothing while the stream
+        // is intact. It is here for the guest that closes the stream's own
+        // descriptor out from under it — undefined behaviour on a real libc, but
+        // a guessable fd number away here. Without it the next `readdir` would
+        // reach a reaped inode and take the interpreter down.
+        let kernel = kernelAtRoot ()
+        let block, inner, kernel = streaming kernel
+
+        let stream = EmulatedKernel.directoryStream block kernel
+        let kernel = closed stream.Fd kernel
+
+        EmulatedKernel.heldInodes kernel |> Set.contains inner |> shouldEqual true
+
+        // ...and it really was the stream that held it: forget the stream and
+        // the inode is unheld.
+        EmulatedKernel.heldInodes (EmulatedKernel.withoutDirectoryStream block kernel)
+        |> Set.contains inner
+        |> shouldEqual false
+
+    [<Test>]
+    let ``a stream keeps an rmdir'd directory alive, and closing it reaps`` () : unit =
+        let kernel = kernelAtRoot ()
+        let block, inner, kernel = streaming kernel
+
+        // `rmdir /outer/inner`, which succeeds against a real kernel because the
+        // stream is not a name.
+        let removed, kernel = unbound "/outer" "inner" kernel
+        removed |> shouldEqual inner
+
+        let kernel = EmulatedKernel.forgetIfUnheld removed kernel
+        contains inner kernel |> shouldEqual true
+
+        VirtualFileSystem.isOrphanedDirectory inner kernel.FileSystem
+        |> shouldEqual true
+
+        // And the orphan answers end-of-stream at once, dots included: probed on
+        // both kernels, `opendir` then `rmdir` then `readdir` gives NULL.
+        VirtualFileSystem.nextDirectoryEntry inner DirectoryCursor.Start kernel.FileSystem
+        |> shouldEqual None
+
+        // `closedir`: forget the stream, then close the descriptor under it.
+        // That order is what makes the reap happen — `heldInodes` counts the
+        // stream among the things holding the inode.
+        let stream = EmulatedKernel.directoryStream block kernel
+
+        let kernel = EmulatedKernel.withoutDirectoryStream block kernel |> closed stream.Fd
+
+        contains inner kernel |> shouldEqual false
+
+    [<Test>]
+    let ``directoryStream refuses a block that names no stream`` () : unit =
+        // A `DIR*` this kernel never handed out, or one already closed. Both are
+        // undefined behaviour on a real libc rather than an error it reports, so
+        // there is no errno to invent.
+        let kernel = kernelAtRoot ()
+        let block, _, kernel = streaming kernel
+        let closedStream = EmulatedKernel.withoutDirectoryStream block kernel
+
+        let exn =
+            Assert.Throws (fun () -> EmulatedKernel.directoryStream block closedStream |> ignore<DirectoryStream>)
+
+        exn.Message |> shouldContainText "names no open directory stream"
+
     [<Test>]
     let ``checkInvariants rejects a descriptor naming an inode the filesystem has forgotten`` () : unit =
         // The mirror image of `UnreachableFromRoot`: between them they bracket

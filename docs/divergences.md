@@ -960,3 +960,130 @@ rather than one compiled from C#:
   will produce, so the schedules in which the parent proceeds before the abort are not explored.
   Making that a pending worker-entry check, aborting when the worker is first scheduled, would
   restore them.
+
+## A directory stream sees mutations by name, where a real kernel's answer depends on its buffer
+
+**CoreCLR (and any Unix)**: POSIX leaves it unspecified whether an entry added to or removed from a
+directory after `opendir(3)` is returned by a subsequent `readdir(3)`. Both modelled kernels were
+measured, and their answers are artefacts of when `getdents` happened to run rather than rules:
+removing the whole directory *before* the first `readdir` gives end-of-stream at once, with no `.`
+or `..`, while reading one entry *first* and then removing it yields the entire listing, dots
+included. The same shape governs individual names.
+
+What both kernels *do* guarantee in practice is that an entry already returned can be removed
+without disturbing the ones after it: measured at 5000 entries — well past glibc's 32 KB `readdir`
+buffer — deleting each name as it is returned skips nothing and leaves the directory empty. That is
+a stable per-entry cookie, not a position.
+
+**PawPrint**: the stream remembers the last *name* it returned, and each `readdir` yields the least
+name strictly greater than it in the directory's current state. So a name removed after being
+returned is invisible; a name removed before being reached is gone from the listing; a name added
+ahead of the cursor appears, and one added behind it does not. A stream over a directory `rmdir` has
+since removed is at end-of-stream at once, dots included, whatever the cursor had reached.
+
+**Spec status**: unspecified by POSIX, so this is a lawful implementation rather than a divergence
+from a rule. It is written down because it is a *choice*, and because two of its consequences —
+insertion visibility, and the orphan answering end-of-stream from any cursor position — are places
+where a real kernel might legitimately answer otherwise.
+
+**Why we chose this**: among the lawful models it is the least convenient one that a guest could
+actually meet on a real kernel, which is the standing preference here: relying on unspecified
+behaviour is almost always a bug in the workload, and a model that hides mutations would let such a
+bug pass under PawPrint and fail in production. The two rejected alternatives fail that test in
+opposite directions. A *position*-indexed cursor is less forgiving than either real kernel and
+breaks correct code: CoreLib's own `FileSystem.RemoveDirectoryRecursive` deletes each child inside
+the `foreach` over the live enumerator and then `rmdir`s the parent, so an enumeration that skipped
+entries would make `Directory.Delete(recursive: true)` throw ENOTEMPTY. A *snapshot* taken at
+`opendir` is the most forgiving: it hides every mutation, so nothing a guest did could ever be
+caught here.
+
+**Observable example**:
+
+```csharp
+Directory.CreateDirectory("d");
+File.Create("d/b").Dispose();
+
+foreach (string entry in Directory.EnumerateFileSystemEntries("d"))
+{
+    File.Create("d/a").Dispose();  // sorts *before* "b", so behind the cursor
+    File.Create("d/c").Dispose();  // sorts after it
+    break;
+}
+
+// PawPrint: a subsequent step of the same enumeration yields "d/c" and never "d/a".
+// A real kernel: unspecified; in practice it depends on whether the directory
+// still fit in the buffer readdir had already filled.
+```
+
+**Where this lives in code**: `VirtualFileSystem.nextDirectoryEntry` and the `DirectoryCursor` type
+beside it. `WoofWare.PawPrint.Test/TestDirectoryEnumeration.fs` pins every case above, including
+the property that deleting each name as it is returned always empties the directory.
+
+## Directory enumeration order is the model's own, not any kernel's
+
+**CoreCLR (and any Unix)**: the order `readdir(3)` returns names in is arbitrary and filesystem-
+specific. Measured, the same seven names come back as `z é a sub ls C b` on APFS and
+`b a C é z sub ls` on a Linux overlay. Only `.` and `..` have a fixed position — first, in that
+order, on both.
+
+**PawPrint**: `.` then `..`, then the directory's names in F# ordinal (UTF-16) order, which is the
+order `DirectoryContent.Entries` already holds them in. Deterministic across runs and machines,
+which is the whole point of the interpreter.
+
+**Spec status**: unspecified. No portable program may depend on enumeration order, and any that does
+is already broken on a real system.
+
+**Why we chose this**: no real order can be reproduced — there are two of them and they disagree —
+so the only criteria are determinism and cost, and the map's own order is free. Sorting by UTF-8
+bytes was considered; it is arguably more principled, since a Unix name *is* bytes, and it is no
+more expensive, but it differs only above the BMP and buys nothing a test could observe.
+
+**Where this lives in code**: `VirtualFileSystem.nextDirectoryEntry`. Every test that compares a
+listing sorts it first, and `TestVirtualFileSystemAgainstHost`'s
+`the model lists exactly the names this kernel lists` compares sets rather than sequences for
+exactly this reason.
+
+## A directory stream's descriptor keeps an offset of zero
+
+**CoreCLR (and any Unix)**: `opendir(3)` consumes a file descriptor, and `readdir(3)` advances that
+descriptor's offset — so `lseek(dirfd, 0, SEEK_CUR)` answers non-zero once enumeration has begun.
+The value is a *cookie*, not a count, and it is not derivable from anything PawPrint models.
+Measured on both, one entry at a time through libc:
+
+| directory | after `readdir` #1 | #2 | #3 |
+| --- | --- | --- | --- |
+| 3 entries, Linux/ext4 | `4096` | `4096` | `4096` |
+| 300 entries, Linux/ext4 | `8192` | `8192` | `8192` |
+| 3 entries, macOS/APFS | `2147483647` | `2147483647` | `2147483647` |
+| 300 entries, macOS/APFS | `4294967551` | `4294967551` | `4294967551` |
+
+Two things that table settles. The offset moves **once**, when libc's `getdents` buffer is filled,
+and then not at all as the guest consumes entries out of that buffer — so it does not track
+enumeration progress even in shape. And its value is the filesystem's own cookie scheme: a block
+boundary on ext4, something else entirely on APFS.
+
+**PawPrint**: the descriptor `opendir` opens is an ordinary `OpenFileTarget.File`, and its offset
+stays at zero for the stream's whole life. The enumeration position lives beside it, in
+`EmulatedKernel.DirectoryStreams`, as a *name* rather than an offset.
+
+**Spec status**: POSIX specifies neither the value nor that `readdir` moves the offset at all; it
+gives `telldir`/`seekdir` as the portable interface and says their values are meaningful only to
+`seekdir` on the same stream.
+
+**Why we chose this**: there is no value to give. An entry index is a number neither kernel
+produces and whose shape is wrong besides — it would move on every `readdir`, where a real one moves
+once. A block boundary would be inventing ext4's scheme on a filesystem that has no blocks. The
+alternative to inventing is refusing, and refusing costs more than it buys here: `lseek` on a
+directory descriptor is otherwise a legal operation that PawPrint answers correctly (it is zero at
+`opendir` on both kernels, which PawPrint matches), and refusing it would break the correct case to
+avoid a wrong answer in a case no managed code reaches.
+
+Nothing in CoreLib or the PAL calls `dirfd(3)`, so no managed caller can obtain this descriptor at
+all. A guest can only reach it by *inferring* the number — descriptors are handed out lowest-free,
+so an `open` immediately after an `opendir` returns one above it — which
+`WoofWare.PawPrint.Test/sourcesImpure/EnumerateClosedFdSeeded.cs` does deliberately, to check that
+the interpreter's own bookkeeping survives a guest closing it.
+
+**Where this lives in code**: the `SystemNative_OpenDir` arm of `Native/NativeSystemNative.fs`
+opens the descriptor; `SystemNative_ReadDir` advances `DirectoryStream.Cursor` and deliberately
+leaves the descriptor's offset alone.

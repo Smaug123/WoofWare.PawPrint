@@ -191,6 +191,28 @@ module PermissionBits =
         match bits with
         | PermissionBits bits -> bits
 
+    /// Whether a caller with `privilege` is denied any of `needed` on an object
+    /// carrying `bits`.
+    ///
+    /// Root gets read and write whatever the mode says — measured on Linux as
+    /// uid 0, where a mode-0000 file opens for writing. Only *execute* still
+    /// needs a bit set for root, and nothing that consults this asks for it.
+    ///
+    /// Only the owner triple can ever apply, for the reason
+    /// `RemovalChecks.lacksWrite` gives: `stat` reports `Kernel.UserId` as every
+    /// inode's `st_uid`, so the caller owns everything.
+    ///
+    /// Shared by `SystemNative_Open` and `OpenDirRules`, which ask the same
+    /// question of the same object — `opendir(3)` is an
+    /// `open(O_RDONLY | O_DIRECTORY)`, and the read bit it demands is the one
+    /// `open` was already demanding. Two copies of the rule could drift apart in
+    /// a way no differential test would catch, since a real runtime would agree
+    /// with itself either way.
+    let deniedTo (privilege : CallerPrivilege) (needed : int) (bits : PermissionBits) : bool =
+        match privilege with
+        | CallerPrivilege.Privileged -> false
+        | CallerPrivilege.Unprivileged -> toInt bits &&& needed <> needed
+
     /// Parse a raw mode word's permission bits, or `None` if it does not fit in
     /// `0o7777`.
     ///
@@ -1166,6 +1188,55 @@ type SeekFault =
     /// values the caller does not jointly control.
     | Overflow
 
+/// A name a directory stream can hand back. Neither "." nor ".." is a
+/// `FileName` — `FileNameError.Reserved` rejects both, because a directory
+/// binds neither and PawPrint derives both from the graph — so a stream that
+/// must produce all three needs a type that can say which it produced.
+[<RequireQualifiedAccess>]
+type DirectoryStreamName =
+    /// The directory being enumerated.
+    | Dot
+    /// `DirectoryContent.Parent`, which is the *physical* parent and so is
+    /// still right after a walk crossed a symlink to get here.
+    | DotDot
+    /// A name the directory actually binds.
+    | Entry of name : FileName
+
+    /// The bytes `readdir(3)` would put in `d_name`.
+    override this.ToString () : string =
+        match this with
+        | DirectoryStreamName.Dot -> "."
+        | DirectoryStreamName.DotDot -> ".."
+        | DirectoryStreamName.Entry name -> FileName.toString name
+
+/// How far through a directory an open stream has read.
+///
+/// A *name*, not a position. Measured on both kernels at 5000 entries — well
+/// past glibc's 32 KB `readdir` buffer — deleting each entry as it is returned
+/// skips nothing and leaves the directory empty, so a real filesystem hands out
+/// a stable per-entry cookie rather than an index into a shifting list. A
+/// position would make `Directory.Delete(recursive: true)` fail: CoreLib's
+/// `FileSystem.RemoveDirectoryRecursive` deletes each child inside the
+/// `foreach` over the live enumerator and then `rmdir`s the parent, so an
+/// enumeration that skipped anything would answer ENOTEMPTY.
+///
+/// Four cases rather than a `FileName option`, because "returned `.`, not yet
+/// `..`" is a real position of the stream and neither dot is expressible as a
+/// `FileName`.
+///
+/// What this does *not* claim is agreement with a real kernel about mutations:
+/// whether an entry added after `opendir` becomes visible is unspecified, and
+/// both kernels' answers are artefacts of when `getdents` happened to run. See
+/// `docs/divergences.md`.
+[<RequireQualifiedAccess>]
+type DirectoryCursor =
+    /// Nothing returned yet.
+    | Start
+    | ReturnedDot
+    | ReturnedDotDot
+    /// The last name handed back, which the next entry must strictly exceed.
+    | After of name : FileName
+
 [<RequireQualifiedAccess>]
 module VirtualFileSystem =
     /// Inode 1, matching the convention that no real filesystem hands out inode
@@ -1853,6 +1924,70 @@ module VirtualFileSystem =
                    Content = InodeContent.Symlink _
                }
         | None -> false
+
+    /// The next entry an open directory stream over `directory` hands back, and
+    /// the cursor to resume from.
+    ///
+    /// `None` is end-of-stream. `.` and `..` come first, in that order, which is
+    /// what both kernels do; the names that follow are in the order
+    /// `DirectoryContent.Entries` holds them, which no real kernel's order
+    /// matches (arbitrary on both, and different between them) and which is
+    /// therefore chosen for being deterministic and free rather than for being
+    /// faithful. No caller may compare an enumeration order against a host.
+    ///
+    /// A stream over a directory `rmdir` has since removed is at end-of-stream
+    /// at once, `.` and `..` included: probed on both kernels, `opendir` then
+    /// `rmdir` then `readdir` answers NULL without yielding either dot. That is
+    /// one of the two orderings a real kernel produces — reading an entry
+    /// *first* and then removing yields the whole listing on both, because the
+    /// answer depends on when `getdents` ran — so it is a lawful choice rather
+    /// than a measured rule, and it is the less convenient of the two.
+    /// `isOrphanedDirectory` is the whole test, because an orphan is empty by
+    /// construction.
+    let nextDirectoryEntry
+        (directory : InodeNumber)
+        (cursor : DirectoryCursor)
+        (vfs : VirtualFileSystem)
+        : (DirectoryStreamName * InodeNumber * DirectoryCursor) option
+        =
+        let content =
+            match Map.tryFind directory vfs.Inodes with
+            | Some {
+                       Content = InodeContent.Directory content
+                   } -> content
+            | Some _
+            | None ->
+                failwith
+                    $"VirtualFileSystem.nextDirectoryEntry: inode %O{directory} is not a directory this filesystem holds. A directory stream's inode is pinned by the descriptor that opened it, so this is an interpreter bug."
+
+        if isOrphanedDirectory directory vfs then
+            None
+        else
+
+        /// The least name this directory binds that is strictly greater than
+        /// `lower`, or the least of all when there is no lower bound. A scan
+        /// rather than a seek: `Map` offers no "least key above" query, and the
+        /// cost (quadratic across a whole enumeration) is stated on the caller.
+        let leastAbove (lower : FileName option) : (FileName * InodeNumber) option =
+            content.Entries
+            |> Map.toSeq
+            |> Seq.filter (fun (name, _) ->
+                match lower with
+                | None -> true
+                | Some lower -> name > lower
+            )
+            |> Seq.tryHead
+
+        let fromEntries (lower : FileName option) =
+            leastAbove lower
+            |> Option.map (fun (name, inode) -> DirectoryStreamName.Entry name, inode, DirectoryCursor.After name)
+
+        match cursor with
+        | DirectoryCursor.Start -> Some (DirectoryStreamName.Dot, directory, DirectoryCursor.ReturnedDot)
+        | DirectoryCursor.ReturnedDot ->
+            Some (DirectoryStreamName.DotDot, content.Parent, DirectoryCursor.ReturnedDotDot)
+        | DirectoryCursor.ReturnedDotDot -> fromEntries None
+        | DirectoryCursor.After name -> fromEntries (Some name)
 
     /// Remove an inode from the graph, which is what a kernel does when the last
     /// name for a file has gone *and* no open description is holding it.

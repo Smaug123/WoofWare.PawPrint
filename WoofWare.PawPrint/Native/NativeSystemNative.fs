@@ -897,6 +897,111 @@ module NativeSystemNative =
         resolveGuestPathFull policy TrailingSeparatorPolicy.Demand kernel path
         |> Result.bind (fun resolution -> VirtualFileSystem.existingOf resolution.Target)
 
+    /// How big the `d_name` buffer inside one directory stream is.
+    ///
+    /// Fixed for the stream's life, because its address *is* the `DIR*` the
+    /// guest holds. 1024 is what Darwin's `struct dirent` declares
+    /// (`__DARWIN_MAXPATHLEN`), and it bounds every name either modelled kernel
+    /// can store: Linux permits 255 bytes, and Darwin 255 UTF-16 code units,
+    /// which is at most 765 bytes.
+    let private directoryNameBufferBytes : int = 1024
+
+    /// `sizeof(DirectoryEntry)`: a pointer, then two 32-bit fields.
+    let private directoryEntrySize : int = 16
+
+    // `Interop.Sys.NodeType`, which is the platform's own `DT_*`; measured
+    // identical on both kernels for every inode kind PawPrint can represent.
+    let private directoryEntryTypeDirectory : int = 4
+    let private directoryEntryTypeRegular : int = 8
+    let private directoryEntryTypeSymlink : int = 10
+
+    /// The native block a guest's `DIR*` names.
+    ///
+    /// Loudly partial: a `DIR*` is opaque, and the only legal values are the
+    /// ones `SystemNative_OpenDir` handed out. Passing anything else to
+    /// `readdir`/`closedir` is undefined behaviour on a real libc rather than an
+    /// error it reports, so there is no errno to give back.
+    let private directoryStreamBlock (operation : string) (ptr : ManagedPointerSource) : NativeMemoryBlockId =
+        match NativeCall.tryResolveNativeHeapFreeTarget ptr with
+        | Ok (Some block) -> block
+        | Ok None ->
+            failwith
+                $"%s{operation}: the guest passed a null DIR*. `opendir` returns NULL only on failure, which CoreLib checks before ever calling this, so a null here is a guest that ignored that failure — undefined behaviour on a real libc."
+        | Error reason ->
+            failwith $"%s{operation}: the DIR* argument is not a directory stream this kernel handed out: %s{reason}"
+
+    /// Fill in a guest's `Interop.Sys.DirectoryEntry`.
+    ///
+    /// Unlike `writeFileStatus` this cannot write a byte image at ABI offsets,
+    /// because the first field is a *pointer* and a pointer has no byte image
+    /// here — PawPrint's address space is a graph of typed cells, not a flat
+    /// array. So the struct is written as a whole value, exactly as the guest's
+    /// own `stobj` would write it, with each field found **by its offset and
+    /// width** rather than by name: the ABI is the contract, and a guest that
+    /// hand-rolls this P/Invoke may call its fields whatever it likes.
+    let private writeDirectoryEntry
+        (ctx : NativeCallContext)
+        (operation : string)
+        (directoryEntryHandle : ConcreteTypeHandle)
+        (output : ManagedPointerSource)
+        (name : ManagedPointerSource)
+        (nameLength : int)
+        (inodeType : int)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let zeroed, state =
+            IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes directoryEntryHandle
+
+        if CliType.sizeOf zeroed <> directoryEntrySize then
+            failwith
+                $"%s{operation}: the output struct is %d{CliType.sizeOf zeroed} bytes, but `DirectoryEntry` is %d{directoryEntrySize}. Either the guest hand-rolled this P/Invoke with a struct that is not layout-identical to `Interop.Sys.DirectoryEntry`, or upstream has changed the layout — check `ConvertDirent` in pal_io.c against `Interop.ReadDir.cs`."
+
+        let structure =
+            match zeroed with
+            | CliType.ValueType structure -> structure
+            | other ->
+                failwith
+                    $"%s{operation}: `DirectoryEntry` came back as %O{other} rather than a value type; this is an interpreter bug."
+
+        /// The one field of `structure` that covers exactly `size` bytes at
+        /// `offset`. Ambiguity would mean an overlapping layout, which this
+        /// struct does not have and which the caller could not resolve anyway.
+        let fieldAt (offset : int) (size : int) (structure : CliValueType) : CliConcreteField =
+            match CliValueType.FieldsAt offset structure |> List.filter (fun f -> f.Size = size) with
+            | [ field ] -> field
+            | found ->
+                failwith
+                    $"%s{operation}: `DirectoryEntry` has %d{List.length found} fields of %d{size} bytes at offset %d{offset}, expected exactly one. The guest's struct is not layout-identical to `Interop.Sys.DirectoryEntry`."
+
+        let setInt32At (offset : int) (value : int32) (structure : CliValueType) : CliValueType =
+            let field = fieldAt offset 4 structure
+            let bytes = Array.zeroCreate<byte> 4
+            BinaryPrimitives.WriteInt32LittleEndian (Span<byte> bytes, value)
+            // Shaped from the field's own zero value rather than assembled as a
+            // bare `Int32`: `InodeType` is a CLR enum in CoreLib's declaration
+            // and a plain `int` in a hand-rolled one, and this writes whichever
+            // the guest declared.
+            CliValueType.WithFieldSetById field.Id (CliType.OfBytesLike field.Contents bytes) structure
+
+        let namePointer =
+            match name with
+            | ManagedPointerSource.Null -> NativeIntSource.Verbatim 0L
+            | pointer -> NativeIntSource.ManagedPointer pointer
+
+        let structure =
+            structure
+            |> (fun structure ->
+                CliValueType.WithFieldSetById
+                    (fieldAt 0 8 structure).Id
+                    (CliType.Numeric (CliNumericType.NativeInt namePointer))
+                    structure
+            )
+            |> setInt32At 8 nameLength
+            |> setInt32At 12 inodeType
+
+        IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state output (CliType.ValueType structure)
+
     /// `sizeof(FileStatus)`: four 32-bit fields, then twelve 64-bit ones, then
     /// a trailing `uint32_t`, rounded up to the struct's 8-byte alignment.
     let private fileStatusSize : int = 120
@@ -2689,7 +2794,7 @@ module NativeSystemNative =
             // exception. The type check belongs in what `FStat` reports.
             let permissionBits =
                 match VirtualFileSystem.permissions entry with
-                | InodePermissions.Stored bits -> PermissionBits.toInt bits
+                | InodePermissions.Stored bits -> bits
                 | InodePermissions.PlatformSymlinkDefault ->
                     failwith
                         $"%s{operation}: inode %O{inode} reports platform-default symlink permissions, but the symlink arm above answered ELOOP for every link (this is an interpreter bug)."
@@ -2730,13 +2835,8 @@ module NativeSystemNative =
                      else
                          0)
 
-            // Root gets read and write whatever the mode says — measured on Linux
-            // as uid 0, where a mode-0000 file opens for writing. (Only *execute*
-            // still needs a bit set for root, and `open` never asks for it.)
             let lacksNeededBits =
-                match EmulatedKernel.callerPrivilege state.Kernel with
-                | CallerPrivilege.Privileged -> false
-                | CallerPrivilege.Unprivileged -> permissionBits &&& neededBits <> neededBits
+                PermissionBits.deniedTo (EmulatedKernel.callerPrivilege state.Kernel) neededBits permissionBits
 
             if lacksNeededBits then
                 fail UnixError.EACCES
@@ -3027,6 +3127,273 @@ module NativeSystemNative =
                 |> EmulatedKernel.forgetIfUnheld target
             )
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        // `DIR* SystemNative_OpenDir(const char* path)` (pal_io.c:532), an
+        // EINTR-retrying `opendir(3)` and nothing else. NULL with errno set on
+        // failure; the handle is opaque to the guest, which only passes it back
+        // to `ReadDir` and `CloseDir`.
+        | Some "SystemNative_OpenDir",
+          [ ConcretePointer _ ],
+          MethodReturnType.Returns (ConcreteIntPtr state.ConcreteTypes) ->
+            let operation = "SystemNative_OpenDir"
+
+            let fail (error : UnixError) : NativeHandlerResult option =
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match
+                bufferPointerArgument operation "path" instruction.Arguments.[0]
+                |> BufferPointer.dereferenceable
+            with
+            | None -> fail UnixError.EFAULT
+            | Some pathPtr ->
+
+            let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
+
+            let bytes =
+                NativeCall.readNullTerminatedBytesWithin
+                    operation
+                    ctx.BaseClassTypes
+                    state
+                    pathPtr
+                    (PathLimits.pathMaxBytes limits)
+
+            match parseGuestPathBytes operation limits bytes with
+            | Error error -> fail error
+            | Ok path ->
+
+            // `Follow`, and a trailing separator that merely records its demand:
+            // measured on both kernels, `opendir` follows a final symlink and a
+            // trailing separator changes no row at all — "ld" and "ld/" both
+            // succeed, "f" and "f/" are both ENOTDIR. Nothing reads
+            // `TrailingSeparatorDemanded`, because a directory is demanded
+            // outright whether the separator was there or not.
+            match resolveGuestPathFull SymlinkPolicy.Follow TrailingSeparatorPolicy.Demand state.Kernel path with
+            | Error error -> fail error
+            | Ok resolution ->
+
+            match
+                OpenDirRules.verdict (EmulatedKernel.callerPrivilege state.Kernel) resolution state.Kernel.FileSystem
+            with
+            | OpenDirVerdict.Refuse error -> fail error
+            | OpenDirVerdict.Open inode ->
+
+            // Measured on both: `opendir` consumes a file descriptor, and
+            // `dirfd(3)` hands it back. Nothing in CoreLib or the PAL calls
+            // `dirfd`, so a guest can only see it in the numbering of a later
+            // `open` — which is enough to make it observable, and is why the
+            // stream takes a real descriptor rather than living beside the
+            // table. It is also what pins the directory's inode while the
+            // stream is open.
+            let fd, registry =
+                FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly state.Kernel.FileDescriptors
+
+            // The block whose address the guest holds as its `DIR*`, and whose
+            // bytes are the `d_name` buffer each `ReadDir` refills. One
+            // allocation per stream rather than one per entry, because
+            // `DirectoryEntry.Name` points into the stream's own storage and
+            // stays valid only until the next `readdir`.
+            let handle, state =
+                NativeCall.allocateNativeHeapBlob operation (Array.zeroCreate directoryNameBufferBytes) state
+
+            let block =
+                match handle with
+                | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, 0), []) -> block
+                | other ->
+                    failwith
+                        $"%s{operation}: the name buffer allocation returned an unexpected pointer shape (%O{other}); this is an interpreter bug."
+
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    FileDescriptors = registry
+                }
+                |> EmulatedKernel.withDirectoryStream
+                    block
+                    {
+                        Fd = fd
+                        Inode = inode
+                        Cursor = DirectoryCursor.Start
+                    }
+            )
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer handle))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        // `int32_t SystemNative_ReadDir(DIR* dir, DirectoryEntry* outputEntry)`
+        // (pal_io.c:506): 0 when an entry was retrieved, **-1 at end of stream**,
+        // and a **raw** errno otherwise — this entry point does not use
+        // `SetLastError`, and `FileSystemEnumerator.FindNextEntry` feeds the
+        // return value straight to `new Interop.ErrorInfo(result)`, which
+        // converts it with `ConvertErrorPlatformToPal`. No failure arm exists
+        // here: the cursor walk is total, and a `DIR*` this kernel never issued
+        // is undefined behaviour on a real libc rather than an errno, so
+        // `EmulatedKernel.directoryStream` refuses instead of inventing EBADF.
+        //
+        // The output parameter is matched loosely, as `SystemNative_Stat`'s is
+        // and for the same reason: `Interop.Sys.DirectoryEntry` is internal to
+        // CoreLib, so a guest exercising this handler declares its own
+        // layout-identical struct. The pointee handle is bound because the
+        // field offsets are derived from it.
+        | Some "SystemNative_ReadDir",
+          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer directoryEntryHandle ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_ReadDir"
+
+            let block =
+                directoryStreamBlock
+                    operation
+                    (NativeCall.managedPointerOfPointerArgument operation "dir" instruction.Arguments.[0])
+
+            let output =
+                NativeCall.managedPointerOfPointerArgument operation "outputEntry" instruction.Arguments.[1]
+
+            let stream = EmulatedKernel.directoryStream block state.Kernel
+
+            // `errno = 0` before the `readdir`, which the C does itself
+            // (pal_io.c:511) so that it can tell "end of stream" from "failed"
+            // by reading errno back afterwards.
+            //
+            // Guest-observable, and *not* the same thing as the `SetLastError`
+            // stub PawPrint does not model: this import declares no
+            // `SetLastError`, so on real .NET nothing saves or restores errno
+            // around the call and `Marshal.GetLastSystemError` reads what the C
+            // left — zero. Without this, a guest that failed a syscall and then
+            // enumerated a directory would still see the old errno.
+            // Note what this does *not* touch: the offset on the descriptor
+            // `opendir` opened. A real `readdir` moves it, but to a cookie
+            // PawPrint cannot produce — measured, it jumps once when libc's
+            // `getdents` buffer fills and then stays put as entries are consumed
+            // out of it, and its value is the filesystem's own (a block boundary
+            // on ext4, `2147483647` on APFS for a three-entry directory). An
+            // entry index would be wrong in shape as well as in value. See
+            // `docs/divergences.md`.
+            let state = state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread 0)
+
+            match VirtualFileSystem.nextDirectoryEntry stream.Inode stream.Cursor state.Kernel.FileSystem with
+            | None ->
+                // "0 returned with null result -> end-of-stream". The C
+                // `memset`s the output struct first, with the comment "managed
+                // out param must be initialized", so the guest sees a null
+                // `Name` rather than the previous entry's.
+                writeDirectoryEntry ctx operation directoryEntryHandle output ManagedPointerSource.Null 0 0 state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Some (name, target, next) ->
+
+            let nameBytes = UnixPathText.utf8.GetBytes (name.ToString ())
+
+            if nameBytes.Length + 1 > directoryNameBufferBytes then
+                // No name either kernel can store reaches this: Linux bounds a
+                // component at 255 bytes and Darwin at 255 UTF-16 code units,
+                // which is at most 765 bytes. A longer one can only have come
+                // from a seed, which bypasses `NAME_MAX` — and such a name is
+                // unreachable by every other syscall, because the walk checks
+                // the limit before each lookup.
+                failwith
+                    $"%s{operation}: the entry \"%s{name.ToString ()}\" is %d{nameBytes.Length} bytes, which does not fit the %d{directoryNameBufferBytes}-byte `d_name` buffer. No name either modelled kernel can store is this long, so this filesystem was seeded with one that could not exist."
+
+            let nameLength =
+                match SimulatedUnixPlatform.directoryEntryNameLength state.Kernel.UnixPlatform with
+                | DirectoryEntryNameLength.Reported -> nameBytes.Length
+                | DirectoryEntryNameLength.WalkToTerminator -> -1
+
+            let inodeType =
+                match VirtualFileSystem.tryGetContent target state.Kernel.FileSystem with
+                | Some (InodeContent.RegularFile _) -> directoryEntryTypeRegular
+                | Some (InodeContent.Directory _) -> directoryEntryTypeDirectory
+                | Some (InodeContent.Symlink _) -> directoryEntryTypeSymlink
+                | None ->
+                    failwith
+                        $"%s{operation}: the entry \"%s{name.ToString ()}\" names inode %O{target}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
+
+            // The name, then its terminator. The block was zero-filled at
+            // allocation, so the terminator is already there for a first entry —
+            // written explicitly all the same, because a *shorter* name after a
+            // longer one would otherwise read back with the tail of its
+            // predecessor.
+            let terminated = Array.zeroCreate<byte> (nameBytes.Length + 1)
+            Array.blit nameBytes 0 terminated 0 nameBytes.Length
+
+            let state =
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        NativeMemoryPool = NativeMemoryPool.writeBytes block 0 terminated kernel.NativeMemoryPool
+                    }
+                    |> EmulatedKernel.withDirectoryCursor block next
+                )
+
+            writeDirectoryEntry
+                ctx
+                operation
+                directoryEntryHandle
+                output
+                (ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, 0), []))
+                nameLength
+                inodeType
+                state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        // `int32_t SystemNative_CloseDir(DIR* dir)` (pal_io.c:542), which is
+        // `closedir(3)` with EINTR folded into success.
+        | Some "SystemNative_CloseDir",
+          [ ConcreteIntPtr state.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_CloseDir"
+
+            let block =
+                directoryStreamBlock
+                    operation
+                    (NativeCall.managedPointerOfPointerArgument operation "dir" instruction.Arguments.[0])
+
+            let stream = EmulatedKernel.directoryStream block state.Kernel
+
+            // Forget the stream *before* closing the descriptor under it: the
+            // close is what reaps a directory whose last name went away while
+            // this stream held it, and `heldInodes` counts this entry among the
+            // things holding it.
+            let state =
+                state.MapKernel (EmulatedKernel.withoutDirectoryStream block)
+                |> IlMachineState.freeNativeMemory block
+
+            let state, result =
+                match EmulatedKernel.closeFd stream.Fd state.Kernel with
+                | Ok kernel -> state.MapKernel (fun _ -> kernel), 0
+                | Error FileDescriptorCloseError.BadFd ->
+                    // Reachable only if the guest closed the stream's own
+                    // descriptor behind its back, which it can do because fd
+                    // numbers are guessable. `closedir` really does call
+                    // `close` on that fd, so EBADF is what a real one reports.
+                    let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+                    state.MapKernel (
+                        EmulatedKernel.withLastSystemError
+                            ctx.Thread
+                            (UnixError.toRawErrnoUnder numbering UnixError.EBADF)
+                    ),
+                    -1
+
+            // Reaped here rather than left to `closeFd`, which does it only for
+            // the descriptor it actually closed. Two paths reach this with the
+            // directory still in the graph and nothing holding it: the guest
+            // closed the stream's own descriptor beforehand (BadFd above), or
+            // that descriptor number has since been reused, in which case
+            // `closeFd` reaped the *replacement's* inode instead. Both are
+            // undefined behaviour on a real libc, but neither may leave this
+            // kernel with an inode no path reaches — `checkInvariants` would
+            // report it, and it would be PawPrint's bookkeeping at fault rather
+            // than the guest's. Idempotent when the descriptor did the job.
+            state.MapKernel (EmulatedKernel.forgetIfUnheld stream.Inode)
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_GetFileSystemType",
