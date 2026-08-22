@@ -902,7 +902,7 @@ arm in `Native/NativeRuntimeFieldHandle.fs`.
 example, parked in `TestPureCases.unimplemented` so the real-runtime side keeps asserting what the
 answer should be.
 
-## Invalid `[UnmanagedCallersOnly]` usage is reported as a fatal error, not a catchable one
+## `[UnmanagedCallersOnly]` declarations and unmanaged call sites are not validated
 
 **CoreCLR**: `COMDelegate::ThrowIfInvalidUnmanagedCallersOnlyUsage` (`vm/comdelegate.cpp:2029-2051`)
 validates the *declaration* before the reverse-P/Invoke prologue is ever installed, and throws a
@@ -920,12 +920,27 @@ uncatchable where CoreCLR's is catchable.
 **Spec status**: Unspecified. `UnmanagedCallersOnlyAttribute` is a runtime contract with no CLI
 counterpart, and ECMA-335 says nothing about it.
 
-**Why we chose this**: unreachable, and closing it is a different feature. C# enforces all three
-conditions itself (CS8932 for a non-static or generic target, CS8894 for a non-blittable one), so
-no guest that compiles can carry an invalid declaration; producing one needs hand-authored IL or
-Reflection.Emit, and PawPrint cannot yet run an emitted body that calls another method at all. The
-fix is not a tweak to the gate either: it is a declaration-time check raising a guest-catchable
-exception, which is the `raise-guest-exception` machinery rather than this one, and blittability
-analysis besides. Doing it here would have meant shipping two features at once, and doing *part* of
-it — validating staticness and genericity but not blittability — would leave the same divergence
-behind a check that looks complete.
+The same gap has two further cases, both of which a guest *can* compile, and both measured:
+
+- A method carrying both `[DllImport]` and `[UnmanagedCallersOnly]`. Reached through a function
+  pointer (a direct call is CS8901), real .NET throws a catchable `NotSupportedException`: "Method
+  'Program.getpid' cannot be marked with both DllImportAttribute and UnmanagedCallersOnlyAttribute."
+  PawPrint dispatches the P/Invoke.
+- A call site naming two base calling conventions, `delegate* unmanaged[Cdecl, Stdcall]<int, int>`.
+  Real .NET throws a catchable `InvalidProgramException`: "Multiple unmanaged calling conventions
+  are specified. Only a single calling convention is supported." (`CallConvBuilder::AddTypeName`
+  refuses the second, callconvbuilder.cpp.) PawPrint runs the call. This one is not really about
+  the attribute at all — it is `calli` call-site validation, and it diverges the same way for an
+  ordinary target.
+
+**Why we chose this**: validating these is a coherent piece of work, and a different one from the
+transition rule. Every case here is a *catchable* exception raised before the transition is ever
+attempted, so the fix is declaration- and call-site-time checking that raises into the guest — the
+`raise-guest-exception` machinery — plus blittability analysis and calling-convention conflict
+detection. None of it shares code with the gate, which asks only whether a thread that has arrived
+at a valid target is still in cooperative mode.
+
+Doing *part* of it would be worse than none: a check covering staticness and genericity but not
+blittability, or one convention conflict but not another, leaves the divergence in place behind
+something that reads as complete. The one thing that is not deferred is honesty at the boundary —
+`callMethod`'s refusal says what it does not know rather than blaming the call site.

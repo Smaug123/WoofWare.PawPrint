@@ -2541,13 +2541,20 @@ module IlMachineStateExecution =
             | _, CallCommitment.Aborted fatal ->
                 // This wrapper's return type has nowhere to put an abort, and dropping one would
                 // let the caller carry on against a state whose process has already died. Its
-                // remaining callers all name a constructor or a specific non-refusable BCL method,
-                // none of which the chokepoint can refuse; a call site that gains a refusable
-                // target must use `callMethodWithCommitment` and propagate.
+                // callers all name a constructor, a class initialiser, or a specific BCL method,
+                // and no guest that compiles can point any of those at a `[UnmanagedCallersOnly]`
+                // method: C# admits the attribute only on ordinary method declarations (CS0592
+                // rejects it on a static constructor), and the BCL targets are ours to choose.
+                //
+                // So reaching here means metadata PawPrint has no answer for, not a wrong call-site
+                // choice — and CoreCLR's behaviour when its *own* machinery enters such a method is
+                // not something we have been able to measure. Refuse rather than guess; see
+                // docs/divergences.md, "`[UnmanagedCallersOnly]` declarations and unmanaged call
+                // sites are not validated".
                 let message = fatal.Message |> Option.defaultValue "<no message>"
 
                 failwith
-                    $"logic error: a call made through `callMethod` aborted the process (%O{fatal.Code}: %s{message}); that wrapper discards the commitment, so a call site whose target can be refused must use `callMethodWithCommitment`"
+                    $"a call made through `callMethod` aborted the process (%O{fatal.Code}: %s{message}). PawPrint cannot say what should happen here: this wrapper serves the interpreter's own entries — class initialisers, constructors, chosen BCL helpers — and it is unmeasured whether CoreCLR applies the reverse-P/Invoke transition to those at all. A guest cannot produce this; hand-authored metadata can"
 
     and loadClass
         (loggerFactory : ILoggerFactory)
