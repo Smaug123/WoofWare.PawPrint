@@ -173,6 +173,123 @@ class WaitsOnADuplicatedPort
         stuck |> shouldContainText "BlockedOnSocketEvents (OpenFileDescriptionId 3L)"
         stuck |> shouldContainText "WaitForSocketEvents"
 
+    /// Two waiters parked on one port, and an entry thread that then makes the port
+    /// deliverable. The sleep is what makes the order deterministic: while the entry
+    /// thread sleeps, the two waiters are the only runnable threads, so both reach their
+    /// parks before the connect.
+    let private twoWaitersSource : string =
+        """
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+class TwoWaitersOnOnePort
+{
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_CreateSocketEventPort")]
+    static extern unsafe int CreateSocketEventPort(IntPtr* port);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Socket")]
+    static extern unsafe int Socket(int addressFamily, int socketType, int protocolType, IntPtr* createdSocket);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Bind")]
+    static extern unsafe int Bind(IntPtr socket, int protocolType, byte* socketAddress, int socketAddressLen);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Listen")]
+    static extern int Listen(IntPtr socket, int backlog);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Connect")]
+    static extern unsafe int Connect(IntPtr socket, byte* socketAddress, int socketAddressLen);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetSockName")]
+    static extern unsafe int GetSockName(IntPtr socket, byte* socketAddress, int* socketAddressLen);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_TryChangeSocketEventRegistration")]
+    static extern int TryChange(IntPtr port, IntPtr socket, int currentEvents, int newEvents, IntPtr data);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_WaitForSocketEvents")]
+    static extern unsafe int WaitForSocketEvents(IntPtr port, byte* buffer, int* count);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetAddressFamily")]
+    static extern unsafe int SetAddressFamily(byte* socketAddress, int socketAddressLen, int addressFamily);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetPort")]
+    static extern unsafe int SetPort(byte* socketAddress, int socketAddressLen, ushort port);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetIPv4Address")]
+    static extern unsafe int SetIPv4Address(byte* socketAddress, int socketAddressLen, uint address);
+
+    static IntPtr Port;
+
+    static unsafe void Waiter()
+    {
+        byte* buffer = stackalloc byte[32];
+        int count = 1;
+        WaitForSocketEvents(Port, buffer, &count);
+    }
+
+    static unsafe int Main()
+    {
+        IntPtr port;
+        if (CreateSocketEventPort(&port) != 0) return 1;
+        Port = port;
+        IntPtr listener;
+        if (Socket(2, 1, 6, &listener) != 0) return 2;
+        byte* addr = stackalloc byte[16];
+        for (int i = 0; i < 16; i++) addr[i] = 0;
+        SetAddressFamily(addr, 16, 2);
+        SetIPv4Address(addr, 16, 0x0100007F);
+        SetPort(addr, 16, 0);
+        if (Bind(listener, 6, addr, 16) != 0) return 3;
+        if (Listen(listener, 8) != 0) return 4;
+        int len = 16;
+        if (GetSockName(listener, addr, &len) != 0) return 5;
+        if (TryChange(port, listener, 0, 0x3, (IntPtr)1) != 0) return 6;
+
+        new Thread(Waiter) { IsBackground = true }.Start();
+        new Thread(Waiter) { IsBackground = true }.Start();
+        Thread.Sleep(100);
+
+        IntPtr client;
+        if (Socket(2, 1, 6, &client) != 0) return 7;
+        if (Connect(client, addr, 16) != 0) return 8;
+        return 9;
+    }
+}
+"""
+
+    /// epoll parks `epoll_wait` callers exclusively, so one edge wakes one waiter, chosen
+    /// by park order — state PawPrint does not record. The sweep must refuse rather than
+    /// wake both and let the scheduler invent the winner; this pins the refusal, and
+    /// kills the mutant that wakes every waiter on the port.
+    [<Test>]
+    let ``an edge arriving with two waiters parked on one port refuses`` () : unit =
+        let image = Roslyn.compile [ twoWaitersSource ]
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "TwoWaitersOnOnePort.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+
+        use peImage = new MemoryStream (image)
+
+        let exc =
+            Assert.Throws<GuestFailureException> (fun () ->
+                BoundedRun.runWith
+                    loggerFactory
+                    BoundedRun.defaultMaxSteps
+                    "TwoWaitersOnOnePort.cs"
+                    (Some "TwoWaitersOnOnePort.cs")
+                    peImage
+                    (HostConfig.Default dotnetRuntimes)
+                |> ignore<RunOutcome>
+            )
+
+        exc.Message
+        |> shouldContainText "are all parked in SystemNative_WaitForSocketEvents"
+
     /// A waiter parked on a registered-but-unready listener, and an entry thread whose
     /// 200 ms join resolves only through the jump-to-deadline fallback — which exists
     /// exactly while the waiter *stays* parked.

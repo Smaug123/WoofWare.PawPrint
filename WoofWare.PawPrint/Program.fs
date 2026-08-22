@@ -364,19 +364,42 @@ module Program =
     /// anyone — where a push from each producer would fail silently, as a
     /// deadlock, on the first one that did.
     let private fireSocketReadiness (state : IlMachineState) : IlMachineState =
-        let woken =
-            state.ThreadState
-            |> Map.toList
-            |> List.choose (fun (tid, threadState) ->
-                match threadState.Status with
-                | ThreadStatus.BlockedOnSocketEvents port when
-                    EmulatedKernel.hasDeliverableSocketEvents port state.Kernel
-                    ->
-                    Some tid
-                | _ -> None
+        // Runs on every tick of every workload, so the no-waiter case must
+        // cost no allocation: a fold that accumulates only matches, rather
+        // than materialising the thread map.
+        let waiters =
+            (state.ThreadState, [])
+            ||> Map.foldBack (fun tid ts acc ->
+                match ts.Status with
+                | ThreadStatus.BlockedOnSocketEvents port -> (tid, port) :: acc
+                | _ -> acc
             )
 
-        (state, woken) ||> List.fold (fun s tid -> Scheduler.wakeFromSocketEvents tid s)
+        match waiters with
+        | [] -> state
+        | waiters ->
+
+        let deliverable =
+            waiters
+            |> List.filter (fun (_, port) -> EmulatedKernel.hasDeliverableSocketEvents port state.Kernel)
+
+        // An edge arriving with several threads parked on one port is
+        // unmodelled: `ep_poll` adds each waiter to the port's wait queue
+        // *exclusively*, so a real event wakes one of them — in an order
+        // PawPrint keeps no state to reproduce (the queue is park-order) and
+        // has not measured. No managed caller can reach this
+        // (`SocketAsyncEngine` dedicates one thread per port), so refuse
+        // loudly rather than wake every waiter and let the scheduler invent
+        // the winner.
+        for port, sharing in deliverable |> List.groupBy snd do
+            if List.length sharing > 1 then
+                let tids = sharing |> List.map (fun (tid, _) -> $"%O{tid}") |> String.concat ", "
+
+                failwith
+                    $"fireSocketReadiness: threads %s{tids} are all parked in SystemNative_WaitForSocketEvents on port %O{port}, which now has a deliverable event. epoll parks waiters exclusively, so a real kernel wakes exactly one of them, chosen by park order — state PawPrint does not record and semantics it has not measured. Implement the one-wakeup rule before parking several threads on one port."
+
+        (state, deliverable)
+        ||> List.fold (fun s (tid, _) -> Scheduler.wakeFromSocketEvents tid s)
 
     /// The minimum wait deadline among currently-blocked threads, or
     /// `None` if no thread is parked with a finite timeout. Used by the
