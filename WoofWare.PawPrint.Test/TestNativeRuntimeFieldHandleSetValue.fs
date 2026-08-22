@@ -192,7 +192,6 @@ public sealed class RvaHolder
             IlMachineState.getOrAllocateField
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
-                fixture.GuestAssembly.DefinitionFullName
                 (RuntimeTypeHandleTarget.Closed fixture.HolderTypeHandle)
                 field.Handle
                 state
@@ -464,7 +463,6 @@ public sealed class RvaHolder
             IlMachineState.getOrAllocateField
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
-                fixture.GuestAssembly.DefinitionFullName
                 (RuntimeTypeHandleTarget.Closed lazyHolderHandle)
                 field.Handle
                 state
@@ -551,7 +549,6 @@ public sealed class RvaHolder
             IlMachineState.getOrAllocateField
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
-                fixture.GuestAssembly.DefinitionFullName
                 (RuntimeTypeHandleTarget.Closed rvaTypeHandle)
                 rvaField.Handle
                 state

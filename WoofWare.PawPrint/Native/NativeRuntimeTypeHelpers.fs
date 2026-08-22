@@ -172,13 +172,7 @@ module NativeRuntimeTypeHelpers =
         ((state, []), fields)
         ||> List.fold (fun (state, ids) field ->
             let runtimeFieldHandle, state =
-                IlMachineState.getOrAllocateField
-                    loggerFactory
-                    baseClassTypes
-                    declaringAssemblyFullName
-                    declaringTarget
-                    field.Handle
-                    state
+                IlMachineState.getOrAllocateField loggerFactory baseClassTypes declaringTarget field.Handle state
 
             let stubAddress = runtimeFieldInfoStubAddress operation state runtimeFieldHandle
 

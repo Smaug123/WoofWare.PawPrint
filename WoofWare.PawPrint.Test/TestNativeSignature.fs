@@ -222,7 +222,6 @@ public sealed class MethodSignatureHost
                 state.ConcreteTypes
                 state
                 (fun fields state -> IlMachineState.allocateManagedObject runtimeFieldInfoStubHandle fields state)
-                fixture.Assembly.DefinitionFullName
                 (RuntimeTypeHandleTarget.Closed closedHostHandle)
                 fixture.Field.Handle
                 state.FieldHandles

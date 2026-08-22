@@ -100,10 +100,12 @@ module IlMachineRuntimeMetadata =
     /// carries its own declaring `RuntimeTypeHandle` — so this helper preserves the
     /// distinction by keying on the full target. Type-parameter targets are rejected
     /// by the registry because they cannot own a field.
+    ///
+    /// `fieldHandle` indexes the tables of the assembly that *defines* the field, which the
+    /// registry derives from `declaringType` rather than taking as an argument.
     let getOrAllocateField
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (declaringAssyFullName : string)
         (declaringType : RuntimeTypeHandleTarget)
         (fieldHandle : FieldDefinitionHandle)
         (state : IlMachineState)
@@ -130,7 +132,6 @@ module IlMachineRuntimeMetadata =
                 state.ConcreteTypes
                 state
                 (fun fields state -> IlMachineThreadState.allocateManagedObject runtimeFieldInfoStub fields state)
-                declaringAssyFullName
                 declaringType
                 fieldHandle
                 state.FieldHandles
