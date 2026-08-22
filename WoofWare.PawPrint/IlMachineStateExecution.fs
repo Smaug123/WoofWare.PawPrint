@@ -1791,8 +1791,10 @@ module IlMachineStateExecution =
     /// reflective invoke passes through — applies it;</item>
     /// <item><c>Thread.StartInternal</c>, which builds a worker's bottom frame directly — applies
     /// it;</item>
-    /// <item>the guest's entry point, installed by <c>Program</c> — does not, because Roslyn
-    /// refuses to attribute one (CS8899), so no guest can present the shape;</item>
+    /// <item>the guest's entry point, installed by <c>Program</c> — does not. Roslyn refuses to
+    /// attribute one (CS8899), so no guest compiled from C# can present the shape; an image handed
+    /// to PawPrint directly could, and what CoreCLR does with it is unmeasured. See
+    /// docs/divergences.md;</item>
     /// <item><c>AppContextSeed</c> and <c>SignalDispatch</c>, which likewise build frames directly
     /// — do not, because neither lets the guest choose the method: the first names BCL methods, and
     /// a signal handler takes a <c>PosixSignalContext</c>, whose non-blittability makes the

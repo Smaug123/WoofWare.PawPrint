@@ -944,3 +944,19 @@ Doing *part* of it would be worse than none: a check covering staticness and gen
 blittability, or one convention conflict but not another, leaves the divergence in place behind
 something that reads as complete. The one thing that is not deferred is honesty at the boundary —
 `callMethod`'s refusal says what it does not know rather than blaming the call site.
+
+Two further entries sit in the same bucket, both reachable only by an image PawPrint is handed
+rather than one compiled from C#:
+
+- An **entry point** carrying the attribute. `Program` installs `Main`'s frame directly, so the
+  refusal is not applied and PawPrint runs the entry type's static constructor and the method body.
+  Roslyn rejects the source (CS8899), so this needs hand-authored or post-processed metadata, and
+  CoreCLR's behaviour for such an image is unmeasured — which is why nothing is asserted here
+  rather than a guess being encoded.
+- The **timing** of the thread-entry refusal. `Thread.StartInternal` refuses while the QCall is
+  still executing, so the guest's `Start()` never returns; CoreCLR raises the fatal error when the
+  *worker* reaches the target prologue, which permits the parent to run first. PawPrint's choice is
+  *a* legal interleaving — the worker being scheduled immediately — but it is the only one PawPrint
+  will produce, so the schedules in which the parent proceeds before the abort are not explored.
+  Making that a pending worker-entry check, aborting when the worker is first scheduled, would
+  restore them.
