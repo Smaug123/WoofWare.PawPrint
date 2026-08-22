@@ -1706,8 +1706,17 @@ module internal UnaryMetadataCallOps =
         // `delegate* unmanaged<...>` StandaloneSignature leaves cooperative mode, where every
         // managed route -- including a `calli` through `delegate*<...>` over the very same address
         // -- does not.
+        // CoreCLR names a modifier in the module that owns the signature
+        // (`GetNameOfTypeRefOrDef(pModule, ...)`), which for a StandaloneSignature is the assembly
+        // being interpreted. A TypeDef token is scoped to that module, so a `FromDefinition`
+        // modifier reached from here is always one of its own rows.
+        let resolveModifierName (identity : ResolvedTypeIdentity) : (string * string) option =
+            match activeAssy.TypeDefs.TryGetValue identity.TypeDefinition.Get with
+            | true, typeDef -> Some (typeDef.Namespace, typeDef.Name)
+            | false, _ -> None
+
         let callSiteTransition =
-            IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature callSiteSignature
+            IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature resolveModifierName callSiteSignature
 
         // No class-initialisation check here: `callMethodWithCommitment` arms it on the callee's
         // frame, and it is the callee's prologue that runs it. That includes the per-kind

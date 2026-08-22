@@ -24,6 +24,13 @@ module TestCallSiteTransition =
 
     let private assy = typeof<RunResult>.Assembly
 
+    /// Roslyn names a calling-convention modifier by TypeRef, never by TypeDef, so a test over
+    /// metadata it emitted should never need to resolve one. Failing loudly rather than answering
+    /// `None` keeps that a fact this file checks rather than one it assumes.
+    let private noTypeDefModifiers (identity : ResolvedTypeIdentity) : (string * string) option =
+        failwith
+            $"the classifier asked to resolve the TypeDef modifier %O{identity}, which this image should not contain"
+
     let private signatureReturningVoid (convention : SignatureCallingConvention) : TypeMethodSignature<TypeDefn> =
         {
             Header =
@@ -52,7 +59,9 @@ module TestCallSiteTransition =
     [<Test>]
     let ``each calling convention lands on the documented side`` () : unit =
         for convention, side in expected do
-            IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature (signatureReturningVoid convention)
+            IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature
+                noTypeDefModifiers
+                (signatureReturningVoid convention)
             |> shouldEqual side
 
     /// Tied to the enum rather than to the list above: a runtime that grew a new calling convention
@@ -75,7 +84,9 @@ module TestCallSiteTransition =
             Enum.GetValues typeof<SignatureCallingConvention>
             |> Seq.cast<SignatureCallingConvention>
             |> Seq.filter (fun c ->
-                IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature (signatureReturningVoid c) = IlMachineStateExecution.CallSiteTransition.StaysCooperative
+                IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature
+                    noTypeDefModifiers
+                    (signatureReturningVoid c) = IlMachineStateExecution.CallSiteTransition.StaysCooperative
             )
             |> Set.ofSeq
 
@@ -103,6 +114,103 @@ module TestCallSiteTransition =
             else
                 None
         )
+
+    /// The shapes CoreCLR's own parser treats differently from a naive reading, each of which is a
+    /// call PawPrint would refuse and real .NET would run.
+    ///
+    /// These are hand-authored metadata: Roslyn emits none of them, because C# reaches the
+    /// suppression only through `unmanaged[SuppressGCTransition]`, which always compiles to an
+    /// optional modifier under the 0x09 header. So there is no guest to write for them, and the
+    /// oracle is CoreCLR's source rather than a run.
+    [<Test>]
+    let ``CoreCLR's rules for which modifiers count`` () : unit =
+        let suppression : TypeDefn =
+            TypeDefn.FromReference (
+                {
+                    Handle = ComparableTypeReferenceHandle.Make (MetadataTokens.TypeReferenceHandle 1)
+                    Name = "CallConvSuppressGCTransition"
+                    Namespace = "System.Runtime.CompilerServices"
+                    ResolutionScope = TypeRefResolutionScope.ModuleRef (MetadataTokens.ModuleReferenceHandle 1)
+                },
+                SignatureTypeKind.Class
+            )
+
+        let signature (convention : SignatureCallingConvention) (isRequired : bool) : TypeMethodSignature<TypeDefn> =
+            { signatureReturningVoid convention with
+                ReturnType =
+                    MethodReturnType.Returns (
+                        TypeDefn.Modified
+                            {
+                                Unmodified = TypeDefn.PrimitiveType PrimitiveType.Int32
+                                Modifier = suppression
+                                IsRequired = isRequired
+                            }
+                    )
+            }
+
+        let classify (convention : SignatureCallingConvention) (isRequired : bool) =
+            IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature
+                noTypeDefModifiers
+                (signature convention isRequired)
+
+        // A `modreq` suppresses nothing: callconvbuilder.cpp skips required modifiers outright
+        // (`if (!fIsOptional) continue;`) while deriving the calling convention.
+        classify SignatureCallingConvention.Unmanaged true
+        |> shouldEqual IlMachineStateExecution.CallSiteTransition.EntersPreemptive
+
+        // The control for that, so this pins the `modreq`/`modopt` distinction rather than just
+        // "something about this signature stops it suppressing".
+        classify SignatureCallingConvention.Unmanaged false
+        |> shouldEqual IlMachineStateExecution.CallSiteTransition.StaysCooperative
+
+        // A legacy header names its convention outright, and `getUnmanagedCallConv`
+        // (jitinterface.cpp) returns it without consulting modifiers at all — only the 0x09
+        // `Unmanaged` case reaches `TryGetUnmanagedCallingConventionFromModOpt`.
+        for legacy in
+            [
+                SignatureCallingConvention.CDecl
+                SignatureCallingConvention.StdCall
+                SignatureCallingConvention.ThisCall
+                SignatureCallingConvention.FastCall
+            ] do
+            classify legacy false
+            |> shouldEqual IlMachineStateExecution.CallSiteTransition.EntersPreemptive
+
+    /// A modifier the signature names by TypeDef rather than TypeRef. CoreCLR resolves both
+    /// (`GetNameOfTypeRefOrDef`), so this must be read rather than refused — and a modifier that
+    /// cannot be named is *ignored*, exactly as CoreCLR's `continue` ignores it, because erroring
+    /// would crash on a legal call carrying some unrelated modifier.
+    [<Test>]
+    let ``a modifier named by TypeDef is resolved, and an unnameable one is ignored`` () : unit =
+        let identity =
+            ResolvedTypeIdentity.ofDefinitionInAssembly "SomeAssembly" (MetadataTokens.TypeDefinitionHandle 2)
+
+        let signature : TypeMethodSignature<TypeDefn> =
+            { signatureReturningVoid SignatureCallingConvention.Unmanaged with
+                ReturnType =
+                    MethodReturnType.Returns (
+                        TypeDefn.Modified
+                            {
+                                Unmodified = TypeDefn.PrimitiveType PrimitiveType.Int32
+                                Modifier = TypeDefn.FromDefinition (identity, SignatureTypeKind.Class)
+                                IsRequired = false
+                            }
+                    )
+            }
+
+        IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature
+            (fun _ -> Some ("System.Runtime.CompilerServices", "CallConvSuppressGCTransition"))
+            signature
+        |> shouldEqual IlMachineStateExecution.CallSiteTransition.StaysCooperative
+
+        IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature
+            (fun _ -> Some ("System.Runtime.CompilerServices", "CallConvCdecl"))
+            signature
+        |> shouldEqual IlMachineStateExecution.CallSiteTransition.EntersPreemptive
+
+        // Unnameable: ignored rather than fatal.
+        IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature (fun _ -> None) signature
+        |> shouldEqual IlMachineStateExecution.CallSiteTransition.EntersPreemptive
 
     /// A modifier that merely shares the simple name `CallConvSuppressGCTransition` must not be
     /// mistaken for the real one. Fabricated rather than compiled, because C# has no way to emit a
@@ -141,13 +249,13 @@ module TestCallSiteTransition =
 
         // The decoy leaves the classification alone...
         signatureModifiedBy (modifierNamed "NotInterop")
-        |> IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature
+        |> IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature noTypeDefModifiers
         |> shouldEqual IlMachineStateExecution.CallSiteTransition.EntersPreemptive
 
         // ...and the genuine article, identical but for its namespace, does not. Both halves are
         // here so that a classifier which simply answered `EntersPreemptive` cannot pass.
         signatureModifiedBy (modifierNamed "System.Runtime.CompilerServices")
-        |> IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature
+        |> IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature noTypeDefModifiers
         |> shouldEqual IlMachineStateExecution.CallSiteTransition.StaysCooperative
 
     /// The modifier axis, read off metadata Roslyn actually emitted rather than off a signature
@@ -192,7 +300,7 @@ public static unsafe class Program
             |> shouldEqual SignatureCallingConvention.Unmanaged
 
         callSites
-        |> List.map IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature
+        |> List.map (IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature noTypeDefModifiers)
         |> List.sort
         |> shouldEqual
             [
@@ -234,7 +342,7 @@ public static unsafe class Program
 """
 
         callSitesOf source
-        |> List.map IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature
+        |> List.map (IlMachineStateExecution.CallSiteTransition.ofCallSiteSignature noTypeDefModifiers)
         |> List.sort
         |> shouldEqual
             [

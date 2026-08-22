@@ -901,3 +901,31 @@ arm in `Native/NativeRuntimeFieldHandle.fs`.
 `WoofWare.PawPrint.Test/sourcesPure/ReflectionFieldSetValueFailingCctor.cs` is the measured
 example, parked in `TestPureCases.unimplemented` so the real-runtime side keeps asserting what the
 answer should be.
+
+## Invalid `[UnmanagedCallersOnly]` usage is reported as a fatal error, not a catchable one
+
+**CoreCLR**: `COMDelegate::ThrowIfInvalidUnmanagedCallersOnlyUsage` (`vm/comdelegate.cpp:2029-2051`)
+validates the *declaration* before the reverse-P/Invoke prologue is ever installed, and throws a
+**catchable** `InvalidProgramException` for each way it can be wrong: a non-static method
+(`InvalidProgram_NonStaticMethod`), a generic one (`InvalidProgram_GenericMethod`), and one whose
+signature is not blittable (`InvalidProgram_NonBlittableTypes`). Only a *valid* declaration goes on
+to get the prologue whose failed transition is the uncatchable
+`EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE` that `ReversePInvokeBadTransition` raises.
+
+**PawPrint**: no such validation. The gate in `callMethodWithCommitment` asks only whether the
+method carries the attribute and whether the call site leaves cooperative mode, so an *invalid*
+declaration entered from managed code is reported as the transition failure — the wrong error, and
+uncatchable where CoreCLR's is catchable.
+
+**Spec status**: Unspecified. `UnmanagedCallersOnlyAttribute` is a runtime contract with no CLI
+counterpart, and ECMA-335 says nothing about it.
+
+**Why we chose this**: unreachable, and closing it is a different feature. C# enforces all three
+conditions itself (CS8932 for a non-static or generic target, CS8894 for a non-blittable one), so
+no guest that compiles can carry an invalid declaration; producing one needs hand-authored IL or
+Reflection.Emit, and PawPrint cannot yet run an emitted body that calls another method at all. The
+fix is not a tweak to the gate either: it is a declaration-time check raising a guest-catchable
+exception, which is the `raise-guest-exception` machinery rather than this one, and blittability
+analysis besides. Doing it here would have meant shipping two features at once, and doing *part* of
+it — validating staticness and genericity but not blittability — would leave the same divergence
+behind a check that looks complete.

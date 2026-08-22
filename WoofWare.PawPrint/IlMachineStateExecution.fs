@@ -1684,71 +1684,87 @@ module IlMachineStateExecution =
 
     [<RequireQualifiedAccess>]
     module CallSiteTransition =
-        /// Does this calling convention describe a call into native code at all?
-        ///
-        /// ECMA-335 II.15.3 / II.23.2.3: `DEFAULT` and `VARARG` are the managed conventions; the
-        /// rest name a platform ABI. `Unmanaged` (0x09) is the "whichever the platform's default
-        /// is" spelling that `delegate* unmanaged&lt;...&gt;` compiles to when none is named — and
-        /// also, per the C# function-pointer encoding, what it compiles to whenever the convention
-        /// is carried by `modopt`s instead, `SuppressGCTransition` among them.
-        let private isUnmanagedConvention (convention : SignatureCallingConvention) : bool =
-            match convention with
-            | SignatureCallingConvention.Default
-            | SignatureCallingConvention.VarArgs -> false
-            | SignatureCallingConvention.CDecl
-            | SignatureCallingConvention.StdCall
-            | SignatureCallingConvention.ThisCall
-            | SignatureCallingConvention.FastCall
-            | SignatureCallingConvention.Unmanaged -> true
-            | other ->
-                failwith
-                    $"call site declares calling convention %O{other}, which is not one ECMA-335 II.23.2.3 admits for a method signature; refusing to guess whether the thread leaves cooperative mode"
+        /// The namespace every calling-convention modifier lives in; CoreCLR's
+        /// `CMOD_CALLCONV_NAMESPACE`, and the first thing it compares (callconvbuilder.cpp).
+        let private callConvNamespace = "System.Runtime.CompilerServices"
 
-        /// Is this custom modifier `System.Runtime.CompilerServices.CallConvSuppressGCTransition`?
+        /// Is this custom modifier `CallConvSuppressGCTransition`?
+        ///
+        /// `resolveTypeDefName` names a modifier the signature gives as a TypeDef, which needs the
+        /// owning module's tables. CoreCLR resolves both forms —
+        /// `GetNameOfTypeRefOrDef(pModule, tk, ...)` — and *ignores* a modifier it cannot name
+        /// rather than failing, so `None` lands on the same "not this one" as an unrelated
+        /// modifier. Erroring here instead would crash on a legal call that merely carries a
+        /// modifier we do not recognise.
         ///
         /// Same accepted risk as the rest of PawPrint's well-known-type matching: this compares
         /// namespace and name without checking that the type resolves to corelib's.
-        ///
-        /// A modifier the signature names by *definition* rather than by reference is refused
-        /// rather than guessed at: naming it needs the defining assembly's TypeDef row, which this
-        /// has no access to, and both wrong answers are bugs — "not the suppression modifier" lets
-        /// a fatal entry through, and "is" would refuse a legal `delegate* unmanaged[Cdecl]` call.
-        let private isSuppressGcTransition (modifier : TypeDefn) : bool =
-            match modifier with
-            | TypeDefn.FromReference (typeRef, _) ->
-                typeRef.Namespace = "System.Runtime.CompilerServices"
-                && typeRef.Name = "CallConvSuppressGCTransition"
-            | other ->
-                failwith
-                    $"call site's return type carries the custom modifier %O{other}, which is not a TypeRef; PawPrint cannot tell whether it is CallConvSuppressGCTransition, and so cannot say whether this call leaves cooperative mode"
+        let private isSuppressGcTransition
+            (resolveTypeDefName : ResolvedTypeIdentity -> (string * string) option)
+            (modifier : TypeDefn)
+            : bool
+            =
+            let named =
+                match modifier with
+                | TypeDefn.FromReference (typeRef, _) -> Some (typeRef.Namespace, typeRef.Name)
+                | TypeDefn.FromDefinition (identity, _) -> resolveTypeDefName identity
+                | _ -> None
+
+            match named with
+            | Some (ns, name) -> ns = callConvNamespace && name = "CallConvSuppressGCTransition"
+            | None -> false
 
         /// The whole signature, not just its header: `delegate* unmanaged[SuppressGCTransition]<...>`
         /// carries the *same* `Unmanaged` header as a plain `delegate* unmanaged<...>` and differs
         /// only by a `modopt` on the return type (measured: `09 01 08 08` against
         /// `09 01 20 49 08 08`), so a classifier reading the header alone would call the two the
         /// same thing.
-        let ofCallSiteSignature (signature : TypeMethodSignature<TypeDefn>) : CallSiteTransition =
-            if not (isUnmanagedConvention signature.Header.Get.CallingConvention) then
-                CallSiteTransition.StaysCooperative
-            else
+        ///
+        /// This follows CoreCLR's own algorithm rather than an approximation of it, because each
+        /// place the two could differ is a call PawPrint would refuse and .NET would run:
+        ///
+        ///  * only the `Unmanaged` (0x09) header consults modifiers at all. A legacy header names
+        ///    its convention outright, and `getUnmanagedCallConv` (jitinterface.cpp) returns it
+        ///    without ever calling `TryGetUnmanagedCallingConventionFromModOpt`;
+        ///  * only *optional* modifiers count. The parser skips required ones outright
+        ///    (`if (!fIsOptional) continue;`, callconvbuilder.cpp), so a
+        ///    `modreq(CallConvSuppressGCTransition)` suppresses nothing.
+        let ofCallSiteSignature
+            (resolveTypeDefName : ResolvedTypeIdentity -> (string * string) option)
+            (signature : TypeMethodSignature<TypeDefn>)
+            : CallSiteTransition
+            =
+            match signature.Header.Get.CallingConvention with
+            | SignatureCallingConvention.Default
+            | SignatureCallingConvention.VarArgs -> CallSiteTransition.StaysCooperative
+            | SignatureCallingConvention.CDecl
+            | SignatureCallingConvention.StdCall
+            | SignatureCallingConvention.ThisCall
+            | SignatureCallingConvention.FastCall -> CallSiteTransition.EntersPreemptive
+            | SignatureCallingConvention.Unmanaged ->
+                // Only the outermost run of modifiers describes the call site; one nested inside
+                // the return type (`int32 modopt(X)[]`) is about that type, not the transition.
+                let rec suppresses (ty : TypeDefn) : bool =
+                    match ty with
+                    | TypeDefn.Modified modified ->
+                        (not modified.IsRequired
+                         && isSuppressGcTransition resolveTypeDefName modified.Modifier)
+                        || suppresses modified.Unmodified
+                    | _ -> false
 
-            // Only the outermost run of modifiers describes the call site; one nested inside the
-            // return type (`int32 modopt(X)[]`) is about that type, not about the transition.
-            let rec suppresses (ty : TypeDefn) : bool =
-                match ty with
-                | TypeDefn.Modified modified ->
-                    isSuppressGcTransition modified.Modifier || suppresses modified.Unmodified
-                | _ -> false
-
-            match signature.ReturnType with
-            // An unmodified void return carries no modifiers to inspect. A *modified* one lands in
-            // `Returns` even when what it modifies is void, which is where the walk above finds it.
-            | MethodReturnType.Void -> CallSiteTransition.EntersPreemptive
-            | MethodReturnType.Returns returnType ->
-                if suppresses returnType then
-                    CallSiteTransition.StaysCooperative
-                else
-                    CallSiteTransition.EntersPreemptive
+                match signature.ReturnType with
+                // An unmodified void return carries no modifiers to inspect. A *modified* one
+                // lands in `Returns` even when what it modifies is void, which is where the walk
+                // above finds it.
+                | MethodReturnType.Void -> CallSiteTransition.EntersPreemptive
+                | MethodReturnType.Returns returnType ->
+                    if suppresses returnType then
+                        CallSiteTransition.StaysCooperative
+                    else
+                        CallSiteTransition.EntersPreemptive
+            | other ->
+                failwith
+                    $"call site declares calling convention %O{other}, which is not one ECMA-335 II.23.2.3 admits for a method signature; refusing to guess whether the thread leaves cooperative mode"
 
     let rec callMethodWithCommitment
         (loggerFactory : ILoggerFactory)
