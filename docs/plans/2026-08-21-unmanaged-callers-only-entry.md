@@ -312,3 +312,63 @@ Written first, observed failing, then mutation-tested.
   `FunctionPointerTarget.Managed` the gate would wrongly abort it. The gate's comment says so, and
   the classifier's contract is stated as "a *managed* entry aborts" so that host-initiated entries
   are exempt by construction.
+
+---
+
+# PR 2 — what actually happened
+
+Shipped as planned: one gate in `callMethodWithCommitment`, ahead of class initialisation, keyed on
+a `CallSiteConvention` the `calli` handler computes from its StandaloneSignature and every other
+caller passes as `Managed`.
+
+## Two departures from the plan
+
+**The classifier precomputes** (see the amended section above). The deciding facts were found while
+reading the code, not while planning.
+
+**The gate's reach is narrower than "all four routes" suggested, and mutation testing is what said
+so.** Mutating each managed call site's convention to `Unmanaged` in turn:
+
+| mutant | outcome |
+| --- | --- |
+| the gate never fires | killed — 4 refusal guests + the ordering guest |
+| the attribute predicate inverted | killed — control *and* every refusal guest |
+| the classifier ignores the namespace | killed — control, via its decoy attribute |
+| `calli` reports its call site as managed | killed — control's legal `delegate* unmanaged` call |
+| delegate `Invoke` treated as unmanaged | killed — delegate guest + ordering guest |
+| reflection's invoke treated as unmanaged | killed — reflection guest **and ForceEmitInvoke** |
+| `call` treated as unmanaged | **survived** |
+| `callvirt` treated as unmanaged | **survived** |
+| abort reports `COR_E_FAILFAST` | killed — the kind assertion, not the exit code |
+| unmanaged convention classified as managed | killed — unit tests + control |
+| vararg classified as unmanaged | killed — unit tests only |
+
+The reflection mutant killing *both* reflection guests is the interesting one: under PawPrint's
+default, `Switch.System.Reflection.ForceEmitInvoke` changes nothing, because dynamic code is off and
+CoreLib falls back to the interpreted invoke. So that guest is a distinct arrival on the oracle
+only. Turning `IsDynamicCodeSupported` on does send it down the emit path, where it stops at an
+unimplemented `ModuleHandle.ResolveMethod` for a method on a generic type — measured, and recorded
+in the guest.
+
+Neither survivor is closable here. `callvirt` never can be: the attribute is legal only on a static
+method and `callvirt` takes an object reference. `call` needs emitted IL, and the `DynamicMethod`
+guest written for it hits a second, unrelated emit gap ("a dynamic method's Call names DynamicScope
+entry 2 … which holds a System.RuntimeMethodHandle rather than a method"). Parked against the real
+runtime alone; adding it to `cases` is the whole of the work once PawPrint can run an emitted
+`call`.
+
+## Cost
+
+`StackHeavyProgramBenchmarks`, 20 iterations, interleaved base/gate/base/gate on one machine:
+
+| round | base | gate |
+| --- | --- | --- |
+| 1 | 342.7 ms ± 41.7 | 338.3 ms ± 35.6 |
+| 2 | 390.2 ms ± 45.4 | 396.8 ms ± 38.0 |
+
+No detectable difference: the within-round gap is ~1.5% either way against ±40 ms error bars and
+flips sign, while the *same base code* drifted 342 → 390 ms between rounds. Allocation was identical
+in every run (1.04 GB, 133000 Gen0/1000 ops), which is the deterministic quantity and the one that
+would move if the change did real per-call work. An earlier probe that *removed* the parse-time scan
+measured 432 ms — slower than either, with strictly less work — which is what established that this
+box cannot resolve a few percent.
