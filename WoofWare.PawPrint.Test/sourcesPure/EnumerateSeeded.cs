@@ -54,6 +54,12 @@ class Program
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_RmDir", SetLastError = true)]
     static extern unsafe int RmDir(byte* path);
 
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Open", SetLastError = true)]
+    static extern unsafe IntPtr Open(byte* path, int flags, int mode);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Close", SetLastError = true)]
+    static extern int Close(IntPtr fd);
+
     // Must match `Interop.Sys.DirectoryEntry` exactly: a pointer then two 32-bit
     // fields, 16 bytes. `NameLength` is -1 on Linux and the name's byte length
     // on Darwin, so nothing here reads it -- walking to the terminator is valid
@@ -69,6 +75,10 @@ class Program
 
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_ConvertErrorPlatformToPal")]
     static extern int ConvertErrorPlatformToPal(int platformErrno);
+
+    // Interop.Sys.OpenFlags, and the mode CoreLib's own OpenReadOnly passes.
+    const int O_RDONLY = 0x0000;
+    const int DefaultCreateMode = 438;
 
     // Interop.Sys.NodeType, which is the platform's own DT_*.
     const int DT_DIR = 4;
@@ -256,6 +266,61 @@ class Program
 
             if (ReadDir(doomed, &entry) != -1) return 28;
             if (CloseDir(doomed) != 0) return 29;
+        }
+
+        // 32-33: `readdir` leaves errno at zero. The C sets `errno = 0` itself
+        // before calling `readdir(3)`, so that it can tell end-of-stream from
+        // failure by reading errno back -- and this import declares no
+        // `SetLastError`, so nothing saves or restores errno around the call
+        // and `Marshal.GetLastSystemError` reads exactly what the C left.
+        // A cross-runtime fact for that reason: through a *flagged* import the
+        // stub would have zeroed errno anyway and the row would prove nothing.
+        unsafe
+        {
+            IntPtr errnoProbe = OpenDirPath("d");
+            if (errnoProbe == IntPtr.Zero) return 32;
+
+            DirectoryEntry probeEntry;
+            Marshal.SetLastSystemError(4242);
+            int got = ReadDir(errnoProbe, &probeEntry);
+            int afterEntry = Marshal.GetLastSystemError();
+
+            // ...and at end of stream too, which is the path that reads errno
+            // back on a real kernel.
+            while (ReadDir(errnoProbe, &probeEntry) == 0) { }
+            int afterEnd = Marshal.GetLastSystemError();
+
+            if (CloseDir(errnoProbe) != 0) return 33;
+            if (got != 0 || afterEntry != 0) return 34;
+            if (afterEnd != 0) return 35;
+        }
+
+        // 36-37: `opendir` consumes a file descriptor. Measured on both kernels:
+        // an `open` either side of one returned fds 3 and 5, with the stream
+        // holding 4. `dirfd(3)` is the only way to ask directly and appears
+        // nowhere in CoreLib, so the numbering of a later `open` is how a guest
+        // sees it -- and it is what makes the descriptor real rather than
+        // bookkeeping.
+        unsafe
+        {
+            byte* file = stackalloc byte[8];
+            Ascii("f", file);
+
+            IntPtr before = Open(file, O_RDONLY, DefaultCreateMode);
+            if (before == new IntPtr(-1)) return 36;
+
+            IntPtr stream = OpenDirPath("d");
+            if (stream == IntPtr.Zero) return 37;
+
+            IntPtr after = Open(file, O_RDONLY, DefaultCreateMode);
+            if (after == new IntPtr(-1)) return 38;
+
+            long gap = (long)after - (long)before;
+
+            Close(before);
+            Close(after);
+            if (CloseDir(stream) != 0) return 39;
+            if (gap != 2) return 40;
         }
 
         // 30-31: the payoff. `Directory.Delete(recursive: true)` enumerates and

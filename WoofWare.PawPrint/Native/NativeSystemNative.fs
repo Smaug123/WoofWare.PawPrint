@@ -3257,6 +3257,18 @@ module NativeSystemNative =
 
             let stream = EmulatedKernel.directoryStream block state.Kernel
 
+            // `errno = 0` before the `readdir`, which the C does itself
+            // (pal_io.c:511) so that it can tell "end of stream" from "failed"
+            // by reading errno back afterwards.
+            //
+            // Guest-observable, and *not* the same thing as the `SetLastError`
+            // stub PawPrint does not model: this import declares no
+            // `SetLastError`, so on real .NET nothing saves or restores errno
+            // around the call and `Marshal.GetLastSystemError` reads what the C
+            // left — zero. Without this, a guest that failed a syscall and then
+            // enumerated a directory would still see the old errno.
+            let state = state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread 0)
+
             match VirtualFileSystem.nextDirectoryEntry stream.Inode stream.Cursor state.Kernel.FileSystem with
             | None ->
                 // "0 returned with null result -> end-of-stream". The C
@@ -3362,7 +3374,17 @@ module NativeSystemNative =
                     ),
                     -1
 
-            state
+            // Reaped here rather than left to `closeFd`, which does it only for
+            // the descriptor it actually closed. Two paths reach this with the
+            // directory still in the graph and nothing holding it: the guest
+            // closed the stream's own descriptor beforehand (BadFd above), or
+            // that descriptor number has since been reused, in which case
+            // `closeFd` reaped the *replacement's* inode instead. Both are
+            // undefined behaviour on a real libc, but neither may leave this
+            // kernel with an inode no path reaches — `checkInvariants` would
+            // report it, and it would be PawPrint's bookkeeping at fault rather
+            // than the guest's. Idempotent when the descriptor did the job.
+            state.MapKernel (EmulatedKernel.forgetIfUnheld stream.Inode)
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some

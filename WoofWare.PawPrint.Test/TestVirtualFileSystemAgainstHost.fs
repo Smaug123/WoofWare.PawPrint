@@ -2211,9 +2211,17 @@ module TestVirtualFileSystemAgainstHost =
 
             outcomes |> List.contains OpenDirOutcome.Opened |> shouldEqual true
 
-            for expected in [ UnixError.ENOENT ; UnixError.ENOTDIR ; UnixError.ELOOP ; UnixError.EACCES ] do
+            for expected in [ UnixError.ENOENT ; UnixError.ENOTDIR ; UnixError.ELOOP ] do
                 if not (List.contains (hostErrno expected) errnos) then
                     failwith $"no probe path makes the model's opendir answer %O{expected}, so that arm is untested."
+
+            // The permission row, which a root test host cannot reach: it
+            // ignores every mode bit, and `hostPrivilege` asks the model the
+            // same way, so the row goes vacuous rather than red. The other
+            // coverage assertions in this fixture carry the same guard.
+            if geteuid () <> 0u then
+                if not (List.contains (hostErrno UnixError.EACCES) errnos) then
+                    failwith "no probe path makes the model's opendir answer EACCES, so that arm is untested."
 
             modelOpenDirOutcome vfs "ns" |> shouldEqual OpenDirOutcome.Opened
         finally

@@ -396,6 +396,34 @@ module TestImpureCases =
                 )
             ]
 
+    /// For the guest that closes a directory stream's descriptor behind its
+    /// back: an empty directory to remove, and a file to open so the stream's
+    /// descriptor number can be derived rather than assumed.
+    let private enumerateClosedFdSeed : Map<FileName, SeedEntry> =
+        let name (s : string) = FileName.parseOrFail "test seed" s
+
+        Map.ofList
+            [
+                name "gone", SeedEntry.directory Map.empty
+                name "f", SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+            ]
+
+    /// The guest closed its stream's descriptor, removed the directory, and then
+    /// closed the stream. Whatever it did, this kernel's own bookkeeping must be
+    /// sound afterwards: the directory's inode had nothing left holding it, so
+    /// it must have been reaped rather than left unreachable from the root.
+    ///
+    /// Not a fact any guest can read. Without it, a `CloseDir` that reaped only
+    /// through `closeFd` would pass every other assertion in this slice, because
+    /// every other path has a live descriptor to reap through.
+    let private assertClosedFdLeftNoOrphan (state : IlMachineState) : unit =
+        state.Kernel.DirectoryStreams |> shouldEqual Map.empty
+
+        VirtualFileSystem.checkInvariants Set.empty state.Kernel.FileSystem
+        |> shouldEqual []
+
+        EmulatedKernel.checkInvariants state.Kernel |> shouldEqual []
+
     /// Shared by the two enumeration wiring guests, so that the only thing that
     /// differs between them is the configured flavour and the rule each expects.
     ///
@@ -1388,6 +1416,22 @@ module TestImpureCases =
                 AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertUnlinkReapedExactlyOne
+            }
+            {
+                // The interpreter's own bookkeeping after a guest closed its
+                // stream's descriptor behind its back. PawPrint-only: `closedir`
+                // on a stream whose fd has gone is undefined behaviour, so there
+                // is no oracle and running it for real is unwise.
+                FileName = "EnumerateClosedFdSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UserId = 1000u
+                        FileSystem = enumerateClosedFdSeed
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertClosedFdLeftNoOrphan
             }
             {
                 // `DirectoryEntry.NameLength`: -1 under the Linux flavour,
