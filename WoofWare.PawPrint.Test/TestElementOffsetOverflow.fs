@@ -67,6 +67,13 @@ module TestElementOffsetOverflow =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
+    /// For the properties whose non-vacuity guard counts how many cases landed in the regime they
+    /// are about. That count is a random variable, so it needs enough cases to concentrate: at 500
+    /// the wrapping counter below spans 246-303 across runs, which no useful threshold can sit
+    /// clear of.
+    let private countedPropertyConfig : Config =
+        Config.QuickThrowOnFailure.WithMaxTest 2000
+
     /// Uniform over the whole int32 range, with extra weight on the boundary values themselves.
     /// FsCheck's default `int` arbitrary is *size-bounded* — under `Quick` it stays roughly within
     /// [-100, 100] — so drawing from it would never approach the limits this property is about.
@@ -418,12 +425,16 @@ module TestElementOffsetOverflow =
                 return start, offset, size
             }
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genCase) property)
+        Check.One (countedPropertyConfig, Prop.forAll (Arb.fromGen genCase) property)
 
-        // Two uniform int64 draws put the great majority of the mass outside the range where the
-        // sum fits, so a generator that had quietly reverted to a size-bounded default would fail
-        // this outright and the property would be asserting nothing about wrapping.
-        if wrapped * 2 < total then
+        // Two uniform int64 draws put most of the mass outside the range where the sum fits, so a
+        // generator that had quietly reverted to a size-bounded default — which wraps essentially
+        // never — fails this outright and the property would be asserting nothing about wrapping.
+        //
+        // The threshold is half the measured minimum, not half the measured mean: over 400 runs of
+        // 2000 cases the counter had mean 1091 and never fell below 1011, so 500 sits far outside
+        // the run-to-run spread in a way that a fraction-of-total threshold near the mean did not.
+        if wrapped < 500 then
             failwith
                 $"generator produced too few wrapping walks: %d{wrapped} of %d{total}, so the modular arithmetic is not being exercised"
 
