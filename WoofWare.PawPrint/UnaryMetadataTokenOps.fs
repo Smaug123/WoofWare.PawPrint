@@ -533,10 +533,13 @@ module internal UnaryMetadataTokenOps =
         // `allowOpenGenericDefinition` is PawPrint's spelling of CoreCLR's `PermitUninstDefOrRef`,
         // which `CEEInfo::resolveToken` grants to `ldtoken` and to no other opcode
         // (`vm/jitinterface.cpp`, the `CORINFO_TOKENKIND_Ldtoken` ternary on the `LoadTypeDefOrRef`
-        // call). Each arm's value has its own observer in `sourcesPure/LdtokenMemberTokens.cs`,
-        // because the arm a type reaches depends on where it lives: `typeof(List<>)` is a
-        // TypeReference and `typeof(Box<>)` a TypeDefinition, so one check cannot stand in for
-        // the other.
+        // call). Each arm's value has its own observer, because the arm a type reaches depends on
+        // where it is declared: `typeof(List<>)` is a TypeReference and `typeof(Box<>)` a
+        // TypeDefinition. Both live in `sourcesPure/LdtokenMemberTokens.cs`, and both are written
+        // inside a *generic context* deliberately: with the token's placeholders unbound, clearing
+        // the flag still reaches the same open-definition target through
+        // `runtimeTypeHandleTargetForTypeToken`'s `containsUnboundGenericParameter` path, so the
+        // flag only decides once they are bound.
         let targetForTypeToken
             (declaringAssembly : DumpedAssembly)
             (allowOpenGenericDefinition : bool)
