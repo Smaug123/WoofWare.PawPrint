@@ -2247,13 +2247,21 @@ module TestVirtualFileSystemAgainstHost =
             | Ok inode -> inode
             | Error error -> failwith $"the model could not resolve %s{relative}: %O{error}"
 
-        let rec go (cursor : DirectoryCursor) (acc : string list) =
+        // Capped, for the reason `TestDirectoryEnumeration`'s drain is: a cursor
+        // that failed to advance *strictly* would hand back one name for ever.
+        // Measured, an uncapped version of this loop ran for two hours and
+        // forty-one minutes under exactly that mutation before dying, which is
+        // the difference between a test that fails and a suite that hangs.
+        let rec go (cursor : DirectoryCursor) (fuel : int) (acc : string list) =
+            if fuel <= 0 then
+                failwith $"the model's stream over %s{relative} did not terminate: %A{List.truncate 8 acc} ..."
+
             match VirtualFileSystem.nextDirectoryEntry inode cursor vfs with
             | None -> acc
-            | Some (DirectoryStreamName.Entry name, _, next) -> go next (FileName.toString name :: acc)
-            | Some (_, _, next) -> go next acc
+            | Some (DirectoryStreamName.Entry name, _, next) -> go next (fuel - 1) (FileName.toString name :: acc)
+            | Some (_, _, next) -> go next (fuel - 1) acc
 
-        go DirectoryCursor.Start [] |> List.sort
+        go DirectoryCursor.Start 1000 [] |> List.sort
 
     [<Test>]
     let ``the model lists exactly the names this kernel lists`` () : unit =
