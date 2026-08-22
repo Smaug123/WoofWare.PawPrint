@@ -15,7 +15,7 @@ using System.Runtime.InteropServices;
 // the dots have a fixed position. An earlier version of this file asserted they
 // came first; it passed on two machines and failed on a third. So every listing
 // here is sorted before it is compared, and PawPrint's own order (the `Map`'s,
-// with the dots ahead of it) is pinned in the unit tier instead.
+// with the dots *after* it, as on CI's ext4) is pinned in the unit tier instead.
 //
 // The one divergence in this slice is `DirectoryEntry.NameLength`, which is -1
 // on Linux and the name's byte length on Darwin; it lives in

@@ -80,43 +80,48 @@ module TestDirectoryEnumeration =
     // --------------------------------------------------------- the plain walk
 
     [<Test>]
-    let ``a stream yields dot, dot-dot, then the names in the map's order`` () : unit =
+    let ``a stream yields the names in the map's order, then dot-dot and dot`` () : unit =
+        // The dots are *last*, and that is the whole point of this order: a
+        // guest that consumes two entries to skip them, or that expects the
+        // first entry to be one, is broken on ext4 and must be broken here.
         let vfs, directory = withEntries [ "m" ; "a" ; "z" ]
 
         drain directory DirectoryCursor.Start vfs
         |> strings
-        |> shouldEqual [ "." ; ".." ; "a" ; "m" ; "z" ]
+        |> shouldEqual [ "a" ; "m" ; "z" ; ".." ; "." ]
 
     [<Test>]
     let ``dot is the directory itself and dot-dot is its physical parent`` () : unit =
+        // Reached from `Start` over an empty directory, which is the only cursor
+        // position a caller can construct without first walking the names.
         let vfs, directory = withEntries []
         let root = VirtualFileSystem.root vfs
 
         match VirtualFileSystem.nextDirectoryEntry directory DirectoryCursor.Start vfs with
-        | Some (DirectoryStreamName.Dot, inode, next) ->
-            inode |> shouldEqual directory
+        | Some (DirectoryStreamName.DotDot, parent, next) ->
+            parent |> shouldEqual root
 
             match VirtualFileSystem.nextDirectoryEntry directory next vfs with
-            | Some (DirectoryStreamName.DotDot, parent, _) -> parent |> shouldEqual root
-            | other -> failwith $"expected .., got %O{other}"
-        | other -> failwith $"expected ., got %O{other}"
+            | Some (DirectoryStreamName.Dot, inode, _) -> inode |> shouldEqual directory
+            | other -> failwith $"expected ., got %O{other}"
+        | other -> failwith $"expected .., got %O{other}"
 
     [<Test>]
     let ``the root's dot-dot is the root`` () : unit =
         let vfs = VirtualFileSystem.empty buildTime
         let root = VirtualFileSystem.root vfs
 
-        match VirtualFileSystem.nextDirectoryEntry root DirectoryCursor.ReturnedDot vfs with
+        match VirtualFileSystem.nextDirectoryEntry root DirectoryCursor.Start vfs with
         | Some (DirectoryStreamName.DotDot, parent, _) -> parent |> shouldEqual root
         | other -> failwith $"expected .., got %O{other}"
 
     [<Test>]
-    let ``an empty directory yields exactly dot and dot-dot`` () : unit =
+    let ``an empty directory yields exactly dot-dot and dot`` () : unit =
         let vfs, directory = withEntries []
 
         drain directory DirectoryCursor.Start vfs
         |> strings
-        |> shouldEqual [ "." ; ".." ]
+        |> shouldEqual [ ".." ; "." ]
 
     [<Test>]
     let ``a directory entry reports the inode that name binds`` () : unit =
@@ -129,7 +134,7 @@ module TestDirectoryEnumeration =
             | Some (InodeContent.Directory content) -> content.Entries.[name "f"]
             | other -> failwith $"test setup: %O{other}"
 
-        match VirtualFileSystem.nextDirectoryEntry directory DirectoryCursor.ReturnedDotDot vfs with
+        match VirtualFileSystem.nextDirectoryEntry directory DirectoryCursor.Start vfs with
         | Some (DirectoryStreamName.Entry n, inode, _) ->
             n |> shouldEqual (name "f")
             inode |> shouldEqual expected
@@ -169,7 +174,7 @@ module TestDirectoryEnumeration =
 
         drain directory (DirectoryCursor.After (name "a")) after
         |> strings
-        |> shouldEqual [ "b" ]
+        |> shouldEqual [ "b" ; ".." ; "." ]
 
     [<Test>]
     let ``a name added ahead of the cursor appears and one added behind it does not`` () : unit =
@@ -178,7 +183,7 @@ module TestDirectoryEnumeration =
 
         drain directory (DirectoryCursor.After (name "b")) after
         |> strings
-        |> shouldEqual [ "c" ]
+        |> shouldEqual [ "c" ; ".." ; "." ]
 
     // ------------------------------------------------------------- the orphan
 
@@ -196,8 +201,9 @@ module TestDirectoryEnumeration =
         for cursor in
             [
                 DirectoryCursor.Start
-                DirectoryCursor.ReturnedDot
+                DirectoryCursor.After (name "gone")
                 DirectoryCursor.ReturnedDotDot
+                DirectoryCursor.ReturnedDot
             ] do
             VirtualFileSystem.nextDirectoryEntry directory cursor orphaned
             |> shouldEqual None
@@ -228,7 +234,14 @@ module TestDirectoryEnumeration =
             let vfs, directory = withEntries names
 
             let seen =
-                drain directory DirectoryCursor.ReturnedDotDot vfs |> strings |> List.sort
+                drain directory DirectoryCursor.Start vfs
+                |> List.choose (fun e ->
+                    match e with
+                    | DirectoryStreamName.Entry n -> Some (FileName.toString n)
+                    | DirectoryStreamName.Dot
+                    | DirectoryStreamName.DotDot -> None
+                )
+                |> List.sort
 
             seen = List.sort names
 
@@ -243,8 +256,13 @@ module TestDirectoryEnumeration =
             let vfs, directory = withEntries (List.distinct names)
 
             let seen =
-                drain directory DirectoryCursor.ReturnedDotDot vfs
-                |> List.map (fun e -> e.ToString ())
+                drain directory DirectoryCursor.Start vfs
+                |> List.choose (fun e ->
+                    match e with
+                    | DirectoryStreamName.Entry n -> Some (FileName.toString n)
+                    | DirectoryStreamName.Dot
+                    | DirectoryStreamName.DotDot -> None
+                )
 
             seen = List.sort seen && List.length (List.distinct seen) = List.length seen
 
