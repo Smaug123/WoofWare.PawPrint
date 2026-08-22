@@ -21,11 +21,12 @@ open WoofWare.PawPrint.Test
 /// `TestImpureCases.runTest` treats a fatal outcome as a test failure — and are driven here against
 /// the real runtime as oracle instead.
 ///
-/// The four are four *arrivals* at one refusal, not four refusals: a delegate, plain reflection,
-/// reflection through CoreLib's emitted invoke stub, and a managed `calli` over the method's
-/// address. They are separate guests because they reach the callee through different interpreter
-/// code, and a gate covering only some of them would pass a narrower test. A fifth,
-/// `UnmanagedCallersOnlyCctorNotRun.cs`, pins *when* the refusal happens rather than that it does.
+/// The five are five *arrivals* at one refusal, not five refusals: a delegate, plain reflection,
+/// reflection through CoreLib's emitted invoke stub, a managed `calli` over the method's address,
+/// and an *unmanaged* `calli` that suppresses the GC transition. They are separate guests because
+/// they reach the callee through different interpreter code, and a gate covering only some of them
+/// would pass a narrower test. A sixth, `UnmanagedCallersOnlyCctorNotRun.cs`, pins *when* the
+/// refusal happens rather than that it does.
 ///
 /// The routes that must keep working are the control, `sourcesPure/UnmanagedCallersOnlyFunctionPointer.cs`:
 /// the legal `delegate* unmanaged<...>` call site, and binding a delegate without invoking it.
@@ -44,6 +45,7 @@ module TestUnmanagedCallersOnlyEntry =
             "UnmanagedCallersOnlyReflectionInvoke.cs"
             "UnmanagedCallersOnlyForceEmitInvoke.cs"
             "UnmanagedCallersOnlyManagedCalli.cs"
+            "UnmanagedCallersOnlySuppressGCTransition.cs"
         ]
 
     /// The distinguishing half of CoreCLR's message. Asserted on both runtimes: an abort for some

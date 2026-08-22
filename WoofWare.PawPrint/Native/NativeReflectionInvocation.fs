@@ -709,7 +709,7 @@ module internal NativeReflectionInvocation =
                         true
                         false
                         false
-                        IlMachineStateExecution.CallSiteConvention.Managed
+                        IlMachineStateExecution.CallSiteTransition.StaysCooperative
                         target.Method.Generics
                         target.Method
                         ctx.Thread
