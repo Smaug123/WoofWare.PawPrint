@@ -180,6 +180,17 @@ type UnixError =
     /// two `<errno.h>`s), so either choice would rename a different error on the
     /// other platform.
     | ENAMETOOLONG
+    /// `ENOTEMPTY` — Directory not empty.
+    ///
+    /// Reported by `rmdir(2)` for a directory that still holds an entry, and —
+    /// on both flavours — for a path whose final component was "..", which
+    /// names a directory that necessarily contains the one the path came
+    /// through. See `RmDirRules`.
+    ///
+    /// Platform-dependent like `ELOOP`: raw 39 is `ENOTEMPTY` on Linux but
+    /// `EDESTADDRREQ` on Darwin, and raw 66 is `ENOTEMPTY` on Darwin but
+    /// `EREMOTE` on Linux (measured on both).
+    | ENOTEMPTY
     /// `EAGAIN` — Resource temporarily unavailable. `EWOULDBLOCK` is the *same*
     /// value, on both platforms and in the PAL enum
     /// (`Interop.Errors.cs:111` defines `EWOULDBLOCK = EAGAIN`), so there is one
@@ -367,6 +378,7 @@ module UnixError =
             UnixError.ERANGE
             UnixError.ELOOP
             UnixError.ENAMETOOLONG
+            UnixError.ENOTEMPTY
             UnixError.EAGAIN
             UnixError.EOVERFLOW
             UnixError.EAFNOSUPPORT
@@ -436,6 +448,9 @@ module UnixError =
         // Likewise: raw 36 is EINPROGRESS on Darwin, and raw 63 is ENOSR on
         // Linux.
         | UnixError.ENAMETOOLONG -> platformDependent 0x10025 36 63
+        // Measured on both: raw 39 is ENOTEMPTY on Linux and EDESTADDRREQ on
+        // Darwin; raw 66 is ENOTEMPTY on Darwin and EREMOTE on Linux.
+        | UnixError.ENOTEMPTY -> platformDependent 0x1003A 39 66
         // The V7 transposition itself: raw 11 is EAGAIN on Linux but EDEADLK on
         // Darwin, and raw 35 is EAGAIN on Darwin but EDEADLK on Linux.
         | UnixError.EAGAIN -> platformDependent 0x10006 11 35
@@ -577,12 +592,13 @@ module UnixError =
     /// reports — which is every caller inside the emulated kernel.
     ///
     /// A table entry whose raw number is platform-dependent becomes matchable,
-    /// so raw 40 answers `ELOOP` under Linux. A number the table does not
-    /// contain at all still fails loudly rather than falling through to
-    /// `ENONSTANDARD`: raw 39 under Linux really is `ENOTEMPTY`, which PawPrint
-    /// has not modelled, and `ENONSTANDARD` would silently take a guest down
-    /// the wrong branch of `if (errorInfo.Error == Interop.Error.ENOTEMPTY)`.
-    /// Knowing the platform does not conjure a table entry.
+    /// so raw 40 answers `ELOOP` under Linux and raw 39 answers `ENOTEMPTY`. A
+    /// number the table does not contain at all still fails loudly rather than
+    /// falling through to `ENONSTANDARD`: raw 35 under Linux really is
+    /// `EDEADLK`, which PawPrint has not modelled, and `ENONSTANDARD` would
+    /// silently take a guest down the wrong branch of an
+    /// `if (errorInfo.Error == Interop.Error.EDEADLK)`. Knowing the platform
+    /// does not conjure a table entry.
     let palOfRawErrnoUnder (reporting : RawErrnoNumbering) (raw : int) : int =
         if raw = 0 then
             palSuccess
@@ -594,4 +610,4 @@ module UnixError =
         | None when isUnambiguouslyNonStandardRawErrno raw -> palNonStandard
         | None ->
             failwith
-                $"UnixError.palOfRawErrnoUnder: cannot convert raw errno %d{raw} to a PAL Interop.Error value under the %O{reporting} numbering. The number is outside the portable set (1-34 except 11) and PawPrint's table has no entry for it on this platform — raw 39 under Linux is ENOTEMPTY, which is not yet modelled. Answering ENONSTANDARD would silently take a guest down the wrong branch of `if (errorInfo.Error == Interop.Error.ENOTEMPTY)`, so this fails instead. Add the error to UnixError's table (with RawErrnoPortability.PlatformDependent if the two Unixes disagree); if it reached here via Marshal.SetLastSystemError, the guest is asserting an errno PawPrint does not model."
+                $"UnixError.palOfRawErrnoUnder: cannot convert raw errno %d{raw} to a PAL Interop.Error value under the %O{reporting} numbering. The number is outside the portable set (1-34 except 11) and PawPrint's table has no entry for it on this platform — raw 35 under Linux is EDEADLK, which is not yet modelled. Answering ENONSTANDARD would silently take a guest down the wrong branch of an `if (errorInfo.Error == Interop.Error.EDEADLK)`, so this fails instead. Add the error to UnixError's table (with RawErrnoPortability.PlatformDependent if the two Unixes disagree); if it reached here via Marshal.SetLastSystemError, the guest is asserting an errno PawPrint does not model."

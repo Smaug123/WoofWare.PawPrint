@@ -82,6 +82,7 @@
     <Compile Include="TestFileSystemSeed.fs" />
     <Compile Include="TestRealRuntimeCleanup.fs" />
     <Compile Include="TestUnlinkRules.fs" />
+    <Compile Include="TestRmDirRules.fs" />
     <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
     <Compile Include="TestFileSystemType.fs" />
     <Compile Include="TestGuestPathBytes.fs" />

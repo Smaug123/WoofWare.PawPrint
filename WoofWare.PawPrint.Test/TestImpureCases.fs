@@ -396,6 +396,130 @@ module TestImpureCases =
                 )
             ]
 
+    /// Shared by the two `rmdir` wiring guests, so that the only thing that
+    /// differs between them is the configured flavour and the constants each
+    /// expects.
+    let private rmDirWiringSeed : Map<FileName, SeedEntry> =
+        let name (s : string) = FileName.parseOrFail "test seed" s
+        let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
+
+        let mode (raw : int) =
+            PermissionBits.parseOrFail "test seed" raw
+
+        Map.ofList
+            [
+                name "f", SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                // Empty, so that Darwin's walk -- which follows `ld` under a
+                // trailing separator -- really can remove it. That row is the
+                // destructive divergence, and a non-empty `d` would hide it
+                // behind ENOTEMPTY.
+                name "d", SeedEntry.directory Map.empty
+                name "ld", SeedEntry.Symlink (target "d")
+                name "dang", SeedEntry.Symlink (target "nx")
+                name "cyc", SeedEntry.Symlink (target "cyc")
+                // Followed to the root by Darwin's walk, giving EISDIR where
+                // Linux never looks and answers ENOTDIR.
+                name "lroot", SeedEntry.Symlink (target "/")
+                // Opened, removed, and `fstat`ed on either side of the removal:
+                // the one guest-readable half of
+                // `RmDirRules.RemovedDirectoryEffect`.
+                name "stamped", SeedEntry.directory Map.empty
+                // Searchable but not writable, holding one of each kind: the
+                // file is EACCES on Linux and ENOTDIR on Darwin, which is the
+                // pair of orderings the two guests exist to tell apart.
+                name "nowrite",
+                SeedEntry.Directory (
+                    Map.ofList
+                        [
+                            name "kdir", SeedEntry.directory Map.empty
+                            name "kid",
+                            SeedEntry.file (Text.Encoding.UTF8.GetBytes "inside" |> ImmutableArray.CreateRange)
+                        ],
+                    mode 0o555
+                )
+            ]
+
+    /// The `rmdir` wiring guests each remove a directory nothing is left holding,
+    /// so the inode must be gone rather than merely nameless.
+    ///
+    /// Not a fact any guest can read — freeing an inode is not something a
+    /// process can watch — and the orphan guests cannot check it either, since
+    /// everything they remove stays pinned. Without this, a handler that never
+    /// called `EmulatedKernel.forgetIfUnheld` would pass every other assertion
+    /// in this slice.
+    let private assertRmDirLeftNoOrphan (state : IlMachineState) : unit =
+        VirtualFileSystem.checkInvariants Set.empty state.Kernel.FileSystem
+        |> shouldEqual []
+
+        EmulatedKernel.checkInvariants state.Kernel |> shouldEqual []
+
+    /// Two nested directories, the inner of which the orphan guests stand in and
+    /// then remove.
+    let private rmDirOrphanSeed : Map<FileName, SeedEntry> =
+        let name (s : string) = FileName.parseOrFail "test seed" s
+
+        Map.ofList
+            [
+                name "work", SeedEntry.directory (Map.ofList [ name "inner", SeedEntry.directory Map.empty ])
+            ]
+
+    let private rmDirOrphanCurrentDirectory : AbsoluteUnixPath =
+        AbsoluteUnixPath.parseOrFail "test seed" "/work/inner"
+
+    /// The `rmdir` orphan guests have removed the directory they stand in, and
+    /// then its parent. Both inodes must survive — the current directory holds
+    /// the first, and the first's ".." holds the second, which is what both
+    /// kernels were measured doing — while the directory the guest went on to
+    /// create at the root must be ordinarily reachable.
+    ///
+    /// Not a fact any guest can read: freeing an inode is not something a
+    /// process can watch, and the failure mode of getting it wrong is a
+    /// `DirectoryContent.Parent` naming an inode the graph no longer contains.
+    let private assertRmDirOrphanChainSurvives (state : IlMachineState) : unit =
+        let kernel = state.Kernel
+        let filesystem = kernel.FileSystem
+        let root = VirtualFileSystem.root filesystem
+        let pinned = EmulatedKernel.pinnedInodes kernel
+
+        let survivors =
+            VirtualFileSystem.inodes filesystem
+            |> Map.toList
+            |> List.map fst
+            |> List.filter (fun inode -> inode <> root)
+
+        let orphaned =
+            survivors
+            |> List.filter (fun inode -> VirtualFileSystem.bindingCount inode filesystem = 0)
+
+        // The current directory, and the parent it climbs to.
+        match orphaned with
+        | [ _ ; _ ] -> ()
+        | other ->
+            failwith
+                $"expected exactly two orphaned inodes to survive -- the removed current directory and its removed parent -- but %d{other.Length} did: %A{other}. Freeing the parent would leave the orphan's \"..\" dangling; freeing neither means the cascade never fires."
+
+        List.contains kernel.CurrentDirectoryInode orphaned |> shouldEqual true
+
+        for inode in orphaned do
+            Set.contains inode pinned |> shouldEqual true
+
+        // The directory created at the root afterwards is reachable, so the
+        // orphaning did not simply break creation everywhere.
+        survivors
+        |> List.filter (fun inode -> VirtualFileSystem.bindingCount inode filesystem > 0)
+        |> List.length
+        |> shouldEqual 1
+
+        VirtualFileSystem.checkInvariants pinned filesystem |> shouldEqual []
+
+        // ...and the pin is what excuses them, rather than the rule having gone
+        // quiet.
+        VirtualFileSystem.checkInvariants Set.empty filesystem
+        |> List.sort
+        |> shouldEqual (orphaned |> List.map VirtualFileSystemDefect.UnreachableFromRoot |> List.sort)
+
+        EmulatedKernel.checkInvariants kernel |> shouldEqual []
+
     /// The two files `UnlinkReapSeeded.cs` opens, one of which it closes.
     let private unlinkReapSeed : Map<FileName, SeedEntry> =
         let name (s : string) = FileName.parseOrFail "test seed" s
@@ -1178,6 +1302,71 @@ module TestImpureCases =
                 AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertUnlinkReapedExactlyOne
+            }
+            {
+                // `rmdir`'s flavour-dependent facts under a **Linux** kernel,
+                // paired with the Darwin case below. Neither alone can catch a
+                // handler that hardcodes one platform's answers -- and here that
+                // would not merely answer wrongly, it would destroy a different
+                // object.
+                FileName = "RmDirWiringLinuxSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UserId = 1000u
+                        FileSystem = rmDirWiringSeed
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertRmDirLeftNoOrphan
+            }
+            {
+                // The same checks under the Darwin flavour, whose walk resolves
+                // a trailing separator -- including the row that follows `ld` to
+                // an empty directory and removes *that*, where Linux answers
+                // ENOTDIR and removes nothing.
+                FileName = "RmDirWiringDarwinSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        UserId = 1000u
+                        FileSystem = rmDirWiringSeed
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertRmDirLeftNoOrphan
+            }
+            {
+                // Standing in a directory that has been removed: what still
+                // works there, what does not, and -- on the terminal state --
+                // that its ancestors stay alive while it does.
+                FileName = "RmDirOrphanLinuxSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        FileSystem = rmDirOrphanSeed
+                        CurrentDirectory = rmDirOrphanCurrentDirectory
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertRmDirOrphanChainSurvives
+            }
+            {
+                // The same, under Darwin -- whose `getcwd` reports a too-small
+                // buffer where Linux reports the removed directory. Everything
+                // else about an orphan is measured identical on the two.
+                FileName = "RmDirOrphanDarwinSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        FileSystem = rmDirOrphanSeed
+                        CurrentDirectory = rmDirOrphanCurrentDirectory
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertRmDirOrphanChainSurvives
             }
             {
                 // The directory search bit at an unprivileged uid, and its uid-0

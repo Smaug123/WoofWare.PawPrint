@@ -1097,6 +1097,15 @@ module CreatingOpenRules =
                 CreatingOpenVerdict.OpenExisting inode
         | ResolvedTarget.Entry (directory, name, None) ->
 
+        // Nothing can be created inside a directory whose own last name has
+        // gone: measured on both, `open("x", O_CREAT)` from inside an orphan is
+        // ENOENT, at 0o755 and at 0o555 alike, so this beats the EACCES below.
+        // `MkDirRules.verdict` states the same rule for the other creating
+        // syscall.
+        if VirtualFileSystem.isOrphanedDirectory directory vfs then
+            CreatingOpenVerdict.Refuse UnixError.ENOENT
+        else
+
         // Write alone: the search half of the rule is the walk's, and a
         // resolution that reached here has already passed it. Only the owner
         // triple can ever apply, since `stat` reports `Kernel.UserId` as every
@@ -1204,7 +1213,9 @@ module MkDirRules =
     ///
     ///  * A path that consumed no component at all — "/", ".", ".." — is
     ///    EEXIST, whichever `FinalNavigation` it was. `mkdir` does not
-    ///    distinguish them, where `rmdir` owes all three different errnos.
+    ///    distinguish them, where `rmdir` does: EBUSY, EINVAL and ENOTEMPTY on
+    ///    Linux, and on Darwin EISDIR for the first with EBUSY swallowing the
+    ///    other two at the root.
     ///  * An existing final name is EEXIST: a file, a directory, or a symlink,
     ///    dangling or cyclic or not.
     ///  * EEXIST beats the *write* bit. Measured on both: an existing child of a
@@ -1228,6 +1239,20 @@ module MkDirRules =
         match resolution.Target with
         | ResolvedTarget.Directory _ -> MkDirVerdict.Refuse UnixError.EEXIST
         | ResolvedTarget.Entry (directory, name, existing) ->
+
+        // Nothing can be created inside a directory whose own last name has
+        // gone. Measured on both, at 0o755 and at 0o555, so ENOENT beats the
+        // EACCES below; and `mkdir(".")` inside an orphan is still EEXIST, which
+        // is why this sits under the `Directory` arm rather than above it.
+        //
+        // Above the `existing` match because that is where a real kernel puts
+        // it: the ENOENT comes from the lookup itself failing against a dead
+        // parent. The ordering is not observable — an orphan is necessarily
+        // empty, since `rmdir` refuses a populated directory and this rule stops
+        // one ever gaining an entry.
+        if VirtualFileSystem.isOrphanedDirectory directory vfs then
+            MkDirVerdict.Refuse UnixError.ENOENT
+        else
 
         // Write alone: the search half of the rule is the walk's, and a
         // resolution that reached here has already passed it. Only the owner
@@ -1332,8 +1357,11 @@ type UnlinkVerdict =
     /// beforehand.
     | Remove of directory : InodeNumber * name : FileName
 
+/// The two questions `unlink(2)` and `rmdir(2)` both ask about a name they have
+/// been asked to remove. Neither is a policy: which of them is asked first, and
+/// what a "yes" costs, is each syscall's own measured business.
 [<RequireQualifiedAccess>]
-module UnlinkRules =
+module private RemovalChecks =
     /// Whether the *holding* directory refuses this caller the write bit it
     /// needs to remove a name from it.
     ///
@@ -1343,7 +1371,10 @@ module UnlinkRules =
     /// bit can never refuse for the same reason — POSIX permits the removal when
     /// the caller owns the file *or* the directory, and one kernel-wide identity
     /// owns both.
-    let private lacksWrite
+    ///
+    /// Partial in `directory`, which the walk has just reported as the directory
+    /// holding `name`.
+    let lacksWrite
         (privilege : CallerPrivilege)
         (directory : InodeNumber)
         (name : FileName)
@@ -1361,31 +1392,52 @@ module UnlinkRules =
                 | InodePermissions.Stored bits -> bits
                 | InodePermissions.PlatformSymlinkDefault ->
                     failwith
-                        $"UnlinkRules: the walk resolved \"%s{FileName.toString name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
+                        $"RemovalChecks.lacksWrite: the walk resolved \"%s{FileName.toString name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
             | None ->
                 failwith
-                    $"UnlinkRules: resolution named inode %O{directory} as the directory holding \"%s{FileName.toString name}\", but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
+                    $"RemovalChecks.lacksWrite: resolution named inode %O{directory} as the directory holding \"%s{FileName.toString name}\", but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
 
         PermissionBits.toInt permissions &&& 0o200 <> 0o200
 
     /// Whether the inode a name is bound to is a directory. Partial in the same
     /// way `lacksWrite` is: the walk has just reported this inode.
-    let private isDirectory (inode : InodeNumber) (vfs : VirtualFileSystem) : bool =
+    let isDirectory (inode : InodeNumber) (vfs : VirtualFileSystem) : bool =
         match VirtualFileSystem.tryGetContent inode vfs with
         | Some (InodeContent.Directory _) -> true
         | Some (InodeContent.RegularFile _)
         | Some (InodeContent.Symlink _) -> false
         | None ->
             failwith
-                $"UnlinkRules: the walk resolved a name to inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
+                $"RemovalChecks.isDirectory: the walk resolved a name to inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
 
+    /// Whether the directory at `inode` still holds an entry, which is what
+    /// `rmdir(2)` answers ENOTEMPTY for. "." and ".." do not count: they are
+    /// derived rather than stored (see `DirectoryContent.Entries`), and a real
+    /// `rmdir` does not count them either.
+    ///
+    /// Partial in the same way the two above are, and additionally in the inode
+    /// being a directory: the caller has just asked `isDirectory`.
+    let isEmptyDirectory (inode : InodeNumber) (vfs : VirtualFileSystem) : bool =
+        match VirtualFileSystem.tryGetContent inode vfs with
+        | Some (InodeContent.Directory directory) -> Map.isEmpty directory.Entries
+        | Some (InodeContent.RegularFile _)
+        | Some (InodeContent.Symlink _) ->
+            failwith
+                $"RemovalChecks.isEmptyDirectory: inode %O{inode} is not a directory, so it has no entries to count. Ask isDirectory first (this is an interpreter bug)."
+        | None ->
+            failwith
+                $"RemovalChecks.isEmptyDirectory: the walk resolved a name to inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
+
+[<RequireQualifiedAccess>]
+module UnlinkRules =
     /// Linux's `unlink(2)`, transcribed from the measured ordering. Each arm
     /// beats the ones below it, and each bullet is a measured row:
     ///
     ///  * A path that consumed no component — "/", ".", "..", and any symlink
     ///    expansion of them — is EISDIR, whichever `FinalNavigation` it was and
     ///    whether or not the directory it reached is the root. Linux spends no
-    ///    errno distinguishing them, where `rmdir` owes all three different ones.
+    ///    errno distinguishing them, where `rmdir` gives each its own (EBUSY,
+    ///    EINVAL and ENOTEMPTY).
     ///  * A free final name is ENOENT, and that beats every check below:
     ///    `unlink("nowrite/nx/")` is ENOENT rather than the ENOTDIR the trailing
     ///    separator would earn or the EACCES the parent would.
@@ -1420,13 +1472,13 @@ module UnlinkRules =
         | Some target ->
 
         if resolution.TrailingSeparatorDemanded then
-            if isDirectory target vfs then
+            if RemovalChecks.isDirectory target vfs then
                 UnlinkVerdict.Refuse UnixError.EISDIR
             else
                 UnlinkVerdict.Refuse UnixError.ENOTDIR
-        elif lacksWrite privilege directory name vfs then
+        elif RemovalChecks.lacksWrite privilege directory name vfs then
             UnlinkVerdict.Refuse UnixError.EACCES
-        elif isDirectory target vfs then
+        elif RemovalChecks.isDirectory target vfs then
             UnlinkVerdict.Refuse UnixError.EISDIR
         else
             UnlinkVerdict.Remove (directory, name)
@@ -1484,9 +1536,9 @@ module UnlinkRules =
         | None -> UnlinkVerdict.Refuse UnixError.ENOENT
         | Some target ->
 
-        if isDirectory target vfs then
+        if RemovalChecks.isDirectory target vfs then
             UnlinkVerdict.Refuse UnixError.EPERM
-        elif lacksWrite privilege directory name vfs then
+        elif RemovalChecks.lacksWrite privilege directory name vfs then
             UnlinkVerdict.Refuse UnixError.EACCES
         else
             UnlinkVerdict.Remove (directory, name)
@@ -1513,6 +1565,223 @@ module UnlinkRules =
         (resolution : Resolution)
         (vfs : VirtualFileSystem)
         : UnlinkVerdict
+        =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> linuxVerdict privilege resolution vfs
+        | SimulatedUnixFlavour.Darwin -> darwinVerdict privilege resolution vfs
+
+/// What `getcwd(3)` answers when the current directory has been *removed* — so
+/// there is no path to report — and how small a buffer can still change that
+/// answer.
+///
+/// Only reachable since `rmdir` could orphan a current directory. Measured on
+/// both with the cwd removed out from under the process, sweeping the size from
+/// 1 past the length of the path that used to be there: a zero-length buffer is
+/// EINVAL everywhere (the shim's own guard, before `getcwd` is called at all),
+/// and everything else splits on the *first byte* only.
+[<RequireQualifiedAccess>]
+type GetCwdOrphanAnswer =
+    /// ENOENT whatever the size. Linux's `sys_getcwd` builds the path, fails
+    /// because it is disconnected, and never reaches the length comparison —
+    /// measured ENOENT at every size from 1 up.
+    | AlwaysDetached
+    /// ENOENT unless the buffer cannot hold even `"/"` and a terminator, which
+    /// is ERANGE. Darwin's `getcwd(3)` builds the path from the root downwards,
+    /// so it needs those two bytes before it can start; measured, size 1 is
+    /// ERANGE and *every* larger size is ENOENT — including sizes far below the
+    /// length of the path that used to be there. It is a minimum, not a
+    /// comparison against a path that no longer exists.
+    | ShortestPathFirst
+
+/// Everything a kernel does differently when `rmdir(2)` removes a directory.
+///
+/// Two fields, and the rest of the divergence — the *order* of the refusals and
+/// the errno vocabulary — lives in `RmDirRules.linuxVerdict` and
+/// `RmDirRules.darwinVerdict` rather than here, for the reason
+/// `UnlinkRules.verdict` gives.
+///
+/// Measured on macOS 26.6/APFS at uid 501, and Linux 6.x arm64 at uid 1000 and
+/// uid 0, one fresh tree per row.
+type RmDirRules =
+    {
+        /// The walk `rmdir` resolves its path with, under
+        /// `SymlinkPolicy.NoFollowFinal` on both platforms. Linux `Ignore`,
+        /// Darwin `Demand`, exactly as `unlink`'s is and for the same reason.
+        ///
+        /// This is the field that makes the two flavours **destroy different
+        /// objects**. With `ld -> d` and `d` an empty directory, `rmdir("ld/")`
+        /// is ENOTDIR on Linux — whose walk cannot have traversed the link — and
+        /// *removes `d`* on Darwin, whose walk did. It is the divergence
+        /// `Resolution.FinalSymlinkFollowed` warns about, and the reason this
+        /// syscall dispatches on the flavour rather than picking a column.
+        TrailingSeparator : TrailingSeparatorPolicy
+        /// What removing the directory does to the removed directory's own
+        /// inode, which the flavours do not agree on.
+        ///
+        /// Measured through a descriptor held across the call, reproduced 3/3 on
+        /// each: Linux drops the directory's `st_nlink` from 2 to 0 and moves its
+        /// `ctime`, while Darwin leaves both alone. It is one fact, not two —
+        /// nothing about the Darwin inode changed, so its `ctime` has no reason
+        /// to move.
+        ///
+        /// Guest-observable, which is why it is modelled rather than approximated:
+        /// `SystemNative_FStat` on a directory descriptor writes
+        /// `InodeTimes.StatusChange` into `FileStatus`. (`st_nlink` itself is not
+        /// a `FileStatus` field, so only its shadow on `ctime` can be read.)
+        ///
+        /// `unlink` needs no such field: removing a *file*'s last name moves its
+        /// `ctime` on both.
+        RemovedDirectoryEffect : UnbindTargetEffect
+    }
+
+/// What `rmdir(2)` should do next, once its path has been resolved.
+[<RequireQualifiedAccess>]
+type RmDirVerdict =
+    /// Answer the guest with this errno.
+    | Refuse of error : UnixError
+    /// Remove `name` from `directory`, and — since no other name can point at a
+    /// directory — free the inode unless a descriptor or the current directory
+    /// still holds it.
+    ///
+    /// Carries no inode for the reason `UnlinkVerdict.Remove` carries none: the
+    /// removing code gets it from `VirtualFileSystem.unbind`, which answers the
+    /// inode it actually unbound.
+    | Remove of directory : InodeNumber * name : FileName
+
+[<RequireQualifiedAccess>]
+module RmDirRules =
+    /// Linux's `rmdir(2)`, transcribed from the measured ordering. Each arm
+    /// beats the ones below it, and each bullet is a measured row:
+    ///
+    ///  * A path that consumed no component at all — "/" — is EBUSY. Linux
+    ///    specialises the *path*, not the inode: `rmdir("/")` is EBUSY where
+    ///    `rmdir("/.")` is EINVAL.
+    ///  * A path whose last component was "." is EINVAL, whatever directory it
+    ///    reached: `rmdir(".")`, `rmdir("d/.")` and `rmdir("/.")` all are.
+    ///  * A path whose last component was ".." is ENOTEMPTY, again whatever it
+    ///    reached. Not a coincidence with the emptiness check below — the parent
+    ///    of any directory necessarily contains that directory — but it *is* a
+    ///    separate arm, and the row proving it is `rmdir("nowrite/kdir/..")`,
+    ///    which is ENOTEMPTY where the write check below would say EACCES.
+    ///  * A free final name is ENOENT, and that beats the write check:
+    ///    `rmdir("nowrite/nx")` is ENOENT.
+    ///  * Removing a name needs write on the directory holding it: EACCES.
+    ///  * The target not being a directory is ENOTDIR — *below* the write check,
+    ///    and measured to be: `rmdir("nowrite/kid")` is EACCES at uid 1000 and
+    ///    ENOTDIR at uid 0. This is the arm Darwin orders the other way round.
+    ///  * A directory that still holds an entry is ENOTEMPTY.
+    ///
+    /// `Resolution.TrailingSeparatorDemanded` is never read, and does not need
+    /// to be: the demand is "the final component must be a directory", which
+    /// `rmdir` owes anyway. Measured, every `X/` row answers what its `X` row
+    /// answers.
+    ///
+    /// Measured at uid 0, every row: the EACCES rows fall through to their next
+    /// check and nothing else moves, so `CallerPrivilege` gates the write bit
+    /// and nothing else.
+    let private linuxVerdict
+        (privilege : CallerPrivilege)
+        (resolution : Resolution)
+        (vfs : VirtualFileSystem)
+        : RmDirVerdict
+        =
+        match resolution.Target with
+        | ResolvedTarget.Directory (_, reachedBy) ->
+            match reachedBy with
+            | FinalNavigation.Root -> RmDirVerdict.Refuse UnixError.EBUSY
+            | FinalNavigation.Current -> RmDirVerdict.Refuse UnixError.EINVAL
+            | FinalNavigation.Parent -> RmDirVerdict.Refuse UnixError.ENOTEMPTY
+        | ResolvedTarget.Entry (directory, name, existing) ->
+
+        match existing with
+        | None -> RmDirVerdict.Refuse UnixError.ENOENT
+        | Some target ->
+
+        if RemovalChecks.lacksWrite privilege directory name vfs then
+            RmDirVerdict.Refuse UnixError.EACCES
+        elif not (RemovalChecks.isDirectory target vfs) then
+            RmDirVerdict.Refuse UnixError.ENOTDIR
+        elif not (RemovalChecks.isEmptyDirectory target vfs) then
+            RmDirVerdict.Refuse UnixError.ENOTEMPTY
+        else
+            RmDirVerdict.Remove (directory, name)
+
+    /// Darwin's `rmdir(2)`, transcribed from the measured ordering. Each arm
+    /// beats the ones below it:
+    ///
+    ///  * A path that consumed no component at all — "/", or a symlink whose
+    ///    target was "/" — is EISDIR. Where Linux gives that path EBUSY.
+    ///  * The root reached by "." or ".." is EBUSY, which is XNU refusing a
+    ///    mount's root vnode; PawPrint mounts one filesystem, so "the root of a
+    ///    mount" and "the root" are the same inode. Measured: `rmdir("/.")`,
+    ///    `rmdir("/..")` and — through `lroot -> "/"` — `rmdir("lroot/.")` are
+    ///    EBUSY, where Linux answers those EINVAL and ENOTEMPTY. So Darwin
+    ///    specialises the *inode* where Linux specialises the path.
+    ///  * Any other directory reached by "." is EINVAL, and by ".." is
+    ///    ENOTEMPTY — agreeing with Linux once the root is out of the way.
+    ///  * A free final name is ENOENT.
+    ///  * The target not being a directory is ENOTDIR, and beats the write
+    ///    check: `rmdir("nowrite/kid")` is ENOTDIR where `rmdir("nowrite/kdir")`
+    ///    is EACCES. This is the arm Linux orders the other way round.
+    ///  * Removing a name needs write on the directory holding it: EACCES.
+    ///  * A directory that still holds an entry is ENOTEMPTY, and the write
+    ///    check beats it: `rmdir("nowrite/kfull")` is EACCES.
+    ///
+    /// Darwin's walk is `TrailingSeparatorPolicy.Demand`, so a separator over a
+    /// non-directory never reaches here — the walk has already answered ENOTDIR
+    /// (`rmdir("f/")`, `rmdir("lf/")`), ELOOP (`rmdir("cyc/")`) or ENOENT
+    /// (`rmdir("dang/")`). What does reach here is a separator over a directory
+    /// a final symlink named, and that is the destructive row: `rmdir("ld/")`
+    /// removes `d`.
+    let private darwinVerdict
+        (privilege : CallerPrivilege)
+        (resolution : Resolution)
+        (vfs : VirtualFileSystem)
+        : RmDirVerdict
+        =
+        match resolution.Target with
+        | ResolvedTarget.Directory (inode, reachedBy) ->
+            match reachedBy with
+            | FinalNavigation.Root -> RmDirVerdict.Refuse UnixError.EISDIR
+            | FinalNavigation.Current ->
+                if inode = VirtualFileSystem.root vfs then
+                    RmDirVerdict.Refuse UnixError.EBUSY
+                else
+                    RmDirVerdict.Refuse UnixError.EINVAL
+            | FinalNavigation.Parent ->
+                if inode = VirtualFileSystem.root vfs then
+                    RmDirVerdict.Refuse UnixError.EBUSY
+                else
+                    RmDirVerdict.Refuse UnixError.ENOTEMPTY
+        | ResolvedTarget.Entry (directory, name, existing) ->
+
+        match existing with
+        | None -> RmDirVerdict.Refuse UnixError.ENOENT
+        | Some target ->
+
+        if not (RemovalChecks.isDirectory target vfs) then
+            RmDirVerdict.Refuse UnixError.ENOTDIR
+        elif RemovalChecks.lacksWrite privilege directory name vfs then
+            RmDirVerdict.Refuse UnixError.EACCES
+        elif not (RemovalChecks.isEmptyDirectory target vfs) then
+            RmDirVerdict.Refuse UnixError.ENOTEMPTY
+        else
+            RmDirVerdict.Remove (directory, name)
+
+    /// Decide what an `rmdir(2)` owes, given how its path resolved.
+    ///
+    /// Two whole functions rather than one reading a rules record, for the
+    /// reason `UnlinkRules.verdict` states: what diverges is the order of the
+    /// checks and the errno vocabulary rather than a constant they both consult.
+    /// `rmdir` makes the case more strongly than `unlink` did — the two flavours
+    /// disagree about which of the root and the *path to it* is the special
+    /// thing, which no table of errnos can express.
+    let verdict
+        (flavour : SimulatedUnixFlavour)
+        (privilege : CallerPrivilege)
+        (resolution : Resolution)
+        (vfs : VirtualFileSystem)
+        : RmDirVerdict
         =
         match flavour with
         | SimulatedUnixFlavour.Linux -> linuxVerdict privilege resolution vfs
@@ -1676,6 +1945,13 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> RawErrnoNumbering.Linux
         | SimulatedUnixFlavour.Darwin -> RawErrnoNumbering.Darwin
 
+    /// What this platform's `getcwd(3)` reports for a removed current directory.
+    /// See `GetCwdOrphanAnswer`.
+    let getCwdOrphanAnswer (platform : SimulatedUnixPlatform) : GetCwdOrphanAnswer =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> GetCwdOrphanAnswer.AlwaysDetached
+        | SimulatedUnixFlavour.Darwin -> GetCwdOrphanAnswer.ShortestPathFirst
+
     /// Whether this platform's `stat` reports a creation time.
     ///
     /// A compile-time property of the native shim rather than of any file:
@@ -1806,6 +2082,22 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Darwin ->
             {
                 TrailingSeparator = TrailingSeparatorPolicy.Demand
+            }
+
+    /// Everything this platform's `rmdir(2)` does differently. See `RmDirRules`,
+    /// whose two fields this picks; the ordering half of the divergence is in
+    /// `RmDirRules.verdict`, which takes the flavour directly.
+    let rmDirRules (platform : SimulatedUnixPlatform) : RmDirRules =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux ->
+            {
+                TrailingSeparator = TrailingSeparatorPolicy.Ignore
+                RemovedDirectoryEffect = UnbindTargetEffect.LostALink
+            }
+        | SimulatedUnixFlavour.Darwin ->
+            {
+                TrailingSeparator = TrailingSeparatorPolicy.Demand
+                RemovedDirectoryEffect = UnbindTargetEffect.Untouched
             }
 
     /// Whether this platform's kernel screens a read or write buffer before it
@@ -4315,21 +4607,20 @@ module EmulatedKernel =
             NextSocketId = SocketId (raw + 1L)
         }
 
-    /// Every inode this kernel holds a reference to, independently of any name
-    /// the filesystem binds to it.
+    /// Every inode this kernel holds a reference to *directly*, independently of
+    /// any name the filesystem binds to it.
     ///
     /// A real kernel keeps an inode alive while any reference survives; this
-    /// enumerates the references PawPrint has. Every live open file description
-    /// onto a file is one, and so is the current directory — a process that has
-    /// `chdir`ed somewhere keeps that directory alive whether or not its name
-    /// outlives the call.
+    /// enumerates the references PawPrint has of its own. Every live open file
+    /// description onto a file is one, and so is the current directory — a
+    /// process that has `chdir`ed somewhere keeps that directory alive whether
+    /// or not its name outlives the call.
     ///
-    /// This is the set `VirtualFileSystem.checkInvariants` takes as `pinned`,
-    /// and the check `EmulatedKernel.forgetIfUnheld` makes before freeing an
-    /// inode. Everything that can *create* a reference must appear here: an
-    /// omission makes a live inode look free, and freeing it leaves a
-    /// descriptor pointing at nothing.
-    let pinnedInodes (kernel : EmulatedKernel) : Set<InodeNumber> =
+    /// Everything that can *create* a reference must appear here: an omission
+    /// makes a live inode look free, and freeing it leaves a descriptor pointing
+    /// at nothing. It is not what callers want, though — see `pinnedInodes`,
+    /// which adds the references the *filesystem* holds on behalf of these.
+    let heldInodes (kernel : EmulatedKernel) : Set<InodeNumber> =
         kernel.FileDescriptors
         |> FileDescriptorRegistry.descriptions
         |> Map.toSeq
@@ -4343,6 +4634,45 @@ module EmulatedKernel =
         |> Set.ofSeq
         |> Set.add kernel.CurrentDirectoryInode
 
+    /// Every inode that must not be freed: `heldInodes`, closed under
+    /// `DirectoryContent.Parent`.
+    ///
+    /// The closure is not caution — it is measured. `rmdir` can remove a
+    /// directory something still holds, and that orphan keeps its "..": probed
+    /// on both flavours, with `a/b` and the current directory inside `b`,
+    /// `rmdir(b)` then `rmdir(a)` both succeed and `stat("..")` still answers
+    /// `a`'s inode while `stat("../..")` still answers the live grandparent's.
+    /// So a held orphan holds its whole ancestor chain, and freeing one of them
+    /// would leave a `DirectoryContent.Parent` naming an inode the graph no
+    /// longer contains.
+    ///
+    /// This is the set `VirtualFileSystem.checkInvariants` takes as `pinned`,
+    /// and the check `forgetIfUnheld` makes before freeing an inode. Ancestors
+    /// that are still reachable from the root are in it too, harmlessly: both
+    /// callers only ever ask about an inode no name reaches.
+    let pinnedInodes (kernel : EmulatedKernel) : Set<InodeNumber> =
+        let rec climb (frontier : InodeNumber list) (seen : Set<InodeNumber>) : Set<InodeNumber> =
+            match frontier with
+            | [] -> seen
+            | inode :: rest ->
+                if Set.contains inode seen then
+                    climb rest seen
+                else
+
+                let seen = Set.add inode seen
+
+                match VirtualFileSystem.tryGetContent inode kernel.FileSystem with
+                | Some (InodeContent.Directory directory) -> climb (directory.Parent :: rest) seen
+                // A file or a link records no parent, and a held inode the graph
+                // has already forgotten records nothing at all — which is a
+                // defect (`EmulatedKernelDefect.DanglingOpenInode`) rather than
+                // something to climb from.
+                | Some (InodeContent.RegularFile _)
+                | Some (InodeContent.Symlink _)
+                | None -> climb rest seen
+
+        climb (heldInodes kernel |> Set.toList) Set.empty
+
     /// Free `inode` if the filesystem no longer names it and this kernel holds
     /// no reference to it — what a real kernel does once the last link and the
     /// last descriptor have both gone.
@@ -4353,7 +4683,12 @@ module EmulatedKernel =
     /// name, and closing a descriptor — because either may be the one that
     /// finishes the job, and which one that is cannot be known from the call
     /// site.
-    let forgetIfUnheld (inode : InodeNumber) (kernel : EmulatedKernel) : EmulatedKernel =
+    ///
+    /// Freeing a *directory* cascades onto its recorded parent, which the
+    /// directory's ".." was the last reference to. So one call collects a whole
+    /// orphaned chain, and the caller passes only the inode whose reference it
+    /// just dropped.
+    let rec forgetIfUnheld (inode : InodeNumber) (kernel : EmulatedKernel) : EmulatedKernel =
         // The root is excluded explicitly rather than by the binding count,
         // which is zero for it by construction: nothing holds an entry naming
         // the root (`VirtualFileSystemDefect.RootHasIncomingLink` states that),
@@ -4369,9 +4704,29 @@ module EmulatedKernel =
         elif Set.contains inode (pinnedInodes kernel) then
             kernel
         else
+
+        // Read before the removal, because it is the removal that makes the
+        // parent's own reference count drop.
+        let parent =
+            match VirtualFileSystem.tryGetContent inode kernel.FileSystem with
+            | Some (InodeContent.Directory directory) -> Some directory.Parent
+            | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.Symlink _)
+            | None -> None
+
+        let freed =
             { kernel with
                 FileSystem = VirtualFileSystem.forget inode kernel.FileSystem
             }
+
+        // A directory freed here was the last thing holding its parent's ".."
+        // reference, so the parent may now be free in turn — the chain a held
+        // orphan kept alive is collected as soon as the last holder goes.
+        // Terminating: each step has removed one inode, and the root is refused
+        // above.
+        match parent with
+        | None -> freed
+        | Some parent -> forgetIfUnheld parent freed
 
     /// Mirrors `close(2)`, including the kernel objects a description was the
     /// last reference to: the socket it named, or the inode whose last name had

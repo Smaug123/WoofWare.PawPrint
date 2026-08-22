@@ -757,11 +757,13 @@ type TrailingSeparatorPolicy =
 [<RequireQualifiedAccess>]
 type FinalNavigation =
     /// The path named no component at all: "/" itself, or a symlink whose
-    /// target was "/". `rmdir` owes this EBUSY on Linux.
+    /// target was "/". `rmdir` owes this EBUSY on Linux and EISDIR on Darwin.
     | Root
-    /// The last component consumed was ".". `rmdir` owes this EINVAL.
+    /// The last component consumed was ".". `rmdir` owes this EINVAL — except
+    /// on Darwin at the root itself, which is EBUSY.
     | Current
-    /// The last component consumed was "..". `rmdir` owes this ENOTEMPTY.
+    /// The last component consumed was "..". `rmdir` owes this ENOTEMPTY —
+    /// except on Darwin at the root itself, which is EBUSY.
     | Parent
 
 /// Where a path resolution ended up.
@@ -782,6 +784,22 @@ type ResolvedTarget =
     /// `FinalNavigation`. (ENOTEMPTY is itself platform-dependent: Linux 39,
     /// Darwin 66.)
     | Directory of inode : InodeNumber * reachedBy : FinalNavigation
+
+/// What losing a name does to the inode that had it, which is not the same for
+/// every caller of `unbind`.
+///
+/// Names the *mechanism* rather than the stamp, because the stamp follows from
+/// it: an inode whose link count changed has changed, so its `ctime` moves.
+[<RequireQualifiedAccess>]
+type UnbindTargetEffect =
+    /// The inode lost a link, so its `ctime` moves and nothing else does.
+    /// `unlink(2)` on both flavours, and Linux's `rmdir(2)`.
+    | LostALink
+    /// The inode is untouched, so no timestamp moves. Darwin's `rmdir(2)`:
+    /// measured through a descriptor held across the call, the removed
+    /// directory keeps its `ctime` and keeps `st_nlink` at 2, where Linux moves
+    /// the one and drops the other to 0.
+    | Untouched
 
 /// The outcome of a resolution, together with the facts about *how* it
 /// finished that a caller cannot recover from the path it passed in.
@@ -822,8 +840,14 @@ type Resolution =
         /// rather than reporting it. `unlink` is measured on both and dispatches
         /// the same way (`SimulatedUnixPlatform.unlinkRules`); it destroys
         /// nothing when the pair is set, since Darwin answers EPERM for the
-        /// directory a followed link named and Linux never follows. `rmdir` is
-        /// not measured yet and still owes a loud failure.
+        /// directory a followed link named and Linux never follows.
+        ///
+        /// `rmdir` is where the pair finally costs something. Measured on both
+        /// and dispatched by `SimulatedUnixPlatform.rmDirRules`: with
+        /// `ld -> d` and `d` empty, `rmdir("ld/")` removes `d` on Darwin and is
+        /// ENOTDIR on Linux. Every mutating operation PawPrint models is now
+        /// measured on both columns, so nothing here owes a loud failure any
+        /// more — but a *new* one still does, and for the same reason.
         ///
         /// Lookup operations (`stat`, `lstat`) are unanimous and can ignore
         /// this.
@@ -1685,6 +1709,10 @@ module VirtualFileSystem =
     /// is absent or does not hold `name`, ENOTDIR if `directory` is not a
     /// directory.
     ///
+    /// `effect` says what the removal did to the inode that lost the name, which
+    /// the two syscalls do not agree on: see `UnbindTargetEffect`. The directory
+    /// losing the entry is stamped the same way either way.
+    ///
     /// Removing the last name an inode has does **not** remove the inode, and
     /// this function deliberately cannot: a real kernel keeps an unlinked inode
     /// alive for as long as any process holds it open, and whether one does is a
@@ -1700,6 +1728,7 @@ module VirtualFileSystem =
     /// populated directory by unbinding and rebinding it, and the subtree is
     /// legitimately unreachable in between.
     let unbind
+        (effect : UnbindTargetEffect)
         (directory : InodeNumber)
         (name : FileName)
         (now : UnixTimestamp)
@@ -1742,19 +1771,23 @@ module VirtualFileSystem =
 
         let inodes = Map.add directory updated vfs.Inodes
 
-        // The target's own `ctime` moves as well, because its link count
-        // changed -- true whether names remain or this was the last one, and
-        // observable in the latter case through a descriptor still holding it.
-        // `mtime` does not move: its contents are untouched.
+        // Whether the target's own `ctime` moves is `effect`'s business, but the
+        // target is looked up either way: a name bound to an inode the graph
+        // does not contain is a broken graph whichever caller asked.
         let inodes =
             match Map.tryFind target inodes with
             | Some node ->
-                Map.add
-                    target
-                    { node with
-                        Times = InodeTimes.statusChangedAt now node.Times
-                    }
-                    inodes
+                match effect with
+                | UnbindTargetEffect.Untouched -> inodes
+                | UnbindTargetEffect.LostALink ->
+                    // `mtime` does not move: the inode's contents are untouched,
+                    // only the count of names pointing at it.
+                    Map.add
+                        target
+                        { node with
+                            Times = InodeTimes.statusChangedAt now node.Times
+                        }
+                        inodes
             | None ->
                 failwith
                     $"VirtualFileSystem.unbind: directory inode %O{directory} bound \"%s{FileName.toString name}\" to inode %O{target}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
@@ -1789,6 +1822,37 @@ module VirtualFileSystem =
             | InodeContent.RegularFile _
             | InodeContent.Symlink _ -> 0
         )
+
+    /// Whether `inode` is a directory that no path from the root can reach: its
+    /// last name has gone, and only a descriptor or the current directory is
+    /// keeping it alive.
+    ///
+    /// A real kernel refuses to create anything inside such a directory —
+    /// `mkdir`, `open(O_CREAT)` and `symlink` are all ENOENT there, measured on
+    /// both flavours — so a caller that is about to add a name must ask. That
+    /// rule is also what keeps an orphan *empty*: a directory can only be
+    /// orphaned by `rmdir`, which refuses a non-empty one, and it can never gain
+    /// an entry afterwards.
+    ///
+    /// False for anything that is not a directory. A file with no names left is
+    /// orphaned in the same sense, but nothing can be created inside it, so no
+    /// caller has the question to ask.
+    let isOrphanedDirectory (inode : InodeNumber) (vfs : VirtualFileSystem) : bool =
+        if inode = vfs.Root then
+            false
+        else
+
+        match Map.tryFind inode vfs.Inodes with
+        | Some {
+                   Content = InodeContent.Directory _
+               } -> bindingCount inode vfs = 0
+        | Some {
+                   Content = InodeContent.RegularFile _
+               }
+        | Some {
+                   Content = InodeContent.Symlink _
+               }
+        | None -> false
 
     /// Remove an inode from the graph, which is what a kernel does when the last
     /// name for a file has gone *and* no open description is holding it.

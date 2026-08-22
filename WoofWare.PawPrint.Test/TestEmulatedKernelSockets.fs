@@ -239,13 +239,32 @@ module TestEmulatedKernelSockets =
     /// filesystem rather than on fabricated inode numbers. Names in one flat
     /// directory: this property is about descriptor and inode *lifetime*, and a
     /// deeper tree would add walking without adding a lifetime.
+    /// Five files at the root, and a chain of nested directories beside them.
+    ///
+    /// The chain is what lets a removal *orphan* something: a directory held
+    /// open after its last name has gone keeps its whole ancestor chain alive,
+    /// and freeing it must collect that chain. A flat seed can never produce
+    /// the state, so the `DanglingParent` clause would go untouched.
     let private lifetimeSeed : Map<FileName, SeedEntry> =
-        [ "a" ; "b" ; "c" ; "d" ; "e" ]
-        |> List.map (fun n ->
-            FileName.parseOrFail "test seed" n,
-            SeedEntry.file (System.Text.Encoding.UTF8.GetBytes n |> ImmutableArray.CreateRange)
-        )
-        |> Map.ofList
+        let name (n : string) = FileName.parseOrFail "test seed" n
+
+        let files =
+            [ "a" ; "b" ; "c" ; "d" ; "e" ]
+            |> List.map (fun n ->
+                name n, SeedEntry.file (System.Text.Encoding.UTF8.GetBytes n |> ImmutableArray.CreateRange)
+            )
+
+        let chain =
+            // Three deep, so a removal can orphan a directory whose own parent
+            // is later orphaned in turn.
+            SeedEntry.directory (
+                Map.ofList
+                    [
+                        name "mid", SeedEntry.directory (Map.ofList [ name "leaf", SeedEntry.directory Map.empty ])
+                    ]
+            )
+
+        Map.ofList ((name "top", chain) :: files)
 
     /// The allocating and closing operations interleaved at random must leave
     /// *all three* tables sound. This is what connects the hand-forged defects
@@ -264,6 +283,7 @@ module TestEmulatedKernelSockets =
     [<Test>]
     let ``a random mix of allocations and closes keeps both tables sound`` () : unit =
         let mutable observedSockets = 0
+        let mutable observedHeldOrphanDirectories = 0
         let mutable observedSocketCloses = 0
         let mutable observedDups = 0
         let mutable observedUnlinks = 0
@@ -343,24 +363,54 @@ module TestEmulatedKernelSockets =
                                 FileDescriptors = registry
                             }
                 | 7 ->
-                    // Remove a name at random, and reap if that was the last
-                    // reference. Interleaved with the closes above, so the two
-                    // orders — last name first, last descriptor first — both
-                    // occur.
-                    let root = VirtualFileSystem.root kernel.FileSystem
+                    // Remove a name at random, from *any* directory the graph
+                    // still contains, and reap if that was the last reference.
+                    // Interleaved with the closes above, so the two orders —
+                    // last name first, last descriptor first — both occur.
+                    //
+                    // Removing a name at *depth* is what produces an orphaned
+                    // directory, whose recorded parent must then outlive being
+                    // unbound itself. A flat corpus reaches neither.
+                    //
+                    // Only names `unlink(2)` or `rmdir(2)` could remove are
+                    // candidates: anything that is not a directory, and a
+                    // directory that is empty. Unbinding a *populated* one is a
+                    // state no syscall PawPrint models can produce — it would
+                    // orphan a whole subtree at once — and asserting soundness
+                    // in it would be asserting a rule nobody has decided.
+                    let removable =
+                        let filesystem = kernel.FileSystem
 
-                    let names =
-                        match VirtualFileSystem.tryGetContent root kernel.FileSystem with
-                        | Some (InodeContent.Directory content) -> content.Entries |> Map.toList |> List.map fst
-                        | Some (InodeContent.RegularFile _)
-                        | Some (InodeContent.Symlink _)
-                        | None -> []
+                        let isRemovable (target : InodeNumber) : bool =
+                            match VirtualFileSystem.tryGetContent target filesystem with
+                            | Some (InodeContent.Directory content) -> Map.isEmpty content.Entries
+                            | Some (InodeContent.RegularFile _)
+                            | Some (InodeContent.Symlink _) -> true
+                            | None -> false
 
-                    if not (List.isEmpty names) then
-                        let chosen = names.[rng.Next names.Length]
+                        VirtualFileSystem.inodes filesystem
+                        |> Map.toList
+                        |> List.collect (fun (holder, node) ->
+                            match node.Content with
+                            | InodeContent.Directory content ->
+                                content.Entries
+                                |> Map.toList
+                                |> List.filter (fun (_, target) -> isRemovable target)
+                                |> List.map (fun (entry, _) -> holder, entry)
+                            | InodeContent.RegularFile _
+                            | InodeContent.Symlink _ -> []
+                        )
+
+                    if not (List.isEmpty removable) then
+                        let holder, chosen = removable.[rng.Next removable.Length]
 
                         match
-                            VirtualFileSystem.unbind root chosen (EmulatedKernel.fileTimestamp kernel) kernel.FileSystem
+                            VirtualFileSystem.unbind
+                                UnbindTargetEffect.LostALink
+                                holder
+                                chosen
+                                (EmulatedKernel.fileTimestamp kernel)
+                                kernel.FileSystem
                         with
                         | Error e -> failwith $"unexpected unbind error: %O{e}"
                         | Ok (inode, filesystem) ->
@@ -374,8 +424,18 @@ module TestEmulatedKernelSockets =
 
                             observedUnlinks <- observedUnlinks + 1
 
-                            if VirtualFileSystem.inodes kernel.FileSystem |> Map.count < before then
+                            if (VirtualFileSystem.inodes kernel.FileSystem |> Map.count) < before then
                                 observedReaps <- observedReaps + 1
+
+                            // The inode survived the loss of its last name, and
+                            // it is a directory — so something is holding an
+                            // orphan whose ".." must not dangle.
+                            match VirtualFileSystem.tryGetContent inode kernel.FileSystem with
+                            | Some (InodeContent.Directory _) ->
+                                observedHeldOrphanDirectories <- observedHeldOrphanDirectories + 1
+                            | Some (InodeContent.RegularFile _)
+                            | Some (InodeContent.Symlink _)
+                            | None -> ()
                 | 6 ->
                     let _, registry =
                         FileDescriptorRegistry.createSocketEventPort kernel.FileDescriptors
@@ -427,6 +487,23 @@ module TestEmulatedKernelSockets =
         // unlink whose inode is still held reaps nothing, and a run of only
         // those would leave both clauses untouched.
         observedReaps |> shouldBeGreaterThan 50
+
+        // ...and specifically that a *directory* outlived its last name. Without
+        // this the run could be sound while never producing an orphaned
+        // directory at all, which is the only state in which `pinnedInodes`'s
+        // climb up `DirectoryContent.Parent` does anything — a flat corpus
+        // reaches neither, and the `DanglingParent` clause would go untouched
+        // throughout.
+        //
+        // `forgetIfUnheld`'s *cascade* is deliberately not guarded here.
+        // Reaching it needs one four-step interleaving in a fixed order — open a
+        // directory, unbind it, unbind its parent while the pin still holds,
+        // then close — which this generator produced not once in 500 runs of up
+        // to 60 steps. A threshold on it would be a flake waiting to happen; the
+        // cascade is pinned deterministically by
+        // `TestEmulatedKernelInodeLifetime`'s `an orphan held by a descriptor
+        // keeps its ancestors alive` and `the cascade stops at the root`.
+        observedHeldOrphanDirectories |> shouldBeGreaterThan 20
 
     // --- socketEventRegistrationCouldFire ---
 
