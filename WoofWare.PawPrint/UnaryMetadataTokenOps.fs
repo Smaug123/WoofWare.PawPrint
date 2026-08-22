@@ -533,7 +533,10 @@ module internal UnaryMetadataTokenOps =
         // `allowOpenGenericDefinition` is PawPrint's spelling of CoreCLR's `PermitUninstDefOrRef`,
         // which `CEEInfo::resolveToken` grants to `ldtoken` and to no other opcode
         // (`vm/jitinterface.cpp`, the `CORINFO_TOKENKIND_Ldtoken` ternary on the `LoadTypeDefOrRef`
-        // call). The per-arm values are therefore load-bearing, not incidental.
+        // call). Each arm's value has its own observer in `sourcesPure/LdtokenMemberTokens.cs`,
+        // because the arm a type reaches depends on where it lives: `typeof(List<>)` is a
+        // TypeReference and `typeof(Box<>)` a TypeDefinition, so one check cannot stand in for
+        // the other.
         let targetForTypeToken
             (declaringAssembly : DumpedAssembly)
             (allowOpenGenericDefinition : bool)

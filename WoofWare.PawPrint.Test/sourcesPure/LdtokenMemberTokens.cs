@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Threading.Tasks;
@@ -22,6 +23,7 @@ public static class Program
     //   MemberReference, TypeSpecification parent  -- `Box<int>.Get`
     //   MethodSpecification over a MemberReference -- `Box<string>.Stat<int>`
     //   MethodSpecification over a MethodDef       -- `Ident<int>`
+    //   TypeReference / TypeDefinition, open       -- `typeof(List<>)`, `typeof(Box<>)`
     //   FieldDefinition                            -- the array initialiser at the end
     //
     // Reference equality throughout, not `==`. CoreCLR hands back one `MethodDesc` for a method
@@ -92,16 +94,33 @@ public static class Program
         if (identMethod.GetGenericArguments()[0] != typeof(int)) return 14;
         if (!ReferenceEquals(identMethod, typeof(Program).GetMethod("Ident").MakeGenericMethod(typeof(int)))) return 15;
 
+        // --- Type tokens naming an open generic *definition*. ---
+        // `ldtoken` is the only opcode CoreCLR grants `PermitUninstDefOrRef` to, and the
+        // interpreter spells that as a per-arm `allowOpenGenericDefinition` flag. The arm depends
+        // on where the type lives: `typeof(List<>)` is a *TypeReference* token because the type is
+        // in another assembly, `typeof(Box<>)` a *TypeDefinition* because it is in this one. They
+        // carry the flag separately, so one check cannot stand in for the other -- measured: with
+        // only the same-assembly check, flipping the TypeReference arm's flag survives the whole
+        // suite.
+        Type crossAssemblyOpen = typeof(List<>);
+        if (!crossAssemblyOpen.IsGenericTypeDefinition) return 16;
+        if (crossAssemblyOpen.GetGenericArguments().Length != 1) return 17;
+        if (crossAssemblyOpen != typeof(List<int>).GetGenericTypeDefinition()) return 18;
+
+        Type sameAssemblyOpen = typeof(Box<>);
+        if (!sameAssemblyOpen.IsGenericTypeDefinition) return 19;
+        if (sameAssemblyOpen != typeof(Box<int>).GetGenericTypeDefinition()) return 20;
+
         // --- FieldDefinition, the shape that already worked: an array initialiser blob. ---
         // A control, so a change that broke the pre-existing arm while fixing the new ones shows up
         // here rather than only in the interpreter's own tests.
         int[] data = { 9, 8, 7, 6, 5 };
-        if (data.Length != 5 || data[0] != 9 || data[4] != 5) return 16;
+        if (data.Length != 5 || data[0] != 9 || data[4] != 5) return 21;
 
         // The whole point of the identity assertions: the guest reaches one member by two routes
         // and must get one object.
         Expression<Func<int>> absAgain = () => Math.Abs(-2);
-        if (!ReferenceEquals(((MethodCallExpression)absAgain.Body).Method, absMethod)) return 17;
+        if (!ReferenceEquals(((MethodCallExpression)absAgain.Body).Method, absMethod)) return 22;
 
         return 0;
     }
