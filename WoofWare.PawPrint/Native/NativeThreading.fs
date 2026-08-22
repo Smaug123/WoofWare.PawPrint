@@ -888,6 +888,27 @@ module NativeThreading =
                         $"Thread.StartInternal: assembly {AssemblyDefinitionName.simpleName targetMethod.DeclaringAssemblyFullName} not loaded"
                 )
 
+            // A thread's entry point is *entered* without any call instruction being executed, so
+            // the refusal `callMethodWithCommitment` applies to a call has to be applied here too;
+            // the rule itself lives in one place. Starting a thread is a managed entry -- the new
+            // thread begins in cooperative mode exactly as its starter is -- so it can never be the
+            // native transition that such a method admits.
+            //
+            // Ahead of the frame and of `ensureTypeInitialised` below, for the same reason the call
+            // gate sits ahead of class initialisation: real .NET refuses before the declaring
+            // type's static constructor runs.
+            //
+            // Attributed to the *new* thread, which is the one whose entry was refused, matching
+            // where CoreCLR's prologue fails. It exists already (minted `NotStarted` at
+            // `Thread.Initialize`); it simply never becomes runnable.
+            match
+                IlMachineStateExecution.unmanagedCallersOnlyRefusal
+                    IlMachineStateExecution.CallSiteTransition.StaysCooperative
+                    targetMethod
+            with
+            | Some fatal -> NativeHandlerResult.aborted newThreadId fatal state |> Some
+            | None ->
+
             let thisArgs =
                 if targetMethod.IsStatic then
                     System.Collections.Immutable.ImmutableArray.Empty

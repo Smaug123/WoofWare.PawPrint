@@ -1655,6 +1655,172 @@ module IlMachineStateExecution =
         /// caller could usefully continue from: every caller must propagate rather than carry on.
         | Aborted of FatalError
 
+    /// What a call site does to the thread on the way into its callee: whether it is still in
+    /// cooperative mode when the callee's prologue runs.
+    ///
+    /// Read from the call site's signature; PawPrint does not model GC mode. This is the property
+    /// CoreCLR's reverse-P/Invoke prologue actually tests, and so the thing that decides whether
+    /// entering a `[UnmanagedCallersOnly]` method is the legal native transition or a fatal one.
+    ///
+    /// Keyed on the call site rather than the callee because the same method admits both:
+    /// `sourcesPure/UnmanagedCallersOnlyFunctionPointer.cs` and
+    /// `sourcesImpure/UnmanagedCallersOnlyManagedCalli.cs` are exactly that pair.
+    [<RequireQualifiedAccess>]
+    type CallSiteTransition =
+        /// The thread leaves cooperative mode before the callee runs. Only a `calli` through a
+        /// `delegate* unmanaged&lt;...&gt;` does this, and only when it does not suppress the
+        /// transition. This is the entry a `[UnmanagedCallersOnly]` method admits.
+        | EntersPreemptive
+        /// The thread is still cooperative when the callee's prologue runs. Every managed call site
+        /// — `call`, `callvirt`, a delegate's `Invoke`, reflection — and *also* an unmanaged one
+        /// carrying `CallConvSuppressGCTransition`, which is an unmanaged calling convention that
+        /// nevertheless skips the transition.
+        ///
+        /// That last case is why this is not simply "is the calling convention managed": measured,
+        /// real .NET refuses a `delegate* unmanaged[SuppressGCTransition]&lt;int, int&gt;` entry into
+        /// such a method with the same fatal error it gives a managed one, because the caller never
+        /// left cooperative mode for the callee's prologue to find it in.
+        | StaysCooperative
+
+    [<RequireQualifiedAccess>]
+    module CallSiteTransition =
+        /// The namespace every calling-convention modifier lives in; CoreCLR's
+        /// `CMOD_CALLCONV_NAMESPACE`, and the first thing it compares (callconvbuilder.cpp).
+        let private callConvNamespace = "System.Runtime.CompilerServices"
+
+        /// Is this custom modifier `CallConvSuppressGCTransition`?
+        ///
+        /// `resolveTypeDefName` names a modifier the signature gives as a TypeDef, which needs the
+        /// owning module's tables. CoreCLR resolves both forms —
+        /// `GetNameOfTypeRefOrDef(pModule, tk, ...)` — and *ignores* a modifier it cannot name
+        /// rather than failing, so `None` lands on the same "not this one" as an unrelated
+        /// modifier. Erroring here instead would crash on a legal call that merely carries a
+        /// modifier we do not recognise.
+        ///
+        /// Same accepted risk as the rest of PawPrint's well-known-type matching: this compares
+        /// namespace and name without checking that the type resolves to corelib's.
+        let private isSuppressGcTransition
+            (resolveTypeDefName : ResolvedTypeIdentity -> (string * string) option)
+            (modifier : TypeDefn)
+            : bool
+            =
+            let named =
+                match modifier with
+                | TypeDefn.FromReference (typeRef, _) -> Some (typeRef.Namespace, typeRef.Name)
+                | TypeDefn.FromDefinition (identity, _) -> resolveTypeDefName identity
+                | _ -> None
+
+            match named with
+            | Some (ns, name) -> ns = callConvNamespace && name = "CallConvSuppressGCTransition"
+            | None -> false
+
+        /// The whole signature, not just its header: `delegate* unmanaged[SuppressGCTransition]<...>`
+        /// carries the *same* `Unmanaged` header as a plain `delegate* unmanaged<...>` and differs
+        /// only by a `modopt` on the return type (measured: `09 01 08 08` against
+        /// `09 01 20 49 08 08`), so a classifier reading the header alone would call the two the
+        /// same thing.
+        ///
+        /// This follows CoreCLR's own algorithm rather than an approximation of it, because each
+        /// place the two could differ is a call PawPrint would refuse and .NET would run:
+        ///
+        ///  * only the `Unmanaged` (0x09) header consults modifiers at all. A legacy header names
+        ///    its convention outright, and `getUnmanagedCallConv` (jitinterface.cpp) returns it
+        ///    without ever calling `TryGetUnmanagedCallingConventionFromModOpt`;
+        ///  * only *optional* modifiers count. The parser skips required ones outright
+        ///    (`if (!fIsOptional) continue;`, callconvbuilder.cpp), so a
+        ///    `modreq(CallConvSuppressGCTransition)` suppresses nothing.
+        let ofCallSiteSignature
+            (resolveTypeDefName : ResolvedTypeIdentity -> (string * string) option)
+            (signature : TypeMethodSignature<TypeDefn>)
+            : CallSiteTransition
+            =
+            match signature.Header.Get.CallingConvention with
+            | SignatureCallingConvention.Default
+            | SignatureCallingConvention.VarArgs -> CallSiteTransition.StaysCooperative
+            | SignatureCallingConvention.CDecl
+            | SignatureCallingConvention.StdCall
+            | SignatureCallingConvention.ThisCall
+            | SignatureCallingConvention.FastCall -> CallSiteTransition.EntersPreemptive
+            | SignatureCallingConvention.Unmanaged ->
+                // Only the outermost run of modifiers describes the call site; one nested inside
+                // the return type (`int32 modopt(X)[]`) is about that type, not the transition.
+                let rec suppresses (ty : TypeDefn) : bool =
+                    match ty with
+                    | TypeDefn.Modified modified ->
+                        (not modified.IsRequired
+                         && isSuppressGcTransition resolveTypeDefName modified.Modifier)
+                        || suppresses modified.Unmodified
+                    | _ -> false
+
+                match signature.ReturnType with
+                // An unmodified void return carries no modifiers to inspect. A *modified* one
+                // lands in `Returns` even when what it modifies is void, which is where the walk
+                // above finds it.
+                | MethodReturnType.Void -> CallSiteTransition.EntersPreemptive
+                | MethodReturnType.Returns returnType ->
+                    if suppresses returnType then
+                        CallSiteTransition.StaysCooperative
+                    else
+                        CallSiteTransition.EntersPreemptive
+            | other ->
+                failwith
+                    $"call site declares calling convention %O{other}, which is not one ECMA-335 II.23.2.3 admits for a method signature; refusing to guess whether the thread leaves cooperative mode"
+
+    /// The fatal error that entering <paramref name="method"/> raises, or `None` when the entry is
+    /// legal.
+    ///
+    /// A `[UnmanagedCallersOnly]` method may be entered only from native code. CoreCLR compiles one
+    /// with `CORJIT_FLAG_REVERSE_PINVOKE`, whose prologue performs a reverse-P/Invoke transition
+    /// asserting *preemptive* GC mode; a thread that is still cooperative trips
+    /// `ReversePInvokeBadTransition` (dllimportcallback.cpp) and the process goes down uncatchably.
+    ///
+    /// One-directional deliberately: a *transitioning* entry into a method that is not
+    /// `[UnmanagedCallersOnly]` is undefined behaviour in real .NET rather than a diagnosed error,
+    /// so there is no answer to be faithful to and none is invented.
+    ///
+    /// This is a rule about *entering a method*, not about calling one, which is why it lives here
+    /// rather than inside `callMethodWithCommitment`: a thread's entry point is entered without any
+    /// call instruction, and `sourcesImpure/UnmanagedCallersOnlyThreadStart.cs` is that route.
+    /// Every caller must apply it before anything the callee could observe — real .NET refuses the
+    /// entry *without* running the declaring type's static constructor, which
+    /// `sourcesImpure/UnmanagedCallersOnlyCctorNotRun.cs` pins.
+    ///
+    /// The places a method gets entered, and what each does with this:
+    /// <list type="bullet">
+    /// <item><c>callMethodWithCommitment</c>, which every call instruction, delegate dispatch and
+    /// reflective invoke passes through — applies it;</item>
+    /// <item><c>Thread.StartInternal</c>, which builds a worker's bottom frame directly — applies
+    /// it;</item>
+    /// <item>the guest's entry point, installed by <c>Program</c> — does not. Roslyn refuses to
+    /// attribute one (CS8899), so no guest compiled from C# can present the shape; an image handed
+    /// to PawPrint directly could, and what CoreCLR does with it is unmeasured. See
+    /// docs/divergences.md;</item>
+    /// <item><c>AppContextSeed</c> and <c>SignalDispatch</c>, which likewise build frames directly
+    /// — do not, because neither lets the guest choose the method: the first names BCL methods, and
+    /// a signal handler takes a <c>PosixSignalContext</c>, whose non-blittability makes the
+    /// attribute illegal on it (CS8894).</item>
+    /// </list>
+    let unmanagedCallersOnlyRefusal
+        (transition : CallSiteTransition)
+        (method : WoofWare.PawPrint.MethodInfo<'a, 'b, 'c>)
+        : FatalError option
+        =
+        match transition with
+        | CallSiteTransition.EntersPreemptive -> None
+        | CallSiteTransition.StaysCooperative ->
+            if MethodInfo.isUnmanagedCallersOnly method then
+                {
+                    Code = FatalErrorCode.ExecutionEngine
+                    // CoreCLR's own wording, extended with the method it refused: the guest cannot
+                    // observe either way, and a run that ends this way should say what ended it.
+                    Message =
+                        Some
+                            $"Invalid Program: attempted to call a UnmanagedCallersOnly method from managed code. (%s{MethodOwner.describe method.Owner}::%s{method.Name})"
+                }
+                |> Some
+            else
+                None
+
     let rec callMethodWithCommitment
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1663,6 +1829,7 @@ module IlMachineStateExecution =
         (performInterfaceResolution : bool)
         (wasClassConstructor : bool)
         (advanceProgramCounterOfCaller : bool)
+        (callSiteTransition : CallSiteTransition)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (thread : ThreadId)
@@ -1714,6 +1881,20 @@ module IlMachineStateExecution =
                 state, resolved |> Option.defaultValue methodToCall
             else
                 state, methodToCall
+
+        // Keyed on the call site, not on the target alone -- the target is perfectly legal to
+        // enter. `sourcesPure/UnmanagedCallersOnlyFunctionPointer.cs` calls this very method
+        // through a `delegate* unmanaged<int, int>` and must keep working, and
+        // `sourcesImpure/UnmanagedCallersOnlyManagedCalli.cs` is the same method reached by a
+        // *managed* `calli`, which must not. When `Marshal.GetDelegateForFunctionPointer` lands, a
+        // delegate wrapping such a method's native pointer is likewise a host-initiated entry and
+        // must be given a transitioning call site rather than arriving here as cooperative.
+        //
+        // Before the callee's class initialiser is armed, and before anything else the callee could
+        // observe; see `unmanagedCallersOnlyRefusal`.
+        match unmanagedCallersOnlyRefusal callSiteTransition methodToCall with
+        | Some fatal -> state, CallCommitment.Aborted fatal
+        | None ->
 
         let declaringAssy =
             match state.LoadedAssembly methodToCall.DeclaringAssemblyFullName with
@@ -2341,6 +2522,13 @@ module IlMachineStateExecution =
             performInterfaceResolution
             wasClassConstructor
             advanceProgramCounterOfCaller
+            // Every caller of this wrapper is interpreter-internal machinery entering a method the
+            // ordinary managed way: a class constructor, a delegate's constructor, a helper the
+            // interpreter itself decided to run. None of them leaves cooperative mode, so a target
+            // carrying `[UnmanagedCallersOnly]` is refused here just as it would be at a `call` --
+            // and the wrapper's own guard below then fails loudly, because such a caller has no way
+            // to propagate the abort.
+            CallSiteTransition.StaysCooperative
             methodGenerics
             methodToCall
             thread
@@ -2355,13 +2543,20 @@ module IlMachineStateExecution =
             | _, CallCommitment.Aborted fatal ->
                 // This wrapper's return type has nowhere to put an abort, and dropping one would
                 // let the caller carry on against a state whose process has already died. Its
-                // remaining callers all name a constructor or a specific non-refusable BCL method,
-                // none of which the chokepoint can refuse; a call site that gains a refusable
-                // target must use `callMethodWithCommitment` and propagate.
+                // callers all name a constructor, a class initialiser, or a specific BCL method,
+                // and no guest that compiles can point any of those at a `[UnmanagedCallersOnly]`
+                // method: C# admits the attribute only on ordinary method declarations (CS0592
+                // rejects it on a static constructor), and the BCL targets are ours to choose.
+                //
+                // So reaching here means metadata PawPrint has no answer for, not a wrong call-site
+                // choice — and CoreCLR's behaviour when its *own* machinery enters such a method is
+                // not something we have been able to measure. Refuse rather than guess; see
+                // docs/divergences.md, "`[UnmanagedCallersOnly]` declarations and unmanaged call
+                // sites are not validated".
                 let message = fatal.Message |> Option.defaultValue "<no message>"
 
                 failwith
-                    $"logic error: a call made through `callMethod` aborted the process (%O{fatal.Code}: %s{message}); that wrapper discards the commitment, so a call site whose target can be refused must use `callMethodWithCommitment`"
+                    $"a call made through `callMethod` aborted the process (%O{fatal.Code}: %s{message}). PawPrint cannot say what should happen here: this wrapper serves the interpreter's own entries — class initialisers, constructors, chosen BCL helpers — and it is unmeasured whether CoreCLR applies the reverse-P/Invoke transition to those at all. A guest cannot produce this; hand-authored metadata can"
 
     and loadClass
         (loggerFactory : ILoggerFactory)

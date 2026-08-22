@@ -420,6 +420,7 @@ module AbstractMachine =
                     false
                     false
                     false
+                    IlMachineStateExecution.CallSiteTransition.StaysCooperative
                     methodGenerics
                     methodPtr
                     thread
