@@ -123,6 +123,9 @@ class Program
         return new string(chars);
     }
 
+    /// TEMPORARY DIAGNOSTIC, to be reverted with its caller.
+    static int Rank(string s) => s == null ? 0 : s == "." ? 1 : s == ".." ? 2 : s == "z" ? 3 : 4;
+
     /// Sorted, and with the directory prefix stripped, so a comparison is about
     /// the names rather than about how the BCL composed the paths.
     static string Names(string[] entries)
@@ -222,7 +225,14 @@ class Program
             }
 
             if (CloseDir(sub) != 0) return 19;
-            if (first != "." || second != "..") return 20;
+
+            // TEMPORARY DIAGNOSTIC, to be reverted. CI (Linux) reports 20 here
+            // while macOS and a Linux container both report 0, so report *what*
+            // the stream returned rather than merely that it was unexpected.
+            // 40 + count when the count is not three; otherwise 60 + a rank for
+            // each of the first two names (0 null, 1 ".", 2 "..", 3 "z", 4 other).
+            if (count != 3) return 40 + (count > 9 ? 9 : count);
+            if (first != "." || second != "..") return 60 + Rank(first) * 5 + Rank(second);
             if (rest != "z") return 21;
 
             // 22-24: `d_type`. Measured identical on both kernels for every
