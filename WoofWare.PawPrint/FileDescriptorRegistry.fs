@@ -1531,18 +1531,27 @@ module FileDescriptorRegistry =
         }
 
     /// The driver signalled every description in `naming` (all of one
-    /// socket's descriptions, whose level is now `level`): on every port,
-    /// each registration targeting one of them becomes pending unless it
-    /// already is — or unless the signal misses its interest entirely, in
-    /// which case epoll never queues it (measured, `order6.c`: an `IN` edge
-    /// at a WRITE-only registration leaves no trace, and a later MOD to READ
-    /// enqueues fresh at MOD time). When one signal makes several
-    /// registrations pending at once they enter newest-registered first —
-    /// the socket's wait queue is LIFO (measured, `order4.c`) — and a
-    /// registration already pending keeps its place (`order2.c` row H).
+    /// socket's descriptions): on every port, each registration targeting one
+    /// of them becomes pending unless it already is. `wakeKey` is what the
+    /// waker carried, and the two kinds are both measured:
+    ///
+    ///   * a *data-ready* wake carries its condition as a key, and a
+    ///     registration whose interest misses it entirely is never queued
+    ///     (`order6.c`: an IN edge at a WRITE-only registration leaves no
+    ///     trace, and a later MOD to READ enqueues fresh at MOD time);
+    ///   * a *state-change* wake (a connect completing, a peer's FIN) is
+    ///     unkeyed and queues every registration regardless of interest —
+    ///     the entry keeps the wake's position through a later interest
+    ///     change, and delivery's re-poll is what filters (`order8.c`,
+    ///     `order9.c`).
+    ///
+    /// When one signal makes several registrations pending at once they enter
+    /// newest-registered first — the socket's wait queue is LIFO (measured,
+    /// `order4.c`) — and a registration already pending keeps its place
+    /// (`order2.c` row H).
     let signalSocketEventPorts
         (naming : Set<OpenFileDescriptionId>)
-        (level : Lazy<EpollReadiness>)
+        (wakeKey : Lazy<EpollReadiness> option)
         (registry : FileDescriptorRegistry)
         : FileDescriptorRegistry
         =
@@ -1560,10 +1569,15 @@ module FileDescriptorRegistry =
                         |> List.filter (fun ((_, targetId as key), registration) ->
                             Set.contains targetId naming
                             && not (List.contains key portState.Ready)
-                            && not (
-                                EpollReadiness.isEmpty (
-                                    EpollReadiness.reportedUnder registration.Interest level.Value
-                                )
+                            && (
+                                match wakeKey with
+                                | None -> true
+                                | Some level ->
+                                    not (
+                                        EpollReadiness.isEmpty (
+                                            EpollReadiness.reportedUnder registration.Interest level.Value
+                                        )
+                                    )
                             )
                         )
                         |> List.sortByDescending (fun (_, registration) -> registration.RegisteredAt)

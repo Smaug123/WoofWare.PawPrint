@@ -1,13 +1,16 @@
-// Is the peer-FIN wake keyed?  ep_poll_callback skips its interest test when
-// the wake carries no key, so an unkeyed FIN would queue even a registration
-// whose interest the half-closed level misses — detectable by where a later
-// MOD finds the entry: already pending at the FIN's position, or enqueued
-// fresh at MOD time behind a newer edge.
+// Is the connect-completion wake keyed?  The completion raises OUT; a
+// registration watching IN only (whose idle HUP edge is consumed first) misses
+// that key — so if the wake is keyed the completion leaves no trace and a
+// later MOD enqueues fresh behind newer edges, and if it is unkeyed (a
+// sk_state_change wake, like the FIN's) the entry keeps the completion's
+// position.  No intermediate wait after the completion: it would consume the
+// candidate being measured.
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -27,30 +30,29 @@ int main(void) {
     struct sockaddr_in a1, a2;
     int l1 = listener(&a1), l2 = listener(&a2);
 
-    // An established pair on l1.
     int c = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    connect(c, (struct sockaddr*)&a1, sizeof a1);
-    int srv = accept(l1, NULL, NULL);
+    fcntl(c, F_SETFL, fcntl(c, F_GETFL) | O_NONBLOCK);
 
     int ep = epoll_create1(0);
     struct epoll_event ev; memset(&ev, 0, sizeof ev);
-    // c watches nothing maskable: only the implicit ERR|HUP remain.
-    ev.events = EPOLLET;           ev.data.u64 = 1; epoll_ctl(ep, EPOLL_CTL_ADD, c, &ev);
+    ev.events = EPOLLIN | EPOLLET; ev.data.u64 = 1; epoll_ctl(ep, EPOLL_CTL_ADD, c, &ev);
     ev.events = EPOLLIN | EPOLLET; ev.data.u64 = 2; epoll_ctl(ep, EPOLL_CTL_ADD, l2, &ev);
 
-    // The FIN: level becomes IN|OUT|RDHUP, none of it in c's interest. No
-    // intermediate wait — a zero-timeout epoll_wait would itself consume a
-    // stale candidate and hide exactly the thing being measured.
-    close(srv);
+    // Consume the idle ADD edge (the level's HUP is unmaskable).
+    struct epoll_event evs[8];
+    int n = epoll_wait(ep, evs, 8, 0);
+    printf("  idle drain -> %d:", n);
+    for (int i = 0; i < n; i++) printf(" data=%llu/0x%x", (unsigned long long)evs[i].data.u64, evs[i].events);
+    printf("\n");
+
+    int r = connect(c, (struct sockaddr*)&a1, sizeof a1);
+    printf("  (connect -> %d errno=%d)\n", r, errno);
     usleep(50000);
 
-    struct epoll_event evs[8];
-    int n;
-
-    // A newer edge elsewhere, then widen c's interest.
+    // A newer edge elsewhere, then widen c's interest to include OUT.
     int c2 = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     connect(c2, (struct sockaddr*)&a2, sizeof a2);
-    ev.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET; ev.data.u64 = 1;
+    ev.events = EPOLLIN | EPOLLOUT | EPOLLET; ev.data.u64 = 1;
     epoll_ctl(ep, EPOLL_CTL_MOD, c, &ev);
 
     n = epoll_wait(ep, evs, 8, 0);

@@ -4863,31 +4863,38 @@ module EmulatedKernel =
             | _ -> false
         )
 
-    /// The driver signalled `socketId`: every registration targeting one of
-    /// its descriptions becomes pending on its port, unless it already is.
+    /// A *data-ready* wake on `socketId` — the accept-queue push is the one
+    /// modelled producer. Keyed: the producer signals synchronously with the
+    /// state change, so the socket's new level is the signalled mask, and a
+    /// registration whose interest misses it entirely is never queued
+    /// (measured, `order6.c`). Lazy so the level is computed only when a
+    /// registration actually targets the socket.
     ///
-    /// Call this from exactly the operations a real driver signals, which is
-    /// a measured set, not "anything that writes the socket table": the
-    /// accept-queue push, the connect resolution on the client, and the
-    /// refusal delivery's reset signal, while the completion-reporting
-    /// connect, a datagram re-target or dissolve, and `bind(2)` measurably
-    /// do not (`order3.c` rows M, N, O, P).
-    let signalSocket (socketId : SocketId) (kernel : EmulatedKernel) : EmulatedKernel =
+    /// The producers are a measured set, not "anything that writes the
+    /// socket table": a datagram re-target or dissolve, `bind(2)`, and the
+    /// completion-reporting connect measurably signal nothing at all
+    /// (`order3.c` rows N, O, P).
+    let signalSocketDataReady (socketId : SocketId) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
             FileDescriptors =
-                // The producers signal synchronously with the state change,
-                // so the socket's new level *is* the signalled mask, and
-                // filtering registrations against it is epoll's own
-                // key-against-interest test in the wake callback.
-                // Lazy so that the level is asked for only when a
-                // registration actually targets the socket: a signal can
-                // land on a phase whose readiness refuses (Darwin's Dead,
-                // reachable only under the flavour whose registration arm
-                // refuses everything), and computing it eagerly would turn
-                // an unobservable no-op signal into that refusal.
                 FileDescriptorRegistry.signalSocketEventPorts
                     (descriptionsNamingSocket socketId kernel)
-                    (lazy (epollReadiness socketId kernel))
+                    (Some (lazy (epollReadiness socketId kernel)))
+                    kernel.FileDescriptors
+        }
+
+    /// A *state-change* wake on `socketId` — a connect resolving (completion
+    /// or refusal), the refusal delivery's reset, a peer's FIN. Unkeyed:
+    /// measured (`order8.c`, `order9.c`), such a wake queues every
+    /// registration regardless of interest, the entry keeps the wake's
+    /// position through a later interest change, and delivery's re-poll does
+    /// the filtering.
+    let signalSocketStateChange (socketId : SocketId) (kernel : EmulatedKernel) : EmulatedKernel =
+        { kernel with
+            FileDescriptors =
+                FileDescriptorRegistry.signalSocketEventPorts
+                    (descriptionsNamingSocket socketId kernel)
+                    None
                     kernel.FileDescriptors
         }
 
@@ -5425,7 +5432,8 @@ module EmulatedKernel =
             // for conditions the half-closed level does not meet — records
             // nothing.
             let closed =
-                (closed, establishedSurvivors) ||> List.fold (fun k s -> signalSocket s k)
+                (closed, establishedSurvivors)
+                ||> List.fold (fun k s -> signalSocketStateChange s k)
 
             // The close may have been the last reference to an inode whose last
             // name went away earlier, which is what keeps `read` on an unlinked
@@ -5797,7 +5805,8 @@ module EmulatedKernel =
                 // its final ACK puts the child on the accept queue. The
                 // client's phase resolves in this call whether or not the
                 // syscall's own answer is deferred to EINPROGRESS.
-                let kernel = kernel |> signalSocket socketId |> signalSocket listenerId
+                let kernel =
+                    kernel |> signalSocketStateChange socketId |> signalSocketDataReady listenerId
 
                 if nonBlocking then
                     // The syscall itself still answers EINPROGRESS —
@@ -5880,7 +5889,7 @@ module EmulatedKernel =
                     // (measured separately for the deferred path, `order3.c`
                     // row M); inline delivery collapses them into this one
                     // state change, so one signal carries both.
-                    let kernel = signalSocket socketId kernel
+                    let kernel = signalSocketStateChange socketId kernel
 
                     ConnectOutcome.Failed UnixError.ECONNREFUSED, kernel
                 else
@@ -5903,7 +5912,7 @@ module EmulatedKernel =
 
                     // The error's arrival signals the client (measured,
                     // `order3.c` row M: the 0x201d edge).
-                    let kernel = signalSocket socketId kernel
+                    let kernel = signalSocketStateChange socketId kernel
 
                     ConnectOutcome.Failed UnixError.EINPROGRESS, kernel
 
@@ -5973,7 +5982,7 @@ module EmulatedKernel =
                     // The reset signals: a registered client whose error edge
                     // was already consumed sees a fresh OUT|HUP edge after
                     // the delivering connect (measured, `order3.c` row M).
-                    let kernel = signalSocket socketId kernel
+                    let kernel = signalSocketStateChange socketId kernel
 
                     ConnectOutcome.Failed UnixError.ECONNREFUSED, kernel
                 | SocketPhase.Dead ->

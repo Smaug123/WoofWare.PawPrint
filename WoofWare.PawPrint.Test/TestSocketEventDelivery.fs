@@ -602,11 +602,14 @@ module TestSocketEventDelivery =
 
         assertSound kernel
 
-    /// A survivor watched only for conditions the half-closed level does not
-    /// meet records nothing — the FIN's edge misses a CLOSE|ERROR-only
-    /// interest, since the measured level carries neither HUP nor ERR.
+    /// The FIN is a *state-change* wake, unkeyed (measured, `order8.c`): it
+    /// pends even a registration whose CLOSE|ERROR-only interest the
+    /// half-closed level misses, the entry keeps the FIN's position through
+    /// a later interest change, and delivery's re-poll is what filters — so
+    /// nothing is deliverable until the interest widens, and once it does
+    /// the entry delivers ahead of newer edges.
     [<Test>]
-    let ``a peer close misses a CLOSE-and-ERROR-only interest`` () : unit =
+    let ``a peer close pends a CLOSE-and-ERROR-only interest, which delivery filters until widened`` () : unit =
         let portFd, portId, kernel = addPort EmulatedKernel.initial
         let _, listenerId, kernel = addListener 5000us kernel
         let clientFd, clientId, kernel = addStream kernel
@@ -631,13 +634,14 @@ module TestSocketEventDelivery =
             | Ok kernel -> kernel
             | Error error -> failwith $"close failed: %O{error}"
 
-        readyOf portId kernel |> shouldEqual []
+        // Pending — the unkeyed wake queued it — but not deliverable: the
+        // re-poll reports nothing under CLOSE|ERROR against a level with
+        // neither.
+        readyOf portId kernel |> List.length |> shouldEqual 1
         EmulatedKernel.hasDeliverableSocketEvents portId kernel |> shouldEqual false
 
-        // The missed FIN leaves no trace at all (measured, `order8.c`): a
-        // newer edge elsewhere followed by a MOD widening the interest
-        // delivers the newer edge first — the MOD enqueues fresh, it does
-        // not resurface the FIN at its original position.
+        // A newer edge elsewhere, then the widening MOD: the FIN's entry
+        // keeps its earlier position and delivers first (`order8.c`).
         let listener2Fd, _, kernel = addListener 5001us kernel
         let _, c2, kernel = addStream kernel
         let kernel = register portFd listener2Fd 9UL kernel
@@ -655,7 +659,7 @@ module TestSocketEventDelivery =
             | Error error -> failwith $"modify failed: %O{error}"
 
         let delivered, kernel = EmulatedKernel.deliverSocketEvents portId 8 kernel
-        dataOf delivered |> shouldEqual [ 9UL ; 5UL ]
+        dataOf delivered |> shouldEqual [ 5UL ; 9UL ]
         assertSound kernel
 
     /// An unregistered peer close proceeds, and a later ADD of the survivor
