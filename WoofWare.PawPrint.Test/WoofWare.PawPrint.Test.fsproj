@@ -225,6 +225,7 @@
     <Compile Include="TestImpureCases.fs" />
     <Compile Include="TestRaces.fs" />
     <Compile Include="TestConcurrencyBugs.fs" />
+    <Compile Include="TestRetireStep.fs" />
     <Compile Include="TestClockJitter.fs" />
     <Compile Include="TestClockJitterFindsBugs.fs" />
     <Compile Include="TestScheduleFork.fs" />

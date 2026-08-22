@@ -414,8 +414,62 @@ type VirtualDispatchProgramBenchmarks () =
 
 
 module Program =
+    /// `--profile <stack|refarg|virt> <guestIterations> <reps>`: run one benchmark guest in *this*
+    /// process, with no BenchmarkDotNet around it, and report milliseconds per repetition.
+    ///
+    /// It exists because BenchmarkDotNet answers "how long" but not "doing what". Attaching a
+    /// sampling or allocation profiler to a `BenchmarkSwitcher` run means attaching it to the host,
+    /// which then spawns a per-benchmark child process that does the actual work; this entry point
+    /// is the guest work with nothing in front of it, so `dotnet-trace collect -- dotnet
+    /// WoofWare.PawPrint.Performance.dll --profile ...` profiles the interpreter directly.
+    ///
+    /// Varying `guestIterations` also separates the two costs the fixed-`Params` benchmarks report
+    /// as one number: a run at zero iterations is startup alone (loading CoreLib, pumping its
+    /// `.cctor`s, reaching and returning from `Main`), and the slope above it is steady-state
+    /// interpretation. On this machine that split is roughly 71ms fixed against ~65µs per guest
+    /// loop iteration, so at the benchmarks' 4096 iterations startup is about a fifth of the total
+    /// — worth knowing before concluding that a change to the instruction loop did nothing.
+    ///
+    /// The exit-code check `Harness.setUp` performs still runs, so a profiling run that silently
+    /// interpreted the guest wrongly fails rather than reporting a fast wrong number.
+    let private profile (guest : string) (guestIterations : int) (reps : int) : int =
+        let sourceName, source =
+            match guest with
+            | "stack" -> "Profile.StackHeavy.cs", GuestPrograms.stackHeavy guestIterations
+            | "refarg" -> "Profile.ReferenceArgHeavy.cs", GuestPrograms.referenceArgHeavy guestIterations
+            | "virt" -> "Profile.VirtualDispatchHeavy.cs", GuestPrograms.virtualDispatchHeavy guestIterations
+            | other -> failwith $"Unknown profile guest %s{other}; expected stack, refarg or virt"
+
+        // Rejected rather than tolerated: with `reps` at zero the loop below runs nothing and the
+        // division reports `Infinity`, which is a successful exit carrying a meaningless number —
+        // exactly the shape of result a profiling run must never produce quietly.
+        if reps < 1 then
+            failwith $"--profile needs at least one repetition to time; got %d{reps}"
+
+        let image, expected, dirs = Harness.setUp sourceName source
+        eprintfn $"[profile] warm-up done, expected exit code %d{expected}; running %d{reps} reps"
+
+        let mutable acc = 0
+        let sw = Diagnostics.Stopwatch.StartNew ()
+
+        for _ in 1..reps do
+            acc <- acc + Harness.runPawPrint sourceName image dirs
+
+        sw.Stop ()
+
+        let perRep = sw.Elapsed.TotalMilliseconds / float reps
+
+        eprintfn
+            $"[profile] guest=%s{guest} iters=%d{guestIterations} reps=%d{reps} perRep=%.2f{perRep}ms checksum=%d{acc}"
+
+        0
+
     [<EntryPoint>]
     let main (args : string[]) : int =
+        match args with
+        | [| "--profile" ; guest ; guestIterations ; reps |] -> profile guest (int guestIterations) (int reps)
+        | _ ->
+
         BenchmarkSwitcher.FromAssembly(typeof<StackHeavyProgramBenchmarks>.Assembly).Run args
         |> ignore
 
