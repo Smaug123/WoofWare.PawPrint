@@ -128,6 +128,7 @@ runtime version) that shape delivery:
 | Q | peer close on an established pair | **signals**, with mask 0x2005 |
 | R | one edge, two registrations of the same socket (via `dup`) on one port | delivered in **reverse registration order** (the socket's wait-queue is LIFO), whichever fd is which |
 | S | as R, with a MOD of the first-registered entry before the edge | order unchanged — MOD does not move a registration's place in the tie (`order5.c`) |
+| T | an edge that misses a registration's interest entirely (IN at a WRITE-only entry), then a MOD to an interest the level meets | the missed edge queues **nothing**; the MOD enqueues fresh at MOD time, behind everything queued since (`order6.c`) — so the signal must filter by the registration's reported mask, not queue unconditionally |
 
 Rows N/O/P answer the chokepoint question from option 1 in the negative twice
 over: not only is there no single function through which `Sockets` writes pass
@@ -144,6 +145,20 @@ so `closeFd` must refuse when the description being destroyed is the last onto a
 socket whose connection's *other* end is registered with any event port. With no
 registration there is no observer (no receive path exists yet), so the sweep in
 #1125's close path is otherwise unchanged.
+
+Two facts a Codex review round surfaced, then settled by reasoning about the
+in-flight syscall (each with its own oracle-validated observer):
+
+- `epoll_wait` uses the `maxevents` it was *entered* with; a guest overwriting
+  the count cell mid-park changes nothing. The park therefore captures the
+  count (`EmulatedKernel.ParkedSocketWaitCounts`) and re-entry consumes it in
+  place of a re-read — pinned by `SocketEventWaitCountCapture.cs`, which
+  overwrites the cell with the fatal-if-re-read 0 while the waiter is parked.
+- a real `close(2)` does not end an in-flight `epoll_wait`: the syscall holds
+  a file reference, so the port and its registrations stay alive for it and a
+  later edge can still complete the wait. PawPrint's close would sweep the
+  description and strand the waiter, so destroying the last descriptor of a
+  parked-on port refuses instead (retention is the unmodelled state).
 
 ## Options considered
 

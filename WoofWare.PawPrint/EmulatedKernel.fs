@@ -2831,51 +2831,6 @@ type TcpConnection =
         ServerAddress : InternetEndpoint
     }
 
-/// A set of epoll conditions — a readiness level a descriptor presents, or
-/// the subset of one that a registration reports. Named in epoll's terms
-/// rather than the PAL's `SocketEvents` because the two disagree at delivery:
-/// the PAL folds `EPOLLHUP` into `EPOLLIN|EPOLLOUT` before converting, so
-/// `Hup` here does not correspond to a deliverable `SA_CLOSE`.
-type EpollReadiness =
-    {
-        /// `EPOLLIN`.
-        In : bool
-        /// `EPOLLOUT`.
-        Out : bool
-        /// `EPOLLRDHUP`.
-        RdHup : bool
-        /// `EPOLLHUP`.
-        Hup : bool
-        /// `EPOLLERR`.
-        Err : bool
-    }
-
-[<RequireQualifiedAccess>]
-module EpollReadiness =
-    let none : EpollReadiness =
-        {
-            In = false
-            Out = false
-            RdHup = false
-            Hup = false
-            Err = false
-        }
-
-    let isEmpty (readiness : EpollReadiness) : bool = readiness = none
-
-    /// The subset of `level` a registration with `interest` reports: `IN`,
-    /// `OUT` and `RDHUP` only when asked for, `ERR` and `HUP` always —
-    /// epoll ignores those two bits in an interest set (measured: a pending
-    /// refusal registered with interest 0 still reports `ERR|HUP`).
-    let reportedUnder (interest : SocketEventInterest) (level : EpollReadiness) : EpollReadiness =
-        {
-            In = level.In && interest.Read
-            Out = level.Out && interest.Write
-            RdHup = level.RdHup && interest.ReadClose
-            Hup = level.Hup
-            Err = level.Err
-        }
-
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
 /// syscall-emulation state: the per-thread last-error registers, the native
 /// heap pool backing `Marshal.AllocHGlobal`, the Unix file-descriptor table,
@@ -2949,6 +2904,15 @@ type EmulatedKernel =
         /// commits, so a failed `epoll_ctl` leaves the kernel exactly as it
         /// found it.
         NextSocketEventRegistrationOrdinal : int64
+        /// The `maxevents` each thread parked in
+        /// `SystemNative_WaitForSocketEvents` entered its wait with. A real
+        /// `epoll_wait` keeps using the value it was passed even if the
+        /// guest overwrites the count cell mid-wait, so the woken handler
+        /// must consume this rather than re-read the cell. An entry exists
+        /// exactly while its thread's status is `BlockedOnSocketEvents`:
+        /// the handler stores it at park and removes it at delivery, so an
+        /// absent key means a first entry into the wait.
+        ParkedSocketWaitCounts : Map<ThreadId, int>
         /// The port a `bind(2)` of port 0 will try first.
         ///
         /// A counter rather than a draw from the seeded PRNG. Which port an
@@ -3744,6 +3708,7 @@ module EmulatedKernel =
             Connections = Map.empty
             NextConnectionId = ConnectionId 0L
             NextSocketEventRegistrationOrdinal = 0L
+            ParkedSocketWaitCounts = Map.empty
             NextSocketId = SocketId 0L
             NextEphemeralPort = fst defaultEphemeralPortRange
             EphemeralPortRange = defaultEphemeralPortRange
@@ -4888,8 +4853,19 @@ module EmulatedKernel =
     let signalSocket (socketId : SocketId) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
             FileDescriptors =
+                // The producers signal synchronously with the state change,
+                // so the socket's new level *is* the signalled mask, and
+                // filtering registrations against it is epoll's own
+                // key-against-interest test in the wake callback.
+                // Lazy so that the level is asked for only when a
+                // registration actually targets the socket: a signal can
+                // land on a phase whose readiness refuses (Darwin's Dead,
+                // reachable only under the flavour whose registration arm
+                // refuses everything), and computing it eagerly would turn
+                // an unobservable no-op signal into that refusal.
                 FileDescriptorRegistry.signalSocketEventPorts
                     (descriptionsNamingSocket socketId kernel)
+                    (lazy (epollReadiness socketId kernel))
                     kernel.FileDescriptors
         }
 

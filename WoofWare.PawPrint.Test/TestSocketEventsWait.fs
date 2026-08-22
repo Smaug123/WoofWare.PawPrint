@@ -290,6 +290,80 @@ class TwoWaitersOnOnePort
         exc.Message
         |> shouldContainText "are all parked in SystemNative_WaitForSocketEvents"
 
+    /// A waiter parked on a port whose last descriptor the entry thread then closes.
+    let private closesParkedPortSource : string =
+        """
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+class ClosesAParkedPort
+{
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_CreateSocketEventPort")]
+    static extern unsafe int CreateSocketEventPort(IntPtr* port);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Close")]
+    static extern int Close(IntPtr fd);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_WaitForSocketEvents")]
+    static extern unsafe int WaitForSocketEvents(IntPtr port, byte* buffer, int* count);
+
+    static IntPtr Port;
+
+    static unsafe void Waiter()
+    {
+        byte* buffer = stackalloc byte[32];
+        int count = 1;
+        WaitForSocketEvents(Port, buffer, &count);
+    }
+
+    static unsafe int Main()
+    {
+        IntPtr port;
+        if (CreateSocketEventPort(&port) != 0) return 1;
+        Port = port;
+        new Thread(Waiter) { IsBackground = true }.Start();
+        Thread.Sleep(100);
+        Close(port);
+        return 2;
+    }
+}
+"""
+
+    /// A real `close(2)` does not end an in-flight `epoll_wait` — the syscall holds a
+    /// file reference, so the port and its registrations stay alive for it and a later
+    /// edge can still complete the wait. PawPrint's close sweeps the description away,
+    /// which would strand the waiter in a sleep a real kernel can end, so the close
+    /// refuses instead. A `dup` of the port would survive the close and needs no
+    /// refusal; this is only about the last descriptor.
+    [<Test>]
+    let ``closing the last descriptor of a parked-on port refuses`` () : unit =
+        let image = Roslyn.compile [ closesParkedPortSource ]
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "ClosesAParkedPort.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+
+        use peImage = new MemoryStream (image)
+
+        let exc =
+            Assert.Throws<GuestFailureException> (fun () ->
+                BoundedRun.runWith
+                    loggerFactory
+                    BoundedRun.defaultMaxSteps
+                    "ClosesAParkedPort.cs"
+                    (Some "ClosesAParkedPort.cs")
+                    peImage
+                    (HostConfig.Default dotnetRuntimes)
+                |> ignore<RunOutcome>
+            )
+
+        exc.Message |> shouldContainText "Implement port retention"
+
     /// A waiter parked on a registered-but-unready listener, and an entry thread whose
     /// 200 ms join resolves only through the jump-to-deadline fallback — which exists
     /// exactly while the waiter *stays* parked.

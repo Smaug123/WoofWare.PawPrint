@@ -412,6 +412,36 @@ module NativeSystemNative =
 
         state
 
+    /// `close(2)` destroying a socket event port a thread is parked on is
+    /// unmodelled, so refuse before letting the close proceed. A real close
+    /// does not end an in-flight `epoll_wait`: the syscall entered holding a
+    /// file reference, so the port and its registrations stay alive for it,
+    /// and a later readiness edge can still complete the wait — retention
+    /// PawPrint's descriptor table does not represent (the close sweeps the
+    /// description away, which would strand the waiter in a sleep a real
+    /// kernel can end). No managed caller closes a port out from under its
+    /// own engine thread. Closing a `dup` while the description survives is
+    /// fine, as is destroying a port nothing waits on.
+    let private refuseDestroyingParkedPort (operation : string) (fd : int) (state : IlMachineState) : unit =
+        match FileDescriptorRegistry.tryFindWithId fd state.Kernel.FileDescriptors with
+        | None -> ()
+        | Some (portId, description) ->
+
+        match description.Target with
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.File _
+        | OpenFileTarget.Socket _ -> ()
+        | OpenFileTarget.SocketEventPort _ ->
+
+        if FileDescriptorRegistry.closeWouldDestroy fd state.Kernel.FileDescriptors = Some true then
+            let parked =
+                state.ThreadState
+                |> Map.exists (fun _ ts -> ts.Status = ThreadStatus.BlockedOnSocketEvents portId)
+
+            if parked then
+                failwith
+                    $"%s{operation}: fd %d{fd} is the last descriptor onto socket event port %O{portId}, and a thread is parked in SystemNative_WaitForSocketEvents on it. A real close leaves the in-flight epoll_wait holding the port — its registrations stay live and a later edge can still complete the wait — which PawPrint's descriptor table cannot represent. Implement port retention for in-flight waits before closing one out from under a waiter."
+
     /// Drain `byteCount` bytes from a caller-supplied `byte*`: the mirror of
     /// `writeBytesThrough`, with the same room requirement and the same per-byte
     /// walk.
@@ -4546,6 +4576,8 @@ module NativeSystemNative =
             // here. Per Unix convention, errno is left untouched on success.
             let fd = fdArgument "SystemNative_Close" instruction.Arguments.[0]
 
+            refuseDestroyingParkedPort "SystemNative_Close" fd state
+
             let resultCode, state =
                 match EmulatedKernel.closeFd fd state.Kernel with
                 | Ok kernel -> 0, state.MapKernel (fun _ -> kernel)
@@ -5805,6 +5837,8 @@ module NativeSystemNative =
             // left untouched on success by the same Unix convention.
             let fd = fdArgument "SystemNative_CloseSocketEventPort" instruction.Arguments.[0]
 
+            refuseDestroyingParkedPort "SystemNative_CloseSocketEventPort" fd state
+
             let error, state =
                 match EmulatedKernel.closeFd fd state.Kernel with
                 | Ok kernel -> UnixError.palSuccess, state.MapKernel (fun _ -> kernel)
@@ -6210,14 +6244,27 @@ module NativeSystemNative =
                     failwith
                         $"%s{operation}: `count` is %O{countPointer}, which is not null but names no storage. The C wrapper dereferences it in user space, so a real run would fault; PawPrint does not model that fault. Pass a real in-out parameter."
 
+            // A woken thread re-enters this handler from the top, but its wait
+            // already captured `*count` at first entry, and a real in-flight
+            // `epoll_wait` keeps using the value it was passed even if the
+            // guest has overwritten the cell since. So a park leaves the
+            // captured count in the kernel, and a re-entry consumes it in
+            // place of a re-read — which also skips the wrapper's negative
+            // screen, a check the real syscall ran once and never again.
+            let captured = Map.tryFind ctx.Thread state.Kernel.ParkedSocketWaitCounts
+
             let requestedCount =
-                let bytes = readBytesThrough ctx operation countCell 4 state
-                BinaryPrimitives.ReadInt32LittleEndian (bytes.AsSpan ())
+                match captured with
+                | Some count -> count
+                | None ->
+                    let bytes = readBytesThrough ctx operation countCell 4 state
+                    BinaryPrimitives.ReadInt32LittleEndian (bytes.AsSpan ())
 
             if requestedCount < 0 then
                 // EFAULT, which is the wrapper's own choice and neither kernel's:
                 // `epoll_wait` answers EINVAL for a non-positive `maxevents`, and
-                // never sees this value.
+                // never sees this value. Unreachable on a re-entry: a captured
+                // count was screened before the park.
                 refuseBeforeSyscall ()
             else
 
@@ -6262,7 +6309,14 @@ module NativeSystemNative =
             // own `buffer`, rather than the wake having to reach into a
             // frame it does not own from some other thread's step.
             let park (port : OpenFileDescriptionId) (state : IlMachineState) : NativeHandlerResult option =
-                Scheduler.blockOnSocketEvents ctx.Thread port state
+                // The capture that survives the park: re-entry reads this
+                // instead of the (possibly since-overwritten) count cell.
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        ParkedSocketWaitCounts = Map.add ctx.Thread requestedCount kernel.ParkedSocketWaitCounts
+                    }
+                )
+                |> Scheduler.blockOnSocketEvents ctx.Thread port
                 |> NativeHandlerResult.blockedRetainingFrame
                 |> Some
 
@@ -6319,8 +6373,13 @@ module NativeSystemNative =
                 let countBytes = Array.zeroCreate<byte> 4
                 BinaryPrimitives.WriteInt32LittleEndian (Span<byte> countBytes, List.length delivered)
 
-                // A successful wait leaves errno alone.
-                state.MapKernel (fun _ -> kernel)
+                // A successful wait leaves errno alone. The wait is over, so
+                // the captured count (if this was a re-entry) goes with it.
+                state.MapKernel (fun _ ->
+                    { kernel with
+                        ParkedSocketWaitCounts = Map.remove ctx.Thread kernel.ParkedSocketWaitCounts
+                    }
+                )
                 |> writeBytesThrough ctx operation bufferPointer (ImmutableArray.CreateRange bytes)
                 |> writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange countBytes)
                 |> IlMachineState.pushToEvalStack'

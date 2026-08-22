@@ -646,28 +646,77 @@ module TestSocketEventDelivery =
 
         assertSound kernel
 
-    /// The walk applies the interest at delivery: a pending entry whose
-    /// re-poll meets none of its interest is consumed silently.
+    /// A signal that misses a registration's interest never queues it
+    /// (measured, `order6.c`: an IN edge at a WRITE-only registration leaves
+    /// no trace), and a later MOD to an interest the level meets enqueues
+    /// fresh at MOD time — behind everything queued since the missed edge.
     [<Test>]
-    let ``an unmet interest is dropped at delivery`` () : unit =
+    let ``a signal missing the interest leaves no trace, and a later MOD enqueues fresh`` () : unit =
         let portFd, portId, kernel = addPort EmulatedKernel.initial
-        let listenerFd, _, kernel = addListener 5000us kernel
+        let l1Fd, _, kernel = addListener 5001us kernel
+        let l2Fd, _, kernel = addListener 5002us kernel
         let _, c1, kernel = addStream kernel
+        let _, c2, kernel = addStream kernel
 
-        // WRITE alone: a queued connection raises only IN, and a listener
-        // reports no ERR or HUP.
+        // l1 watches WRITE alone: a queued connection raises only IN, and a
+        // listener reports no ERR or HUP.
         let kernel =
             match
                 EmulatedKernel.changeSocketEventRegistration
                     portFd
-                    listenerFd
-                    (SocketEventRegistrationChange.Add (SocketEventInterest.ofBits "test" 0x2, 6UL))
+                    l1Fd
+                    (SocketEventRegistrationChange.Add (SocketEventInterest.ofBits "test" 0x2, 1UL))
                     kernel
             with
             | Ok kernel -> kernel
             | Error error -> failwith $"registration failed: %O{error}"
 
+        let kernel = register portFd l2Fd 2UL kernel
+
+        let _, kernel = connect c1 false (loopback 5001us) kernel
+        readyOf portId kernel |> shouldEqual []
+        EmulatedKernel.hasDeliverableSocketEvents portId kernel |> shouldEqual false
+
+        let _, kernel = connect c2 false (loopback 5002us) kernel
+
+        let kernel =
+            match
+                EmulatedKernel.changeSocketEventRegistration
+                    portFd
+                    l1Fd
+                    (SocketEventRegistrationChange.Modify (SocketEventInterest.ofBits "test" allInterest, 1UL))
+                    kernel
+            with
+            | Ok kernel -> kernel
+            | Error error -> failwith $"modify failed: %O{error}"
+
+        let delivered, kernel = EmulatedKernel.deliverSocketEvents portId 8 kernel
+        dataOf delivered |> shouldEqual [ 2UL ; 1UL ]
+        assertSound kernel
+
+    /// The walk re-applies the interest at delivery: an entry queued under a
+    /// wide interest and then narrowed while pending keeps its place (row L)
+    /// but reports nothing, and is consumed silently.
+    [<Test>]
+    let ``an interest narrowed while pending is dropped at delivery`` () : unit =
+        let portFd, portId, kernel = addPort EmulatedKernel.initial
+        let listenerFd, _, kernel = addListener 5000us kernel
+        let _, c1, kernel = addStream kernel
+        let kernel = register portFd listenerFd 6UL kernel
         let _, kernel = connect c1 false (loopback 5000us) kernel
+        readyOf portId kernel |> List.length |> shouldEqual 1
+
+        let kernel =
+            match
+                EmulatedKernel.changeSocketEventRegistration
+                    portFd
+                    listenerFd
+                    (SocketEventRegistrationChange.Modify (SocketEventInterest.ofBits "test" 0x2, 6UL))
+                    kernel
+            with
+            | Ok kernel -> kernel
+            | Error error -> failwith $"modify failed: %O{error}"
+
         readyOf portId kernel |> List.length |> shouldEqual 1
         EmulatedKernel.hasDeliverableSocketEvents portId kernel |> shouldEqual false
 

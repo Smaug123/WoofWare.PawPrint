@@ -326,6 +326,51 @@ module SocketEventInterest =
             Error = bits &&& 0x10 <> 0
         }
 
+/// A set of epoll conditions — a readiness level a descriptor presents, or
+/// the subset of one that a registration reports. Named in epoll's terms
+/// rather than the PAL's `SocketEvents` because the two disagree at delivery:
+/// the PAL folds `EPOLLHUP` into `EPOLLIN|EPOLLOUT` before converting, so
+/// `Hup` here does not correspond to a deliverable `SA_CLOSE`.
+type EpollReadiness =
+    {
+        /// `EPOLLIN`.
+        In : bool
+        /// `EPOLLOUT`.
+        Out : bool
+        /// `EPOLLRDHUP`.
+        RdHup : bool
+        /// `EPOLLHUP`.
+        Hup : bool
+        /// `EPOLLERR`.
+        Err : bool
+    }
+
+[<RequireQualifiedAccess>]
+module EpollReadiness =
+    let none : EpollReadiness =
+        {
+            In = false
+            Out = false
+            RdHup = false
+            Hup = false
+            Err = false
+        }
+
+    let isEmpty (readiness : EpollReadiness) : bool = readiness = none
+
+    /// The subset of `level` a registration with `interest` reports: `IN`,
+    /// `OUT` and `RDHUP` only when asked for, `ERR` and `HUP` always —
+    /// epoll ignores those two bits in an interest set (measured: a pending
+    /// refusal registered with interest 0 still reports `ERR|HUP`).
+    let reportedUnder (interest : SocketEventInterest) (level : EpollReadiness) : EpollReadiness =
+        {
+            In = level.In && interest.Read
+            Out = level.Out && interest.Write
+            RdHup = level.RdHup && interest.ReadClose
+            Hup = level.Hup
+            Err = level.Err
+        }
+
 /// One registration held by a socket event port: what
 /// `SystemNative_TryChangeSocketEventRegistration` recorded for one target.
 type SocketEventRegistration =
@@ -1437,6 +1482,16 @@ module FileDescriptorRegistry =
                     registry.Descriptions
         }
 
+    /// Whether closing `fd` would destroy its open file description — that
+    /// is, no other descriptor names it. `None` when `fd` is not live.
+    let closeWouldDestroy (fd : int) (registry : FileDescriptorRegistry) : bool option =
+        match Map.tryFind fd registry.Fds with
+        | None -> None
+        | Some id ->
+            registry.Fds
+            |> Map.forall (fun otherFd otherId -> otherFd = fd || otherId <> id)
+            |> Some
+
     /// Replace the ready list of the port `portId` names — delivery's
     /// write-back once a walk has consumed a prefix. Loudly partial on a
     /// dead or non-port description, on an entry the interest table does not
@@ -1486,17 +1541,18 @@ module FileDescriptorRegistry =
         }
 
     /// The driver signalled every description in `naming` (all of one
-    /// socket's descriptions): on every port, each registration targeting one
-    /// of them becomes pending unless it already is. When one signal makes
-    /// several registrations pending at once they enter newest-registered
-    /// first — the socket's wait queue is LIFO (measured, `order4.c`) — and a
+    /// socket's descriptions, whose level is now `level`): on every port,
+    /// each registration targeting one of them becomes pending unless it
+    /// already is — or unless the signal misses its interest entirely, in
+    /// which case epoll never queues it (measured, `order6.c`: an `IN` edge
+    /// at a WRITE-only registration leaves no trace, and a later MOD to READ
+    /// enqueues fresh at MOD time). When one signal makes several
+    /// registrations pending at once they enter newest-registered first —
+    /// the socket's wait queue is LIFO (measured, `order4.c`) — and a
     /// registration already pending keeps its place (`order2.c` row H).
-    ///
-    /// Unconditional on readiness: delivery re-polls every pending entry and
-    /// silently drops the ones reporting nothing, so queueing an entry whose
-    /// mask turns out empty is indistinguishable from not queueing it.
     let signalSocketEventPorts
         (naming : Set<OpenFileDescriptionId>)
+        (level : Lazy<EpollReadiness>)
         (registry : FileDescriptorRegistry)
         : FileDescriptorRegistry
         =
@@ -1511,8 +1567,14 @@ module FileDescriptorRegistry =
                     let entering =
                         portState.Registrations
                         |> Map.toList
-                        |> List.filter (fun ((_, targetId as key), _) ->
-                            Set.contains targetId naming && not (List.contains key portState.Ready)
+                        |> List.filter (fun ((_, targetId as key), registration) ->
+                            Set.contains targetId naming
+                            && not (List.contains key portState.Ready)
+                            && not (
+                                EpollReadiness.isEmpty (
+                                    EpollReadiness.reportedUnder registration.Interest level.Value
+                                )
+                            )
                         )
                         |> List.sortByDescending (fun (_, registration) -> registration.RegisteredAt)
                         |> List.map fst
