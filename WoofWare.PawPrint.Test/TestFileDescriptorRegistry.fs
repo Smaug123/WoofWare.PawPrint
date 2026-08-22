@@ -1731,7 +1731,7 @@ module TestFileDescriptorRegistry =
         : Map<int * OpenFileDescriptionId, SocketEventRegistration>
         =
         match FileDescriptorRegistry.tryFindTarget portFd registry with
-        | Some (OpenFileTarget.SocketEventPort registrations) -> registrations
+        | Some (OpenFileTarget.SocketEventPort portState) -> portState.Registrations
         | other -> failwith $"fd %d{portFd} is not a socket event port: %O{other}"
 
     let private readWrite : SocketEventInterest =
@@ -1750,7 +1750,7 @@ module TestFileDescriptorRegistry =
         (registry : FileDescriptorRegistry)
         : FileDescriptorRegistry
         =
-        match FileDescriptorRegistry.changeSocketEventRegistration portFd targetFd change registry with
+        match FileDescriptorRegistry.changeSocketEventRegistration portFd targetFd 0L change registry with
         | Ok registry -> registry
         | Error error -> failwith $"changeSocketEventRegistration failed: %O{error}"
 
@@ -1782,6 +1782,7 @@ module TestFileDescriptorRegistry =
                     {
                         Interest = readWrite
                         Data = 0xABCDUL
+                        RegisteredAt = 0L
                     }
                 ]
         )
@@ -1802,6 +1803,7 @@ module TestFileDescriptorRegistry =
                     {
                         Interest = readOnly
                         Data = 77UL
+                        RegisteredAt = 0L
                     }
                 ]
         )
@@ -1844,6 +1846,7 @@ module TestFileDescriptorRegistry =
         FileDescriptorRegistry.changeSocketEventRegistration
             dupPortFd
             sockFd
+            0L
             (SocketEventRegistrationChange.Add (readWrite, 3UL))
             registry
         |> shouldEqual (Error SocketEventRegistrationError.AlreadyRegistered)
@@ -1904,16 +1907,20 @@ module TestFileDescriptorRegistry =
                         portId,
                         {
                             Target =
-                                OpenFileTarget.SocketEventPort (
-                                    Map.ofList
-                                        [
-                                            (4, deadId),
-                                            {
-                                                Interest = readWrite
-                                                Data = 0UL
-                                            }
-                                        ]
-                                )
+                                OpenFileTarget.SocketEventPort
+                                    {
+                                        Registrations =
+                                            Map.ofList
+                                                [
+                                                    (4, deadId),
+                                                    {
+                                                        Interest = readWrite
+                                                        Data = 0UL
+                                                        RegisteredAt = 0L
+                                                    }
+                                                ]
+                                        Ready = []
+                                    }
                             AccessMode = FileAccessMode.ReadWrite
                             NonBlocking = false
                             Flock = None
@@ -1926,3 +1933,57 @@ module TestFileDescriptorRegistry =
             [
                 FileDescriptorRegistryDefect.SocketEventRegistrationTargetDead (portId, deadId)
             ]
+
+    /// A port whose ready list disagrees with its interest table: one entry
+    /// nothing registers, and one registered entry pending twice.
+    [<Test>]
+    let ``checkInvariants rejects unregistered and duplicated ready entries`` () : unit =
+        let portFd, registry =
+            FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
+
+        let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
+
+        let sockId =
+            match FileDescriptorRegistry.tryFindId sockFd registry with
+            | Some id -> id
+            | None -> failwith "socket fd not live"
+
+        let portId =
+            match FileDescriptorRegistry.tryFindId portFd registry with
+            | Some id -> id
+            | None -> failwith "port fd not live"
+
+        let registry =
+            change portFd sockFd (SocketEventRegistrationChange.Add (readWrite, 1UL)) registry
+
+        let withReady (ready : (int * OpenFileDescriptionId) list) : FileDescriptorRegistry =
+            FileDescriptorRegistry.Unchecked.mapDescription
+                portId
+                (fun description ->
+                    match description.Target with
+                    | OpenFileTarget.SocketEventPort portState ->
+                        { description with
+                            Target =
+                                OpenFileTarget.SocketEventPort
+                                    { portState with
+                                        Ready = ready
+                                    }
+                        }
+                    | other -> failwith $"not a port: %O{other}"
+                )
+                registry
+
+        FileDescriptorRegistry.checkInvariants (withReady [ 7, OpenFileDescriptionId 55L ])
+        |> shouldEqual
+            [
+                FileDescriptorRegistryDefect.SocketEventReadyEntryUnregistered (portId, 7, OpenFileDescriptionId 55L)
+            ]
+
+        FileDescriptorRegistry.checkInvariants (withReady [ sockFd, sockId ; sockFd, sockId ])
+        |> shouldEqual
+            [
+                FileDescriptorRegistryDefect.SocketEventReadyEntryDuplicated (portId, sockFd, sockId)
+            ]
+
+        FileDescriptorRegistry.checkInvariants (withReady [ sockFd, sockId ])
+        |> shouldEqual []
