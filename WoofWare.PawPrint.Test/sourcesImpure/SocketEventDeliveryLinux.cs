@@ -222,14 +222,20 @@ class SocketEventDeliveryLinux
                 if (TryChange(port, l2, 0, SA_READ, (IntPtr)2) != PAL_SUCCESS) return 34;
                 byte* first = firstIsL1 == 1 ? a1 : a2;
                 byte* second = firstIsL1 == 1 ? a2 : a1;
-                if (ConnectOne(first) == (IntPtr)(-1)) return 35;
-                if (ConnectOne(second) == (IntPtr)(-1)) return 36;
+                IntPtr cc1 = ConnectOne(first);
+                if (cc1 == (IntPtr)(-1)) return 35;
+                IntPtr cc2 = ConnectOne(second);
+                if (cc2 == (IntPtr)(-1)) return 36;
                 int count = 8;
                 if (WaitForSocketEvents(port, buffer, &count) != PAL_SUCCESS || count != 2) return 37;
                 ulong expectedFirst = firstIsL1 == 1 ? 1UL : 2UL;
                 ulong expectedSecond = firstIsL1 == 1 ? 2UL : 1UL;
                 if (DataAt(buffer, 0) != expectedFirst) return 38;
                 if (DataAt(buffer, 1) != expectedSecond) return 39;
+                // Clients first: closing a listener over a live unaccepted
+                // client leaves that client RST'd, a state PawPrint refuses
+                // to invent.
+                if (Close(cc1) != PAL_SUCCESS || Close(cc2) != PAL_SUCCESS) return 40;
                 if (Close(l1) != PAL_SUCCESS || Close(l2) != PAL_SUCCESS || Close(port) != PAL_SUCCESS) return 40;
             }
 
@@ -244,13 +250,17 @@ class SocketEventDeliveryLinux
                 if (l1 == (IntPtr)(-1) || l2 == (IntPtr)(-1)) return 42;
                 if (TryChange(port, l1, 0, SA_READ, (IntPtr)1) != PAL_SUCCESS) return 43;
                 if (TryChange(port, l2, 0, SA_READ, (IntPtr)2) != PAL_SUCCESS) return 44;
-                if (ConnectOne(a2) == (IntPtr)(-1)) return 45;
-                if (ConnectOne(a1) == (IntPtr)(-1)) return 46;
-                if (ConnectOne(a2) == (IntPtr)(-1)) return 47;
+                IntPtr hc1 = ConnectOne(a2);
+                if (hc1 == (IntPtr)(-1)) return 45;
+                IntPtr hc2 = ConnectOne(a1);
+                if (hc2 == (IntPtr)(-1)) return 46;
+                IntPtr hc3 = ConnectOne(a2);
+                if (hc3 == (IntPtr)(-1)) return 47;
                 int count = 8;
                 if (WaitForSocketEvents(port, buffer, &count) != PAL_SUCCESS || count != 2) return 48;
                 if (DataAt(buffer, 0) != 2UL) return 49;
                 if (DataAt(buffer, 1) != 1UL) return 50;
+                if (Close(hc1) != PAL_SUCCESS || Close(hc2) != PAL_SUCCESS || Close(hc3) != PAL_SUCCESS) return 51;
                 if (Close(l1) != PAL_SUCCESS || Close(l2) != PAL_SUCCESS || Close(port) != PAL_SUCCESS) return 51;
             }
 
@@ -264,13 +274,16 @@ class SocketEventDeliveryLinux
                 IntPtr l2 = MakeListener(a2);
                 if (l1 == (IntPtr)(-1) || l2 == (IntPtr)(-1)) return 53;
                 if (TryChange(port, l1, 0, SA_READ, (IntPtr)1) != PAL_SUCCESS) return 54;
-                if (ConnectOne(a2) == (IntPtr)(-1)) return 55;
-                if (ConnectOne(a1) == (IntPtr)(-1)) return 56;
+                IntPtr ic1 = ConnectOne(a2);
+                if (ic1 == (IntPtr)(-1)) return 55;
+                IntPtr ic2 = ConnectOne(a1);
+                if (ic2 == (IntPtr)(-1)) return 56;
                 if (TryChange(port, l2, 0, SA_READ, (IntPtr)2) != PAL_SUCCESS) return 57;
                 int count = 8;
                 if (WaitForSocketEvents(port, buffer, &count) != PAL_SUCCESS || count != 2) return 58;
                 if (DataAt(buffer, 0) != 1UL) return 59;
                 if (DataAt(buffer, 1) != 2UL) return 60;
+                if (Close(ic1) != PAL_SUCCESS || Close(ic2) != PAL_SUCCESS) return 61;
                 if (Close(l1) != PAL_SUCCESS || Close(l2) != PAL_SUCCESS || Close(port) != PAL_SUCCESS) return 61;
             }
 
@@ -295,13 +308,15 @@ class SocketEventDeliveryLinux
                     if (TryChange(port, d1, 0, SA_READ, (IntPtr)2) != PAL_SUCCESS) return 65;
                     if (TryChange(port, l1, 0, SA_READ, (IntPtr)1) != PAL_SUCCESS) return 66;
                 }
-                if (ConnectOne(a1) == (IntPtr)(-1)) return 67;
+                IntPtr rc1 = ConnectOne(a1);
+                if (rc1 == (IntPtr)(-1)) return 67;
                 int count = 8;
                 if (WaitForSocketEvents(port, buffer, &count) != PAL_SUCCESS || count != 2) return 68;
                 ulong newest = originalFirst == 1 ? 2UL : 1UL;
                 ulong oldest = originalFirst == 1 ? 1UL : 2UL;
                 if (DataAt(buffer, 0) != newest) return 69;
                 if (DataAt(buffer, 1) != oldest) return 70;
+                if (Close(rc1) != PAL_SUCCESS) return 71;
                 if (Close(l1) != PAL_SUCCESS || Close(d1) != PAL_SUCCESS || Close(port) != PAL_SUCCESS) return 71;
             }
         }
@@ -321,11 +336,14 @@ class SocketEventDeliveryLinux
             // dropped at delivery.
             if (TryChange(port, l1, 0, SA_WRITE, (IntPtr)1) != PAL_SUCCESS) return 74;
             if (TryChange(port, l2, 0, SA_READ, (IntPtr)2) != PAL_SUCCESS) return 75;
-            if (ConnectOne(a1) == (IntPtr)(-1)) return 76;
-            if (ConnectOne(a2) == (IntPtr)(-1)) return 77;
+            IntPtr uc1 = ConnectOne(a1);
+            if (uc1 == (IntPtr)(-1)) return 76;
+            IntPtr uc2 = ConnectOne(a2);
+            if (uc2 == (IntPtr)(-1)) return 77;
             int count = 8;
             if (WaitForSocketEvents(port, buffer, &count) != PAL_SUCCESS || count != 1) return 78;
             if (DataAt(buffer, 0) != 2UL) return 79;
+            if (Close(uc1) != PAL_SUCCESS || Close(uc2) != PAL_SUCCESS) return 80;
             if (Close(l1) != PAL_SUCCESS || Close(l2) != PAL_SUCCESS || Close(port) != PAL_SUCCESS) return 80;
         }
 
@@ -343,9 +361,12 @@ class SocketEventDeliveryLinux
             if (TryChange(port, l1, 0, SA_READ, (IntPtr)1) != PAL_SUCCESS) return 83;
             if (TryChange(port, l2, 0, SA_READ, (IntPtr)2) != PAL_SUCCESS) return 84;
             if (TryChange(port, l3, 0, SA_READ, (IntPtr)3) != PAL_SUCCESS) return 85;
-            if (ConnectOne(a1) == (IntPtr)(-1)) return 86;
-            if (ConnectOne(a2) == (IntPtr)(-1)) return 87;
-            if (ConnectOne(a3) == (IntPtr)(-1)) return 88;
+            IntPtr tc1 = ConnectOne(a1);
+            if (tc1 == (IntPtr)(-1)) return 86;
+            IntPtr tc2 = ConnectOne(a2);
+            if (tc2 == (IntPtr)(-1)) return 87;
+            IntPtr tc3 = ConnectOne(a3);
+            if (tc3 == (IntPtr)(-1)) return 88;
 
             for (int i = 0; i < 8 * EventSize; i++) buffer[i] = 0xEE;
             int count = 2;
@@ -359,6 +380,7 @@ class SocketEventDeliveryLinux
             count = 8;
             if (WaitForSocketEvents(port, buffer, &count) != PAL_SUCCESS || count != 1) return 93;
             if (DataAt(buffer, 0) != 3UL) return 94;
+            if (Close(tc1) != PAL_SUCCESS || Close(tc2) != PAL_SUCCESS || Close(tc3) != PAL_SUCCESS) return 95;
             if (Close(l1) != PAL_SUCCESS || Close(l2) != PAL_SUCCESS || Close(l3) != PAL_SUCCESS) return 95;
             if (Close(port) != PAL_SUCCESS) return 96;
         }
@@ -371,7 +393,8 @@ class SocketEventDeliveryLinux
             IntPtr l1 = MakeListener(a1);
             if (l1 == (IntPtr)(-1)) return 98;
             if (TryChange(port, l1, 0, SA_READ, (IntPtr)1) != PAL_SUCCESS) return 99;
-            if (ConnectOne(a1) == (IntPtr)(-1)) return 100;
+            IntPtr mc1 = ConnectOne(a1);
+            if (mc1 == (IntPtr)(-1)) return 100;
             int count = 8;
             if (WaitForSocketEvents(port, buffer, &count) != PAL_SUCCESS || count != 1) return 101;
             // MOD with a widened interest: the still-readable listener
@@ -381,6 +404,7 @@ class SocketEventDeliveryLinux
             if (WaitForSocketEvents(port, buffer, &count) != PAL_SUCCESS || count != 1) return 103;
             if (DataAt(buffer, 0) != 1UL) return 104;
             if (EventsAt(buffer, 0) != SA_READ) return 105;
+            if (Close(mc1) != PAL_SUCCESS) return 106;
             if (Close(l1) != PAL_SUCCESS || Close(port) != PAL_SUCCESS) return 106;
         }
 

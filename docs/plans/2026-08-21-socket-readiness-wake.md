@@ -146,9 +146,11 @@ connection object outlives its ends exactly as long as something references
 it — so `epollReadiness` answers the measured half-closed level for a
 peerless established socket, and `closeFd` signals the surviving end through
 the ordinary interest-filtered path instead of refusing. The one remaining
-close refusal on the socket side is a dying listener with a registered
-unaccepted client: the post-RST level is unmeasured, and an RST raises ERR,
-which no interest mask can hide.
+close refusal on the socket side is a dying listener with a *live* unaccepted
+client, registered or not (a fifth round's finding): the RST leaves the client
+in an unmeasured state — its level, and what `connect(2)` then answers, are
+both unknown — and an unregistered survivor would otherwise be
+indistinguishable from a cleanly FIN'd peer at its next ADD.
 
 Two facts a Codex review round surfaced, then settled by reasoning about the
 in-flight syscall (each with its own oracle-validated observer):

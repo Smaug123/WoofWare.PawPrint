@@ -5369,28 +5369,27 @@ module EmulatedKernel =
                                 )
                             | SocketPhase.Listening _ ->
                                 for candidate in candidates do
-                                    let registeredClients =
+                                    let liveClients =
                                         sockets
                                         |> Map.toSeq
-                                        |> Seq.filter (fun (survivorId, survivor) ->
-                                            (match survivor.Phase with
-                                             | SocketPhase.Established c
-                                             | SocketPhase.EstablishedPendingReport c -> c = candidate
-                                             | SocketPhase.Listening _
-                                             | SocketPhase.Idle
-                                             | SocketPhase.RefusedPendingDelivery
-                                             | SocketPhase.Dead
-                                             | SocketPhase.DatagramPeer _ -> false)
-                                            && socketIsRegisteredWithAnyEventPort survivorId kernel
+                                        |> Seq.filter (fun (_, survivor) ->
+                                            match survivor.Phase with
+                                            | SocketPhase.Established c
+                                            | SocketPhase.EstablishedPendingReport c -> c = candidate
+                                            | SocketPhase.Listening _
+                                            | SocketPhase.Idle
+                                            | SocketPhase.RefusedPendingDelivery
+                                            | SocketPhase.Dead
+                                            | SocketPhase.DatagramPeer _ -> false
                                         )
                                         |> Seq.map fst
                                         |> List.ofSeq
 
-                                    match registeredClients with
+                                    match liveClients with
                                     | [] -> ()
                                     | survivor :: _ ->
                                         failwith
-                                            $"EmulatedKernel.closeFd: closing fd %d{fd} destroys listening socket %O{socketId} while connection %O{candidate} sits unaccepted in its queue, and that connection's client (socket %O{survivor}) is registered with a socket event port. A real kernel RSTs the unaccepted client on listener close, whose resulting readiness level is unmeasured — and an RST raises ERR, which no interest mask can hide, so the registration would observe it. Measure the post-RST level before closing a listener out from under a registered queued client."
+                                            $"EmulatedKernel.closeFd: closing fd %d{fd} destroys listening socket %O{socketId} while connection %O{candidate} sits unaccepted in its queue, and that connection's client (socket %O{survivor}) is still open. A real kernel RSTs the unaccepted client on listener close, leaving it in a state PawPrint has not measured — its readiness level, and what connect(2) then answers, are both unknown, and the client would otherwise be indistinguishable from a cleanly FIN'd peer. Accept the connection or close the client before closing the listener."
 
                                 []
                             | SocketPhase.Idle

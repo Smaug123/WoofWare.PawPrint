@@ -510,9 +510,20 @@ module TestSocketEventDelivery =
     let ``closing the registered target sweeps its pending entry`` () : unit =
         let portFd, portId, kernel = addPort EmulatedKernel.initial
         let listenerFd, _, kernel = addListener 5000us kernel
-        let _, c1, kernel = addStream kernel
+        let clientFd, c1, kernel = addStream kernel
         let kernel = register portFd listenerFd 7UL kernel
         let _, kernel = connect c1 false (loopback 5000us) kernel
+        readyOf portId kernel |> List.length |> shouldEqual 1
+
+        // The client goes first: a listener close over a live queued client
+        // refuses (the RST would leave the client unmeasurable), and the
+        // queued connection survives its client, so the pending entry is
+        // still there to sweep.
+        let kernel =
+            match EmulatedKernel.closeFd clientFd kernel with
+            | Ok kernel -> kernel
+            | Error error -> failwith $"close failed: %O{error}"
+
         readyOf portId kernel |> List.length |> shouldEqual 1
 
         let kernel =
@@ -657,21 +668,21 @@ module TestSocketEventDelivery =
 
         assertSound kernel
 
-    /// A dying listener RSTs its unaccepted queue entries' clients, whose
-    /// post-RST level is unmeasured — refused when a registration could
-    /// observe it, and proceeding when none can.
+    /// A dying listener RSTs its unaccepted queue entries' clients, leaving
+    /// them in an unmeasured state a later registration could not answer for
+    /// — so the close refuses whenever a live client would be left behind,
+    /// registered or not (an unregistered survivor would otherwise be
+    /// indistinguishable from a cleanly FIN'd peer at its next ADD).
     [<Test>]
-    let ``closing a listener with a registered queued client refuses`` () : unit =
-        let portFd, _, kernel = addPort EmulatedKernel.initial
-        let listenerFd, _, kernel = addListener 5000us kernel
-        let clientFd, clientId, kernel = addStream kernel
+    let ``closing a listener with a live queued client refuses`` () : unit =
+        let listenerFd, _, kernel = addListener 5000us EmulatedKernel.initial
+        let _, clientId, kernel = addStream kernel
         let _, kernel = connect clientId false (loopback 5000us) kernel
-        let kernel = register portFd clientFd 5UL kernel
 
         let exc =
             Assert.Throws<System.Exception> (fun () -> EmulatedKernel.closeFd listenerFd kernel |> ignore)
 
-        exc.Message |> shouldContainText "post-RST level"
+        exc.Message |> shouldContainText "RSTs the unaccepted client"
 
     /// The connect's two edges enter in the measured order (`order7.c`): the
     /// client's completion before the listener's accept edge.
