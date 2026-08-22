@@ -910,6 +910,41 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // `connect(2)`'s flavour-divergent rows under Linux: EISCONN
+                // on the listening socket itself, the retry-after-async
+                // semantics (SUCCESS-once after establishment; ECONNREFUSED
+                // delivered once then a reset after refusal), the
+                // bound-not-listening RST, AF_UNSPEC as no-op and UDP
+                // dissolve, the oversized-sockaddr prefix read, the raw errno
+                // numbers, and the backlog+1 queue capacity. Expectations
+                // confirmed on real Linux .NET before the handler existed;
+                // the agreement rows live differentially in
+                // sourcesPure/SocketConnect.cs.
+                FileName = "SocketConnectLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The same divergences under Darwin's answers: EOPNOTSUPP on
+                // the listening socket, EISCONN retries, the dead-socket
+                // latch after a refusal (EINVAL forever), AF_UNSPEC refused
+                // everywhere, exact-length sockaddr, capacity = backlog.
+                // Expectations confirmed on real macOS .NET before the
+                // handler existed.
+                FileName = "SocketConnectDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The bytes `SocketAddressPal` lays a `sockaddr_in` and
                 // `sockaddr_in6` out in, under the Linux flavour. Not
                 // differential: the family field is two bytes at offset 0 here

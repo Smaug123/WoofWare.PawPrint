@@ -297,6 +297,40 @@ type UnixError =
     /// Linux numbers this 88, which Darwin reads as `EBADMACHO`; Darwin numbers
     /// it 38, which Linux reads as `ENOSYS`.
     | ENOTSOCK
+    /// `EISCONN` — Socket is connected.
+    ///
+    /// Reported by `connect(2)` on a socket that already is: measured on both
+    /// kernels after a blocking loopback connect. Also Linux's answer for a
+    /// connect issued on a *listening* socket, and Darwin's for a retry after
+    /// an async establishment.
+    ///
+    /// Platform-dependent, and neither number is free on the other platform:
+    /// Linux numbers this 106, which Darwin reads as unnamed; Darwin numbers
+    /// it 56, which Linux reads as `EBADRQC`.
+    | EISCONN
+    /// `EINPROGRESS` — Operation now in progress.
+    ///
+    /// `connect(2)`'s answer on a non-blocking socket — measured on both
+    /// kernels, *even on loopback*, and whether the destination is listening
+    /// or refuses. The PAL's managed callers switch on it to pend
+    /// (`SocketPal.TryStartConnect`), so answering the final outcome instead
+    /// would change guest control flow.
+    ///
+    /// Platform-dependent: Linux numbers this 115, which Darwin has no name
+    /// for; Darwin numbers it 36, which Linux reads as `ENAMETOOLONG`.
+    | EINPROGRESS
+    /// `ECONNREFUSED` — Connection refused.
+    ///
+    /// `connect(2)`'s answer for a local destination with no listening socket
+    /// behind it, delivered inline by a blocking connect and by the first
+    /// retry after a non-blocking one. Measured on both kernels for a closed
+    /// port; on Linux a bound-but-not-listening port answers the same (the
+    /// SYN gets RST either way), where Darwin drops the SYN instead.
+    ///
+    /// Platform-dependent, and neither number is free on the other platform:
+    /// Linux numbers this 111, which Darwin reads as unnamed; Darwin numbers
+    /// it 61, which Linux reads as `ENODATA`.
+    | ECONNREFUSED
 
 /// The raw and PAL numbering of one `UnixError`.
 type UnixErrorNumbering =
@@ -376,6 +410,9 @@ module UnixError =
             UnixError.EADDRNOTAVAIL
             UnixError.EOPNOTSUPP
             UnixError.ENOTSOCK
+            UnixError.EISCONN
+            UnixError.EINPROGRESS
+            UnixError.ECONNREFUSED
         ]
 
     let private portable (pal : int) (raw : int) : UnixErrorNumbering =
@@ -457,6 +494,9 @@ module UnixError =
         // Measured on both: raw 88 is ENOTSOCK on Linux and EBADMACHO on
         // Darwin, while raw 38 is ENOTSOCK on Darwin and ENOSYS on Linux.
         | UnixError.ENOTSOCK -> platformDependent 0x1003C 88 38
+        | UnixError.EISCONN -> platformDependent 0x1001E 106 56
+        | UnixError.EINPROGRESS -> platformDependent 0x1001A 115 36
+        | UnixError.ECONNREFUSED -> platformDependent 0x1000E 111 61
 
     /// The `Interop.Error` value CoreLib switches on. Total: the PAL numbering is
     /// platform-independent, so it is always answerable.
