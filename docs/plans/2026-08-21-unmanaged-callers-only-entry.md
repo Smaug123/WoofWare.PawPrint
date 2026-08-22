@@ -331,17 +331,20 @@ so.** Mutating each managed call site's convention to `Unmanaged` in turn:
 
 | mutant | outcome |
 | --- | --- |
-| the gate never fires | killed — 4 refusal guests + the ordering guest |
+| the gate never fires | killed — every refusal guest + the ordering guest |
 | the attribute predicate inverted | killed — control *and* every refusal guest |
-| the classifier ignores the namespace | killed — control, via its decoy attribute |
-| `calli` reports its call site as managed | killed — control's legal `delegate* unmanaged` call |
-| delegate `Invoke` treated as unmanaged | killed — delegate guest + ordering guest |
-| reflection's invoke treated as unmanaged | killed — reflection guest **and ForceEmitInvoke** |
-| `call` treated as unmanaged | **survived** |
-| `callvirt` treated as unmanaged | **survived** |
+| the attribute classifier ignores the namespace | killed — control, via its decoy attribute |
+| `calli` reports its call site as cooperative | killed — control's legal `delegate* unmanaged` call |
+| delegate `Invoke` treated as transitioning | killed — delegate guest + ordering guest |
+| reflection's invoke treated as transitioning | killed — reflection guest **and ForceEmitInvoke** |
+| `call` treated as transitioning | **survived** |
+| `callvirt` treated as transitioning | **survived** |
 | abort reports `COR_E_FAILFAST` | killed — the kind assertion, not the exit code |
-| unmanaged convention classified as managed | killed — unit tests + control |
-| vararg classified as unmanaged | killed — unit tests only |
+| unmanaged convention classified as cooperative | killed — unit tests + control |
+| vararg classified as transitioning | killed — unit tests only |
+| the classifier reads the header only | killed — both modifier tests |
+| the modifier walk stops at the outermost | killed — the multi-modifier test |
+| the suppression modifier matched on name alone | killed — the fabricated decoy |
 
 The reflection mutant killing *both* reflection guests is the interesting one: under PawPrint's
 default, `Switch.System.Reflection.ForceEmitInvoke` changes nothing, because dynamic code is off and
@@ -349,6 +352,21 @@ CoreLib falls back to the interpreted invoke. So that guest is a distinct arriva
 only. Turning `IsDynamicCodeSupported` on does send it down the emit path, where it stops at an
 unimplemented `ModuleHandle.ResolveMethod` for a method on a generic type — measured, and recorded
 in the guest.
+
+## The hole review found
+
+Codex caught one, and it was real. `delegate* unmanaged[SuppressGCTransition]<int, int>` reaches
+such a method and real .NET refuses it with the same fatal error as any managed entry — measured —
+while the gate let it through. The suppression is *not* in the calling convention: both call sites
+carry header `0x09`, and C# puts `SuppressGCTransition` in a `modopt` on the return type, so the
+blobs are `09 01 08 08` against `09 01 20 49 08 08`. And the suppression is exactly what makes it
+fatal, because the caller never leaves cooperative mode for the callee's prologue to find it in.
+
+So the classifier had been asking the wrong question. `CallSiteConvention` became
+`CallSiteTransition = EntersPreemptive | StaysCooperative`. The alternative — keep the convention DU
+and add a separate suppression flag — was rejected because `CallSiteConvention.Unmanaged` would then
+no longer justify the operation its callers use it for, which is the failure the "keep the
+classifier truthful" rule exists to prevent.
 
 Neither survivor is closable here. `callvirt` never can be: the attribute is legal only on a static
 method and `callvirt` takes an object reference. `call` needs emitted IL, and the `DynamicMethod`
