@@ -11,9 +11,10 @@ using System.Runtime.InteropServices;
 // real CLR. It could not be a cross-runtime test even in principle. The PAL
 // values are platform-independent, but the *mapping* is not: the real shim is
 // compiled against one platform's <errno.h>, so on macOS raw 39 is
-// EDESTADDRREQ while on Linux it is ENOTEMPTY. PawPrint deliberately models
-// only the errnos that mean the same thing on every Unix it models, so an
-// oracle comparison would be asserting a host-specific fact.
+// EDESTADDRREQ while on Linux it is ENOTEMPTY. PawPrint answers under the
+// numbering its *configured* flavour reports, which is a fact about
+// `KernelConfig` rather than about the machine — so an oracle comparison would
+// be asserting a host-specific fact instead.
 //
 // Two declarations of the same entry point, deliberately: CoreLib declares the
 // return as the `Interop.Error` enum — nested in a class in the *global*

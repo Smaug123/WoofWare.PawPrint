@@ -79,7 +79,7 @@ class Program
         }
 
         // A path that consumed no component at all is EEXIST too, whichever
-        // navigation got it there. `rmdir` owes these three different errnos;
+        // navigation got it there. `rmdir` distinguishes these three;
         // `mkdir` does not distinguish them.
         foreach (string navigated in new[] { ".", "d/.", "d/..", "/" })
         {

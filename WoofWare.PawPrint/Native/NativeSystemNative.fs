@@ -2345,7 +2345,33 @@ module NativeSystemNative =
             elif bufferSize = 0 then
                 // POSIX: size 0 with a non-NULL buffer is EINVAL, *not*
                 // ERANGE — so a guest must not treat it as "grow and retry".
+                // Measured on both, this beats the detached case below: with the
+                // current directory removed, `getcwd(buf, 0)` is still EINVAL.
                 fail UnixError.EINVAL
+            else
+
+            // A current directory whose last name has gone still works for every
+            // relative path — a real process keeps it — but it has no *path*, and
+            // `getcwd` fails rather than answering a name nothing reaches.
+            // Reachable only since `rmdir`, which is what can orphan one.
+            let detached =
+                VirtualFileSystem.isOrphanedDirectory state.Kernel.CurrentDirectoryInode state.Kernel.FileSystem
+
+            if detached then
+                // The stored path is stale here — nothing reaches it any more —
+                // so it must not be measured against the buffer. What the buffer
+                // can still change is per-flavour and measured: see
+                // `GetCwdOrphanAnswer`.
+                match SimulatedUnixPlatform.getCwdOrphanAnswer state.Kernel.UnixPlatform with
+                | GetCwdOrphanAnswer.AlwaysDetached -> fail UnixError.ENOENT
+                | GetCwdOrphanAnswer.ShortestPathFirst ->
+                    // Room for "/" and its terminator, which is what Darwin
+                    // writes before it starts climbing. Two bytes, not the
+                    // length of the path that used to be here.
+                    if bufferSize < 2 then
+                        fail UnixError.ERANGE
+                    else
+                        fail UnixError.ENOENT
             elif bufferSize < path.Length + 1 then
                 fail UnixError.ERANGE
             else
@@ -2895,7 +2921,7 @@ module NativeSystemNative =
 
             let now = EmulatedKernel.fileTimestamp state.Kernel
 
-            match VirtualFileSystem.unbind directory name now state.Kernel.FileSystem with
+            match VirtualFileSystem.unbind UnbindTargetEffect.LostALink directory name now state.Kernel.FileSystem with
             | Error error ->
                 // `unbind` refuses a directory it does not hold and a name that
                 // directory does not bind. The walk has just established both,
@@ -2913,6 +2939,91 @@ module NativeSystemNative =
                 // any other name or any open descriptor still holds it. A real
                 // `unlink` of a file something has open leaves it readable
                 // through that descriptor until the last one closes.
+                |> EmulatedKernel.forgetIfUnheld target
+            )
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        // `int32_t SystemNative_RmDir(const char* path)` (pal_io.c): an
+        // EINTR-retrying `rmdir(2)` and nothing else, taking a UTF-8 path
+        // exactly as `SystemNative_Unlink` does.
+        | Some "SystemNative_RmDir",
+          [ ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_RmDir"
+
+            let fail (error : UnixError) : NativeHandlerResult option =
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+                state.MapKernel (
+                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            let rules = SimulatedUnixPlatform.rmDirRules state.Kernel.UnixPlatform
+
+            match
+                bufferPointerArgument operation "path" instruction.Arguments.[0]
+                |> BufferPointer.dereferenceable
+            with
+            | None -> fail UnixError.EFAULT
+            | Some pathPtr ->
+
+            let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
+
+            let bytes =
+                NativeCall.readNullTerminatedBytesWithin
+                    operation
+                    ctx.BaseClassTypes
+                    state
+                    pathPtr
+                    (PathLimits.pathMaxBytes limits)
+
+            match parseGuestPathBytes operation limits bytes with
+            | Error error -> fail error
+            | Ok path ->
+
+            // `NoFollowFinal` on both platforms. The trailing separator is what
+            // reaches past a final symlink, and only on Darwin -- which is how
+            // `rmdir("ld/")` removes the *link's target* there and is ENOTDIR on
+            // Linux. See `RmDirRules.TrailingSeparator`.
+            match resolveGuestPathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator state.Kernel path with
+            | Error error -> fail error
+            | Ok resolution ->
+
+            match
+                RmDirRules.verdict
+                    (SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform)
+                    (EmulatedKernel.callerPrivilege state.Kernel)
+                    resolution
+                    state.Kernel.FileSystem
+            with
+            | RmDirVerdict.Refuse error -> fail error
+            | RmDirVerdict.Remove (directory, name) ->
+
+            let now = EmulatedKernel.fileTimestamp state.Kernel
+
+            match VirtualFileSystem.unbind rules.RemovedDirectoryEffect directory name now state.Kernel.FileSystem with
+            | Error error ->
+                // `unbind` refuses a directory it does not hold and a name that
+                // directory does not bind. The walk has just established both,
+                // so either is a broken graph rather than something the guest
+                // did.
+                failwith
+                    $"%s{operation}: removing \"%s{FileName.toString name}\" from inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and holds that name (this is an interpreter bug)."
+            | Ok (target, filesystem) ->
+
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    FileSystem = filesystem
+                }
+                // A directory has only ever had the one name, so this was the
+                // last -- but a descriptor or the current directory may still
+                // hold it, and a real `rmdir` leaves such an orphan usable
+                // through what holds it. `forgetIfUnheld` also collects the
+                // ancestors this directory's ".." was keeping alive.
                 |> EmulatedKernel.forgetIfUnheld target
             )
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
@@ -3102,13 +3213,15 @@ module NativeSystemNative =
                 match VirtualFileSystem.tryGet inode state.Kernel.FileSystem with
                 | Some entry -> entry
                 | None ->
-                    // Not reachable today — nothing unlinks — but stated so
-                    // that the write path finds a decision rather than a crash:
-                    // a descriptor keeps its inode alive after the last link is
-                    // gone, so `unlink` must not remove the inode from the
-                    // graph while a descriptor still names it.
+                    // Not reachable: `EmulatedKernel.pinnedInodes` names every
+                    // inode an open description holds, and `forgetIfUnheld`
+                    // refuses to free one of those — so a descriptor outlives
+                    // the last name bound to its inode, exactly as it does on a
+                    // real kernel. Stated rather than assumed, because a
+                    // deletion path that forgot to ask would otherwise present
+                    // as a wrong `fstat` rather than as a crash.
                     failwith
-                        $"%s{operation}: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink removed a still-open file; the open file description must keep it alive."
+                        $"%s{operation}: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive."
 
             match
                 bufferPointerArgument operation "output" instruction.Arguments.[1]
@@ -3472,7 +3585,7 @@ module NativeSystemNative =
                 | Some entry -> entry
                 | None ->
                     failwith
-                        $"%s{operation}: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink removed a still-open file; the open file description must keep it alive."
+                        $"%s{operation}: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive."
 
             match entry.Content with
             | InodeContent.Directory _ ->
@@ -3849,7 +3962,7 @@ module NativeSystemNative =
                 | Some entry -> entry
                 | None ->
                     failwith
-                        $"%s{operation}: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink removed a still-open file; the open file description must keep it alive."
+                        $"%s{operation}: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive."
 
             match entry.Content with
             | InodeContent.Directory _ ->
@@ -4096,7 +4209,7 @@ module NativeSystemNative =
                 | Some entry -> entry
                 | None ->
                     failwith
-                        $"%s{operation}: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink removed a still-open file; the open file description must keep it alive."
+                        $"%s{operation}: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive."
 
             // Deferred, because only `SEEK_END` consults it and a directory has
             // no size PawPrint will state. `seekTarget` forces this exactly on

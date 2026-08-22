@@ -62,6 +62,13 @@ module TestEmulatedKernelInodeLifetime =
             seed
             (absolute "/outer/inner")
 
+    /// The same tree, but standing at the root — so that `/outer/inner` can be
+    /// orphaned with a descriptor as its only holder, which is the shape the
+    /// cascade rows need.
+    let private kernelAtRoot () : EmulatedKernel =
+        EmulatedKernel.initial
+        |> EmulatedKernel.withFileSystemAndCurrentDirectory SimulatedUnixPlatform.linuxX64 createdAt seed (absolute "/")
+
     let private inodeOf (kernel : EmulatedKernel) (path : string) : InodeNumber =
         match
             VirtualFileSystem.resolveExisting
@@ -89,7 +96,14 @@ module TestEmulatedKernelInodeLifetime =
     /// name bound and the kernel with the name gone — the state `unlink` leaves
     /// before anything decides whether to free the inode.
     let private unbound (path : string) (entry : string) (kernel : EmulatedKernel) : InodeNumber * EmulatedKernel =
-        match VirtualFileSystem.unbind (inodeOf kernel path) (name entry) later kernel.FileSystem with
+        match
+            VirtualFileSystem.unbind
+                UnbindTargetEffect.LostALink
+                (inodeOf kernel path)
+                (name entry)
+                later
+                kernel.FileSystem
+        with
         | Error error -> failwith $"could not unbind %s{entry} from %s{path}: %O{error}"
         | Ok (inode, filesystem) ->
             inode,
@@ -105,41 +119,75 @@ module TestEmulatedKernelInodeLifetime =
     let private contains (inode : InodeNumber) (kernel : EmulatedKernel) : bool =
         (VirtualFileSystem.tryGet inode kernel.FileSystem).IsSome
 
-    // ------------------------------------------------------------ pinnedInodes
+    // -------------------------------------------------------------- heldInodes
 
     [<Test>]
-    let ``pinnedInodes names every open file and the current directory`` () : unit =
+    let ``heldInodes names every open file and the current directory`` () : unit =
         let kernel = kernel ()
         let a = inodeOf kernel "/outer/inner/a"
         let b = inodeOf kernel "/outer/inner/b"
 
         // Before anything is opened, the current directory is the only
-        // reference. A `pinnedInodes` that enumerated only the descriptor table
+        // reference. A `heldInodes` that enumerated only the descriptor table
         // would answer the empty set here — and then reap the directory the
         // process is standing in, the moment `rmdir` can orphan one.
-        EmulatedKernel.pinnedInodes kernel
+        EmulatedKernel.heldInodes kernel
         |> shouldEqual (Set.singleton kernel.CurrentDirectoryInode)
 
         let _, withA = opened a kernel
 
-        EmulatedKernel.pinnedInodes withA
+        EmulatedKernel.heldInodes withA
         |> shouldEqual (Set.ofList [ kernel.CurrentDirectoryInode ; a ])
 
         // ...and not merely "some file is open": `b` is not held.
-        EmulatedKernel.pinnedInodes withA |> Set.contains b |> shouldEqual false
+        EmulatedKernel.heldInodes withA |> Set.contains b |> shouldEqual false
 
     [<Test>]
-    let ``a standard stream or a socket pins no inode`` () : unit =
+    let ``a standard stream or a socket holds no inode`` () : unit =
         // The three descriptors every process inherits are `OpenFileTarget.StandardStream`,
-        // which names no inode at all; a `choose` matching them would pin
+        // which names no inode at all; a `choose` matching them would hold
         // whatever `InodeNumber` it invented for them.
         let kernel = kernel ()
 
-        EmulatedKernel.pinnedInodes kernel |> Set.count |> shouldEqual 1
+        EmulatedKernel.heldInodes kernel |> Set.count |> shouldEqual 1
 
         FileDescriptorRegistry.descriptions kernel.FileDescriptors
         |> Map.isEmpty
         |> shouldEqual false
+
+    // ------------------------------------------------------------ pinnedInodes
+
+    [<Test>]
+    let ``pinnedInodes climbs from every held inode to the root`` () : unit =
+        // Measured on both flavours: a held orphan keeps its "..", and its
+        // parent's "..", all the way up. So the ancestors of anything held must
+        // not be freed, and `checkInvariants` must excuse them.
+        let kernel = kernel ()
+        let root = VirtualFileSystem.root kernel.FileSystem
+        let outer = inodeOf kernel "/outer"
+        let inner = inodeOf kernel "/outer/inner"
+
+        EmulatedKernel.heldInodes kernel |> shouldEqual (Set.singleton inner)
+
+        EmulatedKernel.pinnedInodes kernel
+        |> shouldEqual (Set.ofList [ inner ; outer ; root ])
+
+    [<Test>]
+    let ``pinning an open file climbs from the file's directory, not the file`` () : unit =
+        // A file records no parent, so holding one pins the file and whatever
+        // the *other* references reach — never the directory that happens to
+        // name it. Nothing needs it to: while a name binds the file, the
+        // directory holding that name is reachable from the root anyway.
+        let kernel = kernel ()
+        let a = inodeOf kernel "/outer/inner/a"
+        let _, withA = opened a kernel
+
+        let root = VirtualFileSystem.root kernel.FileSystem
+        let outer = inodeOf kernel "/outer"
+        let inner = inodeOf kernel "/outer/inner"
+
+        EmulatedKernel.pinnedInodes withA
+        |> shouldEqual (Set.ofList [ a ; inner ; outer ; root ])
 
     // --------------------------------------------------------- forgetIfUnheld
 
@@ -266,6 +314,117 @@ module TestEmulatedKernelInodeLifetime =
         let fd, held = opened a kernel
 
         closed fd held |> contains a |> shouldEqual true
+
+    // ---------------------------------------------------- orphaned directories
+
+    /// Empty `/outer/inner` out, then unbind it from `/outer`, answering the
+    /// three inodes and the kernel holding the orphan through `fd`.
+    let private orphanedInner () : int * InodeNumber * InodeNumber * EmulatedKernel =
+        let kernel = kernelAtRoot ()
+        let inner = inodeOf kernel "/outer/inner"
+        let outer = inodeOf kernel "/outer"
+        let fd, kernel = opened inner kernel
+
+        let kernel =
+            [ "a" ; "b" ]
+            |> List.fold
+                (fun kernel entry ->
+                    let inode, kernel = unbound "/outer/inner" entry kernel
+                    EmulatedKernel.forgetIfUnheld inode kernel
+                )
+                kernel
+
+        let _, kernel = unbound "/outer" "inner" kernel
+        fd, inner, outer, EmulatedKernel.forgetIfUnheld inner kernel
+
+    [<Test>]
+    let ``an orphan held by a descriptor keeps its ancestors alive`` () : unit =
+        let fd, inner, outer, kernel = orphanedInner ()
+
+        // The descriptor holds `inner` directly...
+        contains inner kernel |> shouldEqual true
+        EmulatedKernel.heldInodes kernel |> Set.contains inner |> shouldEqual true
+
+        // ...and `inner`'s recorded parent is what "`.." from the orphan
+        // resolves to, so it must survive being unbound as well. Measured on
+        // both flavours: after `rmdir(b)` and `rmdir(a)`, `stat("..")` from
+        // inside the orphan still answers `a`'s inode.
+        let _, kernel = unbound "/" "outer" kernel
+        let kernel = EmulatedKernel.forgetIfUnheld outer kernel
+
+        contains outer kernel |> shouldEqual true
+        EmulatedKernel.heldInodes kernel |> Set.contains outer |> shouldEqual false
+        EmulatedKernel.pinnedInodes kernel |> Set.contains outer |> shouldEqual true
+
+        VirtualFileSystem.checkInvariants (EmulatedKernel.pinnedInodes kernel) kernel.FileSystem
+        |> shouldEqual []
+
+        EmulatedKernel.checkInvariants kernel |> shouldEqual []
+
+        // Both are legitimately unreachable, and only because of the pin.
+        VirtualFileSystem.checkInvariants Set.empty kernel.FileSystem
+        |> List.sort
+        |> shouldEqual (
+            [
+                VirtualFileSystemDefect.UnreachableFromRoot inner
+                VirtualFileSystemDefect.UnreachableFromRoot outer
+            ]
+            |> List.sort
+        )
+
+        // Closing the one descriptor drops the last reference to the whole
+        // chain, so both go at once.
+        let afterClose = closed fd kernel
+
+        contains inner afterClose |> shouldEqual false
+        contains outer afterClose |> shouldEqual false
+
+        VirtualFileSystem.checkInvariants (EmulatedKernel.pinnedInodes afterClose) afterClose.FileSystem
+        |> shouldEqual []
+
+        EmulatedKernel.checkInvariants afterClose |> shouldEqual []
+
+    [<Test>]
+    let ``the cascade stops at a parent something still names`` () : unit =
+        // The ordinary case, and the one the guard is for: `/outer` is still
+        // bound in the root, so freeing `/outer/inner` must not touch it.
+        let kernel = kernelAtRoot ()
+        let outer = inodeOf kernel "/outer"
+
+        let kernel =
+            [ "a" ; "b" ]
+            |> List.fold
+                (fun kernel entry ->
+                    let inode, kernel = unbound "/outer/inner" entry kernel
+                    EmulatedKernel.forgetIfUnheld inode kernel
+                )
+                kernel
+
+        let inner, kernel = unbound "/outer" "inner" kernel
+        let reaped = EmulatedKernel.forgetIfUnheld inner kernel
+
+        contains inner reaped |> shouldEqual false
+        contains outer reaped |> shouldEqual true
+
+        VirtualFileSystem.checkInvariants (EmulatedKernel.pinnedInodes reaped) reaped.FileSystem
+        |> shouldEqual []
+
+        EmulatedKernel.checkInvariants reaped |> shouldEqual []
+
+    [<Test>]
+    let ``the cascade stops at the root`` () : unit =
+        // Every chain ends at the root, whose binding count is zero by
+        // construction — so a cascade that only checked "is anything naming
+        // this" would free the filesystem out from under every path.
+        let fd, _, outer, kernel = orphanedInner ()
+        let root = VirtualFileSystem.root kernel.FileSystem
+
+        let _, kernel = unbound "/" "outer" kernel
+        let afterClose = closed fd (EmulatedKernel.forgetIfUnheld outer kernel)
+
+        contains root afterClose |> shouldEqual true
+        VirtualFileSystem.root afterClose.FileSystem |> shouldEqual root
+        EmulatedKernel.checkInvariants afterClose |> shouldEqual []
 
     // ------------------------------------------------------------- invariants
 
