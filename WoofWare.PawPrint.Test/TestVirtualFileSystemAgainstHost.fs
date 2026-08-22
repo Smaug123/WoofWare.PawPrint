@@ -49,6 +49,12 @@ module TestVirtualFileSystemAgainstHost =
     extern int private close(int fd)
 
     [<DllImport("libc", SetLastError = true)>]
+    extern nativeint private opendir(string path)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int private closedir(nativeint dir)
+
+    [<DllImport("libc", SetLastError = true)>]
     extern int private mkdir(string path, uint32 mode)
 
     [<DllImport("libc", SetLastError = true)>]
@@ -2092,3 +2098,182 @@ module TestVirtualFileSystemAgainstHost =
             ] do
             let bits = VirtualFileSystem.fileTypeBits content
             bits &&& mask |> shouldEqual bits
+
+    // --------------------------------------------------------------- opendir
+
+    /// What `opendir(3)` did, in the terms both worlds can answer.
+    ///
+    /// Non-destructive, unlike the `unlink`/`rmdir` comparisons, so every row
+    /// shares one tree.
+    [<RequireQualifiedAccess>]
+    type private OpenDirOutcome =
+        | Opened
+        | Failed of errno : int
+
+    let private hostOpenDirOutcome (root : string) (relative : string) : OpenDirOutcome =
+        let handle = opendir (hostPath root relative)
+        let failure = errno ()
+
+        if handle = 0n then
+            OpenDirOutcome.Failed failure
+        else
+
+        closedir handle |> ignore<int>
+        OpenDirOutcome.Opened
+
+    let private modelOpenDirOutcome (vfs : VirtualFileSystem) (relative : string) : OpenDirOutcome =
+        match
+            VirtualFileSystem.resolveFull
+                (limits ())
+                (hostPrivilege ())
+                (VirtualFileSystem.root vfs)
+                SymlinkPolicy.Follow
+                TrailingSeparatorPolicy.Demand
+                (UnixPath.parseOrFail "test" relative)
+                vfs
+        with
+        | Error error -> OpenDirOutcome.Failed (hostErrno error)
+        | Ok resolution ->
+
+        match OpenDirRules.verdict (hostPrivilege ()) resolution vfs with
+        | OpenDirVerdict.Refuse error -> OpenDirOutcome.Failed (hostErrno error)
+        | OpenDirVerdict.Open _ -> OpenDirOutcome.Opened
+
+    [<Test>]
+    let ``opendir decides exactly as this kernel does`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-opendir-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            buildHostTree root
+            let vfs = buildModel ()
+
+            let mismatches =
+                [
+                    for relative in probePaths do
+                        if not (List.contains relative rootReachingPaths) then
+                            let expected = hostOpenDirOutcome root relative
+                            let actual = modelOpenDirOutcome vfs relative
+
+                            if expected <> actual then
+                                yield $"opendir %s{relative}: kernel said %A{expected}, model said %A{actual}"
+                ]
+
+            if not (List.isEmpty mismatches) then
+                let rendered = String.Join (Environment.NewLine, mismatches)
+
+                failwith $"The model disagrees with this kernel about opendir:%s{Environment.NewLine}%s{rendered}"
+        finally
+            removeHostTree root
+
+    [<Test>]
+    let ``the opendir corpus reaches every verdict this kernel can give`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // Without this the comparison above could pass by refusing everything.
+        //
+        // EACCES appears here only from the *walk* — `ns` is 0o666, readable and
+        // unsearchable, so `opendir("ns")` succeeds while `opendir("ns/kid")`
+        // does not. Every narrowed mode in this corpus keeps the owner's read
+        // bit (and must: see `narrowedDirectories`), so the verdict's *own*
+        // EACCES arm is unreachable from here and is pinned in
+        // `TestOpenDirRules` instead. That is also what makes `ns` the
+        // asymmetric row: a verdict demanding search rather than read would
+        // refuse it, and this test would fail.
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-opendir-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            buildHostTree root
+            let vfs = buildModel ()
+
+            let outcomes =
+                probePaths
+                |> List.filter (fun relative -> not (List.contains relative rootReachingPaths))
+                |> List.map (modelOpenDirOutcome vfs)
+
+            let errnos =
+                outcomes
+                |> List.choose (fun outcome ->
+                    match outcome with
+                    | OpenDirOutcome.Failed errno -> Some errno
+                    | OpenDirOutcome.Opened -> None
+                )
+                |> List.distinct
+
+            outcomes |> List.contains OpenDirOutcome.Opened |> shouldEqual true
+
+            for expected in [ UnixError.ENOENT ; UnixError.ENOTDIR ; UnixError.ELOOP ; UnixError.EACCES ] do
+                if not (List.contains (hostErrno expected) errnos) then
+                    failwith $"no probe path makes the model's opendir answer %O{expected}, so that arm is untested."
+
+            modelOpenDirOutcome vfs "ns" |> shouldEqual OpenDirOutcome.Opened
+        finally
+            removeHostTree root
+
+    /// The names one directory holds, as the host reports them. `.` and `..` are
+    /// excluded on both sides: the BCL's enumerator drops them by default, and
+    /// they are the only two entries whose position is fixed anyway.
+    let private hostNames (root : string) (relative : string) : string list =
+        Directory.GetFileSystemEntries (hostPath root relative)
+        |> Array.map Path.GetFileName
+        |> List.ofArray
+        |> List.sort
+
+    /// The same, for the model, driven through the stream rather than read off
+    /// the map — so this compares what a guest would see rather than what the
+    /// graph happens to hold.
+    let private modelNames (vfs : VirtualFileSystem) (relative : string) : string list =
+        let inode =
+            match
+                VirtualFileSystem.resolveFull
+                    (limits ())
+                    (hostPrivilege ())
+                    (VirtualFileSystem.root vfs)
+                    SymlinkPolicy.Follow
+                    TrailingSeparatorPolicy.Demand
+                    (UnixPath.parseOrFail "test" relative)
+                    vfs
+                |> Result.bind (fun resolution -> VirtualFileSystem.existingOf resolution.Target)
+            with
+            | Ok inode -> inode
+            | Error error -> failwith $"the model could not resolve %s{relative}: %O{error}"
+
+        let rec go (cursor : DirectoryCursor) (acc : string list) =
+            match VirtualFileSystem.nextDirectoryEntry inode cursor vfs with
+            | None -> acc
+            | Some (DirectoryStreamName.Entry name, _, next) -> go next (FileName.toString name :: acc)
+            | Some (_, _, next) -> go next acc
+
+        go DirectoryCursor.Start [] |> List.sort
+
+    [<Test>]
+    let ``the model lists exactly the names this kernel lists`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // Sorted on both sides, and deliberately: measured on both kernels, the
+        // order `readdir` returns names in is arbitrary and the two disagree
+        // (`z é a sub ls C b` on APFS against `b a C é z sub ls` on a Linux
+        // overlay, for one seed). Nothing may compare it.
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-opendir-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            buildHostTree root
+            let vfs = buildModel ()
+
+            for relative in [ "d" ; "d/sub" ; "ld" ; "cls500" ; "cls677" ] do
+                modelNames vfs relative |> shouldEqual (hostNames root relative)
+        finally
+            removeHostTree root

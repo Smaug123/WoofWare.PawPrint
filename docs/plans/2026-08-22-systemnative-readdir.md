@@ -283,3 +283,23 @@ would be vacuous. The constraint lives in a comment instead.
 `TimeSpec[2]` that the interpreter refuses. And `File.Copy`, which on a Darwin
 CoreLib P/Invokes `libc!clonefile` directly rather than
 `SystemNative_CopyFile`, so it needs a different primitive per flavour.
+
+## What landed
+
+Against the plan above, with the differences worth stating:
+
+- **Decision A(β) as written**, and it needed one thing the plan did not name: the descriptor an
+  `opendir` opens is guessable by a guest (fd numbers are), so a guest can `close` it out from under
+  the stream. `EmulatedKernel.heldInodes` therefore counts an open stream's inode as well as its
+  descriptor's, or the next `readdir` would reach a reaped inode and take the interpreter down
+  rather than the guest.
+- **Decision E turned out to be a correction rather than an addition.** `SystemNative_Open` already
+  demanded `0o400` for `O_RDONLY`, directories included, so the read bit was not new here at all.
+  The rule now lives once, as `PermissionBits.deniedTo`, and both `open` and `OpenDirRules` call it.
+- **`OpenDirRules.verdict` takes no flavour**, because no measured row diverges. `TestOpenDirRules`
+  still drives both platforms, since "they agree" is the claim.
+- The `sourcesPure` guest reaches ENOENT through the BCL and ENOTDIR through the shim, as the plan
+  predicted, and needed no `StrErrorR`.
+- The terminal-state assertion is **bounded rather than exact**: CoreLib's own startup holds a
+  handful of native blocks, so `liveBlockCount = 0` is not available. The wiring guests open and
+  close fifty streams instead, which puts a leak far outside the noise.

@@ -396,6 +396,31 @@ module TestImpureCases =
                 )
             ]
 
+    /// Shared by the two enumeration wiring guests, so that the only thing that
+    /// differs between them is the configured flavour and the rule each expects.
+    ///
+    /// The three names are chosen so that a *byte* count is the only rule that
+    /// fits Darwin's answer: "e" is 1 byte and 1 char, "\u00e9" is 2 bytes and
+    /// 1 char, and "\u4e2d\u4e2d" is 6 bytes and 2 chars.
+    let private enumerateWiringSeed : Map<FileName, SeedEntry> =
+        let name (s : string) = FileName.parseOrFail "test seed" s
+
+        let file (contents : string) =
+            SeedEntry.file (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
+
+        Map.ofList
+            [
+                name "d",
+                SeedEntry.directory (
+                    Map.ofList
+                        [
+                            name "e", file "one"
+                            name "\u00e9", file "two"
+                            name "\u4e2d\u4e2d", file "three"
+                        ]
+                )
+            ]
+
     /// Shared by the two `rmdir` wiring guests, so that the only thing that
     /// differs between them is the configured flavour and the constants each
     /// expects.
@@ -452,6 +477,32 @@ module TestImpureCases =
         |> shouldEqual []
 
         EmulatedKernel.checkInvariants state.Kernel |> shouldEqual []
+
+    /// Every directory stream the enumeration guests opened has been closed, and
+    /// so has every descriptor and native block behind it.
+    ///
+    /// Not a fact any guest can read: a process cannot watch its own kernel
+    /// tables. Without this, a `CloseDir` that forgot to release the descriptor,
+    /// the name buffer or the stream entry would pass every other assertion in
+    /// this slice — and the leak would only show up much later, as a native-heap
+    /// block nothing frees.
+    let private assertEnumerationClosedEverything (state : IlMachineState) : unit =
+        let kernel = state.Kernel
+
+        kernel.DirectoryStreams |> shouldEqual Map.empty
+
+        // The three inherited standard streams and nothing else.
+        FileDescriptorRegistry.fds kernel.FileDescriptors |> Map.count |> shouldEqual 3
+
+        // Bounded rather than exact: CoreLib's own startup holds a handful of
+        // native blocks (four, as this suite stands) and this assertion is not
+        // about them. The guest opened and closed fifty streams, so a `CloseDir`
+        // that failed to free its name buffer would leave at least fifty.
+        NativeMemoryPool.liveBlockCount kernel.NativeMemoryPool
+        |> shouldBeSmallerThan 20
+
+        VirtualFileSystem.checkInvariants Set.empty kernel.FileSystem |> shouldEqual []
+        EmulatedKernel.checkInvariants kernel |> shouldEqual []
 
     /// Two nested directories, the inner of which the orphan guests stand in and
     /// then remove.
@@ -1337,6 +1388,39 @@ module TestImpureCases =
                 AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertUnlinkReapedExactlyOne
+            }
+            {
+                // `DirectoryEntry.NameLength`: -1 under the Linux flavour,
+                // paired with the Darwin case below. Neither alone can catch a
+                // handler that hardcodes one platform's answer, and no
+                // differential test can reach this at all -- the real runtime
+                // answers for the machine it is on, not for the flavour this
+                // kernel claims.
+                FileName = "EnumerateWiringLinuxSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UserId = 1000u
+                        FileSystem = enumerateWiringSeed
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertEnumerationClosedEverything
+            }
+            {
+                // The same field under the Darwin flavour, where it is the
+                // name's length in bytes.
+                FileName = "EnumerateWiringDarwinSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UserId = 1000u
+                        FileSystem = enumerateWiringSeed
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertEnumerationClosedEverything
             }
             {
                 // `rmdir`'s flavour-dependent facts under a **Linux** kernel,
