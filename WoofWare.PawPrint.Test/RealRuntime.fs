@@ -13,6 +13,26 @@ open WoofWare.PawPrint
 ///
 /// These cases mirror the terminal `WoofWare.PawPrint.RunOutcome` cases that a real process can
 /// actually reach, so that the oracle is comparable against PawPrint.
+/// What the real runtime's stderr reveals about *which* fatal error killed the guest.
+///
+/// Strictly less than PawPrint's own <c>FatalErrorCode</c>, and deliberately a different type so
+/// the two are not mistaken for the same fact. PawPrint knows which fatal error it raised because
+/// it raised it; the oracle can only read what the process printed, and CoreCLR derives the banner
+/// from the <c>COR_E_*</c> code with a single equality test — <c>exitCode == COR_E_FAILFAST</c>
+/// (eepolicy.cpp:374-383) — so stderr separates <c>COR_E_FAILFAST</c> from everything else and
+/// nothing finer. The exit status adds nothing either: on Unix the process aborts to 134 whatever
+/// the code was.
+[<RequireQualifiedAccess>]
+type ObservedFatalError =
+    /// Banner <c>Process terminated.</c>, so the code was <c>COR_E_FAILFAST</c>: the guest called
+    /// <c>Environment.FailFast</c>.
+    | FailFast
+    /// Banner <c>Fatal error.</c>, so the code was one of the others — <c>COR_E_EXECUTIONENGINE</c>,
+    /// <c>COR_E_STACKOVERFLOW</c>, and so on. Which is not recoverable from what the process
+    /// printed; a test that needs to know reads the report, whose message is the runtime's own and
+    /// does identify the situation even though it does not identify the code.
+    | Other
+
 type RealRuntimeResult =
     /// The program terminated with this exit code: by returning from `Main`, by falling off the end
     /// of a `void` entry point, or by calling `Environment.Exit`.
@@ -26,8 +46,9 @@ type RealRuntimeResult =
     /// The runtime terminated the program because an exception escaped. The payload is the
     /// runtime's own stderr report, which names the exception type and carries its stack trace.
     | UnhandledException of report : string
-    /// The program called `Environment.FailFast`. The payload is the runtime's stderr report.
-    | FailFast of report : string
+    /// A fatal error tore the program down: `Environment.FailFast`, or a refusal the runtime
+    /// itself raised. The payload is the runtime's stderr report, banner included.
+    | Aborted of observed : ObservedFatalError * report : string
 
 [<RequireQualifiedAccess>]
 module RealRuntime =
@@ -38,10 +59,20 @@ module RealRuntime =
     [<Literal>]
     let private UnhandledExceptionBanner = "Unhandled exception."
 
-    /// As `UnhandledExceptionBanner`, for `Environment.FailFast`: `PrintToStdErrA("Process
-    /// terminated.\n")` in coreclr/vm/eepolicy.cpp.
+    /// As `UnhandledExceptionBanner`, for a fatal error whose code is `COR_E_FAILFAST` --
+    /// `Environment.FailFast`, and nothing else. `PrintToStdErrA("Process terminated.\n")` in
+    /// coreclr/vm/eepolicy.cpp:378.
     [<Literal>]
     let private FailFastBanner = "Process terminated."
+
+    /// The banner for every *other* fatal error, chosen by the same `if` that chooses the one
+    /// above (eepolicy.cpp:374-383) -- so a guest whose runtime refused to continue prints this
+    /// one and exits 134, exactly as `Environment.FailFast` does. Without this the two are
+    /// indistinguishable from the exit code alone, and a runtime-raised abort would be classified
+    /// as an ordinary `NormalExit 134`. It says only "not `COR_E_FAILFAST`": see
+    /// `ObservedFatalError.Other`.
+    [<Literal>]
+    let private FatalErrorBanner = "Fatal error."
 
     /// A guest that neither exits nor blocks is a bug in the guest, but without a bound it hangs CI
     /// with no diagnostic at all. This only has to be larger than any legitimate guest; the
@@ -210,16 +241,23 @@ module RealRuntime =
         let outputText = snapshot stdout
         let errorText = snapshot stderr
 
-        // Exit code alone cannot classify this: an escaped exception, a `FailFast`, and a guest
-        // that merely returns 134 all exit 134 on Unix (128 + SIGABRT). Requiring a nonzero
-        // exit *and* the runtime's banner keeps both a plain `return 134` and a guest that
-        // prints the banner itself on the normal path. A guest that does both at once would be
-        // misclassified, but it's either impossible or extremely hard to repair that.
+        // Exit code alone cannot classify this: an escaped exception, either flavour of fatal
+        // error, and a guest that merely returns 134 all exit 134 on Unix (128 + SIGABRT).
+        // Requiring a nonzero exit *and* the runtime's banner keeps both a plain `return 134` and
+        // a guest that prints the banner itself on the normal path. A guest that does both at once
+        // would be misclassified, but it's either impossible or extremely hard to repair that.
+        //
+        // The two fatal-error banners are the two sides of the single equality test CoreCLR makes
+        // on the `COR_E_*` code (eepolicy.cpp:374-383), so that is exactly what they distinguish
+        // and `ObservedFatalError` says no more than that. They are disjoint strings, so the order
+        // between them is for readability rather than correctness.
         let result =
             if exitCode <> 0 && errorText.Contains UnhandledExceptionBanner then
                 RealRuntimeResult.UnhandledException (errorText.Trim ())
             elif exitCode <> 0 && errorText.Contains FailFastBanner then
-                RealRuntimeResult.FailFast (errorText.Trim ())
+                RealRuntimeResult.Aborted (ObservedFatalError.FailFast, errorText.Trim ())
+            elif exitCode <> 0 && errorText.Contains FatalErrorBanner then
+                RealRuntimeResult.Aborted (ObservedFatalError.Other, errorText.Trim ())
             else
                 RealRuntimeResult.NormalExit exitCode
 
@@ -235,7 +273,7 @@ module RealRuntime =
             if errorText.Length > 0 then
                 Console.Error.Write errorText
         | RealRuntimeResult.UnhandledException _
-        | RealRuntimeResult.FailFast _ -> ()
+        | RealRuntimeResult.Aborted _ -> ()
 
         result
 

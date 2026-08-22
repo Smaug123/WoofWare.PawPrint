@@ -730,6 +730,13 @@ module Scheduler =
     /// means a reader tracing why a status changed lands in the right function.
     let onWorkerSpawned (worker : ThreadId) (initOutcome : WhatWeDid) (state : IlMachineState) : IlMachineState =
         match initOutcome with
+        | WhatWeDid.Aborted fatal ->
+            // A terminating outcome is the caller's to surface: this function only decides what
+            // status the new worker should hold, and a process that has aborted has no use for one.
+            let message = fatal.Message |> Option.defaultValue "<no message>"
+
+            failwith
+                $"logic error: spawning worker %O{worker} produced an abort (%O{fatal.Code}: %s{message}); the caller must surface a terminating outcome rather than applying it to the worker's status"
         | WhatWeDid.Executed
         | WhatWeDid.VoluntaryYield _
         | WhatWeDid.SuspendedForClassInit
@@ -883,6 +890,16 @@ module Scheduler =
             }
 
         match outcome with
+        | WhatWeDid.Aborted fatal ->
+            // `AbstractMachine` converts an aborting step into `ExecutionResult.Aborted` at the
+            // point where an op's `WhatWeDid` becomes an `ExecutionResult`, which is upstream of
+            // every call to this function -- so the scheduler never sees one. That is deliberate:
+            // a step that tore the process down did not retire, so none of the bookkeeping here
+            // (waking class-init waiters, charging yield debt) has a meaningful answer for it.
+            let message = fatal.Message |> Option.defaultValue "<no message>"
+
+            failwith
+                $"logic error: thread %O{ran} reported an abort (%O{fatal.Code}: %s{message}) to the scheduler; an aborting step should have become ExecutionResult.Aborted before reaching here"
         | WhatWeDid.Executed -> wakeClassInitWaiters state
         | WhatWeDid.VoluntaryYield reportsSwitch ->
             // Wake first, then charge: the run queue the yielder goes to the back of is the

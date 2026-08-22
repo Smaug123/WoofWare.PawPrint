@@ -64,6 +64,7 @@ module TestScheduleFork =
         | WhatWeDid.SuspendedForManagedCall -> "suspendedForManagedCall"
         | WhatWeDid.BlockedOnClassInit (ThreadId blocker) -> $"blockedOnClassInit(%d{blocker})"
         | WhatWeDid.ThrowingTypeInitializationException -> "throwingTypeInit"
+        | WhatWeDid.Aborted fatal -> $"aborted(%O{fatal.Code})"
 
     /// Collapse a terminal outcome to a string. Rendered rather than kept structurally because
     /// every `RunOutcome` carries an entire `IlMachineState`, which is neither comparable nor
@@ -76,9 +77,9 @@ module TestScheduleFork =
             | EvalStackValue.Int32 (Int32Source.Verbatim code) :: _ -> $"exit %d{code}"
             | [] -> "exit void"
             | other :: _ -> $"exit non-int %O{other}"
-        | RunOutcome.FailFast (_, _, message) ->
-            let message = message |> Option.defaultValue "<none>"
-            $"failfast %s{message}"
+        | RunOutcome.Aborted (_, _, fatal) ->
+            let message = fatal.Message |> Option.defaultValue "<none>"
+            $"aborted %O{fatal.Code} %s{message}"
         | RunOutcome.SignalTerminated (_, signal) -> $"signal %O{signal}"
         | RunOutcome.GuestUnhandledException (_, _, _) -> "unhandled exception"
 
@@ -86,7 +87,7 @@ module TestScheduleFork =
         match outcome with
         | RunOutcome.NormalExit (state, _)
         | RunOutcome.ProcessExit (state, _)
-        | RunOutcome.FailFast (state, _, _)
+        | RunOutcome.Aborted (state, _, _)
         | RunOutcome.SignalTerminated (state, _)
         | RunOutcome.GuestUnhandledException (state, _, _) -> state
 

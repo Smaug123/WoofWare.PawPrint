@@ -42,9 +42,9 @@ module TestRaces =
             | [] -> failwith $"%s{sourceName} (seed=%A{seed}) returned void; race tests expect Int32 exit codes"
             | ret :: _ ->
                 failwith $"%s{sourceName} (seed=%A{seed}) returned %O{ret}; race tests expect an Int32 on the stack"
-        | RunOutcome.FailFast (_, _, message) ->
-            let m = message |> Option.defaultValue "<no message>"
-            failwith $"%s{sourceName} (seed=%A{seed}) called Environment.FailFast: %s{m}"
+        | RunOutcome.Aborted (_, _, fatal) ->
+            let m = fatal.Message |> Option.defaultValue "<no message>"
+            failwith $"%s{sourceName} (seed=%A{seed}) aborted (%O{fatal.Code}): %s{m}"
         | RunOutcome.SignalTerminated (_, signal) ->
             failwith $"%s{sourceName} (seed=%A{seed}) was terminated by POSIX signal %O{signal}"
         | RunOutcome.GuestUnhandledException (_, _, exn) ->
@@ -60,7 +60,7 @@ module TestRaces =
         | RealRuntimeResult.NormalExit exitCode -> exitCode
         | RealRuntimeResult.UnhandledException report ->
             failwith $"%s{sourceName} terminated with an unhandled exception under the real runtime:\n%s{report}"
-        | RealRuntimeResult.FailFast report ->
+        | RealRuntimeResult.Aborted (_code, report) ->
             failwith $"%s{sourceName} called Environment.FailFast under the real runtime:\n%s{report}"
 
     // Seed sweep used to characterise PCT coverage. The first 30 splitmix64

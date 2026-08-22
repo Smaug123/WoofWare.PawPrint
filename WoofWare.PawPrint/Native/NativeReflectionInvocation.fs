@@ -544,6 +544,7 @@ module internal NativeReflectionInvocation =
                     NativeHandlerResult.blockedOnClassInit blockedBy state |> Some
                 | WhatWeDid.ThrowingTypeInitializationException ->
                     NativeHandlerResult.throwingTypeInitializationException state |> Some
+                | WhatWeDid.Aborted fatal -> NativeHandlerResult.aborted ctx.Thread fatal state |> Some
                 | WhatWeDid.SuspendedForManagedCall ->
                     failwith
                         $"logic error: %s{operation}: ensureTypeInitialised cannot suspend for an arbitrary managed call"
@@ -718,6 +719,8 @@ module internal NativeReflectionInvocation =
                         state
 
                 match commitment with
+                | IlMachineStateExecution.CallCommitment.Aborted fatal ->
+                    NativeHandlerResult.aborted ctx.Thread fatal state |> Some
                 | IlMachineStateExecution.CallCommitment.Committed ->
                     NativeHandlerResult.pushedManagedCallee state |> Some
                 | IlMachineStateExecution.CallCommitment.Raised ->

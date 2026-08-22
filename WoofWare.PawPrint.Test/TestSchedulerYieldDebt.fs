@@ -495,6 +495,55 @@ module TestSchedulerYieldDebt =
         debtOf (ThreadId 0) state |> shouldEqual Set.empty
 
     [<Test>]
+    let ``onStepOutcome refuses an aborting step, and refuses only that`` () : unit =
+        // `AbstractMachine.surfaceAbort` turns `WhatWeDid.Aborted` into `ExecutionResult.Aborted`
+        // at the single exit from `executeOneStep`, which is upstream of every call to
+        // `onStepOutcome` — so the scheduler never sees one. That is deliberate: a step that tore
+        // the process down did not retire, and neither half of this function's bookkeeping (waking
+        // class-init waiters, charging yield debt) has a meaningful answer for one.
+        //
+        // Pin both halves. That the refusal is real, so a conversion quietly removed upstream
+        // surfaces here rather than as a scheduler silently treating an abort as progress; and
+        // that it is the *only* variant refused, so this stays a statement about aborts rather
+        // than drifting into a general-purpose guard.
+        let state = baseState () |> withThreads (runnable 2)
+        let ran = ThreadId 0
+
+        let variants : WhatWeDid list =
+            [
+                WhatWeDid.Executed
+                // `false`: the reporting form pops the optimistic `Interop.BOOL` its handler left
+                // behind, and these stub threads have no eval stack to pop from.
+                WhatWeDid.VoluntaryYield false
+                WhatWeDid.SuspendedForClassInit
+                WhatWeDid.SuspendedForManagedCall
+                WhatWeDid.BlockedOnClassInit (ThreadId 1)
+                WhatWeDid.ThrowingTypeInitializationException
+                WhatWeDid.Aborted
+                    {
+                        Code = FatalErrorCode.ExecutionEngine
+                        Message = Some "boom"
+                    }
+            ]
+
+        // As in `mapState reaches ...` below: the table is hand-written, so tie it to the type or
+        // a new variant is silently left unclassified here.
+        FSharpType.GetUnionCases typeof<WhatWeDid>
+        |> Array.length
+        |> shouldEqual variants.Length
+
+        for variant in variants do
+            match variant with
+            | WhatWeDid.Aborted _ ->
+                let e =
+                    Assert.Throws (fun () -> Scheduler.onStepOutcome ran variant state |> ignore)
+
+                if not (e.Message.Contains "ExecutionResult.Aborted") then
+                    failwith
+                        $"expected the refusal to name the conversion that should have happened upstream, got: %s{e.Message}"
+            | _ -> Scheduler.onStepOutcome ran variant state |> ignore
+
+    [<Test>]
     let ``mapState reaches the state of every ExecutionResult variant`` () : unit =
         // `mapState`'s totality is the enforcement mechanism: `Program.stepPrepared` discharges by
         // mapping over whatever `executeOneStep` returned, so an outcome whose state `mapState`
@@ -520,7 +569,14 @@ module TestSchedulerYieldDebt =
             [
                 ExecutionResult.Terminated (sentinel, thread)
                 ExecutionResult.ProcessExit (sentinel, thread)
-                ExecutionResult.FailFast (sentinel, thread, Some "m")
+                ExecutionResult.Aborted (
+                    sentinel,
+                    thread,
+                    {
+                        Code = FatalErrorCode.FailFast
+                        Message = Some "m"
+                    }
+                )
                 ExecutionResult.SignalTerminated (sentinel, Signal.SIGINT)
                 ExecutionResult.Stepped (sentinel, WhatWeDid.Executed, StepEffect.NoEffect)
                 ExecutionResult.UnhandledException (sentinel, thread, guestException)
@@ -541,7 +597,7 @@ module TestSchedulerYieldDebt =
                 match mapped with
                 | ExecutionResult.Terminated (s, _)
                 | ExecutionResult.ProcessExit (s, _)
-                | ExecutionResult.FailFast (s, _, _)
+                | ExecutionResult.Aborted (s, _, _)
                 | ExecutionResult.SignalTerminated (s, _)
                 | ExecutionResult.Stepped (s, _, _)
                 | ExecutionResult.UnhandledException (s, _, _) -> s

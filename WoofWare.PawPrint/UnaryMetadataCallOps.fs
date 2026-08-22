@@ -656,23 +656,28 @@ module internal UnaryMetadataCallOps =
 
         let threadState = state.ThreadState.[ctx.Thread]
 
-        IlMachineStateExecution.callMethod
-            ctx.LoggerFactory
-            ctx.BaseClassTypes
-            None
-            ConstructionState.NotConstructing
-            false
-            false
-            true
-            concretizedMethod.Generics
-            concretizedMethod
-            ctx.Thread
-            threadState
-            None
-            ReturnValueDisposition.PushToCaller
-            false // wrapExceptionInTargetInvocation
-            state,
-        WhatWeDid.Executed
+        let state, commitment =
+            IlMachineStateExecution.callMethodWithCommitment
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                None
+                ConstructionState.NotConstructing
+                false
+                false
+                true
+                concretizedMethod.Generics
+                concretizedMethod
+                ctx.Thread
+                threadState
+                None
+                ReturnValueDisposition.PushToCaller
+                false // wrapExceptionInTargetInvocation
+                state
+
+        match commitment with
+        | IlMachineStateExecution.CallCommitment.Aborted fatal -> state, WhatWeDid.Aborted fatal
+        | IlMachineStateExecution.CallCommitment.Committed
+        | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed
 
     let executeCall (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         // Split on the operand before anything else: `ctx.ActiveAssembly` and `ctx.MetadataToken`
@@ -1205,23 +1210,28 @@ module internal UnaryMetadataCallOps =
 
         let threadState = state.ThreadState.[thread]
 
-        IlMachineStateExecution.callMethod
-            loggerFactory
-            baseClassTypes
-            None
-            ConstructionState.NotConstructing
-            performInterfaceResolution
-            false
-            true
-            concretizedMethod.Generics
-            concretizedMethod
-            thread
-            threadState
-            None
-            ReturnValueDisposition.PushToCaller
-            false // wrapExceptionInTargetInvocation
-            state,
-        WhatWeDid.Executed
+        let state, commitment =
+            IlMachineStateExecution.callMethodWithCommitment
+                loggerFactory
+                baseClassTypes
+                None
+                ConstructionState.NotConstructing
+                performInterfaceResolution
+                false
+                true
+                concretizedMethod.Generics
+                concretizedMethod
+                thread
+                threadState
+                None
+                ReturnValueDisposition.PushToCaller
+                false // wrapExceptionInTargetInvocation
+                state
+
+        match commitment with
+        | IlMachineStateExecution.CallCommitment.Aborted fatal -> state, WhatWeDid.Aborted fatal
+        | IlMachineStateExecution.CallCommitment.Committed
+        | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed
 
     /// The first instruction at or after `offset` that is not itself a prefix — PawPrint's
     /// counterpart to CoreCLR's `impGetNonPrefixOpcode` (`importer.cpp`), which skips exactly
@@ -1722,5 +1732,6 @@ module internal UnaryMetadataCallOps =
         // and nothing has to put it back: class initialisation happens in the callee's own frame,
         // after this instruction is finished with, so there is no retry to prepare for.
         match commitment with
+        | IlMachineStateExecution.CallCommitment.Aborted fatal -> state, WhatWeDid.Aborted fatal
         | IlMachineStateExecution.CallCommitment.Committed
         | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed

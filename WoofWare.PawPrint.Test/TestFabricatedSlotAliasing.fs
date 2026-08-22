@@ -168,9 +168,9 @@ public static class Driver
                         | [] -> failwith "guest returned no value"
                         | head :: _ -> failwith $"guest returned a non-int: %O{head}"
                     | RunOutcome.GuestUnhandledException (_, _, exn) -> failwith $"guest threw: %O{exn.ExceptionObject}"
-                    | RunOutcome.FailFast (_, _, message) ->
-                        let message = message |> Option.defaultValue "<none>"
-                        failwith $"guest called FailFast: %s{message}"
+                    | RunOutcome.Aborted (_, _, fatal) ->
+                        let message = fatal.Message |> Option.defaultValue "<none>"
+                        failwith $"guest aborted (%O{fatal.Code}): %s{message}"
                     | RunOutcome.SignalTerminated (_, signal) -> failwith $"guest was signalled: %O{signal}"
                 with _ ->
                     for message in messages () do

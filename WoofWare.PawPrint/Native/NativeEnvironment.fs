@@ -151,9 +151,16 @@ module NativeEnvironment =
                 // FailFast aborts the process. We deliberately do not load the
                 // StackCrawlMark / exception / errorSource arguments onto the
                 // eval stack because the caller never returns — the run loop
-                // converts `ExecutionResult.FailFast` directly into
-                // `RunOutcome.FailFast` for the host to surface.
-                ExecutionResult.FailFast (state, ctx.Thread, message)
+                // converts `ExecutionResult.Aborted` directly into
+                // `RunOutcome.Aborted` for the host to surface.
+                ExecutionResult.Aborted (
+                    state,
+                    ctx.Thread,
+                    {
+                        Code = FatalErrorCode.FailFast
+                        Message = message
+                    }
+                )
                 |> NativeHandlerResult.Terminating
                 |> Some
             | paramTypes, returnType ->
