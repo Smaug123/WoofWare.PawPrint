@@ -728,6 +728,24 @@ module NativeCall =
             managedPointerOfPointerArgument operation $"{argName}._ptr" ptrValue
         | other -> failwith $"%s{operation}: expected %s{argName} to be StringHandleOnStack, got %O{other}"
 
+    /// Decode the byref a `StackCrawlMarkHandle` wraps. Its `_ptr` is `Unsafe.AsPointer(ref
+    /// stackMark)` over a `StackCrawlMark` local, so the byref names the frame that declared the
+    /// mark; `StackCrawlMark.resolveCaller` needs exactly that frame.
+    let stackCrawlMarkHandleTarget
+        (operation : string)
+        (state : IlMachineState)
+        (argName : string)
+        (arg : CliType)
+        : ManagedPointerSource
+        =
+        match arg with
+        | CliType.ValueType vt ->
+            let ptrField = IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_ptr"
+
+            let ptrValue = CliValueType.DereferenceFieldById ptrField vt
+            managedPointerOfPointerArgument operation $"{argName}._ptr" ptrValue
+        | other -> failwith $"%s{operation}: expected %s{argName} to be StackCrawlMarkHandle, got %O{other}"
+
     let objectHandleOnStackTarget
         (operation : string)
         (state : IlMachineState)

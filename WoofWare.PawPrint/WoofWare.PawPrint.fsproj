@@ -66,6 +66,7 @@
     <Compile Include="MethodState.fs" />
     <Compile Include="ThreadState.fs" />
     <Compile Include="StackFrameCapture.fs" />
+    <Compile Include="StackCrawlMark.fs" />
     <Compile Include="TypeResolution.fs" />
     <Compile Include="HardwareIntrinsicsProfile.fs" />
     <Compile Include="DebuggerState.fs" />
