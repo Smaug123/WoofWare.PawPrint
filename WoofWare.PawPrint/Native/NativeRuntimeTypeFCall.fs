@@ -40,6 +40,36 @@ module NativeRuntimeTypeFCall =
         | "System.Private.CoreLib",
           "System.Runtime.CompilerServices",
           "MethodTable",
+          "InstantiationArg0",
+          [],
+          MethodReturnType.Returns (ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                                      "MethodTable",
+                                                                                      methodTableGenerics))) when
+            methodTableGenerics.IsEmpty
+            ->
+            // CoreCLR: `MethodTableNative::InstantiationArg0` (comutilnative.cpp:1829). Its
+            // callers are `CastHelpers.Box_Nullable`, which uses it to allocate a box of the `T`
+            // in `Nullable<T>` rather than of the nullable itself, and the debug assertion in
+            // `CastHelpers.IsNullableForType` that the `**PerInstInfo` shortcut agrees with it.
+            let operation = "MethodTable.InstantiationArg0"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let methodTableArg, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let methodTableFor =
+                NativeCall.runtimeTypeHandleTargetOfEvalStackValue operation methodTableArg
+
+            let argument = MethodTableProjection.instantiationArg0 state methodTableFor
+
+            let state =
+                IlMachineState.pushToEvalStack
+                    (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed argument)))
+                    ctx.Thread
+                    state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System.Runtime.CompilerServices",
+          "MethodTable",
           "GetPrimitiveCorElementType",
           [],
           MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection",
