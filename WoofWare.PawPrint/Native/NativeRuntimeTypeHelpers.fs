@@ -1036,47 +1036,117 @@ module NativeRuntimeTypeHelpers =
 
         $"%s{declaringTypeName}::%s{methodInfo.Name} (MethodDef 0x%08x{token})"
 
+    /// What one axis of a reflected type's generic environment -- the type variables, or the
+    /// method variables -- denotes.
+    ///
+    /// Two cases and not a per-variable mixture, because a mixture cannot arise: an axis comes
+    /// either from an instantiation, whose every argument is a runtime type, or from a definition
+    /// read as itself, whose every argument is that definition's own variable. Binding *some*
+    /// arguments of an axis is `MakeGenericMethod` with an open argument, which
+    /// `MethodHandle.MethodGenerics` cannot express either (see
+    /// `sourcesPure/MakeGenericMethodOpenArgument.cs`).
+    ///
+    /// The distinction is not cosmetic. `Bound` keeps the concrete handles, which is what lets an
+    /// element mentioning only this axis be *concretized* rather than walked -- and it must be,
+    /// since `RuntimeTypeHandleTarget.openConstructed` refuses an all-closed argument list.
+    [<RequireQualifiedAccess>]
+    type ReflectionVariableBinding =
+        /// The owner is an instantiation: the `i`th variable denotes this runtime type.
+        | Bound of ImmutableArray<ConcreteTypeHandle>
+        /// The owner is a definition read as itself: the `i`th variable denotes this target,
+        /// which is the very object reflection hands the guest for it.
+        | Formal of ImmutableArray<RuntimeTypeHandleTarget>
+
+    [<RequireQualifiedAccess>]
+    module ReflectionVariableBinding =
+        /// The axis as targets, which is what a structural walk substitutes.
+        let targets (binding : ReflectionVariableBinding) : ImmutableArray<RuntimeTypeHandleTarget> =
+            match binding with
+            | ReflectionVariableBinding.Bound handles ->
+                handles |> Seq.map RuntimeTypeHandleTarget.Closed |> ImmutableArray.CreateRange
+            | ReflectionVariableBinding.Formal targets -> targets
+
+        /// The axis as a substitution `concretizeType` can apply, where it has one.
+        ///
+        /// `Formal` answers empty rather than failing: it is a legitimate argument on the closed
+        /// path precisely when the element mentions no variable of this axis, and then the vector
+        /// is never indexed. `reflectedTypeTarget` is what enforces that precondition.
+        let substitution (binding : ReflectionVariableBinding) : ImmutableArray<ConcreteTypeHandle> =
+            match binding with
+            | ReflectionVariableBinding.Bound handles -> handles
+            | ReflectionVariableBinding.Formal _ -> ImmutableArray.Empty
+
     /// The generic environment a *reflected* type is read in: what each ECMA-335 `!i` and `!!i`
     /// denotes, as something reflection can hand the guest.
     ///
     /// One entry per generic parameter the owner declares, so an index outside an array is
-    /// malformed metadata rather than a missing entry. `MethodVariables` is empty where the owner
-    /// is a type rather than a method, which makes every `!!i` there a failure -- ECMA-335
-    /// §II.10.1.7 scopes a type parameter's constraints to the type, and a method that declares no
-    /// generic parameters cannot spell one in its own signature.
+    /// malformed metadata rather than a missing entry. `MethodVariables` is an empty `Formal`
+    /// where the owner is a type rather than a method, which makes every `!!i` there a failure --
+    /// ECMA-335 §II.10.1.7 scopes a type parameter's constraints to the type, and a method that
+    /// declares no generic parameters cannot spell one in its own signature.
     type ReflectionTypeEnvironment =
         {
-            TypeVariables : ImmutableArray<RuntimeTypeHandleTarget>
-            MethodVariables : ImmutableArray<RuntimeTypeHandleTarget>
+            TypeVariables : ReflectionVariableBinding
+            MethodVariables : ReflectionVariableBinding
         }
 
-    /// Does this signature element mention a generic parameter anywhere inside it? Such an element
-    /// denotes no single runtime type, so it cannot be concretised.
-    let rec private mentionsGenericParameter (ty : TypeDefn) : bool =
+    /// Which axes a signature element mentions: whether any `!i` and whether any `!!i` appears
+    /// anywhere inside it.
+    ///
+    /// Both answers come from one walk rather than from two predicates, because the caller uses
+    /// them together to decide whether the element can be concretized, and two walks that had to
+    /// agree by discipline could drift.
+    [<Struct>]
+    type private MentionedAxes =
+        {
+            TypeVariable : bool
+            MethodVariable : bool
+        }
+
+    module private MentionedAxes =
+        let none : MentionedAxes =
+            {
+                TypeVariable = false
+                MethodVariable = false
+            }
+
+        let combine (a : MentionedAxes) (b : MentionedAxes) : MentionedAxes =
+            {
+                TypeVariable = a.TypeVariable || b.TypeVariable
+                MethodVariable = a.MethodVariable || b.MethodVariable
+            }
+
+    let rec private mentionedAxes (ty : TypeDefn) : MentionedAxes =
         match ty with
-        | TypeDefn.GenericTypeParameter _
-        | TypeDefn.GenericMethodParameter _ -> true
+        | TypeDefn.GenericTypeParameter _ ->
+            { MentionedAxes.none with
+                TypeVariable = true
+            }
+        | TypeDefn.GenericMethodParameter _ ->
+            { MentionedAxes.none with
+                MethodVariable = true
+            }
         | TypeDefn.Array (element, _)
         | TypeDefn.Pinned element
         | TypeDefn.Pointer element
         | TypeDefn.Byref element
-        | TypeDefn.OneDimensionalArrayLowerBoundZero element -> mentionsGenericParameter element
-        | TypeDefn.Modified m -> mentionsGenericParameter m.Unmodified || mentionsGenericParameter m.Modifier
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element -> mentionedAxes element
+        | TypeDefn.Modified m -> MentionedAxes.combine (mentionedAxes m.Unmodified) (mentionedAxes m.Modifier)
         | TypeDefn.GenericInstantiation (generic, args) ->
-            mentionsGenericParameter generic
-            || (args |> Seq.exists mentionsGenericParameter)
+            (mentionedAxes generic, args)
+            ||> Seq.fold (fun acc arg -> MentionedAxes.combine acc (mentionedAxes arg))
         | TypeDefn.FunctionPointer signature ->
-            let returnMentions =
+            let fromReturn =
                 match signature.ReturnType with
-                | MethodReturnType.Void -> false
-                | MethodReturnType.Returns ret -> mentionsGenericParameter ret
+                | MethodReturnType.Void -> MentionedAxes.none
+                | MethodReturnType.Returns ret -> mentionedAxes ret
 
-            returnMentions
-            || (signature.ParameterTypes |> List.exists mentionsGenericParameter)
+            (fromReturn, signature.ParameterTypes)
+            ||> List.fold (fun acc parameter -> MentionedAxes.combine acc (mentionedAxes parameter))
         | TypeDefn.PrimitiveType _
         | TypeDefn.FromReference _
         | TypeDefn.FromDefinition _
-        | TypeDefn.Void -> false
+        | TypeDefn.Void -> MentionedAxes.none
 
     /// The canonical identity of the definition at the head of a generic instantiation.
     ///
@@ -1128,35 +1198,63 @@ module NativeRuntimeTypeHelpers =
         (ty : TypeDefn)
         : IlMachineState * RuntimeTypeHandleTarget
         =
-        if not (mentionsGenericParameter ty) then
-            // No variable to bind, so this is an ordinary closed type and the environment is
-            // irrelevant to it.
+        // Every variable this element mentions denotes a runtime type, so the element does too --
+        // whether it mentions none at all, or only variables of an axis that is `Bound`.
+        //
+        // This has to be decided *before* the structural walk rather than after it, because a
+        // walk that resolved every argument closed could not put the answer back together:
+        // `RuntimeTypeHandleTarget.openConstructed` refuses an all-closed argument list, since
+        // such a type belongs in `AllConcreteTypes` as a `Closed` handle, which the walk cannot
+        // mint. `List<!0>` under a closed `Box<int>` is exactly that shape, and it shares a
+        // signature with `!!0` whenever the declaring type is an instantiation and the method is
+        // a generic method definition.
+        let mentioned = mentionedAxes ty
+
+        let axisIsClosed (mentions : bool) (binding : ReflectionVariableBinding) : bool =
+            not mentions
+            || (
+                match binding with
+                | ReflectionVariableBinding.Bound _ -> true
+                | ReflectionVariableBinding.Formal _ -> false
+            )
+
+        if
+            axisIsClosed mentioned.TypeVariable environment.TypeVariables
+            && axisIsClosed mentioned.MethodVariable environment.MethodVariables
+        then
+            // A `Formal` axis contributes an empty substitution, which is sound precisely because
+            // the test above has established that this element mentions no variable of it.
             let state, handle =
                 IlMachineState.concretizeType
                     loggerFactory
                     baseClassTypes
                     state
                     assembly.DefinitionFullName
-                    ImmutableArray.Empty
-                    ImmutableArray.Empty
+                    (ReflectionVariableBinding.substitution environment.TypeVariables)
+                    (ReflectionVariableBinding.substitution environment.MethodVariables)
                     ty
 
             state, RuntimeTypeHandleTarget.Closed handle
         else
 
+        // Reached only for an axis the test above found `Formal`, since a `Bound` one takes the
+        // closed path; but indexed generally, so the arm stays correct if that ever changes.
+        let typeVariables = ReflectionVariableBinding.targets environment.TypeVariables
+        let methodVariables = ReflectionVariableBinding.targets environment.MethodVariables
+
         match ty with
         | TypeDefn.GenericTypeParameter index ->
-            if index < 0 || index >= environment.TypeVariables.Length then
+            if index < 0 || index >= typeVariables.Length then
                 failwith
-                    $"%s{operation}: %s{ownerDescription} names type-generic parameter !%d{index}, but its generic environment supplies %d{environment.TypeVariables.Length} type argument(s)"
+                    $"%s{operation}: %s{ownerDescription} names type-generic parameter !%d{index}, but its generic environment supplies %d{typeVariables.Length} type argument(s)"
 
-            state, environment.TypeVariables.[index]
+            state, typeVariables.[index]
         | TypeDefn.GenericMethodParameter index ->
-            if index < 0 || index >= environment.MethodVariables.Length then
+            if index < 0 || index >= methodVariables.Length then
                 failwith
-                    $"%s{operation}: %s{ownerDescription} names method-generic parameter !!%d{index}, but its generic environment supplies %d{environment.MethodVariables.Length} method argument(s)"
+                    $"%s{operation}: %s{ownerDescription} names method-generic parameter !!%d{index}, but its generic environment supplies %d{methodVariables.Length} method argument(s)"
 
-            state, environment.MethodVariables.[index]
+            state, methodVariables.[index]
         | TypeDefn.Modified modified ->
             // Reflection reports the unmodified type, and `concretizeType` strips custom modifiers
             // on the closed path too (TypeConcretisation.fs), so the two agree.
@@ -1296,6 +1394,10 @@ module NativeRuntimeTypeHelpers =
                 failwith
                     $"logic error: %s{operation}: %O{target} is not a generic-parameter target, which binding `declaringType` above has already refused"
 
+        // Both axes are `Formal`: a constraint is read against the declaring owner's own
+        // variables, never against an instantiation of them, so nothing here can take the closed
+        // path on account of the environment. An all-closed constraint like `where T : List<int>`
+        // still does, by mentioning no variable at all.
         let environment =
             {
                 ReflectionTypeEnvironment.TypeVariables =
@@ -1303,7 +1405,8 @@ module NativeRuntimeTypeHelpers =
                         declaringTypeInfo.Generics.Length
                         (fun index -> RuntimeTypeHandleTarget.GenericParameter (declaringType, index))
                     |> ImmutableArray.CreateRange
-                ReflectionTypeEnvironment.MethodVariables = methodVariables
+                    |> ReflectionVariableBinding.Formal
+                ReflectionTypeEnvironment.MethodVariables = methodVariables |> ReflectionVariableBinding.Formal
             }
 
         let constraintTarget (state : IlMachineState) (ty : TypeDefn) : IlMachineState * RuntimeTypeHandleTarget =
