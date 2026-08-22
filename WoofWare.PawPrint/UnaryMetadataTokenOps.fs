@@ -533,13 +533,20 @@ module internal UnaryMetadataTokenOps =
         // `allowOpenGenericDefinition` is PawPrint's spelling of CoreCLR's `PermitUninstDefOrRef`,
         // which `CEEInfo::resolveToken` grants to `ldtoken` and to no other opcode
         // (`vm/jitinterface.cpp`, the `CORINFO_TOKENKIND_Ldtoken` ternary on the `LoadTypeDefOrRef`
-        // call). Each arm's value has its own observer, because the arm a type reaches depends on
-        // where it is declared: `typeof(List<>)` is a TypeReference and `typeof(Box<>)` a
-        // TypeDefinition. Both live in `sourcesPure/LdtokenMemberTokens.cs`, and both are written
-        // inside a *generic context* deliberately: with the token's placeholders unbound, clearing
-        // the flag still reaches the same open-definition target through
-        // `runtimeTypeHandleTargetForTypeToken`'s `containsUnboundGenericParameter` path, so the
-        // flag only decides once they are bound.
+        // call).
+        //
+        // The flag only decides anything once the token's placeholder arguments are *bound* by the
+        // enclosing frame: unbound, `runtimeTypeHandleTargetForTypeToken` reaches the same
+        // open-definition target through its `containsUnboundGenericParameter` path either way.
+        // `sourcesPure/TypeOpenGenericDefinitionInGenericContext.cs` is the guest that binds them,
+        // and it observes the `TypeSpecification` and `TypeDefinition` arms.
+        //
+        // The `TypeReference` arm is *not* observed, and cannot be today: `typeof(List<>)` --
+        // cross-assembly, so a TypeReference token -- comes back closed at the enclosing
+        // instantiation rather than as the open definition, which is a divergence of its own,
+        // parked as `sourcesPure/TypeOpenGenericDefinitionCrossAssembly.cs`. So do not read this
+        // arm's `true` as tested; it is carried over unchanged, and un-parking that file is what
+        // would pin it.
         let targetForTypeToken
             (declaringAssembly : DumpedAssembly)
             (allowOpenGenericDefinition : bool)

@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Threading.Tasks;
@@ -23,7 +22,6 @@ public static class Program
     //   MemberReference, TypeSpecification parent  -- `Box<int>.Get`
     //   MethodSpecification over a MemberReference -- `Box<string>.Stat<int>`
     //   MethodSpecification over a MethodDef       -- `Ident<int>`
-    //   TypeReference / TypeDefinition, open       -- `typeof(List<>)`, `typeof(Box<>)`
     //   FieldDefinition                            -- the array initialiser at the end
     //
     // Reference equality throughout, not `==`. CoreCLR hands back one `MethodDesc` for a method
@@ -94,53 +92,20 @@ public static class Program
         if (identMethod.GetGenericArguments()[0] != typeof(int)) return 14;
         if (!ReferenceEquals(identMethod, typeof(Program).GetMethod("Ident").MakeGenericMethod(typeof(int)))) return 15;
 
-        // --- Type tokens naming an open generic *definition*, from inside a generic context. ---
-        int openGeneric = OpenGenericTypeTokens<int>();
-        if (openGeneric != 0) return openGeneric;
-
         // --- FieldDefinition, the shape that already worked: an array initialiser blob. ---
         // A control, so a change that broke the pre-existing arm while fixing the new ones shows up
         // here rather than only in the interpreter's own tests.
         int[] data = { 9, 8, 7, 6, 5 };
-        if (data.Length != 5 || data[0] != 9 || data[4] != 5) return 22;
+        if (data.Length != 5 || data[0] != 9 || data[4] != 5) return 16;
 
         // The whole point of the identity assertions: the guest reaches one member by two routes
         // and must get one object.
         Expression<Func<int>> absAgain = () => Math.Abs(-2);
-        if (!ReferenceEquals(((MethodCallExpression)absAgain.Body).Method, absMethod)) return 23;
+        if (!ReferenceEquals(((MethodCallExpression)absAgain.Body).Method, absMethod)) return 17;
 
         return 0;
     }
 
     public static T Ident<T>(T x) => x;
 
-    // `ldtoken` is the only opcode CoreCLR grants `PermitUninstDefOrRef` to, and the interpreter
-    // spells that as a per-arm `allowOpenGenericDefinition` flag on the type-token arms.
-    //
-    // The generic context is what makes the flag decide, and is not incidental: outside one, the
-    // token's placeholder arguments are unbound, and the resolution reaches the same
-    // open-definition target through a second path whether the flag is set or not -- measured, a
-    // version of these checks written in `Main` left the flag flippable with the whole suite still
-    // green. With `T` bound, clearing the flag instead yields the *closed* `List<int>`, which
-    // `crossClosedForContext` catches.
-    //
-    // Both arms are checked because the arm a type reaches depends on where it is declared:
-    // `typeof(List<>)` is a TypeReference (another assembly), `typeof(Box<>)` a TypeDefinition
-    // (this one). They carry the flag separately, so one cannot stand in for the other.
-    private static int OpenGenericTypeTokens<T>()
-    {
-        Type crossOpen = typeof(List<>);
-        Type crossClosedForContext = typeof(List<T>);
-        if (!crossOpen.IsGenericTypeDefinition) return 16;
-        if (ReferenceEquals(crossOpen, crossClosedForContext)) return 17;
-        if (!ReferenceEquals(crossOpen, typeof(List<int>).GetGenericTypeDefinition())) return 18;
-
-        Type sameOpen = typeof(Box<>);
-        Type sameClosedForContext = typeof(Box<T>);
-        if (!sameOpen.IsGenericTypeDefinition) return 19;
-        if (ReferenceEquals(sameOpen, sameClosedForContext)) return 20;
-        if (!ReferenceEquals(sameOpen, typeof(Box<int>).GetGenericTypeDefinition())) return 21;
-
-        return 0;
-    }
 }

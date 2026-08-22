@@ -284,3 +284,74 @@ TypeSpec rows are not expected to park on their consumer.
 the defining-assembly argument.
 
 **Re-measure rung H** after the fix, and report where it goes next.
+
+---
+
+# Outcome
+
+## What the implementation actually did
+
+Option B as planned, plus one thing the plan did not anticipate and one it got wrong.
+
+**Anticipated and done:** `LdtokenTarget` classifier; `MemberReference` and `MethodSpecification`
+decoding shared with `ldftn` and *not* extended to `MethodDef`; `FieldHandleRegistry` derives the
+defining assembly instead of taking it (risk 1 made unrepresentable rather than tested).
+
+**Not anticipated:** a *bare* `MemberReference` naming a generic method is the typical-instantiation
+form, exactly as a bare `MethodDef` is, and needed its own refusal. Before it, that row failed inside
+concretization with "Generic method parameter 0", naming neither token nor shape. The whole-space
+sweep found it; none of the hand-picked cases did.
+
+**Got wrong:** the plan proposed mutation-testing "the `allowOpenGenericDefinition` flags carried
+over unchanged". Two of the three arms are killable; the third is not, for a reason worth recording
+(below).
+
+## Mutation results
+
+Full suite (4286 tests) unless noted.
+
+| # | mutation | outcome |
+| --- | --- | --- |
+| M1 | drop `extractedTypeArgs` on the MemberReference arm | killed — 4, incl. the TypeSpec-parent tests and the guest |
+| M2 | `definingAssemblyOf` returns a wrong assembly | killed — 20 |
+| M3 | MethodSpec: drop the spec's method generics | killed — 4, incl. both MethodSpec tests |
+| M4 | MethodSpec: drop the parent TypeSpec's arguments | killed — the guest |
+| M5 | `TypeSpecification` arm: allow open definitions | killed — `TypeOpenGenericDefinitionInGenericContext.cs` |
+| M6 | `TypeReference` arm: forbid open definitions | **survived** — see below |
+| M7 | accept a bare MemberReference to a generic method | killed — the sweep test |
+| M8 | `TypeDefinition` arm: forbid open definitions | killed — 7 |
+
+M5/M6/M8 were first run under a 51-test filter, where M5 *also* looked like a survivor. It is not;
+the narrow filter was hiding its only killer. Numbers above are from the full suite.
+
+## The surviving mutant is a pre-existing divergence
+
+`allowOpenGenericDefinition` only decides anything once the token's placeholder arguments are bound
+by the enclosing frame — unbound, `runtimeTypeHandleTargetForTypeToken` reaches the same target
+through its `containsUnboundGenericParameter` path either way. Two wrong guesses were measured
+before that was established: the checks were first written in `Main` (placeholders unbound) and then
+in a generic *method* (still unbound — `typeof(List<>)` carries a *declaring-type* parameter, which
+only a generic declaring type binds). Instrumenting the arm directly settled it.
+
+With them bound, `typeof(List<>)` — cross-assembly, so a `TypeReference` token — comes back *closed
+at the enclosing instantiation* rather than as the open definition. Real .NET disagrees, and `main`
+diverges identically, so this is neither caused nor fixed here. Parked as
+`sourcesPure/TypeOpenGenericDefinitionCrossAssembly.cs`, whose comment records that un-parking it is
+what would make M6 killable.
+
+The code comment on that arm now says the flag is *unobserved* rather than claiming it is
+load-bearing. An earlier revision of this branch claimed the latter, which the mutant falsified.
+
+## Rung H
+
+Advances from 4 frames out to **20**, and now stops at `ModuleHandle.ResolveMethod` refusing a
+`MethodDef` token on a generic declaring type — the sibling decoder named under Option C, and the
+same open-generic `RuntimeMethodHandle` work this change scopes out.
+
+## Guest scope, cut back as the plan allowed for
+
+The `sourcesPure` guest carries no *field* shapes. The `ldtoken` half works and the unit tests assert
+it, but every route from a `RuntimeFieldHandle` back to a `FieldInfo` runs `RuntimeType.GetFieldInfo`,
+which reaches the unimplemented `RuntimeFieldHandle.AcquiresContextFromThis` whenever the field
+handle is the first thing to materialise its declaring type. Measured to be independent of this
+change: a `FieldDefinition` `ldtoken` of a same-assembly static stops in the same place on `main`.
