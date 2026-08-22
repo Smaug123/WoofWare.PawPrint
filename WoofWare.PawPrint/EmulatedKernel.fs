@@ -3814,15 +3814,9 @@ module EmulatedKernel =
     [<Literal>]
     let maxMonotonicTimestampClockTicks : int64 = 92233720368547758L
 
-    /// Advance the virtual clock to `ticks`, which must not move it backwards and must keep it
-    /// inside the range every clock-derived reading can be computed from.
-    ///
-    /// The bound is `maxMonotonicTimestampClockTicks` — the tightest of the per-reader ceilings
-    /// — so this is deliberately stricter than any individual reader requires. Enforcing it at
-    /// the writer means a guest that runs the clock off the end faults at the wait that did it,
-    /// naming the operation responsible, rather than at whichever unlucky later `Stopwatch` read
-    /// happens to trip over the value.
-    let withVirtualClockTicks (ticks : int64) (kernel : EmulatedKernel) : EmulatedKernel =
+    /// The checks `withVirtualClockTicks` and `retireStep` share: shared so that the fused
+    /// per-instruction advance cannot drift from the general setter's contract.
+    let private validateVirtualClockTicks (ticks : int64) (kernel : EmulatedKernel) : unit =
         // Checked independently of the monotonicity comparison below, which on its own would
         // wave through a negative target whenever the current value is more negative still —
         // reachable because a kernel assembled by record-copy never passed through here.
@@ -3846,7 +3840,42 @@ module EmulatedKernel =
             failwith
                 $"simulated uptime has reached %d{ticks} ticks (100 ns each), past the %d{maxMonotonicTimestampClockTicks} from which a monotonic nanosecond timestamp can still be derived — about 292 years. The guest has almost certainly been jumping the clock with long timed waits; PawPrint cannot represent time beyond this."
 
+    /// Advance the virtual clock to `ticks`, which must not move it backwards and must keep it
+    /// inside the range every clock-derived reading can be computed from.
+    ///
+    /// The bound is `maxMonotonicTimestampClockTicks` — the tightest of the per-reader ceilings
+    /// — so this is deliberately stricter than any individual reader requires. Enforcing it at
+    /// the writer means a guest that runs the clock off the end faults at the wait that did it,
+    /// naming the operation responsible, rather than at whichever unlucky later `Stopwatch` read
+    /// happens to trip over the value.
+    let withVirtualClockTicks (ticks : int64) (kernel : EmulatedKernel) : EmulatedKernel =
+        validateVirtualClockTicks ticks kernel
+
         { kernel with
+            VirtualClockTicks = ticks
+        }
+
+    /// Retire one interpreted instruction: bump `StepCounter` by one and charge
+    /// `InstructionCostTicks` of virtual time, subject to exactly the checks `withVirtualClockTicks`
+    /// applies.
+    ///
+    /// Equivalent to bumping `StepCounter` by record-copy and piping the result through
+    /// `withVirtualClockTicks`, and exists only because that spelling costs two copies of a
+    /// 31-field record where this costs one. The interpreter performs it once per retired IL
+    /// instruction, which is what makes one record copy worth a named function.
+    let retireStep (kernel : EmulatedKernel) : EmulatedKernel =
+        let ticks = kernel.VirtualClockTicks + kernel.InstructionCostTicks
+
+        // Through the same validation rather than trusting the arithmetic. `withInstructionCostTicks`
+        // rejects a cost below 1, and `KernelConfig.applyTo` is the only production path that sets
+        // the field, so a legally-assembled kernel cannot reach here with one — but a kernel built
+        // by record-copy bypasses that setter entirely, which is the same hole the monotonicity
+        // check below already exists to cover. Revalidating keeps this path's guarantee independent
+        // of how its caller's kernel was assembled.
+        validateVirtualClockTicks ticks kernel
+
+        { kernel with
+            StepCounter = kernel.StepCounter + 1L
             VirtualClockTicks = ticks
         }
 
