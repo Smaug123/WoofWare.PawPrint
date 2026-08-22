@@ -242,14 +242,30 @@ Copy that. Note there is already a third attribute-name decoder at parse time
 (`tryReadAttributeTypeName`, MethodInfo.fs:1024, used for `[UnsafeAccessor]` at :1146-1157) — do
 not add a fourth.
 
-Point-of-use rather than precomputed onto `MetadataMethodFacts`. The first draft justified this by
-a parse-time cost that turns out already to be paid — `CustomAttributes` is materialised eagerly
-for every method (MethodInfo.fs:1230, 1294) and parse already runs a per-method attribute scan —
-so the real trade is: precomputing adds a name comparison inside a loop that already runs, while
-point-of-use pays a scan of an array that is empty for most methods, on a path that is now every
-call. Measure with `WoofWare.PawPrint.Performance` (`StackHeavyProgramBenchmarks`,
-`ReferenceArgProgramBenchmarks`, `VirtualDispatchProgramBenchmarks`) before and after, and put the
-numbers in the PR; if the point-of-use scan shows, precompute instead.
+Precomputed onto `MetadataMethodFacts`, as `IsUnmanagedCallersOnly`, rather than scanned at the
+point of use. This reverses the earlier draft, on three facts established while reading the code:
+
+- `CustomAttribute.Constructor` is a `MetadataToken`, not the `EntityHandle` that
+  `constructorParentName` takes. A point-of-use scan therefore cannot reuse the Domain's decoder
+  as-is: it would need either a fifth attribute-name decoder written against `DumpedAssembly`'s
+  parsed tables, or a refactor of the public one. Parse time has the `MetadataReader` in hand and
+  reuses `constructorParentName` verbatim.
+- `FieldInfo.IsThreadStatic` — the precedent the earlier draft named for the *classifier* — turns
+  out to precompute, for this reason stated in its own comment: "`[ThreadStatic]` is a custom
+  attribute rather than a `FieldAttributes` flag, so it is computed once here at parse time rather
+  than re-walking metadata at each access." Following the precedent means following that too.
+- `callMethodWithCommitment` is the hottest path in the interpreter, and the gate is unconditional
+  on it.
+
+`MetadataMethodFacts` has exactly one construction site (MethodInfo.fs), so the blast radius is a
+field addition rather than a sweep. It is a *derived* fact sitting beside the `CustomAttributes` it
+is derived from, which is a denormalisation; the same shape is already accepted for
+`FieldInfo.IsThreadStatic`, and the field is computed at the one place the array is built, so the
+two cannot drift apart. Note `WoofWare.PawPrint.Domain` is a published package, so this is a
+source-breaking addition for any external consumer constructing the record.
+
+Measure with `WoofWare.PawPrint.Performance` before and after anyway: precompute should be free on
+the call path, and a measurement is what says so.
 
 Accepted risk, precedented on `hasThreadStaticAttribute` (FieldInfo.fs:126-128) and stated in the
 code: the match is on namespace + name and does not verify the attribute type resolves to

@@ -1655,6 +1655,41 @@ module IlMachineStateExecution =
         /// caller could usefully continue from: every caller must propagate rather than carry on.
         | Aborted of FatalError
 
+    /// How the *call site* names its target: whether the transition into the callee is a managed
+    /// one.
+    ///
+    /// Read from the call site's own signature rather than from the callee, because the same
+    /// method can be entered legally through an unmanaged function pointer and fatally through a
+    /// managed one. `sourcesPure/UnmanagedCallersOnlyFunctionPointer.cs` and
+    /// `sourcesImpure/UnmanagedCallersOnlyManagedCalli.cs` are exactly that pair.
+    [<RequireQualifiedAccess>]
+    type CallSiteConvention =
+        /// An ordinary managed call: `call`, `callvirt`, a delegate's `Invoke`, reflection, and a
+        /// `calli` whose call-site signature carries a managed calling convention.
+        | Managed
+        /// A `calli` through a `delegate* unmanaged<...>` — the transition native code itself
+        /// would make.
+        | Unmanaged
+
+    [<RequireQualifiedAccess>]
+    module CallSiteConvention =
+        /// ECMA-335 II.15.3 / II.23.2.3: a call site's calling convention is `DEFAULT` or `VARARG`
+        /// when the call is managed, and one of the platform conventions when it is not.
+        /// `Unmanaged` (0x09) is the "whatever the platform default is" spelling that
+        /// `delegate* unmanaged&lt;...&gt;` compiles to when no convention is named.
+        let ofSignatureCallingConvention (convention : SignatureCallingConvention) : CallSiteConvention =
+            match convention with
+            | SignatureCallingConvention.Default
+            | SignatureCallingConvention.VarArgs -> CallSiteConvention.Managed
+            | SignatureCallingConvention.CDecl
+            | SignatureCallingConvention.StdCall
+            | SignatureCallingConvention.ThisCall
+            | SignatureCallingConvention.FastCall
+            | SignatureCallingConvention.Unmanaged -> CallSiteConvention.Unmanaged
+            | other ->
+                failwith
+                    $"call site declares calling convention %O{other}, which is not one ECMA-335 II.23.2.3 admits for a method signature; refusing to guess whether the transition into the callee is managed"
+
     let rec callMethodWithCommitment
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1663,6 +1698,7 @@ module IlMachineStateExecution =
         (performInterfaceResolution : bool)
         (wasClassConstructor : bool)
         (advanceProgramCounterOfCaller : bool)
+        (callSiteConvention : CallSiteConvention)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (thread : ThreadId)
@@ -1714,6 +1750,51 @@ module IlMachineStateExecution =
                 state, resolved |> Option.defaultValue methodToCall
             else
                 state, methodToCall
+
+        // A `[UnmanagedCallersOnly]` method may be entered only from native code. CoreCLR compiles
+        // one with `CORJIT_FLAG_REVERSE_PINVOKE`, whose prologue performs a reverse-P/Invoke
+        // transition asserting *preemptive* GC mode; managed code runs cooperative, so the
+        // transition fails and `ReversePInvokeBadTransition` (dllimportcallback.cpp) takes the
+        // process down uncatchably. PawPrint does not model GC mode, and asks instead the question
+        // metadata already answers: is this call site a managed one?
+        //
+        // Keyed on the call site, not on the target alone — the target is perfectly legal to
+        // enter. `sourcesPure/UnmanagedCallersOnlyFunctionPointer.cs` calls this very method
+        // through a `delegate* unmanaged<int, int>` and must keep working, and
+        // `sourcesImpure/UnmanagedCallersOnlyManagedCalli.cs` is the same method reached by a
+        // *managed* `calli`, which must not. When `Marshal.GetDelegateForFunctionPointer` lands, a
+        // delegate wrapping such a method's native pointer is likewise a host-initiated entry and
+        // must be given an unmanaged call site rather than arriving here as `Managed`.
+        //
+        // One-directional deliberately: an *unmanaged* call site entering a method that is not
+        // `[UnmanagedCallersOnly]` is undefined behaviour in real .NET rather than a diagnosed
+        // error, so there is no answer to be faithful to and none is invented.
+        //
+        // Before the callee's class initialiser is armed, and before anything else the callee
+        // could observe: real .NET refuses the entry *without* running the declaring type's static
+        // constructor, which `sourcesImpure/UnmanagedCallersOnlyCctorNotRun.cs` pins with a static
+        // constructor that writes to stderr.
+        let unmanagedCallersOnlyEntry : FatalError option =
+            match callSiteConvention with
+            | CallSiteConvention.Unmanaged -> None
+            | CallSiteConvention.Managed ->
+                if MethodInfo.isUnmanagedCallersOnly methodToCall then
+                    {
+                        Code = FatalErrorCode.ExecutionEngine
+                        // CoreCLR's own wording, extended with the method it refused: the guest
+                        // cannot observe either way, and a run that ends this way should say what
+                        // ended it.
+                        Message =
+                            Some
+                                $"Invalid Program: attempted to call a UnmanagedCallersOnly method from managed code. (%s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name})"
+                    }
+                    |> Some
+                else
+                    None
+
+        match unmanagedCallersOnlyEntry with
+        | Some fatal -> state, CallCommitment.Aborted fatal
+        | None ->
 
         let declaringAssy =
             match state.LoadedAssembly methodToCall.DeclaringAssemblyFullName with
@@ -2341,6 +2422,13 @@ module IlMachineStateExecution =
             performInterfaceResolution
             wasClassConstructor
             advanceProgramCounterOfCaller
+            // Every caller of this wrapper is interpreter-internal machinery entering a method the
+            // ordinary managed way: a class constructor, a delegate's constructor, a helper the
+            // interpreter itself decided to run. None of them is the native transition that a
+            // `[UnmanagedCallersOnly]` method admits, so a target carrying that attribute is
+            // refused here just as it would be at a `call` -- and the wrapper's own guard below
+            // then fails loudly, because such a caller has no way to propagate the abort.
+            CallSiteConvention.Managed
             methodGenerics
             methodToCall
             thread

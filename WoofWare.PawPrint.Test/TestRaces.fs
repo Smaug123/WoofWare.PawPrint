@@ -60,8 +60,8 @@ module TestRaces =
         | RealRuntimeResult.NormalExit exitCode -> exitCode
         | RealRuntimeResult.UnhandledException report ->
             failwith $"%s{sourceName} terminated with an unhandled exception under the real runtime:\n%s{report}"
-        | RealRuntimeResult.Aborted (_code, report) ->
-            failwith $"%s{sourceName} called Environment.FailFast under the real runtime:\n%s{report}"
+        | RealRuntimeResult.Aborted (observed, report) ->
+            failwith $"%s{sourceName} aborted (%O{observed}) under the real runtime:\n%s{report}"
 
     // Seed sweep used to characterise PCT coverage. The first 30 splitmix64
     // outputs already hit both interleavings of ReadWriteRace; running 64

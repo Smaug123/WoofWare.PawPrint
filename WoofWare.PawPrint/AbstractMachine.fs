@@ -420,6 +420,7 @@ module AbstractMachine =
                     false
                     false
                     false
+                    IlMachineStateExecution.CallSiteConvention.Managed
                     methodGenerics
                     methodPtr
                     thread

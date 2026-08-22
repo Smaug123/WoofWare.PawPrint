@@ -665,6 +665,7 @@ module internal UnaryMetadataCallOps =
                 false
                 false
                 true
+                IlMachineStateExecution.CallSiteConvention.Managed
                 concretizedMethod.Generics
                 concretizedMethod
                 ctx.Thread
@@ -1219,6 +1220,7 @@ module internal UnaryMetadataCallOps =
                 performInterfaceResolution
                 false
                 true
+                IlMachineStateExecution.CallSiteConvention.Managed
                 concretizedMethod.Generics
                 concretizedMethod
                 thread
@@ -1699,6 +1701,14 @@ module internal UnaryMetadataCallOps =
                     $"calli: declaring type %s{MethodOwner.describe methodToCall.Owner} of the target method is not registered in AllConcreteTypes"
             )
 
+        // `calli` is the only instruction whose call site declares its own calling convention, and
+        // so the only one that can make the *legal* entry into a `[UnmanagedCallersOnly]` method:
+        // `delegate* unmanaged<...>` compiles to a StandaloneSignature carrying an unmanaged
+        // convention, where every managed route -- including a `calli` through
+        // `delegate*<...>` over the very same address -- carries `Default`.
+        let callSiteConvention =
+            IlMachineStateExecution.CallSiteConvention.ofSignatureCallingConvention callSiteHeader.CallingConvention
+
         // No class-initialisation check here: `callMethodWithCommitment` arms it on the callee's
         // frame, and it is the callee's prologue that runs it. That includes the per-kind
         // question of whether a *synthesised* method's declaring type is initialised at all —
@@ -1719,6 +1729,7 @@ module internal UnaryMetadataCallOps =
                 false
                 false
                 true
+                callSiteConvention
                 methodToCall.Generics
                 methodToCall
                 thread
