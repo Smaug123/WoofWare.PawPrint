@@ -153,6 +153,8 @@
     <Compile Include="TestEmulatedKernelInodeLifetime.fs" />
     <Compile Include="TestEmulatedKernelSockets.fs" />
     <Compile Include="TestSocketEventDelivery.fs" />
+    <Compile Include="SocketFuzz.fs" />
+    <Compile Include="TestSocketFuzz.fs" />
     <Compile Include="TestSocketBinding.fs" />
     <Compile Include="TestFlockBlocking.fs" />
     <Compile Include="TestPReadNegativeSize.fs" />
@@ -266,6 +268,8 @@
 
   <ItemGroup>
     <EmbeddedResource Include="socketMatrix\*.tsv" />
+    <EmbeddedResource Include="socketFuzz\harness.c" />
+    <EmbeddedResource Include="socketFuzzCorpus\*.txt" />
     <EmbeddedResource Include="sourcesPure\*.cs" />
     <EmbeddedResource Include="sourcesImpure\*.cs" />
     <EmbeddedResource Include="sources\*.cs" />
