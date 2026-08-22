@@ -1317,6 +1317,82 @@ module IntrinsicMethodKeys =
             pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector128`1" "get_IsSupported" []
             pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector256`1" "get_IsSupported" []
             pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector512`1" "get_IsSupported" []
+            // `System.UInt128` carries a *type-level* [Intrinsic], which is why every one of its
+            // members reaches the intrinsic dispatcher. That marker is not about body
+            // substitution: CoreCLR consumes it in MethodTableBuilder (methodtablebuilder.cpp:11176,
+            // `SetIsIntrinsicType`) to give the type the ABI and alignment of `unsigned __int128`
+            // — the fact `DeclaredTypeFacts.nominalAlignment` already models — and this runtime's
+            // JIT has no `NI_System_UInt128_*` entry at all. The shipped IL below is therefore
+            // what real .NET runs, modulo ordinary inlining.
+            //
+            // op_Equality: `ldarg.0; ldfld _lower; ldarg.1; ldfld _lower; bne.un L; ldarg.0;
+            // ldfld _upper; ldarg.1; ldfld _upper; ceq; ret; L: ldc.i4.0; ret`. Two `ldfld`s of a
+            // `ulong` field on a by-value struct argument, then integer comparison — every
+            // boundary is modelled. `op_Inequality` has the mirror-image body and is deliberately
+            // left off: nothing exercises it yet, so it keeps failing at the dispatcher naming
+            // itself.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/UInt128.cs#L1300
+            pattern
+                "System.Private.CoreLib"
+                "System.UInt128"
+                "op_Equality"
+                [
+                    IntrinsicParameterPattern.Exact "System.UInt128"
+                    IntrinsicParameterPattern.Exact "System.UInt128"
+                ]
+            // The value-construction members equality is useless without, and which every one of
+            // the entries below bottoms out in: `.ctor(ulong upper, ulong lower)` is
+            // `ldarg.0; ldarg.2; stfld _lower; ldarg.0; ldarg.1; stfld _upper; ret`.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/UInt128.cs#L39
+            pattern
+                "System.Private.CoreLib"
+                "System.UInt128"
+                ".ctor"
+                [
+                    IntrinsicParameterPattern.Exact "System.UInt64"
+                    IntrinsicParameterPattern.Exact "System.UInt64"
+                ]
+            // `ldc.i4.0/m1; conv.i8` twice, then the ctor above: MinValue is (0, 0) and MaxValue
+            // is (ulong.MaxValue, ulong.MaxValue).
+            pattern "System.Private.CoreLib" "System.UInt128" "get_MinValue" []
+            pattern "System.Private.CoreLib" "System.UInt128" "get_MaxValue" []
+            // The six widening conversions, each `ldc.i4.0; conv.i8; ldarg.0; conv.u8; newobj
+            // .ctor; ret` — a zero upper half and a zero-extended lower half. The `UInt64`
+            // overload is the one that needs no `conv.u8`. They are enumerated rather than
+            // matched with `anyParams` so that an overload added by a future runtime bump has to
+            // be reviewed rather than inherited. UInt128 declares no `op_Implicit` *from*
+            // UInt128; the narrowing direction is `op_Explicit`, which is not allowlisted.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/UInt128.cs#L1712
+            pattern
+                "System.Private.CoreLib"
+                "System.UInt128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.Byte" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.UInt128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.Char" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.UInt128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.UInt16" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.UInt128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.UInt32" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.UInt128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.UInt64" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.UInt128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
         ]
 
     let isSafeIntrinsic (key : IntrinsicMethodKey) : bool =

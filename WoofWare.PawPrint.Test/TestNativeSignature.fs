@@ -855,29 +855,36 @@ public sealed class MethodSignatureHost
         |> shouldEqual (CliType.unwrapPrimitiveLikeDeep expectedHandle)
 
     [<Test>]
-    let ``Signature_Init refuses a generic method definition`` () : unit =
+    let ``Signature_Init resolves a generic method definition's own variables`` () : unit =
         // The handle the introduced-method iterator mints for `Generic<T>` has empty MethodGenerics
-        // even though the method declares one type parameter. CoreCLR resolves the signature
-        // against the typical instantiation, whose method generic parameters a ConcreteTypeHandle
-        // cannot represent (the same limit that parks MakeGenericMethodOpenArgument.cs), so this
-        // must fail loudly rather than substitute something plausible for T.
+        // even though the method declares one type parameter -- which is how a handle spells the
+        // typical instantiation. CoreCLR resolves the signature against it, so `!!0` has to come
+        // back as the RuntimeType for the method's own `T` rather than being substituted away.
         let fixture = makeSignatureFixture ()
 
-        let ex =
-            Assert.Throws<System.Exception> (fun () ->
-                invokeSignatureInit
-                    fixture
-                    nullPCorSig
-                    (CliType.Numeric (CliNumericType.Int32 0))
-                    (Some nullFieldHandle)
-                    (openMethodHandle fixture "Generic")
-                |> ignore
+        let signatureAddr, _, state =
+            invokeSignatureInit
+                fixture
+                nullPCorSig
+                (CliType.Numeric (CliNumericType.Int32 0))
+                (Some nullFieldHandle)
+                (openMethodHandle fixture "Generic")
+
+        let methodInfo = requiredHostMethod fixture "Generic"
+
+        let expected =
+            RuntimeTypeHandleTarget.MethodGenericParameter (
+                (methodInfo.TryDeclaringType |> Option.get).Identity,
+                ComparableMethodDefinitionHandle.Make (MethodInfo.requireMetadata "test" methodInfo).Handle,
+                0
             )
 
-        ex.Message
-        |> shouldContainText "TODO: Signature_Init on generic method definition Generic"
+        // Parameter and return alike: `T Generic<T>(T t)` spells `!!0` in both positions, and one
+        // walk answers both.
+        argumentTargets state signatureAddr |> shouldEqual [ expected ]
 
-        ex.Message |> shouldContainText "declares 1 generic parameter"
+        runtimeTypeTargetOfField state signatureAddr "_returnTypeORfieldType"
+        |> shouldEqual expected
 
     [<TestCaseSource(nameof nullFieldHandleSpellings)>]
     let ``Signature_Init reaches the method arm for every spelling of a null field handle``

@@ -23,6 +23,7 @@ module TestSocketBinding =
     let private binding (address : uint32) (port : uint16) : SocketBinding =
         {
             Endpoint = endpoint address port
+            LockedAddress = None
         }
 
     let private loopback = InternetEndpoint.LoopbackAddress
@@ -102,9 +103,20 @@ module TestSocketBinding =
 
         Check.One (propertyConfig, property)
 
-    /// The measured conflict matrix, row by row: `(first address, first is
-    /// listening, first reuse, second address, second reuse)` against what each
-    /// flavour answered. Ports are equal throughout, since an unequal port never
+    let private idle = SocketPhase.Idle
+
+    let private listeningPhase =
+        SocketPhase.Listening
+            {
+                Backlog = 8
+                Queue = []
+            }
+
+    let private establishedPhase = SocketPhase.Established (ConnectionId 0L)
+
+    /// The measured conflict matrix, row by row: `(first address, first phase,
+    /// first reuse, second address, second reuse)` against what each flavour
+    /// answered. Ports are equal throughout, since an unequal port never
     /// conflicts.
     [<Test>]
     let ``the conflict relation matches the measured matrix`` () : unit =
@@ -112,23 +124,29 @@ module TestSocketBinding =
             [
                 // exact address, neither listening, both reuse: Linux permits,
                 // Darwin refuses the duplicate.
-                "exact, unlistened, both reuse", loopback, false, true, loopback, true, false, true
+                "exact, unlistened, both reuse", loopback, idle, true, loopback, true, false, true
                 // ...and once the first listens, both refuse.
-                "exact, listening, both reuse", loopback, true, true, loopback, true, true, true
+                "exact, listening, both reuse", loopback, listeningPhase, true, loopback, true, true, true
                 // Without the flag on both sides the two agree, whatever the
                 // addresses: this is every UDP bind, and every PT_UNSPECIFIED one.
-                "exact, unlistened, no reuse", loopback, false, false, loopback, false, true, true
-                "exact, unlistened, reuse on second only", loopback, false, false, loopback, true, true, true
+                "exact, unlistened, no reuse", loopback, idle, false, loopback, false, true, true
+                "exact, unlistened, reuse on second only", loopback, idle, false, loopback, true, true, true
                 // wildcard against a specific address, both reuse: Linux refuses
                 // once the wildcard listens, Darwin permits regardless.
-                "wildcard listening, then specific", wildcard, true, true, loopback, true, true, false
-                "wildcard unlistened, then specific", wildcard, false, true, loopback, true, false, false
-                "specific listening, then wildcard", loopback, true, true, wildcard, true, true, false
+                "wildcard listening, then specific", wildcard, listeningPhase, true, loopback, true, true, false
+                "wildcard unlistened, then specific", wildcard, idle, true, loopback, true, false, false
+                "specific listening, then wildcard", loopback, listeningPhase, true, wildcard, true, true, false
                 // No overlap at all, so nothing to refuse.
-                "different specific addresses", loopback, true, true, 0x7F000002u, true, false, false
+                "different specific addresses", loopback, listeningPhase, true, 0x7F000002u, true, false, false
+                // An established socket's pcb is keyed by its full peer tuple:
+                // a reuse-carrying rebind over it passes on both flavours (a
+                // replacement listener over accepted children — measured), and
+                // a flagless one is refused on both.
+                "exact, established, both reuse", loopback, establishedPhase, true, loopback, true, false, false
+                "exact, established, no reuse on second", loopback, establishedPhase, true, loopback, false, true, true
             ]
 
-        for name, firstAddress, listening, firstReuse, secondAddress, secondReuse, linuxConflicts, darwinConflicts in
+        for name, firstAddress, firstPhase, firstReuse, secondAddress, secondReuse, linuxConflicts, darwinConflicts in
             rows do
             let existing = binding firstAddress 40000us
             let candidate = binding secondAddress 40000us
@@ -137,7 +155,7 @@ module TestSocketBinding =
                 SimulatedUnixPlatform.linuxX64
                 existing
                 firstReuse
-                listening
+                firstPhase
                 candidate
                 secondReuse
             |> fun actual ->
@@ -148,7 +166,7 @@ module TestSocketBinding =
                 SimulatedUnixPlatform.macOsArm64
                 existing
                 firstReuse
-                listening
+                firstPhase
                 candidate
                 secondReuse
             |> fun actual ->
@@ -168,9 +186,11 @@ module TestSocketBinding =
             let existing = binding loopback firstPort
             let candidate = binding loopback secondPort
 
+            let phase = if listening then listeningPhase else idle
+
             platforms
             |> List.forall (fun platform ->
-                not (SimulatedUnixPlatform.bindConflict platform existing reuse listening candidate reuse)
+                not (SimulatedUnixPlatform.bindConflict platform existing reuse phase candidate reuse)
             )
 
         Check.One (propertyConfig, property)
@@ -263,7 +283,7 @@ module TestSocketBinding =
             SimulatedUnixPlatform.macOsArm64
             specificBinding
             true
-            false
+            idle
             wildcardBinding
             false
         |> shouldEqual true

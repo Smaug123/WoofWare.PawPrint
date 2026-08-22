@@ -467,23 +467,21 @@ module Program =
         // from here to the return touches only `State`, so each rebuilt `PreparedProgram` existed
         // only for the next stage to read `.State` straight back out of it. This function runs
         // once per interpreted instruction, which is what made those wrappers worth removing.
-        let state =
-            state.MapKernel (fun kernel ->
-                // `EmulatedKernel.InstructionCostTicks` of virtual time per scheduler
-                // tick — see that constant for the rate and why it is what it is.
-                // Bumping in lock-step with `StepCounter` keeps both clocks pure
-                // functions of "how many scheduler ticks have elapsed", which is what
-                // tests rely on when driving the strategies without a real driver.
-                //
-                // Through `withVirtualClockTicks` so that the horizon is enforced at
-                // the writer; this path cannot realistically reach it (it would take
-                // ~9.2e12 retired instructions) but going around the validating setter
-                // would leave the invariant true only by coincidence.
-                { kernel with
-                    StepCounter = kernel.StepCounter + 1L
-                }
-                |> EmulatedKernel.withVirtualClockTicks (kernel.VirtualClockTicks + kernel.InstructionCostTicks)
-            )
+
+        // `EmulatedKernel.InstructionCostTicks` of virtual time per scheduler
+        // tick — see that constant for the rate and why it is what it is.
+        // Bumping in lock-step with `StepCounter` keeps both clocks pure
+        // functions of "how many scheduler ticks have elapsed", which is what
+        // tests rely on when driving the strategies without a real driver.
+        //
+        // `retireStep` rather than a record-copy piped through
+        // `withVirtualClockTicks`: it applies the same validation — so the horizon
+        // is still enforced at the writer, which this path cannot realistically
+        // reach (it would take ~9.2e12 retired instructions) but which should not
+        // hold only by coincidence — while costing one copy of a 31-field record
+        // instead of two. This runs once per interpreted instruction, where the
+        // second copy was ~8% of everything the interpreter allocated.
+        let state = state.WithKernel (EmulatedKernel.retireStep state.Kernel)
 
         // Clock jitter: with the configured strategy's blessing, jump the clock
         // onto a deadline some thread is already parked on, so that the timeout
