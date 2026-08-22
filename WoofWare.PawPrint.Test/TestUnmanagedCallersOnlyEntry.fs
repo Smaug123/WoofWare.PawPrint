@@ -46,6 +46,7 @@ module TestUnmanagedCallersOnlyEntry =
             "UnmanagedCallersOnlyForceEmitInvoke.cs"
             "UnmanagedCallersOnlyManagedCalli.cs"
             "UnmanagedCallersOnlySuppressGCTransition.cs"
+            "UnmanagedCallersOnlyThreadStart.cs"
         ]
 
     /// The distinguishing half of CoreCLR's message. Asserted on both runtimes: an abort for some

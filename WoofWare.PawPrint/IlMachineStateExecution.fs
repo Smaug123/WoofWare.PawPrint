@@ -1766,6 +1766,59 @@ module IlMachineStateExecution =
                 failwith
                     $"call site declares calling convention %O{other}, which is not one ECMA-335 II.23.2.3 admits for a method signature; refusing to guess whether the thread leaves cooperative mode"
 
+    /// The fatal error that entering <paramref name="method"/> raises, or `None` when the entry is
+    /// legal.
+    ///
+    /// A `[UnmanagedCallersOnly]` method may be entered only from native code. CoreCLR compiles one
+    /// with `CORJIT_FLAG_REVERSE_PINVOKE`, whose prologue performs a reverse-P/Invoke transition
+    /// asserting *preemptive* GC mode; a thread that is still cooperative trips
+    /// `ReversePInvokeBadTransition` (dllimportcallback.cpp) and the process goes down uncatchably.
+    ///
+    /// One-directional deliberately: a *transitioning* entry into a method that is not
+    /// `[UnmanagedCallersOnly]` is undefined behaviour in real .NET rather than a diagnosed error,
+    /// so there is no answer to be faithful to and none is invented.
+    ///
+    /// This is a rule about *entering a method*, not about calling one, which is why it lives here
+    /// rather than inside `callMethodWithCommitment`: a thread's entry point is entered without any
+    /// call instruction, and `sourcesImpure/UnmanagedCallersOnlyThreadStart.cs` is that route.
+    /// Every caller must apply it before anything the callee could observe — real .NET refuses the
+    /// entry *without* running the declaring type's static constructor, which
+    /// `sourcesImpure/UnmanagedCallersOnlyCctorNotRun.cs` pins.
+    ///
+    /// The places a method gets entered, and what each does with this:
+    /// <list type="bullet">
+    /// <item><c>callMethodWithCommitment</c>, which every call instruction, delegate dispatch and
+    /// reflective invoke passes through — applies it;</item>
+    /// <item><c>Thread.StartInternal</c>, which builds a worker's bottom frame directly — applies
+    /// it;</item>
+    /// <item>the guest's entry point, installed by <c>Program</c> — does not, because Roslyn
+    /// refuses to attribute one (CS8899), so no guest can present the shape;</item>
+    /// <item><c>AppContextSeed</c> and <c>SignalDispatch</c>, which likewise build frames directly
+    /// — do not, because neither lets the guest choose the method: the first names BCL methods, and
+    /// a signal handler takes a <c>PosixSignalContext</c>, whose non-blittability makes the
+    /// attribute illegal on it (CS8894).</item>
+    /// </list>
+    let unmanagedCallersOnlyRefusal
+        (transition : CallSiteTransition)
+        (method : WoofWare.PawPrint.MethodInfo<'a, 'b, 'c>)
+        : FatalError option
+        =
+        match transition with
+        | CallSiteTransition.EntersPreemptive -> None
+        | CallSiteTransition.StaysCooperative ->
+            if MethodInfo.isUnmanagedCallersOnly method then
+                {
+                    Code = FatalErrorCode.ExecutionEngine
+                    // CoreCLR's own wording, extended with the method it refused: the guest cannot
+                    // observe either way, and a run that ends this way should say what ended it.
+                    Message =
+                        Some
+                            $"Invalid Program: attempted to call a UnmanagedCallersOnly method from managed code. (%s{MethodOwner.describe method.Owner}::%s{method.Name})"
+                }
+                |> Some
+            else
+                None
+
     let rec callMethodWithCommitment
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1827,48 +1880,17 @@ module IlMachineStateExecution =
             else
                 state, methodToCall
 
-        // A `[UnmanagedCallersOnly]` method may be entered only from native code. CoreCLR compiles
-        // one with `CORJIT_FLAG_REVERSE_PINVOKE`, whose prologue performs a reverse-P/Invoke
-        // transition asserting *preemptive* GC mode; managed code runs cooperative, so the
-        // transition fails and `ReversePInvokeBadTransition` (dllimportcallback.cpp) takes the
-        // process down uncatchably. PawPrint does not model GC mode, and asks instead the question
-        // metadata already answers: is the thread still cooperative when the callee starts?
-        //
-        // Keyed on the call site, not on the target alone — the target is perfectly legal to
+        // Keyed on the call site, not on the target alone -- the target is perfectly legal to
         // enter. `sourcesPure/UnmanagedCallersOnlyFunctionPointer.cs` calls this very method
         // through a `delegate* unmanaged<int, int>` and must keep working, and
         // `sourcesImpure/UnmanagedCallersOnlyManagedCalli.cs` is the same method reached by a
         // *managed* `calli`, which must not. When `Marshal.GetDelegateForFunctionPointer` lands, a
         // delegate wrapping such a method's native pointer is likewise a host-initiated entry and
-        // must be given an unmanaged call site rather than arriving here as `Managed`.
+        // must be given a transitioning call site rather than arriving here as cooperative.
         //
-        // One-directional deliberately: a *transitioning* call site entering a method that is not
-        // `[UnmanagedCallersOnly]` is undefined behaviour in real .NET rather than a diagnosed
-        // error, so there is no answer to be faithful to and none is invented.
-        //
-        // Before the callee's class initialiser is armed, and before anything else the callee
-        // could observe: real .NET refuses the entry *without* running the declaring type's static
-        // constructor, which `sourcesImpure/UnmanagedCallersOnlyCctorNotRun.cs` pins with a static
-        // constructor that writes to stderr.
-        let unmanagedCallersOnlyEntry : FatalError option =
-            match callSiteTransition with
-            | CallSiteTransition.EntersPreemptive -> None
-            | CallSiteTransition.StaysCooperative ->
-                if MethodInfo.isUnmanagedCallersOnly methodToCall then
-                    {
-                        Code = FatalErrorCode.ExecutionEngine
-                        // CoreCLR's own wording, extended with the method it refused: the guest
-                        // cannot observe either way, and a run that ends this way should say what
-                        // ended it.
-                        Message =
-                            Some
-                                $"Invalid Program: attempted to call a UnmanagedCallersOnly method from managed code. (%s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name})"
-                    }
-                    |> Some
-                else
-                    None
-
-        match unmanagedCallersOnlyEntry with
+        // Before the callee's class initialiser is armed, and before anything else the callee could
+        // observe; see `unmanagedCallersOnlyRefusal`.
+        match unmanagedCallersOnlyRefusal callSiteTransition methodToCall with
         | Some fatal -> state, CallCommitment.Aborted fatal
         | None ->
 
