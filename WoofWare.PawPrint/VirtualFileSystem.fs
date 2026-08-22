@@ -1928,12 +1928,14 @@ module VirtualFileSystem =
     /// The next entry an open directory stream over `directory` hands back, and
     /// the cursor to resume from.
     ///
-    /// `None` is end-of-stream. `.` and `..` come first, in that order, which is
-    /// what both kernels do; the names that follow are in the order
-    /// `DirectoryContent.Entries` holds them, which no real kernel's order
-    /// matches (arbitrary on both, and different between them) and which is
-    /// therefore chosen for being deterministic and free rather than for being
-    /// faithful. No caller may compare an enumeration order against a host.
+    /// `None` is end-of-stream. `.` and `..` come first, in that order, and then
+    /// the names in the order `DirectoryContent.Entries` holds them. The whole
+    /// sequence is chosen for being deterministic and free rather than for being
+    /// faithful: no real kernel's order matches it, and none is even stable
+    /// across machines — measured, a directory holding one name `z` enumerates
+    /// as `. .. z` on APFS but as `z .. .` on an ext4, so the dots have no fixed
+    /// position either. No caller may compare an enumeration order against a
+    /// host.
     ///
     /// A stream over a directory `rmdir` has since removed is at end-of-stream
     /// at once, `.` and `..` included: probed on both kernels, `opendir` then

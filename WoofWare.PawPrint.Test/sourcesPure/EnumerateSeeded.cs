@@ -7,12 +7,15 @@ using System.Runtime.InteropServices;
 // a *pure* test, so it runs on the real CLR as well as under PawPrint, and every
 // fact below is one both must agree on.
 //
-// **No row compares an order.** Measured on both kernels, the order `readdir`
-// returns names in is arbitrary and the two disagree: the same seven names come
-// back as `z é a sub ls C b` on APFS and `b a C é z sub ls` on the Linux overlay.
-// Only `.` and `..` have a fixed position -- first, in that order, on both. So
-// every listing here is sorted before it is compared, and PawPrint's own order
-// (the `Map`'s) is pinned in the unit tier instead.
+// **No row compares an order, and that includes `.` and `..`.** Measured, the
+// order `readdir` returns names in is arbitrary and machine-specific: the same
+// seven names come back as `z é a sub ls C b` on APFS and `b a C é z sub ls` on
+// a Linux overlay, and a directory holding one name `z` enumerates as `. .. z`
+// on APFS and on a container's ext4 but as `z .. .` on CI's ext4 -- so not even
+// the dots have a fixed position. An earlier version of this file asserted they
+// came first; it passed on two machines and failed on a third. So every listing
+// here is sorted before it is compared, and PawPrint's own order (the `Map`'s,
+// with the dots ahead of it) is pinned in the unit tier instead.
 //
 // The one divergence in this slice is `DirectoryEntry.NameLength`, which is -1
 // on Linux and the name's byte length on Darwin; it lives in
@@ -196,34 +199,35 @@ class Program
         }
 
         // 18-21: the same walk through the shim, which is the only way to see
-        // `.` and `..` in the order the stream produces them -- first, in that
-        // order, on both kernels. The names after them are compared as a set,
-        // because that order is arbitrary and the two kernels disagree.
+        // `.` and `..` at all -- the managed enumerator drops them unless it is
+        // asked for them, and even then it gives no position. Compared as a
+        // sorted set, because *every* position here is arbitrary: measured, this
+        // directory enumerates as `. .. z` on APFS and as `z .. .` on CI's ext4.
         unsafe
         {
             IntPtr sub = OpenDirPath("d/sub");
             if (sub == IntPtr.Zero) return 18;
 
             DirectoryEntry entry;
-            string first = null;
-            string second = null;
-            string rest = "";
+            string[] seen = new string[8];
             int count = 0;
 
             while (ReadDir(sub, &entry) == 0)
             {
-                string got = NameOf(entry.Name);
+                // A directory of three entries cannot fill this, so overflowing
+                // it means the stream did not terminate where it should have.
+                if (count >= seen.Length) return 19;
 
-                if (count == 0) first = got;
-                else if (count == 1) second = got;
-                else rest = rest.Length == 0 ? got : rest + "," + got;
-
+                seen[count] = NameOf(entry.Name);
                 count++;
             }
 
-            if (CloseDir(sub) != 0) return 19;
-            if (first != "." || second != "..") return 20;
-            if (rest != "z") return 21;
+            if (CloseDir(sub) != 0) return 20;
+
+            // The set, which pins the count too: a stream that yielded the
+            // wrong number of names cannot join to this string.
+            Array.Sort(seen, 0, count, StringComparer.Ordinal);
+            if (string.Join(",", seen, 0, count) != ".,..,z") return 21;
 
             // 22-24: `d_type`. Measured identical on both kernels for every
             // inode kind PawPrint can represent, and *not* implied by the

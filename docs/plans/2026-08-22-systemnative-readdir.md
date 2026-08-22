@@ -90,9 +90,10 @@ platforms; there is no Linux/Darwin divergence anywhere in this table.
 | directory mode `0o000` | EACCES |
 | a name under an unreadable-but-searchable directory | resolves normally |
 | a **nonexistent** name under an unsearchable directory | EACCES, not ENOENT — the walk's search check wins |
-| `.` and `..` present, and first, in that order | yes |
+| `.` and `..` present | yes |
+| `.` and `..` first, in that order | **only on the machines this was measured on.** CI's ext4 puts them last, `..` before `.` — see `docs/divergences.md` |
 | `d_type` for regular / directory / symlink / fifo / socket | `DT_REG` / `DT_DIR` / `DT_LNK` / `DT_FIFO` / `DT_SOCK` |
-| order of the remaining names | arbitrary, and different between them (`m a z` against `z a m` for one seed) |
+| order of the names | arbitrary, and different between them (`m a z` against `z a m` for one seed) |
 | deleting each entry as it is returned, at 5000 entries | skips nothing; the directory ends empty |
 | `DirectoryEntry.NameLength` | **-1 on Linux, the byte length on Darwin** |
 

@@ -2227,9 +2227,9 @@ module TestVirtualFileSystemAgainstHost =
         finally
             removeHostTree root
 
-    /// The names one directory holds, as the host reports them. `.` and `..` are
-    /// excluded on both sides: the BCL's enumerator drops them by default, and
-    /// they are the only two entries whose position is fixed anyway.
+    /// The names one directory holds, as the host reports them, sorted. `.` and
+    /// `..` are excluded on both sides, because the BCL's enumerator drops them
+    /// by default.
     let private hostNames (root : string) (relative : string) : string list =
         Directory.GetFileSystemEntries (hostPath root relative)
         |> Array.map Path.GetFileName
@@ -2276,10 +2276,12 @@ module TestVirtualFileSystemAgainstHost =
         if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
             Assert.Ignore "This oracle compares against a Unix kernel."
 
-        // Sorted on both sides, and deliberately: measured on both kernels, the
-        // order `readdir` returns names in is arbitrary and the two disagree
-        // (`z é a sub ls C b` on APFS against `b a C é z sub ls` on a Linux
-        // overlay, for one seed). Nothing may compare it.
+        // Sorted on both sides, and deliberately: measured, the order `readdir`
+        // returns names in is arbitrary and machine-specific (`z é a sub ls C b`
+        // on APFS against `b a C é z sub ls` on a Linux overlay, for one seed),
+        // and not even `.` and `..` have a fixed position — a directory holding
+        // one name `z` enumerates as `. .. z` on APFS and as `z .. .` on CI's
+        // ext4. Nothing may compare it.
         let unique = Guid.NewGuid().ToString "N"
         let root = Path.Combine (Path.GetTempPath (), $"pawprint-opendir-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>

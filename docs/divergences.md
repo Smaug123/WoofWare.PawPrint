@@ -1021,10 +1021,24 @@ the property that deleting each name as it is returned always empties the direct
 
 ## Directory enumeration order is the model's own, not any kernel's
 
-**CoreCLR (and any Unix)**: the order `readdir(3)` returns names in is arbitrary and filesystem-
-specific. Measured, the same seven names come back as `z é a sub ls C b` on APFS and
-`b a C é z sub ls` on a Linux overlay. Only `.` and `..` have a fixed position — first, in that
-order, on both.
+**CoreCLR (and any Unix)**: the order `readdir(3)` returns names in is arbitrary and machine-
+specific, and *no* entry has a fixed position — the dots included. Measured, the same seven names
+come back as `z é a sub ls C b` on APFS and `b a C é z sub ls` on a Linux overlay; and a directory
+holding the single name `z` enumerates as:
+
+| machine | order |
+| --- | --- |
+| macOS 26.6, APFS | `. .. z` |
+| Linux 6.x arm64 container, ext4 (`/tmp` and `/var/tmp`) | `. .. z` |
+| Linux 6.x arm64 container, fuse bind mount | `. .. z` |
+| GitHub Actions `ubuntu-latest`, ext4 (`/home/runner/work/_temp`) | `z .. .` |
+| GitHub Actions `ubuntu-latest`, ext4 (`/build`, the Nix sandbox on the same filesystem) | `z .. .` |
+
+The last two rows are why this is written down. `EnumerateSeeded.cs` originally asserted that `.`
+and `..` came first, in that order; it passed on macOS and in a Linux container and failed on CI,
+where the dots come *last* and in the other order. What separates the machines was not measured —
+the two that disagree are both ext4, so it is a property of the individual filesystem rather than
+of the flavour, and no claim is made here about which property.
 
 **PawPrint**: `.` then `..`, then the directory's names in F# ordinal (UTF-16) order, which is the
 order `DirectoryContent.Entries` already holds them in. Deterministic across runs and machines,
@@ -1041,7 +1055,9 @@ more expensive, but it differs only above the BMP and buys nothing a test could 
 **Where this lives in code**: `VirtualFileSystem.nextDirectoryEntry`. Every test that compares a
 listing sorts it first, and `TestVirtualFileSystemAgainstHost`'s
 `the model lists exactly the names this kernel lists` compares sets rather than sequences for
-exactly this reason.
+exactly this reason. `sourcesPure/EnumerateSeeded.cs` sorts the shim's own walk too, dots included,
+since it is the differential tier and may claim only what holds on every machine either runtime
+might run on.
 
 ## A directory stream's descriptor keeps an offset of zero
 
