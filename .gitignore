@@ -15,3 +15,5 @@ result
 .codex
 *.trx
 BenchmarkDotNet.Artifacts/
+
+.claude/worktrees/
