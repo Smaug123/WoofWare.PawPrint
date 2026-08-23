@@ -43,11 +43,12 @@ container's own block device is ext4, while a bind-mounted host directory is
 virtiofs and answers differently — `stat -f -c %T /tmp` before believing a
 Linux column.
 
-## Two rows that are unmeasurable, not merely unmeasured
+## The mount root: three readings, two of them wrong
 
-**Nothing, as it turns out — but establishing that took three attempts, and
-each wrong answer looked convincing.** The question was whether Darwin gives the
-filesystem root its own arm for `rename`, as its `unlink` and `rmdir` both do.
+The question was whether Darwin gives the filesystem root its own arm for
+`rename`, as its `unlink` and `rmdir` both do. The answer is **no** — but
+getting there took three attempts, and each wrong answer looked convincing
+enough to be written into an implementation.
 
 The obstacle is that a filesystem root which is not `/` is a *mount* root, and
 renaming one is liable to EXDEV, which masks the rule. Two earlier readings of
@@ -76,17 +77,17 @@ applicable ones. The root is not a special case, and `darwinVerdict` has no arm
 for it.
 
 The mount-root section is the one part of this probe that writes outside a
-private temp directory, because those rows have to name the mount root itself
-and it cannot be relocated. It therefore creates only uniquely-named entries,
-**refuses to run** if any of them already exists rather than clearing the way,
-and removes only what it made. Set `RENAME_PROBE_TAG` to a fixed string to
-exercise that refusal.
+private temp directory, because its rows have to name the mount root itself and
+that cannot be relocated. Everything it creates lives in one `mkdtemp`
+directory made directly under the mount — created atomically and uniquely, so
+there is no collision to lose a race against and nothing to clean up but that
+directory. Two rows need a destination whose *parent* is the mount root, so they
+name one sibling of it; that name derives from `mkdtemp`'s, is collision-checked
+before use, and at cleanup is removed only if the object there is one this run
+created, verified by `(st_dev, st_ino)` and removed with `rmdir` rather than
+recursively. Anything else at that name is reported and left alone.
 
-PawPrint models one filesystem and therefore never answers EXDEV, so nothing
-can stand in for the row — and guessing EINVAL would be a guess against
-evidence, since Darwin's `unlink` and `rmdir` both give the root its own EBUSY
-arm where an ordinary directory gets EPERM or EINVAL. `RenameRules.darwinVerdict`
-crashes there, naming the condition.
+## Rows the probe declines to run
 
 **Anything resolving to `/` while running as root.** Those rows are refusals on
 both kernels and create nothing, but a probe run under `sudo` must not be the
