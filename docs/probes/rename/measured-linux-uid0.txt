@@ -1,0 +1,224 @@
+uid=0 euid=0 platform=linux base=None
+
+## type
+file -> file                                                                             ok
+file -> emptydir                                                                         EISDIR
+file -> fulldir                                                                          EISDIR
+file -> symfile                                                                          ok
+file -> symdir                                                                           ok
+file -> dangling                                                                         ok
+file -> fifo                                                                             ok
+file -> absent                                                                           ok
+emptydir -> file                                                                         ENOTDIR
+emptydir -> emptydir                                                                     ok
+emptydir -> fulldir                                                                      ENOTEMPTY
+emptydir -> symfile                                                                      ENOTDIR
+emptydir -> symdir                                                                       ENOTDIR
+emptydir -> dangling                                                                     ENOTDIR
+emptydir -> fifo                                                                         ENOTDIR
+emptydir -> absent                                                                       ok
+fulldir -> file                                                                          ENOTDIR
+fulldir -> emptydir                                                                      ok
+fulldir -> fulldir                                                                       ENOTEMPTY
+fulldir -> symfile                                                                       ENOTDIR
+fulldir -> symdir                                                                        ENOTDIR
+fulldir -> dangling                                                                      ENOTDIR
+fulldir -> fifo                                                                          ENOTDIR
+fulldir -> absent                                                                        ok
+symfile -> file                                                                          ok
+symfile -> emptydir                                                                      EISDIR
+symfile -> fulldir                                                                       EISDIR
+symfile -> symfile                                                                       ok
+symfile -> symdir                                                                        ok
+symfile -> dangling                                                                      ok
+symfile -> fifo                                                                          ok
+symfile -> absent                                                                        ok
+symdir -> file                                                                           ok
+symdir -> emptydir                                                                       EISDIR
+symdir -> fulldir                                                                        EISDIR
+symdir -> symfile                                                                        ok
+symdir -> symdir                                                                         ok
+symdir -> dangling                                                                       ok
+symdir -> fifo                                                                           ok
+symdir -> absent                                                                         ok
+dangling -> file                                                                         ok
+dangling -> emptydir                                                                     EISDIR
+dangling -> fulldir                                                                      EISDIR
+dangling -> symfile                                                                      ok
+dangling -> symdir                                                                       ok
+dangling -> dangling                                                                     ok
+dangling -> fifo                                                                         ok
+dangling -> absent                                                                       ok
+fifo -> file                                                                             ok
+fifo -> emptydir                                                                         EISDIR
+fifo -> fulldir                                                                          EISDIR
+fifo -> symfile                                                                          ok
+fifo -> symdir                                                                           ok
+fifo -> dangling                                                                         ok
+fifo -> fifo                                                                             ok
+fifo -> absent                                                                           ok
+absent -> file                                                                           ENOENT
+absent -> emptydir                                                                       ENOENT
+absent -> fulldir                                                                        ENOENT
+absent -> symfile                                                                        ENOENT
+absent -> symdir                                                                         ENOENT
+absent -> dangling                                                                       ENOENT
+absent -> fifo                                                                           ENOENT
+absent -> absent                                                                         ENOENT
+
+## struct
+rename(a, a/b) -- into own subtree                                                       EINVAL
+rename(a/b, a/b/c/x) -- into own subtree                                                 EINVAL
+rename(a, link/inner) where link -> a/b                                                  EINVAL
+rename(a, a/b/../c) -- dest parent resolves back to a                                    EINVAL
+rename(a/b/c, a/x) -- out of own subtree                                                 ok
+rename(a, ab) -- prefix, not ancestor (occupied)                                         ok
+rename(a, ab) -- prefix, not ancestor (free)                                             ok
+rename(f, f) -- self, file                                                               ok
+rename(f, ./f) -- self via .                                                             ok
+rename(d, d) -- self, directory                                                          ok
+rename(d, d) -- self, NON-EMPTY directory                                                ok
+rename(f, g) where g is a hard link to f                                                 ok
+rename(g, f) -- the same pair, arguments reversed                                        ok
+rename(lf, f) where lf -> f (two inodes, so NOT a no-op)                                 ok
+source absent                                                                            ENOENT
+destination's parent absent                                                              ENOENT
+destination's parent is a regular file                                                   ENOTDIR
+destination component 300 bytes                                                          ENAMETOOLONG
+source component 300 bytes                                                               ENAMETOOLONG
+rename(a/b, a) -- destination is an ANCESTOR of the source                               ENOTEMPTY
+rename(a, a/b/free) -- into own subtree, destination name free                           EINVAL
+rename(a, a/b/f) -- into own subtree AND destination is a regular file                   EINVAL
+
+## nav
+rename(d/., x)                                                                           EBUSY
+rename(d/.., x)                                                                          EBUSY
+rename(x, d/.)                                                                           EBUSY
+rename(x, d/..)                                                                          EBUSY
+rename("/", x)                                                                           skipped (resolves to "/" and this process is root)
+rename("/.", x)                                                                          skipped (resolves to "/" and this process is root)
+rename("/..", x)                                                                         skipped (resolves to "/" and this process is root)
+rename(x, "/.")                                                                          skipped (resolves to "/" and this process is root)
+rename(dir, "/")                                                                         skipped (resolves to "/" and this process is root)
+rename(file, "/")                                                                        skipped (resolves to "/" and this process is root)
+rename(fulldir, "/")                                                                     skipped (resolves to "/" and this process is root)
+rename(emptydir, "e/..")                                                                 EBUSY
+rename(fulldir, "e/..")                                                                  EBUSY
+rename(file, "e/..")                                                                     EBUSY
+rename(A/d, B/sub/..) -- the ".." is NOT an ancestor of the source                       EBUSY
+rename(A/x, B/sub/..) -- file source, ".." not an ancestor                               EBUSY
+rename("lroot/.", x) where lroot -> "/"                                                  skipped (resolves to "/" and this process is root)
+rename(d, "lroot/") where lroot -> "/"                                                   skipped (resolves to "/" and this process is root)
+rename(f, "lroot/") where lroot -> "/"                                                   skipped (resolves to "/" and this process is root)
+rename(d/., nodir/y) -- source is a navigation AND destination parent absent             ENOENT
+rename(nope, d/.) -- source absent AND destination is a navigation                       EBUSY
+rename(p/x, p/d/..) -- destination is a navigation AND its parent unwritable             EBUSY
+
+## perm
+write missing on the source's parent                                                     ok
+write missing on the destination's parent                                                ok
+search missing on the source's parent                                                    ok
+search missing on the destination's parent                                               ok
+directory to a NEW parent, write missing on the moved directory                          ok
+directory to a NEW parent, SEARCH missing on the moved directory                         ok
+directory renamed WITHIN its parent, write missing on the moved directory                ok
+the same, but DISPLACING an empty directory in that parent                               ok
+the same, but displacing a NON-EMPTY directory (EACCES against ENOTEMPTY)                ENOTEMPTY
+the same, but displacing a regular file (control: the type rule pre-empts)               ENOTDIR
+file to a new parent, mode 0 on the moved file (files have no "..")                      ok
+source absent under an unsearchable parent                                               ENOENT
+source absent under a searchable but unwritable parent                                   ENOENT
+sticky destination parent                                                                ok
+
+## order
+src parent unwritable AND destination is a directory                                     EISDIR
+dst parent unwritable AND destination is a directory                                     EISDIR
+dst parent unwritable AND destination is a NON-EMPTY directory                           ENOTEMPTY
+src parent unwritable AND directory source over a FILE destination                       ENOTDIR
+same-inode no-op AND the SOURCE's parent unwritable                                      ok
+same-inode no-op AND the DESTINATION's parent unwritable                                 ok
+moved directory unwritable AND destination is a regular file                             ENOTDIR
+moved directory unwritable AND destination is an empty directory                         ok
+moved directory unwritable AND destination is a NON-EMPTY directory                      ENOTEMPTY
+dst parent unwritable AND source absent                                                  ENOENT
+dst parent unwritable AND source name 300 bytes                                          ENAMETOOLONG
+src parent unwritable AND destination name 300 bytes                                     ENAMETOOLONG
+src parent unwritable AND trailing separator on a file source                            ENOTDIR
+self-rename of a file AND parent unwritable                                              ok
+self-rename of a directory AND parent unwritable                                         ok
+self-rename of a directory whose own write bit is missing                                ok
+self-rename of a NON-EMPTY directory whose own write bit is missing                      ok
+self-rename of a directory, own write bit present (control)                              ok
+into own subtree AND the source's parent unwritable                                      EINVAL
+into own subtree AND the moved directory unwritable                                      EINVAL
+into own subtree AND destination non-empty                                               EINVAL
+into own subtree AND destination is a regular file                                       EINVAL
+same-inode no-op AND a trailing separator on the destination                             ENOTDIR
+self-rename AND a trailing separator on the destination                                  ENOTDIR
+non-directory source AND non-empty directory destination                                 EISDIR
+
+## displaced
+dir -> emptydir, q=0755 d=0755 (control: everything writable)                            ok
+dir -> emptydir, q=0555 d=0755 (holder unwritable, displaced writable)                   ok
+dir -> emptydir, q=0755 d=0000 (holder writable, displaced mode 0)                       ok
+dir -> emptydir, q=0755 d=0555 (holder writable, displaced read+search only)             ok
+dir -> emptydir, q=0755 d=0300 (holder writable, displaced write+search only)            ok
+dir -> emptydir, q=0555 d=0300 (holder unwritable, displaced write+search only)          ok
+dir -> emptydir, q=0555 d=0200 (holder unwritable, displaced write only)                 ok
+dir -> emptydir, q=0444 d=0755 (holder unsearchable: the walk answers, not the verdict)  ok
+dir -> NON-EMPTY dir, q=0755 d=0000 (EACCES against ENOTEMPTY)                           ENOTEMPTY
+dir -> FILE, q=0755 d=0000 (control: the type rule pre-empts)                            ENOTDIR
+file -> file, q=0755 d=0000 (control: a non-directory's own mode is never asked)         ok
+file -> file, q=0555 d=0777 (control: the holder still refuses)                          ok
+within one parent: dir a -> empty dir b, b=0000                                          ok
+within one parent: dir a -> empty dir b, b=0755 (control)                                ok
+
+## trail
+rename("s/", "moved") where s -> a real directory                                        ENOTDIR
+rename("src", "s/") where s -> a real directory                                          ENOTDIR
+rename("f", "s/") where s -> a real directory                                            ENOTDIR
+rename("s", "moved") -- the same link with no separator                                  ok
+rename("f/", "g") -- separator on a regular-file source                                  ENOTDIR
+rename("lf/", "g") -- separator on a symlink to a file                                   ENOTDIR
+rename("dang/", "g") -- separator on a dangling symlink                                  ENOTDIR
+rename("lroot/", "g") where lroot -> "/"                                                 skipped (resolves to "/" and this process is root)
+rename("nope/", "g") -- separator on an absent source                                    ENOENT
+rename("d/", "moved") -- separator on a directory source                                 ok
+rename("d/", "d2/") -- separators on both                                                ok
+rename("f", "absent/") -- file source, free destination + separator                      ENOTDIR
+rename("d", "absent/") -- directory source, free destination + separator                 ok
+rename("f", "d/") -- file source, directory destination + separator                      ENOTDIR
+rename("d", "d2/") -- directory source, directory destination + separator                ok
+rename("d", "ld/") where ld -> realdir                                                   ENOTDIR
+rename(p/f, "q/absent/") -- the demand against the parent's write bit                    ENOTDIR
+rename(a, "a/b/new/") -- the subtree rule against the demand                             EINVAL
+rename(d, "q/t/") where q/t is a symlink to a dir, q writable                            ENOTDIR
+rename(d, "q/t/") where q/t is a symlink to a dir, q UNWRITABLE                          ENOTDIR
+rename(d, "q/t/") where q/t is a regular file, q UNWRITABLE                              ENOTDIR
+rename(d, "q/t/") where q/t is an empty dir, q UNWRITABLE (control)                      ok
+rename(f, "q/t/") where q/t is a symlink to a dir, q UNWRITABLE                          ENOTDIR
+
+## unstable
+rename("l/", "g"), relative target, 200 trials                                           ENOTDIR x200
+rename("l/", "g"), absolute target, 200 trials                                           ENOTDIR x200
+
+## orphan
+ordinary file source (control)                                                           ENOENT
+AND source absent                                                                        ENOENT
+AND the source's parent unwritable                                                       ENOENT
+AND the source is a navigation                                                           EBUSY
+directory source                                                                         ENOENT
+AND destination name 300 bytes                                                           ENOENT
+AND a trailing separator on a file source                                                ENOENT
+AND a trailing separator on the destination                                              ENOENT
+
+## walk
+source absent  X  destination's parent is a regular file                                 ENOTDIR
+source name 300 bytes  X  destination's parent absent                                    ENOENT
+source absent  X  destination name 300 bytes                                             ENOENT
+source's parent unsearchable  X  destination's parent absent                             ENOENT
+source's parent unsearchable  X  destination's parent is a file                          ENOTDIR
+source's parent is a regular file  X  destination is a directory                         ENOTDIR
+
+## mountroot
+(pass a mount point as argv[1] to run this section)                                      skipped

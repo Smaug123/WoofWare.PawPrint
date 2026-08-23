@@ -17,3 +17,7 @@ result
 BenchmarkDotNet.Artifacts/
 
 .claude/worktrees/
+
+# Python bytecode, e.g. from importing a probe under docs/probes/
+__pycache__/
+*.py[cod]
