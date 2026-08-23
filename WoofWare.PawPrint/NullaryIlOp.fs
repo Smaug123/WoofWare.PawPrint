@@ -1725,6 +1725,9 @@ module NullaryIlOp =
     /// with `0xFF`, as does `-1`.
     let private initblkValue (arg : EvalStackValue) : byte =
         match arg with
+        // The mask is written out rather than left to `byte`, whose truncation is a property of
+        // the build's arithmetic mode: under `--checked+` the conversion operator would raise
+        // OverflowException on `0x1FF` instead of narrowing it.
         | EvalStackValue.Int32 (Int32Source.Verbatim value) -> byte (value &&& 0xFF)
         | EvalStackValue.Int32 other ->
             failwith
