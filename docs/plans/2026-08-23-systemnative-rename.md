@@ -295,7 +295,8 @@ different objects, which is exactly why an unconditional column would be wrong.
 | the moved inode | `ctime` moves; `mtime` and `atime` do not — file or directory, same parent or different |
 | both parents | `mtime` **and** `ctime` move; `atime` does not |
 | a rename within one directory | that one directory's `mtime` moves, and the moved inode's `ctime` moves |
-| a displaced destination inode with a surviving hard link | `ctime` moves, `mtime` does not, `st_nlink` drops by one — exactly `UnbindTargetEffect.LostALink` |
+| a displaced destination **file**, watched through a surviving hard link | `ctime` moves, `mtime` does not, `st_nlink` drops by one — exactly `UnbindTargetEffect.LostALink` |
+| a displaced destination **empty directory**, watched through a held descriptor | `ctime` moves, `mtime` does not — the *same* answer, and measured separately rather than generalised, because `rmdir` disagrees: there Darwin leaves the removed directory's inode alone (`RmDirRules.RemovedDirectoryEffect` is `Untouched`) where Linux stamps it. Under `rename` both kernels stamp, so no per-flavour effect parameter is needed. (`st_nlink` on it: Darwin keeps 2, Linux drops to 0 — the `rmdir` shape again, and of no consequence since `st_nlink` is derived and unreported.) |
 | a no-op (self, or two names for one inode) | **nothing is stamped at all**, and both names survive |
 | directory moved to a new parent | source parent `st_nlink` −1, destination parent +1, and `..` is the new parent |
 | directory renamed within one parent | parent `st_nlink` unchanged |
@@ -408,11 +409,15 @@ The moved inode is deliberately *not* returned. It never loses its last name, so
 no caller has to decide anything about it, and descriptors key on inode numbers,
 which a rename does not change. Returning it would be a value with no consumer.
 
-**It is mechanical about policy but not about graph soundness.** Two conditions
+**It is mechanical about policy but not about graph soundness.** Four conditions
 would leave a filesystem no kernel could produce, and the primitive refuses them
 itself — with a `failwith` naming the condition, in the style of `unbind`'s
 broken-graph arm, because the verdict is supposed to have excluded them:
 
+* the two paths **naming one inode** — `rename(2)`'s no-op, which changes
+  nothing at all. Its *position in the arm ordering* is itself one of the
+  flavour divergences, so it belongs to the verdict rather than to a
+  short-circuit in the primitive.
 * a **populated directory** at the destination. Reaping it would strand its
   children as `UnreachableFromRoot`: `forgetIfUnheld` climbs parents, not
   children.
@@ -509,7 +514,7 @@ previous branches, so that a reviewer can review each branch in isolation.
 **Implements**: "The graph primitive" above.
 
 `VirtualFileSystem.isWithinSubtree`, `RenameOutcome` and
-`VirtualFileSystem.rename`, including the two graph-soundness refusals and the
+`VirtualFileSystem.rename`, including the four graph-soundness refusals and the
 timestamp rules. No `EmulatedKernel` change, no handler, no guest.
 
 **Correctness oracle**:
@@ -517,7 +522,7 @@ timestamp rules. No `EmulatedKernel` change, no handler, no guest.
 - Property (total, no "legal" precondition): for **any** filesystem and **any**
   quadruple, `rename` either fails with the filesystem unchanged, or succeeds
   and `checkInvariants` reports no defect. This is the property #978 built the
-  invariant checker for, and the two soundness refusals are what make it total.
+  invariant checker for, and the four soundness refusals are what make it total.
 - Generator alphabet, and the reason to state it: the sweep's filesystems must
   *contain* orphans. `filesystemGen` only ever creates, so nothing it builds has
   one — and "the destination directory has lost its last name" is invisible to
@@ -556,13 +561,20 @@ timestamp rules. No `EmulatedKernel` change, no handler, no guest.
   bind into the wrong directory *and* set `Parent` to match — passes
   `checkInvariants` and is invisible to the non-directory reference property, so
   this is the arm that catches it.
-- Host-equality (`TestVirtualFileSystemAgainstHost`): the timestamp and
-  `st_nlink` rows above, **plus the before/after tree delta of a successful
-  cross-parent directory move**, which is the strongest wrong-reparent oracle
-  available and is the comparison the `rmdir` slice already built for
-  "destroys the wrong object". Assert equality against the machine running the
-  test, with the failure message reporting the measured value.
-- Mutation: each stamp, the reparenting, and each of the two soundness refusals
+- Host-equality (`TestVirtualFileSystemAgainstHost`): the before/after **tree
+  delta** of a successful rename, **plus every directory's ".."** through
+  `realpath`. The second is the strongest wrong-reparent oracle available — a
+  rename that binds the moved directory into the wrong parent *and* sets its
+  `Parent` to match is self-consistent, passes `checkInvariants`, and is
+  invisible to the non-directory reference property.
+
+  The timestamp and `st_nlink` rows are **not** in this tier, and cannot be: no
+  .NET API exposes `st_ctime`, and this fixture deliberately avoids `struct
+  stat` (platform-specific layout, versioned symbol on macOS). They are probe-
+  measured and pinned by unit tests instead, which is what `unlink` and `rmdir`
+  already do with their own timestamp facts. Stating the tier a fact *can* be
+  checked in is part of the fact.
+- Mutation: each stamp, the reparenting, and each of the four soundness refusals
   must have a test that goes red when it is removed. Per the `mutation-testing`
   skill; the reparenting especially, since `..` has no other reader in this
   stage.

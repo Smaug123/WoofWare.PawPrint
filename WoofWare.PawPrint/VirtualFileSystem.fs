@@ -2011,7 +2011,7 @@ module VirtualFileSystem =
     /// move what, and which of the several possible refusals wins, is the
     /// verdict's measured business and diverges between the flavours. What this
     /// function does insist on is that the *graph* survives, because a caller
-    /// that got past its verdict with any of these three cannot leave a
+    /// that got past its verdict with any of these four cannot leave a
     /// filesystem a kernel could produce:
     ///
     ///  * the two paths naming one inode. That is `rename(2)`'s no-op, which
@@ -2066,32 +2066,28 @@ module VirtualFileSystem =
             failwith
                 $"VirtualFileSystem.rename: the destination directory %O{destinationDirectory} has lost its last name, so binding \"%s{FileName.toString destinationName}\" into it would make inode %O{moved} unreachable from the root while it still has a name -- which nothing could then reap. The verdict owes ENOENT, exactly as it does for the creating operations."
 
-        // Read the destination's entries out of `sourceContent` when the two
-        // directories are the same inode, so that a rename within one directory
-        // cannot consult a stale copy of the map it is about to rewrite.
-        let destinationEntries =
-            if sourceDirectory = destinationDirectory then
-                sourceContent.Entries
-            else
-                destinationContent.Entries
-
-        let displaced = Map.tryFind destinationName destinationEntries
+        let displaced = Map.tryFind destinationName destinationContent.Entries
 
         if displaced = Some moved then
             failwith
                 $"VirtualFileSystem.rename: \"%s{FileName.toString sourceName}\" in inode %O{sourceDirectory} and \"%s{FileName.toString destinationName}\" in inode %O{destinationDirectory} both name inode %O{moved}. That is rename(2)'s no-op, which changes nothing at all; the verdict must answer it rather than calling this."
 
-        match displaced |> Option.bind (fun inode -> tryGetDirectory inode vfs) with
-        | Some content when not (Map.isEmpty content.Entries) ->
-            failwith
-                $"VirtualFileSystem.rename: the destination \"%s{FileName.toString destinationName}\" in inode %O{destinationDirectory} names directory inode %O{displaced.Value}, which holds %i{Map.count content.Entries} entries. Displacing it would strand them unreachable from the root; the verdict owes ENOTEMPTY."
-        | Some _
-        | None ->
-
+        // Before the populated-destination check below, and the order is
+        // load-bearing rather than arbitrary: the two overlap on
+        // `rename(a, a/b)` with `a/b` populated, and both kernels answer
+        // EINVAL there rather than ENOTEMPTY. Either arm would refuse, but
+        // only this one names the errno the verdict will owe.
         match tryGetDirectory moved vfs with
         | Some _ when isWithinSubtree moved destinationDirectory vfs ->
             failwith
                 $"VirtualFileSystem.rename: the destination directory %O{destinationDirectory} is inode %O{moved} itself or lies beneath it, so moving it there would detach a cycle from the root; the verdict owes EINVAL."
+        | Some _
+        | None ->
+
+        match displaced |> Option.bind (fun inode -> tryGetDirectory inode vfs) with
+        | Some content when not (Map.isEmpty content.Entries) ->
+            failwith
+                $"VirtualFileSystem.rename: the destination \"%s{FileName.toString destinationName}\" in inode %O{destinationDirectory} names directory inode %O{displaced.Value}, which holds %i{Map.count content.Entries} entries. Displacing it would strand them unreachable from the root; the verdict owes ENOTEMPTY."
         | Some _
         | None ->
 
@@ -2180,8 +2176,16 @@ module VirtualFileSystem =
                 inodes
 
         // A displaced inode lost a name, so its `ctime` moves and nothing else
-        // does -- `UnbindTargetEffect.LostALink`, measured through a surviving
-        // hard link on both kernels.
+        // does -- `UnbindTargetEffect.LostALink`. Measured on both kernels for
+        // both kinds a destination can be, and the second row is not a
+        // generalisation of the first: a displaced *file* through a surviving
+        // hard link, and a displaced empty *directory* through a descriptor held
+        // across the call. The directory row had to be measured separately
+        // because `rmdir`'s does not agree with it -- there Darwin leaves the
+        // removed directory's inode alone (`RmDirRules.RemovedDirectoryEffect`
+        // is `Untouched`) where Linux stamps it. Under `rename` both kernels
+        // stamp, so this needs no per-flavour effect parameter the way `unbind`
+        // does.
         let inodes =
             match displaced with
             | None -> inodes

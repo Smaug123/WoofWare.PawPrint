@@ -2961,14 +2961,13 @@ module TestVirtualFileSystem =
         // Measured on both kernels, for a file and for a directory, whether or
         // not the parent changed: what changed is which directory names it, not
         // what it holds.
-        for movedName, expectMoved in [ "f", true ; "d", true ] do
+        for movedName in [ "f" ; "d" ] do
             let vfs, a, b, d, f = twoParents ()
             let moved = if movedName = "f" then f else d
             let before = timesOf moved vfs
             let _, renamed = doRename a movedName b "x" vfs
             let after = timesOf moved renamed
 
-            expectMoved |> shouldEqual true
             after.StatusChange |> shouldEqual renameTime
             after.Modification |> shouldEqual before.Modification
             after.Access |> shouldEqual before.Access
@@ -3028,7 +3027,7 @@ module TestVirtualFileSystem =
         attempt a "f" absent "x" |> shouldEqual (Error UnixError.ENOENT)
         attempt a "f" file "x" |> shouldEqual (Error UnixError.ENOTDIR)
 
-    // The three conditions a correct verdict never produces. Each is a loud
+    // The four conditions a correct verdict never produces. Each is a loud
     // failure rather than an errno, because each would leave a filesystem no
     // kernel could produce and the errno for it is measured, flavour-ordered
     // policy that lives in the verdict.
@@ -3115,6 +3114,43 @@ module TestVirtualFileSystem =
         // reachability and not about `b`.
         doRename a "f" b "landed" vfs |> ignore
 
+    [<Test>]
+    let ``a destination that is both inside the subtree and populated reports the subtree`` () : unit =
+        // The disagreeing input for the two refusals' order. Both would refuse,
+        // so an input that only one of them matches proves nothing about which
+        // runs first; this one matches both, and the kernels answer EINVAL for
+        // it rather than ENOTEMPTY -- measured on both. Swapping the two arms
+        // must therefore change the message, which is what makes the ordering
+        // testable at all.
+        let vfs, a, _, d, _ = twoParents ()
+        let vfs = vfs |> mkdir d "inner"
+        let inner = childOf d "inner" vfs
+        let vfs = vfs |> mkfile inner "occupant"
+
+        shouldFailWith "detach a cycle" (fun () -> doRename a "d" d "inner" vfs |> ignore)
+
+    [<Test>]
+    let ``a displaced empty directory is stamped like a displaced file`` () : unit =
+        // Not a generalisation of the hard-link row, and it had to be measured
+        // separately: `rmdir` does *not* agree with this. There Darwin leaves
+        // the removed directory's inode untouched where Linux stamps it
+        // (`RmDirRules.RemovedDirectoryEffect`), so a reader could reasonably
+        // expect `rename` to need the same per-flavour effect. Measured on both
+        // kernels through a descriptor held across the call: under `rename` both
+        // stamp `ctime` and neither moves `mtime`.
+        let vfs, a, b, d, _ = twoParents ()
+        let vfs = vfs |> mkdir b "target"
+        let displaced = childOf b "target" vfs
+
+        let before = timesOf displaced vfs
+        let outcome, renamed = doRename a "d" b "target" vfs
+
+        outcome.Displaced |> shouldEqual (Some displaced)
+        d |> shouldEqual (childOf b "target" renamed)
+        (timesOf displaced renamed).StatusChange |> shouldEqual renameTime
+        (timesOf displaced renamed).Modification |> shouldEqual before.Modification
+        (timesOf displaced renamed).Access |> shouldEqual before.Access
+
     // ------------------------------------------------------- isWithinSubtree
 
     [<Test>]
@@ -3146,6 +3182,20 @@ module TestVirtualFileSystem =
         shouldFailWith "no parent chain to climb" (fun () -> VirtualFileSystem.isWithinSubtree a f vfs |> ignore)
 
     // --------------------------------------------------- rename properties
+
+    /// The rename sweep runs at this size rather than at `config`'s 300, and the
+    /// number was measured rather than picked. At 300 the rarest class — a
+    /// *directory* moved between two different parents, which is the class the
+    /// reparent lives in and the one the host ".." oracle exists to check — had
+    /// a median of 3 and a measured minimum of 0 across 24 runs. A coverage
+    /// bound over a class that rare is a coin toss rather than a guard.
+    ///
+    /// Biasing the source generator towards directory bindings was tried first
+    /// and barely moved it: generated filesystems are small, so a directory
+    /// nested inside another is scarce *per case* rather than merely unlikely
+    /// to be picked. Raising the case count is the lever that works, and it
+    /// lifts every counter together.
+    let private renameSweepConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 3000
 
     /// A rename to attempt against a generated filesystem. Named by inode
     /// rather than by path, because the primitive under test takes inodes and a
@@ -3199,7 +3249,7 @@ module TestVirtualFileSystem =
                 []
             else
                 [
-                    2, Gen.map2 (fun d n -> d, n) (Gen.elements (Set.toList pinned)) (Gen.elements alphabet)
+                    5, Gen.map2 (fun d n -> d, n) (Gen.elements (Set.toList pinned)) (Gen.elements alphabet)
                 ]
 
         let destinationGen =
@@ -3270,8 +3320,8 @@ module TestVirtualFileSystem =
         | _ ->
             Gen.frequency
                 [
-                    2, Gen.constant (vfs, Set.empty)
-                    1,
+                    1, Gen.constant (vfs, Set.empty)
+                    3,
                     Gen.elements candidates
                     |> Gen.map (fun (inode, parent, entry) ->
                         match VirtualFileSystem.unbind UnbindTargetEffect.LostALink parent entry (tickOf 400) vfs with
@@ -3289,8 +3339,8 @@ module TestVirtualFileSystem =
             renameCaseGen pinned vfs |> Gen.map (fun case -> vfs, pinned, case)
         )
 
-    /// The three conditions `VirtualFileSystem.rename` refuses loudly, computed
-    /// from the graph directly. Three one-line graph predicates rather than a
+    /// The four conditions `VirtualFileSystem.rename` refuses loudly, computed
+    /// from the graph directly. Four one-line graph predicates rather than a
     /// re-implementation of the verdict — which is the point: if this had to
     /// know the measured errno ordering, the primitive would be doing policy.
     let private refusedLoudly (vfs : VirtualFileSystem) (case : RenameCase) : bool =
@@ -3329,8 +3379,8 @@ module TestVirtualFileSystem =
     [<Test>]
     let ``rename either refuses loudly, errors without changing anything, or leaves a sound filesystem`` () : unit =
         // Total: no "legal quadruple" precondition hides the verdict inside the
-        // property. The three loud refusals are what make it so, and asserting
-        // that they fire *exactly* when the three graph predicates hold pins
+        // property. The four loud refusals are what make it so, and asserting
+        // that they fire *exactly* when the four graph predicates hold pins
         // them rather than merely tolerating an exception.
         let mutable displacedSomething = 0
         let mutable movedDirectoryAcrossParents = 0
@@ -3367,8 +3417,9 @@ module TestVirtualFileSystem =
 
             match attempt () with
             | Error _ ->
-                // A rejected rename must leave the filesystem alone, exactly as
-                // a rejected builder step does.
+                // Nothing to assert: `Error` carries no filesystem, so a
+                // rejected rename cannot have changed one. The signature is the
+                // guarantee here, not a check.
                 ()
             | Ok (outcome, renamed) ->
                 if outcome.Displaced.IsSome then
@@ -3398,19 +3449,27 @@ module TestVirtualFileSystem =
                     renamed
                 |> shouldEqual []
 
-        Check.One (config, Prop.forAll (Arb.fromGen renameScenarioGen) property)
+        Check.One (renameSweepConfig, Prop.forAll (Arb.fromGen renameScenarioGen) property)
 
         // Not a coverage *threshold* in FsCheck's sense — those flake. These are
-        // sums over the whole run at deliberately low bounds, and they exist so
-        // that a generator which quietly stopped producing a class fails here
-        // rather than making every property above vacuous. The classes each
-        // also have a hand-written test above; this only guards the sweep.
-        displacedSomething |> shouldBeGreaterThan 2
-        movedDirectoryAcrossParents |> shouldBeGreaterThan 2
-        movedWithinOneDirectory |> shouldBeGreaterThan 2
-        refusedCount |> shouldBeGreaterThan 2
+        // sums over the whole run, and they exist so that a generator which
+        // quietly stopped producing a class fails here rather than making every
+        // property above vacuous. The classes each also have a hand-written test
+        // above; this only guards the sweep.
+        //
+        // Every bound is a third of the *measured* minimum over 24 runs at this
+        // config, rather than a number that looked safe. Picking them by eye is
+        // what produced the flake this replaces: at `config`'s 300 cases the
+        // bounds were all 2, and the measured minima were 2 for the orphan class
+        // and 0 for the directory-across-parents class — the first was reported
+        // as a ~20% flake by review, and the second was worse and had not been
+        // noticed at all. Measured minima here: 268, 23, 544, 730, 200.
+        displacedSomething |> shouldBeGreaterThan 80
+        movedDirectoryAcrossParents |> shouldBeGreaterThan 7
+        movedWithinOneDirectory |> shouldBeGreaterThan 150
+        refusedCount |> shouldBeGreaterThan 200
         // The class this sweep was blind to until `orphanGen` existed.
-        refusedForOrphan |> shouldBeGreaterThan 2
+        refusedForOrphan |> shouldBeGreaterThan 60
 
     [<Test>]
     let ``a successful rename creates and destroys no inode`` () : unit =
@@ -3513,6 +3572,13 @@ module TestVirtualFileSystem =
                     renameTime
                     vfs
                 |> Result.map snd
+
+            // Agreement on *whether* the move happens comes first. Skipping
+            // straight to the Ok/Ok arm would let a rename that wrongly refused
+            // where the composition succeeded — or the reverse — pass this
+            // property unremarked, and the `compared` bound below can only
+            // notice a wholesale loss, never a lost class.
+            Result.isOk actual |> shouldEqual (Result.isOk reference)
 
             match reference, actual with
             | Ok expected, Ok got ->
