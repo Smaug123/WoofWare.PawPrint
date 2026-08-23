@@ -14,6 +14,11 @@ open WoofWare.PawPrint.Test
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
+// Runs guests under the interpreter, which is where essentially all of the suite's
+// time goes; `Explicit` keeps it out of a bare `dotnet test` so local iteration is
+// quick. CI selects it by category and so runs it. See AGENTS.md.
+[<Category("Guest")>]
+[<Explicit>]
 module TestFSharpPureCases =
 
     type private TestAssemblyMarker = class end
@@ -168,19 +173,24 @@ module TestFSharpPureCases =
         use peImage = new MemoryStream (image)
 
         try
-            let realResult = RealRuntime.executePublishedApp [| testCaseName |] exePath
-
-            let pawPrintResult =
-                Program.run
-                    loggerFactory
-                    (Some dllPath)
-                    peImage
-                    { HostConfig.Default dotnetRuntimes with
-                        Guest =
-                            { GuestConfig.Default dotnetRuntimes with
-                                Argv = [ testCaseName ]
+            // The two runs are independent, so the oracle's child process runs while the
+            // interpreter works rather than before it. See
+            // `DifferentialOracle.alongsideInterpreted`.
+            let realResult, pawPrintResult =
+                DifferentialOracle.alongsideInterpreted
+                    (fun () -> RealRuntime.executePublishedApp [| testCaseName |] exePath)
+                    (fun () ->
+                        Program.run
+                            loggerFactory
+                            (Some dllPath)
+                            peImage
+                            { HostConfig.Default dotnetRuntimes with
+                                Guest =
+                                    { GuestConfig.Default dotnetRuntimes with
+                                        Argv = [ testCaseName ]
+                                    }
                             }
-                    }
+                    )
 
             match realResult, pawPrintResult with
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, terminatingThread) ->

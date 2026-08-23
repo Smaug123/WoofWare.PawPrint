@@ -1809,6 +1809,32 @@ module Intrinsics =
                 let state = state |> IlMachineState.advanceProgramCounter currentThread
                 IntrinsicResult.Completed state
             | _ -> IntrinsicResult.Unrecognised
+        | CorelibAssembly, "Unsafe", ("InitBlock" | "InitBlockUnaligned") ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L471
+            // Three of the four CoreLib bodies throw PlatformNotSupportedException and the fourth
+            // is a byte loop; the real JIT replaces all four with `initblk` (optionally prefixed
+            // by `unaligned.`), so the opcode's own implementation is what runs here rather than
+            // any body. Both overloads accept the byref and pointer forms uniformly via
+            // managedPointerOfPointerArgument.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+                ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte
+                ConcreteUInt32 state.ConcreteTypes ],
+              MethodReturnType.Void
+            | [ ConcretePointer _
+                ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte
+                ConcreteUInt32 state.ConcreteTypes ],
+              MethodReturnType.Void ->
+                let operation = $"Unsafe.%s{methodToCall.Name}"
+
+                match IntrinsicHelpers.executeInitBlock baseClassTypes currentThread operation state with
+                | InitBlockOutcome.Filled state ->
+                    state
+                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> IntrinsicResult.Completed
+                | InitBlockOutcome.NullDestination state ->
+                    IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
+            | _ -> IntrinsicResult.Unrecognised
         | CorelibAssembly, "Unsafe", ("CopyBlock" | "CopyBlockUnaligned") ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L313
             // The CoreLib bodies throw PlatformNotSupportedException; the real JIT replaces

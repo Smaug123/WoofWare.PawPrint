@@ -36,8 +36,16 @@ jobs:
     # build and then ran the more expensive configuration. Debug costs ~20% more time and
     # ~20% more allocation than Release across the suite, and this was the only job that
     # tested Debug and the only one whose runner ever died of resource starvation.
+    # Two invocations because the guest-running fixtures are `[<Explicit>]`, which keeps
+    # them out of a bare `dotnet test` so that local iteration costs seconds rather than
+    # minutes. CI wants all of them, so it selects them by category as well. Splitting the
+    # run is deliberate rather than reaching for a filter that matches everything: "run the
+    # default set, then run the set we excluded from it" cannot silently stop covering
+    # something the way a clever filter expression could.
     - name: Test
       run: nix develop --command dotnet test --no-build --configuration Release
+    - name: Test (guest-running fixtures)
+      run: nix develop --command dotnet test --no-build --configuration Release --filter "TestCategory=Guest"
 
   build-nix:
     runs-on: ubuntu-latest

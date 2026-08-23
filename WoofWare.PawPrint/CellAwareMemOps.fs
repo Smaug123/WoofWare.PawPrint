@@ -554,18 +554,42 @@ module internal CellAwareMemOps =
         | Some _
         | None -> None
 
-    /// Zero `byteCount` bytes starting at `dest`, preferring whole-cell typed
-    /// writes through `tryWholeCellZeroAt` and falling back to byte-by-byte
-    /// stepping otherwise.
+    /// Set `byteCount` bytes starting at `dest` to `value`, falling back to
+    /// byte-by-byte stepping wherever a whole-cell write is not available.
     ///
     /// Always walks forwards. Unlike `copy` there is no source to alias
     /// against, so no direction policy is required: every byte in the range
-    /// ends up zero regardless of the order in which it is written.
-    let clear
+    /// ends up holding `value` regardless of the order in which it is written.
+    ///
+    /// A whole typed cell is taken only when `value` is `0uy`. That is not a
+    /// missed optimisation: the whole-cell step writes `CliType.ZeroLike cell`,
+    /// which is derived from the destination cell and so preserves its CLI
+    /// shape, and there is no counterpart that could render an arbitrary
+    /// repeated byte into a cell's declared shape. For byte-addressable cells
+    /// the byte walk produces the identical bytes anyway, so nothing is lost
+    /// there; for cells with no byte image (an object reference, a runtime
+    /// pointer, a `NativeInt` carrying non-`Verbatim` provenance) a nonzero
+    /// fill therefore fails loudly in `writeByte`. Where the range really does
+    /// cover such a cell that refusal is the wanted answer, because the real
+    /// runtime would leave a corrupt GC reference behind and there is no value
+    /// PawPrint could write that models it.
+    ///
+    /// It is *not* the wanted answer for a byte-addressable sub-range that
+    /// merely lives inside reference-bearing storage — an interior `long` of a
+    /// struct that also holds an `object`, say, reached through a byte view at
+    /// a nonzero intra-cell offset. The real runtime updates that field and
+    /// leaves its siblings alone; here `tryWholeCellZeroAt` declines (it
+    /// requires intra-cell offset 0) and the byte walk then fails against the
+    /// unrenderable outer cell. `copy` serves that shape through
+    /// `tryWholeCellMoveAt`/`tryPaddingMoveAt`, which name nested cells; the
+    /// single-endpoint walk has no counterpart yet. This is a limitation
+    /// inherited from `clear`, not a position.
+    let fill
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (state : IlMachineState)
         (dest : ManagedPointerSource)
+        (value : byte)
         (byteCount : int)
         : IlMachineState
         =
@@ -576,15 +600,34 @@ module internal CellAwareMemOps =
         while i < byteCount do
             let destAtI = ManagedPointerByteView.addByteOffset state byteConcreteType i dest
 
-            match tryWholeCellZeroAt baseClassTypes state destAtI (byteCount - i) with
+            let wholeCell =
+                if value = 0uy then
+                    tryWholeCellZeroAt baseClassTypes state destAtI (byteCount - i)
+                else
+                    None
+
+            match wholeCell with
             | Some (newState, cellSize) ->
                 state <- newState
                 i <- i + cellSize
             | None ->
-                state <- writeByte baseClassTypes state destAtI 0uy
+                state <- writeByte baseClassTypes state destAtI value
                 i <- i + 1
 
         state
+
+    /// Zero `byteCount` bytes starting at `dest`, preferring whole-cell typed
+    /// writes through `tryWholeCellZeroAt` and falling back to byte-by-byte
+    /// stepping otherwise.
+    let clear
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (dest : ManagedPointerSource)
+        (byteCount : int)
+        : IlMachineState
+        =
+        fill baseClassTypes operation state dest 0uy byteCount
 
     /// Copy `byteCount` bytes from `src` to `dest`, preferring the structural
     /// steps through `tryStructuralMoveAt` — a whole typed cell, or a run of a

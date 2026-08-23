@@ -16,6 +16,40 @@ type RunResult =
         FinalState : IlMachineState
     }
 
+/// Whether a case's answer is checked against the same guest run on the real .NET
+/// runtime, and on which hosts.
+///
+/// The oracle runs the guest on the *host's* kernel and the host's shared framework.
+/// PawPrint, meanwhile, runs it against whatever kernel `KernelConfig.UnixPlatform`
+/// says to impersonate — Linux by default, whatever the host. So the two runtimes are
+/// only comparing like with like when the guest's claims are ones that hold on both
+/// kernels at once, and a case has to say which of those situations it is in.
+type OraclePolicy =
+    /// Compare on every host. Sound only for a guest whose claims hold under every
+    /// flavour PawPrint models: this is the standing rule for `sourcesPure`, whose
+    /// cases run against a Linux-impersonating PawPrint and a macOS oracle on a dev
+    /// box and against two Linuxes on CI, and must pass both ways.
+    | Always
+    /// Compare only on a host whose own kernel is the flavour this case's
+    /// `KernelConfig` impersonates; assert PawPrint's exit code alone elsewhere.
+    ///
+    /// This is for a guest that describes one kernel exactly — the `*Linux.cs` and
+    /// `*Darwin.cs` pairs in `sourcesImpure`. Such a guest cannot be `Always`, because
+    /// on the other host the real runtime answers for a kernel the guest is not
+    /// talking about; but on a matching host it is as good a differential case as
+    /// anything in `sourcesPure`, and CI runs Linux.
+    ///
+    /// Matching flavours makes the comparison *possible*, not automatically valid: the
+    /// emulated kernel and the host kernel still disagree about the release string, the
+    /// processor count, the clock, the filesystem type under any path, directory
+    /// enumeration order, and uid/gid. A guest that can observe any of those must stay
+    /// `Never`, whatever host it is run on.
+    | WhenHostMatchesEmulatedFlavour
+    /// Never compared: the case asserts something only PawPrint can be asked, or
+    /// something the real runtime would answer differently for a reason that is not a
+    /// PawPrint bug.
+    | Never
+
 type EndToEndTestCase =
     {
         FileName : string
@@ -32,6 +66,9 @@ type EndToEndTestCase =
         /// and cannot be reseeded, so a seeded property is a PawPrint-only fact
         /// and belongs in `sourcesImpure`. `TestPureCases.runTest` enforces this.
         AppContext : AppContextProperties
+        /// When this case's answer is checked against the same guest run on the
+        /// real .NET runtime, rather than only against `ExpectedReturnCode`.
+        Oracle : OraclePolicy
         ExpectsUnhandledException : bool
         /// Optional assertion run against the final PawPrint state once the
         /// guest has exited. Used by impure tests that want to verify
@@ -42,6 +79,53 @@ type EndToEndTestCase =
         /// against.
         AssertTerminalState : (IlMachineState -> unit) option
     }
+
+[<RequireQualifiedAccess>]
+module OraclePolicy =
+
+    /// Whether a case with this policy, impersonating this kernel, is compared against
+    /// the real runtime on a host of this flavour. `None` is a host whose kernel
+    /// PawPrint does not model at all, which never matches.
+    let comparesOnHost
+        (hostFlavour : SimulatedUnixFlavour option)
+        (impersonated : SimulatedUnixFlavour)
+        (policy : OraclePolicy)
+        : bool
+        =
+        match policy with
+        | OraclePolicy.Always -> true
+        | OraclePolicy.Never -> false
+        | OraclePolicy.WhenHostMatchesEmulatedFlavour ->
+            match hostFlavour with
+            | None -> false
+            | Some host -> host = impersonated
+
+    /// Whether a host of this width and byte order can stand in for a kernel PawPrint
+    /// impersonates at all.
+    ///
+    /// Both presets describe a 64-bit little-endian kernel, and `SimulatedUnixPlatform`
+    /// carries no architecture to check against the host's. The guests that opt into a
+    /// comparison read native-width layouts back as bytes -- a `sockaddr_in`'s fields,
+    /// the 16-byte `SocketEvent` -- so on a 32-bit or big-endian Linux the two runtimes
+    /// would disagree for a reason that is not PawPrint's, and the failure would read
+    /// as an interpreter bug. Declining to compare there costs only the oracle.
+    let hostShapeCanCompare (isLittleEndian : bool) (pointerSizeBytes : int) : bool =
+        isLittleEndian && pointerSizeBytes = 8
+
+    /// `comparesOnHost` asked of the host this test process is running on, for the
+    /// kernel the case impersonates.
+    ///
+    /// A host whose shape the presets do not describe counts as no host at all, which
+    /// leaves `Always` alone -- `sourcesPure`'s rule that its claims hold everywhere is
+    /// not this policy's to narrow.
+    let comparesHere (case : EndToEndTestCase) : bool =
+        let host =
+            if hostShapeCanCompare System.BitConverter.IsLittleEndian System.IntPtr.Size then
+                HostPlatform.flavour ()
+            else
+                None
+
+        comparesOnHost host (SimulatedUnixPlatform.flavour case.KernelConfig.UnixPlatform) case.Oracle
 
 /// `Program.run`, bounded so a guest that never terminates fails its test instead of wedging
 /// the whole suite.

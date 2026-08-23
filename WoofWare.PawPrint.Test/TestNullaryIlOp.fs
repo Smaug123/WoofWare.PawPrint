@@ -2428,3 +2428,173 @@ module TestNullaryIlOp =
         // offset is a fact about the element type, not about how many cells exist.
         elementByteOffset baseClassTypes.Int32 0 2
         |> shouldEqual (elementByteOffset baseClassTypes.Int32 8 2)
+
+    // --- initblk operand refusals ---
+    //
+    // `initblk` reads three operands off the stack (ECMA-335 III.3.36): an address, a fill byte
+    // widened to int32, and an *unsigned* int32 size. The shapes below are the ones the
+    // interpreter must refuse rather than guess at, and each of them throws, so an end-to-end
+    // guest cannot distinguish them — only the message says which rule fired.
+
+    let private runInitblk (addr : EvalStackValue) (value : EvalStackValue) (size : EvalStackValue) : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state, thread = stateWithNullary loggerFactory NullaryIlOp.Initblk addr
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' value thread
+            |> IlMachineState.pushToEvalStack' size thread
+
+        NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Initblk
+        |> ignore<ExecutionResult>
+
+    let private initblkRefusal
+        (addr : EvalStackValue)
+        (value : EvalStackValue)
+        (size : EvalStackValue)
+        (expected : string)
+        : unit
+        =
+        let exn = Assert.Throws (fun () -> runInitblk addr value size)
+        exn.Message |> shouldContainText expected
+
+    let private validDest : EvalStackValue =
+        EvalStackValue.ManagedPointer (nativeBlockByref 0)
+
+    let private verbatim (i : int32) : EvalStackValue =
+        EvalStackValue.Int32 (Int32Source.Verbatim i)
+
+    [<Test>]
+    let ``initblk reads its size unsigned, so a 2GiB fill is too large rather than negative`` () : unit =
+        // 0x80000000 as an unsigned int32 is 2147483648, which does not fit PawPrint's int32
+        // byte-offset model. Reading the slot signed would call it -2147483648 and report it as
+        // *negative*, which names the wrong rule: the operand is perfectly valid IL, it is the
+        // interpreter's model that cannot hold it.
+        initblkRefusal validDest (verbatim 0) (verbatim 0x80000000) "exceeds the interpreter Int32 byte-offset model"
+
+        // Sized just below the boundary the model does accept, so the message above is a statement
+        // about 2^31 and not about every value with the high bit set.
+        initblkRefusal
+            validDest
+            (verbatim 0)
+            (verbatim 0xFFFFFFFF)
+            "initblk: size 4294967295 exceeds the interpreter Int32 byte-offset model"
+
+    [<Test>]
+    let ``initblk refuses a size or fill value carrying pointer provenance`` () : unit =
+        // A narrowed byref in the size slot is a memory address, not a length; interpreting one as
+        // a byte count would invent a number.
+        initblkRefusal
+            validDest
+            (verbatim 0)
+            (EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer (nativeBlockByref 6)))
+            "size carries pointer provenance"
+
+        initblkRefusal
+            validDest
+            (EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer (nativeBlockByref 6)))
+            (verbatim 1)
+            "fill value carries pointer provenance"
+
+    [<Test>]
+    let ``initblk refuses an address it must not dereference`` () : unit =
+        // The placeholder stands for "non-null, but with no storage behind it"; writing through it
+        // would fabricate storage.
+        initblkRefusal
+            (EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder 0x1000L))
+            (verbatim 0)
+            (verbatim 1)
+            "must never be dereferenced"
+
+        // A bare unmanaged address is not something PawPrint's heap model can locate.
+        initblkRefusal
+            (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0x1234L))
+            (verbatim 0)
+            (verbatim 1)
+            "refusing to dereference unmanaged pointer value"
+
+    /// Assert that `initblk` completed the instruction rather than throwing or faulting.
+    let private initblkCompletes (addr : EvalStackValue) (value : EvalStackValue) (size : EvalStackValue) : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state, thread = stateWithNullary loggerFactory NullaryIlOp.Initblk addr
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' value thread
+            |> IlMachineState.pushToEvalStack' size thread
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Initblk with
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            let methodState = state.ThreadState.[thread].MethodState
+
+            // Nothing raised: the frame that ran the instruction is still the active one, and it
+            // has stepped past the opcode's own encoding.
+            methodState.ExecutingMethod.Name |> shouldEqual "ToString"
+
+            methodState.IlOpIndex
+            |> shouldEqual (IlOp.NumberOfBytes (IlOp.Nullary NullaryIlOp.Initblk))
+        | other -> failwith $"Expected Initblk to step, got %O{other}"
+
+    /// Assert that `initblk` raised a guest NullReferenceException, by the same signal the
+    /// `Conv_ovf_i` overflow test uses: the runtime has pushed a frame running the exception's
+    /// constructor.
+    let private initblkRaisesNullReference
+        (addr : EvalStackValue)
+        (value : EvalStackValue)
+        (size : EvalStackValue)
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state, thread = stateWithNullary loggerFactory NullaryIlOp.Initblk addr
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' value thread
+            |> IlMachineState.pushToEvalStack' size thread
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Initblk with
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            let ctor = state.ThreadState.[thread].MethodState.ExecutingMethod
+            ctor.Name |> shouldEqual ".ctor"
+
+            let declaring = ctor.RequiredDeclaringType
+            declaring.Namespace |> shouldEqual "System"
+            declaring.Name |> shouldEqual "NullReferenceException"
+        | other -> failwith $"Expected Initblk to step, got %O{other}"
+
+    [<Test>]
+    let ``initblk does not decode a fill value it is not going to write`` () : unit =
+        let pointerShaped =
+            EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer (nativeBlockByref 6))
+
+        // Real .NET discards `value` entirely when the size is zero, so a fill byte PawPrint
+        // cannot render must not make a no-op fill fail. The same value with a nonzero size is
+        // refused (see the refusal tests above), which is what makes this a statement about
+        // *ordering* rather than about the value being acceptable.
+        initblkCompletes validDest pointerShaped (verbatim 0)
+
+        // ... and a null destination faults before the fill byte is ever needed.
+        initblkRaisesNullReference (EvalStackValue.ManagedPointer ManagedPointerSource.Null) pointerShaped (verbatim 1)
+
+    [<Test>]
+    let ``initblk faults on a null destination whatever the size beyond it says`` () : unit =
+        // The fault is on the first byte, so a size PawPrint could not have filled anyway must
+        // still come back as the guest exception rather than as a host refusal about the
+        // byte-offset model.
+        initblkRaisesNullReference
+            (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
+            (verbatim 0)
+            (verbatim 0x80000000)
+
+        // A zero size through a null destination is legal and writes nothing.
+        initblkCompletes (EvalStackValue.ManagedPointer ManagedPointerSource.Null) (verbatim 0) (verbatim 0)

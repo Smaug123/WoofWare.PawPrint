@@ -100,6 +100,20 @@ module internal IntrinsicHelpers =
         state : IlMachineState ->
             IlMachineState
 
+    /// Pop `addr`, `value` and `size` from the evaluation stack and fill the block they describe,
+    /// serving both the `initblk` opcode and the `Unsafe.InitBlock` / `Unsafe.InitBlockUnaligned`
+    /// JIT intrinsics the real JIT replaces with it. `operation` names the caller in the
+    /// diagnostics raised for operands PawPrint cannot interpret as a fill.
+    ///
+    /// The program counter is left where it was, so a caller can raise `NullDestination` at the
+    /// faulting instruction; a caller must advance it itself on `Filled`.
+    val executeInitBlock :
+        baseClassTypes : BaseClassTypes<DumpedAssembly> ->
+        currentThread : ThreadId ->
+        operation : string ->
+        state : IlMachineState ->
+            InitBlockOutcome
+
     /// Execute the `Unsafe.CopyBlock` / `Unsafe.CopyBlockUnaligned` JIT intrinsics. Drives the
     /// shared cell-aware copy primitive forwards (cpblk has undefined behaviour on overlap per
     /// ECMA-335 III.3.30, so no overlap detection is performed); the cell-aware path preserves

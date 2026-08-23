@@ -4,6 +4,7 @@ open System
 open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
+open Microsoft.Extensions.Logging
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
@@ -11,6 +12,11 @@ open WoofWare.PawPrint.Test
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
+// Runs guests under the interpreter, which is where essentially all of the suite's
+// time goes; `Explicit` keeps it out of a bare `dotnet test` so local iteration is
+// quick. CI selects it by category and so runs it. See AGENTS.md.
+[<Category("Guest")>]
+[<Explicit>]
 module TestPureCases =
     let assy = typeof<RunResult>.Assembly
 
@@ -362,6 +368,48 @@ module TestPureCases =
         )
         |> Seq.toList
 
+    /// Run `body` against a logger that captures the guest's run, writing everything it
+    /// captured to stderr if `body` throws. The assertion belongs inside `body` rather
+    /// than after it: a guest whose two runtimes disagree needs the same account of what
+    /// PawPrint did as a guest that failed outright.
+    let private withGuestLog (sourceName : string) (body : ILoggerFactory -> 'a) : 'a =
+        let messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", sourceName ]
+
+        use _loggerFactoryResource = loggerFactory
+
+        try
+            body loggerFactory
+        with _ ->
+            for message in messages () do
+                System.Console.Error.WriteLine $"{message}"
+
+            reraise ()
+
+    let private interpret
+        (loggerFactory : ILoggerFactory)
+        (sourceName : string)
+        (kernelConfig : KernelConfig)
+        (image : byte array)
+        : RunOutcome
+        =
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+
+        use peImage = new MemoryStream (image)
+
+        BoundedRun.run
+            loggerFactory
+            sourceName
+            (Some sourceName)
+            peImage
+            { HostConfig.Default dotnetRuntimes with
+                Guest =
+                    { GuestConfig.Default dotnetRuntimes with
+                        Kernel = kernelConfig
+                    }
+            }
+
     let runPawPrintSource
         (sourceName : string)
         (source : string)
@@ -371,111 +419,65 @@ module TestPureCases =
         =
         let image = Roslyn.compile [ source ]
 
-        let messages, loggerFactory =
-            LoggerFactory.makeTestWithProperties [ "source_file", sourceName ]
+        withGuestLog
+            sourceName
+            (fun loggerFactory -> interpret loggerFactory sourceName kernelConfig image |> assertResult image)
 
-        use _loggerFactoryResource = loggerFactory
+    /// As `runPawPrintSource`, but the image also runs under the real runtime, and the two
+    /// runs happen *at the same time* rather than one after the other. See
+    /// `DifferentialOracle.alongsideInterpreted` for why overlapping them is sound. It is
+    /// worth doing because the oracle is the larger half of an ordinary case's cost, and
+    /// nearly all of that is spent blocked on the child process rather than computing.
+    let runPawPrintSourceAgainstOracle
+        (sourceName : string)
+        (source : string)
+        (kernelConfig : KernelConfig)
+        (oracle : byte array -> RealRuntimeResult)
+        (assertResult : RealRuntimeResult -> RunOutcome -> unit)
+        : unit
+        =
+        let image = Roslyn.compile [ source ]
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        withGuestLog
+            sourceName
+            (fun loggerFactory ->
+                let realResult, pawPrintResult =
+                    DifferentialOracle.alongsideInterpreted
+                        (fun () -> oracle image)
+                        (fun () -> interpret loggerFactory sourceName kernelConfig image)
 
-        use peImage = new MemoryStream (image)
-
-        try
-            let pawPrintResult =
-                BoundedRun.run
-                    loggerFactory
-                    sourceName
-                    (Some sourceName)
-                    peImage
-                    { HostConfig.Default dotnetRuntimes with
-                        Guest =
-                            { GuestConfig.Default dotnetRuntimes with
-                                Kernel = kernelConfig
-                            }
-                    }
-
-            assertResult image pawPrintResult
-        with _ ->
-            for message in messages () do
-                System.Console.Error.WriteLine $"{message}"
-
-            reraise ()
+                assertResult realResult pawPrintResult
+            )
 
     let runTest (case : EndToEndTestCase) : unit =
-        if not (AppContextProperties.isEmpty case.AppContext) then
-            // The oracle runs the guest out of process under a fixed `runtimeconfig.json`
-            // (`RealRuntime.runtimeConfig`) that carries no `configProperties`, so a case's
-            // AppContext properties never reach the real runtime. A case with properties
-            // would therefore be comparing a seeded PawPrint against an unseeded oracle —
-            // a PawPrint-only fact dressed up as a cross-runtime one. Those belong in
-            // `sourcesImpure`.
+        // Every `sourcesPure` case is `Always`: the directory's whole premise is that
+        // the guest's claims hold on any host PawPrint's oracle can run on. A case that
+        // needs a narrower policy belongs in `sourcesImpure`, where the policy is
+        // declared per case.
+        if case.Oracle <> OraclePolicy.Always then
             failwith
-                $"%s{case.FileName} sets AppContext properties (%O{case.AppContext}), but it is registered as a *pure* differential case. Move it to sourcesImpure."
+                $"%s{case.FileName} is registered as a *pure* differential case but declares Oracle = %O{case.Oracle}. A case whose claims hold on only one kernel belongs in sourcesImpure, where the policy is per case."
+
+        DifferentialOracle.assertComparable case
 
         let source = Assembly.getEmbeddedResourceAsString case.FileName assy
 
-        runPawPrintSource
+        runPawPrintSourceAgainstOracle
             case.FileName
             source
             case.KernelConfig
-            (fun image pawPrintResult ->
-                // The case's own seed drives the oracle too, so both runtimes
-                // are looking at one description of a filesystem. An unseeded
-                // case passes `FileSystemSeed.empty`, which materialises
-                // nothing and leaves the oracle exactly as it was.
-                let realResult = RealRuntime.executeWithSeed case.KernelConfig.FileSystem [||] image
-
-                // NormalExit and ProcessExit both represent a clean process termination with
-                // an exit code on the terminating thread's eval stack; the only difference is
-                // whether the guest returned from Main or called Environment.Exit. The real
-                // runtime surfaces both as RealRuntimeResult.NormalExit, so normalise here.
-                let normalisedPawPrint =
-                    match pawPrintResult with
-                    | RunOutcome.ProcessExit (s, t) -> RunOutcome.NormalExit (s, t)
-                    | other -> other
-
-                match realResult, normalisedPawPrint with
-                | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                    exitCode |> shouldEqual case.ExpectedReturnCode
-
-                    let pawPrintExitCode =
-                        match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                        | [] -> failwith "expected program to return a value, but it returned void"
-                        | head :: _ ->
-                            match head with
-                            | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
-                            | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
-
-                    pawPrintExitCode |> shouldEqual exitCode
-                | RealRuntimeResult.UnhandledException _, RunOutcome.GuestUnhandledException _ ->
-                    if not case.ExpectsUnhandledException then
-                        failwith
-                            $"Both runtimes threw unhandled exceptions for %s{case.FileName}, but this test was not expected to throw. Add to expectsUnhandledException if intentional."
-                | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (_, _, exn) ->
-                    failwith
-                        $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception: %O{exn.ExceptionObject}"
-                | RealRuntimeResult.Aborted (_code, report), _ ->
-                    failwith
-                        $"Real runtime called Environment.FailFast for %s{case.FileName}; this fixture does not exercise FailFast:\n%s{report}"
-                | RealRuntimeResult.UnhandledException realExn,
-                  RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                    let pawPrintExitCode =
-                        match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                        | [] -> None
-                        | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> Some i
-                        | _ -> None
-
-                    failwith
-                        $"Real runtime terminated with an unhandled exception, but PawPrint exited normally (code: %O{pawPrintExitCode}):\n%s{realExn}"
-                | _, RunOutcome.Aborted (_, _, fatal) ->
-                    let m = fatal.Message |> Option.defaultValue "<no message>"
-
-                    failwith $"PawPrint guest aborted (%O{fatal.Code}) for %s{case.FileName}: %s{m}"
-                | _, RunOutcome.SignalTerminated (_, signal) ->
-                    failwith
-                        $"PawPrint guest was terminated by POSIX signal %O{signal} for %s{case.FileName}; this test does not exercise signal-driven termination"
-                | _, RunOutcome.ProcessExit _ -> failwith "unreachable: normalised away above"
+            // The case's own seed drives the oracle too, so both runtimes
+            // are looking at one description of a filesystem. An unseeded
+            // case passes `FileSystemSeed.empty`, which materialises
+            // nothing and leaves the oracle exactly as it was.
+            (RealRuntime.executeWithSeed case.KernelConfig.FileSystem [||])
+            (fun realResult pawPrintResult ->
+                DifferentialOracle.compareOutcomes
+                    case.FileName
+                    case.ExpectedReturnCode
+                    case.ExpectsUnhandledException
+                    realResult
+                    pawPrintResult
             )
 
     /// `calli` through a null function pointer. This cannot be a comparison test in
@@ -933,6 +935,7 @@ class Program
             ExpectedReturnCode = 0
             KernelConfig = KernelConfig.Default
             AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Always
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }
@@ -955,6 +958,7 @@ class Program
                     FileSystem = seededCases.[fileName]
                 }
             AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Always
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }
@@ -970,6 +974,7 @@ class Program
             ExpectedReturnCode = exitCode
             KernelConfig = KernelConfig.Default
             AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Always
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }
@@ -982,6 +987,7 @@ class Program
             ExpectedReturnCode = 0 // not checked; both runtimes are expected to throw
             KernelConfig = KernelConfig.Default
             AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Always
             ExpectsUnhandledException = true
             AssertTerminalState = None
         }
@@ -1010,6 +1016,7 @@ class Program
             ExpectedReturnCode = 0
             KernelConfig = KernelConfig.Default
             AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Always
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }

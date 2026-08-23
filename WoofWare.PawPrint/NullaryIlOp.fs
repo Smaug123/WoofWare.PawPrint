@@ -3402,7 +3402,22 @@ module NullaryIlOp =
 
             stElem loggerFactory corelib value index arr currentThread state
         | Cpblk -> failwith "TODO: Cpblk unimplemented"
-        | Initblk -> failwith "TODO: Initblk unimplemented"
+        | Initblk ->
+            // ECMA-335 III.3.36, shared with the `Unsafe.InitBlock` intrinsics that lower to it.
+            match IntrinsicHelpers.executeInitBlock corelib currentThread "initblk" state with
+            | InitBlockOutcome.Filled state ->
+                state
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.stepped
+            | InitBlockOutcome.NullDestination state ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.NullReferenceException
+                    currentThread
+                    state
+                |> ExecutionResult.stepped
         | Conv_ovf_u1 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
 
