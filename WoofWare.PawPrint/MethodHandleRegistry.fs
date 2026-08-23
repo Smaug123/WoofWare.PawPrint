@@ -423,6 +423,18 @@ module MethodHandleRegistry =
         else
             Map.tryFind id reg.IdToMethodHandle
 
+    /// Mint (or reuse) a registry id for the given fully-concretised method, including its own
+    /// generic arguments. Returns the bare id rather than a `RuntimeMethodHandleInternal`, for
+    /// callers whose consumer is an `IntPtr`-shaped slot: CoreCLR's `MethodDesc*` is handed out as
+    /// a raw `void*` by several FCalls, and the managed caller wraps it itself.
+    let getOrAllocateConcreteId
+        (allConcreteTypes : AllConcreteTypes)
+        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (reg : MethodHandleRegistry)
+        : int64 * MethodHandleRegistry
+        =
+        idOfHandle (makeMethodHandle allConcreteTypes method) reg
+
     /// Mint (or reuse) a registry id for the given fully-concretised method and return a
     /// `RuntimeMethodHandleInternal` value type referencing it. Unlike `getOrAllocate`, this
     /// does not also allocate a `RuntimeMethodInfoStub` on the managed heap: callers that
@@ -435,8 +447,7 @@ module MethodHandleRegistry =
         (reg : MethodHandleRegistry)
         : CliValueType * MethodHandleRegistry
         =
-        let handle = makeMethodHandle allConcreteTypes method
-        let registryId, reg = idOfHandle handle reg
+        let registryId, reg = getOrAllocateConcreteId allConcreteTypes method reg
 
         let mHandle =
             CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle registryId)

@@ -577,6 +577,67 @@ module NativeDelegate =
 
         if returnMatches then state, Some shape else state, None
 
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
+        let state = ctx.State
+        let instruction = ctx.Instruction
+
+        match
+            ctx.TargetAssembly.Name.Name,
+            ctx.TargetType.Namespace,
+            ctx.TargetType.Name,
+            instruction.ExecutingMethod.Name,
+            instruction.ExecutingMethod.Signature.ParameterTypes,
+            instruction.ExecutingMethod.Signature.ReturnType
+        with
+        | "System.Private.CoreLib",
+          "System",
+          "Delegate",
+          "GetInvokeMethod",
+          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                              "MethodTable",
+                                                              methodTableGenerics)) ],
+          MethodReturnType.Returns (ConcretePointer (ConcreteVoid state.ConcreteTypes)) when methodTableGenerics.IsEmpty ->
+            // `COMDelegate::GetInvokeMethod` (comdelegate.cpp:2156): the `MethodDesc*` of the
+            // delegate type's own `Invoke`, read off the `DelegateEEClass` the type loader filled
+            // in. Despite the `void*` return this is a method identity and not a code address --
+            // its two callers are `Delegate.DynamicInvokeImpl`, which wraps it in a
+            // `RuntimeMethodHandleInternal` and hands it straight to `RuntimeType.GetMethodBase`
+            // (Delegate.CoreCLR.cs:80-86), and `MulticastDelegate.NewMulticastDelegate`, which
+            // stores it in the new delegate's `_methodPtrAux` (MulticastDelegate.CoreCLR.cs:183).
+            // A registry id is therefore the right answer, and a `FunctionPointerTarget` would
+            // not be: the sibling `GetMulticastInvoke`, which really does return code, is
+            // separately unimplemented.
+            //
+            // The id names the `Invoke` of the *exact* instantiation, matching the MethodDesc
+            // CoreCLR reads from the instantiated MethodTable's class. `GetMethodBase` is handed
+            // the delegate's `RuntimeType` alongside it and must agree with it, and the
+            // signature the reflective invoke coerces arguments against is the instantiated one.
+            let operation = "Delegate.GetInvokeMethod"
+
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let methodTableArg, state = IlMachineState.popEvalStack ctx.Thread state
+            let delegateType = NativeCall.methodTableOfEvalStackValue operation methodTableArg
+
+            let state, invoke =
+                delegateInvokeMethod ctx.LoggerFactory ctx.BaseClassTypes operation delegateType state
+
+            let registryId, registry =
+                MethodHandleRegistry.getOrAllocateConcreteId state.ConcreteTypes invoke state.MethodHandles
+
+            let state =
+                { state with
+                    MethodHandles = registry
+                }
+
+            let state =
+                IlMachineState.pushToEvalStack
+                    (CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle registryId))
+                    ctx.Thread
+                    state
+
+            NativeHandlerResult.completed state |> Some
+        | _ -> None
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
