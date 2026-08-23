@@ -15,7 +15,7 @@ IL/CLR/BCL/PAL concepts in it, and makes PawPrint one client of it.
 ## Commissioned scope
 
 **Stages 1–3 only, as a spike.** Those three stages are rename-only: they move
-the 8,190 lines that are already free of every CLR concept, and they change no
+the 9,650 lines that are already free of every CLR concept, and they change no
 behaviour. What they are meant to establish is whether the boundary is real —
 whether `WoofWare.PosixKernel` can build and test with no reference to
 `WoofWare.PawPrint.Domain`, and whether the host-equality tests still pass on
@@ -277,7 +277,10 @@ the gospel warns about.
 
 **(c) A third project** owning the PRNG, referenced by both.
 
-**Chosen: (c).** The two consumers are doing genuinely different things with
+**Chosen: (c).** Note first that (a) and (c) are *equally* breaking to
+`Domain` — both delete a public module from it — so the breaking change is not
+what separates them, and the argument for (c) has to stand on dependency shape
+alone. It does: the two consumers are doing genuinely different things with
 it — the kernel draws entropy a guest reads back through `getrandom`/
 `/dev/urandom`, the scheduler draws an interleaving to explore — and neither is
 a special case of the other. A deterministic PRNG is a utility, and a utility
@@ -357,16 +360,55 @@ Each of these fails the test "would a POSIX kernel have this?":
 
 ## Settled
 
-* **Packaging.** `WoofWare.PosixKernel` is **not** `IsPackable`. Publishing
-  before the syscall layer exists would commit us to the state-record shape as
-  a public API, and the state records are the part stages 5–6 are expected to
-  rearrange.
+* **Packaging.** `WoofWare.PosixKernel` **is** `IsPackable`, with its own
+  `PackageId`, following the `WoofWare.PawPrint.Domain` precedent — `Domain` is
+  a `ProjectReference` of `WoofWare.PawPrint`, is packable, and CI uploads both
+  nupkgs.
+
+  This overturns an earlier "not packable" decision, which was made without the
+  following, established by probe rather than from memory: a `ProjectReference`
+  to an `IsPackable=false` project emits `<dependency id="…" version="1.0.0"/>`
+  into the referencing package's nuspec **and omits the referenced assembly from
+  `lib/`**, silently and with no warning. Since `WoofWare.PawPrint` is packable
+  and `nuget-pack`/`expected-pack` are required checks that only count nupkg
+  *files*, a non-packable `WoofWare.PosixKernel` would have made the published
+  PawPrint package depend on a package that does not exist and ship without the
+  assembly, with CI green throughout.
+
+  The cost this incurs — the state records become public surface — is smaller
+  than it looks while the publish jobs remain `if: false`: nothing reaches
+  nuget.org today, so what is committed to is the *shape of the package graph*,
+  not an API contract with users.
+
 * **`.fsi` discipline.** None for now. `.fsi` files are the only thing that
   actually hides an F# representation within an assembly, so the syscall layer
-  gets them when it is built (stages 7–9); writing them for 14k moved lines
+  gets them when it is built (stages 7–9); writing them for 9,650 moved lines
   would turn rename-only stages into rewrites and destroy their oracle.
+
 * **The shared PRNG.** Its own project — see decision 6. Not needed before
   stage 5.
+
+## What the assembly boundary starts enforcing
+
+F# `private` on a record or single-case union declared in a *namespace* is
+assembly-scoped: it does not hide the representation from other files in the
+same assembly, but it does hide it across an assembly boundary. Twelve of the
+moving types have private representations (`AbsoluteUnixPath`, `FileName`,
+`UnixPath`, `PathCursor`, `SymlinkTarget`, `PermissionBits`, `UnixTimestamp`,
+`VirtualFileSystem`, `PathLimits`, `FileDescriptorRegistry`, `SignalState`,
+`SignalHandler`), so anything in PawPrint reaching into one becomes `FS1093`
+the moment it is a different assembly.
+
+Measured across `WoofWare.PawPrint`, `.App` and `.Test`, for every constructor,
+pattern match and field access outside the defining file: **there is exactly
+one**, `EmulatedKernel.fs`'s `checkInvariants` reading
+`kernel.FileDescriptors.Descriptions`. `FileDescriptorRegistry.descriptions`
+already exists as a public accessor, so it is a one-line change in stage 2.
+
+That is a good result for this plan's premise. The private representations were
+already being respected by discipline; the assembly boundary will now enforce
+what discipline was achieving, which is the machine-checks-invariants principle
+applied to a module boundary.
 
 ## Still open
 
@@ -376,6 +418,12 @@ Each of these fails the test "would a POSIX kernel have this?":
   library is not a separate repository), with its file paths updated in stage 3
   — the divergence tables and the platform profile move together, so that is
   the moment its paths go stale.
+* **Two test files worth splitting, deferred.** `TestAbsoluteUnixPath.fs` has
+  four cases that forge an `EmulatedKernel`, and `TestFileSystemSeed.fs` has
+  eight that call `RealRuntime.validateSeedForOracle`. In both, the minority is
+  genuinely a PawPrint test and the majority is genuinely a library test.
+  Splitting them is the right end state but is not rename-only, so the spike
+  leaves both whole in `WoofWare.PawPrint.Test`.
 
 ## Implementation plan
 
@@ -399,72 +447,171 @@ plus the new `WoofWare.PosixKernel.Test` project from stage 1 onward.
 
 ---
 
+### How the test files were assigned
+
+The first draft of this plan assigned test files by assuming they followed
+their implementation files. They do not, and four of the assignments were
+wrong. Assignment is therefore by grep over each *test* file's own code
+references (comments stripped), against two lists: names that will never be on
+the library side (`EmulatedKernel`, `KernelConfig`, `RealRuntime`,
+`HostPlatform`, `IlMachineState`, `NativeSystemNative`, …), and
+`SimulatedUnixPlatform`, which arrives only in stage 3.
+
+| test file | blockers | needs platform | lands in |
+| --- | --- | --- | --- |
+| `TestUnixError.fs` | — | no | stage 1 |
+| `TestUnixPath.fs` | — | no | stage 1 |
+| `TestFileDescriptorRegistry.fs` | — | no | stage 2 |
+| `TestSignal.fs` | — | no | stage 2 |
+| `TestDirectoryEnumeration.fs` | — | no | stage 2 |
+| `TestPathCursor.fs` | — | yes | stage 3 |
+| `TestVirtualFileSystem.fs` | — | yes | stage 3 |
+| `TestVirtualFileSystemAgainstHost.fs` | — | yes | stage 3 |
+| `TestOpenDirRules.fs` | — | yes | stage 3 |
+| `TestRmDirRules.fs` | — | yes | stage 3 |
+| `TestUnlinkRules.fs` | — | yes | stage 3 |
+| `TestRenameRules.fs` | — | yes | stage 3 |
+| `TestLinuxEpollLimits.fs` | — | yes | stage 3 |
+| `TestAbsoluteUnixPath.fs` | `EmulatedKernel`, `KernelConfig` | yes | stays |
+| `TestFileSystemSeed.fs` | `RealRuntime` | yes | stays |
+| `TestFileSystemType.fs` | `EmulatedKernel`, `HostPlatform` | yes | stays |
+| `TestSocketBinding.fs` | `EmulatedKernel` | yes | stays |
+| `TestUserBufferCheck.fs` | `EmulatedKernel` | yes | stays |
+| `TestUserBufferCheckAgainstHost.fs` | `EmulatedKernel`, `HostPlatform` | yes | stays |
+| `TestGuestPathBytes.fs` | `NativeSystemNative` | yes | stays |
+| `TestSignalHandler.fs` | `IlMachineState`, `MethodInfo` | no | stage 4 |
+| `TestSignalState.fs` | — | no | stage 4 |
+| `TestSocketCreation.fs` | embedded resource, see below | yes | stays |
+
+A test staying behind is not a problem: `WoofWare.PawPrint.Test` references the
+new library, so every one of these keeps testing the moved code. Moving a test
+buys one thing only — that the library is tested *without* a PawPrint
+reference — and the thirteen that do move include the host-equality suite,
+which is the expensive one.
+
+`TestSocketCreation.fs` is the one commissioned file that is not a rename: it
+reads embedded resources through `Assembly.GetExecutingAssembly()` with the
+hard-coded logical name `"WoofWare.PawPrint.Test.socketMatrix.%s"`, so moving it
+also means moving the `<EmbeddedResource Include="socketMatrix\*.tsv" />` item
+and editing that string. It stays behind in the spike. Assembly-identity-
+dependent code is a class the rename-only check cannot see; this is the only
+instance among the movers, and the check's documentation should say so.
+
+---
+
 ### Stage 1: project skeleton, and the path/errno vocabulary
 
 **Dependencies**: none.
 
-**Implements**: "What is already true".
+**Implements**: "What is already true"; the packaging decision.
 
-Create `WoofWare.PosixKernel/` (net8.0, `IsPackable=false`) and
-`WoofWare.PosixKernel.Test/`; add both to `WoofWare.PawPrint.slnx` and to
-`.github/workflows/ci.yaml`. `WoofWare.PawPrint` references the new project.
-Move, with namespace change only: `UnixPathText.fs`, `AbsoluteUnixPath.fs`,
-`UnixPath.fs`, `UnixError.fs` (1,407 lines) and their tests
-(`TestAbsoluteUnixPath.fs`, `TestUnixPath.fs`, `TestPathCursor.fs`,
-`TestUnixError.fs`). Add `open WoofWare.PosixKernel` to every referencing file.
+Create `WoofWare.PosixKernel/` (net8.0, `IsPackable=true`, `PackageId`
+`WoofWare.PosixKernel`) and `WoofWare.PosixKernel.Test/` (net10.0 — the devshell
+carries only the net10 runtime, so a net8.0 test host will not run; NUnit 4.4.0,
+NUnit3TestAdapter 5.1.0, FsUnit 7.1.1, FsCheck(.NUnit) 3.3.2,
+Microsoft.NET.Test.Sdk 17.14.1, to match the existing test project). Add both to
+`WoofWare.PawPrint.slnx`; add a `WoofWare.PosixKernel` nupkg upload to the
+`nuget-pack` job. `WoofWare.PawPrint` references the new project.
+
+The new package gets its **own** `version.json` and its **own** `README.md`,
+rather than sharing the repository root's. Both existing packages carry a
+`version.json` whose `pathFilters` decide which tree changes bump that
+package's version — so a shared file would tie the new package's version to
+PawPrint's churn, which is exactly the coupling the extraction is trying to
+remove. `WoofWare.PawPrint`'s own filters already list
+`:/WoofWare.PawPrint.Domain` because it depends on it; add
+`:/WoofWare.PosixKernel` for the same reason. The `README.md` is separate
+because it is the package's front page on nuget.org and the repository root's
+describes an IL interpreter, which this library is not.
+
+Move, in compile order and with namespace change only: `UnixError.fs`,
+`UnixPathText.fs`, `AbsoluteUnixPath.fs`, `UnixPath.fs` (1,407 lines), and the
+tests `TestUnixError.fs`, `TestUnixPath.fs`. Add `open WoofWare.PosixKernel` to
+every referencing file.
 
 **Correctness oracle**:
 * The rename-only script reports an empty diff for every moved file.
-* Both halves of the existing suite are green and the test counts are
-  unchanged except for the tests that moved projects; those counts must sum to
-  the old total.
-* `WoofWare.PosixKernel.dll` has no reference to `WoofWare.PawPrint.Domain`
-  (assert this, in CI: it is the invariant the whole plan rests on, and it is
-  cheap to check with `ikdasm`/`System.Reflection.Metadata`).
+* The default suite is green and its total is the 3,502-test baseline minus
+  exactly the tests that moved projects; the two projects' totals must sum to
+  3,502. The `Guest` half is unchanged.
+* **Check the empty-filter case before landing**: CI's second step is
+  `dotnet test --filter "TestCategory=Guest"`, and `WoofWare.PosixKernel.Test`
+  contains no `Guest`-category test at all. Confirm VSTest treats "no test
+  matches" in one assembly of a solution-level run as a warning rather than a
+  failure. If it does not, that is a stage-1 blocker and needs a filter change,
+  not a workaround later.
+* `WoofWare.PosixKernel.dll` references neither `WoofWare.PawPrint` nor
+  `WoofWare.PawPrint.Domain` — asserted in CI, because it is the invariant the
+  whole plan rests on and it is cheap to check with `System.Reflection.Metadata`.
 
 ### Stage 2: the CLR-free state modules
 
 **Dependencies**: stage 1.
 
 Move `VirtualFileSystem.fs`, `FileSystemSeed.fs`, `InternetEndpoint.fs`,
-`FileDescriptorRegistry.fs`, `Signal.fs` (5,433 lines) and the tests that do
-not reference `SimulatedUnixPlatform` (`TestVirtualFileSystem.fs`,
-`TestFileSystemSeed.fs`, `TestFileDescriptorRegistry.fs`, `TestSignal.fs`).
-Tests that *do* reference the platform (`TestVirtualFileSystemAgainstHost.fs`,
-`TestSocketBinding.fs`, `TestSocketCreation.fs`) stay put until stage 3.
+`FileDescriptorRegistry.fs`, `Signal.fs` (5,433 lines) and the tests
+`TestFileDescriptorRegistry.fs`, `TestSignal.fs`, `TestDirectoryEnumeration.fs`.
 
-**Correctness oracle**: as stage 1. After this stage every CLR-free file has
-moved, and `WoofWare.PosixKernel` is 6,840 lines with no PawPrint dependency.
+One non-rename edit, in its own commit: `EmulatedKernel.checkInvariants` reads
+`kernel.FileDescriptors.Descriptions`, which the assembly boundary now hides.
+Replace with the existing public accessor
+`FileDescriptorRegistry.descriptions`.
+
+**Correctness oracle**: as stage 1. The compiler is the real oracle for the
+private-representation question — if more than the one predicted `FS1093`
+appears, the measurement in "What the assembly boundary starts enforcing" was
+wrong and the surplus needs understanding rather than papering over with
+accessors.
 
 ### Stage 3: the Unix platform profile
 
 **Dependencies**: stage 2.
 
-Measured: lines 559–1913 of `EmulatedKernel.fs` reference **nothing** defined
-outside that range except in five doc comments and error-message strings
-(`KernelConfig.FileSystemType`, `EmulatedKernel.UserAddressLimit`,
-`EmulatedKernel.withUnixPlatformAndFileSystemType`). So this block, too, is a
-rename — but those five cross-references will need their names updating, so run
-the rename-only check *first* and land the comment edits as a separate,
-reviewable commit on the same branch.
+**Specify this stage by definition name, never by line range.** The first draft
+named lines 559–1913, and commit #1153 landed `RenameRules` inside that window
+between the measurement and the commit, silently moving every boundary. The
+block is 18% of recent commits by volume; assume it will move again.
 
-Move lines ~559–1913 of `EmulatedKernel.fs` — `SimulatedUnixFlavour`,
-`SimulatedUnixPlatform`, `EmulatedFileSystemType`, `SimulatedUnixReleaseError`,
-`UserBufferCheck`, `ObservedUserAddressLimit`, `LinuxEpollLimits`,
+Move into `WoofWare.PosixKernel/SimulatedUnixPlatform.fs`, from
+`EmulatedKernel.fs`: `SimulatedUnixFlavour`, `EmulatedFileSystemType`,
+`FileSystemTypeAnswer`, `SimulatedUnixReleaseError`, `UserBufferCheck`,
+`ObservedUserAddressLimit`, `LinuxEpollLimits`, `SimulatedUnixPlatform`,
 `SocketAddressSizes`, `SockaddrFamilyField`, `SocketCreationRefusal`,
-`CreatingOpenRules`, `MkDirRules`, `UnlinkRules`, `RmDirRules`,
-`OpenDirRules`, `BindLengthVerdict`, `BindFault` — into
-`WoofWare.PosixKernel/SimulatedUnixPlatform.fs` (~1,350 lines). This block is
-already CLR-free and already self-contained; it just happens to live in the
-same file as things that are not.
+`CreatingOpenRules`/`CreatingOpenVerdict`, `MkDirRules`/`MkDirVerdict`,
+`UnlinkRules`/`UnlinkVerdict`, `RemovalChecks`, `DirectoryEntryNameLength`,
+`GetCwdOrphanAnswer`, `RmDirRules`/`RmDirVerdict`, `OpenDirRules`/
+`OpenDirVerdict`, `RenameRules`/`RenameVerdict`/`RenameChecks`,
+`BindLengthVerdict`, `BindFault`, **and `module SimulatedUnixPlatform`**.
 
-Move the host-equality tests with it:
+That last is not optional and the first draft omitted it. The module holds every
+flavour derivation — `linuxX64`, `macOsArm64`, `pathLimits`,
+`creatingOpenRules`, `rawErrnoNumbering`, `socketCreation`, the bind rules — so
+it *is* the divergence tables, and six of the eight moving tests call into it.
+Leaving it behind would also split `type SimulatedUnixPlatform` from `module
+SimulatedUnixPlatform` across two namespaces, making resolution in any file
+opening both depend on `open` order. Verified CLR-free along with the rest of
+the block.
+
+Measured on `dc341c58`: this block references nothing defined outside it except
+in nine doc comments and one interpolated error string, all naming
+`EmulatedKernel.*` or `KernelConfig.*`. Land the move first, then the comment
+rewrites as a separate commit — and rewrite them into *library* vocabulary
+rather than merely repointing the names. The error string in
+`EmulatedFileSystemType.reportedFor` currently instructs its caller to use
+`EmulatedKernel.withUnixPlatformAndFileSystemType`, which after the move is
+client vocabulary inside a library that has no idea its client has such a
+function.
+
+Move the tests: `TestPathCursor.fs`, `TestVirtualFileSystem.fs`,
 `TestVirtualFileSystemAgainstHost.fs`, `TestOpenDirRules.fs`,
-`TestRmDirRules.fs`, `TestFileSystemType.fs`, `TestLinuxEpollLimits.fs`,
-`TestSocketBinding.fs`, `TestSocketCreation.fs`.
+`TestRmDirRules.fs`, `TestUnlinkRules.fs`, `TestRenameRules.fs`,
+`TestLinuxEpollLimits.fs`.
 
 **Correctness oracle**:
-* The rename-only script, on the move commit.
+* The rename-only script, on the move commit — but note this stage is a
+  **split**, not a rename: `EmulatedKernel.fs` keeps its name, so `git diff -M`
+  detects nothing. The check must diff the old file against
+  (remainder + extracted file) explicitly.
 * The host-equality tests are the real oracle here and they must pass **on both
   platforms**: locally on macOS and in CI on Linux. Each falsifies a different
   column of the divergence tables, so a green run on one is half a result.
@@ -480,12 +627,12 @@ The question the commissioned work answers: **is the boundary real?** Concretely
 after stage 3:
 
 * `WoofWare.PosixKernel.dll` builds and its tests pass with no reference to
-  `WoofWare.PawPrint.Domain` or `WoofWare.PawPrint` — asserted in CI, not
+  `WoofWare.PawPrint` or `WoofWare.PawPrint.Domain` — asserted in CI, not
   eyeballed.
-* 8,190 of the 14,135 candidate lines have moved without a behavioural diff,
+* 9,650 of the ~15,000 candidate lines have moved without a behavioural diff,
   and the rename-only check says so mechanically.
-* The host-equality suite — the most expensive-to-establish thing in this area —
-  passes from the far side of the boundary on both macOS and Linux.
+* Thirteen test files, including the host-equality suite, run from the far side
+  of the boundary, on both macOS and Linux.
 
 If any of those fails, the finding is worth more than the move: it means a CLR
 concept is reaching the POSIX model somewhere the type names did not reveal,
