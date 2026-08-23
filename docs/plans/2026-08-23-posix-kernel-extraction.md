@@ -24,6 +24,45 @@ down here because the spike is only worth running if there is somewhere for it
 to go, but they are **not commissioned**: revisit them once stage 3 has
 answered its question.
 
+## Spike result (2026-08-23)
+
+All three commissioned stages are done. Measured on `dc341c58`:
+
+| | |
+| --- | --- |
+| lines moved into `WoofWare.PosixKernel` | 9,652 across 10 files |
+| project references from the library | **none** (asserted by `TestNoPawPrintReference.fs`) |
+| test files now on the library side | 14, including the 27-case host-equality suite |
+| test total | 3,056 + 448 = 3,504, against a 3,502 baseline, the difference being two new tests |
+| behavioural diff | none; `scripts/check-move-is-rename-only.sh` verifies every move, and the split |
+| guest fixtures | 1,011 passing, unchanged, after stages 1 and 2 |
+
+Answering the question the spike was for: **the boundary is real.** Nothing in
+the moved 9,652 lines needed a CLR concept, and the one place PawPrint was
+reaching through an abstraction — `EmulatedKernel.checkInvariants` reading
+`FileDescriptorRegistry`'s private `Descriptions` — was predicted before the
+move and fixed with an accessor that already existed.
+
+Two findings worth carrying forward:
+
+* **The assembly boundary now enforces twelve private representations** that
+  were previously respected only by discipline. That is the extraction's first
+  concrete benefit and it arrived before any of the syscall work.
+* **Stage 3 doubled in size between the plan being written and being executed**,
+  because #1153 landed `RenameRules` inside the block. Specifying by definition
+  name rather than line range is what made that a non-event. Any future stage
+  touching this block should assume the same.
+
+Two things outstanding before the spike is fully closed:
+
+* The host-equality suite has been verified from the far side of the boundary
+  **on macOS only**. It falsifies a different column on Linux, so CI's run is
+  the other half of that result.
+* The guest fixtures were run and unchanged at 1,011 after stages 1 and 2; the
+  stage-3 run is the one that matters most, since stage 3 is the only stage that
+  touched `EmulatedKernel.fs`'s contents rather than merely relocating whole
+  files.
+
 ## Goal
 
 A pure state machine that answers syscalls. Specifically:
