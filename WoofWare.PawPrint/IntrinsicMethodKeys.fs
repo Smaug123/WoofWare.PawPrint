@@ -1049,9 +1049,11 @@ module IntrinsicMethodKeys =
             // return type follows the call on everything but the 32-bit pair. They are marked
             // [Intrinsic] only so the JIT can elide the wrapper; PawPrint can run the IL
             // unchanged because the BitOperations.LeadingZeroCount boundary is modelled in
-            // Intrinsics.fs. The narrower wrappers (SByte/Byte/Int16/UInt16) and the Int128
-            // pair carry no [Intrinsic] attribute, so they are never routed to Intrinsics.call
-            // and need no entry here.
+            // Intrinsics.fs. The narrower wrappers (SByte/Byte/Int16/UInt16) carry no [Intrinsic]
+            // attribute, so they are never routed to Intrinsics.call and need no entry here. The
+            // Int128 pair are a different case: the *methods* are unmarked, but `Int128` and
+            // `UInt128` carry a type-level [Intrinsic], which routes every one of their members.
+            // Their absence here is a gap, not an argument -- see the PopCount block below.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/UInt32.cs#L294-L296
             pattern
                 "System.Private.CoreLib"
@@ -1122,8 +1124,9 @@ module IntrinsicMethodKeys =
             // The IBinaryInteger<TSelf>.TrailingZeroCount wrappers, exactly as for
             // LeadingZeroCount above: `ldarg.0; call BitOperations::TrailingZeroCount; [conv];
             // ret`, [Intrinsic] only so the JIT can elide the wrapper. The narrower wrappers
-            // (SByte/Byte/Int16/UInt16) and the Int128 pair are not [Intrinsic] and so need no
-            // entry.
+            // (SByte/Byte/Int16/UInt16) are not [Intrinsic] and so need no entry; the Int128 pair
+            // are unmarked as methods but are routed anyway by their type-level [Intrinsic], as
+            // the PopCount block below describes.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/UInt32.cs#L310-L312
             pattern
                 "System.Private.CoreLib"
@@ -1191,9 +1194,9 @@ module IntrinsicMethodKeys =
                 [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
             // The IBinaryInteger<TSelf>.PopCount wrappers, exactly as for LeadingZeroCount above:
             // `ldarg.0; call int32 BitOperations::PopCount(<U>); [conv]; ret`, [Intrinsic] only so
-            // the JIT can elide the wrapper. The narrower wrappers (SByte/Byte/Int16/UInt16),
-            // `char`'s explicit interface implementation, and the Int128 pair carry no [Intrinsic]
-            // attribute, so they are never routed to Intrinsics.call and need no entry here.
+            // the JIT can elide the wrapper. The narrower wrappers (SByte/Byte/Int16/UInt16) and
+            // `char`'s explicit interface implementation carry no [Intrinsic] attribute, so they
+            // are never routed to Intrinsics.call and need no entry here.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/UInt32.cs#L298-L300
             pattern
                 "System.Private.CoreLib"
@@ -1225,6 +1228,25 @@ module IntrinsicMethodKeys =
                 "System.UIntPtr"
                 "PopCount"
                 [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
+            // `Int128.PopCount` and `UInt128.PopCount` carry no *method*-level [Intrinsic], but
+            // their declaring types do, and a type-level marker routes every member -- so unlike
+            // the narrower wrappers above they do reach Intrinsics.call and do need entries. Their
+            // bodies are `ulong.PopCount(value._lower) + ulong.PopCount(value._upper)`, which
+            // bottoms out in the UInt64 wrapper allowlisted above.
+            //
+            // Only the UInt128 one is listed. `UInt128` already has the cluster PR #1132 added
+            // (.ctor, get_MinValue/get_MaxValue, op_Equality and the widening op_Implicit
+            // overloads), so a guest can build a value, call this, and compare the result --
+            // measured working. `Int128` has no such cluster: a guest cannot get past
+            // `Int128.op_Implicit(System.Int64)` to reach any member at all, so an `Int128.PopCount`
+            // entry would be unreachable and untestable. It belongs with the rest of that cluster,
+            // not here.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/UInt128.cs#L800-L802
+            pattern
+                "System.Private.CoreLib"
+                "System.UInt128"
+                "PopCount"
+                [ IntrinsicParameterPattern.Exact "System.UInt128" ]
             // BitOperations.RotateLeft is marked [Intrinsic] only so the JIT can lower it to a
             // single ROL instruction; the IL bodies are pure shift+OR over the existing primitive
             // numeric ops PawPrint already supports:

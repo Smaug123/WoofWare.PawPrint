@@ -148,6 +148,36 @@ public class BitOperationsPopCountTests
         return 0;
     }
 
+    public static int TestUInt128Wrapper()
+    {
+        // UInt128's PopCount carries no method-level [Intrinsic], but its declaring type does,
+        // and a type-level marker routes every member -- so this needs its own allowlist entry.
+        // Its body is ulong.PopCount(_lower) + ulong.PopCount(_upper).
+        //
+        // There is deliberately no Int128 counterpart: a guest cannot construct an Int128 at all
+        // (Int128.op_Implicit is itself unimplemented), so nothing here could reach it.
+        // Conversions are spelled from `ulong` so they bind to the widening op_Implicit that
+        // PR #1132 allowlisted; `(UInt128)0` would instead emit op_Explicit(Int32), which is
+        // not part of that cluster. Comparisons are spelled `!(a == b)` for the same reason:
+        // that cluster has op_Equality but no op_Inequality.
+        if (!(UInt128.PopCount((UInt128)0ul) == (UInt128)0ul)) return 164;
+        if (!(UInt128.PopCount((UInt128)1ul) == (UInt128)1ul)) return 165;
+        if (!(UInt128.PopCount((UInt128)ulong.MaxValue) == (UInt128)64ul)) return 166;
+        if (!(UInt128.PopCount(UInt128.MaxValue) == (UInt128)128ul)) return 167;
+
+        // A value with bits in both halves, built through the public (upper, lower) ctor: the
+        // upper half is what the `_upper` term contributes, so a body that read only `_lower`
+        // would answer 8 rather than 16.
+        UInt128 both = new UInt128(0xFFul, 0xFFul);
+        if (!(UInt128.PopCount(both) == (UInt128)16ul)) return 168;
+
+        // Only the upper half is set, so a body that read only `_lower` would answer 0.
+        UInt128 upperOnly = new UInt128(0xFFul, 0ul);
+        if (!(UInt128.PopCount(upperOnly) == (UInt128)8ul)) return 169;
+
+        return 0;
+    }
+
     public static int TestAgainstNaiveOracle()
     {
         ulong state = 0x9E3779B97F4A7C15ul;
@@ -200,6 +230,9 @@ class Program
         if (result != 0) return result;
 
         result = BitOperationsPopCountTests.TestThroughIBinaryIntegerWrappers();
+        if (result != 0) return result;
+
+        result = BitOperationsPopCountTests.TestUInt128Wrapper();
         if (result != 0) return result;
 
         result = BitOperationsPopCountTests.TestAgainstNaiveOracle();
