@@ -2744,6 +2744,17 @@ module TestImpureCases =
         ]
 
     let runTest (case : EndToEndTestCase) : unit =
+        // This fixture ends by reading an exit code off the terminating thread's
+        // evaluation stack, which a guest that died of an escaping exception never
+        // reaches -- so `ExpectsUnhandledException` has no meaning here, and a case
+        // that set it would fail below whatever the oracle thought. Refused rather
+        // than quietly ignored, because the field *is* consulted a few lines down
+        // when the oracle runs, and a case could otherwise be compared as though the
+        // declaration were honoured throughout.
+        if case.ExpectsUnhandledException then
+            failwith
+                $"%s{case.FileName} sets ExpectsUnhandledException, which the impure harness cannot honour: it asserts an exit code, and a guest that threw has none. A case whose point is the escaping exception belongs in sourcesPure, whose fixture compares the two runtimes' exceptions instead."
+
         // Asked before the guest runs, so that a case which cannot be compared at all
         // fails on its declaration rather than after a full interpreted run.
         let comparesHere = OraclePolicy.comparesHere case

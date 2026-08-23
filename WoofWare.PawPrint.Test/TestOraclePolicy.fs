@@ -138,6 +138,37 @@ module TestOraclePolicy =
         |> shouldEqual []
 
     [<Test>]
+    let ``no impure case expects an unhandled exception`` () : unit =
+        // The impure fixture reads an exit code off the terminating thread, which a
+        // guest that died of an escaping exception never produces, so it refuses the
+        // declaration outright. Asked here of the whole corpus rather than only of the
+        // case that happens to run, and asked of every case rather than only the
+        // compared ones, because the refusal is about this fixture and not the oracle.
+        TestImpureCases.cases @ TestImpureCases.unimplemented
+        |> List.filter (fun case -> case.ExpectsUnhandledException)
+        |> List.map (fun case -> case.FileName)
+        |> shouldEqual []
+
+    [<Test>]
+    let ``the impure harness refuses a case that expects an unhandled exception`` () : unit =
+        // The corpus assertion above says no case does this today; this says what
+        // happens to the one that tries. Refused before the guest runs, so the
+        // diagnostic does not depend on how far the interpreter got.
+        let case =
+            TestImpureCases.cases
+            |> List.find (fun case -> case.FileName = "AssemblyLocationEmpty.cs")
+
+        let forced =
+            { case with
+                ExpectsUnhandledException = true
+            }
+
+        let exn = Assert.Throws<System.Exception> (fun () -> TestImpureCases.runTest forced)
+
+        exn.Message |> shouldContainText "AssemblyLocationEmpty.cs"
+        exn.Message |> shouldContainText "ExpectsUnhandledException"
+
+    [<Test>]
     let ``a divergent case registered as compared is caught`` () : unit =
         // The wiring, not the decision: proof that `TestImpureCases.runTest` really does
         // consult the policy and really does run the oracle when it says so.
