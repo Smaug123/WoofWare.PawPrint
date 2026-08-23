@@ -462,6 +462,18 @@ type IntrinsicResult =
         exnType : TypeInfo<GenericParamFromMetadata, TypeDefn> *
         message : string option
 
+/// Outcome of an `initblk`-shaped fill (`IntrinsicHelpers.executeInitBlock`), which serves both
+/// the opcode and the `Unsafe.InitBlock` / `Unsafe.InitBlockUnaligned` intrinsics the JIT
+/// replaces with it. Neither case has advanced the program counter: a caller turning
+/// `NullDestination` into a guest exception needs the faulting instruction's offset, which is
+/// what exception dispatch keys the handler search and the stack trace on.
+type InitBlockOutcome =
+    /// The fill completed. A zero size reaches this case too, having written nothing and without
+    /// dereferencing the destination.
+    | Filled of IlMachineState
+    /// The destination was null and the size nonzero, so the fill faults on its first byte.
+    | NullDestination of IlMachineState
+
 /// Outcome of invoking a native handler (QCall, P/Invoke shim, or other host-provided
 /// primitive registered under `WoofWare.PawPrint.Native`). Each variant names a single
 /// dispatcher decision, so the dispatcher's pattern match is total.
