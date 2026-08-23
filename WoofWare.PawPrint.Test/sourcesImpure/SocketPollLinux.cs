@@ -137,6 +137,23 @@ class SocketPollLinux
         one = new PollEvent { FileDescriptor = idleFd, Events = POLLIN };
         if (Poll(&one, 1, 0, null) != PAL_EFAULT) return 4;
 
+        // 4b-4d: `eventCount = 0`. The copy-in loop is the only thing that
+        // dereferences `pollEvents`, and it does not run, so a non-null pointer
+        // naming nothing at all is legal here -- the call succeeds and stores
+        // zero. `SocketPal.Select` reaches this shape when every list it was
+        // given is empty. (Contrast check 2: a *null* pointer is EFAULT even at
+        // count 0, because that screen precedes the count.)
+        triggered = 12345;
+        if (Poll((PollEvent*)1, 0, 0, &triggered) != PAL_SUCCESS) return 60;
+        if (triggered != 0) return 61;
+        // The same call with a real buffer, for contrast: still zero.
+        one = new PollEvent { FileDescriptor = idleFd, Events = POLLIN };
+        triggered = 12345;
+        if (Poll(&one, 0, 0, &triggered) != PAL_SUCCESS) return 62;
+        if (triggered != 0) return 63;
+        // ... and the entry is untouched, since no entry was examined.
+        if (one.TriggeredEvents != 0) return 64;
+
         // 5: `milliseconds < -1`. -1 itself is legal (infinite).
         one = new PollEvent { FileDescriptor = idleFd, Events = POLLIN };
         if (Poll(&one, 1, -2, &triggered) != PAL_EINVAL) return 5;

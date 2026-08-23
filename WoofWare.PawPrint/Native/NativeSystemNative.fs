@@ -6927,7 +6927,17 @@ module NativeSystemNative =
 
             let eventCount = NativeCall.uint32Argument operation instruction.Arguments.[1]
 
-            let entriesStorage = requireStorage operation "pollEvents" pollEvents
+            // Resolved only when at least one entry is actually read. With
+            // `eventCount = 0` the C dereferences `pollEvents` nowhere — the
+            // copy-in loop is its only reader, and it does not run — so any
+            // non-null bit pattern is legal there: the call succeeds and stores
+            // zero through `triggered`. `SocketPal.Select` reaches exactly that
+            // shape when every list it was given is empty.
+            let entriesStorage : ManagedPointerSource option =
+                if eventCount = 0u then
+                    None
+                else
+                    Some (requireStorage operation "pollEvents" pollEvents)
 
             // `struct PollEvent` is `{ int32 FileDescriptor; int16 Events; int16
             // TriggeredEvents; }` (Interop.Poll.Structs.cs) — eight bytes, no
@@ -6950,11 +6960,15 @@ module NativeSystemNative =
                     $"%s{operation}: eventCount %d{eventCount} spans %d{totalBytes} bytes, which overflows the int32 byte offsets PawPrint's address space uses. PawPrint models no descriptor limit (RLIMIT_NOFILE is not in the interop surface), so this is a limit of the interpreter rather than a kernel refusal to reproduce."
             else
 
-            requireBufferRoom ctx operation BufferTransfer.OutOf entriesStorage (int totalBytes) state
-
             // Decode every entry before answering, exactly as the C fills its
             // whole `struct pollfd` array before calling `poll(2)`.
             let entries =
+                match entriesStorage with
+                | None -> []
+                | Some entriesStorage ->
+
+                requireBufferRoom ctx operation BufferTransfer.OutOf entriesStorage (int totalBytes) state
+
                 List.init
                     (int eventCount)
                     (fun i ->
@@ -7028,6 +7042,10 @@ module NativeSystemNative =
             // and `Events` alone (it asserts they are unchanged), so PawPrint
             // must not touch those bytes either.
             let state =
+                match entriesStorage with
+                | None -> state
+                | Some entriesStorage ->
+
                 entries
                 |> List.indexed
                 |> List.fold
