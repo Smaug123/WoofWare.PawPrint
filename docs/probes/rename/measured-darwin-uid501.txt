@@ -122,6 +122,9 @@ search missing on the destination's parent                                      
 directory to a NEW parent, write missing on the moved directory                          EACCES
 directory to a NEW parent, SEARCH missing on the moved directory                         ok
 directory renamed WITHIN its parent, write missing on the moved directory                ok
+the same, but DISPLACING an empty directory in that parent                               EACCES
+the same, but displacing a NON-EMPTY directory (EACCES against ENOTEMPTY)                EACCES
+the same, but displacing a regular file (control: the type rule pre-empts)               ENOTDIR
 file to a new parent, mode 0 on the moved file (files have no "..")                      ok
 source absent under an unsearchable parent                                               EACCES
 source absent under a searchable but unwritable parent                                   ENOENT
@@ -197,7 +200,7 @@ rename(f, "q/t/") where q/t is a symlink to a dir, q UNWRITABLE                 
 
 ## unstable
 rename("l/", "g"), relative target, 200 trials                                           ENOTDIR x200
-rename("l/", "g"), absolute target, 200 trials                                           ENOTDIR x170, ok (moved the target) x30
+rename("l/", "g"), absolute target, 200 trials                                           ENOTDIR x161, ok (moved the target) x39
 
 ## orphan
 ordinary file source (control)                                                           ENOENT

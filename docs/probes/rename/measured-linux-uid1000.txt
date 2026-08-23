@@ -122,6 +122,9 @@ search missing on the destination's parent                                      
 directory to a NEW parent, write missing on the moved directory                          EACCES
 directory to a NEW parent, SEARCH missing on the moved directory                         ok
 directory renamed WITHIN its parent, write missing on the moved directory                ok
+the same, but DISPLACING an empty directory in that parent                               ok
+the same, but displacing a NON-EMPTY directory (EACCES against ENOTEMPTY)                ENOTEMPTY
+the same, but displacing a regular file (control: the type rule pre-empts)               ENOTDIR
 file to a new parent, mode 0 on the moved file (files have no "..")                      ok
 source absent under an unsearchable parent                                               EACCES
 source absent under a searchable but unwritable parent                                   ENOENT

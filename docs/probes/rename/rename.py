@@ -328,12 +328,34 @@ def permissions():
     row("perm", "directory to a NEW parent, SEARCH missing on the moved directory",
         movednosearch, "p/m", "q/m")
 
-    def renamedirnowrite(root):
-        os.mkdir(os.path.join(root, "p"))
-        os.mkdir(os.path.join(root, "p", "m"))
-        os.chmod(os.path.join(root, "p", "m"), 0o555)
+    # Whether the moved directory's own write bit is demanded turns on *two*
+    # things, not one, and the flavours want different pairs. Linux asks only
+    # when the parent changes (the ".." rewrite); Darwin asks then and also
+    # whenever the moved directory displaces another directory, within one
+    # parent included. The free-destination row alone cannot see that, which is
+    # how it was missed: it is the same on both.
+    def withinparent(dstkind):
+        def build(root):
+            os.mkdir(os.path.join(root, "p"))
+            os.mkdir(os.path.join(root, "p", "m"))
+            if dstkind == "emptydir":
+                os.mkdir(os.path.join(root, "p", "d"))
+            elif dstkind == "fulldir":
+                os.mkdir(os.path.join(root, "p", "d"))
+                open(os.path.join(root, "p", "d", "kid"), "w").close()
+            elif dstkind == "file":
+                open(os.path.join(root, "p", "d"), "w").close()
+            os.chmod(os.path.join(root, "p", "m"), 0o555)
+        return build
+
     row("perm", "directory renamed WITHIN its parent, write missing on the moved directory",
-        renamedirnowrite, "p/m", "p/m2")
+        withinparent("absent"), "p/m", "p/m2")
+    row("perm", "the same, but DISPLACING an empty directory in that parent",
+        withinparent("emptydir"), "p/m", "p/d")
+    row("perm", "the same, but displacing a NON-EMPTY directory (EACCES against ENOTEMPTY)",
+        withinparent("fulldir"), "p/m", "p/d")
+    row("perm", "the same, but displacing a regular file (control: the type rule pre-empts)",
+        withinparent("file"), "p/m", "p/d")
 
     def filemovenowrite(root):
         os.mkdir(os.path.join(root, "p"))
@@ -772,12 +794,17 @@ def walk_order():
 def mount_root():
     """The Darwin rows that need a filesystem root which is not "/".
 
-    A mount root reached by a final "." cannot be measured at all: for such a
-    path the source's parent directory is the mount's parent, on the containing
-    filesystem, so EXDEV pre-empts the rule. Reached by a final ".." it answers
-    EINVAL like any other directory -- and getting that row right requires
-    descending into a child of the mount first, since `base/..` is the mount's
-    *parent*, a different inode on a different filesystem.
+    Whether the root gets its own arm, as Darwin's `unlink` and `rmdir` both
+    give it. It does not -- but the measurement is masked, because a filesystem
+    root that is not "/" is a *mount* root and renaming one is liable to EXDEV.
+    The discriminator is not "." against ".." but whether the source's parent
+    directory and the destination's parent directory are the same object: where
+    they differ EXDEV stays quiet and the root answers EINVAL for both
+    navigations, exactly as an ordinary directory does.
+
+    Hence the 2x2 below, and hence the child: `base/..` is the mount's *parent*,
+    a different inode on a different filesystem, so reaching the mount root by a
+    final ".." means descending into a child of it first.
 
     Everything this section creates lives inside one `mkdtemp` directory made
     directly under the mount. That is what makes it safe on a caller-supplied

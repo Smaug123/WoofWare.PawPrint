@@ -107,6 +107,12 @@ module TestRenameRules =
         let vfs = dir root "ab" plainDir vfs |> snd
 
         let vfs = dir root "mv" (mode 0o555) vfs |> snd
+        // Somewhere for `mv` to land within its own parent: a free name, an
+        // existing empty directory, and an existing non-empty one. Those three
+        // are what separate Linux's ".."-rewrite rule from Darwin's wider one.
+        let vfs = dir root "mvdest" plainDir vfs |> snd
+        let mvfull, vfs = dir root "mvfull" plainDir vfs
+        let vfs = file mvfull "kid" vfs |> snd
 
         let p, vfs = dir root "p" (mode 0o555) vfs
         let pf, vfs = file p "pf" vfs
@@ -332,6 +338,26 @@ module TestRenameRules =
         for platform in [ linux ; darwin ] do
             refuses platform UnixError.EACCES [ "mv", "w/x" ; "mv", "w/wd" ; "mv", "w/wfull" ]
             succeeds platform [ "mv", "mv2" ]
+
+    [<Test>]
+    let ``the moved directory's write bit is demanded on more occasions on Darwin`` () : unit =
+        // Linux asks for it only when the parent changes -- that is the ".."
+        // rewrite and nothing else. Darwin asks then, and also whenever the
+        // moved directory *displaces* another directory, within one parent
+        // included. Measured 40/40 per cell on both kernels.
+        //
+        // `mv` is 0o555 and sits at the root, alongside a free name, an empty
+        // directory and a non-empty one.
+        for platform in [ linux ; darwin ] do
+            succeeds platform [ "mv", "mvfree" ]
+
+        succeeds linux [ "mv", "mvdest" ]
+        refuses darwin UnixError.EACCES [ "mv", "mvdest" ]
+
+        // And it beats ENOTEMPTY on the same shape, which is what makes it a
+        // check of its own rather than a spelling of the displaced-directory one.
+        refuses linux UnixError.ENOTEMPTY [ "mv", "mvfull" ]
+        refuses darwin UnixError.EACCES [ "mv", "mvfull" ]
 
     [<Test>]
     let ``the type rule beats the moved directory's own write bit on both`` () : unit =

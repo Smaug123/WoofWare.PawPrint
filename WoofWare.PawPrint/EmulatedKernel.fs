@@ -2024,7 +2024,8 @@ module RenameRules =
     ///  * Moving a **directory to a different parent** rewrites its own ".."
     ///    entry, so it demands write on the moved directory itself: EACCES.
     ///    Renaming one within its parent changes nothing inside it and demands
-    ///    nothing. This check is *below* the type arm, unlike the parents' —
+    ///    nothing -- and that holds even when it *displaces* a directory there,
+    ///    which is measured (40/40) and is where Darwin diverges a second time. This check is *below* the type arm, unlike the parents' —
     ///    `rename(p/m, q/file)` with `p/m` unwritable is ENOTDIR — and above
     ///    ENOTEMPTY.
     ///  * A destination directory that still holds an entry is ENOTEMPTY.
@@ -2147,8 +2148,13 @@ module RenameRules =
     ///  * Both paths naming one inode changes nothing and succeeds — below the
     ///    two write checks above, which is why the self-rename of a directory
     ///    whose own write bit is missing is EACCES here and succeeds on Linux.
-    ///  * Moving a directory to a different parent demands write on the moved
-    ///    directory, as on Linux.
+    ///  * Moving a directory demands write on the moved directory -- on *two*
+    ///    occasions where Linux wants one. Linux asks only when the parent
+    ///    changes, which is the ".." rewrite; Darwin asks then and also whenever
+    ///    the moved directory displaces another directory, within one parent
+    ///    included. Measured 40/40: `rename("p/m", "p/d")` with `m` at 0o555 and
+    ///    `d` an existing directory is EACCES here and succeeds on Linux, while
+    ///    the same call to a free name succeeds on both.
     ///  * A destination directory that still holds an entry is ENOTEMPTY, below
     ///    the displaced-directory write check: `rename(dir, fulldir)` with the
     ///    non-empty destination at mode 0 is EACCES here and ENOTEMPTY on Linux.
@@ -2254,8 +2260,19 @@ module RenameRules =
         elif destinationExisting = Some moved then
             RenameVerdict.NoOp
         elif
+            // Two occasions, not one, and this is where Darwin parts from Linux
+            // a second time. Linux wants this bit only when the parent changes,
+            // which is the ".." rewrite and nothing else. Darwin wants it then
+            // *and* whenever the moved directory displaces another directory,
+            // even within one parent: measured 40/40, `rename("p/m", "p/d")`
+            // with `m` at 0o555 and `d` an existing directory is EACCES, where
+            // the same call to a free name succeeds and Linux allows both.
+            //
+            // It beats ENOTEMPTY below on the same shape -- a non-empty `d` is
+            // still EACCES -- which is what makes it a check in its own right
+            // rather than a spelling of the displaced-directory one above.
             movedIsDirectory
-            && sourceDirectory <> destinationDirectory
+            && (sourceDirectory <> destinationDirectory || displacedDirectory.IsSome)
             && RenameChecks.lacksWrite "the moved directory" privilege moved vfs
         then
             RenameVerdict.Refuse UnixError.EACCES
