@@ -4850,19 +4850,23 @@ module EmulatedKernel =
             failwith
                 $"EmulatedKernel.socket: %O{socketId} names no socket in this kernel's socket table. Every SocketId reachable by a caller comes from an open file description, and EmulatedKernelDefect.DanglingSocket exists to make that unreachable, so this is an interpreter bug rather than anything a guest did."
 
-    /// The epoll readiness a socket presents right now, before any interest
-    /// mask is applied. Every row is measured on Linux 6.18.5 (`masks.c`,
-    /// docs/plans/2026-08-21-socket-readiness-wake): level-triggered
-    /// `epoll_wait` with timeout 0 reports the current level directly, which
-    /// is what each row reads off. Darwin has no measured rows and needs
-    /// none: the registration handler refuses that flavour, so no readiness
+    /// The readiness a socket presents right now, before any waiter's interest
+    /// mask is applied. Every row is measured on Linux 6.18.5 — `masks.c`
+    /// (docs/plans/2026-08-21-socket-readiness-wake) through level-triggered
+    /// `epoll_wait` with timeout 0, and `pollmask.c`
+    /// (docs/plans/2026-08-23-socket-poll) through `poll(2)` with timeout 0,
+    /// which agree on every phase.
+    ///
+    /// Darwin has no measured rows and needs none: both waiters refuse that
+    /// flavour before reaching here — epoll at registration (kqueue is
+    /// structurally different) and poll in its own handler — so no readiness
     /// question can be asked of a Darwin-flavoured kernel.
-    let epollReadiness (socketId : SocketId) (kernel : EmulatedKernel) : EpollReadiness =
+    let socketReadinessLevel (socketId : SocketId) (kernel : EmulatedKernel) : ReadinessLevel =
         let target = socket socketId kernel
 
         match target.Phase with
         | SocketPhase.Listening listenState ->
-            { EpollReadiness.none with
+            { ReadinessLevel.none with
                 In = not (List.isEmpty listenState.Queue)
             }
         | SocketPhase.Idle
@@ -4871,18 +4875,18 @@ module EmulatedKernel =
             | SocketKind.Stream ->
                 // A datagram socket never enters `DatagramPeer` with a
                 // Stream kind, so this arm is `Idle` only.
-                { EpollReadiness.none with
+                { ReadinessLevel.none with
                     Out = true
                     Hup = true
                 }
             | SocketKind.Datagram ->
-                { EpollReadiness.none with
+                { ReadinessLevel.none with
                     Out = true
                 }
             | SocketKind.Raw
             | SocketKind.SeqPacket ->
                 failwith
-                    $"EmulatedKernel.epollReadiness: socket %O{socketId} is %O{target.Kind}, whose readiness is unmeasured (both kinds are reachable only in the AF_UNIX domain, whose connection model PawPrint does not implement). Measure what epoll reports for one before registering it delivers."
+                    $"EmulatedKernel.socketReadinessLevel: socket %O{socketId} is %O{target.Kind}, whose readiness is measured for poll but not for epoll. Both kinds are reachable only in the AF_UNIX domain, and two callers arrive here: an epoll ADD (the registration screen rejects only regular files, so a socket of any kind is admitted) and `SystemNative_Poll` (which needs no registration at all). `poll(2)` reports OUT for a fresh SOCK_RAW and OUT|HUP for a fresh SOCK_SEQPACKET on Linux (docs/plans/2026-08-23-socket-poll/pollgaps.c). Those two rows are the whole answer only while PawPrint's own `listen`/`connect`/`accept` handlers keep refusing these kinds, which is what confines such a socket to `Idle` — the real kernel does accept connections on SOCK_SEQPACKET, so measuring those handlers reopens every other phase for it. They are still refused because what `epoll_wait` reports is only *inferred* from the two waiters sharing one poll handler, and every other row in this function is measured through both. Take an epoll measurement (an et.c-style probe on an AF_UNIX raw and seqpacket socket) before answering, since answering here makes epoll delivery answer too."
         | SocketPhase.EstablishedPendingReport connectionId
         | SocketPhase.Established connectionId ->
             // With the peer alive and no receive path modelled, both ends
@@ -4905,7 +4909,7 @@ module EmulatedKernel =
                 )
 
             if peerAlive then
-                { EpollReadiness.none with
+                { ReadinessLevel.none with
                     Out = true
                 }
             else
@@ -4931,7 +4935,7 @@ module EmulatedKernel =
             }
         | SocketPhase.Dead ->
             failwith
-                $"EmulatedKernel.epollReadiness: socket %O{socketId} is in the Darwin-only Dead phase, but readiness is only ever computed for registrations and the registration handler refuses the Darwin flavour — this is an interpreter bug."
+                $"EmulatedKernel.socketReadinessLevel: socket %O{socketId} is in the Darwin-only Dead phase. Both doors into this function refuse the Darwin flavour before any level is computed — `SystemNative_TryChangeSocketEventRegistration` because kqueue is structurally different, and `SystemNative_Poll` because its Darwin rows are measured but unmodelled — so reaching here is an interpreter bug. Darwin polls this phase IN|PRI|HUP (docs/plans/2026-08-23-socket-poll/pollmulti.c) if that changes."
 
     /// The epoll readiness of the descriptor `targetId` names, for computing
     /// what a registration on it would report.
@@ -4944,7 +4948,7 @@ module EmulatedKernel =
     /// `EPOLLOUT`. No modelled operation changes either, so the streams need
     /// no producer. A file or port target cannot reach here: the registry
     /// answers EPERM for the one and refuses the other.
-    let epollReadinessOfDescription (targetId : OpenFileDescriptionId) (kernel : EmulatedKernel) : EpollReadiness =
+    let epollReadinessOfDescription (targetId : OpenFileDescriptionId) (kernel : EmulatedKernel) : ReadinessLevel =
         match Map.tryFind targetId (FileDescriptorRegistry.descriptions kernel.FileDescriptors) with
         | None ->
             failwith
@@ -4952,14 +4956,14 @@ module EmulatedKernel =
         | Some description ->
 
         match description.Target with
-        | OpenFileTarget.Socket socketId -> epollReadiness socketId kernel
+        | OpenFileTarget.Socket socketId -> socketReadinessLevel socketId kernel
         | OpenFileTarget.StandardStream FileDescriptorRole.StandardInput ->
-            { EpollReadiness.none with
+            { ReadinessLevel.none with
                 Hup = true
             }
         | OpenFileTarget.StandardStream FileDescriptorRole.StandardOutput
         | OpenFileTarget.StandardStream FileDescriptorRole.StandardError ->
-            { EpollReadiness.none with
+            { ReadinessLevel.none with
                 Out = true
             }
         | OpenFileTarget.File _ ->
@@ -4968,6 +4972,55 @@ module EmulatedKernel =
         | OpenFileTarget.SocketEventPort _ ->
             failwith
                 $"EmulatedKernel.epollReadinessOfDescription: %O{targetId} is itself a socket event port; the registry refuses a nested-port registration, so no registration can name it (this is an interpreter bug)."
+
+    /// The readiness of the descriptor `targetId` names, for a `poll(2)`
+    /// caller.
+    ///
+    /// A sibling of `epollReadinessOfDescription` rather than a widening of
+    /// it: the two dispatchers refuse different things, because `epoll_ctl`
+    /// screens targets that `poll(2)` accepts. The per-socket level they share
+    /// (`socketReadinessLevel`) is the part measurement says is one function.
+    ///
+    /// Linux rows only; the handler refuses the Darwin flavour before calling
+    /// this, which is what lets the file row below be a single answer — on
+    /// Darwin a regular file polls `IN|PRI|OUT` but a directory polls `NVAL`,
+    /// so the same `OpenFileTarget.File` would need two.
+    let pollReadinessOfDescription (targetId : OpenFileDescriptionId) (kernel : EmulatedKernel) : ReadinessLevel =
+        match Map.tryFind targetId (FileDescriptorRegistry.descriptions kernel.FileDescriptors) with
+        | None ->
+            failwith
+                $"EmulatedKernel.pollReadinessOfDescription: %O{targetId} names no live open file description. `SystemNative_Poll` answers POLLNVAL for an fd that names nothing, without ever reaching here, so this is an interpreter bug."
+        | Some description ->
+
+        match description.Target with
+        | OpenFileTarget.Socket socketId -> socketReadinessLevel socketId kernel
+        | OpenFileTarget.File _ ->
+            // Measured (`pollgaps.c`): a regular file answers IN|OUT at every
+            // offset and under O_RDONLY as much as O_RDWR, and a directory
+            // answers the same. Files have no `->poll` handler, so the VFS
+            // default reports them always-ready; nothing about this varies
+            // with the file's contents or the description's position.
+            { ReadinessLevel.none with
+                In = true
+                Out = true
+            }
+        | OpenFileTarget.StandardStream FileDescriptorRole.StandardInput ->
+            // The same launch-shape constants `epollReadinessOfDescription`
+            // holds, and poll agrees with both on Linux (`pollmask.c` rows 19
+            // and 20). Not shared with that function: it refuses two of the
+            // targets this one answers, so the common part is the socket
+            // level, not the dispatch.
+            { ReadinessLevel.none with
+                Hup = true
+            }
+        | OpenFileTarget.StandardStream FileDescriptorRole.StandardOutput
+        | OpenFileTarget.StandardStream FileDescriptorRole.StandardError ->
+            { ReadinessLevel.none with
+                Out = true
+            }
+        | OpenFileTarget.SocketEventPort _ ->
+            failwith
+                $"EmulatedKernel.pollReadinessOfDescription: %O{targetId} is a socket event port, and what poll(2) reports for one is unmeasured. Unlike the epoll dispatcher's refusal of this case, a guest genuinely can reach it — poll accepts any descriptor — but no managed caller does: CoreLib polls only sockets (System.Net.Sockets), a standard stream (ConsolePal.Write) and an inotify descriptor (FileSystemWatcher, a kind PawPrint does not model). Measure what an epoll descriptor with and without ready events reports before answering."
 
     /// Every live open file description naming `socketId`.
     let private descriptionsNamingSocket (socketId : SocketId) (kernel : EmulatedKernel) : Set<OpenFileDescriptionId> =
@@ -5016,7 +5069,7 @@ module EmulatedKernel =
             FileDescriptors =
                 FileDescriptorRegistry.signalSocketEventPorts
                     (descriptionsNamingSocket socketId kernel)
-                    (Some (lazy (epollReadiness socketId kernel)))
+                    (Some (lazy (socketReadinessLevel socketId kernel)))
                     kernel.FileDescriptors
         }
 
@@ -5041,7 +5094,7 @@ module EmulatedKernel =
     let private annotatedReady
         (portState : SocketEventPortState)
         (kernel : EmulatedKernel)
-        : ((int * OpenFileDescriptionId) * SocketEventRegistration * EpollReadiness) list
+        : ((int * OpenFileDescriptionId) * SocketEventRegistration * ReadinessLevel) list
         =
         portState.Ready
         |> List.map (fun (_, targetId as key) ->
@@ -5054,7 +5107,7 @@ module EmulatedKernel =
 
             let reported =
                 epollReadinessOfDescription targetId kernel
-                |> EpollReadiness.reportedUnder registration.Interest
+                |> ReadinessLevel.reportedUnder registration.Interest
 
             key, registration, reported
         )
@@ -5078,7 +5131,7 @@ module EmulatedKernel =
         | OpenFileTarget.Socket _ -> false
         | OpenFileTarget.SocketEventPort portState ->
             annotatedReady portState kernel
-            |> List.exists (fun (_, _, reported) -> not (EpollReadiness.isEmpty reported))
+            |> List.exists (fun (_, _, reported) -> not (ReadinessLevel.isEmpty reported))
 
     /// Drain the port as one `epoll_wait(maxevents = maxCount)` would: walk
     /// the pending entries in order, re-polling each; report the ones whose
@@ -5098,7 +5151,7 @@ module EmulatedKernel =
         (portId : OpenFileDescriptionId)
         (maxCount : int)
         (kernel : EmulatedKernel)
-        : (uint64 * EpollReadiness) list * EmulatedKernel
+        : (uint64 * ReadinessLevel) list * EmulatedKernel
         =
         if maxCount <= 0 then
             failwith
@@ -5119,16 +5172,16 @@ module EmulatedKernel =
         | OpenFileTarget.SocketEventPort portState ->
 
         let rec walk
-            (delivered : (uint64 * EpollReadiness) list)
-            (remaining : ((int * OpenFileDescriptionId) * SocketEventRegistration * EpollReadiness) list)
-            : (uint64 * EpollReadiness) list * (int * OpenFileDescriptionId) list
+            (delivered : (uint64 * ReadinessLevel) list)
+            (remaining : ((int * OpenFileDescriptionId) * SocketEventRegistration * ReadinessLevel) list)
+            : (uint64 * ReadinessLevel) list * (int * OpenFileDescriptionId) list
             =
             match remaining with
             | [] -> List.rev delivered, []
             | (_, registration, reported) :: rest ->
                 if List.length delivered = maxCount then
                     List.rev delivered, remaining |> List.map (fun (key, _, _) -> key)
-                elif EpollReadiness.isEmpty reported then
+                elif ReadinessLevel.isEmpty reported then
                     walk delivered rest
                 else
                     walk ((registration.Data, reported) :: delivered) rest
@@ -5206,8 +5259,8 @@ module EmulatedKernel =
 
         let readyNow =
             epollReadinessOfDescription targetId kernel
-            |> EpollReadiness.reportedUnder interest
-            |> EpollReadiness.isEmpty
+            |> ReadinessLevel.reportedUnder interest
+            |> ReadinessLevel.isEmpty
             |> not
 
         if readyNow && not alreadyPending then

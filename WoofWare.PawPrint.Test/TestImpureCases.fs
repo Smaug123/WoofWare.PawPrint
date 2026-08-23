@@ -1083,6 +1083,14 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                FileName = "SocketPollLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The same rows under Darwin's numbering.
                 FileName = "SocketAcceptDarwin.cs"
                 ExpectedReturnCode = 0

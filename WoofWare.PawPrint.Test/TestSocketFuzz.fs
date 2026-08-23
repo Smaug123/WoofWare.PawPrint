@@ -147,6 +147,7 @@ module TestSocketFuzz =
         | FuzzOp.Mod _ -> "mod"
         | FuzzOp.Del _ -> "del"
         | FuzzOp.Wait _ -> "wait"
+        | FuzzOp.Poll _ -> "poll"
 
     let private allOpKinds : string list =
         [
@@ -162,6 +163,7 @@ module TestSocketFuzz =
             "mod"
             "del"
             "wait"
+            "poll"
         ]
 
     [<Test>]

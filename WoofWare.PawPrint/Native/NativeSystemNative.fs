@@ -530,14 +530,17 @@ module NativeSystemNative =
     /// The storage `offset` bytes into a caller's buffer.
     ///
     /// `readBytesThrough` and `writeBytesThrough` both start at the pointer they
-    /// are given, so reaching one field of a `struct sockaddr` means advancing
-    /// the pointer first. Reaching fields individually rather than transferring
-    /// the whole struct is deliberate: it keeps the bytes PawPrint touches to the
-    /// bytes the C touches, which matters because the two differ — a
-    /// `SocketAddress` for an IPv4 endpoint is 16 bytes and a guest can read all
-    /// of them back, and PawPrint's typed address space aborts on a read that
-    /// runs past the storage rather than inventing what follows it.
-    let private sockaddrFieldAt
+    /// are given, so reaching one field of a struct — or one element of an array
+    /// of them — means advancing the pointer first. Reaching fields individually
+    /// rather than transferring the whole struct is deliberate: it keeps the
+    /// bytes PawPrint touches to the bytes the C touches, which matters because
+    /// the two differ. A `SocketAddress` for an IPv4 endpoint is 16 bytes and a
+    /// guest can read all of them back, while PawPrint's typed address space
+    /// aborts on a read that runs past the storage rather than inventing what
+    /// follows it; and `SystemNative_Poll` writes back only each entry's
+    /// `TriggeredEvents`, leaving the `FileDescriptor` and `Events` the caller
+    /// set exactly as they were.
+    let private bufferFieldAt
         (ctx : NativeCallContext)
         (operation : string)
         (buffer : ManagedPointerSource)
@@ -665,7 +668,7 @@ module NativeSystemNative =
             readBytesThrough
                 ctx
                 operation
-                (sockaddrFieldAt ctx operation buffer offset state)
+                (bufferFieldAt ctx operation buffer offset state)
                 (SockaddrFamilyField.width field)
                 state
 
@@ -700,7 +703,7 @@ module NativeSystemNative =
         writeBytesThrough
             ctx
             operation
-            (sockaddrFieldAt ctx operation buffer offset state)
+            (bufferFieldAt ctx operation buffer offset state)
             (ImmutableArray.CreateRange bytes)
             state
 
@@ -1555,7 +1558,7 @@ module NativeSystemNative =
                 readBytesThrough
                     ctx
                     operation
-                    (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.Port state)
+                    (bufferFieldAt ctx operation blobStorage SockaddrOffsets.Port state)
                     2
                     state
 
@@ -1624,7 +1627,7 @@ module NativeSystemNative =
             writeBytesThrough
                 ctx
                 operation
-                (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.Port state)
+                (bufferFieldAt ctx operation blobStorage SockaddrOffsets.Port state)
                 (ImmutableArray.CreateRange bytes)
                 state
             |> complete UnixError.palSuccess
@@ -1679,7 +1682,7 @@ module NativeSystemNative =
                 readBytesThrough
                     ctx
                     operation
-                    (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.InternetAddress state)
+                    (bufferFieldAt ctx operation blobStorage SockaddrOffsets.InternetAddress state)
                     4
                     state
 
@@ -1735,7 +1738,7 @@ module NativeSystemNative =
             writeBytesThrough
                 ctx
                 operation
-                (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.InternetAddress state)
+                (bufferFieldAt ctx operation blobStorage SockaddrOffsets.InternetAddress state)
                 (ImmutableArray.CreateRange bytes)
                 state
             |> complete UnixError.palSuccess
@@ -1793,7 +1796,7 @@ module NativeSystemNative =
                 readBytesThrough
                     ctx
                     operation
-                    (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.InternetV6Address state)
+                    (bufferFieldAt ctx operation blobStorage SockaddrOffsets.InternetV6Address state)
                     SockaddrOffsets.InternetV6AddressLength
                     state
 
@@ -1815,7 +1818,7 @@ module NativeSystemNative =
                 readBytesThrough
                     ctx
                     operation
-                    (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.ScopeId state)
+                    (bufferFieldAt ctx operation blobStorage SockaddrOffsets.ScopeId state)
                     4
                     state
 
@@ -1905,17 +1908,17 @@ module NativeSystemNative =
             |> writeBytesThrough
                 ctx
                 operation
-                (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.InternetV6Address state)
+                (bufferFieldAt ctx operation blobStorage SockaddrOffsets.InternetV6Address state)
                 addressBytes
             |> writeBytesThrough
                 ctx
                 operation
-                (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.FlowInfo state)
+                (bufferFieldAt ctx operation blobStorage SockaddrOffsets.FlowInfo state)
                 (ImmutableArray.CreateRange flowInfo)
             |> writeBytesThrough
                 ctx
                 operation
-                (sockaddrFieldAt ctx operation blobStorage SockaddrOffsets.ScopeId state)
+                (bufferFieldAt ctx operation blobStorage SockaddrOffsets.ScopeId state)
                 (ImmutableArray.CreateRange scopeIdBytes)
             |> complete UnixError.palSuccess
         | Some "SystemNative_GetMaximumAddressSize",
@@ -5323,7 +5326,7 @@ module NativeSystemNative =
                         readBytesThrough
                             ctx
                             operation
-                            (sockaddrFieldAt ctx operation blob SockaddrOffsets.Port state)
+                            (bufferFieldAt ctx operation blob SockaddrOffsets.Port state)
                             2
                             state
 
@@ -5331,7 +5334,7 @@ module NativeSystemNative =
                         readBytesThrough
                             ctx
                             operation
-                            (sockaddrFieldAt ctx operation blob SockaddrOffsets.InternetAddress state)
+                            (bufferFieldAt ctx operation blob SockaddrOffsets.InternetAddress state)
                             4
                             state
 
@@ -5943,7 +5946,7 @@ module NativeSystemNative =
                         readBytesThrough
                             ctx
                             operation
-                            (sockaddrFieldAt ctx operation blob SockaddrOffsets.Port state)
+                            (bufferFieldAt ctx operation blob SockaddrOffsets.Port state)
                             2
                             state
 
@@ -5951,7 +5954,7 @@ module NativeSystemNative =
                         readBytesThrough
                             ctx
                             operation
-                            (sockaddrFieldAt ctx operation blob SockaddrOffsets.InternetAddress state)
+                            (bufferFieldAt ctx operation blob SockaddrOffsets.InternetAddress state)
                             4
                             state
 
@@ -6646,7 +6649,7 @@ module NativeSystemNative =
             // pal_networking.c), so `SA_CLOSE` is never delivered under this
             // flavour.
             let deliver
-                (delivered : (uint64 * EpollReadiness) list)
+                (delivered : (uint64 * ReadinessLevel) list)
                 (kernel : EmulatedKernel)
                 : NativeHandlerResult option
                 =
@@ -6850,6 +6853,237 @@ module NativeSystemNative =
                         $"%s{operation}: a Darwin-flavoured kernel holds %d{Map.count portState.Registrations} socket event registrations, but the Darwin registration arm refuses every change — this is an interpreter bug."
 
                 park port requestedCount state
+        | Some "SystemNative_Poll",
+          [ ConcretePointer _
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            // `int32_t SystemNative_Poll(PollEvent* pollEvents, uint32_t
+            // eventCount, int32_t milliseconds, uint32_t* triggered)`
+            // (pal_io.c:1109), whose whole body is `Common_Poll`
+            // (pal_io_common.h:143):
+            //
+            //     if (pollEvents == NULL || triggered == NULL) return Error_EFAULT;
+            //     if (milliseconds < -1)                       return Error_EINVAL;
+            //     ... convert each entry's Events, poll(2), convert each revents
+            //     *triggered = (uint32_t)rv;
+            //     return Error_SUCCESS;
+            //
+            // Both the buffer and the count pointer are matched with a wildcard
+            // pointee: CoreLib declares them `PollEvent*` and `uint*`, and a
+            // guest hand-rolling the P/Invoke will say `byte*` or `void*`.
+            // Element bytes are addressed individually, so the pointee type is
+            // never consulted.
+            let operation = "SystemNative_Poll"
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            // The wrapper's two screens, in its order. Both are answered in user
+            // space having run no syscall, so `errno` keeps whatever it held and
+            // `*triggered` is left exactly as the caller set it — the C returns
+            // before assigning it.
+            //
+            // The null check deliberately precedes any use of `eventCount`, which
+            // is the one row where this entry point and libc `poll(2)` disagree:
+            // `poll(NULL, 0, 0)` succeeds with `rv = 0` on both kernels, while
+            // `SystemNative_Poll(NULL, 0, …)` answers EFAULT.
+            let pollEvents =
+                bufferPointerArgument operation "pollEvents" instruction.Arguments.[0]
+
+            let triggeredPointer =
+                bufferPointerArgument operation "triggered" instruction.Arguments.[3]
+
+            match pollEvents, triggeredPointer with
+            | BufferPointer.RawAddress 0UL, _
+            | _, BufferPointer.RawAddress 0UL -> complete (UnixError.toPal UnixError.EFAULT) state
+            | _ ->
+
+            let milliseconds = NativeCall.int32Argument operation instruction.Arguments.[2]
+
+            if milliseconds < -1 then
+                complete (UnixError.toPal UnixError.EINVAL) state
+            else
+
+            match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+            | SimulatedUnixFlavour.Darwin ->
+                // Past the wrapper's portable screens, this is the kernel
+                // boundary, and Darwin's answers differ on almost every row that
+                // has been measured (docs/plans/2026-08-23-socket-poll): an idle
+                // TCP socket presents nothing where Linux presents OUT|HUP, a
+                // directory and a character device answer NVAL where Linux
+                // answers IN|OUT, and ERR/HUP are *not* output-only — a poll with
+                // `events = 0` over a socket carrying HUP answers 0 there and 1
+                // on Linux. Answering those needs its own readiness model, which
+                // is the same reason `SystemNative_TryChangeSocketEventRegistration`
+                // refuses this flavour.
+                failwith
+                    $"%s{operation}: the kernel is Darwin-flavoured (%O{state.Kernel.UnixPlatform}), and PawPrint models poll(2)'s readiness only for Linux. The refusal is deliberately coarser than it has to be: it precedes `eventCount`, so it also refuses a zero-entry poll, whose answer (rv 0, store 0) is measured identical on both flavours and consults no readiness at all. Answering that one row would be a branch with no consumer, since no Darwin-flavoured guest reaches this entry point today. The Darwin rows are measured in docs/plans/2026-08-23-socket-poll but not implemented, because they are a second readiness model rather than an extra column: ERR and HUP are not output-only there, an idle stream socket presents nothing, and file targets split by kind. Model Darwin readiness before running a Darwin-flavoured guest through poll."
+            | SimulatedUnixFlavour.Linux ->
+
+            let eventCount = NativeCall.uint32Argument operation instruction.Arguments.[1]
+
+            // Resolved only when at least one entry is actually read. With
+            // `eventCount = 0` the C dereferences `pollEvents` nowhere — the
+            // copy-in loop is its only reader, and it does not run — so any
+            // non-null bit pattern is legal there: the call succeeds and stores
+            // zero through `triggered`. `SocketPal.Select` reaches exactly that
+            // shape when every list it was given is empty.
+            let entriesStorage : ManagedPointerSource option =
+                if eventCount = 0u then
+                    None
+                else
+                    Some (requireStorage operation "pollEvents" pollEvents)
+
+            // `struct PollEvent` is `{ int32 FileDescriptor; int16 Events; int16
+            // TriggeredEvents; }` (Interop.Poll.Structs.cs) — eight bytes, no
+            // padding on either architecture PawPrint models.
+            let entryStride = 8
+            let eventsOffset = 4
+            let triggeredEventsOffset = 6
+
+            let totalBytes = int64 eventCount * int64 entryStride
+
+            if totalBytes > int64 Int32.MaxValue then
+                // An interpreter limit rather than a kernel one, and named as
+                // such.
+                //
+                // A real `poll(2)` bounds `nfds` by RLIMIT_NOFILE (measured,
+                // pollnfds.c: EINVAL above it), and PawPrint does not reproduce
+                // that bound. This is a modelling choice rather than a gap:
+                // PawPrint behaves as `RLIMIT_NOFILE = RLIM_INFINITY`, which is
+                // a lawful setting, and it is the *only* self-consistent one
+                // here, because the descriptor table answers `EMFILE`/`ENFILE`
+                // nowhere either. Enforcing the bound in `poll` alone would let
+                // a guest open five thousand descriptors and then be told that
+                // polling two thousand is EINVAL — a worse model than no limit.
+                // Nothing can observe the difference: `getrlimit` is not in the
+                // interop surface.
+                //
+                // If a descriptor limit ever enters `KernelConfig`, this becomes
+                // EINVAL above the soft limit, and `open`/`socket`/`dup` gain
+                // their `EMFILE` at the same time.
+                failwith
+                    $"%s{operation}: eventCount %d{eventCount} spans %d{totalBytes} bytes, which overflows the int32 byte offsets PawPrint's address space uses. PawPrint models no descriptor limit (RLIMIT_NOFILE is not in the interop surface), so this is a limit of the interpreter rather than a kernel refusal to reproduce."
+            else
+
+            // Decode every entry before answering, exactly as the C fills its
+            // whole `struct pollfd` array before calling `poll(2)`.
+            let entries =
+                match entriesStorage with
+                | None -> []
+                | Some entriesStorage ->
+
+                requireBufferRoom ctx operation BufferTransfer.OutOf entriesStorage (int totalBytes) state
+
+                List.init
+                    (int eventCount)
+                    (fun i ->
+                        let fdBytes =
+                            readBytesThrough
+                                ctx
+                                operation
+                                (bufferFieldAt ctx operation entriesStorage (i * entryStride) state)
+                                4
+                                state
+
+                        let eventsBytes =
+                            readBytesThrough
+                                ctx
+                                operation
+                                (bufferFieldAt ctx operation entriesStorage (i * entryStride + eventsOffset) state)
+                                2
+                                state
+
+                        let fd = BinaryPrimitives.ReadInt32LittleEndian (fdBytes.AsSpan ())
+
+                        let requested =
+                            PollEvents.ofBits (BinaryPrimitives.ReadInt16LittleEndian (eventsBytes.AsSpan ()))
+
+                        let reported =
+                            if fd < 0 then
+                                // Measured on both kernels: a negative descriptor is
+                                // ignored, reports nothing, and does not count towards
+                                // the return value. It is not an error and not NVAL.
+                                PollEvents.none
+                            else
+                                match FileDescriptorRegistry.tryFindId fd state.Kernel.FileDescriptors with
+                                | None ->
+                                    // POLLNVAL is a statement about the entry, not a
+                                    // readiness level, and it is reported whether or
+                                    // not anything was asked for.
+                                    { PollEvents.none with
+                                        Nval = true
+                                    }
+                                | Some descriptionId ->
+                                    EmulatedKernel.pollReadinessOfDescription descriptionId state.Kernel
+                                    |> PollEvents.ofLevel requested
+
+                        reported
+                    )
+
+            // What `poll(2)` returns, and what the C stores through `triggered`:
+            // the number of entries carrying anything, which is not `eventCount`
+            // and not the number of *conditions*.
+            let triggeredCount =
+                entries |> List.filter (PollEvents.isEmpty >> not) |> List.length
+
+            if triggeredCount = 0 && milliseconds <> 0 then
+                // Everything masked to empty and the call would block. Nothing
+                // below this point could be answered without modelling the park:
+                // a real `poll` sleeps here until a descriptor becomes ready or
+                // the timeout expires, and PawPrint has no parked-poll state to
+                // wake.
+                //
+                // Every *other* case is answerable regardless of timeout, and
+                // that is measured rather than assumed: an entry carrying
+                // anything at all — a requested IN/OUT, an unrequested HUP, or
+                // NVAL — makes a real poll return in 0.0ms at timeout 5000 and at
+                // timeout -1 alike (docs/plans/2026-08-23-socket-poll/pollmulti.c
+                // and pollimmediate.c).
+                failwith
+                    $"%s{operation}: no entry of the %d{eventCount} is ready and the timeout is %d{milliseconds}ms, so a real poll(2) would block. PawPrint does not model a parked poll: there is no thread status carrying this call's captured entry set and its deadline, and no wake for it beside the readiness sweep that serves SystemNative_WaitForSocketEvents. A poll with anything already ready is answered at any timeout; only this case needs the park."
+            else
+
+            // Write back only `TriggeredEvents`. The C leaves `FileDescriptor`
+            // and `Events` alone (it asserts they are unchanged), so PawPrint
+            // must not touch those bytes either.
+            let state =
+                match entriesStorage with
+                | None -> state
+                | Some entriesStorage ->
+
+                entries
+                |> List.indexed
+                |> List.fold
+                    (fun state (i, reported) ->
+                        let bytes = Array.zeroCreate<byte> 2
+
+                        BinaryPrimitives.WriteInt16LittleEndian (Span<byte> bytes, PollEvents.toBits reported)
+
+                        writeBytesThrough
+                            ctx
+                            operation
+                            (bufferFieldAt ctx operation entriesStorage (i * entryStride + triggeredEventsOffset) state)
+                            (ImmutableArray.CreateRange bytes)
+                            state
+                    )
+                    state
+
+            let triggeredBytes = Array.zeroCreate<byte> 4
+            BinaryPrimitives.WriteUInt32LittleEndian (Span<byte> triggeredBytes, uint32 triggeredCount)
+
+            writeBytesThrough
+                ctx
+                operation
+                (requireStorage operation "triggered" triggeredPointer)
+                (ImmutableArray.CreateRange triggeredBytes)
+                state
+            |> complete UnixError.palSuccess
         | Some "SystemNative_IsATty",
           [ ConcreteIntPtr state.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->

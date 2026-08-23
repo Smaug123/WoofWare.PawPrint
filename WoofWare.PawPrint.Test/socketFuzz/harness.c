@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -145,6 +146,33 @@ static void mask_string(uint32_t events, char *buf, size_t cap)
         if (i > 0)
             strncat(buf, "+", cap - strlen(buf) - 1);
         strncat(buf, parts[i], cap - strlen(buf) - 1);
+    }
+}
+
+/* poll(2)'s revents, in the same alphabet SocketFuzz.fs prints. Deliberately
+ * refuses a bit outside the six: POLLRDNORM and friends exist on Linux, and
+ * silently dropping one would make a divergence look like agreement. */
+static void poll_mask_string(short revents, char *out, size_t cap)
+{
+    out[0] = '\0';
+    short known = 0;
+    struct { short bit; const char *name; } rows[] = {
+        { POLLIN, "IN" }, { POLLPRI, "PRI" }, { POLLOUT, "OUT" },
+        { POLLERR, "ERR" }, { POLLHUP, "HUP" }, { POLLNVAL, "NVAL" },
+    };
+    for (size_t i = 0; i < sizeof rows / sizeof *rows; i++)
+    {
+        known |= rows[i].bit;
+        if (revents & rows[i].bit)
+        {
+            if (out[0] != '\0') strncat(out, "+", cap - strlen(out) - 1);
+            strncat(out, rows[i].name, cap - strlen(out) - 1);
+        }
+    }
+    if (revents & ~known)
+    {
+        fprintf(stderr, "poll reported revents 0x%x outside IN|PRI|OUT|ERR|HUP|NVAL\n", (unsigned short)revents);
+        _exit(1);
     }
 }
 
@@ -321,6 +349,34 @@ static void run_op(const char *op)
         }
         strncat(batch, "]", sizeof batch - strlen(batch) - 1);
         emit(batch);
+    }
+    else if (sscanf(op, "poll:%d:%d", &a, &b) == 2)
+    {
+        /* The PAL's PollEvents bits are numerically the platform's for the six
+         * it knows (IN 0x1, PRI 0x2, OUT 0x4, ERR 0x8, HUP 0x10, NVAL 0x20), so
+         * the mask goes through unchanged -- but only those six: the PAL's
+         * conversion has exactly six rows, and the generator emits nothing
+         * else. */
+        if ((b & ~0x3F) != 0)
+        {
+            fprintf(stderr, "poll events 0x%x outside IN|PRI|OUT|ERR|HUP|NVAL\n", b);
+            _exit(1);
+        }
+        struct pollfd p;
+        p.fd = slot_fd(a);
+        p.events = (short)b;
+        p.revents = 0;
+        int n = poll(&p, 1, 0);
+        if (n < 0)
+        {
+            emit_errno();
+            return;
+        }
+        char mask[64];
+        poll_mask_string(p.revents, mask, sizeof mask);
+        char out[96];
+        snprintf(out, sizeof out, "<%s>", mask);
+        emit(out);
     }
     else
     {
