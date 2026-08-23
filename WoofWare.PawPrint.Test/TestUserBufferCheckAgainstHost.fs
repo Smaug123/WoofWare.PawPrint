@@ -37,27 +37,6 @@ module TestUserBufferCheckAgainstHost =
     [<Literal>]
     let private EFAULT = 14
 
-    /// Whether this host is one whose flavour the model describes at all.
-    let private hostFlavour () : SimulatedUnixFlavour option =
-        if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
-            Some SimulatedUnixFlavour.Darwin
-        elif RuntimeInformation.IsOSPlatform OSPlatform.Linux then
-            Some SimulatedUnixFlavour.Linux
-        else
-            None
-
-    /// The preset for a flavour. Only the flavour is consumed from it, so the
-    /// architecture each preset is named for does not need to match this host.
-    let private hostPlatformOf (flavour : SimulatedUnixFlavour) : SimulatedUnixPlatform =
-        match flavour with
-        | SimulatedUnixFlavour.Darwin -> SimulatedUnixPlatform.macOsArm64
-        | SimulatedUnixFlavour.Linux -> SimulatedUnixPlatform.linuxX64
-
-    let private onUnixHost (action : SimulatedUnixFlavour -> unit) : unit =
-        match hostFlavour () with
-        | None -> Assert.Ignore $"no Unix kernel to measure (%s{RuntimeInformation.OSDescription})"
-        | Some flavour -> action flavour
-
     /// Whether the host refuses `length` bytes at `address` on a descriptor with
     /// nothing to transfer.
     ///
@@ -138,12 +117,12 @@ module TestUserBufferCheckAgainstHost =
     /// and is deliberately not asserted here — see `EmulatedKernel.UserAddressLimit`.
     [<Test>]
     let ``the flavour decides whether this kernel screens up front`` () : unit =
-        onUnixHost (fun flavour ->
+        HostPlatform.onUnixHost (fun flavour ->
             withProbeDescriptor (fun fd ->
                 let screens = (measureLimit fd 1UL).IsSome
 
                 screens
-                |> shouldEqual (SimulatedUnixPlatform.screensUserBufferUpFront (hostPlatformOf flavour))
+                |> shouldEqual (SimulatedUnixPlatform.screensUserBufferUpFront (HostPlatform.platformOf flavour))
             )
         )
 
@@ -153,7 +132,7 @@ module TestUserBufferCheckAgainstHost =
     /// but answer differently for every buffer longer than a byte.
     [<Test>]
     let ``this kernel screens the range end, not the pointer`` () : unit =
-        onUnixHost (fun _ ->
+        HostPlatform.onUnixHost (fun _ ->
             withProbeDescriptor (fun fd ->
                 match measureLimit fd 1UL, measureLimit fd 5UL with
                 | None, None ->
@@ -171,14 +150,14 @@ module TestUserBufferCheckAgainstHost =
     /// particular machine's address space is the one PawPrint ships as default.
     [<Test>]
     let ``the model agrees with this kernel once given its limit`` () : unit =
-        onUnixHost (fun flavour ->
+        HostPlatform.onUnixHost (fun flavour ->
             withProbeDescriptor (fun fd ->
                 let check =
                     match measureLimit fd 1UL with
                     | None -> UserBufferCheck.AtCopyTime
                     | Some limit ->
                         EmulatedKernel.initial
-                        |> EmulatedKernel.withUnixPlatformAndFileSystemType (hostPlatformOf flavour) None
+                        |> EmulatedKernel.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) None
                         |> EmulatedKernel.withUserAddressLimit limit
                         |> EmulatedKernel.userBufferCheck
 

@@ -24,9 +24,11 @@
     <Compile Include="TestFriendAssemblies.fs" />
     <Compile Include="TestAccessCheck.fs" />
     <Compile Include="TestFatalErrorCode.fs" />
+    <Compile Include="HostPlatform.fs" />
     <Compile Include="RealRuntime.fs" />
     <Compile Include="TestRealRuntimeOracle.fs" />
     <Compile Include="TestHarness.fs"/>
+    <Compile Include="DifferentialOracle.fs" />
     <Compile Include="TestBoundedRun.fs" />
     <Compile Include="TestAbortChannel.fs" />
     <Compile Include="TestGuestLocation.fs" />
@@ -231,6 +233,7 @@
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestFSharpPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
+    <Compile Include="TestOraclePolicy.fs" />
     <Compile Include="TestRaces.fs" />
     <Compile Include="TestCallSiteTransition.fs" />
     <Compile Include="TestUnmanagedCallersOnlyEntry.fs" />
