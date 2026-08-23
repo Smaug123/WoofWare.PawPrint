@@ -2872,6 +2872,786 @@ module TestVirtualFileSystem =
         resolve SimulatedUnixPlatform.macOsArm64
         |> shouldEqual (Error UnixError.ENAMETOOLONG)
 
+    // ------------------------------------------------------------- rename
+
+    let private parentOf (inode : InodeNumber) (vfs : VirtualFileSystem) : InodeNumber =
+        match VirtualFileSystem.tryGetContent inode vfs with
+        | Some (InodeContent.Directory content) -> content.Parent
+        | other -> failwith $"expected inode %O{inode} to be a directory, got %A{other}"
+
+    let private entryMap (inode : InodeNumber) (vfs : VirtualFileSystem) : Map<FileName, InodeNumber> =
+        match VirtualFileSystem.tryGetContent inode vfs with
+        | Some (InodeContent.Directory content) -> content.Entries
+        | other -> failwith $"expected inode %O{inode} to be a directory, got %A{other}"
+
+    let private entriesOf (inode : InodeNumber) (vfs : VirtualFileSystem) : (string * InodeNumber) list =
+        entryMap inode vfs
+        |> Map.toList
+        |> List.map (fun (n, i) -> FileName.toString n, i)
+
+    let private childOf (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) : InodeNumber =
+        Map.find (name n) (entryMap parent vfs)
+
+    /// A moment strictly after `buildTime`, so "did this stamp move" is not
+    /// answered by an accident of equal timestamps.
+    let private renameTime : UnixTimestamp = tickOf 500
+
+    let private doRename
+        (sourceDirectory : InodeNumber)
+        (sourceName : string)
+        (destinationDirectory : InodeNumber)
+        (destinationName : string)
+        (vfs : VirtualFileSystem)
+        : RenameOutcome * VirtualFileSystem
+        =
+        VirtualFileSystem.rename
+            sourceDirectory
+            (name sourceName)
+            destinationDirectory
+            (name destinationName)
+            renameTime
+            vfs
+        |> ok
+
+    /// The root, `a` and `b` beneath it, `a/d` a directory and `a/f` a file.
+    let private twoParents () : VirtualFileSystem * InodeNumber * InodeNumber * InodeNumber * InodeNumber =
+        let root = rootOf emptyFs
+        let vfs = emptyFs |> mkdir root "a" |> mkdir root "b"
+        let a = childOf root "a" vfs
+        let b = childOf root "b" vfs
+        let vfs = vfs |> mkdir a "d" |> mkfile a "f"
+        vfs, a, b, childOf a "d" vfs, childOf a "f" vfs
+
+    [<Test>]
+    let ``rename moves a name within one directory`` () : unit =
+        let vfs, a, _, _, f = twoParents ()
+
+        let outcome, renamed = doRename a "f" a "g" vfs
+
+        outcome.Displaced |> shouldEqual None
+        // Asserted against literals rather than against the graph under test:
+        // deriving the expectation from `renamed` would agree with any
+        // self-consistent wrong answer.
+        entriesOf a renamed |> List.map fst |> shouldEqual [ "d" ; "g" ]
+        entriesOf a renamed |> List.find (fun (n, _) -> n = "g") |> snd |> shouldEqual f
+
+    [<Test>]
+    let ``renaming a directory to a new parent rewrites its parent`` () : unit =
+        let vfs, a, b, d, _ = twoParents ()
+
+        parentOf d vfs |> shouldEqual a
+
+        let _, renamed = doRename a "d" b "moved" vfs
+
+        parentOf d renamed |> shouldEqual b
+        entriesOf b renamed |> shouldEqual [ "moved", d ]
+        entriesOf a renamed |> List.map fst |> shouldEqual [ "f" ]
+
+    [<Test>]
+    let ``renaming a directory within its parent leaves its parent alone`` () : unit =
+        let vfs, a, _, d, _ = twoParents ()
+
+        let _, renamed = doRename a "d" a "e" vfs
+
+        parentOf d renamed |> shouldEqual a
+        entriesOf a renamed |> shouldEqual [ "e", d ; "f", childOf a "f" vfs ]
+
+    [<Test>]
+    let ``the moved inode's ctime moves and its mtime does not`` () : unit =
+        // Measured on both kernels, for a file and for a directory, whether or
+        // not the parent changed: what changed is which directory names it, not
+        // what it holds.
+        for movedName in [ "f" ; "d" ] do
+            let vfs, a, b, d, f = twoParents ()
+            let moved = if movedName = "f" then f else d
+            let before = timesOf moved vfs
+            let _, renamed = doRename a movedName b "x" vfs
+            let after = timesOf moved renamed
+
+            after.StatusChange |> shouldEqual renameTime
+            after.Modification |> shouldEqual before.Modification
+            after.Access |> shouldEqual before.Access
+            after.Birth |> shouldEqual before.Birth
+
+    [<Test>]
+    let ``both parents are stamped, and one directory is stamped once`` () : unit =
+        let vfs, a, b, _, _ = twoParents ()
+
+        let _, across = doRename a "f" b "x" vfs
+
+        for directory in [ a ; b ] do
+            (timesOf directory across).Modification |> shouldEqual renameTime
+            (timesOf directory across).StatusChange |> shouldEqual renameTime
+
+        // Within one directory there is one stamp, not two — every stamp in one
+        // rename carries the same `now`, so a doubled one is invisible in the
+        // value and this asserts the shape rather than the count. What it does
+        // catch is a second stamp taken from a *different* clock reading.
+        let _, within = doRename a "f" a "g" vfs
+        (timesOf a within).Modification |> shouldEqual renameTime
+        (timesOf a within).StatusChange |> shouldEqual renameTime
+
+    [<Test>]
+    let ``a displaced inode loses a link and keeps its contents`` () : unit =
+        let vfs, a, b, _, f = twoParents ()
+        // `b/x` and `a/keep` are two names for one file, so the displaced inode
+        // survives the rename and can be inspected afterwards.
+        let vfs = vfs |> mkfile b "x"
+        let displaced = childOf b "x" vfs
+        let vfs = VirtualFileSystem.hardLink a (name "keep") displaced buildTime vfs |> ok
+
+        let before = timesOf displaced vfs
+        let outcome, renamed = doRename a "f" b "x" vfs
+
+        outcome.Displaced |> shouldEqual (Some displaced)
+        // Returned, not freed: only the caller that can see the descriptor
+        // table may decide, exactly as for `unbind`.
+        VirtualFileSystem.tryGet displaced renamed |> Option.isSome |> shouldEqual true
+        (timesOf displaced renamed).StatusChange |> shouldEqual renameTime
+        (timesOf displaced renamed).Modification |> shouldEqual before.Modification
+        VirtualFileSystem.bindingCount displaced renamed |> shouldEqual 1
+        entriesOf b renamed |> shouldEqual [ "x", f ]
+
+    [<Test>]
+    let ``rename reports a missing or unusable directory the way unbind does`` () : unit =
+        let vfs, a, b, _, _ = twoParents ()
+        let absent = InodeNumber 9999L
+        let file = childOf a "f" vfs
+
+        let attempt (sd : InodeNumber) (sn : string) (dd : InodeNumber) (dn : string) =
+            VirtualFileSystem.rename sd (name sn) dd (name dn) renameTime vfs
+
+        attempt absent "f" b "x" |> shouldEqual (Error UnixError.ENOENT)
+        attempt file "f" b "x" |> shouldEqual (Error UnixError.ENOTDIR)
+        attempt a "nope" b "x" |> shouldEqual (Error UnixError.ENOENT)
+        attempt a "f" absent "x" |> shouldEqual (Error UnixError.ENOENT)
+        attempt a "f" file "x" |> shouldEqual (Error UnixError.ENOTDIR)
+
+    // The four conditions a correct verdict never produces. Each is a loud
+    // failure rather than an errno, because each would leave a filesystem no
+    // kernel could produce and the errno for it is measured, flavour-ordered
+    // policy that lives in the verdict.
+
+    let private shouldFailWith (fragment : string) (action : unit -> unit) : unit =
+        let thrown =
+            try
+                action ()
+                None
+            with e ->
+                Some e.Message
+
+        match thrown with
+        | None -> failwith $"expected a failure mentioning \"%s{fragment}\""
+        | Some message ->
+            if not (message.Contains fragment) then
+                failwith $"expected a failure mentioning \"%s{fragment}\", got: %s{message}"
+
+    [<Test>]
+    let ``renaming a name onto another name for the same inode is refused`` () : unit =
+        let vfs, a, _, _, f = twoParents ()
+        let vfs = VirtualFileSystem.hardLink a (name "g") f buildTime vfs |> ok
+
+        shouldFailWith "no-op" (fun () -> doRename a "f" a "g" vfs |> ignore)
+        // The literal self-rename is the same condition and must reach the same
+        // arm, not a separate one that happens to agree.
+        shouldFailWith "no-op" (fun () -> doRename a "f" a "f" vfs |> ignore)
+
+    [<Test>]
+    let ``displacing a populated directory is refused`` () : unit =
+        let vfs, a, b, _, _ = twoParents ()
+        let vfs = vfs |> mkdir b "occupied"
+        let occupied = childOf b "occupied" vfs
+        let vfs = vfs |> mkfile occupied "inside"
+
+        shouldFailWith "unreachable from the root" (fun () -> doRename a "d" b "occupied" vfs |> ignore)
+
+        // An *empty* directory at the destination is the ordinary case, and
+        // this is the pair that keeps the refusal from being "any directory".
+        let emptied =
+            VirtualFileSystem.unbind UnbindTargetEffect.LostALink occupied (name "inside") buildTime vfs
+            |> ok
+            |> snd
+
+        doRename a "d" b "occupied" emptied
+        |> fst
+        |> fun o -> o.Displaced |> shouldEqual (Some occupied)
+
+    [<Test>]
+    let ``moving a directory into its own subtree is refused`` () : unit =
+        let vfs, a, _, d, _ = twoParents ()
+        let vfs = vfs |> mkdir d "deeper"
+        let deeper = childOf d "deeper" vfs
+
+        shouldFailWith "detach a cycle" (fun () -> doRename a "d" d "self" vfs |> ignore)
+        shouldFailWith "detach a cycle" (fun () -> doRename a "d" deeper "self" vfs |> ignore)
+
+        // One step outside it is the ordinary case.
+        doRename a "d" (rootOf vfs) "moved" vfs |> ignore
+
+    [<Test>]
+    let ``renaming into a directory whose last name has gone is refused`` () : unit =
+        // The condition neither the type checks nor the subtree check can see:
+        // the destination directory is perfectly well-formed and empty, and
+        // binding into it strands the moved inode -- it keeps a name, so nothing
+        // reaps it, and no path reaches it. A pinned orphan is a *sound* input
+        // (`checkInvariants` excuses it), which is what makes this the
+        // primitive's problem rather than the caller's.
+        let vfs, a, b, _, _ = twoParents ()
+
+        let orphaned =
+            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "b") buildTime vfs
+            |> ok
+            |> snd
+
+        // Sound *before* the rename, with the orphan pinned as a descriptor
+        // would pin it.
+        VirtualFileSystem.checkInvariants (Set.singleton b) orphaned |> shouldEqual []
+
+        shouldFailWith "unreachable from the root" (fun () -> doRename a "f" b "landed" orphaned |> ignore)
+
+        // The paired row: the same rename into the same directory *before* it
+        // was orphaned is the ordinary case, so the refusal is about
+        // reachability and not about `b`.
+        doRename a "f" b "landed" vfs |> ignore
+
+    [<Test>]
+    let ``a destination that is both inside the subtree and populated reports the subtree`` () : unit =
+        // The disagreeing input for the two refusals' order. Both would refuse,
+        // so an input that only one of them matches proves nothing about which
+        // runs first; this one matches both, and the kernels answer EINVAL for
+        // it rather than ENOTEMPTY -- measured on both. Swapping the two arms
+        // must therefore change the message, which is what makes the ordering
+        // testable at all.
+        let vfs, a, _, d, _ = twoParents ()
+        let vfs = vfs |> mkdir d "inner"
+        let inner = childOf d "inner" vfs
+        let vfs = vfs |> mkfile inner "occupant"
+
+        shouldFailWith "detach a cycle" (fun () -> doRename a "d" d "inner" vfs |> ignore)
+
+    [<Test>]
+    let ``a displaced empty directory is stamped like a displaced file`` () : unit =
+        // Not a generalisation of the hard-link row, and it had to be measured
+        // separately: `rmdir` does *not* agree with this. There Darwin leaves
+        // the removed directory's inode untouched where Linux stamps it
+        // (`RmDirRules.RemovedDirectoryEffect`), so a reader could reasonably
+        // expect `rename` to need the same per-flavour effect. Measured on both
+        // kernels through a descriptor held across the call: under `rename` both
+        // stamp `ctime` and neither moves `mtime`.
+        let vfs, a, b, d, _ = twoParents ()
+        let vfs = vfs |> mkdir b "target"
+        let displaced = childOf b "target" vfs
+
+        let before = timesOf displaced vfs
+        let outcome, renamed = doRename a "d" b "target" vfs
+
+        outcome.Displaced |> shouldEqual (Some displaced)
+        d |> shouldEqual (childOf b "target" renamed)
+        (timesOf displaced renamed).StatusChange |> shouldEqual renameTime
+        (timesOf displaced renamed).Modification |> shouldEqual before.Modification
+        (timesOf displaced renamed).Access |> shouldEqual before.Access
+
+    // ------------------------------------------------------- isWithinSubtree
+
+    [<Test>]
+    let ``isWithinSubtree is reflexive on directories and false for a sibling`` () : unit =
+        let vfs, a, b, d, _ = twoParents ()
+
+        VirtualFileSystem.isWithinSubtree a a vfs |> shouldEqual true
+        VirtualFileSystem.isWithinSubtree a d vfs |> shouldEqual true
+        VirtualFileSystem.isWithinSubtree a b vfs |> shouldEqual false
+        VirtualFileSystem.isWithinSubtree d a vfs |> shouldEqual false
+        VirtualFileSystem.isWithinSubtree (rootOf vfs) d vfs |> shouldEqual true
+
+    [<Test>]
+    let ``isWithinSubtree is on inodes, not on path text`` () : unit =
+        // The measured pair: `rename("a", "ab")` succeeds although "/a" is a
+        // string prefix of "/ab", and `rename("a", "link/inner")` with
+        // `link -> a/b` refuses although neither path is a prefix of the other.
+        let root = rootOf emptyFs
+        let vfs = emptyFs |> mkdir root "a" |> mkdir root "ab"
+        let a = childOf root "a" vfs
+        let ab = childOf root "ab" vfs
+
+        VirtualFileSystem.isWithinSubtree a ab vfs |> shouldEqual false
+
+    [<Test>]
+    let ``isWithinSubtree refuses an inode that is not a directory`` () : unit =
+        let vfs, a, _, _, f = twoParents ()
+
+        shouldFailWith "no parent chain to climb" (fun () -> VirtualFileSystem.isWithinSubtree a f vfs |> ignore)
+
+    // --------------------------------------------------- rename properties
+
+    /// The rename sweep runs at this size rather than at `config`'s 300, and the
+    /// number was measured rather than picked. At 300 the rarest class — a
+    /// *directory* moved between two different parents, which is the class the
+    /// reparent lives in and the one the host ".." oracle exists to check — had
+    /// a median of 3 and a measured minimum of 0 across 24 runs. A coverage
+    /// bound over a class that rare is a coin toss rather than a guard.
+    ///
+    /// Biasing the source generator towards directory bindings was tried first
+    /// and barely moved it: generated filesystems are small, so a directory
+    /// nested inside another is scarce *per case* rather than merely unlikely
+    /// to be picked. Raising the case count is the lever that works, and it
+    /// lifts every counter together.
+    let private renameSweepConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 3000
+
+    /// A rename to attempt against a generated filesystem. Named by inode
+    /// rather than by path, because the primitive under test takes inodes and a
+    /// path-shaped generator would test the resolver instead.
+    type private RenameCase =
+        {
+            SourceDirectory : InodeNumber
+            SourceName : FileName
+            DestinationDirectory : InodeNumber
+            DestinationName : FileName
+        }
+
+    /// `pinned` is the deliberately-orphaned directory, if `orphanGen` made one.
+    /// The destination generator is biased towards it: an orphan is one
+    /// directory among many, so uniform choice reaches "rename into an orphan"
+    /// only by luck, and a coverage bound on a class that rare is a flake rather
+    /// than a guard.
+    let private renameCaseGen (pinned : Set<InodeNumber>) (vfs : VirtualFileSystem) : Gen<RenameCase> =
+        let directories =
+            VirtualFileSystem.inodes vfs
+            |> Map.toList
+            |> List.choose (fun (inode, node) ->
+                match node.Content with
+                | InodeContent.Directory content -> Some (inode, content)
+                | _ -> None
+            )
+
+        let bindings =
+            directories
+            |> List.collect (fun (inode, content) -> content.Entries |> Map.toList |> List.map (fun (n, _) -> inode, n))
+
+        let alphabet = [ "a" ; "b" ; "c" ; "d" ; "fresh" ] |> List.map name
+
+        let anyDirectory = directories |> List.map fst |> Gen.elements
+
+        // Biased hard towards *existing* source bindings and existing
+        // destination names: a uniform generator over the name alphabet would
+        // spend almost all its budget on ENOENT and never displace anything.
+        let sourceGen =
+            match bindings with
+            | [] -> Gen.map2 (fun d n -> d, n) anyDirectory (Gen.elements alphabet)
+            | _ ->
+                Gen.frequency
+                    [
+                        4, Gen.elements bindings
+                        1, Gen.map2 (fun d n -> d, n) anyDirectory (Gen.elements alphabet)
+                    ]
+
+        let intoOrphan =
+            if Set.isEmpty pinned then
+                []
+            else
+                [
+                    5, Gen.map2 (fun d n -> d, n) (Gen.elements (Set.toList pinned)) (Gen.elements alphabet)
+                ]
+
+        let destinationGen =
+            match bindings with
+            | [] ->
+                Gen.frequency (
+                    (2, Gen.map2 (fun d n -> d, n) anyDirectory (Gen.elements alphabet))
+                    :: intoOrphan
+                )
+            | _ ->
+                Gen.frequency (
+                    [
+                        2, Gen.elements bindings
+                        2, Gen.map2 (fun d n -> d, n) anyDirectory (Gen.elements alphabet)
+                    ]
+                    @ intoOrphan
+                )
+
+        Gen.map2
+            (fun (sd, sn) (dd, dn) ->
+                {
+                    SourceDirectory = sd
+                    SourceName = sn
+                    DestinationDirectory = dd
+                    DestinationName = dn
+                }
+            )
+            sourceGen
+            destinationGen
+
+    /// Sometimes orphan an empty directory, pinning it as a descriptor would,
+    /// and answer the pinned set alongside.
+    ///
+    /// `filesystemGen` only ever *creates*, so without this step no generated
+    /// filesystem contains an orphan at all — and "the destination directory
+    /// has lost its last name" is precisely the condition that neither the type
+    /// checks nor the subtree check can see. The sweep below was structurally
+    /// blind to it until this existed, which is the whole argument for stating a
+    /// generator's alphabet rather than trusting it.
+    let private orphanGen (vfs : VirtualFileSystem) : Gen<VirtualFileSystem * Set<InodeNumber>> =
+        let root = VirtualFileSystem.root vfs
+
+        // An orphan can only ever be an *empty* directory, since `rmdir` refuses
+        // a populated one — so this generator may only unbind one, or it would
+        // be building filesystems no kernel could produce.
+        let candidates =
+            VirtualFileSystem.inodes vfs
+            |> Map.toList
+            |> List.collect (fun (inode, node) ->
+                match node.Content with
+                | InodeContent.Directory content when inode <> root && Map.isEmpty content.Entries ->
+                    VirtualFileSystem.inodes vfs
+                    |> Map.toList
+                    |> List.collect (fun (parent, parentNode) ->
+                        match parentNode.Content with
+                        | InodeContent.Directory parentContent ->
+                            parentContent.Entries
+                            |> Map.toList
+                            |> List.filter (fun (_, target) -> target = inode)
+                            |> List.map (fun (entry, _) -> inode, parent, entry)
+                        | _ -> []
+                    )
+                | _ -> []
+            )
+
+        match candidates with
+        | [] -> Gen.constant (vfs, Set.empty)
+        | _ ->
+            Gen.frequency
+                [
+                    1, Gen.constant (vfs, Set.empty)
+                    3,
+                    Gen.elements candidates
+                    |> Gen.map (fun (inode, parent, entry) ->
+                        match VirtualFileSystem.unbind UnbindTargetEffect.LostALink parent entry (tickOf 400) vfs with
+                        | Ok (_, orphaned) -> orphaned, Set.singleton inode
+                        | Error _ -> vfs, Set.empty
+                    )
+                ]
+
+    let private renameScenarioGen : Gen<VirtualFileSystem * Set<InodeNumber> * RenameCase> =
+        filesystemGen
+        |> Gen.bind orphanGen
+        |> Gen.bind (fun (vfs, pinned) ->
+            // Every generated filesystem has at least a root, so there is always
+            // one directory to name.
+            renameCaseGen pinned vfs |> Gen.map (fun case -> vfs, pinned, case)
+        )
+
+    /// The four conditions `VirtualFileSystem.rename` refuses loudly, computed
+    /// from the graph directly. Four one-line graph predicates rather than a
+    /// re-implementation of the verdict — which is the point: if this had to
+    /// know the measured errno ordering, the primitive would be doing policy.
+    let private refusedLoudly (vfs : VirtualFileSystem) (case : RenameCase) : bool =
+        let entriesOfDirectory (inode : InodeNumber) =
+            match VirtualFileSystem.tryGetContent inode vfs with
+            | Some (InodeContent.Directory content) -> Some content.Entries
+            | _ -> None
+
+        match entriesOfDirectory case.SourceDirectory, entriesOfDirectory case.DestinationDirectory with
+        | Some source, Some destination ->
+            match Map.tryFind case.SourceName source with
+            | None -> false
+            | Some moved ->
+
+            let displaced = Map.tryFind case.DestinationName destination
+
+            let sameInode = displaced = Some moved
+
+            let populatedDestination =
+                match displaced |> Option.bind (fun i -> VirtualFileSystem.tryGetContent i vfs) with
+                | Some (InodeContent.Directory content) -> not (Map.isEmpty content.Entries)
+                | _ -> false
+
+            let intoOwnSubtree =
+                match VirtualFileSystem.tryGetContent moved vfs with
+                | Some (InodeContent.Directory _) ->
+                    VirtualFileSystem.isWithinSubtree moved case.DestinationDirectory vfs
+                | _ -> false
+
+            let intoAnOrphan =
+                VirtualFileSystem.isOrphanedDirectory case.DestinationDirectory vfs
+
+            sameInode || populatedDestination || intoOwnSubtree || intoAnOrphan
+        | _ -> false
+
+    [<Test>]
+    let ``rename either refuses loudly, errors without changing anything, or leaves a sound filesystem`` () : unit =
+        // Total: no "legal quadruple" precondition hides the verdict inside the
+        // property. The four loud refusals are what make it so, and asserting
+        // that they fire *exactly* when the four graph predicates hold pins
+        // them rather than merely tolerating an exception.
+        let mutable displacedSomething = 0
+        let mutable movedDirectoryAcrossParents = 0
+        let mutable movedWithinOneDirectory = 0
+        let mutable refusedCount = 0
+        let mutable refusedForOrphan = 0
+
+        let property (vfs : VirtualFileSystem, pinned : Set<InodeNumber>, case : RenameCase) : unit =
+            let attempt () =
+                VirtualFileSystem.rename
+                    case.SourceDirectory
+                    case.SourceName
+                    case.DestinationDirectory
+                    case.DestinationName
+                    renameTime
+                    vfs
+
+            if refusedLoudly vfs case then
+                refusedCount <- refusedCount + 1
+
+                if VirtualFileSystem.isOrphanedDirectory case.DestinationDirectory vfs then
+                    refusedForOrphan <- refusedForOrphan + 1
+
+                let threw =
+                    try
+                        attempt () |> ignore
+                        false
+                    with _ ->
+                        true
+
+                if not threw then
+                    failwith $"expected a loud refusal for %A{case}"
+            else
+
+            match attempt () with
+            | Error _ ->
+                // Nothing to assert: `Error` carries no filesystem, so a
+                // rejected rename cannot have changed one. The signature is the
+                // guarantee here, not a check.
+                ()
+            | Ok (outcome, renamed) ->
+                if outcome.Displaced.IsSome then
+                    displacedSomething <- displacedSomething + 1
+
+                if case.SourceDirectory = case.DestinationDirectory then
+                    movedWithinOneDirectory <- movedWithinOneDirectory + 1
+                else
+                    let moved =
+                        match VirtualFileSystem.tryGetContent case.DestinationDirectory renamed with
+                        | Some (InodeContent.Directory content) -> Map.find case.DestinationName content.Entries
+                        | other -> failwith $"destination is not a directory after the rename: %A{other}"
+
+                    match VirtualFileSystem.tryGetContent moved renamed with
+                    | Some (InodeContent.Directory _) -> movedDirectoryAcrossParents <- movedDirectoryAcrossParents + 1
+                    | _ -> ()
+
+                // The displaced inode may have lost its last name, which is
+                // legitimate only while something holds it; the caller has not
+                // decided yet, so it is pinned here exactly as `unbind`'s
+                // callers pin theirs.
+                // `pinned` is the deliberately-orphaned directory, which a
+                // descriptor would be holding; `Displaced` may have lost its
+                // last name and the caller has not decided about it yet.
+                VirtualFileSystem.checkInvariants
+                    (Set.union pinned (Set.ofList (Option.toList outcome.Displaced)))
+                    renamed
+                |> shouldEqual []
+
+        Check.One (renameSweepConfig, Prop.forAll (Arb.fromGen renameScenarioGen) property)
+
+        // Not a coverage *threshold* in FsCheck's sense — those flake. These are
+        // sums over the whole run, and they exist so that a generator which
+        // quietly stopped producing a class fails here rather than making every
+        // property above vacuous. The classes each also have a hand-written test
+        // above; this only guards the sweep.
+        //
+        // Every bound is a third of the *measured* minimum over 24 runs at this
+        // config, rather than a number that looked safe. Picking them by eye is
+        // what produced the flake this replaces: at `config`'s 300 cases the
+        // bounds were all 2, and the measured minima were 2 for the orphan class
+        // and 0 for the directory-across-parents class — the first was reported
+        // as a ~20% flake by review, and the second was worse and had not been
+        // noticed at all. Measured minima here: 268, 23, 544, 730, 200.
+        displacedSomething |> shouldBeGreaterThan 80
+        movedDirectoryAcrossParents |> shouldBeGreaterThan 7
+        movedWithinOneDirectory |> shouldBeGreaterThan 150
+        refusedCount |> shouldBeGreaterThan 200
+        // The class this sweep was blind to until `orphanGen` existed.
+        refusedForOrphan |> shouldBeGreaterThan 60
+
+    [<Test>]
+    let ``a successful rename creates and destroys no inode`` () : unit =
+        let property (vfs : VirtualFileSystem, _ : Set<InodeNumber>, case : RenameCase) : unit =
+            if refusedLoudly vfs case then
+                ()
+            else
+
+            match
+                VirtualFileSystem.rename
+                    case.SourceDirectory
+                    case.SourceName
+                    case.DestinationDirectory
+                    case.DestinationName
+                    renameTime
+                    vfs
+            with
+            | Error _ -> ()
+            | Ok (_, renamed) ->
+                // The displaced inode is *returned*, not freed: only a caller
+                // that can see the descriptor table may remove it.
+                VirtualFileSystem.inodes renamed
+                |> Map.toList
+                |> List.map fst
+                |> shouldEqual (VirtualFileSystem.inodes vfs |> Map.toList |> List.map fst)
+
+        Check.One (config, Prop.forAll (Arb.fromGen renameScenarioGen) property)
+
+    [<Test>]
+    let ``for a non-directory source, rename is exactly unbind-then-hardLink-then-unbind`` () : unit =
+        // The reference-implementation oracle, over the half of the domain the
+        // composition can express. Exact equality, `Times` included: every stamp
+        // in one rename carries the same `now`, so stamping an inode twice at
+        // that instant equals stamping it once, and there is nothing to except.
+        //
+        // It cannot extend to a directory source — `bind` is private and
+        // `hardLink` refuses a directory with EPERM — which is the whole reason
+        // `rename` is a primitive rather than a composition.
+        let mutable compared = 0
+        let mutable withDisplacement = 0
+
+        let property (vfs : VirtualFileSystem, _ : Set<InodeNumber>, case : RenameCase) : unit =
+            if refusedLoudly vfs case then
+                ()
+            else
+
+            let sourceEntries =
+                match VirtualFileSystem.tryGetContent case.SourceDirectory vfs with
+                | Some (InodeContent.Directory content) -> content.Entries
+                | _ -> Map.empty
+
+            match Map.tryFind case.SourceName sourceEntries with
+            | None -> ()
+            | Some moved ->
+
+            match VirtualFileSystem.tryGetContent moved vfs with
+            | Some (InodeContent.Directory _)
+            | None -> ()
+            | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.Symlink _) ->
+
+            let displaced =
+                match VirtualFileSystem.tryGetContent case.DestinationDirectory vfs with
+                | Some (InodeContent.Directory content) -> Map.tryFind case.DestinationName content.Entries
+                | _ -> None
+
+            let reference =
+                let cleared =
+                    match displaced with
+                    | None -> Ok vfs
+                    | Some _ ->
+                        VirtualFileSystem.unbind
+                            UnbindTargetEffect.LostALink
+                            case.DestinationDirectory
+                            case.DestinationName
+                            renameTime
+                            vfs
+                        |> Result.map snd
+
+                cleared
+                |> Result.bind (fun vfs ->
+                    VirtualFileSystem.hardLink case.DestinationDirectory case.DestinationName moved renameTime vfs
+                )
+                |> Result.bind (fun vfs ->
+                    VirtualFileSystem.unbind
+                        UnbindTargetEffect.LostALink
+                        case.SourceDirectory
+                        case.SourceName
+                        renameTime
+                        vfs
+                    |> Result.map snd
+                )
+
+            let actual =
+                VirtualFileSystem.rename
+                    case.SourceDirectory
+                    case.SourceName
+                    case.DestinationDirectory
+                    case.DestinationName
+                    renameTime
+                    vfs
+                |> Result.map snd
+
+            // Agreement on *whether* the move happens comes first. Skipping
+            // straight to the Ok/Ok arm would let a rename that wrongly refused
+            // where the composition succeeded — or the reverse — pass this
+            // property unremarked, and the `compared` bound below can only
+            // notice a wholesale loss, never a lost class.
+            Result.isOk actual |> shouldEqual (Result.isOk reference)
+
+            match reference, actual with
+            | Ok expected, Ok got ->
+                compared <- compared + 1
+
+                if displaced.IsSome then
+                    withDisplacement <- withDisplacement + 1
+
+                VirtualFileSystem.inodes got |> shouldEqual (VirtualFileSystem.inodes expected)
+            | _ -> ()
+
+        Check.One (config, Prop.forAll (Arb.fromGen renameScenarioGen) property)
+
+        compared |> shouldBeGreaterThan 20
+        withDisplacement |> shouldBeGreaterThan 2
+
+    [<Test>]
+    let ``isWithinSubtree agrees with a component-wise path prefix`` () : unit =
+        // An outside oracle: `pathOfDirectory` walks the same `Parent` chain but
+        // renders it as names, and the comparison is component-wise rather than
+        // string-wise. String-wise would be wrong on the corpus's own `a` / `ab`
+        // pair, where "/a" is a prefix of "/ab" and neither contains the other.
+        //
+        // Orphans are excluded rather than fudged: `pathOfDirectory` answers
+        // `None` for a directory whose last name has gone, which is not "not
+        // within" — it is "the oracle cannot see this one".
+        let mutable agreements = 0
+        let mutable insideCases = 0
+
+        let components (absolute : AbsoluteUnixPath) : string list =
+            AbsoluteUnixPath.toString absolute
+            |> fun s -> s.Split '/'
+            |> Array.toList
+            |> List.filter (fun s -> s <> "")
+
+        let property (vfs : VirtualFileSystem) : unit =
+            let directories =
+                VirtualFileSystem.inodes vfs
+                |> Map.toList
+                |> List.choose (fun (inode, node) ->
+                    match node.Content with
+                    | InodeContent.Directory _ -> Some inode
+                    | _ -> None
+                )
+
+            for root in directories do
+                for candidate in directories do
+                    match
+                        VirtualFileSystem.pathOfDirectory root vfs, VirtualFileSystem.pathOfDirectory candidate vfs
+                    with
+                    | Some rootPath, Some candidatePath ->
+                        let rootComponents = components rootPath
+                        let candidateComponents = components candidatePath
+
+                        let isPrefix =
+                            List.length rootComponents <= List.length candidateComponents
+                            && candidateComponents
+                               |> List.truncate (List.length rootComponents)
+                               |> (=) rootComponents
+
+                        agreements <- agreements + 1
+
+                        if isPrefix && root <> candidate then
+                            insideCases <- insideCases + 1
+
+                        VirtualFileSystem.isWithinSubtree root candidate vfs |> shouldEqual isPrefix
+                    | _ -> ()
+
+        Check.One (config, Prop.forAll (Arb.fromGen filesystemGen) property)
+
+        agreements |> shouldBeGreaterThan 100
+        insideCases |> shouldBeGreaterThan 10
+
 /// `readTransferCount` decides the whole of what `pread(2)` returns once its
 /// error cases are out of the way, and getting it wrong is an off-by-one that
 /// end-to-end tests report as "the file came back slightly wrong" from inside a
