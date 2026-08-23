@@ -513,6 +513,13 @@ both were real gaps rather than unjustified lines:
 | ready predicate ignores `ERR`/`HUP`/`NVAL` | killed | impure: positive-timeout rows |
 | `NVAL` never reported | killed | impure: never-opened fd |
 | entry buffer resolved eagerly at `eventCount = 0` | killed | impure: `Poll((PollEvent*)1, 0, 0, …)` |
+| `Pri` echoes the request back | killed | corpus `poll:1:2`; pure: `SelectError` rows |
+
+Four of the projection mutants — `In` unmasked, `Err` maskable, `Hup` maskable,
+`Pri` echoed — are additionally killed by the **corpus replay test alone**,
+which runs in CI with no container. That was the point of checking the
+hand-picked rows in: the live fuzzer is opt-in and container-gated, so an
+oracle that existed only there would not defend the projection on any CI run.
 
 The two survivors are worth recording, because each says something the plan
 had wrong:
