@@ -13,7 +13,7 @@ If you need to check upstream behaviour, the genuine .NET runtime's source is pi
 
 There are two distinct kinds of OS divergence, and they are handled in different places. Do not conflate them.
 
-*Facts the guest reads about its platform* (kernel release, processor count, clock) are **data in the emulated kernel**, never a host read — see `SimulatedUnixPlatform` in `EmulatedKernel.fs`, which defaults to `LinuxX64`. A host read would make a replay depend on the machine that produced it, and guests branch on `Environment.OSVersion`, so it would change guest *control flow* between runs.
+*Facts the guest reads about its platform* (kernel release, processor count, clock) are **data in the emulated kernel**, never a host read — see `SimulatedUnixPlatform` in `WoofWare.PosixKernel/SimulatedUnixPlatform.fs`, which defaults to `LinuxX64`. A host read would make a replay depend on the machine that produced it, and guests branch on `Environment.OSVersion`, so it would change guest *control flow* between runs.
 
 *Which BCL code path exists at all* is a different thing: CoreLib is `#if`-split per target at its own compile time, so `System.Threading.Lock.ThreadId.InitializeForCurrentThread` calls `GetUInt64OSThreadId` under `TARGET_OSX` and `TryGetUInt32OSThreadId` everywhere else. PawPrint interprets whichever CoreLib its runtime-dir list resolves, and that is normally the *host's* shared framework — so a macOS dev box runs different guest code from CI and production, both of which are Linux.
 
@@ -52,8 +52,14 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 - `EvalStack.fs`: Evaluation stack implementation
 - `Corelib.fs`: Core library type definitions (String, Array, etc.)
 - `Native/` (dispatched by `Native/NativeDispatch.fs`) and `ExternImplementations/`: the boundary for runtime-provided or host-provided behavior; prefer extending this seam over special-casing host effects elsewhere in the interpreter
-- `EmulatedKernel.fs`: the simulated process's kernel-visible state (virtual clock, seeded PRNG, fd table, env vars, processor count). Values the real runtime would read from the host belong here as *data*, never as a host read: the library must not call `System.Environment`, `DateTime.Now`, `Guid.NewGuid` or similar, because a replay would then depend on the machine that produced it
+- `EmulatedKernel.fs`: the simulated process's kernel-visible state (virtual clock, seeded PRNG, fd table, env vars, processor count), most of which is by now held in `WoofWare.PosixKernel` and aggregated here. Values the real runtime would read from the host belong here as *data*, never as a host read: the library must not call `System.Environment`, `DateTime.Now`, `Guid.NewGuid` or similar, because a replay would then depend on the machine that produced it
 - `HostConfig.fs`: everything the host supplies to configure one run — where to find framework assemblies, the `KernelConfig` above, the scheduler seed, guest argv, and the AppContext properties. Distinct from `KernelConfig`: that is what the guest could learn by asking the OS, this is how the host launches the process at all
+
+**WoofWare.PosixKernel** (and **WoofWare.PosixKernel.Test**)
+- A general POSIX process simulator published as its own package. It owns the filesystem (`VirtualFileSystem.fs`), the descriptor table and socket vocabulary (`FileDescriptorRegistry.fs`), paths and errno (`UnixPath.fs`, `UnixError.fs`), signals (`Signal.fs`), and the Unix platform profile with its measured Linux/Darwin divergences (`SimulatedUnixPlatform.fs`)
+- **It must not reference `WoofWare.PawPrint` or `WoofWare.PawPrint.Domain`, and must contain no IL/CLR/BCL/PAL concept.** `TestNoPawPrintReference.fs` asserts the reference half of that mechanically; the rest is a matter of review. PawPrint is one client of it, and a second client should be able to use it without meeting a PawPrint concept
+- Run its tests with `nix develop -c dotnet test WoofWare.PosixKernel.Test/WoofWare.PosixKernel.Test.fsproj`. It has no `Guest`-category fixtures, so the category-filtered CI step matches nothing in it and exits 0 with a warning
+- `docs/plans/2026-08-23-posix-kernel-extraction.md` is the plan, including the stages not yet done and the decisions behind the split. `scripts/check-move-is-rename-only.sh` is the oracle the move stages are held to
 
 **WoofWare.PawPrint.Test**
 - Uses NUnit as the test framework

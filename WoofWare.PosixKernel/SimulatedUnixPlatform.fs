@@ -26,8 +26,8 @@ type SimulatedUnixFlavour =
 ///
 /// A *choice* rather than a measured fact, because PawPrint's filesystem is an
 /// in-memory graph that is not any real filesystem. That is why it is
-/// configuration (`KernelConfig.FileSystemType`) rather than a derivation from
-/// the flavour the way the errno numbering is: a single Linux reports `0xEF53`,
+/// something a client configures rather than a derivation from the flavour the
+/// way the errno numbering is: a single Linux reports `0xEF53`,
 /// `0x01021994` and `0x9FA0` for three directories in one process, so a flavour
 /// does not determine a mount's type. It does *constrain* it, which is what
 /// `EmulatedFileSystemType.isReportableUnder` carries.
@@ -145,15 +145,14 @@ module EmulatedFileSystemType =
         // and every other descriptor's from the flavour, so a caller supplying
         // one of each would get a machine that is Linux for its pipes and macOS
         // for its files. `withUnixPlatformAndFileSystemType` writes both fields
-        // together so the kernel cannot hold such a pair, but `EmulatedKernel`
-        // is a public record and `{ kernel with UnixPlatform = ... }` bypasses
-        // every setter on it. Checking here rather than trusting the caller is
-        // what keeps this function's contract true wherever it is reached: the
-        // handler, the unit tests and the host-comparison oracle all arrive
-        // through it.
+        // A client is expected to write both together for that reason, but no
+        // client can be made to: a state record assembled field by field
+        // bypasses whatever setter it provides. Checking here rather than
+        // trusting the caller is what keeps this function's contract true
+        // wherever it is reached.
         if not (isReportableUnder flavour mount) then
             failwith
-                $"EmulatedFileSystemType.reportedFor: asked what a %O{flavour} kernel reports for a %O{mount} mount, which %O{flavour} cannot have. The kernel's UnixPlatform and FileSystemType have come apart — set them together with EmulatedKernel.withUnixPlatformAndFileSystemType rather than by updating the record directly."
+                $"EmulatedFileSystemType.reportedFor: asked what a %O{flavour} kernel reports for a %O{mount} mount, which %O{flavour} cannot have. The flavour and the mount type have come apart; they constrain each other (see EmulatedFileSystemType.isReportableUnder) and must be chosen together rather than set one at a time."
 
         /// Darwin's `fstatfs` refuses every object that is not on a
         /// filesystem, uniformly; Linux's succeeds and names the
@@ -206,15 +205,15 @@ type SimulatedUnixReleaseError =
 type UserBufferCheck =
     /// `vfs_read` and `vfs_write` run `access_ok(buf, count)` before reaching
     /// the file operation. A range is accepted when `address + length`, in
-    /// exact arithmetic, is at most this value — the machine's
-    /// `EmulatedKernel.UserAddressLimit`.
+    /// exact arithmetic, is at most this value — the machine's `TASK_SIZE_MAX`
+    /// (see `ObservedUserAddressLimit` for values real machines have).
     | BeforeOperation of highestRangeEnd : uint64
     /// No up-front check, so a bad address is discovered by the copy itself and
     /// a call that copies nothing never faults.
     | AtCopyTime
 
 /// Limits on the user half of the address space that real machines have been
-/// observed to impose, for a host picking an `EmulatedKernel.UserAddressLimit`.
+/// observed to impose, for a host picking one for a simulated machine.
 ///
 /// Every one of these is `TASK_SIZE_MAX` for some real configuration; the value
 /// is a property of the *machine* (its paging depth, its virtual-address width)
@@ -1873,10 +1872,11 @@ module SimulatedUnixPlatform =
     ///
     /// Naming a real kernel rather than a plausible one matters because facts
     /// derived from a platform are claims about a machine somebody could be
-    /// running. Note the division of labour with `EmulatedKernel`: identity
-    /// that a guest reads back, like this release, belongs here; a fact that
-    /// varies between two machines running this very kernel, like
-    /// `UserAddressLimit`, is configuration instead.
+    /// running. Note the division of labour: identity that a guest reads back,
+    /// like this release, belongs to the platform, because it is the same on
+    /// every machine running this kernel image; a fact that varies between two
+    /// machines running this very kernel, like the user-address limit, is a
+    /// client's configuration instead.
     let linuxX64 : SimulatedUnixPlatform =
         createOrFail "SimulatedUnixPlatform.linuxX64" SimulatedUnixFlavour.Linux "6.17.0-1022-azure"
 
@@ -1965,12 +1965,12 @@ module SimulatedUnixPlatform =
     /// kernel produced.
     ///
     /// The Darwin answer here is the `umask 022` one, and stays a constant even
-    /// though `EmulatedKernel.Umask` now exists: a symbolic link can only enter
-    /// this filesystem through a *seed*, and a seed describes a tree some other
+    /// though a process umask is modelled: a symbolic link can only enter this
+    /// filesystem through a *seed*, and a seed describes a tree some other
     /// process built, so this run's configured umask is not the one that applied
-    /// to it. The day `SystemNative_SymLink` lets a guest create one, that link
-    /// *is* created by this process and this must become a function of
-    /// `Kernel.Umask` — that is the trigger, not the existence of the field.
+    /// to it. The day a `symlink(2)` lets a guest create one, that link *is*
+    /// created by this process and this must become a function of the configured
+    /// umask — that is the trigger, not the existence of the field.
     let symlinkPermissions (platform : SimulatedUnixPlatform) : PermissionBits =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> PermissionBits.parseOrFail "SimulatedUnixPlatform.symlinkPermissions" 0o777
@@ -2120,7 +2120,9 @@ module SimulatedUnixPlatform =
     /// `(u65)addr + (u65)size <= (u65)TASK_SIZE_MAX` that
     /// arch/arm64/include/asm/uaccess.h documents), and that value varies with
     /// paging depth and virtual-address width — measured, two GitHub runners in
-    /// one CI run disagreed. `EmulatedKernel.userBufferCheck` combines the two.
+    /// one CI run disagreed. A caller combines the two: this predicate decides
+    /// *whether* there is an up-front check, and its own configured limit says
+    /// what that check compares against.
     let screensUserBufferUpFront (platform : SimulatedUnixPlatform) : bool =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> true

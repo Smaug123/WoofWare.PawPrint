@@ -1,6 +1,6 @@
 ---
 name: emulated-posix-kernel
-description: Deciding how the emulated kernel should answer a syscall — whether a fact belongs to the flavour, to configuration, or to the interpreter; where per-thread state lives; which test tier can observe the answer. Use when adding or changing anything in EmulatedKernel.fs, VirtualFileSystem.fs, FileDescriptorRegistry.fs, SignalState.fs, or a Native/ handler that reports kernel state. Carries measured Linux/Darwin divergence tables — consult them rather than re-measuring.
+description: Deciding how the emulated kernel should answer a syscall — whether a fact belongs to the flavour, to configuration, or to the interpreter; where per-thread state lives; which test tier can observe the answer. Use when adding or changing anything in WoofWare.PosixKernel (SimulatedUnixPlatform.fs, VirtualFileSystem.fs, FileDescriptorRegistry.fs), in EmulatedKernel.fs or SignalState.fs, or in a Native/ handler that reports kernel state. Carries measured Linux/Darwin divergence tables — consult them rather than re-measuring.
 ---
 
 # Deciding what the emulated kernel says
