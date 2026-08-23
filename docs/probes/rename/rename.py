@@ -798,6 +798,18 @@ def mount_root():
 
     base = os.path.realpath(BASE)
 
+    # `row`'s guard does not reach this section, because these rows build their
+    # own paths rather than going through it -- and "/" is a perfectly valid
+    # mount point to pass, so as root this would otherwise create a directory in
+    # the real root and hand "/" itself to rename(2). Refuse the whole section:
+    # every row here names `base` or a path through it, so there is nothing left
+    # to measure once the root is off limits.
+    if os.geteuid() == 0 and base == "/":
+        ROWS.append(("mountroot",
+                     'REFUSING: the mount given is "/" and this process is root',
+                     "skipped"))
+        return
+
     try:
         private = tempfile.mkdtemp(prefix="renameprobe-", dir=base)
     except OSError as e:
@@ -830,6 +842,12 @@ def mount_root():
         os.mkdir(src_dir)
 
     def absolute_row(label, src, dst):
+        # Defence in depth behind the section-level refusal above: a row must
+        # never hand the real root to rename(2) as a privileged process, however
+        # it came to name it.
+        if os.geteuid() == 0 and (names_the_real_root(src) or names_the_real_root(dst)):
+            ROWS.append(("mountroot", label, 'skipped (resolves to "/" and this process is root)'))
+            return
         try:
             setup()
             try:
