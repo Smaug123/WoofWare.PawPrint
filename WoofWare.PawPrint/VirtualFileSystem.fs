@@ -1220,22 +1220,27 @@ type DirectoryStreamName =
 /// `foreach` over the live enumerator and then `rmdir`s the parent, so an
 /// enumeration that skipped anything would answer ENOTEMPTY.
 ///
-/// Four cases rather than a `FileName option`, because "returned `.`, not yet
-/// `..`" is a real position of the stream and neither dot is expressible as a
+/// Four cases rather than a `FileName option`, because "returned `..`, not yet
+/// `.`" is a real position of the stream and neither dot is expressible as a
 /// `FileName`.
 ///
 /// What this does *not* claim is agreement with a real kernel about mutations:
 /// whether an entry added after `opendir` becomes visible is unspecified, and
 /// both kernels' answers are artefacts of when `getdents` happened to run. See
 /// `docs/divergences.md`.
+///
+/// The cases are declared in the order the stream visits them.
 [<RequireQualifiedAccess>]
 type DirectoryCursor =
-    /// Nothing returned yet.
+    /// Nothing returned yet; the next entry is the least name the directory
+    /// binds, or `..` if it binds none.
     | Start
-    | ReturnedDot
-    | ReturnedDotDot
     /// The last name handed back, which the next entry must strictly exceed.
     | After of name : FileName
+    /// The names are exhausted and `..` has been handed back; `.` is next.
+    | ReturnedDotDot
+    /// `.` has been handed back, which is the end of the stream.
+    | ReturnedDot
 
 [<RequireQualifiedAccess>]
 module VirtualFileSystem =
@@ -1928,14 +1933,21 @@ module VirtualFileSystem =
     /// The next entry an open directory stream over `directory` hands back, and
     /// the cursor to resume from.
     ///
-    /// `None` is end-of-stream. `.` and `..` come first, in that order, and then
-    /// the names in the order `DirectoryContent.Entries` holds them. The whole
-    /// sequence is chosen for being deterministic and free rather than for being
-    /// faithful: no real kernel's order matches it, and none is even stable
-    /// across machines — measured, a directory holding one name `z` enumerates
-    /// as `. .. z` on APFS but as `z .. .` on an ext4, so the dots have no fixed
-    /// position either. No caller may compare an enumeration order against a
-    /// host.
+    /// `None` is end-of-stream. The names come first, in the order
+    /// `DirectoryContent.Entries` holds them, and then `..` and `.` — in that
+    /// order, at the *end*.
+    ///
+    /// That is a measured order rather than an invented one: a directory holding
+    /// the single name `z` enumerates as `z .. .` on CI's ext4, where it
+    /// enumerates as `. .. z` on APFS. Both are lawful, `readdir(3)` fixes no
+    /// position for anything, and this is the less convenient of the two — it
+    /// refuses a guest that consumes two entries to skip the dots, or that
+    /// expects the first entry to be one. A guest doing either is already broken
+    /// on ext4, and the point of this interpreter is to say so deterministically
+    /// rather than on whichever machine happens to run it.
+    ///
+    /// No caller may compare an enumeration order against a host: the order
+    /// among the names is the map's, which matches no kernel at all.
     ///
     /// A stream over a directory `rmdir` has since removed is at end-of-stream
     /// at once, `.` and `..` included: probed on both kernels, `opendir` then
@@ -1980,16 +1992,19 @@ module VirtualFileSystem =
             )
             |> Seq.tryHead
 
+        /// The next entry when the stream is still among the names: the least
+        /// name above `lower`, or — once they are exhausted — `..`, which is
+        /// where this model puts the dots.
         let fromEntries (lower : FileName option) =
-            leastAbove lower
-            |> Option.map (fun (name, inode) -> DirectoryStreamName.Entry name, inode, DirectoryCursor.After name)
+            match leastAbove lower with
+            | Some (name, inode) -> Some (DirectoryStreamName.Entry name, inode, DirectoryCursor.After name)
+            | None -> Some (DirectoryStreamName.DotDot, content.Parent, DirectoryCursor.ReturnedDotDot)
 
         match cursor with
-        | DirectoryCursor.Start -> Some (DirectoryStreamName.Dot, directory, DirectoryCursor.ReturnedDot)
-        | DirectoryCursor.ReturnedDot ->
-            Some (DirectoryStreamName.DotDot, content.Parent, DirectoryCursor.ReturnedDotDot)
-        | DirectoryCursor.ReturnedDotDot -> fromEntries None
+        | DirectoryCursor.Start -> fromEntries None
         | DirectoryCursor.After name -> fromEntries (Some name)
+        | DirectoryCursor.ReturnedDotDot -> Some (DirectoryStreamName.Dot, directory, DirectoryCursor.ReturnedDot)
+        | DirectoryCursor.ReturnedDot -> None
 
     /// Remove an inode from the graph, which is what a kernel does when the last
     /// name for a file has gone *and* no open description is holding it.

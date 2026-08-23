@@ -215,11 +215,21 @@ chasing performance, but stated so nobody rediscovers it in a profile.
 `DirectoryContent.Entries` is a `Map<FileName, InodeNumber>`, so an order is
 already available for free — F# ordinal comparison of the *UTF-16* strings.
 
-- **Chosen: that order**, with `.` and `..` ahead of it.
+- **Chosen: that order**, with `..` and `.` after it — the dots *last*.
 - Rejected: sorting by UTF-8 bytes. More principled — a name *is* bytes — and
   **not more expensive**: least-name-above-cursor is a linear scan under either
   comparator. The honest tiebreak is that the Map's order is determinism for
   free and the two differ only above the BMP.
+
+Where the dots go was originally decided the other way — dots first — on the
+strength of two machines that agreed. CI's ext4 then produced `z .. .` for a
+directory holding one name, which falsified the claim and the guest asserting
+it. The dots now go last: it is the less convenient of the two *measured*
+orders, so a guest that skips two entries to get past them, or expects the first
+entry to be one, fails here as it would on ext4. Interleaving them among the
+names — what a hash order effectively does — was rejected: it catches only the
+further assumption that the dots are adjacent, and costs a cursor that tracks
+emitted dots as well as the name it stopped at.
 
 No real kernel's order can be matched (arbitrary on both, and different), so
 **no test may compare order** and every guest must sort.

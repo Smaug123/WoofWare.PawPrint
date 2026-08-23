@@ -1040,17 +1040,31 @@ where the dots come *last* and in the other order. What separates the machines w
 the two that disagree are both ext4, so it is a property of the individual filesystem rather than
 of the flavour, and no claim is made here about which property.
 
-**PawPrint**: `.` then `..`, then the directory's names in F# ordinal (UTF-16) order, which is the
-order `DirectoryContent.Entries` already holds them in. Deterministic across runs and machines,
-which is the whole point of the interpreter.
+**PawPrint**: the directory's names in F# ordinal (UTF-16) order, which is the order
+`DirectoryContent.Entries` already holds them in, and *then* `..` and `.` — the dots last.
+Deterministic across runs and machines, which is the whole point of the interpreter.
 
 **Spec status**: unspecified. No portable program may depend on enumeration order, and any that does
 is already broken on a real system.
 
-**Why we chose this**: no real order can be reproduced — there are two of them and they disagree —
-so the only criteria are determinism and cost, and the map's own order is free. Sorting by UTF-8
-bytes was considered; it is arguably more principled, since a Unix name *is* bytes, and it is no
-more expensive, but it differs only above the BMP and buys nothing a test could observe.
+**Why we chose this**: two decisions, and they have different reasons.
+
+*Where the dots go* is the least convenient of the two orders measured above. Both are lawful, and
+`readdir(3)` fixes no position for anything; putting them last refuses a guest that consumes two
+entries to skip them, or that expects the first entry to be one. Such a guest is already broken on
+CI's ext4, and a deterministic interpreter should say so on every machine rather than on whichever
+one happens to run it. Putting them first was the original choice and was rejected once the table
+above existed: it is the *more* convenient order, and it made exactly this mistake pass — the guest
+that asserted dots-first was `EnumerateSeeded.cs` itself. Interleaving them among the names, which
+is what an ext4 htree hash order effectively does, was also considered and rejected: it is no more
+lawful, it catches only the additional assumption that the dots are *adjacent*, and it costs a
+cursor that must track which dots it has already emitted alongside which name it stopped at.
+
+*The order among the names* has no such argument, because no real order can be reproduced — there
+are several and they disagree — so the criteria are determinism and cost, and the map's own order is
+free. Sorting by UTF-8 bytes was considered; it is arguably more principled, since a Unix name *is*
+bytes, and it is no more expensive, but it differs only above the BMP and buys nothing a test could
+observe.
 
 **Where this lives in code**: `VirtualFileSystem.nextDirectoryEntry`. Every test that compares a
 listing sorts it first, and `TestVirtualFileSystemAgainstHost`'s
