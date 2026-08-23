@@ -44,31 +44,39 @@ class SocketPoll
 
         if (!listener.Poll(0, SelectMode.SelectRead)) return 2;
 
+        // A listener with a completed connection queued presents read-readiness
+        // and nothing else, so asking it for *write*-readiness must come back
+        // empty. This is the row that pins the IN mask: it is the only check
+        // where a condition is present in the level and absent from the
+        // request, so an implementation that reported IN unconditionally would
+        // pass every other check in this file and in the impure one.
+        if (listener.Poll(0, SelectMode.SelectWrite)) return 3;
+
         using var accepted = listener.Accept();
 
-        if (listener.Poll(0, SelectMode.SelectRead)) return 3;
+        if (listener.Poll(0, SelectMode.SelectRead)) return 4;
 
         // Both ends of an established connection are write-ready, and neither is
         // read-ready with nothing sent.
-        if (!client.Poll(0, SelectMode.SelectWrite)) return 4;
-        if (!accepted.Poll(0, SelectMode.SelectWrite)) return 5;
-        if (client.Poll(0, SelectMode.SelectRead)) return 6;
-        if (accepted.Poll(0, SelectMode.SelectRead)) return 7;
+        if (!client.Poll(0, SelectMode.SelectWrite)) return 5;
+        if (!accepted.Poll(0, SelectMode.SelectWrite)) return 6;
+        if (client.Poll(0, SelectMode.SelectRead)) return 7;
+        if (accepted.Poll(0, SelectMode.SelectRead)) return 8;
 
         // An idle datagram socket is write-ready on both kernels. Its *stream*
         // counterpart is not — that row diverges and lives in the impure guest.
         using var udp = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-        if (!udp.Poll(0, SelectMode.SelectWrite)) return 8;
+        if (!udp.Poll(0, SelectMode.SelectWrite)) return 9;
 
         // Sub-millisecond timeouts truncate to 0, so this is still the
         // non-blocking path despite the argument.
-        if (!client.Poll(500, SelectMode.SelectWrite)) return 9;
+        if (!client.Poll(500, SelectMode.SelectWrite)) return 10;
 
         // The one genuinely positive timeout, and the only check that
         // distinguishes "poll answers whenever something is ready" from "poll
         // answers only at timeout 0". A ready descriptor returns immediately at
         // any timeout, so this must not wait 100ms.
-        if (!client.Poll(100_000, SelectMode.SelectWrite)) return 10;
+        if (!client.Poll(100_000, SelectMode.SelectWrite)) return 11;
 
         // No `Socket.Select` here, deliberately: which PAL entry point it
         // reaches is a CoreLib *flavour* fact, not a kernel one.
