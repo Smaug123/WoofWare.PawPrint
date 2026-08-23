@@ -1,13 +1,15 @@
 using System;
 using System.Reflection;
 
-// `Delegate.DynamicInvoke`, the only guest route to the `Delegate::GetInvokeMethod(MethodTable*)`
-// InternalCall (`COMDelegate::GetInvokeMethod`, comdelegate.cpp:2156). `DynamicInvokeImpl` asks the
-// runtime for the *delegate type's* `Invoke` MethodDesc, turns it into a `RuntimeMethodInfo` via
-// `RuntimeType.GetMethodBase`, and reflectively invokes it with the delegate as the receiver
-// (Delegate.CoreCLR.cs:80-86). Every check below therefore also depends on
-// `RuntimeMethodHandle_InvokeMethod` and on ordinary delegate dispatch; what is new here is which
-// method the runtime names.
+// `Delegate.DynamicInvoke`, the ordinary guest route to the
+// `Delegate::GetInvokeMethod(MethodTable*)` InternalCall (`COMDelegate::GetInvokeMethod`,
+// comdelegate.cpp:2156). `DynamicInvokeImpl` asks the runtime for the *delegate type's* `Invoke`
+// MethodDesc, turns it into a `RuntimeMethodInfo` via `RuntimeType.GetMethodBase`, and reflectively
+// invokes it with the delegate as the receiver (Delegate.CoreCLR.cs:80-86). Every check below
+// therefore also depends on `RuntimeMethodHandle_InvokeMethod` and on ordinary delegate dispatch;
+// what is new here is which method the runtime names. The last block reaches the InternalCall a
+// second way, by reflecting on its managed wrapper, in order to observe the answer's identity
+// rather than only its effect.
 //
 // This file deliberately breaks the "invoke each MethodInfo exactly once" rule that
 // `ReflectionInvokeMethod.cs` and its siblings keep, because the whole point of the issue-849 row
@@ -223,13 +225,22 @@ public class DelegateDynamicInvoke
         if (!h1.Equals (getInvokeMethod.Invoke (f, null))) return 103;
         if (!h1.Equals (getInvokeMethod.Invoke (f3, null))) return 104;
 
-        // Two instantiations of one generic delegate definition name *different* methods. An
-        // implementation that answered per definition rather than per instantiation would pass
-        // every check above that happens to coerce its arguments successfully.
+        // A value-type and a reference-type instantiation of one generic delegate definition name
+        // *different* methods. An implementation that answered per definition rather than per
+        // instantiation would pass every check above that happens to coerce its arguments
+        // successfully.
+        //
+        // Do not generalise this to two *reference-type* instantiations: CoreCLR shares one
+        // `DelegateEEClass`, and so one `Invoke` MethodDesc, across all of them, so real .NET
+        // answers `Func<string, int>` and `Func<object, int>` alike where PawPrint answers two
+        // registry ids. That pair is a recorded divergence, not an assertion this file can make --
+        // see docs/divergences.md, "A generic delegate type's `Invoke` handle is
+        // per-instantiation". The pair below spans the value/reference boundary, where CoreCLR
+        // shares nothing and the two runtimes agree.
         if (h1.Equals (getInvokeMethod.Invoke (len, null))) return 105;
 
-        // As do two unrelated delegate types, including one whose `Invoke` has the same signature
-        // shape as `f`'s.
+        // As do two unrelated delegate types. Neither shares a generic definition with `f`, so
+        // neither is at risk of the canonical sharing above.
         if (h1.Equals (getInvokeMethod.Invoke (act, null))) return 106;
         if (h1.Equals (getInvokeMethod.Invoke (id, null))) return 107;
 

@@ -455,6 +455,35 @@ The managed observables agree with CoreCLR for every shape a dynamic method can 
 
 **Where this lives in code**: `IlMachineRuntimeMetadata.executeDelegateConstructor` for the `newobj` path, `NativeDelegate.tryExecuteQCall` for the `CreateDelegate` path, and `AbstractMachine.dispatchDelegateInvoke` for the consumer that makes the convention work.
 
+## A generic delegate type's `Invoke` handle is per-instantiation, not per-canonical-form
+
+**CoreCLR**: `COMDelegate::GetInvokeMethod` (`comdelegate.cpp:2156`) answers `((DelegateEEClass*)pDelegateMT->GetClass())->GetInvokeMethod()` — a field of the `EEClass`, not of the `MethodTable`. An `EEClass` is shared between every instantiation whose type arguments are all reference types, those being represented by the canonical `__Canon`, so `Func<string, int>` and `Func<object, int>` are handed one and the same `MethodDesc*`: that of `Func<__Canon, int>.Invoke`. A value-type instantiation shares nothing, so `Func<int, int>` gets its own. Measured on .NET 10 by reflecting on `Delegate.GetInvokeMethod` and comparing the returned `IntPtr`s: the two reference instantiations compare equal, and each compares unequal to `Func<int, int>`'s.
+
+**PawPrint**: models no canonical sharing anywhere. `MethodHandleRegistry` keys a handle on a fully closed `ConcreteTypeHandle` declaring type, so each instantiation is minted its own registry id and the two reference-type instantiations above disagree where CoreCLR agrees. The value/reference pair agrees with CoreCLR.
+
+**Spec status**: outside ECMA-335 entirely. `__Canon` is a CoreCLR code-sharing strategy; nothing in the standard says anything about the identity of the runtime handle behind a delegate's `Invoke`.
+
+**Why we chose this**: exact instantiations are the interpreter's only currency, and answering exactly is what makes the *consumer* right rather than merely convenient. `Delegate.DynamicInvokeImpl` hands the handle to `RuntimeType.GetMethodBase` together with the delegate's exact `RuntimeType` (`Delegate.CoreCLR.cs:82`), and CoreCLR's `GetMethodBase` has to walk that reflected type's base chain to remap a shared declaring type back onto it before it can produce the `MethodInfo` (`RuntimeType.CoreCLR.cs:1871-1899`). PawPrint hands over the answer that remap would arrive at, and skips a step it has no shared form to perform. Answering the *typical definition* instead would be worse than either: the signature reflection coerces arguments against would then be the open one.
+
+Reproducing the sharing would mean giving PawPrint a canonical method identity and a remap on every consumer of a method handle — a change to the whole type system in order to make one private field of one InternalCall agree, and one whose only visible effect would be to make two distinct methods answer as one.
+
+**Observable example**:
+
+```csharp
+// Reachable only by reflecting on Delegate's internal GetInvokeMethod().
+Func<string, int> a = s => s.Length;
+Func<object, int> b = o => 1;
+var m = typeof (Delegate).GetMethod ("GetInvokeMethod",
+    BindingFlags.NonPublic | BindingFlags.Instance, null, Type.EmptyTypes, null);
+// CoreCLR:  True  — one MethodDesc for Func<__Canon, int>.Invoke.
+// PawPrint: False — two registry ids, one per exact instantiation.
+Console.WriteLine (m.Invoke (a, null).Equals (m.Invoke (b, null)));
+```
+
+Nothing public exposes it. `DynamicInvoke` never surfaces the handle or the `MethodInfo` derived from it, and the delegate field that would carry it — `_methodPtrAux`, written by `MulticastDelegate.NewMulticastDelegate` — is unreachable while `Delegate::GetMulticastInvoke` is unimplemented (issue #959). `sourcesPure/DelegateDynamicInvoke.cs` therefore asserts handle distinctness only for pairs CoreCLR shares nothing between — a value-type instantiation against a reference-type one, and two unrelated delegate definitions — and says at the assertion why the reference/reference pair cannot join it. `sourcesImpure/DelegateInvokeHandlePerInstantiation.cs` pins PawPrint's own answer for that pair, which is what keeps this entry from being a claim nothing checks.
+
+**Where this lives in code**: `NativeDelegate.tryExecute`'s `Delegate.GetInvokeMethod` arm, and `MethodHandleRegistry.getOrAllocateConcreteId` behind it.
+
 ## A delegate invocation that fails before entering its target names no frame for it
 
 **CoreCLR**: when invoking a delegate fails *because of the target itself*, the failure happens

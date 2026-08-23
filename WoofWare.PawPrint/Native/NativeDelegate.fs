@@ -311,9 +311,11 @@ module NativeDelegate =
                 | [ single ] -> single
                 | [] ->
                     // CoreCLR raises `MissingMethodException("Invoke")` here
-                    // (comdelegate.cpp:2530). Unreachable from this QCall: `CreateDelegate`'s
-                    // callers all check `rtType.IsDelegate()` first, and a type whose base is
-                    // `MulticastDelegate` got its `Invoke` from the runtime.
+                    // (comdelegate.cpp:2530). Unreachable from either caller. From
+                    // `Delegate_BindToMethodInfo`, because `CreateDelegate`'s callers all check
+                    // `rtType.IsDelegate()` first; from `Delegate.GetInvokeMethod`, because the
+                    // MethodTable it is handed is that of a live delegate instance. Either way, a
+                    // type whose base is `MulticastDelegate` got its `Invoke` from the runtime.
                     failwith
                         $"%s{operation}: delegate type %s{typeInfo.Namespace}.%s{typeInfo.Name} declares no instance method named Invoke"
                 | several ->
@@ -608,10 +610,17 @@ module NativeDelegate =
             // not be: the sibling `GetMulticastInvoke`, which really does return code, is
             // separately unimplemented.
             //
-            // The id names the `Invoke` of the *exact* instantiation, matching the MethodDesc
-            // CoreCLR reads from the instantiated MethodTable's class. `GetMethodBase` is handed
-            // the delegate's `RuntimeType` alongside it and must agree with it, and the
-            // signature the reflective invoke coerces arguments against is the instantiated one.
+            // The id names the `Invoke` of the *exact* instantiation, which is deliberately not
+            // what CoreCLR answers: `GetInvokeMethod()` is a field of the `DelegateEEClass`, and
+            // an `EEClass` is shared across every instantiation whose arguments are all reference
+            // types, so `Func<string, int>` and `Func<object, int>` get one `MethodDesc*` there
+            // and two registry ids here (docs/divergences.md, "A generic delegate type's `Invoke`
+            // handle is per-instantiation"). Exact is nonetheless the right answer for the
+            // consumer: `RuntimeType.GetMethodBase` is handed the delegate's exact `RuntimeType`
+            // alongside the handle and remaps a shared one onto it before producing the
+            // `MethodInfo` (RuntimeType.CoreCLR.cs:1871-1899), which PawPrint has no shared form
+            // to need; and the signature the reflective invoke coerces arguments against has to
+            // be the instantiated one.
             let operation = "Delegate.GetInvokeMethod"
 
             let state = IlMachineState.loadArgument ctx.Thread 0 state
