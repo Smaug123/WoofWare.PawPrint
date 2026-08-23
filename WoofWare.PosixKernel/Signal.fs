@@ -1,4 +1,4 @@
-namespace WoofWare.PawPrint
+namespace WoofWare.PosixKernel
 
 /// A POSIX signal recognised by the simulator. The named cases cover the
 /// signals the .NET BCL surfaces via the `PosixSignal` managed enum plus the

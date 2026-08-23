@@ -5,6 +5,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// The rules behind `SystemNative_Bind`, at the level the guests cannot reach:
 /// the fault ordering as an object, the conflict relation across the whole

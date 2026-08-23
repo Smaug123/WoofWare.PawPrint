@@ -8,6 +8,7 @@ open Microsoft.Extensions.Logging
 open Microsoft.Extensions.Logging.Console
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint.Logging
+open WoofWare.PosixKernel
 
 module AppProgram =
     let private usage =

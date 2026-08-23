@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
+open WoofWare.PosixKernel
 
 /// Drives signal delivery onto the kernel-owned dispatcher thread allocated
 /// by `SystemNative_InitializeTerminalAndSignalHandling`. Mirrors the real

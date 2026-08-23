@@ -7,6 +7,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// Pins the yield-debt fairness filter: an honoured `Thread.Yield()` / `Thread.Sleep(0)`
 /// sends the caller to the back of the run queue, and the scheduler holds it out of the

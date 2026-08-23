@@ -1,10 +1,10 @@
-namespace WoofWare.PawPrint.Test
+namespace WoofWare.PosixKernel.Test
 
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]

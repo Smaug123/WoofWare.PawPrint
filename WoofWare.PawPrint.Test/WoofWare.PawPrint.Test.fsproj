@@ -87,7 +87,6 @@
     <Compile Include="TestUnlinkRules.fs" />
     <Compile Include="TestRmDirRules.fs" />
     <Compile Include="TestRenameRules.fs" />
-    <Compile Include="TestDirectoryEnumeration.fs" />
     <Compile Include="TestOpenDirRules.fs" />
     <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
     <Compile Include="TestFileSystemType.fs" />
@@ -153,7 +152,6 @@
     <Compile Include="TestGenericConstraintSatisfaction.fs" />
     <Compile Include="TestGcHandleRegistry.fs" />
     <Compile Include="TestSocketCreation.fs" />
-    <Compile Include="TestFileDescriptorRegistry.fs" />
     <Compile Include="TestEmulatedKernelCurrentDirectory.fs" />
     <Compile Include="TestEmulatedKernelInodeLifetime.fs" />
     <Compile Include="TestEmulatedKernelSockets.fs" />
@@ -189,7 +187,6 @@
     <Compile Include="TestBclIntrinsicStaticFields.fs" />
     <Compile Include="TestThreadStatics.fs" />
     <Compile Include="TestLowLevelMonitor.fs" />
-    <Compile Include="TestSignal.fs" />
     <Compile Include="TestLastError.fs" />
     <Compile Include="TestSignalState.fs" />
     <Compile Include="TestSignalHandler.fs" />

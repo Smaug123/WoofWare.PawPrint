@@ -6993,7 +6993,7 @@ module EmulatedKernel =
     /// `VirtualFileSystem.checkInvariants (EmulatedKernel.pinnedInodes kernel)`.
     let checkInvariants (kernel : EmulatedKernel) : EmulatedKernelDefect list =
         let named =
-            kernel.FileDescriptors.Descriptions
+            FileDescriptorRegistry.descriptions kernel.FileDescriptors
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with

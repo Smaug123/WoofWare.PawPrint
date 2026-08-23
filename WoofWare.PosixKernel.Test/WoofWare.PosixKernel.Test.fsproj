@@ -12,6 +12,9 @@
     <Compile Include="TestNoPawPrintReference.fs" />
     <Compile Include="TestUnixError.fs" />
     <Compile Include="TestUnixPath.fs" />
+    <Compile Include="TestFileDescriptorRegistry.fs" />
+    <Compile Include="TestSignal.fs" />
+    <Compile Include="TestDirectoryEnumeration.fs" />
   </ItemGroup>
 
   <ItemGroup>

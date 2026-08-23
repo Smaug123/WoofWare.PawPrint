@@ -6,6 +6,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// Pins the contract a *streaming* driver depends on: every guest write is reported to the
 /// driver, as it happens, by the step that performed it.

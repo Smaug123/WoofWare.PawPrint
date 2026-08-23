@@ -1,4 +1,4 @@
-namespace WoofWare.PawPrint
+namespace WoofWare.PosixKernel
 
 /// An IPv4 transport endpoint: the pair `bind(2)` gives a socket and
 /// `getsockname(2)` reports back.

@@ -1,8 +1,8 @@
-namespace WoofWare.PawPrint.Test
+namespace WoofWare.PosixKernel.Test
 
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// Unit tests for the `Signal` conversion helpers that the SystemNative
 /// signal-handling arms rely on. These functions are the only piece of

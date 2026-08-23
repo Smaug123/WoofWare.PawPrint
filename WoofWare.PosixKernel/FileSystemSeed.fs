@@ -1,7 +1,6 @@
-namespace WoofWare.PawPrint
+namespace WoofWare.PosixKernel
 
 open System.Collections.Immutable
-open WoofWare.PosixKernel
 
 /// One entry in the filesystem a host hands to the emulated kernel.
 ///

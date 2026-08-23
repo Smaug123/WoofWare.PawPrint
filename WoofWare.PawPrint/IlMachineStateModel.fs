@@ -6,6 +6,7 @@ open System.Reflection
 open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
+open WoofWare.PosixKernel
 
 type IlMachineState =
     {
