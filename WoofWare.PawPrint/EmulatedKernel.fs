@@ -1146,7 +1146,7 @@ type EmulatedKernel =
         /// Held on `EmulatedKernel` (rather than per-thread) because POSIX
         /// signal disposition is process-wide; the per-thread piece lives
         /// inside `SignalState.Blocked`.
-        Signals : SignalState
+        Signals : SignalState<ThreadId, SignalHandler>
     }
 
 /// A way the emulated kernel's socket table and its descriptor table could

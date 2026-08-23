@@ -4,6 +4,7 @@ open System.Collections.Immutable
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// Focused tests for the kernel-owned signal-dispatch thread that PawPrint
 /// spawns on the first call to
@@ -46,13 +47,16 @@ module TestSignalDispatcherThread =
 
     [<Test>]
     let ``empty SignalState has no signal thread`` () : unit =
-        SignalState.empty |> SignalState.signalThread |> shouldEqual None
+        let empty : SignalState<ThreadId, SignalHandler> = SignalState.empty
+
+        empty |> SignalState.signalThread |> shouldEqual None
 
     [<Test>]
     let ``markInitialized records the dispatcher ThreadId`` () : unit =
         let dispatcher = ThreadId 7
+        let empty : SignalState<ThreadId, SignalHandler> = SignalState.empty
 
-        SignalState.empty
+        empty
         |> SignalState.markInitialized dispatcher
         |> SignalState.signalThread
         |> shouldEqual (Some dispatcher)

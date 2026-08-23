@@ -819,7 +819,41 @@ and stages 4–9 need re-costing before anyone starts them.
 result can be judged against where it was heading; re-read and re-cost them
 before starting any of them.*
 
-### Stage 4: `SignalState` genericised
+### Stage 4: `SignalState` genericised — **done; two decisions taken in absentia**
+
+The plan as written missed that `SignalState` uses `ThreadId` in four places,
+one of which destructures its representation
+(`List.sortBy (fun (ThreadId.ThreadId tid) -> tid)`). Two questions followed,
+both answered the reversible way:
+
+* **Task identity: a second type parameter, not a library `TaskId`.**
+  `SignalState<'Task, 'Handler>` with `'Task : comparison`. The alternative —
+  introducing the library's own `TaskId` now — is where stage 5 is heading
+  anyway, but it needs a `ThreadId`↔`TaskId` mapping established at thread
+  creation, which is stage 5's work. A type parameter is purely additive and
+  collapses to `TaskId` later for free. The destructuring sort becomes
+  `List.sort`, which is identical for a single-field DU over `int`.
+* **The dispatcher payload stays on `Initialized`, rather than moving out.**
+  The plan proposed reducing `SignalInitState` to a payload-free bit with
+  PawPrint holding the dispatcher alongside. That is conceptually cleaner — no
+  real kernel has a managed-handler dispatch thread — but it splits an
+  invariant the original DU shape exists to make unrepresentable-to-violate
+  ("the dispatcher exists iff signal handling is initialised"). Keeping it as
+  `Initialized of dispatcher : 'Task` preserves the machine-checked invariant
+  and is honest at the library's altitude: the type records *which* task
+  dispatches without claiming to know what a task is.
+
+`SignalHandler` (which wraps a CLR `MethodInfo`) split out into its own PawPrint
+file and stayed. `TestSignalState.fs` moved and instantiates both parameters
+with nominal stand-in types of its own rather than `int` — an `int` could
+satisfy the signature through a numeric path without the parameter being
+genuinely opaque.
+
+The existing tests never exercised the handler slot at all, so two were added
+for it, and both are mutation-tested: making `setHandler` discard the rest of
+the state, and making it first-writer-wins, each kill exactly one.
+
+### Stage 4 (as originally specified): `SignalState` genericised
 
 **Dependencies**: stage 2.
 
