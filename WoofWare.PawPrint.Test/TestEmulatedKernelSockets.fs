@@ -6,6 +6,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// The socket table and the descriptor table have to agree, and neither module
 /// can check that alone: `FileDescriptorRegistry` compiles before the kernel

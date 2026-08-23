@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
+open WoofWare.PosixKernel
 
 /// Identity of a file within the emulated filesystem: the `st_ino` a guest
 /// reads back from `stat`.

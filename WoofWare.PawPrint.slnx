@@ -9,4 +9,6 @@
   <Project Path="WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj" />
   <Project Path="WoofWare.PawPrint/WoofWare.PawPrint.fsproj" />
   <Project Path="WoofWare.PawPrint.Test.FSharpPureCases/WoofWare.PawPrint.Test.FSharpPureCases.fsproj" />
+  <Project Path="WoofWare.PosixKernel/WoofWare.PosixKernel.fsproj" />
+  <Project Path="WoofWare.PosixKernel.Test/WoofWare.PosixKernel.Test.fsproj" />
 </Solution>

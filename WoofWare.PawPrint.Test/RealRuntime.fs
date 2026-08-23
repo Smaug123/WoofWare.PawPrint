@@ -8,6 +8,7 @@ open System.Reflection.PortableExecutable
 open System.Runtime.InteropServices
 open System.Text
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// How a program terminated when run on the real .NET runtime.
 ///

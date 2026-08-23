@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint
 open System
 open System.Buffers.Binary
 open System.Collections.Immutable
+open WoofWare.PosixKernel
 
 /// Why a file descriptor cannot be seeked, as a *fault* rather than as the errno
 /// it becomes.

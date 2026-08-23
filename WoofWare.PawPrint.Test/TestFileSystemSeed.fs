@@ -8,6 +8,7 @@ open FsUnitTyped
 open System.Runtime.InteropServices
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// A seed is a *tree*, so the properties a path-list manifest would need —
 /// order-independence, no duplicate paths, no child declared before its parent

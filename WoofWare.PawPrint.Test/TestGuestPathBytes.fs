@@ -5,6 +5,7 @@ open System.Text
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `PATH_MAX` is the one length rule the resolver can never see: it binds the
 /// pathname *as the guest passed it*, in bytes, before any parsing. `UnixPath`

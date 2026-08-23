@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net10.0 rather than the library's net8.0: the Nix devshell carries only the
+         net10 runtime, so a net8.0 test host has nothing to run on. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="TestNoPawPrintReference.fs" />
+    <Compile Include="TestUnixError.fs" />
+    <Compile Include="TestUnixPath.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../WoofWare.PosixKernel/WoofWare.PosixKernel.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NUnit" Version="4.4.0"/>
+    <PackageReference Include="NUnit3TestAdapter" Version="5.1.0"/>
+    <PackageReference Include="FsUnit" Version="7.1.1"/>
+    <PackageReference Include="FsCheck" Version="3.3.2" />
+    <PackageReference Include="FsCheck.NUnit" Version="3.3.2" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1"/>
+  </ItemGroup>
+
+</Project>

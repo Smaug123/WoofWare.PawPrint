@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open System
 open System.Text
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// One operation of the socket/epoll differential fuzzer's op language
 /// (docs/plans/2026-08-22-socket-epoll-fuzzer.md). Slots name descriptors on

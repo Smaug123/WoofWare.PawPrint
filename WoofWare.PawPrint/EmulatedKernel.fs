@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
+open WoofWare.PosixKernel
 
 /// Deterministic model of a single `System.Threading.LowLevelMonitor`, as
 /// minted by `SystemNative_LowLevelMonitor_Create`. CoreCLR backs this with a

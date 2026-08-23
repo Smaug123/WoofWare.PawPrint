@@ -8,6 +8,7 @@ open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PawPrint.Test
+open WoofWare.PosixKernel
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]

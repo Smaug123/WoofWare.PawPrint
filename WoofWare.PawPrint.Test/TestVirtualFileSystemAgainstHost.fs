@@ -7,6 +7,7 @@ open System.Runtime.InteropServices
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// Differential test: the same filesystem is built twice — once as a
 /// `VirtualFileSystem` and once as a real directory tree — and the same paths

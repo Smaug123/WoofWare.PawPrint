@@ -80,7 +80,6 @@
     <Compile Include="TestStackMemoryPool.fs" />
     <Compile Include="TestNativeMemoryPool.fs" />
     <Compile Include="TestAbsoluteUnixPath.fs" />
-    <Compile Include="TestUnixPath.fs" />
     <Compile Include="TestPathCursor.fs" />
     <Compile Include="TestVirtualFileSystem.fs" />
     <Compile Include="TestFileSystemSeed.fs" />
@@ -153,7 +152,6 @@
     <Compile Include="TestGenericParamConstraints.fs" />
     <Compile Include="TestGenericConstraintSatisfaction.fs" />
     <Compile Include="TestGcHandleRegistry.fs" />
-    <Compile Include="TestUnixError.fs" />
     <Compile Include="TestSocketCreation.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />
     <Compile Include="TestEmulatedKernelCurrentDirectory.fs" />

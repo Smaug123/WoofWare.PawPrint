@@ -1,4 +1,4 @@
-namespace WoofWare.PawPrint.Test
+namespace WoofWare.PosixKernel.Test
 
 open System
 open System.IO
@@ -6,7 +6,7 @@ open System.Runtime.InteropServices
 open System.Text.RegularExpressions
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `UnixError`'s table is a transcription of two upstream authorities, so the
 /// tests that matter here re-derive it from those authorities rather than

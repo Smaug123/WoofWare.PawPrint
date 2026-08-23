@@ -4,6 +4,7 @@ open System
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `KernelConfig.ProcessPath` is the executable path a guest reads back through
 /// `SystemNative_GetProcessPath`. These pin the configuration-to-kernel wiring,

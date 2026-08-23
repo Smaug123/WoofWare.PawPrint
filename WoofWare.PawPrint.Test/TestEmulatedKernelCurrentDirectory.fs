@@ -4,6 +4,7 @@ open System.Collections.Immutable
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// The simulated process holds its current directory as an *inode*, the way a
 /// real process holds it, rather than as a name re-walked on every relative
