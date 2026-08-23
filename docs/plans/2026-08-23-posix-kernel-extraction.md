@@ -53,6 +53,41 @@ Two findings worth carrying forward:
   name rather than line range is what made that a non-event. Any future stage
   touching this block should assume the same.
 
+**What the spike also found, which the plan did not anticipate.** The boundary
+is real for *state* but not yet for *vocabulary*. Eleven leaf functions in the
+library convert to and from CoreCLR's PAL encodings rather than POSIX ones:
+`UnixError.toPal` / `palOfRawErrno` / `palOfRawErrnoUnder`,
+`Signal.ofPosixSignalEnum` / `toPosixSignalEnum`, `SocketEventInterest.ofBits`,
+`PollEvents.ofBits` / `toBits`, and `SimulatedUnixPlatform`'s
+`addressFamilyPalToPlatform` / `addressFamilyPlatformToPal` / `socketCreation`.
+
+They are genuinely misplaced — a second, non-.NET client would have to learn
+`Interop.Sys.AddressFamily` to call `socketCreation` — and they are all leaves,
+consumed almost entirely by `Native/NativeSystemNative.fs` (49 call sites for
+`toPal` alone, 1–3 for each of the others). Stage 3.5 below moves them.
+
+They were *not* fixed inside stages 1–3, deliberately: doing so would have meant
+non-rename edits to five moved files and re-pointing sixty call sites, which
+would have destroyed the rename-only oracle that is the only reason a
+9,650-line diff is reviewable at all. The claim in `AGENTS.md` and the package
+README was corrected to state the gap instead.
+
+### Stage 3.5: move the PAL adapters out of the library
+
+**Dependencies**: stage 3.
+
+For each of the eleven, the POSIX half stays and the PAL half moves to a
+PawPrint-side adapter beside `Native/NativeSystemNative.fs`. `UnixError` is the
+one with real design content: its `numbering` table returns a record carrying
+both `.Raw` (POSIX) and `.Pal` (CoreCLR), so the split is a question of which
+side owns that table, not a move of a function.
+
+**Correctness oracle**: the full suite including `Guest`, unchanged; and a
+grep-based assertion, run in CI beside the reference test, that no
+identifier in `WoofWare.PosixKernel` contains `Pal`/`pal` or names
+`PosixSignal`. That assertion is what stops the residue growing back, and is
+worth more than the move itself.
+
 One thing outstanding before the spike is fully closed: the host-equality suite
 has been verified from the far side of the boundary **on macOS only**. It
 falsifies a different column on Linux, so CI's run is the other half of that
