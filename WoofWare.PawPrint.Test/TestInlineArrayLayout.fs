@@ -29,6 +29,11 @@ open WoofWare.PawPrint.Test
 /// message decodes both sides, so a failure names the shape.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
+// Runs guests under the interpreter, which is where essentially all of the suite's
+// time goes; `Explicit` keeps it out of a bare `dotnet test` so local iteration is
+// quick. CI selects it by category and so runs it. See AGENTS.md.
+[<Category("Guest")>]
+[<Explicit>]
 module TestInlineArrayLayout =
 
     /// An element type to build inline arrays over: the declarations it needs, and the name to use
@@ -292,13 +297,17 @@ public class TestInlineArrayLayoutSweep
             | RealRuntimeResult.Aborted (code, report) ->
                 failwith $"%s{case}: real runtime aborted (%O{code}):\n%s{report}"
 
-        let expected =
-            (measure 0)
-            ||| ((measure 1) <<< 8)
-            ||| ((measure 2) <<< 16)
-            ||| ((measure 3) <<< 24)
-
-        let actual = runUnderPawPrint case image
+        // The four oracle processes run while PawPrint interprets the same guest; the two
+        // sides do not interact. See `DifferentialOracle.alongsideInterpreted`.
+        let expected, actual =
+            DifferentialOracle.alongsideInterpreted
+                (fun () ->
+                    (measure 0)
+                    ||| ((measure 1) <<< 8)
+                    ||| ((measure 2) <<< 16)
+                    ||| ((measure 3) <<< 24)
+                )
+                (fun () -> runUnderPawPrint case image)
 
         if actual = -1 then
             failwith $"%s{case}: PawPrint reported a size too large to encode; the sweep needs widening"

@@ -11,6 +11,11 @@ open WoofWare.PawPrint.Test
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
+// Runs guests under the interpreter, which is where essentially all of the suite's
+// time goes; `Explicit` keeps it out of a bare `dotnet test` so local iteration is
+// quick. CI selects it by category and so runs it. See AGENTS.md.
+[<Category("Guest")>]
+[<Explicit>]
 module TestImpureCases =
     let assy = typeof<RunResult>.Assembly
 
@@ -2787,7 +2792,7 @@ module TestImpureCases =
         use peImage = new MemoryStream (image)
 
         try
-            let pawPrintResult =
+            let interpretGuest () =
                 BoundedRun.run
                     loggerFactory
                     case.FileName
@@ -2801,21 +2806,35 @@ module TestImpureCases =
                             }
                     }
 
-            // Run first, compare second: a divergence is reported by
-            // `DifferentialOracle` with both runtimes' answers side by side, which is
-            // more use than this fixture's own one-sided failure on the PawPrint half.
-            if comparesHere then
-                // The case's own seed drives the oracle too, exactly as it does for a
-                // `sourcesPure` case, so both runtimes see one description of a
-                // filesystem.
-                let realResult = RealRuntime.executeWithSeed case.KernelConfig.FileSystem [||] image
+            // A case that is compared runs its oracle alongside the interpreted guest
+            // rather than after it (see `DifferentialOracle.alongsideInterpreted`); one
+            // that is not compared starts no second run at all.
+            let realResult, pawPrintResult =
+                if comparesHere then
+                    // The case's own seed drives the oracle too, exactly as it does for a
+                    // `sourcesPure` case, so both runtimes see one description of a
+                    // filesystem.
+                    let realResult, pawPrintResult =
+                        DifferentialOracle.alongsideInterpreted
+                            (fun () -> RealRuntime.executeWithSeed case.KernelConfig.FileSystem [||] image)
+                            interpretGuest
 
+                    Some realResult, pawPrintResult
+                else
+                    None, interpretGuest ()
+
+            // Compared only once both runtimes have answered: a divergence is then
+            // reported by `DifferentialOracle` with both answers side by side, which is
+            // more use than this fixture's own one-sided failure on the PawPrint half.
+            match realResult with
+            | Some realResult ->
                 DifferentialOracle.compareOutcomes
                     case.FileName
                     case.ExpectedReturnCode
                     case.ExpectsUnhandledException
                     realResult
                     pawPrintResult
+            | None -> ()
 
             let terminalState, terminatingThread =
                 match pawPrintResult with

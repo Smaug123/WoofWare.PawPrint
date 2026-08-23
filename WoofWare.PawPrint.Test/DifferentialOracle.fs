@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open System.Threading.Tasks
 open WoofWare.PawPrint
 
 /// Comparing one guest's behaviour under PawPrint against the same guest under the
@@ -9,6 +10,46 @@ open WoofWare.PawPrint
 /// module only knows what "agreeing" means once both runtimes have answered.
 [<RequireQualifiedAccess>]
 module DifferentialOracle =
+
+    /// Run the real-runtime oracle at the same time as the interpreted run, instead of
+    /// after it, and return both answers once both have finished.
+    ///
+    /// A guest's two runs do not interact: the oracle is a separate process, and the only
+    /// thing that crosses between them is the PE image, which both merely read. So the
+    /// overlap is invisible to each side, and in particular the interpreted run is as
+    /// deterministic as it was — the interpreter still sees one thread driving it, and
+    /// PawPrint's own scheduler, not the host's, decides what the guest observes.
+    ///
+    /// The oracle gets a dedicated thread rather than a pool one. It spends nearly all of
+    /// its time blocked on a child process, and every NUnit worker running one of these
+    /// blocks until it finishes; on a pool thread that is a queue of blocked work items
+    /// waiting for the pool's thread-injection heuristic to notice, which reintroduces
+    /// exactly the serialisation this exists to remove.
+    ///
+    /// Both runs are awaited before this returns, *including* when the interpreted run
+    /// throws. The oracle owns a child process and a scratch directory it deletes on its
+    /// way out, so abandoning it mid-flight would leak both into the rest of the suite.
+    let alongsideInterpreted (oracle : unit -> 'oracle) (interpreted : unit -> 'interpreted) : 'oracle * 'interpreted =
+        let oracleRun =
+            Task.Factory.StartNew ((fun () -> oracle ()), TaskCreationOptions.LongRunning)
+
+        let interpretedResult =
+            try
+                interpreted ()
+            with _ ->
+                // Deliberately swallowed: the interpreted run's failure is the one worth
+                // reporting, and this wait is only here to be sure the child process and
+                // its scratch directory are gone before the test ends.
+                (try
+                    oracleRun.Wait ()
+                 with _ ->
+                     ())
+
+                reraise ()
+
+        // Not `.Result`, which would wrap a failure in an AggregateException and bury the
+        // oracle's own message.
+        oracleRun.GetAwaiter().GetResult (), interpretedResult
 
     /// Assert that the two runtimes agreed about how the guest terminated, and that
     /// they agreed on the exit code the case declares.

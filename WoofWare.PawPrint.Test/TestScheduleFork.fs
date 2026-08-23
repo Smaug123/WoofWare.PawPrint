@@ -18,6 +18,11 @@ open WoofWare.PawPrint
 /// post-fork decision trace: which thread ran at each tick and what it did.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
+// Runs guests under the interpreter, which is where essentially all of the suite's
+// time goes; `Explicit` keeps it out of a bare `dotnet test` so local iteration is
+// quick. CI selects it by category and so runs it. See AGENTS.md.
+[<Category("Guest")>]
+[<Explicit>]
 module TestScheduleFork =
 
     let private assy = typeof<RunResult>.Assembly
