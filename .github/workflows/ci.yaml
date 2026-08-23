@@ -175,6 +175,7 @@ jobs:
         artifact:
         - nuget-package-pawprint
         - nuget-package-domain
+        - nuget-package-posixkernel
     runs-on: ubuntu-latest
     needs: [nuget-pack]
     steps:
@@ -186,7 +187,9 @@ jobs:
       - name: Compute package path
         id: compute-path
         run: |
-          find . -maxdepth 1 -type f -name 'WoofWare.PawPrint.*.nupkg' -exec sh -c 'echo "output=$(basename "$1")" >> $GITHUB_OUTPUT' shell {} \;
+          # WoofWare.* rather than WoofWare.PawPrint.*: each artifact contains exactly
+          # one nupkg, and WoofWare.PosixKernel's name does not begin WoofWare.PawPrint.
+          find . -maxdepth 1 -type f -name 'WoofWare.*.nupkg' -exec sh -c 'echo "output=$(basename "$1")" >> $GITHUB_OUTPUT' shell {} \;
       - name: Compute tag name
         id: compute-tag
         env:
