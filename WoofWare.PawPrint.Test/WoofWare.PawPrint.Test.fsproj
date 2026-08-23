@@ -35,6 +35,7 @@
     <Compile Include="TestGuestLocation.fs" />
     <Compile Include="TestGuestFailure.fs" />
     <Compile Include="CrossAssemblyHarness.fs" />
+    <Compile Include="FabricatedGuest.fs" />
     <Compile Include="TestCrossAssemblyOracle.fs" />
     <Compile Include="TypeIdentityTestHelpers.fs" />
     <Compile Include="PointerHashTestHelpers.fs" />
@@ -225,6 +226,7 @@
     <Compile Include="TestFabricatedSlotAliasing.fs" />
     <Compile Include="TestFabricatedSlotContent.fs" />
     <Compile Include="TestFabricatedInitblk.fs" />
+    <Compile Include="TestFabricatedUnaligned.fs" />
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />

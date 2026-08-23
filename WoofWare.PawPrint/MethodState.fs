@@ -20,7 +20,12 @@ type PrefixState =
         /// so there is nothing for the following call to consume. It exists for a future
         /// implementation that actually releases the caller's frame.
         Tail : bool
-        /// `unaligned. alignment` (III.2.3) — applies to the next ldind/stind/ldfld/stfld/ldobj/stobj/initblk/cpblk.
+        /// `unaligned. alignment` (III.2.3) — applies to the next
+        /// ldind/stind/ldfld/stfld/ldobj/stobj/initblk/cpblk.
+        /// PawPrint never sets this: `unaligned.` executes as a no-op (see `UnaryConstIlOp.execute`,
+        /// which explains why the interpreter has no alignment to be wrong about), so there is
+        /// nothing for the following instruction to consume. It exists for a future implementation
+        /// that actually models alignment.
         Unaligned : uint8 option
         /// `readonly.` (III.2.2) — applies to the next ldelema.
         Readonly : bool
