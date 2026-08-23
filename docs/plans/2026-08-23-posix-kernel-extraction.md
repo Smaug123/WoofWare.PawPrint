@@ -35,7 +35,7 @@ All three commissioned stages are done. Measured on `dc341c58`:
 | test files now on the library side | 14, including the 27-case host-equality suite |
 | test total | 3,056 + 448 = 3,504, against a 3,502 baseline, the difference being two new tests |
 | behavioural diff | none; `scripts/check-move-is-rename-only.sh` verifies every move, and the split |
-| guest fixtures | 1,011 passing, unchanged, after stages 1 and 2 |
+| guest fixtures | 1,011 passing, unchanged, after each of the three stages |
 
 Answering the question the spike was for: **the boundary is real.** Nothing in
 the moved 9,652 lines needed a CLR concept, and the one place PawPrint was
@@ -53,15 +53,14 @@ Two findings worth carrying forward:
   name rather than line range is what made that a non-event. Any future stage
   touching this block should assume the same.
 
-Two things outstanding before the spike is fully closed:
+One thing outstanding before the spike is fully closed: the host-equality suite
+has been verified from the far side of the boundary **on macOS only**. It
+falsifies a different column on Linux, so CI's run is the other half of that
+result.
 
-* The host-equality suite has been verified from the far side of the boundary
-  **on macOS only**. It falsifies a different column on Linux, so CI's run is
-  the other half of that result.
-* The guest fixtures were run and unchanged at 1,011 after stages 1 and 2; the
-  stage-3 run is the one that matters most, since stage 3 is the only stage that
-  touched `EmulatedKernel.fs`'s contents rather than merely relocating whole
-  files.
+The guest fixtures were run after each stage and were 1,011 passing every time,
+including after stage 3 — the run that matters most, since stage 3 is the only
+one that reorganised a file's contents rather than relocating whole files.
 
 ## Goal
 
