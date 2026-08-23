@@ -23,6 +23,12 @@ type FuzzOp =
     | Mod of port : int * target : int * mask : int
     | Del of port : int * target : int
     | Wait of port : int * maxEvents : int
+    /// `poll(2)` over a single slot, with timeout 0. The `events` mask is in
+    /// the PAL's `PollEvents` alphabet (`IN` 0x1, `PRI` 0x2, `OUT` 0x4,
+    /// `ERR` 0x8, `HUP` 0x10, `NVAL` 0x20) — a *different* alphabet from the
+    /// `SocketEvents` bits `Add`/`Mod` carry, which number different
+    /// conditions with the same small integers.
+    | Poll of slot : int * events : int
 
 /// How the emulated side answered one whole sequence.
 [<RequireQualifiedAccess>]
@@ -53,6 +59,7 @@ module SocketFuzz =
         | FuzzOp.Mod (p, t, m) -> $"mod:%d{p}:%d{t}:%d{m}"
         | FuzzOp.Del (p, t) -> $"del:%d{p}:%d{t}"
         | FuzzOp.Wait (p, n) -> $"wait:%d{p}:%d{n}"
+        | FuzzOp.Poll (s, e) -> $"poll:%d{s}:%d{e}"
 
     let serialize (ops : FuzzOp list) : string =
         ops |> List.map serializeOp |> String.concat " "
@@ -79,6 +86,7 @@ module SocketFuzz =
         | "mod", 4 -> FuzzOp.Mod (arg 1, arg 2, arg 3)
         | "del", 3 -> FuzzOp.Del (arg 1, arg 2)
         | "wait", 3 -> FuzzOp.Wait (arg 1, arg 2)
+        | "poll", 3 -> FuzzOp.Poll (arg 1, arg 2)
         | _ -> failwith $"SocketFuzz.parseOp: unrecognised op '%s{token}'."
 
     let parse (line : string) : FuzzOp list =
@@ -88,7 +96,7 @@ module SocketFuzz =
 
     /// Canonical mask rendering, shared with the harness: bits in
     /// IN,OUT,RDHUP,HUP,ERR order joined by '+'.
-    let private maskString (r : EpollReadiness) : string =
+    let private maskString (r : ReadinessLevel) : string =
         [
             if r.In then
                 "IN"
@@ -100,6 +108,27 @@ module SocketFuzz =
                 "HUP"
             if r.Err then
                 "ERR"
+        ]
+        |> String.concat "+"
+
+    /// `poll(2)`'s `revents`, in the PAL's alphabet. Separate from
+    /// `maskString` because the two alphabets differ: poll has no `RDHUP` (the
+    /// PAL never asks for it) and does have `NVAL`, which is not a readiness
+    /// condition at all.
+    let private pollMaskString (r : PollEvents) : string =
+        [
+            if r.In then
+                "IN"
+            if r.Pri then
+                "PRI"
+            if r.Out then
+                "OUT"
+            if r.Err then
+                "ERR"
+            if r.Hup then
+                "HUP"
+            if r.Nval then
+                "NVAL"
         ]
         |> String.concat "+"
 
@@ -386,6 +415,20 @@ module SocketFuzz =
             { state with
                 Kernel = kernel
             }
+        | FuzzOp.Poll (slot, events) ->
+            // The whole point of this op: it asks the *shared* level function
+            // the same question `poll(2)` asks the real kernel, so a generated
+            // sequence that drives a socket into any phase compares PawPrint's
+            // level against the kernel's rather than against a hand-written
+            // row. `poll(2)` mutates nothing, so the state passes through.
+            let reported =
+                match FileDescriptorRegistry.tryFindId (slotFd slot state) state.Kernel.FileDescriptors with
+                | Some descriptionId ->
+                    EmulatedKernel.pollReadinessOfDescription descriptionId state.Kernel
+                    |> PollEvents.ofLevel (PollEvents.ofBits (int16 events))
+                | None -> failwith $"INTERPRETER-DRIVER BUG: poll's slot %d{slot} is not live."
+
+            $"<%s{pollMaskString reported}>", state
 
     /// Run one sequence against a fresh `EmulatedKernel.initial` (Linux
     /// flavour, matching the harness's kernel). Both invariant checkers run
@@ -495,6 +538,27 @@ module SocketFuzz =
         | 8 -> rng.Next 0x20 // anything, CLOSE/ERROR bits included
         | _ -> 0x1F
 
+    /// A `poll(2)` request mask, in the PAL's `PollEvents` alphabet.
+    ///
+    /// 0 and the output-only bits are drawn deliberately, not as an
+    /// afterthought: `ERR`, `HUP` and `NVAL` are reported whether or not they
+    /// were asked for, so a generator that only ever asked for `IN`/`OUT`
+    /// would never exercise the one rule this projection can get wrong. `PRI`
+    /// is included for the same reason in the other direction — no modelled
+    /// level sets it, so every draw of it must come back empty.
+    let private randomPollMask (rng : Random) : int =
+        match rng.Next 10 with
+        | 0 -> 0x00 // ask for nothing; ERR/HUP/NVAL must still be reported
+        | 1 -> 0x01 // IN
+        | 2 -> 0x04 // OUT
+        | 3
+        | 4 -> 0x05 // IN|OUT — what SocketPal.SelectViaPoll asks for
+        | 5 -> 0x02 // PRI alone
+        | 6 -> 0x08 // ERR alone, an output-only bit in the request
+        | 7 -> 0x10 // HUP alone, likewise
+        | 8 -> 0x20 // NVAL alone, likewise
+        | _ -> rng.Next 0x40 // anything inside the six the PAL knows
+
     /// One generated sequence. Constructive: every op names live slots and
     /// stays inside the modelled envelope where the shadow can tell — e.g. no
     /// slot of a listener with a nonempty shadow queue is ever closed (a
@@ -510,6 +574,7 @@ module SocketFuzz =
         let wConnect = 1 + rng.Next 4
         let wRegister = 1 + rng.Next 4
         let wWait = 1 + rng.Next 3
+        let wPoll = 1 + rng.Next 3
         let wChurn = rng.Next 3
 
         let mutable state =
@@ -778,6 +843,9 @@ module SocketFuzz =
                                 Registrations = Set.remove (port, target) state.Registrations
                             }
                     )
+
+            if not (List.isEmpty allSockets) then
+                addWeighted wPoll (fun () -> ops.Add (FuzzOp.Poll (pick rng allSockets, randomPollMask rng)))
 
             if not (List.isEmpty ports) then
                 addWeighted

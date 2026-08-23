@@ -326,12 +326,23 @@ module SocketEventInterest =
             Error = bits &&& 0x10 <> 0
         }
 
-/// A set of epoll conditions — a readiness level a descriptor presents, or
-/// the subset of one that a registration reports. Named in epoll's terms
-/// rather than the PAL's `SocketEvents` because the two disagree at delivery:
-/// the PAL folds `EPOLLHUP` into `EPOLLIN|EPOLLOUT` before converting, so
-/// `Hup` here does not correspond to a deliverable `SA_CLOSE`.
-type EpollReadiness =
+/// The set of readiness conditions a descriptor presents right now, or the
+/// subset of one that a particular waiter reports.
+///
+/// Shared by both waiters PawPrint models, because on Linux they read the same
+/// thing: `poll(2)` and epoll's `ep_item_poll` both take their mask from the
+/// file's own `->poll` handler, and measurement agrees on every phase
+/// (docs/plans/2026-08-23-socket-poll). What differs between them is the
+/// *projection* at the boundary, which is each waiter's own business:
+/// `reportedUnder` for epoll, `PollEvents.ofLevel` for poll.
+///
+/// The fields are named in epoll's terms rather than the PAL's `SocketEvents`
+/// because those two disagree at delivery: the PAL folds `EPOLLHUP` into
+/// `EPOLLIN|EPOLLOUT` before converting, so `Hup` here does not correspond to
+/// a deliverable `SA_CLOSE`. Poll's projection drops `RdHup` for a different
+/// boundary reason — neither direction of the PAL's poll conversion has an
+/// `RDHUP` row, so the PAL can never ask for it.
+type ReadinessLevel =
     {
         /// `EPOLLIN`.
         In : bool
@@ -346,8 +357,8 @@ type EpollReadiness =
     }
 
 [<RequireQualifiedAccess>]
-module EpollReadiness =
-    let none : EpollReadiness =
+module ReadinessLevel =
+    let none : ReadinessLevel =
         {
             In = false
             Out = false
@@ -356,19 +367,109 @@ module EpollReadiness =
             Err = false
         }
 
-    let isEmpty (readiness : EpollReadiness) : bool = readiness = none
+    let isEmpty (readiness : ReadinessLevel) : bool = readiness = none
 
     /// The subset of `level` a registration with `interest` reports: `IN`,
     /// `OUT` and `RDHUP` only when asked for, `ERR` and `HUP` always —
     /// epoll ignores those two bits in an interest set (measured: a pending
     /// refusal registered with interest 0 still reports `ERR|HUP`).
-    let reportedUnder (interest : SocketEventInterest) (level : EpollReadiness) : EpollReadiness =
+    let reportedUnder (interest : SocketEventInterest) (level : ReadinessLevel) : ReadinessLevel =
         {
             In = level.In && interest.Read
             Out = level.Out && interest.Write
             RdHup = level.RdHup && interest.ReadClose
             Hup = level.Hup
             Err = level.Err
+        }
+
+/// The PAL's `PollEvents` bits (`Interop.Poll.Structs.cs`), which are what a
+/// `SystemNative_Poll` caller asks for in `PollEvent.Events` and reads back in
+/// `PollEvent.TriggeredEvents`.
+///
+/// A distinct alphabet from `SocketEventInterest`, and deliberately not shared
+/// with it: that one is the PAL's `SocketEvents` (`SA_READ` 0x01 …), these are
+/// the PAL's poll bits (`POLLIN` 0x01 …), and the two number different
+/// conditions with the same small integers.
+type PollEvents =
+    {
+        /// `POLLIN`, 0x01.
+        In : bool
+        /// `POLLPRI`, 0x02. Never set by `ofLevel` — `ReadinessLevel` has no
+        /// urgent-data condition to project, and measurement finds no modelled
+        /// Linux phase that sets it (`pollmask.c`). A caller may still *ask*
+        /// for it, which is why the field exists on the request side.
+        Pri : bool
+        /// `POLLOUT`, 0x04.
+        Out : bool
+        /// `POLLERR`, 0x08. Output-only: reported whether or not it was asked
+        /// for.
+        Err : bool
+        /// `POLLHUP`, 0x10. Output-only, as `Err` is.
+        Hup : bool
+        /// `POLLNVAL`, 0x20. Output-only, and not a readiness condition at
+        /// all: it says the entry named no open descriptor, so it is set by
+        /// the handler rather than by any level.
+        Nval : bool
+    }
+
+[<RequireQualifiedAccess>]
+module PollEvents =
+    let none : PollEvents =
+        {
+            In = false
+            Pri = false
+            Out = false
+            Err = false
+            Hup = false
+            Nval = false
+        }
+
+    let isEmpty (events : PollEvents) : bool = events = none
+
+    /// Read a caller's `PollEvent.Events`.
+    ///
+    /// Total, and bits outside the six are dropped rather than refused:
+    /// `Common_ConvertPollEventsPalToPlatform` translates exactly these six and
+    /// silently ignores anything else, so a guest passing an unknown bit gets
+    /// it discarded before the kernel ever sees it.
+    let ofBits (bits : int16) : PollEvents =
+        {
+            In = bits &&& 0x01s <> 0s
+            Pri = bits &&& 0x02s <> 0s
+            Out = bits &&& 0x04s <> 0s
+            Err = bits &&& 0x08s <> 0s
+            Hup = bits &&& 0x10s <> 0s
+            Nval = bits &&& 0x20s <> 0s
+        }
+
+    /// The `PollEvent.TriggeredEvents` value for this set.
+    let toBits (events : PollEvents) : int16 =
+        (if events.In then 0x01s else 0s)
+        ||| (if events.Pri then 0x02s else 0s)
+        ||| (if events.Out then 0x04s else 0s)
+        ||| (if events.Err then 0x08s else 0s)
+        ||| (if events.Hup then 0x10s else 0s)
+        ||| (if events.Nval then 0x20s else 0s)
+
+    /// The `revents` a descriptor at `level` reports to a caller who asked for
+    /// `interest`.
+    ///
+    /// `IN` and `OUT` only when asked for; `ERR` and `HUP` unconditionally —
+    /// measured, `poll(events = 0)` on an idle Linux TCP socket answers `HUP`
+    /// and counts toward the return value (`pollmask.c`), which is the same
+    /// output-only rule `ReadinessLevel.reportedUnder` encodes for epoll.
+    ///
+    /// `RdHup` is dropped, and that is a fact about the PAL rather than about
+    /// the kernel: neither direction of the PAL's poll conversion
+    /// (`Common_ConvertPollEvents*`, pal_io_common.h) has an `RDHUP` row, so
+    /// the PAL never asks for `POLLRDHUP` and `poll(2)` reports it only when
+    /// asked. A guest therefore cannot see this bit through this entry point.
+    let ofLevel (interest : PollEvents) (level : ReadinessLevel) : PollEvents =
+        { none with
+            In = level.In && interest.In
+            Out = level.Out && interest.Out
+            Err = level.Err
+            Hup = level.Hup
         }
 
 /// One registration held by a socket event port: what
@@ -1551,7 +1652,7 @@ module FileDescriptorRegistry =
     /// (`order2.c` row H).
     let signalSocketEventPorts
         (naming : Set<OpenFileDescriptionId>)
-        (wakeKey : Lazy<EpollReadiness> option)
+        (wakeKey : Lazy<ReadinessLevel> option)
         (registry : FileDescriptorRegistry)
         : FileDescriptorRegistry
         =
@@ -1574,8 +1675,8 @@ module FileDescriptorRegistry =
                                 | None -> true
                                 | Some level ->
                                     not (
-                                        EpollReadiness.isEmpty (
-                                            EpollReadiness.reportedUnder registration.Interest level.Value
+                                        ReadinessLevel.isEmpty (
+                                            ReadinessLevel.reportedUnder registration.Interest level.Value
                                         )
                                     )
                             )
