@@ -78,6 +78,16 @@ class SocketPoll
         // any timeout, so this must not wait 100ms.
         if (!client.Poll(100_000, SelectMode.SelectWrite)) return 11;
 
+        // `SelectMode.SelectError` asks for `POLLPRI` and tests
+        // `revents & (POLLPRI | POLLERR)`. No level PawPrint models sets either
+        // bit outside a pending connect refusal, so this is false for every
+        // socket here — on both kernels, including the idle stream socket whose
+        // level otherwise diverges. It is the only guest-visible exercise of the
+        // PRI request path.
+        if (client.Poll(0, SelectMode.SelectError)) return 12;
+        if (listener.Poll(0, SelectMode.SelectError)) return 13;
+        if (udp.Poll(0, SelectMode.SelectError)) return 14;
+
         // No `Socket.Select` here, deliberately: which PAL entry point it
         // reaches is a CoreLib *flavour* fact, not a kernel one.
         // `SocketPal.Select` branches on `SelectOverPollIsBroken`, which is

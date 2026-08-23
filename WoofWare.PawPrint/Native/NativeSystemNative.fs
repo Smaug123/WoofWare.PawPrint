@@ -6922,7 +6922,7 @@ module NativeSystemNative =
                 // is the same reason `SystemNative_TryChangeSocketEventRegistration`
                 // refuses this flavour.
                 failwith
-                    $"%s{operation}: the kernel is Darwin-flavoured (%O{state.Kernel.UnixPlatform}), and PawPrint models poll(2)'s readiness only for Linux. The Darwin rows are measured in docs/plans/2026-08-23-socket-poll but not implemented, because they are a second readiness model rather than an extra column: ERR and HUP are not output-only there, an idle stream socket presents nothing, and file targets split by kind. Model Darwin readiness before running a Darwin-flavoured guest through poll."
+                    $"%s{operation}: the kernel is Darwin-flavoured (%O{state.Kernel.UnixPlatform}), and PawPrint models poll(2)'s readiness only for Linux. The refusal is deliberately coarser than it has to be: it precedes `eventCount`, so it also refuses a zero-entry poll, whose answer (rv 0, store 0) is measured identical on both flavours and consults no readiness at all. Answering that one row would be a branch with no consumer, since no Darwin-flavoured guest reaches this entry point today. The Darwin rows are measured in docs/plans/2026-08-23-socket-poll but not implemented, because they are a second readiness model rather than an extra column: ERR and HUP are not output-only there, an idle stream socket presents nothing, and file targets split by kind. Model Darwin readiness before running a Darwin-flavoured guest through poll."
             | SimulatedUnixFlavour.Linux ->
 
             let eventCount = NativeCall.uint32Argument operation instruction.Arguments.[1]
@@ -6950,12 +6950,23 @@ module NativeSystemNative =
 
             if totalBytes > int64 Int32.MaxValue then
                 // An interpreter limit rather than a kernel one, and named as
-                // such. A real `poll(2)` bounds `nfds` by RLIMIT_NOFILE
-                // (measured: EINVAL above it), but PawPrint models no descriptor
-                // limit at all — `RLIMIT_NOFILE` is not in the interop surface,
-                // which `FileDescriptorRegistry` already states — so there is no
-                // honest errno to answer with. Every count below this bound is
-                // served, and a count above it cannot describe a real buffer.
+                // such.
+                //
+                // A real `poll(2)` bounds `nfds` by RLIMIT_NOFILE (measured,
+                // pollnfds.c: EINVAL above it), and PawPrint does not reproduce
+                // that bound. This is a modelling choice rather than a gap:
+                // PawPrint behaves as `RLIMIT_NOFILE = RLIM_INFINITY`, which is
+                // a lawful setting, and it is the *only* self-consistent one
+                // here, because the descriptor table answers `EMFILE`/`ENFILE`
+                // nowhere either. Enforcing the bound in `poll` alone would let
+                // a guest open five thousand descriptors and then be told that
+                // polling two thousand is EINVAL — a worse model than no limit.
+                // Nothing can observe the difference: `getrlimit` is not in the
+                // interop surface.
+                //
+                // If a descriptor limit ever enters `KernelConfig`, this becomes
+                // EINVAL above the soft limit, and `open`/`socket`/`dup` gain
+                // their `EMFILE` at the same time.
                 failwith
                     $"%s{operation}: eventCount %d{eventCount} spans %d{totalBytes} bytes, which overflows the int32 byte offsets PawPrint's address space uses. PawPrint models no descriptor limit (RLIMIT_NOFILE is not in the interop surface), so this is a limit of the interpreter rather than a kernel refusal to reproduce."
             else

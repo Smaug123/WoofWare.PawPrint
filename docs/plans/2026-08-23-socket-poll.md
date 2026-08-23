@@ -387,15 +387,19 @@ Out, each behind a named refusal:
 1. **`sourcesPure/SocketPoll.cs`** — differential against real .NET on the
    host, so only rows *both* kernels agree on (PawPrint's kernel is `LinuxX64`
    whatever the host is, and a macOS dev box runs the oracle on Darwin).
-   **Verified rather than derived:** the candidate guest exits 42 on real .NET
-   on macOS *and* on real .NET on Linux
-   (`container run mcr.microsoft.com/dotnet/runtime:10.0`). That verification
-   must be re-run against the guest as actually committed, since it is a
-   property of the exact rows rather than of the design. Rows: listener with
+   **Verified rather than derived:** the guest *as committed* exits 0 on real
+   .NET on macOS *and* on real .NET on Linux
+   (`container run mcr.microsoft.com/dotnet/runtime:10.0`) — re-checked after
+   every change to its rows, since portability is a property of the exact rows
+   rather than of the design. Rows: listener with
    an empty queue / with a pending connection / drained again (`SelectRead`),
    both ends of an established pair `SelectWrite` true and `SelectRead` false,
-   idle UDP `SelectWrite`, and three `Socket.Select` calls to exercise the
-   multi-entry array path. An established pair is reachable today —
+   idle UDP `SelectWrite`, and `SelectError` false everywhere (the only
+   guest-visible exercise of the PRI request path). **No `Socket.Select`** —
+   see the findings section below: which PAL entry point it reaches is a
+   CoreLib-flavour fact, so the multi-entry array path is covered by the impure
+   guest calling `SystemNative_Poll` directly. An established pair is
+   reachable today —
    `sourcesPure/SocketConnectManaged.cs` already does blocking
    `Socket.Connect`/`Socket.Accept`, and a blocking fd never sees EINPROGRESS,
    so this needs neither Poll nor `GetSocketErrorOption` to set up.
@@ -441,7 +445,11 @@ Out, each behind a named refusal:
    every other ready row either runs at timeout 0 (where the predicate is not
    consulted) or is ready via a *requested* bit.
 
-4. **Socket fuzzer op.** `SocketFuzz.fs` / `socketFuzz/harness.c` gain
+4. **Socket fuzzer op.** `socketFuzzCorpus/handPickedPoll.txt` carries eleven
+   rows measured through the harness on real Linux, one per projection rule,
+   each naming the mutant it kills — so the CI replay covers the op with no
+   container. (Without checked-in rows this oracle would be container-only:
+   the per-op-kind coverage assertion lives inside the opt-in live test.) `SocketFuzz.fs` / `socketFuzz/harness.c` gain
    `Poll of slot : int * events : int`. This is the strongest available oracle
    for D1 — it asserts "PawPrint's level equals real Linux poll's level" over
    *generated* socket-state sequences rather than the hand-written rows above,
@@ -490,7 +498,7 @@ Out, each behind a named refusal:
 
 ## What the tests turned out to be worth
 
-Eight mutants, run against `sourcesPure/SocketPoll.cs` and
+Nine mutants, run against `sourcesPure/SocketPoll.cs` and
 `sourcesImpure/SocketPollLinux.cs`. **Two survived the first battery**, and
 both were real gaps rather than unjustified lines:
 
