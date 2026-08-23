@@ -237,7 +237,8 @@ public class DelegateDynamicInvoke
         // recorded divergence, not an assertion this file can make -- see docs/divergences.md,
         // "A generic delegate type's `Invoke` handle is per-instantiation", and its PawPrint-side
         // counterpart `sourcesImpure/DelegateInvokeHandlePerInstantiation.cs`. The pair below
-        // differs in a *value* position, which canonicalisation keeps, so the two runtimes agree.
+        // holds a value type where the other holds a reference type: canonicalisation keeps the
+        // `int` and replaces the `string`, so the forms differ and the two runtimes agree.
         if (h1.Equals (getInvokeMethod.Invoke (len, null))) return 105;
 
         // As do two unrelated delegate types. Neither shares a generic definition with `f`, so
