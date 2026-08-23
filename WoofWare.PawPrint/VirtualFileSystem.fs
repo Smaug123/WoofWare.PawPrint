@@ -823,6 +823,25 @@ type UnbindTargetEffect =
     /// the one and drops the other to 0.
     | Untouched
 
+/// What a `rename` displaced, for the caller that can see the descriptor table
+/// to decide about.
+///
+/// A named record rather than a bare `InodeNumber option` beside the
+/// filesystem: a rename has *two* inodes a caller could plausibly want — the
+/// one that moved and the one that lost its name — and only the second has
+/// anything left to decide. Naming the field is what stops the two being
+/// confused at a call site where both are just numbers.
+type RenameOutcome =
+    {
+        /// The inode the destination name was bound to before the rename took
+        /// it, or `None` when that name was free.
+        ///
+        /// It may still have other names, and something may still hold it open;
+        /// `VirtualFileSystem.rename` frees nothing, for the reason
+        /// `VirtualFileSystem.unbind` frees nothing.
+        Displaced : InodeNumber option
+    }
+
 /// The outcome of a resolution, together with the facts about *how* it
 /// finished that a caller cannot recover from the path it passed in.
 type Resolution =
@@ -1929,6 +1948,252 @@ module VirtualFileSystem =
                    Content = InodeContent.Symlink _
                }
         | None -> false
+
+    /// Whether `candidate` is `root` itself, or a directory somewhere beneath
+    /// it, by climbing `DirectoryContent.Parent`.
+    ///
+    /// This is the question `rename(2)` asks before moving a directory: a move
+    /// whose destination lies inside the thing being moved detaches a cycle
+    /// from the root, and both kernels answer EINVAL. Measured, the rule is on
+    /// *inodes* rather than on path text — with `link -> a/b`,
+    /// `rename("a", "link/inner")` is EINVAL although neither path is a prefix
+    /// of the other, and `rename("a", "ab")` succeeds although one is.
+    ///
+    /// `root` need not be a directory: a non-directory never appears in any
+    /// parent chain, so the honest answer for one is `false`. `candidate` must
+    /// be a directory this filesystem contains, because a non-directory has no
+    /// `..` to climb and no caller has that question — every caller obtains it
+    /// from a resolution that has just named it as the directory a new entry
+    /// would go into.
+    let isWithinSubtree (root : InodeNumber) (candidate : InodeNumber) (vfs : VirtualFileSystem) : bool =
+        match tryGetDirectory candidate vfs with
+        | None ->
+            failwith
+                $"VirtualFileSystem.isWithinSubtree: inode %O{candidate} is not a directory this filesystem contains, so it has no parent chain to climb. Only a directory can be the parent of a new entry."
+        | Some _ ->
+
+        // `visited` is not paranoia about this module's own operations, which
+        // preserve tree-ness: `checkInvariants` can be handed a filesystem
+        // assembled by a test, and a query that hangs would hang the suite
+        // rather than fail it.
+        let rec climb (current : InodeNumber) (visited : Set<InodeNumber>) : bool =
+            if current = root then
+                true
+            elif Set.contains current visited then
+                false
+            elif current = vfs.Root then
+                false
+            else
+
+            match tryGetDirectory current vfs with
+            | None -> false
+            | Some content -> climb content.Parent (Set.add current visited)
+
+        climb candidate Set.empty
+
+    /// Move the binding of `sourceName` in `sourceDirectory` to
+    /// `destinationName` in `destinationDirectory`, displacing whatever was
+    /// bound there. The naming half of `rename(2)`.
+    ///
+    /// Answers what the destination name was bound to before, if anything, for
+    /// the caller to reap: as in `unbind`, this module cannot see whether a
+    /// descriptor still holds it, so it frees nothing and the displaced inode
+    /// is owed to `checkInvariants` as a pinned inode until the caller decides.
+    ///
+    /// Not `unbind` followed by `hardLink`, because that composition cannot
+    /// express a directory move at all — `bind` is private, so there is no
+    /// public way to attach a directory to a new parent, and `hardLink` refuses
+    /// a directory with EPERM by design. For a *non-directory* source the two
+    /// agree exactly, timestamps included, which is what makes the composition
+    /// a usable reference implementation for that half of the domain.
+    ///
+    /// Makes no permission check and imposes no type rule: which caller may
+    /// move what, and which of the several possible refusals wins, is the
+    /// verdict's measured business and diverges between the flavours. What this
+    /// function does insist on is that the *graph* survives, because a caller
+    /// that got past its verdict with any of these three cannot leave a
+    /// filesystem a kernel could produce:
+    ///
+    ///  * the two paths naming one inode. That is `rename(2)`'s no-op, which
+    ///    succeeds and changes nothing at all — and whose position in the
+    ///    ordering is one of the things the flavours disagree about, so it
+    ///    belongs to the verdict rather than to a short-circuit here.
+    ///  * a **populated directory** at the destination. Displacing it would
+    ///    strand its children unreachable from the root, since a caller reaping
+    ///    the displaced inode climbs parents rather than descending.
+    ///  * a destination directory **inside the source's own subtree**, which
+    ///    detaches a cycle.
+    let rename
+        (sourceDirectory : InodeNumber)
+        (sourceName : FileName)
+        (destinationDirectory : InodeNumber)
+        (destinationName : FileName)
+        (now : UnixTimestamp)
+        (vfs : VirtualFileSystem)
+        : Result<RenameOutcome * VirtualFileSystem, UnixError>
+        =
+        // As in `bind` and `unbind`, so that a forged `default(FileName)` is
+        // stopped before it becomes an entry no path could name.
+        let sourceName =
+            FileName.assertValid "VirtualFileSystem: directory entry name" sourceName
+
+        let destinationName =
+            FileName.assertValid "VirtualFileSystem: directory entry name" destinationName
+
+        match tryGetDirectory sourceDirectory vfs, tryGet sourceDirectory vfs with
+        | None, Some _ -> Error UnixError.ENOTDIR
+        | None, None -> Error UnixError.ENOENT
+        | Some sourceContent, _ ->
+
+        match tryGetDirectory destinationDirectory vfs, tryGet destinationDirectory vfs with
+        | None, Some _ -> Error UnixError.ENOTDIR
+        | None, None -> Error UnixError.ENOENT
+        | Some destinationContent, _ ->
+
+        match Map.tryFind sourceName sourceContent.Entries with
+        | None -> Error UnixError.ENOENT
+        | Some moved ->
+
+        // Read the destination's entries out of `sourceContent` when the two
+        // directories are the same inode, so that a rename within one directory
+        // cannot consult a stale copy of the map it is about to rewrite.
+        let destinationEntries =
+            if sourceDirectory = destinationDirectory then
+                sourceContent.Entries
+            else
+                destinationContent.Entries
+
+        let displaced = Map.tryFind destinationName destinationEntries
+
+        if displaced = Some moved then
+            failwith
+                $"VirtualFileSystem.rename: \"%s{FileName.toString sourceName}\" in inode %O{sourceDirectory} and \"%s{FileName.toString destinationName}\" in inode %O{destinationDirectory} both name inode %O{moved}. That is rename(2)'s no-op, which changes nothing at all; the verdict must answer it rather than calling this."
+
+        match displaced |> Option.bind (fun inode -> tryGetDirectory inode vfs) with
+        | Some content when not (Map.isEmpty content.Entries) ->
+            failwith
+                $"VirtualFileSystem.rename: the destination \"%s{FileName.toString destinationName}\" in inode %O{destinationDirectory} names directory inode %O{displaced.Value}, which holds %i{Map.count content.Entries} entries. Displacing it would strand them unreachable from the root; the verdict owes ENOTEMPTY."
+        | Some _
+        | None ->
+
+        match tryGetDirectory moved vfs with
+        | Some _ when isWithinSubtree moved destinationDirectory vfs ->
+            failwith
+                $"VirtualFileSystem.rename: the destination directory %O{destinationDirectory} is inode %O{moved} itself or lies beneath it, so moving it there would detach a cycle from the root; the verdict owes EINVAL."
+        | Some _
+        | None ->
+
+        // Both directories gain or lose an entry, so each one's `mtime` moves --
+        // and when they are the same inode that is one stamp, not two, because
+        // every stamp in one rename carries the same `now`.
+        let inodes =
+            if sourceDirectory = destinationDirectory then
+                let entries =
+                    sourceContent.Entries |> Map.remove sourceName |> Map.add destinationName moved
+
+                let existing = Map.find sourceDirectory vfs.Inodes
+
+                Map.add
+                    sourceDirectory
+                    {
+                        Content =
+                            InodeContent.Directory
+                                { sourceContent with
+                                    Entries = entries
+                                }
+                        Times = InodeTimes.contentsChangedAt now existing.Times
+                    }
+                    vfs.Inodes
+            else
+
+            let source = Map.find sourceDirectory vfs.Inodes
+            let destination = Map.find destinationDirectory vfs.Inodes
+
+            vfs.Inodes
+            |> Map.add
+                sourceDirectory
+                {
+                    Content =
+                        InodeContent.Directory
+                            { sourceContent with
+                                Entries = Map.remove sourceName sourceContent.Entries
+                            }
+                    Times = InodeTimes.contentsChangedAt now source.Times
+                }
+            |> Map.add
+                destinationDirectory
+                {
+                    Content =
+                        InodeContent.Directory
+                            { destinationContent with
+                                Entries = Map.add destinationName moved destinationContent.Entries
+                            }
+                    Times = InodeTimes.contentsChangedAt now destination.Times
+                }
+
+        // The moved inode's `ctime` moves and its `mtime` does not: what changed
+        // is which directory names it, not what it holds. Measured on both
+        // kernels for a file and for a directory, and whether or not the parent
+        // changed.
+        //
+        // A moved *directory* also carries its own ".." entry, which is the
+        // physical parent rather than the lexical one, so a move to a new parent
+        // rewrites it. Both kernels demand the write bit on the moved directory
+        // for exactly this rewrite, and demand nothing when the parent is
+        // unchanged -- which is the verdict's business, but is the reason this
+        // is a real mutation rather than bookkeeping.
+        let inodes =
+            let existing =
+                match Map.tryFind moved inodes with
+                | Some node -> node
+                | None ->
+                    failwith
+                        $"VirtualFileSystem.rename: directory inode %O{sourceDirectory} bound \"%s{FileName.toString sourceName}\" to inode %O{moved}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
+
+            let content =
+                match existing.Content with
+                | InodeContent.Directory content when destinationDirectory <> sourceDirectory ->
+                    InodeContent.Directory
+                        { content with
+                            Parent = destinationDirectory
+                        }
+                | other -> other
+
+            Map.add
+                moved
+                {
+                    Content = content
+                    Times = InodeTimes.statusChangedAt now existing.Times
+                }
+                inodes
+
+        // A displaced inode lost a name, so its `ctime` moves and nothing else
+        // does -- `UnbindTargetEffect.LostALink`, measured through a surviving
+        // hard link on both kernels.
+        let inodes =
+            match displaced with
+            | None -> inodes
+            | Some displaced ->
+                match Map.tryFind displaced inodes with
+                | Some node ->
+                    Map.add
+                        displaced
+                        { node with
+                            Times = InodeTimes.statusChangedAt now node.Times
+                        }
+                        inodes
+                | None ->
+                    failwith
+                        $"VirtualFileSystem.rename: directory inode %O{destinationDirectory} bound \"%s{FileName.toString destinationName}\" to inode %O{displaced}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
+
+        Ok (
+            {
+                Displaced = displaced
+            },
+            { vfs with
+                Inodes = inodes
+            }
+        )
 
     /// The next entry an open directory stream over `directory` hands back, and
     /// the cursor to resume from.
