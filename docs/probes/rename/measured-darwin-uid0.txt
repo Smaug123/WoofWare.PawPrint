@@ -95,21 +95,21 @@ rename(d/., x)                                                                  
 rename(d/.., x)                                                                          EINVAL
 rename(x, d/.)                                                                           EINVAL
 rename(x, d/..)                                                                          EINVAL
-rename("/", x)                                                                           skipped (names "/" and this process is root)
-rename("/.", x)                                                                          EXDEV
-rename("/..", x)                                                                         EXDEV
-rename(x, "/.")                                                                          EINVAL
-rename(dir, "/")                                                                         skipped (names "/" and this process is root)
-rename(file, "/")                                                                        skipped (names "/" and this process is root)
-rename(fulldir, "/")                                                                     skipped (names "/" and this process is root)
+rename("/", x)                                                                           skipped (resolves to "/" and this process is root)
+rename("/.", x)                                                                          skipped (resolves to "/" and this process is root)
+rename("/..", x)                                                                         skipped (resolves to "/" and this process is root)
+rename(x, "/.")                                                                          skipped (resolves to "/" and this process is root)
+rename(dir, "/")                                                                         skipped (resolves to "/" and this process is root)
+rename(file, "/")                                                                        skipped (resolves to "/" and this process is root)
+rename(fulldir, "/")                                                                     skipped (resolves to "/" and this process is root)
 rename(emptydir, "e/..")                                                                 EINVAL
 rename(fulldir, "e/..")                                                                  EINVAL
 rename(file, "e/..")                                                                     EINVAL
 rename(A/d, B/sub/..) -- the ".." is NOT an ancestor of the source                       EINVAL
 rename(A/x, B/sub/..) -- file source, ".." not an ancestor                               EINVAL
-rename("lroot/.", x) where lroot -> "/"                                                  EXDEV
-rename(d, "lroot/") where lroot -> "/"                                                   EINVAL
-rename(f, "lroot/") where lroot -> "/"                                                   EISDIR
+rename("lroot/.", x) where lroot -> "/"                                                  skipped (resolves to "/" and this process is root)
+rename(d, "lroot/") where lroot -> "/"                                                   skipped (resolves to "/" and this process is root)
+rename(f, "lroot/") where lroot -> "/"                                                   skipped (resolves to "/" and this process is root)
 rename(d/., nodir/y) -- source is a navigation AND destination parent absent             ENOENT
 rename(nope, d/.) -- source absent AND destination is a navigation                       ENOENT
 rename(p/x, p/d/..) -- destination is a navigation AND its parent unwritable             EINVAL
@@ -178,7 +178,7 @@ rename("s", "moved") -- the same link with no separator                         
 rename("f/", "g") -- separator on a regular-file source                                  ENOTDIR
 rename("lf/", "g") -- separator on a symlink to a file                                   ENOTDIR
 rename("dang/", "g") -- separator on a dangling symlink                                  ENOENT
-rename("lroot/", "g") where lroot -> "/"                                                 EISDIR
+rename("lroot/", "g") where lroot -> "/"                                                 skipped (resolves to "/" and this process is root)
 rename("nope/", "g") -- separator on an absent source                                    ENOENT
 rename("d/", "moved") -- separator on a directory source                                 ok
 rename("d/", "d2/") -- separators on both                                                ok
@@ -194,6 +194,10 @@ rename(d, "q/t/") where q/t is a symlink to a dir, q UNWRITABLE                 
 rename(d, "q/t/") where q/t is a regular file, q UNWRITABLE                              ENOTDIR
 rename(d, "q/t/") where q/t is an empty dir, q UNWRITABLE (control)                      ok
 rename(f, "q/t/") where q/t is a symlink to a dir, q UNWRITABLE                          EISDIR
+
+## unstable
+rename("l/", "g"), relative target, 200 trials                                           ENOTDIR x200
+rename("l/", "g"), absolute target, 200 trials                                           ENOTDIR x200
 
 ## orphan
 ordinary file source (control)                                                           ENOENT

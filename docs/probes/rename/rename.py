@@ -820,12 +820,6 @@ def mount_root():
         shutil.rmtree(private, ignore_errors=True)
         return
 
-    # (device, inode) of every object a row creates. The only thing outside
-    # `private` this section can leave behind is one of these, moved there by a
-    # rename that succeeded -- so cleanup can insist on an exact identity match
-    # rather than trusting a name.
-    ours = set()
-
     def setup():
         for path in (src_file, src_dir, moved):
             if os.path.isdir(path) and not os.path.islink(path):
@@ -834,9 +828,6 @@ def mount_root():
                 os.unlink(path)
         open(src_file, "w").close()
         os.mkdir(src_dir)
-        for path in (src_file, src_dir):
-            st = os.lstat(path)
-            ours.add((st.st_dev, st.st_ino))
 
     def absolute_row(label, src, dst):
         try:
@@ -891,38 +882,26 @@ def mount_root():
         # One directory, created atomically by this process and named by nobody
         # else. Nothing here has to decide whether an object is ours.
         shutil.rmtree(private, ignore_errors=True)
-        # Every measured row refuses, so nothing is ever created at `outside`.
-        # A kernel that did succeed would leave one of *our* objects there, and
-        # that must not stay on the caller's mount -- but a name is not
-        # ownership, so this removes the object only if its identity is one we
-        # recorded at creation. Anything else is reported and left alone: on a
-        # shared mount another process may have taken the name after the
-        # preflight check, and deleting it would be exactly the fault this
-        # section exists to avoid.
+        # `outside` is the one name this section uses that is not inside
+        # `private`, and it is never deleted -- only reported.
         #
-        # `rmdir`, never `rmtree`: our directory is created empty and a rename
-        # cannot fill it, so a non-empty directory here is not ours whatever its
-        # inode says, and recursive deletion has no business in this file.
-        try:
-            st = os.lstat(outside)
-        except OSError:
-            st = None
-        if st is not None:
-            if (st.st_dev, st.st_ino) not in ours:
-                ROWS.append(("mountroot",
-                             "LEFT ALONE: %s exists and is not ours" % os.path.basename(outside),
-                             "not removed"))
-            else:
-                try:
-                    if stat.S_ISDIR(st.st_mode):
-                        os.rmdir(outside)
-                    else:
-                        os.unlink(outside)
-                except OSError as e:
-                    ROWS.append(("mountroot",
-                                 "LEFT BEHIND: could not remove %s" % os.path.basename(outside),
-                                 str(e)))
-
+        # Three rounds of review went into trying to delete it safely, and the
+        # conclusion is that it cannot be done: POSIX has no verified
+        # delete-by-path. An `(st_dev, st_ino)` check before `unlink` proves
+        # nothing, because `unlink` resolves the name again and another process
+        # can have replaced the object in between; and tracking which inodes are
+        # ours founders on inode reuse. There is no primitive that says "remove
+        # the object I looked at".
+        #
+        # Leaving it is cheap. Every row on both measured kernels refuses, so
+        # nothing is ever created here at all; only a kernel neither of us has
+        # seen would leave one of this run's objects behind, and then a line of
+        # output on a hand-attached disk image is a far smaller cost than
+        # deleting a stranger's file on a shared mount.
+        if os.path.lexists(outside):
+            ROWS.append(("mountroot",
+                         "LEFT BEHIND: %s -- remove it by hand" % os.path.basename(outside),
+                         "not removed"))
 
 def main():
     print("uid=%d euid=%d platform=%s base=%s" % (os.getuid(), os.geteuid(), sys.platform, BASE))

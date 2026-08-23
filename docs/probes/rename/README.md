@@ -110,6 +110,14 @@ traverse — ~1% under `/private/tmp`, ~10–20% under a `/private/var/folders`
 temp directory. With a **relative** target it is ENOTDIR every time, 600/600
 across both locations, and on Linux it is stable either way.
 
+It is also **uid-dependent**: at uid 0 the same row is ENOTDIR 200/200, where at
+uid 501 it is ~178/22. At an ~11% success rate, 0 successes in 200 has
+probability ~5e-11, so privilege genuinely suppresses the race rather than the
+root column having been lucky. Not modelled — PawPrint answers ENOTDIR whatever
+the uid, which is what root sees anyway — but recorded, because a reader
+comparing the two columns will notice the discrepancy and should not have to
+re-derive it.
+
 The `unstable` section samples it 200 times per style on every run, so the fact
 stays measured rather than decaying into a comment. The corpus rows use relative
 targets deliberately, which is what makes the `trail` section reproducible.
