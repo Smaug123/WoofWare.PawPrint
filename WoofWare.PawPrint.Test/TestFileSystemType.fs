@@ -45,19 +45,6 @@ module TestFileSystemType =
     [<DllImport("libc")>]
     extern int private close(int fd)
 
-    let private hostFlavour () : SimulatedUnixFlavour option =
-        if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
-            Some SimulatedUnixFlavour.Darwin
-        elif RuntimeInformation.IsOSPlatform OSPlatform.Linux then
-            Some SimulatedUnixFlavour.Linux
-        else
-            None
-
-    let private platformOf (flavour : SimulatedUnixFlavour) : SimulatedUnixPlatform =
-        match flavour with
-        | SimulatedUnixFlavour.Darwin -> SimulatedUnixPlatform.macOsArm64
-        | SimulatedUnixFlavour.Linux -> SimulatedUnixPlatform.linuxX64
-
     let private everyFlavour : SimulatedUnixFlavour list =
         [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
 
@@ -128,7 +115,7 @@ module TestFileSystemType =
         for flavour in everyFlavour do
             let kernel =
                 EmulatedKernel.initial
-                |> EmulatedKernel.withUnixPlatformAndFileSystemType (platformOf flavour) None
+                |> EmulatedKernel.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) None
 
             kernel.FileSystemType |> shouldEqual (EmulatedFileSystemType.defaultFor flavour)
 
@@ -151,7 +138,7 @@ module TestFileSystemType =
                 if permitted then
                     let kernel =
                         EmulatedKernel.initial
-                        |> EmulatedKernel.withUnixPlatformAndFileSystemType (platformOf flavour) requested
+                        |> EmulatedKernel.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) requested
 
                     let carried = SimulatedUnixPlatform.flavour kernel.UnixPlatform
 
@@ -177,7 +164,7 @@ module TestFileSystemType =
             let thrown =
                 Assert.Throws (fun () ->
                     EmulatedKernel.initial
-                    |> EmulatedKernel.withUnixPlatformAndFileSystemType (platformOf flavour) (Some fsType)
+                    |> EmulatedKernel.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) (Some fsType)
                     |> ignore<EmulatedKernel>
                 )
 
@@ -200,7 +187,7 @@ module TestFileSystemType =
         for flavour, fsType in accepted do
             let kernel =
                 EmulatedKernel.initial
-                |> EmulatedKernel.withUnixPlatformAndFileSystemType (platformOf flavour) (Some fsType)
+                |> EmulatedKernel.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) (Some fsType)
 
             kernel.FileSystemType |> shouldEqual fsType
 
@@ -282,7 +269,7 @@ module TestFileSystemType =
         // Only this host's column is checked, so macOS covers Darwin locally
         // and CI covers Linux. That is the same split `pathLimits` lives with,
         // and the reason the per-flavour guests exist alongside this.
-        match hostFlavour () with
+        match HostPlatform.flavour () with
         | None -> Assert.Ignore $"no Unix shim to measure (%s{RuntimeInformation.OSDescription})"
         | Some flavour ->
 
@@ -365,7 +352,7 @@ module TestFileSystemType =
         // that failed, those guest checks would pass vacuously against a
         // runtime that locked nothing — so the premise is asserted here, where
         // a failure names the actual cause.
-        match hostFlavour () with
+        match HostPlatform.flavour () with
         | None -> Assert.Ignore $"no Unix shim to measure (%s{RuntimeInformation.OSDescription})"
         | Some _ ->
 

@@ -47,6 +47,7 @@ module TestImpureCases =
                             ]
                 }
             AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Never
             ExpectsUnhandledException = false
             AssertTerminalState =
                 Some (fun state ->
@@ -99,6 +100,7 @@ module TestImpureCases =
                     FileSystem = directoryChain dir
                 }
             AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Never
             ExpectsUnhandledException = false
             AssertTerminalState =
                 Some (fun state ->
@@ -126,6 +128,7 @@ module TestImpureCases =
                     ProcessPath = Some (AbsoluteUnixPath.parseOrFail "test process path" path)
                 }
             AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Never
             ExpectsUnhandledException = false
             AssertTerminalState =
                 Some (fun state ->
@@ -731,6 +734,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertCapturedFrozenStackTrace
             }
@@ -762,6 +766,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -814,6 +819,7 @@ module TestImpureCases =
                                 ]
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -847,6 +853,7 @@ module TestImpureCases =
                                 ]
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -866,6 +873,7 @@ module TestImpureCases =
                         FileSystem = getFileSystemTypeSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -883,6 +891,7 @@ module TestImpureCases =
                         FileSystem = getFileSystemTypeSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -906,6 +915,7 @@ module TestImpureCases =
                                 ]
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -930,6 +940,7 @@ module TestImpureCases =
                                 ]
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -957,6 +968,7 @@ module TestImpureCases =
                                 ]
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -999,6 +1011,7 @@ module TestImpureCases =
                                 ]
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1026,6 +1039,7 @@ module TestImpureCases =
                                 ]
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1043,6 +1057,8 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                // Not compared: it asserts descriptor numbers throughout.
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1055,6 +1071,10 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                // Not compared even on Linux: the privileged-port row asserts EACCES,
+                // which is the answer for a non-root uid only, and the file says so
+                // itself. The oracle runs as whoever runs the suite.
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1067,6 +1087,8 @@ module TestImpureCases =
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
                     }
                 AppContext = AppContextProperties.empty
+                // Not compared, for the privileged-port row its Linux sibling carries.
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1079,6 +1101,9 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                // Compared: every row is an errno or a returned address, and nothing here
+                // names a descriptor number.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1087,6 +1112,9 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                // Compared. The `triggered` counts it asserts are poll's own answers
+                // rather than descriptor numbers, so real Linux can be asked all of them.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1099,6 +1127,8 @@ module TestImpureCases =
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
                     }
                 AppContext = AppContextProperties.empty
+                // Compared, as its Linux sibling is.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1117,6 +1147,13 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                // Not compared: it registers fd 0 with the port and expects success, which
+                // holds because PawPrint models the standard streams as pipes. A real
+                // process's stdin is whatever its parent handed it, and `epoll_ctl`
+                // refuses a /dev/null with EPERM. Measured on ext4; the
+                // EPERM-for-a-regular-file rows do hold there, but not on a virtiofs bind
+                // mount, where such a file is pollable.
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1135,6 +1172,8 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                // Compared: errnos and connection outcomes on loopback only.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1154,6 +1193,9 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                // Compared. The `3` it reads out of an event is the user data it
+                // registered, not a descriptor number.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1169,6 +1211,8 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                // Compared.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1186,6 +1230,8 @@ module TestImpureCases =
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
                     }
                 AppContext = AppContextProperties.empty
+                // Compared, as its Linux sibling is.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1200,6 +1246,9 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                // Compared: the byte layout of a sockaddr is the shim's, and the shim on a
+                // Linux host is the one this file describes.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1216,6 +1265,8 @@ module TestImpureCases =
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
                     }
                 AppContext = AppContextProperties.empty
+                // Compared, as its Linux sibling is.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1228,6 +1279,10 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                // Not compared: it asserts the descriptor numbers 3 and 4. The emulated fd
+                // table starts at 3 with nothing else open; a real process has already
+                // opened files by the time `Main` runs.
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1243,6 +1298,9 @@ module TestImpureCases =
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
                     }
                 AppContext = AppContextProperties.empty
+                // Not compared, for the descriptor-number row its Linux sibling carries.
+                // Measured: real macOS answers 5.
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1259,6 +1317,9 @@ module TestImpureCases =
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
                     }
                 AppContext = AppContextProperties.empty
+                // Not compared, for the same reason. Measured: real macOS answers 1, at
+                // the first such row.
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1276,6 +1337,8 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                // Not compared: it asserts the port's descriptor number.
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1292,6 +1355,8 @@ module TestImpureCases =
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
                     }
                 AppContext = AppContextProperties.empty
+                // Not compared, for the same reason. Measured: real macOS answers 2.
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1303,6 +1368,10 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                // Not compared, as the file's own header explains: the boundary it
+                // measures is PawPrint's int32 block offset, and a real 64-bit libc
+                // succeeds at both counts by overcommit.
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1317,6 +1386,9 @@ module TestImpureCases =
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
                     }
                 AppContext = AppContextProperties.empty
+                // Not compared, for the reason its Linux sibling gives. Measured: real
+                // macOS answers 4.
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1341,6 +1413,7 @@ module TestImpureCases =
                                 ]
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1364,6 +1437,7 @@ module TestImpureCases =
                             Map.ofList [ name "f", file "one" ; name "g", file "two" ; name "h", file "three" ]
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1387,6 +1461,7 @@ module TestImpureCases =
                         FileSystem = mkDirWiringSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1404,6 +1479,7 @@ module TestImpureCases =
                         FileSystem = mkDirWiringSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1425,6 +1501,7 @@ module TestImpureCases =
                         FileSystem = unlinkWiringSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1442,6 +1519,7 @@ module TestImpureCases =
                         FileSystem = unlinkWiringSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1456,6 +1534,7 @@ module TestImpureCases =
                         FileSystem = unlinkReapSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertUnlinkReapedExactlyOne
             }
@@ -1472,6 +1551,7 @@ module TestImpureCases =
                         FileSystem = enumerateClosedFdSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertClosedFdLeftNoOrphan
             }
@@ -1490,6 +1570,7 @@ module TestImpureCases =
                         FileSystem = enumerateWiringSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertEnumerationClosedEverything
             }
@@ -1505,6 +1586,7 @@ module TestImpureCases =
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertEnumerationClosedEverything
             }
@@ -1522,6 +1604,7 @@ module TestImpureCases =
                         FileSystem = rmDirWiringSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertRmDirLeftNoOrphan
             }
@@ -1539,6 +1622,7 @@ module TestImpureCases =
                         FileSystem = rmDirWiringSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertRmDirLeftNoOrphan
             }
@@ -1554,6 +1638,7 @@ module TestImpureCases =
                         CurrentDirectory = rmDirOrphanCurrentDirectory
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertRmDirOrphanChainSurvives
             }
@@ -1570,6 +1655,7 @@ module TestImpureCases =
                         CurrentDirectory = rmDirOrphanCurrentDirectory
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertRmDirOrphanChainSurvives
             }
@@ -1586,6 +1672,7 @@ module TestImpureCases =
                         FileSystem = searchPermissionSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1598,6 +1685,7 @@ module TestImpureCases =
                         FileSystem = searchPermissionSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1615,6 +1703,7 @@ module TestImpureCases =
                         FileSystem = searchPermissionCwdSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1631,6 +1720,7 @@ module TestImpureCases =
                         FileSystem = mkDirWiringSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1660,6 +1750,7 @@ module TestImpureCases =
                                 ]
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1705,6 +1796,7 @@ module TestImpureCases =
                             [ chain "a" 32 ; chain "b" 33 ; chain "c" 41 ] |> List.concat |> Map.ofList
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1726,6 +1818,7 @@ module TestImpureCases =
                         FileSystem = truncationModeSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1738,6 +1831,7 @@ module TestImpureCases =
                         FileSystem = truncationModeSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1758,6 +1852,7 @@ module TestImpureCases =
                         FileSystem = writeModeSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1770,6 +1865,7 @@ module TestImpureCases =
                         FileSystem = writeModeSeed
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1801,6 +1897,7 @@ module TestImpureCases =
                             |> Map.ofList
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1841,6 +1938,7 @@ module TestImpureCases =
                             |> Map.ofList
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1857,6 +1955,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1871,6 +1970,7 @@ module TestImpureCases =
                     AppContextProperties.ofMap (
                         Map.ofList [ "System.Diagnostics.Tracing.EventSource.IsSupported", "false" ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1894,6 +1994,7 @@ module TestImpureCases =
                                 "Test.False", "false"
                             ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1906,6 +2007,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.ofMap (Map.ofList [ "Test.Latched", "latched" ])
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1925,6 +2027,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1943,6 +2046,7 @@ module TestImpureCases =
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1963,6 +2067,7 @@ module TestImpureCases =
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -1982,6 +2087,7 @@ module TestImpureCases =
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2002,6 +2108,7 @@ module TestImpureCases =
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2020,6 +2127,7 @@ module TestImpureCases =
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2037,6 +2145,7 @@ module TestImpureCases =
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2054,6 +2163,7 @@ module TestImpureCases =
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2074,6 +2184,7 @@ module TestImpureCases =
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2094,6 +2205,7 @@ module TestImpureCases =
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2115,6 +2227,7 @@ module TestImpureCases =
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2136,6 +2249,7 @@ module TestImpureCases =
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2155,6 +2269,7 @@ module TestImpureCases =
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2174,6 +2289,7 @@ module TestImpureCases =
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2192,6 +2308,7 @@ module TestImpureCases =
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2210,6 +2327,7 @@ module TestImpureCases =
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2230,6 +2348,7 @@ module TestImpureCases =
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2244,6 +2363,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2264,6 +2384,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 1
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState =
                     Some (fun state ->
@@ -2292,6 +2413,7 @@ module TestImpureCases =
                         ProcessorCount = 4
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2305,6 +2427,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2326,6 +2449,7 @@ module TestImpureCases =
                         ProcessorCount = 4
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2346,6 +2470,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2363,6 +2488,7 @@ module TestImpureCases =
                         WallClockEpochMs = 1_699_920_000_000L
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2381,6 +2507,7 @@ module TestImpureCases =
                         Environment = Map.ofList [ "DOTNET_PROCESSOR_COUNT", "4" ]
                     }
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2395,6 +2522,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 1
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2405,6 +2533,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 7
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2424,6 +2553,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState =
                     Some (fun state ->
@@ -2456,6 +2586,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2475,6 +2606,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState =
                     Some (fun state ->
@@ -2503,6 +2635,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2518,6 +2651,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2532,6 +2666,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 42
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2551,6 +2686,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2566,6 +2702,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2581,6 +2718,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -2599,12 +2737,20 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
         ]
 
     let runTest (case : EndToEndTestCase) : unit =
+        // Asked before the guest runs, so that a case which cannot be compared at all
+        // fails on its declaration rather than after a full interpreted run.
+        let comparesHere = OraclePolicy.comparesHere case
+
+        if comparesHere then
+            DifferentialOracle.assertComparable case
+
         let source = Assembly.getEmbeddedResourceAsString case.FileName assy
         let image = Roslyn.compile [ source ]
 
@@ -2619,21 +2765,38 @@ module TestImpureCases =
         use peImage = new MemoryStream (image)
 
         try
+            let pawPrintResult =
+                BoundedRun.run
+                    loggerFactory
+                    case.FileName
+                    (Some case.FileName)
+                    peImage
+                    { HostConfig.Default dotnetRuntimes with
+                        Guest =
+                            { GuestConfig.Default dotnetRuntimes with
+                                Kernel = case.KernelConfig
+                                AppContext = case.AppContext
+                            }
+                    }
+
+            // Run first, compare second: a divergence is reported by
+            // `DifferentialOracle` with both runtimes' answers side by side, which is
+            // more use than this fixture's own one-sided failure on the PawPrint half.
+            if comparesHere then
+                // The case's own seed drives the oracle too, exactly as it does for a
+                // `sourcesPure` case, so both runtimes see one description of a
+                // filesystem.
+                let realResult = RealRuntime.executeWithSeed case.KernelConfig.FileSystem [||] image
+
+                DifferentialOracle.compareOutcomes
+                    case.FileName
+                    case.ExpectedReturnCode
+                    case.ExpectsUnhandledException
+                    realResult
+                    pawPrintResult
+
             let terminalState, terminatingThread =
-                match
-                    BoundedRun.run
-                        loggerFactory
-                        case.FileName
-                        (Some case.FileName)
-                        peImage
-                        { HostConfig.Default dotnetRuntimes with
-                            Guest =
-                                { GuestConfig.Default dotnetRuntimes with
-                                    Kernel = case.KernelConfig
-                                    AppContext = case.AppContext
-                                }
-                        }
-                with
+                match pawPrintResult with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
                 | RunOutcome.Aborted (_, _, fatal) ->
