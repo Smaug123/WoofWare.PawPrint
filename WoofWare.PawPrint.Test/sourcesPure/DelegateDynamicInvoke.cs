@@ -200,6 +200,43 @@ public class DelegateDynamicInvoke
         if (invoke.ReturnType != typeof (int)) return 92;
         if (invoke.GetParameters ().Length != 1) return 93;
 
+        // The InternalCall itself, called directly. Everything above observes it only through the
+        // answer `Invoke` computes, which several wrong implementations would still get right;
+        // these check the handle's *identity*. Real .NET returns a raw `MethodDesc*` here, so only
+        // equality is asserted and never a value.
+        MethodInfo getInvokeMethod = typeof (Delegate).GetMethod (
+            "GetInvokeMethod",
+            BindingFlags.NonPublic | BindingFlags.Instance,
+            null,
+            Type.EmptyTypes,
+            null);
+        if (getInvokeMethod == null) return 100;
+
+        object h1 = getInvokeMethod.Invoke (f, null);
+        if (!(h1 is IntPtr)) return 101;
+        if (h1.Equals (IntPtr.Zero)) return 102;
+
+        // Two delegates of one type name one method, and asking twice gives one answer: CoreCLR
+        // reads a slot the type loader filled in, so there is exactly one `MethodDesc` per
+        // delegate type however many delegates or calls there are.
+        Func<int, int> f3 = Twice;
+        if (!h1.Equals (getInvokeMethod.Invoke (f, null))) return 103;
+        if (!h1.Equals (getInvokeMethod.Invoke (f3, null))) return 104;
+
+        // Two instantiations of one generic delegate definition name *different* methods. An
+        // implementation that answered per definition rather than per instantiation would pass
+        // every check above that happens to coerce its arguments successfully.
+        if (h1.Equals (getInvokeMethod.Invoke (len, null))) return 105;
+
+        // As do two unrelated delegate types, including one whose `Invoke` has the same signature
+        // shape as `f`'s.
+        if (h1.Equals (getInvokeMethod.Invoke (act, null))) return 106;
+        if (h1.Equals (getInvokeMethod.Invoke (id, null))) return 107;
+
+        // And a delegate over an instance method answers the same as one over a static method,
+        // because what is named is the delegate type's `Invoke` and not the target.
+        if (!h1.Equals (getInvokeMethod.Invoke (closed, null))) return 108;
+
         return 0;
     }
 }
