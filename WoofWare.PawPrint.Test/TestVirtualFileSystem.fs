@@ -3089,6 +3089,32 @@ module TestVirtualFileSystem =
         // One step outside it is the ordinary case.
         doRename a "d" (rootOf vfs) "moved" vfs |> ignore
 
+    [<Test>]
+    let ``renaming into a directory whose last name has gone is refused`` () : unit =
+        // The condition neither the type checks nor the subtree check can see:
+        // the destination directory is perfectly well-formed and empty, and
+        // binding into it strands the moved inode -- it keeps a name, so nothing
+        // reaps it, and no path reaches it. A pinned orphan is a *sound* input
+        // (`checkInvariants` excuses it), which is what makes this the
+        // primitive's problem rather than the caller's.
+        let vfs, a, b, _, _ = twoParents ()
+
+        let orphaned =
+            VirtualFileSystem.unbind UnbindTargetEffect.LostALink (rootOf vfs) (name "b") buildTime vfs
+            |> ok
+            |> snd
+
+        // Sound *before* the rename, with the orphan pinned as a descriptor
+        // would pin it.
+        VirtualFileSystem.checkInvariants (Set.singleton b) orphaned |> shouldEqual []
+
+        shouldFailWith "unreachable from the root" (fun () -> doRename a "f" b "landed" orphaned |> ignore)
+
+        // The paired row: the same rename into the same directory *before* it
+        // was orphaned is the ordinary case, so the refusal is about
+        // reachability and not about `b`.
+        doRename a "f" b "landed" vfs |> ignore
+
     // ------------------------------------------------------- isWithinSubtree
 
     [<Test>]
@@ -3132,7 +3158,12 @@ module TestVirtualFileSystem =
             DestinationName : FileName
         }
 
-    let private renameCaseGen (vfs : VirtualFileSystem) : Gen<RenameCase> =
+    /// `pinned` is the deliberately-orphaned directory, if `orphanGen` made one.
+    /// The destination generator is biased towards it: an orphan is one
+    /// directory among many, so uniform choice reaches "rename into an orphan"
+    /// only by luck, and a coverage bound on a class that rare is a flake rather
+    /// than a guard.
+    let private renameCaseGen (pinned : Set<InodeNumber>) (vfs : VirtualFileSystem) : Gen<RenameCase> =
         let directories =
             VirtualFileSystem.inodes vfs
             |> Map.toList
@@ -3163,15 +3194,29 @@ module TestVirtualFileSystem =
                         1, Gen.map2 (fun d n -> d, n) anyDirectory (Gen.elements alphabet)
                     ]
 
+        let intoOrphan =
+            if Set.isEmpty pinned then
+                []
+            else
+                [
+                    2, Gen.map2 (fun d n -> d, n) (Gen.elements (Set.toList pinned)) (Gen.elements alphabet)
+                ]
+
         let destinationGen =
             match bindings with
-            | [] -> Gen.map2 (fun d n -> d, n) anyDirectory (Gen.elements alphabet)
+            | [] ->
+                Gen.frequency (
+                    (2, Gen.map2 (fun d n -> d, n) anyDirectory (Gen.elements alphabet))
+                    :: intoOrphan
+                )
             | _ ->
-                Gen.frequency
+                Gen.frequency (
                     [
                         2, Gen.elements bindings
                         2, Gen.map2 (fun d n -> d, n) anyDirectory (Gen.elements alphabet)
                     ]
+                    @ intoOrphan
+                )
 
         Gen.map2
             (fun (sd, sn) (dd, dn) ->
@@ -3185,12 +3230,63 @@ module TestVirtualFileSystem =
             sourceGen
             destinationGen
 
-    let private renameScenarioGen : Gen<VirtualFileSystem * RenameCase> =
+    /// Sometimes orphan an empty directory, pinning it as a descriptor would,
+    /// and answer the pinned set alongside.
+    ///
+    /// `filesystemGen` only ever *creates*, so without this step no generated
+    /// filesystem contains an orphan at all — and "the destination directory
+    /// has lost its last name" is precisely the condition that neither the type
+    /// checks nor the subtree check can see. The sweep below was structurally
+    /// blind to it until this existed, which is the whole argument for stating a
+    /// generator's alphabet rather than trusting it.
+    let private orphanGen (vfs : VirtualFileSystem) : Gen<VirtualFileSystem * Set<InodeNumber>> =
+        let root = VirtualFileSystem.root vfs
+
+        // An orphan can only ever be an *empty* directory, since `rmdir` refuses
+        // a populated one — so this generator may only unbind one, or it would
+        // be building filesystems no kernel could produce.
+        let candidates =
+            VirtualFileSystem.inodes vfs
+            |> Map.toList
+            |> List.collect (fun (inode, node) ->
+                match node.Content with
+                | InodeContent.Directory content when inode <> root && Map.isEmpty content.Entries ->
+                    VirtualFileSystem.inodes vfs
+                    |> Map.toList
+                    |> List.collect (fun (parent, parentNode) ->
+                        match parentNode.Content with
+                        | InodeContent.Directory parentContent ->
+                            parentContent.Entries
+                            |> Map.toList
+                            |> List.filter (fun (_, target) -> target = inode)
+                            |> List.map (fun (entry, _) -> inode, parent, entry)
+                        | _ -> []
+                    )
+                | _ -> []
+            )
+
+        match candidates with
+        | [] -> Gen.constant (vfs, Set.empty)
+        | _ ->
+            Gen.frequency
+                [
+                    2, Gen.constant (vfs, Set.empty)
+                    1,
+                    Gen.elements candidates
+                    |> Gen.map (fun (inode, parent, entry) ->
+                        match VirtualFileSystem.unbind UnbindTargetEffect.LostALink parent entry (tickOf 400) vfs with
+                        | Ok (_, orphaned) -> orphaned, Set.singleton inode
+                        | Error _ -> vfs, Set.empty
+                    )
+                ]
+
+    let private renameScenarioGen : Gen<VirtualFileSystem * Set<InodeNumber> * RenameCase> =
         filesystemGen
-        |> Gen.bind (fun vfs ->
+        |> Gen.bind orphanGen
+        |> Gen.bind (fun (vfs, pinned) ->
             // Every generated filesystem has at least a root, so there is always
             // one directory to name.
-            renameCaseGen vfs |> Gen.map (fun case -> vfs, case)
+            renameCaseGen pinned vfs |> Gen.map (fun case -> vfs, pinned, case)
         )
 
     /// The three conditions `VirtualFileSystem.rename` refuses loudly, computed
@@ -3224,7 +3320,10 @@ module TestVirtualFileSystem =
                     VirtualFileSystem.isWithinSubtree moved case.DestinationDirectory vfs
                 | _ -> false
 
-            sameInode || populatedDestination || intoOwnSubtree
+            let intoAnOrphan =
+                VirtualFileSystem.isOrphanedDirectory case.DestinationDirectory vfs
+
+            sameInode || populatedDestination || intoOwnSubtree || intoAnOrphan
         | _ -> false
 
     [<Test>]
@@ -3237,8 +3336,9 @@ module TestVirtualFileSystem =
         let mutable movedDirectoryAcrossParents = 0
         let mutable movedWithinOneDirectory = 0
         let mutable refusedCount = 0
+        let mutable refusedForOrphan = 0
 
-        let property (vfs : VirtualFileSystem, case : RenameCase) : unit =
+        let property (vfs : VirtualFileSystem, pinned : Set<InodeNumber>, case : RenameCase) : unit =
             let attempt () =
                 VirtualFileSystem.rename
                     case.SourceDirectory
@@ -3250,6 +3350,9 @@ module TestVirtualFileSystem =
 
             if refusedLoudly vfs case then
                 refusedCount <- refusedCount + 1
+
+                if VirtualFileSystem.isOrphanedDirectory case.DestinationDirectory vfs then
+                    refusedForOrphan <- refusedForOrphan + 1
 
                 let threw =
                     try
@@ -3287,7 +3390,12 @@ module TestVirtualFileSystem =
                 // legitimate only while something holds it; the caller has not
                 // decided yet, so it is pinned here exactly as `unbind`'s
                 // callers pin theirs.
-                VirtualFileSystem.checkInvariants (Set.ofList (Option.toList outcome.Displaced)) renamed
+                // `pinned` is the deliberately-orphaned directory, which a
+                // descriptor would be holding; `Displaced` may have lost its
+                // last name and the caller has not decided about it yet.
+                VirtualFileSystem.checkInvariants
+                    (Set.union pinned (Set.ofList (Option.toList outcome.Displaced)))
+                    renamed
                 |> shouldEqual []
 
         Check.One (config, Prop.forAll (Arb.fromGen renameScenarioGen) property)
@@ -3301,10 +3409,12 @@ module TestVirtualFileSystem =
         movedDirectoryAcrossParents |> shouldBeGreaterThan 2
         movedWithinOneDirectory |> shouldBeGreaterThan 2
         refusedCount |> shouldBeGreaterThan 2
+        // The class this sweep was blind to until `orphanGen` existed.
+        refusedForOrphan |> shouldBeGreaterThan 2
 
     [<Test>]
     let ``a successful rename creates and destroys no inode`` () : unit =
-        let property (vfs : VirtualFileSystem, case : RenameCase) : unit =
+        let property (vfs : VirtualFileSystem, _ : Set<InodeNumber>, case : RenameCase) : unit =
             if refusedLoudly vfs case then
                 ()
             else
@@ -3342,7 +3452,7 @@ module TestVirtualFileSystem =
         let mutable compared = 0
         let mutable withDisplacement = 0
 
-        let property (vfs : VirtualFileSystem, case : RenameCase) : unit =
+        let property (vfs : VirtualFileSystem, _ : Set<InodeNumber>, case : RenameCase) : unit =
             if refusedLoudly vfs case then
                 ()
             else

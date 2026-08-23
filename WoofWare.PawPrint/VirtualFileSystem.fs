@@ -2023,6 +2023,14 @@ module VirtualFileSystem =
     ///    the displaced inode climbs parents rather than descending.
     ///  * a destination directory **inside the source's own subtree**, which
     ///    detaches a cycle.
+    ///  * a destination directory whose own last name has gone. Binding into an
+    ///    orphan strands the moved inode: it keeps a name, so nothing reaps it,
+    ///    and no path reaches it. `mkdir`, `open(O_CREAT)` and `symlink` all
+    ///    answer ENOENT there — measured on both kernels — and rename is the
+    ///    third guest-reachable operation that adds a name, so it owes the same.
+    ///    This is also what keeps `isOrphanedDirectory`'s stated invariant true:
+    ///    an orphan is empty because `rmdir` refuses a populated directory *and*
+    ///    nothing can afterwards put an entry into one.
     let rename
         (sourceDirectory : InodeNumber)
         (sourceName : FileName)
@@ -2053,6 +2061,10 @@ module VirtualFileSystem =
         match Map.tryFind sourceName sourceContent.Entries with
         | None -> Error UnixError.ENOENT
         | Some moved ->
+
+        if isOrphanedDirectory destinationDirectory vfs then
+            failwith
+                $"VirtualFileSystem.rename: the destination directory %O{destinationDirectory} has lost its last name, so binding \"%s{FileName.toString destinationName}\" into it would make inode %O{moved} unreachable from the root while it still has a name -- which nothing could then reap. The verdict owes ENOENT, exactly as it does for the creating operations."
 
         // Read the destination's entries out of `sourceContent` when the two
         // directories are the same inode, so that a rename within one directory

@@ -161,15 +161,35 @@ already records: POSIX permits the operation when the caller owns the file *or*
 the directory, and PawPrint reports `Kernel.UserId` as every inode's `st_uid`,
 so one identity owns both.
 
-**Privileged (uid 0).** Measured on Linux: every permission row above becomes
-`ok`, and each ordering row below collapses to whatever the *other* check said
-(EISDIR, ENOTEMPTY). Nothing else moves. The Darwin privileged column is
-**not measured** — this dev box has no passwordless root — and it does not need
-to be: the only thing privilege can reorder is a permission arm against
-something else, and at uid 0 the permission arm never fires at all, so both
-orderings below degenerate to the same chain. That is a derivation, labelled as
-one; if a future row makes privilege do anything but short-circuit
-`RemovalChecks.lacksWrite`, it needs measuring rather than deriving.
+**Privileged (uid 0). Measured on both**, against one script
+(`probe-root.py`, which touches nothing outside a fresh temp directory and in
+particular never names "/"):
+
+| row | uid 501 / 1000 | uid 0, both kernels |
+| --- | --- | --- |
+| every permission row above | EACCES | **ok** |
+| src parent unwritable + dst is a directory | EACCES (Linux) / EISDIR (Darwin) | EISDIR |
+| dst parent unwritable + dst is a directory | EACCES (Linux) / EISDIR (Darwin) | EISDIR |
+| dst parent unwritable + dst dir non-empty | EACCES (Linux) / ENOTEMPTY (Darwin) | ENOTEMPTY |
+| same-inode no-op + parent unwritable | ok (Linux) / **EACCES (Darwin)** | **ok** |
+| self-rename + parent unwritable | ok (Linux) / **EACCES (Darwin)** | **ok** |
+| directory self-rename + parent unwritable | ok (Linux) / **EACCES (Darwin)** | **ok** |
+| into own subtree + parent unwritable | EINVAL | EINVAL |
+| src absent + src parent unsearchable | EACCES | ENOENT |
+| src parent unsearchable × dst parent absent | EACCES | ENOENT |
+| dst name 300 bytes + dst parent unwritable | ENAMETOOLONG | ENAMETOOLONG |
+
+Privilege does exactly one thing — it stops the permission arm firing — and
+nothing reorders. The consequence worth stating, because Stage 2's tests can
+check it: **at uid 0 the two flavours agree on every measured row.** The whole
+of rename's ordering divergence lives in the unprivileged column, and a
+privileged guest cannot tell the two kernels apart.
+
+An earlier draft *derived* the Darwin column from the Linux one. The derivation
+turned out to be right, and was still worth replacing: the three rows where
+Darwin answers EACCES and Linux answers `ok` are exactly the rows it would have
+got wrong had privilege participated in the ordering rather than
+short-circuiting one arm of it.
 
 ### Ordering — **this is where the flavours split**
 
@@ -209,7 +229,7 @@ that answers the same errno either way proves nothing:
 | source name 300 bytes **×** destination's parent absent | **ENOENT** | **ENAMETOOLONG** |
 | source absent **×** destination name 300 bytes | ENOENT | ENOENT |
 | source's parent unsearchable **×** destination's parent absent | EACCES | EACCES |
-| source's parent unsearchable **×** destination's parent absent, **at uid 0** | ENOENT | *(unmeasured)* |
+| source's parent unsearchable **×** destination's parent absent, **at uid 0** | ENOENT | ENOENT |
 | source's parent is a regular file **×** destination is a directory | ENOTDIR | ENOTDIR |
 
 The Linux rows are only consistent with a **four-phase** order — resolve the
@@ -398,8 +418,18 @@ broken-graph arm, because the verdict is supposed to have excluded them:
   children.
 * a destination directory **within the source's own subtree**. The result is a
   detached cycle.
+* a destination directory whose own **last name has gone**. Binding into an
+  orphan strands the moved inode — it keeps a name, so nothing reaps it, and no
+  path reaches it — and a *pinned* orphan is a perfectly sound input, which is
+  what makes this the primitive's problem rather than the caller's. The verdict
+  owes ENOENT, as it already does for `mkdir`, `open(O_CREAT)` and `symlink`.
+  This refusal is also what keeps `isOrphanedDirectory`'s stated invariant true:
+  an orphan is empty because `rmdir` refuses a populated directory *and* nothing
+  can afterwards put an entry into one. Rename was the missing half of that
+  argument, and this condition was found by review rather than by the sweep —
+  see the generator note in Stage 1.
 
-Both are guest-*reachable* conditions whose errno and ordering are the verdict's
+All are guest-*reachable* conditions whose errno and ordering are the verdict's
 business (ENOTEMPTY and EINVAL, at measured positions); what the primitive owes
 is that no caller can reach past the verdict and corrupt the graph. Making them
 refusals rather than preconditions also makes Stage 1's central property
@@ -488,6 +518,13 @@ timestamp rules. No `EmulatedKernel` change, no handler, no guest.
   quadruple, `rename` either fails with the filesystem unchanged, or succeeds
   and `checkInvariants` reports no defect. This is the property #978 built the
   invariant checker for, and the two soundness refusals are what make it total.
+- Generator alphabet, and the reason to state it: the sweep's filesystems must
+  *contain* orphans. `filesystemGen` only ever creates, so nothing it builds has
+  one — and "the destination directory has lost its last name" is invisible to
+  every other check, so the sweep was structurally blind to it. The scenario
+  generator orphans an empty directory (the only kind `rmdir` could have
+  produced), pins it as a descriptor would, and biases the destination towards
+  it, because a class that rare is a flake rather than a guard.
 - Property: a successful rename preserves the inode set exactly — none created,
   none destroyed (the displaced one is *returned*, not freed).
 - Property (reference implementation): for a **non-directory** source, including
@@ -578,5 +615,3 @@ when the displaced destination is a directory).
 - Whether a directory stream open across a rename of one of its entries sees the
   old name or the new one. POSIX leaves it unspecified and #1141 already chose a
   name cursor; this slice inherits that choice and adds no rule.
-- The Darwin privileged column, derived rather than measured — see "Privileged"
-  above for why that is sound here and what would falsify it.
