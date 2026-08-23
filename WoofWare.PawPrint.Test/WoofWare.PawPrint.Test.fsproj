@@ -80,15 +80,8 @@
     <Compile Include="TestStackMemoryPool.fs" />
     <Compile Include="TestNativeMemoryPool.fs" />
     <Compile Include="TestAbsoluteUnixPath.fs" />
-    <Compile Include="TestPathCursor.fs" />
-    <Compile Include="TestVirtualFileSystem.fs" />
     <Compile Include="TestFileSystemSeed.fs" />
     <Compile Include="TestRealRuntimeCleanup.fs" />
-    <Compile Include="TestUnlinkRules.fs" />
-    <Compile Include="TestRmDirRules.fs" />
-    <Compile Include="TestRenameRules.fs" />
-    <Compile Include="TestOpenDirRules.fs" />
-    <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
     <Compile Include="TestFileSystemType.fs" />
     <Compile Include="TestGuestPathBytes.fs" />
     <Compile Include="TestRuntimeConfig.fs" />
@@ -192,7 +185,6 @@
     <Compile Include="TestSignalHandler.fs" />
     <Compile Include="TestSignalDispatcherThread.fs" />
     <Compile Include="TestSignalDispatch.fs" />
-    <Compile Include="TestLinuxEpollLimits.fs" />
     <Compile Include="TestSocketEventsWaitReason.fs" />
     <Compile Include="TestSocketEventsWait.fs" />
     <Compile Include="TestSocketEventBuffer.fs" />

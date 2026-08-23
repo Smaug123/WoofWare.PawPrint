@@ -1,11 +1,10 @@
-namespace WoofWare.PawPrint.Test
+namespace WoofWare.PosixKernel.Test
 
 open System.Collections.Immutable
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
 /// `PathCursor` is the resolution walk's spine; unlike a `PathComponent list`

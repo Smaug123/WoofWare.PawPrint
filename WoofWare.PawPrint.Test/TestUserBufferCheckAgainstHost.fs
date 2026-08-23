@@ -6,6 +6,7 @@ open System.Runtime.InteropServices
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// Measures how the *host* kernel screens a read buffer, and checks the model
 /// against it.

@@ -1,9 +1,8 @@
-namespace WoofWare.PawPrint.Test
+namespace WoofWare.PosixKernel.Test
 
 open System.Collections.Immutable
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
 /// `rename(2)`'s per-flavour orderings, row by row against the measurement.

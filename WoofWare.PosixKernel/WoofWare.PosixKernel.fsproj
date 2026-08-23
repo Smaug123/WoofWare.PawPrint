@@ -25,6 +25,7 @@
         <Compile Include="InternetEndpoint.fs" />
         <Compile Include="FileDescriptorRegistry.fs" />
         <Compile Include="Signal.fs" />
+        <Compile Include="SimulatedUnixPlatform.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
 

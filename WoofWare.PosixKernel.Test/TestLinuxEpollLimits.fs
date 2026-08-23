@@ -1,9 +1,9 @@
-namespace WoofWare.PawPrint.Test
+namespace WoofWare.PosixKernel.Test
 
 open System
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `LinuxEpollLimits` is two literals, and they are not independent of each other: the cap is
 /// `INT_MAX / sizeof(struct epoll_event)` (fs/eventpoll.c). Checking the arithmetic rather than

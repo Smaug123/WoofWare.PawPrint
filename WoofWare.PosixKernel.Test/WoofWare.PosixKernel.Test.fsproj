@@ -15,6 +15,14 @@
     <Compile Include="TestFileDescriptorRegistry.fs" />
     <Compile Include="TestSignal.fs" />
     <Compile Include="TestDirectoryEnumeration.fs" />
+    <Compile Include="TestPathCursor.fs" />
+    <Compile Include="TestVirtualFileSystem.fs" />
+    <Compile Include="TestOpenDirRules.fs" />
+    <Compile Include="TestRmDirRules.fs" />
+    <Compile Include="TestUnlinkRules.fs" />
+    <Compile Include="TestRenameRules.fs" />
+    <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
+    <Compile Include="TestLinuxEpollLimits.fs" />
   </ItemGroup>
 
   <ItemGroup>
