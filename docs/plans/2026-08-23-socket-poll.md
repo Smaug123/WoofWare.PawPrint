@@ -488,7 +488,72 @@ Out, each behind a named refusal:
    omitted from it. The last two are killed only by the positive-timeout rows
    in test 3.
 
+## What the tests turned out to be worth
+
+Eight mutants, run against `sourcesPure/SocketPoll.cs` and
+`sourcesImpure/SocketPollLinux.cs`. **Two survived the first battery**, and
+both were real gaps rather than unjustified lines:
+
+| mutant | outcome | killed by |
+| --- | --- | --- |
+| `In` reported unmasked | **survived**, then killed | impure: listener with a queued connection, asked for `OUT` alone |
+| `Err` maskable instead of output-only | **survived**, then killed | impure: refused connect, asked for nothing |
+| `Hup` maskable instead of output-only | killed | impure: idle TCP, `events = 0` |
+| `Out` reported unmasked | killed | pure: established socket, `SelectRead` |
+| `*triggered` = `eventCount` | killed | impure: mixed array, 3 of 4 ready |
+| refuse *every* nonzero timeout (i.e. D3(a)) | killed | pure check 11 and impure checks 24-27 |
+| ready predicate ignores `ERR`/`HUP`/`NVAL` | killed | impure: positive-timeout rows |
+| `NVAL` never reported | killed | impure: never-opened fd |
+
+The two survivors are worth recording, because each says something the plan
+had wrong:
+
+**`SocketPal.Poll` masks the result a second time.** `Socket.Poll(…,
+SelectWrite)` asks for `POLLOUT` and then tests `revents & POLLOUT`, so an
+implementation that leaked an unrequested `IN` bit is *invisible* through the
+managed surface. The plan had assumed a managed row could pin the mask; it
+cannot. Only a guest reading `TriggeredEvents` directly can, which is why that
+row lives in the impure guest even though the underlying fact is portable.
+
+**Nothing else in the suite produces a socket whose level carries `ERR`.**
+`RefusedPendingDelivery` is the only phase that sets it, so pinning "ERR is
+output-only" needs a refused connect built by hand — bind, listen, capture the
+port, close the listener, then a non-blocking connect to it. Without that row
+the `Err` line of the projection was never executed with `interest.Err` false.
+
+## Two findings that changed the test plan
+
+**`Socket.Select` cannot appear in `sourcesPure`, and the reason is the CoreLib
+flavour rather than the kernel.** `SocketPal.Select` branches on
+`SelectOverPollIsBroken`, which is `OperatingSystem.IsMacOS() || IsIOS() ||
+IsTvOS() || IsMacCatalyst()`; `IsMacOS()` is `#if TARGET_OSX` in CoreLib. So a
+macOS-flavour image routes `Socket.Select` to `SystemNative_Select` — a
+different entry point, not implemented — and a Linux-flavour image routes it to
+`SelectViaPoll`. A pure row using Select would pass in CI and fail on a macOS
+dev box for a reason unrelated to what it was testing. The multi-entry array
+path is covered by the impure guest calling the entry point directly, where no
+such branch exists.
+
+**`nfds` is bounded by `RLIMIT_NOFILE` on Linux** (measured, `pollnfds.c`:
+EINVAL above it; Darwin refuses at 65536 despite a far larger rlimit). PawPrint
+models no descriptor limit at all, which `FileDescriptorRegistry` already
+states, so it answers as though the bound were unbounded. The only refusal is
+an interpreter one: a count whose byte extent overflows `int32`.
+
 ## What the frontier becomes
 
-Rung I advances to `SystemNative_GetSocketErrorOption`, whose design is
-already measured above. That is the next slice.
+Measured, not predicted — rung I re-run against this branch:
+
+```
+Unimplemented native method
+  (PInvokeImpl libSystem.Native!SystemNative_GetSocketErrorOption)
+Guest was: thread 1 (BlockedOnSocketEvents) in Sys.WaitForSocketEvents;
+           thread 2 (Runnable) in Sys.GetSocketErrorOption
+```
+
+So `TryCompleteConnect`'s `Poll(POLLOUT, 0)` now answers, the socket reports
+itself writable, and the call proceeds to the second half.
+`SystemNative_GetSocketErrorOption` is the next slice, and the `SO_ERROR`
+table above is its measured starting point: it needs a new Linux phase
+("refused, error consumed") whose poll level is `IN|OUT|HUP` and whose
+`connect(2)` answers `ECONNABORTED`.
