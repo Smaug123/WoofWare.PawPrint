@@ -1155,6 +1155,76 @@ module IntrinsicMethodKeys =
                 "System.UIntPtr"
                 "TrailingZeroCount"
                 [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
+            // BitOperations.PopCount is marked [Intrinsic] only so the JIT can lower it to POPCNT
+            // on x86 or CNT+ADDV on Arm. Unlike its LeadingZeroCount, TrailingZeroCount and Log2
+            // siblings above, no width of it needs an arm in Intrinsics.fs: its software fallback
+            // is pure shift/mask/add/multiply arithmetic on the operand itself,
+            //   value -= (value >> 1) & 0x5555_5555;
+            //   value = (value & 0x3333_3333) + ((value >> 2) & 0x3333_3333);
+            //   value = (((value + (value >> 4)) & 0x0F0F_0F0F) * 0x0101_0101) >> 24;
+            // (the uint64 body is the same over 64-bit constants and a final shift of 56), with no
+            // De Bruijn lookup table backed by a PE byte range -- which is the only reason those
+            // siblings are modelled. The `(nuint)` overload is `ldarg.0; conv.u8; call
+            // PopCount(uint64); ret` on a 64-bit build, so it too just forwards.
+            //
+            // Both hardware guards ahead of the fallback answer false: `Popcnt`, `Popcnt+X64` and
+            // `AdvSimd+Arm64` are all in `scalarOnlyFalseIsSupportedIntrinsics`, and whichever of
+            // them belongs to a foreign architecture was already folded to `ldc.i4.0` when CoreLib
+            // was compiled. The two flavours fold opposite guards, so the IL differs between them:
+            // TestLinuxCoreLibFlavour.fs runs the x64 shape, which a macOS/arm64 box never
+            // interprets.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Numerics/BitOperations.cs#L427-L523
+            pattern
+                "System.Private.CoreLib"
+                "System.Numerics.BitOperations"
+                "PopCount"
+                [ IntrinsicParameterPattern.Exact "System.UInt32" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Numerics.BitOperations"
+                "PopCount"
+                [ IntrinsicParameterPattern.Exact "System.UInt64" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Numerics.BitOperations"
+                "PopCount"
+                [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
+            // The IBinaryInteger<TSelf>.PopCount wrappers, exactly as for LeadingZeroCount above:
+            // `ldarg.0; call int32 BitOperations::PopCount(<U>); [conv]; ret`, [Intrinsic] only so
+            // the JIT can elide the wrapper. The narrower wrappers (SByte/Byte/Int16/UInt16),
+            // `char`'s explicit interface implementation, and the Int128 pair carry no [Intrinsic]
+            // attribute, so they are never routed to Intrinsics.call and need no entry here.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/UInt32.cs#L298-L300
+            pattern
+                "System.Private.CoreLib"
+                "System.Int32"
+                "PopCount"
+                [ IntrinsicParameterPattern.Exact "System.Int32" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int64"
+                "PopCount"
+                [ IntrinsicParameterPattern.Exact "System.Int64" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.IntPtr"
+                "PopCount"
+                [ IntrinsicParameterPattern.Exact "System.IntPtr" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.UInt32"
+                "PopCount"
+                [ IntrinsicParameterPattern.Exact "System.UInt32" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.UInt64"
+                "PopCount"
+                [ IntrinsicParameterPattern.Exact "System.UInt64" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.UIntPtr"
+                "PopCount"
+                [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
             // BitOperations.RotateLeft is marked [Intrinsic] only so the JIT can lower it to a
             // single ROL instruction; the IL bodies are pure shift+OR over the existing primitive
             // numeric ops PawPrint already supports:
