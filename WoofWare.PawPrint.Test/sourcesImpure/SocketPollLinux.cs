@@ -45,15 +45,70 @@ class SocketPollLinux
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_Close")]
     static extern int Close(IntPtr fd);
 
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Bind")]
+    static extern unsafe int Bind(IntPtr socket, int protocolType, byte* socketAddress, int socketAddressLen);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Listen")]
+    static extern int Listen(IntPtr socket, int backlog);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Connect")]
+    static extern unsafe int Connect(IntPtr socket, byte* socketAddress, int socketAddressLen);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetSockName")]
+    static extern unsafe int GetSockName(IntPtr socket, byte* socketAddress, int* socketAddressLen);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_FcntlSetIsNonBlocking")]
+    static extern int SetIsNonBlocking(IntPtr fd, int isNonBlocking);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetAddressFamily")]
+    static extern unsafe int SetAddressFamily(byte* socketAddress, int socketAddressLen, int addressFamily);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetPort")]
+    static extern unsafe int SetPort(byte* socketAddress, int socketAddressLen, ushort port);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetIPv4Address")]
+    static extern unsafe int SetIPv4Address(byte* socketAddress, int socketAddressLen, uint address);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetPort")]
+    static extern unsafe int GetPort(byte* socketAddress, int socketAddressLen, ushort* port);
+
     const int PAL_SUCCESS = 0;
     const int PAL_EFAULT = 0x10015;
     const int PAL_EINVAL = 0x1001C;
+
+    const int PAL_ECONNREFUSED = 0x1000E;
+    const int PAL_EINPROGRESS = 0x1001A;
 
     const int PAL_AF_INET = 2;
     const int PAL_SOCK_STREAM = 1;
     const int PAL_PT_TCP = 6;
 
+    const int V4Size = 16;
+
+    // `INADDR_LOOPBACK` in network order, as `SetIPv4Address` takes it.
+    const uint Loopback = 0x0100007F;
+
+    static unsafe bool Address(byte* blob, uint address, ushort port)
+    {
+        for (int i = 0; i < V4Size; i++) blob[i] = 0;
+
+        return SetAddressFamily(blob, V4Size, PAL_AF_INET) == PAL_SUCCESS
+               && SetPort(blob, V4Size, port) == PAL_SUCCESS
+               && SetIPv4Address(blob, V4Size, address) == PAL_SUCCESS;
+    }
+
+    static unsafe ushort PortOf(IntPtr socket)
+    {
+        byte* blob = stackalloc byte[V4Size];
+        int len = V4Size;
+        if (GetSockName(socket, blob, &len) != PAL_SUCCESS) return 0;
+        ushort port;
+        if (GetPort(blob, V4Size, &port) != PAL_SUCCESS) return 0;
+        return port;
+    }
+
     const short POLLIN = 0x0001;
+    const short POLLERR = 0x0008;
     const short POLLOUT = 0x0004;
     const short POLLHUP = 0x0010;
     const short POLLNVAL = 0x0020;
@@ -168,8 +223,76 @@ class SocketPollLinux
         if (Poll(&one, 1, 5000, &triggered) != PAL_SUCCESS) return 26;
         if (one.TriggeredEvents != POLLNVAL || triggered != 1) return 27;
 
-        if (Close(idle2) != PAL_SUCCESS) return 28;
-        if (Close(idle) != PAL_SUCCESS) return 29;
+        // 28-33: the two conditions no other check here can present, and each
+        // pins one half of the projection.
+        //
+        // A listener with a completed connection queued has IN in its level and
+        // nothing else. Asking it for OUT alone must therefore come back empty:
+        // this is the only place a condition is *present in the level and
+        // absent from the request*, so it is what pins the IN mask. The managed
+        // `Socket.Poll` cannot pin it — `SocketPal.Poll` masks the returned
+        // revents a second time, so a leaked IN bit is invisible there.
+        IntPtr listener;
+        if (Socket(PAL_AF_INET, PAL_SOCK_STREAM, PAL_PT_TCP, &listener) != PAL_SUCCESS) return 28;
+        byte* bindAddr = stackalloc byte[V4Size];
+        if (!Address(bindAddr, Loopback, 0)) return 29;
+        if (Bind(listener, PAL_PT_TCP, bindAddr, V4Size) != PAL_SUCCESS) return 30;
+        if (Listen(listener, 4) != PAL_SUCCESS) return 31;
+        ushort listenerPort = PortOf(listener);
+        if (listenerPort == 0) return 32;
+
+        IntPtr client;
+        if (Socket(PAL_AF_INET, PAL_SOCK_STREAM, PAL_PT_TCP, &client) != PAL_SUCCESS) return 33;
+        byte* dst = stackalloc byte[V4Size];
+        if (!Address(dst, Loopback, listenerPort)) return 34;
+        if (Connect(client, dst, V4Size) != PAL_SUCCESS) return 35;
+
+        one = new PollEvent { FileDescriptor = (int)listener, Events = POLLOUT };
+        if (Poll(&one, 1, 0, &triggered) != PAL_SUCCESS) return 36;
+        if (one.TriggeredEvents != 0 || triggered != 0) return 37;
+        // ... and asking for IN does report it, so the row above is a mask and
+        // not simply a listener that reports nothing.
+        one = new PollEvent { FileDescriptor = (int)listener, Events = POLLIN };
+        if (Poll(&one, 1, 0, &triggered) != PAL_SUCCESS) return 38;
+        if (one.TriggeredEvents != POLLIN || triggered != 1) return 39;
+
+        // A refused connect is the only phase whose level carries ERR, so it is
+        // the only thing that can pin ERR as output-only. Asking for nothing
+        // must still report ERR|HUP.
+        IntPtr deadListener;
+        if (Socket(PAL_AF_INET, PAL_SOCK_STREAM, PAL_PT_TCP, &deadListener) != PAL_SUCCESS) return 40;
+        byte* deadBind = stackalloc byte[V4Size];
+        if (!Address(deadBind, Loopback, 0)) return 41;
+        if (Bind(deadListener, PAL_PT_TCP, deadBind, V4Size) != PAL_SUCCESS) return 42;
+        if (Listen(deadListener, 1) != PAL_SUCCESS) return 43;
+        ushort deadPort = PortOf(deadListener);
+        if (deadPort == 0) return 44;
+        if (Close(deadListener) != PAL_SUCCESS) return 45;
+
+        IntPtr refused;
+        if (Socket(PAL_AF_INET, PAL_SOCK_STREAM, PAL_PT_TCP, &refused) != PAL_SUCCESS) return 46;
+        if (SetIsNonBlocking(refused, 1) != PAL_SUCCESS) return 47;
+        byte* deadDst = stackalloc byte[V4Size];
+        if (!Address(deadDst, Loopback, deadPort)) return 48;
+        // Both kernels answer EINPROGRESS even on loopback; the refusal lands
+        // in the socket's pending error rather than in this return value.
+        if (Connect(refused, deadDst, V4Size) != PAL_EINPROGRESS) return 49;
+
+        one = new PollEvent { FileDescriptor = (int)refused, Events = 0 };
+        if (Poll(&one, 1, 0, &triggered) != PAL_SUCCESS) return 50;
+        if (one.TriggeredEvents != (POLLERR | POLLHUP) || triggered != 1) return 51;
+        // Asked for everything, the same socket reports IN and OUT too. RDHUP is
+        // in its level and is *not* here: the PAL never asks for POLLRDHUP, so a
+        // guest cannot see that bit through this entry point.
+        one = new PollEvent { FileDescriptor = (int)refused, Events = POLLIN | POLLOUT };
+        if (Poll(&one, 1, 0, &triggered) != PAL_SUCCESS) return 52;
+        if (one.TriggeredEvents != (POLLIN | POLLOUT | POLLERR | POLLHUP)) return 53;
+
+        if (Close(refused) != PAL_SUCCESS) return 54;
+        if (Close(client) != PAL_SUCCESS) return 55;
+        if (Close(listener) != PAL_SUCCESS) return 56;
+        if (Close(idle2) != PAL_SUCCESS) return 57;
+        if (Close(idle) != PAL_SUCCESS) return 58;
 
         return 0;
     }
