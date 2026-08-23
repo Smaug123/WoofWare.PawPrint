@@ -1247,6 +1247,49 @@ module IntrinsicMethodKeys =
                 "System.UInt128"
                 "PopCount"
                 [ IntrinsicParameterPattern.Exact "System.UInt128" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "PopCount"
+                [ IntrinsicParameterPattern.Exact "System.Int128" ]
+            // The minimum `Int128` cluster that makes the PopCount entry above usable and
+            // testable, all reached only because `Int128`'s type-level [Intrinsic] routes every
+            // member:
+            //   op_Implicit(UInt64): PopCount's body returns a `ulong` sum that the return type
+            //     widens through this. Body is `ldc.i4.0; conv.i8; ldarg.0; newobj .ctor; ret`.
+            //   .ctor(UInt64, UInt64): two `stfld`s, and the public (upper, lower) spelling a
+            //     guest needs to set bits in the high half.
+            //   op_Equality: `ldfld _lower` on both arguments, `bne.un`, then the same over
+            //     `_upper` — the identical body shape to the `UInt128.op_Equality` allowlisted
+            //     below, and every boundary in it is modelled. Without it a guest can call
+            //     PopCount but cannot inspect the `Int128` it returns, which would leave the test
+            //     asserting only that the call did not abort.
+            // This is still not the whole cluster PR #1132 built for `UInt128`: there is no
+            // `get_MinValue`/`get_MaxValue`, no signed-widening `op_Implicit(Int64)` and no
+            // `op_Inequality`, so those keep failing at the dispatcher naming themselves. Filling
+            // that in is separate work.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Int128.cs#L37-L41
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.UInt64" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                ".ctor"
+                [
+                    IntrinsicParameterPattern.Exact "System.UInt64"
+                    IntrinsicParameterPattern.Exact "System.UInt64"
+                ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Equality"
+                [
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                ]
             // BitOperations.RotateLeft is marked [Intrinsic] only so the JIT can lower it to a
             // single ROL instruction; the IL bodies are pure shift+OR over the existing primitive
             // numeric ops PawPrint already supports:

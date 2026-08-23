@@ -178,6 +178,24 @@ public class BitOperationsPopCountTests
         return 0;
     }
 
+    public static int TestInt128Wrapper()
+    {
+        // Int128.PopCount is reachable without any conversion at all -- `default(Int128)` needs
+        // neither a ctor nor an operator -- so it needs its own allowlist entry despite the
+        // method carrying no [Intrinsic] of its own; the type-level one on Int128 routes it.
+        // Its body is ulong.PopCount(_lower) + ulong.PopCount(_upper), widened back to Int128.
+        if (!(Int128.PopCount(default(Int128)) == (Int128)0ul)) return 170;
+        if (!(Int128.PopCount((Int128)1ul) == (Int128)1ul)) return 171;
+        if (!(Int128.PopCount((Int128)ulong.MaxValue) == (Int128)64ul)) return 172;
+
+        // Bits in both halves, and in the upper half alone: a body that read only `_lower`
+        // would answer 8 and 0 respectively.
+        if (!(Int128.PopCount(new Int128(0xFFul, 0xFFul)) == (Int128)16ul)) return 173;
+        if (!(Int128.PopCount(new Int128(0xFFul, 0ul)) == (Int128)8ul)) return 174;
+
+        return 0;
+    }
+
     public static int TestAgainstNaiveOracle()
     {
         ulong state = 0x9E3779B97F4A7C15ul;
@@ -233,6 +251,9 @@ class Program
         if (result != 0) return result;
 
         result = BitOperationsPopCountTests.TestUInt128Wrapper();
+        if (result != 0) return result;
+
+        result = BitOperationsPopCountTests.TestInt128Wrapper();
         if (result != 0) return result;
 
         result = BitOperationsPopCountTests.TestAgainstNaiveOracle();
