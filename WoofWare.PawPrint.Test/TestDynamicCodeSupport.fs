@@ -9,10 +9,12 @@ open WoofWare.PawPrint
 /// The AppContext baseline PawPrint supplies on every run, declaring that it does not
 /// support dynamic code.
 ///
-/// This is a claim about the runtime, not about any guest: PawPrint has no JIT and no
-/// Reflection.Emit, and `RuntimeFeature.IsDynamicCodeSupported` is exactly the switch the
-/// BCL consults before reaching for either. NativeAOT reports the same profile, so the BCL's
-/// fallbacks for it are well travelled rather than exotic.
+/// This is a claim about the runtime, not about any guest: PawPrint has no JIT, and its
+/// Reflection.Emit support reaches a `DynamicMethod` a guest builds itself but not the stubs
+/// the BCL emits on its own behalf, nor `AssemblyBuilder`/`TypeBuilder` at all.
+/// `RuntimeFeature.IsDynamicCodeSupported` is exactly the switch the BCL consults before
+/// reaching for either. NativeAOT reports the same profile, so the BCL's fallbacks for it are
+/// well travelled rather than exotic.
 ///
 /// The guest-visible half of this contract lives in `sourcesImpure`
 /// (`DynamicCodeUnsupportedByDefault.cs`, `DynamicCodeSupportedOverride.cs`); what is pinned
