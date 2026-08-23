@@ -1293,17 +1293,26 @@ module internal IntrinsicHelpers =
             CopyBlockOutcome.Copied state
         else
 
-        let sourcePtr = managedPointerOfPointerArgument operation sourceArg
-        let destPtr = managedPointerOfPointerArgument operation destArg
+        // The source is examined before the destination, because a copy must read before it
+        // writes, and that is what decides which fault the guest sees when *both* endpoints are
+        // bad. Measured on real .NET: `Unsafe.CopyBlock((void*)0x100000000UL, null, 1)` — null
+        // source, unmapped destination — raises a NullReferenceException the guest can catch,
+        // because the read happens first; the mirror image `Unsafe.CopyBlock(null,
+        // (void*)0x100000000UL, 1)` instead dies with an AccessViolationException no guest can
+        // catch. PawPrint models neither unmanaged address, so it must not answer that second
+        // case with a catchable NullReferenceException — turning a fatal error into a catchable
+        // one changes guest control flow. Reading the source operand first refuses it instead,
+        // via `managedPointerOfPointerArgument`, which is where the unmanaged address is rejected.
+        match managedPointerOfPointerArgument operation sourceArg with
+        // A null endpoint with a nonzero count faults on its first byte, so this is the answer for
+        // any nonzero count, including one past what the interpreter's byte-offset model could
+        // have copied. A null source short-circuits before the destination is looked at at all.
+        | ManagedPointerSource.Null -> CopyBlockOutcome.NullEndpoint state
+        | sourcePtr ->
 
-        match sourcePtr, destPtr with
-        // Measured against real .NET: a null endpoint with a nonzero count raises a
-        // NullReferenceException the guest can catch, on whichever side the null is. The fault is
-        // on the first byte, so this is the answer for any nonzero count, including one past what
-        // the interpreter's byte-offset model could have copied.
-        | ManagedPointerSource.Null, _
-        | _, ManagedPointerSource.Null -> CopyBlockOutcome.NullEndpoint state
-        | _ ->
+        match managedPointerOfPointerArgument operation destArg with
+        | ManagedPointerSource.Null -> CopyBlockOutcome.NullEndpoint state
+        | destPtr ->
 
         // cpblk is undefined for overlapping ranges (ECMA-335 III.3.30), so a forward walk is
         // per-spec correct; the Memmove-style overlap handling is not needed. The shared

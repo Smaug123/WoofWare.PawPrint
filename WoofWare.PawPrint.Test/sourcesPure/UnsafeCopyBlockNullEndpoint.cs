@@ -134,6 +134,25 @@ public unsafe class Program
         }
     }
 
+    // A null source wins over a destination that is not a real address at all. A copy reads
+    // before it writes, so the read from null faults first and the destination is never touched.
+    // Measured on real .NET: this raises a catchable NullReferenceException, while the mirror
+    // image (null destination, unmapped source) instead dies with an uncatchable
+    // AccessViolationException — which is why that direction is not a row here, and why the
+    // source endpoint has to be the one examined first.
+    private static unsafe int NullSourceBeatsAnUnmappedDestination()
+    {
+        try
+        {
+            Unsafe.CopyBlock((void*)0x100000000UL, null, 1);
+            return 11;
+        }
+        catch (NullReferenceException)
+        {
+            return 0;
+        }
+    }
+
     // A zero count must not dereference either endpoint, so none of these faults, and the
     // destination is left alone.
     private static int NullWithZeroCountIsLegal()
@@ -170,6 +189,8 @@ public unsafe class Program
         r = UnalignedOverloadFaultsToo();
         if (r != 0) return r;
         r = NullEndpointOutranksAnImpossibleCount();
+        if (r != 0) return r;
+        r = NullSourceBeatsAnUnmappedDestination();
         if (r != 0) return r;
         r = NullWithZeroCountIsLegal();
         if (r != 0) return r;
