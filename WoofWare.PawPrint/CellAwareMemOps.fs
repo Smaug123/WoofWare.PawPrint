@@ -569,10 +569,21 @@ module internal CellAwareMemOps =
     /// the byte walk produces the identical bytes anyway, so nothing is lost
     /// there; for cells with no byte image (an object reference, a runtime
     /// pointer, a `NativeInt` carrying non-`Verbatim` provenance) a nonzero
-    /// fill therefore fails loudly in `writeByte`. That is the wanted answer:
-    /// the real runtime would leave a corrupt GC reference behind, which is
-    /// undefined behaviour, and there is no value PawPrint could write that
-    /// would model it.
+    /// fill therefore fails loudly in `writeByte`. Where the range really does
+    /// cover such a cell that refusal is the wanted answer, because the real
+    /// runtime would leave a corrupt GC reference behind and there is no value
+    /// PawPrint could write that models it.
+    ///
+    /// It is *not* the wanted answer for a byte-addressable sub-range that
+    /// merely lives inside reference-bearing storage — an interior `long` of a
+    /// struct that also holds an `object`, say, reached through a byte view at
+    /// a nonzero intra-cell offset. The real runtime updates that field and
+    /// leaves its siblings alone; here `tryWholeCellZeroAt` declines (it
+    /// requires intra-cell offset 0) and the byte walk then fails against the
+    /// unrenderable outer cell. `copy` serves that shape through
+    /// `tryWholeCellMoveAt`/`tryPaddingMoveAt`, which name nested cells; the
+    /// single-endpoint walk has no counterpart yet. This is a limitation
+    /// inherited from `clear`, not a position.
     let fill
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
