@@ -1995,11 +1995,17 @@ module RenameRules =
     ///    symlink to get here — `rename("lf/", "g")`, `rename("dang/", "g")` and
     ///    `rename("lroot/", "g")` are all ENOTDIR, with no chance of moving a
     ///    link's target.
-    ///  * A trailing separator on the **destination** demands both that the
-    ///    source be a directory and that any existing destination be one:
-    ///    `rename(f, "absent/")` and `rename(f, "d/")` are ENOTDIR for the first
-    ///    reason, and `rename(d, "ld/")` with `ld -> realdir` for the second,
-    ///    since Linux will not follow that final link.
+    ///  * A trailing separator on the **destination** demands that the *source*
+    ///    be a directory: `rename(f, "absent/")` and `rename(f, "d/")` are
+    ///    ENOTDIR, and so is `rename(p/f, "q/absent/")` with `q` unwritable,
+    ///    which is what puts this arm above the write checks.
+    ///
+    ///    It demands nothing of the destination, and seeing that needs an
+    ///    unwritable parent: `rename(d, "q/l/")` with `l` a symlink to a
+    ///    directory is ENOTDIR when `q` is writable and **EACCES** when it is
+    ///    not. So the ENOTDIR there is the ordinary type rule further down, not
+    ///    this arm — the two are indistinguishable until a check between them
+    ///    fires.
     ///  * Both paths naming one inode changes nothing and succeeds, and that
     ///    beats every permission check below: `rename(f, g)` with `g` a hard link
     ///    to `f` succeeds from a parent the caller may not write, and so does the
@@ -2059,10 +2065,7 @@ module RenameRules =
 
         if source.TrailingSeparatorDemanded && not movedIsDirectory then
             RenameVerdict.Refuse UnixError.ENOTDIR
-        elif
-            destination.TrailingSeparatorDemanded
-            && (not movedIsDirectory || displacesNonDirectory)
-        then
+        elif destination.TrailingSeparatorDemanded && not movedIsDirectory then
             RenameVerdict.Refuse UnixError.ENOTDIR
         elif destinationExisting = Some moved then
             RenameVerdict.NoOp
@@ -2216,15 +2219,6 @@ module RenameRules =
         let displacedDirectory = RenameChecks.existingDirectory destinationExisting vfs
         let displacesNonDirectory = RenameChecks.namesNonDirectory destinationExisting vfs
 
-        // Which directory the destination-side write check asks about. A
-        // directory displacing a directory is the one shape where Darwin asks
-        // the displaced object rather than the directory holding it.
-        let destinationWriteCheck : string * InodeNumber =
-            match displacedDirectory with
-            | Some displaced when movedIsDirectory -> "the displaced directory", displaced
-            | Some _
-            | None -> "the destination's parent", destinationDirectory
-
         if movedIsDirectory && displacesNonDirectory then
             RenameVerdict.Refuse UnixError.ENOTDIR
         elif not movedIsDirectory && displacedDirectory.IsSome then
@@ -2242,7 +2236,17 @@ module RenameRules =
             RenameVerdict.Refuse UnixError.EINVAL
         elif RenameChecks.lacksWrite "the source's parent" privilege sourceDirectory vfs then
             RenameVerdict.Refuse UnixError.EACCES
-        elif RenameChecks.lacksWrite (fst destinationWriteCheck) privilege (snd destinationWriteCheck) vfs then
+        elif
+            // Which directory this asks about is the measured oddity. A
+            // directory displacing a directory is the one shape where Darwin
+            // consults the displaced object rather than the directory holding
+            // it -- and `displacedDirectory` being `Some` here already implies
+            // the source is a directory, because the EISDIR arm above refused
+            // the only other way to reach this line with one.
+            (match displacedDirectory with
+             | Some displaced -> RenameChecks.lacksWrite "the displaced directory" privilege displaced vfs
+             | None -> RenameChecks.lacksWrite "the destination's parent" privilege destinationDirectory vfs)
+        then
             RenameVerdict.Refuse UnixError.EACCES
         elif destinationExisting = Some moved then
             RenameVerdict.NoOp

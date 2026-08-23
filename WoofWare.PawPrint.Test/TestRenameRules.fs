@@ -60,6 +60,7 @@ module TestRenameRules =
     ///     pd, pm     two empty directories inside p
     ///   q/           0o555: searchable, not writable
     ///     qd         an empty directory, qfull/kid a non-empty one, qfile a file
+    ///     lq -> /d2  a symlink to a directory, inside the unwritable parent
     ///   w/           0o755, the writable destination parent
     ///     wf, wd, wfull/kid   a file, an empty directory, a non-empty directory
     ///     wzero, wzerofull/kid  the same two at mode 0o000
@@ -118,6 +119,10 @@ module TestRenameRules =
         let qfull, vfs = dir q "qfull" plainDir vfs
         let vfs = file qfull "kid" vfs |> snd
         let vfs = file q "qfile" vfs |> snd
+        // A symlink to a directory inside the unwritable `q`. It is what makes
+        // the destination's trailing-separator arm distinguishable from the type
+        // rule below it: with `q` writable the two both say ENOTDIR.
+        let vfs = link q "lq" "/d2" vfs
 
         let w, vfs = dir root "w" plainDir vfs
         let vfs = file w "wf" vfs |> snd
@@ -503,6 +508,33 @@ module TestRenameRules =
     let ``the destination's trailing separator beats its parent's write bit`` () : unit =
         refuses linux UnixError.ENOTDIR [ "f", "q/nx/" ]
         refuses darwin UnixError.ENOENT [ "f", "q/nx/" ]
+
+    [<Test>]
+    let ``the destination's trailing separator demands nothing of the destination`` () : unit =
+        // The arm above the write checks asks only about the *source*. Seeing
+        // that needs an unwritable parent: with `q` writable, `rename(d, "q/l/")`
+        // is ENOTDIR either way — from this arm if it asked, and from the type
+        // rule below if it did not. Measured EACCES, so it does not ask.
+        refuses linux UnixError.EACCES [ "d", "q/lq/" ; "d", "q/qfile/" ]
+        // And the *source* half really is above them, on the same shape.
+        refuses linux UnixError.ENOTDIR [ "f", "q/lq/" ]
+
+        // Darwin's walk follows `q/lq` and lands on `d2`, so what it sees is an
+        // ordinary directory-over-directory rename — which is the one shape
+        // where it never consults `q` at all.
+        moves (verdict darwin CallerPrivilege.Unprivileged "d" "q/lq/")
+        |> shouldEqual ("d", "d2")
+
+        refuses darwin UnixError.EISDIR [ "f", "q/lq/" ]
+        // `q/qfile` is a regular file, so Darwin's `Demand` walk refuses the
+        // path before any verdict runs.
+        refuses darwin UnixError.ENOTDIR [ "d", "q/qfile/" ]
+
+    [<Test>]
+    let ``a symlink at the destination is refused by the type rule, not the separator`` () : unit =
+        // The control for the row above: with a writable parent both candidate
+        // arms answer ENOTDIR, which is why that row needs the narrowed one.
+        refuses linux UnixError.ENOTDIR [ "d", "ld/" ]
 
     [<Test>]
     let ``the subtree rule beats the destination's trailing separator on both`` () : unit =

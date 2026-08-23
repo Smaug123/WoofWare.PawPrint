@@ -189,6 +189,11 @@ rename("d", "d2/") -- directory source, directory destination + separator       
 rename("d", "ld/") where ld -> realdir                                                   ENOTDIR
 rename(p/f, "q/absent/") -- the demand against the parent's write bit                    ENOTDIR
 rename(a, "a/b/new/") -- the subtree rule against the demand                             EINVAL
+rename(d, "q/t/") where q/t is a symlink to a dir, q writable                            ENOTDIR
+rename(d, "q/t/") where q/t is a symlink to a dir, q UNWRITABLE                          EACCES
+rename(d, "q/t/") where q/t is a regular file, q UNWRITABLE                              EACCES
+rename(d, "q/t/") where q/t is an empty dir, q UNWRITABLE (control)                      EACCES
+rename(f, "q/t/") where q/t is a symlink to a dir, q UNWRITABLE                          ENOTDIR
 
 ## orphan
 ordinary file source (control)                                                           ENOENT

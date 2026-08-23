@@ -569,6 +569,44 @@ def trailing():
     row("trail", 'rename(a, "a/b/new/") -- the subtree rule against the demand',
         subtreetrailing, "a", "a/b/new/")
 
+    # Does the demand on the *destination* say anything about the destination
+    # itself, or only about the source? With a writable parent the two readings
+    # both answer ENOTDIR -- once from the demand and once from the ordinary
+    # type rule below it -- so only an unwritable parent, whose write check sits
+    # between them, can tell them apart.
+    def narrowed(dstkind):
+        def go(root):
+            os.mkdir(os.path.join(root, "d"))
+            open(os.path.join(root, "f"), "w").close()
+            os.mkdir(os.path.join(root, "realdir"))
+            os.mkdir(os.path.join(root, "q"))
+            t = os.path.join(root, "q", "t")
+            if dstkind == "symdir":
+                os.symlink(os.path.join(root, "realdir"), t)
+            elif dstkind == "file":
+                open(t, "w").close()
+            elif dstkind == "emptydir":
+                os.mkdir(t)
+            os.chmod(os.path.join(root, "q"), 0o555)
+        return go
+
+    def writable(dstkind):
+        def go(root):
+            narrowed(dstkind)(root)
+            os.chmod(os.path.join(root, "q"), 0o755)
+        return go
+
+    row("trail", 'rename(d, "q/t/") where q/t is a symlink to a dir, q writable',
+        writable("symdir"), "d", "q/t/")
+    row("trail", 'rename(d, "q/t/") where q/t is a symlink to a dir, q UNWRITABLE',
+        narrowed("symdir"), "d", "q/t/")
+    row("trail", 'rename(d, "q/t/") where q/t is a regular file, q UNWRITABLE',
+        narrowed("file"), "d", "q/t/")
+    row("trail", 'rename(d, "q/t/") where q/t is an empty dir, q UNWRITABLE (control)',
+        narrowed("emptydir"), "d", "q/t/")
+    row("trail", 'rename(f, "q/t/") where q/t is a symlink to a dir, q UNWRITABLE',
+        narrowed("symdir"), "f", "q/t/")
+
 
 # ---------------------------------------------- a destination parent with no name
 
