@@ -4,6 +4,7 @@ open System
 open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
+open Microsoft.Extensions.Logging
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
@@ -11,6 +12,11 @@ open WoofWare.PawPrint.Test
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
+// Runs guests under the interpreter, which is where essentially all of the suite's
+// time goes; `Explicit` keeps it out of a bare `dotnet test` so local iteration is
+// quick. CI selects it by category and so runs it. See AGENTS.md.
+[<Category("Guest")>]
+[<Explicit>]
 module TestPureCases =
     let assy = typeof<RunResult>.Assembly
 
@@ -362,6 +368,48 @@ module TestPureCases =
         )
         |> Seq.toList
 
+    /// Run `body` against a logger that captures the guest's run, writing everything it
+    /// captured to stderr if `body` throws. The assertion belongs inside `body` rather
+    /// than after it: a guest whose two runtimes disagree needs the same account of what
+    /// PawPrint did as a guest that failed outright.
+    let private withGuestLog (sourceName : string) (body : ILoggerFactory -> 'a) : 'a =
+        let messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", sourceName ]
+
+        use _loggerFactoryResource = loggerFactory
+
+        try
+            body loggerFactory
+        with _ ->
+            for message in messages () do
+                System.Console.Error.WriteLine $"{message}"
+
+            reraise ()
+
+    let private interpret
+        (loggerFactory : ILoggerFactory)
+        (sourceName : string)
+        (kernelConfig : KernelConfig)
+        (image : byte array)
+        : RunOutcome
+        =
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+
+        use peImage = new MemoryStream (image)
+
+        BoundedRun.run
+            loggerFactory
+            sourceName
+            (Some sourceName)
+            peImage
+            { HostConfig.Default dotnetRuntimes with
+                Guest =
+                    { GuestConfig.Default dotnetRuntimes with
+                        Kernel = kernelConfig
+                    }
+            }
+
     let runPawPrintSource
         (sourceName : string)
         (source : string)
@@ -371,36 +419,35 @@ module TestPureCases =
         =
         let image = Roslyn.compile [ source ]
 
-        let messages, loggerFactory =
-            LoggerFactory.makeTestWithProperties [ "source_file", sourceName ]
+        withGuestLog
+            sourceName
+            (fun loggerFactory -> interpret loggerFactory sourceName kernelConfig image |> assertResult image)
 
-        use _loggerFactoryResource = loggerFactory
+    /// As `runPawPrintSource`, but the image also runs under the real runtime, and the two
+    /// runs happen *at the same time* rather than one after the other. See
+    /// `DifferentialOracle.alongsideInterpreted` for why overlapping them is sound. It is
+    /// worth doing because the oracle is the larger half of an ordinary case's cost, and
+    /// nearly all of that is spent blocked on the child process rather than computing.
+    let runPawPrintSourceAgainstOracle
+        (sourceName : string)
+        (source : string)
+        (kernelConfig : KernelConfig)
+        (oracle : byte array -> RealRuntimeResult)
+        (assertResult : RealRuntimeResult -> RunOutcome -> unit)
+        : unit
+        =
+        let image = Roslyn.compile [ source ]
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        withGuestLog
+            sourceName
+            (fun loggerFactory ->
+                let realResult, pawPrintResult =
+                    DifferentialOracle.alongsideInterpreted
+                        (fun () -> oracle image)
+                        (fun () -> interpret loggerFactory sourceName kernelConfig image)
 
-        use peImage = new MemoryStream (image)
-
-        try
-            let pawPrintResult =
-                BoundedRun.run
-                    loggerFactory
-                    sourceName
-                    (Some sourceName)
-                    peImage
-                    { HostConfig.Default dotnetRuntimes with
-                        Guest =
-                            { GuestConfig.Default dotnetRuntimes with
-                                Kernel = kernelConfig
-                            }
-                    }
-
-            assertResult image pawPrintResult
-        with _ ->
-            for message in messages () do
-                System.Console.Error.WriteLine $"{message}"
-
-            reraise ()
+                assertResult realResult pawPrintResult
+            )
 
     let runTest (case : EndToEndTestCase) : unit =
         // Every `sourcesPure` case is `Always`: the directory's whole premise is that
@@ -415,17 +462,16 @@ module TestPureCases =
 
         let source = Assembly.getEmbeddedResourceAsString case.FileName assy
 
-        runPawPrintSource
+        runPawPrintSourceAgainstOracle
             case.FileName
             source
             case.KernelConfig
-            (fun image pawPrintResult ->
-                // The case's own seed drives the oracle too, so both runtimes
-                // are looking at one description of a filesystem. An unseeded
-                // case passes `FileSystemSeed.empty`, which materialises
-                // nothing and leaves the oracle exactly as it was.
-                let realResult = RealRuntime.executeWithSeed case.KernelConfig.FileSystem [||] image
-
+            // The case's own seed drives the oracle too, so both runtimes
+            // are looking at one description of a filesystem. An unseeded
+            // case passes `FileSystemSeed.empty`, which materialises
+            // nothing and leaves the oracle exactly as it was.
+            (RealRuntime.executeWithSeed case.KernelConfig.FileSystem [||])
+            (fun realResult pawPrintResult ->
                 DifferentialOracle.compareOutcomes
                     case.FileName
                     case.ExpectedReturnCode
