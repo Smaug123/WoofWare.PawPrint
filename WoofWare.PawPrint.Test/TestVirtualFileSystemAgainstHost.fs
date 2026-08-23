@@ -64,6 +64,9 @@ module TestVirtualFileSystemAgainstHost =
     extern int private rmdir(string path)
 
     [<DllImport("libc", SetLastError = true)>]
+    extern int private rename(string oldPath, string newPath)
+
+    [<DllImport("libc", SetLastError = true)>]
     extern int private ftruncate(int fd, int64 length)
 
     [<DllImport("libc", SetLastError = true)>]
@@ -2295,3 +2298,308 @@ module TestVirtualFileSystemAgainstHost =
                 modelNames vfs relative |> shouldEqual (hostNames root relative)
         finally
             removeHostTree root
+
+    // ------------------------------------------------- rename: the graph half
+
+    /// A tree of its own, rather than the shared corpus. The corpus exists to
+    /// exercise the *walk*, so it narrows three directories past the point
+    /// where this test host can enumerate them — and what a rename does to the
+    /// graph has nothing to do with permissions, which are `RenameRules`'
+    /// business in the next stage. A small readable tree is the honest input.
+    let private renameDirectories = [ "d" ; "d/sub" ; "b" ]
+
+    let private renameFiles = [ "f" ; "d/g" ]
+
+    let private renameSymlinks = [ "ld", "d" ; "dang", "nx" ]
+
+    let private buildRenameHostTree (root : string) : unit =
+        for directory in renameDirectories do
+            Directory.CreateDirectory (Path.Combine (root, directory))
+            |> ignore<DirectoryInfo>
+
+        for file in renameFiles do
+            File.WriteAllBytes (Path.Combine (root, file), Array.empty)
+
+        for name, target in renameSymlinks do
+            if symlink (target, Path.Combine (root, name)) <> 0 then
+                failwith $"could not create symlink %s{name} -> %s{target}: errno %d{errno ()}"
+
+    let private buildRenameModel () : VirtualFileSystem =
+        let mutable vfs = VirtualFileSystem.empty buildTime
+
+        let directoryOf (relative : string) : InodeNumber =
+            match
+                VirtualFileSystem.resolveExisting
+                    (limits ())
+                    CallerPrivilege.Privileged
+                    (VirtualFileSystem.root vfs)
+                    SymlinkPolicy.Follow
+                    (UnixPath.parseOrFail "test" (if relative = "" then "/" else "/" + relative))
+                    vfs
+            with
+            | Ok inode -> inode
+            | Error error -> failwith $"could not place an entry under \"%s{relative}\": %O{error}"
+
+        let split (relative : string) : string * FileName =
+            match relative.LastIndexOf '/' with
+            | -1 -> "", FileName.parseOrFail "test" relative
+            | index -> relative.Substring (0, index), FileName.parseOrFail "test" (relative.Substring (index + 1))
+
+        for directory in renameDirectories do
+            let parent, leaf = split directory
+
+            vfs <-
+                VirtualFileSystem.createDirectory
+                    (directoryOf parent)
+                    leaf
+                    PermissionBits.defaultForDirectory
+                    buildTime
+                    vfs
+                |> function
+                    | Ok (_, updated) -> updated
+                    | Error error -> failwith $"could not create %s{directory}: %O{error}"
+
+        for file in renameFiles do
+            let parent, leaf = split file
+
+            vfs <-
+                VirtualFileSystem.createFile
+                    (directoryOf parent)
+                    leaf
+                    PermissionBits.defaultForRegularFile
+                    buildTime
+                    ImmutableArray<byte>.Empty
+                    vfs
+                |> function
+                    | Ok (_, updated) -> updated
+                    | Error error -> failwith $"could not create %s{file}: %O{error}"
+
+        for name, target in renameSymlinks do
+            let parent, leaf = split name
+
+            vfs <-
+                VirtualFileSystem.createSymlink
+                    (directoryOf parent)
+                    leaf
+                    buildTime
+                    (SymlinkTarget.parseOrFail "test" target)
+                    vfs
+                |> function
+                    | Ok (_, updated) -> updated
+                    | Error error -> failwith $"could not create symlink %s{name}: %O{error}"
+
+        vfs
+
+    /// The rename pairs compared below: relative source, relative destination.
+    ///
+    /// Every one succeeds on both kernels — this stage has no verdict to
+    /// compare, only the graph surgery, so a row that refused would compare two
+    /// unchanged trees and assert nothing. The refusals are `RenameRules`'
+    /// business, and are compared where `rmdir`'s are.
+    ///
+    /// No row carries a trailing separator, and none needs one: the two kernels
+    /// resolve these paths identically, so each pair means the same thing on
+    /// both and the comparison is purely about what the rename *did*.
+    let private renamePairs =
+        [
+            // A file to a free name, in its own directory and in another.
+            "f", "moved"
+            "d/g", "moved"
+            "f", "d/moved"
+            // A file onto an existing file: the destination inode loses its
+            // name and the source takes it.
+            "d/g", "f"
+            // A directory to a free name in another directory. This is the row
+            // the ".." comparison exists for.
+            "d/sub", "b/sub-moved"
+            // A directory renamed within its own parent, whose ".." must *not*
+            // move.
+            "d/sub", "d/sub2"
+            // A directory onto an existing empty directory.
+            "d/sub", "b"
+            // A symlink, which moves as itself rather than as its target.
+            "ld", "ld-moved"
+            "dang", "d/dang-moved"
+        ]
+
+    let private renameHostListing (root : string) : string list =
+        let rec walk (prefix : string) (directory : string) : string list =
+            DirectoryInfo(directory).EnumerateFileSystemInfos ()
+            |> Seq.collect (fun entry ->
+                let relative =
+                    if prefix = "" then
+                        entry.Name
+                    else
+                        prefix + "/" + entry.Name
+
+                match entry with
+                | :? DirectoryInfo as sub when isNull entry.LinkTarget ->
+                    relative :: List.ofSeq (walk relative sub.FullName)
+                | _ -> [ relative ]
+            )
+            |> List.ofSeq
+
+        walk "" root |> List.sort
+
+    /// Where `<relative>/..` leads, for every directory in the tree: the oracle
+    /// for `DirectoryContent.Parent`, which a name listing alone cannot see. A
+    /// rename that bound the moved directory into the wrong parent *and* set its
+    /// `Parent` to match is self-consistent, passes `checkInvariants`, and shows
+    /// up only here.
+    let private renameHostParents (root : string) : (string * string) list =
+        renameHostListing root
+        |> List.filter (fun relative ->
+            let full = Path.Combine (root, relative)
+            Directory.Exists full && isNull (DirectoryInfo full).LinkTarget
+        )
+        |> List.map (fun relative ->
+            let resolved = physicalPath (Path.Combine (root, relative, ".."))
+
+            let trimmed =
+                if resolved = root then
+                    ""
+                elif resolved.StartsWith (root + "/", StringComparison.Ordinal) then
+                    resolved.Substring (root.Length + 1)
+                else
+                    resolved
+
+            relative, trimmed
+        )
+        |> List.sort
+
+    let private renameModelParents (vfs : VirtualFileSystem) : (string * string) list =
+        modelListing vfs
+        |> List.choose (fun relative ->
+            match
+                VirtualFileSystem.resolveExisting
+                    (limits ())
+                    CallerPrivilege.Privileged
+                    (VirtualFileSystem.root vfs)
+                    SymlinkPolicy.NoFollowFinal
+                    (UnixPath.parseOrFail "test" relative)
+                    vfs
+            with
+            | Error _ -> None
+            | Ok inode ->
+
+            match VirtualFileSystem.tryGetContent inode vfs with
+            | Some (InodeContent.Directory content) ->
+                match VirtualFileSystem.pathOfDirectory content.Parent vfs with
+                | None -> Some (relative, "<unreachable>")
+                | Some absolute ->
+                    let rendered = AbsoluteUnixPath.toString absolute
+                    Some (relative, (if rendered = "/" then "" else rendered.TrimStart '/'))
+            | _ -> None
+        )
+        |> List.sort
+
+    /// Apply one rename to the model by resolving both paths and calling the
+    /// primitive, which is all this stage has: there is no `RenameRules` yet to
+    /// decide anything.
+    let private modelRename (source : string) (destination : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
+        let resolveEntry (relative : string) : InodeNumber * FileName =
+            match
+                VirtualFileSystem.resolve
+                    (limits ())
+                    CallerPrivilege.Privileged
+                    (VirtualFileSystem.root vfs)
+                    SymlinkPolicy.NoFollowFinal
+                    (UnixPath.parseOrFail "test" relative)
+                    vfs
+            with
+            | Error error -> failwith $"the model could not resolve %s{relative}: %O{error}"
+            | Ok target ->
+
+            match target with
+            | ResolvedTarget.Entry (directory, name, _) -> directory, name
+            | ResolvedTarget.Directory _ ->
+                failwith $"%s{relative} names no final component, which no row in this corpus does"
+
+        let sourceDirectory, sourceName = resolveEntry source
+        let destinationDirectory, destinationName = resolveEntry destination
+
+        VirtualFileSystem.rename sourceDirectory sourceName destinationDirectory destinationName buildTime vfs
+        |> function
+            | Ok (_, updated) -> updated
+            | Error error -> failwith $"the model refused to rename %s{source} to %s{destination}: %O{error}"
+
+    [<Test>]
+    let ``rename rearranges the tree exactly as this kernel does`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // Compares the whole tree and every directory's "..", not merely the two
+        // names involved: a rename that moved the right entry and corrupted
+        // something else would pass a two-name check.
+        let mismatches =
+            [
+                for source, destination in renamePairs do
+                    let unique = Guid.NewGuid().ToString "N"
+                    let root = Path.Combine (Path.GetTempPath (), $"pawprint-rename-%s{unique}")
+                    Directory.CreateDirectory root |> ignore<DirectoryInfo>
+                    let root = physicalPath root
+
+                    try
+                        buildRenameHostTree root
+                        let vfs = buildRenameModel ()
+
+                        if rename (hostPath root source, hostPath root destination) <> 0 then
+                            yield
+                                $"rename %s{source} -> %s{destination}: the kernel refused with errno %d{errno ()}, and every row here is meant to succeed"
+                        else
+
+                        let renamed = modelRename source destination vfs
+
+                        let hostTree = renameHostListing root
+                        let modelTree = modelListing renamed
+
+                        if hostTree <> modelTree then
+                            yield
+                                $"rename %s{source} -> %s{destination}: kernel tree %A{hostTree}, model tree %A{modelTree}"
+
+                        let hostDots = renameHostParents root
+                        let modelDots = renameModelParents renamed
+
+                        if hostDots <> modelDots then
+                            yield
+                                $"rename %s{source} -> %s{destination}: kernel \"..\" %A{hostDots}, model \"..\" %A{modelDots}"
+                    finally
+                        try
+                            Directory.Delete (root, true)
+                        with _ ->
+                            ()
+            ]
+
+        if not (List.isEmpty mismatches) then
+            let rendered = String.Join (Environment.NewLine, mismatches)
+
+            failwith $"The model disagrees with this kernel about rename:%s{Environment.NewLine}%s{rendered}"
+
+    [<Test>]
+    let ``the rename corpus actually moves a directory between parents`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // Without this the comparison above could pass while never exercising
+        // the reparent — the one thing a name listing cannot see, and the one
+        // thing the ".." comparison exists for. Stated against the *kernel*, so
+        // the model cannot satisfy it by agreeing with itself.
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-rename-cover-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            buildRenameHostTree root
+
+            let before = renameHostParents root |> Map.ofList
+            rename (hostPath root "d/sub", hostPath root "b/sub-moved") |> shouldEqual 0
+            let after = renameHostParents root |> Map.ofList
+
+            Map.tryFind "d/sub" before |> shouldEqual (Some "d")
+            Map.tryFind "b/sub-moved" after |> shouldEqual (Some "b")
+        finally
+            try
+                Directory.Delete (root, true)
+            with _ ->
+                ()
