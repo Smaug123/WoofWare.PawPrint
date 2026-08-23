@@ -2320,6 +2320,9 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
+                // Measured: the guest exits 3 on real .NET and 0 here, which is the divergence
+                // itself rather than a PawPrint bug.
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
