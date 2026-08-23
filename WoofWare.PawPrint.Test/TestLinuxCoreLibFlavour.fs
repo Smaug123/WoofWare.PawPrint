@@ -369,3 +369,64 @@ public class Program
 
         exitCode terminalState thread |> shouldEqual 0
         loadedCorelibPath terminalState |> shouldEqual (corelibPath frameworkDir)
+
+    /// `BitOperations.PopCount` is the strongest flavour case of the three: no width of it is
+    /// modelled at all, so every overload's CoreLib body is *executed*. Those bodies are exactly
+    /// where the flavours diverge — the x64 build calls `Popcnt.IsSupported` for real and has
+    /// folded the `AdvSimd.Arm64` guard to a constant false, while the arm64 build a macOS dev
+    /// box interprets does the reverse and additionally carries the live `Vector64`/`AdvSimd`
+    /// calls behind that guard. Both must reach the same software fallback.
+    ///
+    /// The same applies to the six `[Intrinsic]`-marked `IBinaryInteger<TSelf>.PopCount`
+    /// wrappers, whose bodies are likewise executed rather than modelled.
+    [<Test>]
+    let ``PopCount runs against the pinned linux-x64 CoreLib`` () : unit =
+        let frameworkDir = requireLinuxFramework ()
+
+        let source =
+            """
+using System;
+using System.Numerics;
+
+public class Program
+{
+    public static int Main(string[] args)
+    {
+        // The executed uint32 body: the extremes, plus a pattern where the fallback's
+        // byte-wise partial sums are all distinct.
+        if (BitOperations.PopCount(0u) != 0) return 1;
+        if (BitOperations.PopCount(uint.MaxValue) != 32) return 2;
+        if (BitOperations.PopCount(0x55555555u) != 16) return 3;
+        if (BitOperations.PopCount(0x01234567u) != 12) return 4;
+
+        // The executed uint64 body. On a 64-bit build this is its own software fallback
+        // (multiply by 0x0101010101010101, shift right by 56), not a split into halves.
+        if (BitOperations.PopCount(0ul) != 0) return 5;
+        if (BitOperations.PopCount(ulong.MaxValue) != 64) return 6;
+        if (BitOperations.PopCount(0xFFFFFFFF00000000ul) != 32) return 7;
+        if (BitOperations.PopCount(0x0123456789ABCDEFul) != 32) return 8;
+
+        // The executed native-width forwarder.
+        int width = IntPtr.Size * 8;
+        if (BitOperations.PopCount((nuint)0) != 0) return 9;
+        if (BitOperations.PopCount(nuint.MaxValue) != width) return 10;
+        if (BitOperations.PopCount(default(nuint)) != 0) return 11;
+        if (BitOperations.PopCount((nuint)255) != 8) return 12;
+
+        // The executed IBinaryInteger wrappers.
+        if (uint.PopCount(uint.MaxValue) != 32u) return 13;
+        if (ulong.PopCount(ulong.MaxValue) != 64ul) return 14;
+        if (nuint.PopCount(nuint.MaxValue) != (nuint)width) return 15;
+        if (int.PopCount(-1) != 32) return 16;
+        if (long.PopCount(-1L) != 64L) return 17;
+        if (nint.PopCount((nint)(-1)) != (nint)width) return 18;
+
+        return 0;
+    }
+}
+"""
+
+        let terminalState, thread = runOnLinuxFramework frameworkDir source
+
+        exitCode terminalState thread |> shouldEqual 0
+        loadedCorelibPath terminalState |> shouldEqual (corelibPath frameworkDir)
