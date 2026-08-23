@@ -30,6 +30,11 @@ open WoofWare.PawPrint
 /// swept. The pair is what pins that the two parameters do different jobs.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
+// Runs guests under the interpreter, which is where essentially all of the suite's
+// time goes; `Explicit` keeps it out of a bare `dotnet test` so local iteration is
+// quick. CI selects it by category and so runs it. See AGENTS.md.
+[<Category("Guest")>]
+[<Explicit>]
 module TestClockJitterFindsBugs =
 
     /// Both guests report their violated invariant with this exit code.
