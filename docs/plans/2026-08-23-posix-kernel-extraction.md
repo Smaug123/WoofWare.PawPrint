@@ -72,21 +72,61 @@ would have destroyed the rename-only oracle that is the only reason a
 9,650-line diff is reviewable at all. The claim in `AGENTS.md` and the package
 README was corrected to state the gap instead.
 
-### Stage 3.5: move the PAL adapters out of the library
+### Stage 3.5: move the PAL adapters out of the library — **needs a decision**
 
 **Dependencies**: stage 3.
 
-For each of the eleven, the POSIX half stays and the PAL half moves to a
-PawPrint-side adapter beside `Native/NativeSystemNative.fs`. `UnixError` is the
-one with real design content: its `numbering` table returns a record carrying
-both `.Raw` (POSIX) and `.Pal` (CoreCLR), so the split is a question of which
-side owns that table, not a move of a function.
+The eleven are not homogeneous, which is what makes this a choice rather than a
+chore:
 
-**Correctness oracle**: the full suite including `Guest`, unchanged; and a
-grep-based assertion, run in CI beside the reference test, that no
-identifier in `WoofWare.PosixKernel` contains `Pal`/`pal` or names
-`PosixSignal`. That assertion is what stops the residue growing back, and is
-worth more than the move itself.
+| group | functions | content |
+| --- | --- | --- |
+| managed-enum mapping | `Signal.ofPosixSignalEnum`, `toPosixSignalEnum` | pure `System.Runtime.InteropServices.PosixSignal` values; no kernel content whatever |
+| PAL numbering of a POSIX concept | `UnixError.toPal`, `palOfRawErrno`, `palOfRawErrnoUnder` | one table carrying `.Raw` (POSIX) and `.Pal` (CoreCLR) together |
+| PAL bit mask | `SocketEventInterest.ofBits` | the PAL's `SocketEvents` bits, plus its EINVAL screen |
+| PAL↔platform numbering | `addressFamilyPalToPlatform`, `addressFamilyPlatformToPal` | transcriptions of `TryConvertAddressFamily*` |
+| **mixed** | `socketCreation` | the shim's three screens **and** this kernel's own declared protocol table, in one function |
+
+`PollEvents.ofBits`/`toBits` were on an earlier draft of this list and should not
+be: `POLLIN`…`POLLNVAL` are numerically identical in the PAL, in Linux's
+`poll.h` and in Darwin's, so those are POSIX values with a PAL-flavoured
+docstring. Fix the docstring, not the code.
+
+**(a) Split every table at the boundary, now.** The library keeps the POSIX
+values; PawPrint gains a mirror table for the PAL ones. Immediate, and
+independent of everything downstream. The cost is two exhaustive matches over
+`UnixError` that the compiler will keep *exhaustive* but cannot keep *in
+agreement*, and — the real problem — it forces a decision on `socketCreation`'s
+mixture before there is anything to decide it against.
+
+**(b) Defer the whole thing to stage 7.** `Syscall`/`SyscallOutcome` carry POSIX
+values by construction, so PawPrint's translator is where PAL naturally lives,
+and these eleven then move as part of a change that must touch them anyway. No
+work is done twice and the adapter is designed once, against a real interface.
+The cost is that the library's public API speaks PAL until stage 7 lands —
+indefinitely, if this stalls.
+
+**(c) Split the eight clean ones now, defer `socketCreation`.** Attractive until
+you notice `socketCreation` *calls* `addressFamilyPalToPlatform`, so those two
+have to stay behind with it or be duplicated. Leaves the residue at three rather
+than eleven, at the price of a half-migrated boundary — the state the gospel
+warns about specifically.
+
+**(d) Parameterise the library over its own encoding**, so PawPrint supplies the
+PAL numbering as data. Rejected: the PAL is one client's encoding, not an axis
+the library varies along, and nothing else would use the generality.
+
+**Recommendation: (b), plus a containment measure borrowed from (a).** Land a
+CI assertion *now* that pins the residue at exactly these eleven named
+functions — an allowlist that must shrink and may never grow. The failure mode
+here is accretion rather than any single function, so the assertion is worth
+more than the move, and it costs nothing that stage 7 would redo. But this is
+Patrick's call: (a) buys a true boundary sooner at the price of designing
+`socketCreation`'s split twice.
+
+**Correctness oracle** (whichever is chosen): the full suite including `Guest`,
+unchanged; plus the allowlisted assertion above, mutation-tested by adding a
+twelfth PAL-named function and watching it go red.
 
 One thing outstanding before the spike is fully closed: the host-equality suite
 has been verified from the far side of the boundary **on macOS only**. It
