@@ -197,7 +197,7 @@ rename(f, "q/t/") where q/t is a symlink to a dir, q UNWRITABLE                 
 
 ## unstable
 rename("l/", "g"), relative target, 200 trials                                           ENOTDIR x200
-rename("l/", "g"), absolute target, 200 trials                                           ENOTDIR x158, ok (moved the target) x42
+rename("l/", "g"), absolute target, 200 trials                                           ENOTDIR x171, ok (moved the target) x29
 
 ## orphan
 ordinary file source (control)                                                           ENOENT

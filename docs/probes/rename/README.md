@@ -45,20 +45,35 @@ Linux column.
 
 ## Two rows that are unmeasurable, not merely unmeasured
 
-**A rename whose *source* is the filesystem root reached by a final `.`, on
-Darwin — and only that.** An earlier version of this note said "`.` or `..`",
-and it was wrong for a measurable reason: it had been probing `base/..`, which
-resolves to the directory *containing* the mount, on the other filesystem. The
-root reached by a final `..` is `base/<child>/..`, and on a fresh APFS image
-where both operands share a device it answers **EINVAL**, like any other
-directory. So `..` needs no special case at all.
+**Nothing, as it turns out — but establishing that took three attempts, and
+each wrong answer looked convincing.** The question was whether Darwin gives the
+filesystem root its own arm for `rename`, as its `unlink` and `rmdir` both do.
 
-A final `.` really is out of reach. For such a path the source's parent
-directory is the mount's parent, on the containing filesystem, so EXDEV
-pre-empts the rule — measured on `base/.`, `base/./.` and `base/kid/../.`
-alike, and at uid 0 as well, so privilege is no way round it. The same
-navigation as a *destination* is fine (EINVAL), because only the source side
-crosses. Pass a mount point as `argv[1]` to run that section.
+The obstacle is that a filesystem root which is not `/` is a *mount* root, and
+renaming one is liable to EXDEV, which masks the rule. Two earlier readings of
+this section were wrong in opposite directions: the first probed `base/..`,
+which resolves to the directory *containing* the mount — a different inode on a
+different filesystem — and the second moved the operands into a private
+subdirectory, which flipped every answer.
+
+The `mountroot` section is now a 2×2 because that is what the discriminator
+turned out to be, measured 40 trials per row and stable: not `.` against `..`,
+but whether the source's parent directory and the destination's parent
+directory are the same object.
+
+| source | parents | result |
+| --- | --- | --- |
+| `base/.` | differ | **EINVAL** |
+| `base/.` | same | EXDEV |
+| `base/<private>/..` | same | EXDEV |
+| `base/<private>/..` | differ | **EINVAL** |
+
+So EXDEV is the mount boundary talking, and wherever it stays quiet the root
+answers **EINVAL for both navigations** — exactly what an ordinary directory
+answers, which the control row confirms. PawPrint has one filesystem and no
+mounts, so nothing can make EXDEV speak and the EINVAL readings are the
+applicable ones. The root is not a special case, and `darwinVerdict` has no arm
+for it.
 
 The mount-root section is the one part of this probe that writes outside a
 private temp directory, because those rows have to name the mount root itself

@@ -2104,15 +2104,11 @@ module RenameRules =
     ///    source's navigation refusal: from inside an `rmdir`'d current
     ///    directory, `rename("d/.", "x")` is ENOENT where it is EINVAL from
     ///    anywhere else.
-    ///  * A **source** that consumed no final name: "/" is EISDIR, and a
-    ///    directory reached by "." or ".." is EINVAL -- including the *root*
-    ///    reached by "..", measured on an APFS disk image where both operands
-    ///    share a device. Where Linux spends EBUSY on all of them.
-    ///
-    ///    The root reached by a final "." is the one row with no answer: for
-    ///    such a path the source's parent is the mount's parent, on the
-    ///    containing filesystem, so EXDEV pre-empts the rule on every approach.
-    ///    It crashes rather than guessing; see the arm.
+    ///  * A **source** that consumed no final name: "/" is EISDIR, and any
+    ///    directory reached by "." or ".." is EINVAL -- the root included, which
+    ///    took an APFS disk image to establish because EXDEV masks it on some
+    ///    approaches. See the arm for the rows. Where Linux spends EBUSY on all
+    ///    of them.
     ///  * A free source name is ENOENT, and beats the destination's navigation
     ///    arm below: `rename("nope", "d/.")` is ENOENT here and EBUSY on Linux.
     ///  * A **destination** that consumed no final name: "." and ".." are EINVAL
@@ -2180,28 +2176,29 @@ module RenameRules =
         else
 
         match source.Target with
-        | ResolvedTarget.Directory (inode, reachedBy) ->
+        | ResolvedTarget.Directory (_, reachedBy) ->
             match reachedBy with
             | FinalNavigation.Root -> RenameVerdict.Refuse UnixError.EISDIR
+            // No root special case, unlike Darwin's `unlink` and `rmdir`, which
+            // each give the root its own EBUSY arm. Establishing that took some
+            // care, because the obvious measurement is masked: a filesystem root
+            // that is not "/" is a *mount* root, and renaming one is liable to
+            // EXDEV.
+            //
+            // Measured on a fresh APFS image, 40 trials per row, all stable. The
+            // discriminator turns out not to be "." against ".." but whether the
+            // source's parent directory and the destination's parent directory
+            // are the same object: with `p` a directory inside the mount,
+            // `rename("base/.", "p/x")` and `rename("p/..", "base/x")` both reach
+            // the mount root and both answer **EINVAL**, while the same two
+            // sources with the destination in the other directory answer EXDEV.
+            // So EXDEV is the mount boundary talking, and where it stays quiet
+            // the root answers exactly what any other directory answers.
+            //
+            // PawPrint has one filesystem and no mounts, so nothing here can
+            // produce EXDEV and the EINVAL readings are the applicable ones.
+            | FinalNavigation.Current
             | FinalNavigation.Parent -> RenameVerdict.Refuse UnixError.EINVAL
-            | FinalNavigation.Current ->
-                if inode = VirtualFileSystem.root vfs then
-                    // Unmeasurable on a real Mac, and deliberately not guessed.
-                    // A mount root's parent directory is on another filesystem
-                    // by construction, so `rename("/.", x)` and every disk-image
-                    // stand-in for it report EXDEV before any rule below can
-                    // speak -- confirmed on an APFS image, where the same call
-                    // with the mount root as the *destination* answers EINVAL
-                    // and so is measured. PawPrint models one filesystem and
-                    // therefore never answers EXDEV, so nothing here can stand
-                    // in for the row. Answering EINVAL like any other directory
-                    // would be a guess against evidence: `unlink` and `rmdir`
-                    // both give Darwin's root its own EBUSY arm where an
-                    // ordinary directory gets EPERM or EINVAL.
-                    failwith
-                        "RenameRules.darwinVerdict: a rename whose source is the filesystem root reached by a final \".\" has no measured answer on Darwin. Measured on an APFS disk image, where both operands share a device: the root reached by \"kid/..\" answers EINVAL and is modelled, but every way of reaching it by a final \".\" -- \"base/.\", \"base/./.\", \"base/kid/../.\" -- answers EXDEV, because for a path ending in \".\" the source's parent directory is the mount's parent, which is on the containing filesystem. PawPrint models one filesystem and can never answer EXDEV itself. Reachable only from a hand-rolled P/Invoke: CoreLib normalises \"/.\" to \"/\" in Path.GetFullPath before it calls SystemNative_Rename, and rename(\"/\", x) is measured EISDIR."
-                else
-                    RenameVerdict.Refuse UnixError.EINVAL
         | ResolvedTarget.Entry (sourceDirectory, sourceName, sourceExisting) ->
 
         match sourceExisting with

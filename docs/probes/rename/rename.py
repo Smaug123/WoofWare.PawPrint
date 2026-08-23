@@ -770,87 +770,64 @@ def walk_order():
 # --------------------------------------------------- the root of a real mount
 
 def mount_root():
-    """The Darwin row that cannot be taken. Pass a mount point as argv[1] and
-    every source-side row still answers EXDEV, because a mount root's parent
-    directory is on the filesystem *containing* the mount. The destination-side
-    rows do answer, and they are what pins that half.
+    """The Darwin rows that need a filesystem root which is not "/".
 
-    This is the one section that writes outside a private temp directory -- the
-    rows have to name the mount root itself, which cannot be relocated. So it
-    creates only uniquely-named entries, **refuses to run** if any of them
-    already exists rather than clearing the way, and removes only what it made.
+    A mount root reached by a final "." cannot be measured at all: for such a
+    path the source's parent directory is the mount's parent, on the containing
+    filesystem, so EXDEV pre-empts the rule. Reached by a final ".." it answers
+    EINVAL like any other directory -- and getting that row right requires
+    descending into a child of the mount first, since `base/..` is the mount's
+    *parent*, a different inode on a different filesystem.
+
+    Everything this section creates lives inside one `mkdtemp` directory made
+    directly under the mount. That is what makes it safe on a caller-supplied
+    real mount, and it is not merely defensive: `mkdtemp` creates atomically and
+    uniquely, so there is no collision to lose a race against, no ownership to
+    verify later, and nothing to clean up but the one directory. The only names
+    outside it are `base`, `base/.`, `base/..`, `base/<private>/..` and one
+    derived sibling of `private` -- needed by the two rows whose destination's
+    parent must be the mount root itself, and checked for a collision before
+    use.
+
+    `base/<private>` doubles as the child the ".." rows descend through: it is a
+    directory directly under the mount, which is exactly what they need.
     """
     if BASE is None:
         ROWS.append(("mountroot", "(pass a mount point as argv[1] to run this section)", "skipped"))
         return
 
     base = os.path.realpath(BASE)
-    # Unique per run, so a name this probe invents cannot collide with a name
-    # somebody's data already uses. Every row's *other* operand is one of these;
-    # only the mount root itself is named as it is.
-    # Overridable only so the refusal below can be exercised: with a fixed tag a
-    # caller can create a colliding name first and check that this section
-    # declines rather than clearing it away. An untestable safety branch is what
-    # this whole rewrite is about.
-    tag = os.environ.get("RENAME_PROBE_TAG") or "renameprobe-%d" % os.getpid()
-    src_file = os.path.join(base, tag + "-file")
-    src_dir = os.path.join(base, tag + "-dir")
-    moved = os.path.join(base, tag + "-moved")
-    # A second directory, so the destination-side ".." row can descend through a
-    # child that is not also its source.
-    src_file_dir = os.path.join(base, tag + "-dir2")
-    mine = [src_file, src_dir, moved, src_file_dir]
 
-    taken = [p for p in mine if os.path.lexists(p)]
-    if taken:
-        ROWS.append(("mountroot",
-                     "REFUSING: %s already exists under the mount" % ", ".join(os.path.basename(p) for p in taken),
-                     "skipped"))
+    try:
+        private = tempfile.mkdtemp(prefix="renameprobe-", dir=base)
+    except OSError as e:
+        ROWS.append(("mountroot", "could not create a working directory under the mount", str(e)))
         return
 
-    # (device, inode) of everything this run creates, so cleanup can check that
-    # the object at a name is still the one we made. A preflight `lexists` scan
-    # is not ownership: two runs sharing a fixed RENAME_PROBE_TAG, or any other
-    # process creating one of these names afterwards, would otherwise have its
-    # object deleted by pathname.
-    created = {}
+    src_file = os.path.join(private, "file")
+    src_dir = os.path.join(private, "dir")
+    moved = os.path.join(private, "moved")
 
-    def remember(path):
-        try:
-            st = os.lstat(path)
-            created[path] = (st.st_dev, st.st_ino)
-        except OSError:
-            created.pop(path, None)
-
-    def remove(path):
-        """Remove the object at `path`, but only if it is still one of ours."""
-        try:
-            st = os.lstat(path)
-        except OSError:
-            return
-        if created.get(path) != (st.st_dev, st.st_ino):
-            # Somebody else's, or something a rename moved here. Leave it.
-            return
-        try:
-            if stat.S_ISDIR(st.st_mode):
-                shutil.rmtree(path, ignore_errors=True)
-            else:
-                os.unlink(path)
-        except OSError:
-            pass
-        created.pop(path, None)
+    # Two rows need a destination whose *parent* is the mount root itself, which
+    # cannot live inside `private`. Its name is derived from `private`'s, so it
+    # inherits mkdtemp's uniqueness rather than inventing a fresh guess -- and it
+    # is still checked, because deriving a name is not reserving one.
+    outside = private + "-outside"
+    if os.path.lexists(outside):
+        ROWS.append(("mountroot",
+                     "REFUSING: %s already exists under the mount" % os.path.basename(outside),
+                     "skipped"))
+        shutil.rmtree(private, ignore_errors=True)
+        return
 
     def setup():
-        # Only ever our own names: the collision check above establishes that
-        # nothing here belonged to anybody else when this run started, so
-        # anything at one of them now was put there by an earlier row.
-        for path in mine:
-            remove(path)
+        for path in (src_file, src_dir, moved):
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path, ignore_errors=True)
+            elif os.path.lexists(path):
+                os.unlink(path)
         open(src_file, "w").close()
         os.mkdir(src_dir)
-        os.mkdir(src_file_dir)
-        for path in (src_file, src_dir, src_file_dir):
-            remember(path)
 
     def absolute_row(label, src, dst):
         try:
@@ -864,26 +841,57 @@ def mount_root():
             result = "setup failed: %s" % e
         ROWS.append(("mountroot", label, result))
 
+    # The four rows that matter, and why they are a 2x2 rather than a list.
+    #
+    # A filesystem root that is not "/" is a *mount* root, and renaming one is
+    # liable to EXDEV -- which masks the rule this section exists to measure.
+    # Measured 40 trials per row on a fresh APFS image, all stable: the
+    # discriminator is not "." against ".." but whether the source's parent
+    # directory and the destination's parent directory are the same object.
+    # Where they differ, EXDEV stays quiet and the root answers EINVAL, exactly
+    # as any other directory does; where they coincide, EXDEV pre-empts it.
+    #
+    # So the conclusion is "the root is not a special case for rename on
+    # Darwin", and these four rows are what carries it. Dropping either column
+    # would leave a table that looks like `.` and `..` disagree.
     try:
-        absolute_row('mount root as source via "."', os.path.join(base, "."), moved)
-        # `base/..` is the directory *containing* the mount, on the filesystem
-        # the mount is attached to -- a different inode entirely. The mount root
-        # reached by a final ".." is `base/<child>/..`, which is why this row
-        # needs a child to descend into first.
-        absolute_row('mount root as source via ".." (through a child)',
+        absolute_row('mount root via "." , dst parent DIFFERS from src parent',
+                     os.path.join(base, "."), moved)
+        absolute_row('mount root via "." , dst parent SAME as src parent',
+                     os.path.join(base, "."), outside)
+        absolute_row('mount root via ".." , dst parent SAME as src parent',
+                     os.path.join(private, ".."), moved)
+        absolute_row('mount root via ".." , dst parent DIFFERS from src parent',
+                     os.path.join(private, ".."), outside)
+        absolute_row('an ordinary directory via ".." (control: never the root)',
                      os.path.join(src_dir, ".."), moved)
-        absolute_row('the mount\'s PARENT via base/.. (control: a different inode)',
+        # `private` is a child of the mount, so `private/..` is the mount root
+        # itself reached by a final "..". `base/..` would be the directory
+        # *containing* the mount -- the control row below measures that, and it
+        # is a different filesystem.
+        absolute_row("the mount's PARENT via base/.. (control: a different inode)",
                      os.path.join(base, ".."), moved)
         absolute_row('directory -> mount root via ".." (through a child)',
-                     src_dir, os.path.join(src_file_dir, ".."))
+                     src_dir, os.path.join(private, ".."))
         absolute_row("mount root named directly as source", base, moved)
         absolute_row('file -> mount root via "."', src_file, os.path.join(base, "."))
         absolute_row('directory -> mount root via "."', src_dir, os.path.join(base, "."))
         absolute_row("file -> mount root named directly", src_file, base)
         absolute_row("directory -> mount root named directly", src_dir, base)
     finally:
-        for path in mine:
-            remove(path)
+        # One directory, created atomically by this process and named by nobody
+        # else. Nothing here has to decide whether an object is ours.
+        shutil.rmtree(private, ignore_errors=True)
+        # Every measured row refuses, so nothing is ever created at `outside` --
+        # but a kernel that did succeed would leave the moved object there, and
+        # that must not be left on the caller's mount.
+        try:
+            if os.path.isdir(outside) and not os.path.islink(outside):
+                shutil.rmtree(outside, ignore_errors=True)
+            elif os.path.lexists(outside):
+                os.unlink(outside)
+        except OSError:
+            pass
 
 
 def main():
