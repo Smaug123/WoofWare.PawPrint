@@ -35,6 +35,7 @@ rather than printing a number:
 import errno
 import os
 import shutil
+import stat
 import sys
 import tempfile
 
@@ -65,21 +66,43 @@ def widen(root):
         pass
 
 
+def names_the_real_root(path):
+    """Whether `path` would hand rename(2) the actual filesystem root.
+
+    Not a string test: "/", "/.", "/.." and a symlink whose target is "/"
+    followed by a separator all reach it, and an earlier version of this guard
+    caught only the first. `realpath` resolves every one of those, and answers
+    the *lexical* parent for a trailing "..", which is what rename(2) will
+    resolve too.
+    """
+    try:
+        return os.path.realpath(path) == "/"
+    except OSError:
+        return False
+
+
 def row(section, label, build, src, dst):
     """Build a fresh tree, rename src -> dst once, and record what happened.
 
     An argument of exactly "/" is passed through verbatim; anything else is
     joined onto the tree's own root, so no row can name a path outside it.
+
+    As root, any operand that *resolves* to the real filesystem root is skipped
+    rather than run. Those rows are refusals on both kernels and create nothing,
+    but a probe run under sudo must not be the thing that discovers otherwise on
+    somebody's real root. The unprivileged runs pin them, and privilege does not
+    participate in either kernel's structural checks.
     """
-    if os.geteuid() == 0 and ("/" == src or "/" == dst):
-        ROWS.append((section, label, 'skipped (names "/" and this process is root)'))
-        return
     root = os.path.realpath(tempfile.mkdtemp(prefix="rn-"))
     try:
         build(root)
+        srcpath = src if src.startswith("/") else os.path.join(root, src)
+        dstpath = dst if dst.startswith("/") else os.path.join(root, dst)
+        if os.geteuid() == 0 and (names_the_real_root(srcpath) or names_the_real_root(dstpath)):
+            ROWS.append((section, label, 'skipped (resolves to "/" and this process is root)'))
+            return
         try:
-            os.rename(src if src.startswith("/") else os.path.join(root, src),
-                      dst if dst.startswith("/") else os.path.join(root, dst))
+            os.rename(srcpath, dstpath)
             result = "ok"
         except OSError as e:
             result = errname(e.errno)
@@ -533,10 +556,13 @@ def trailing():
         os.mkdir(os.path.join(root, "d2"))
         open(os.path.join(root, "f"), "w").close()
         open(os.path.join(root, "t"), "w").close()
-        os.symlink(os.path.join(root, "t"), os.path.join(root, "lf"))
-        os.symlink(os.path.join(root, "nowhere"), os.path.join(root, "dang"))
+        os.symlink("t", os.path.join(root, "lf"))
+        os.symlink("nowhere", os.path.join(root, "dang"))
         os.symlink("/", os.path.join(root, "lroot"))
     row("trail", 'rename("f/", "g") -- separator on a regular-file source', objects, "f/", "g")
+    # The symlink targets in `objects` are *relative*, and that is load-bearing
+    # rather than incidental: with an absolute target this row is nondeterministic
+    # on macOS. See `unstable_trailing_symlink` below.
     row("trail", 'rename("lf/", "g") -- separator on a symlink to a file', objects, "lf/", "g")
     row("trail", 'rename("dang/", "g") -- separator on a dangling symlink', objects, "dang/", "g")
     row("trail", 'rename("lroot/", "g") where lroot -> "/"', objects, "lroot/", "g")
@@ -606,6 +632,53 @@ def trailing():
         narrowed("emptydir"), "d", "q/t/")
     row("trail", 'rename(f, "q/t/") where q/t is a symlink to a dir, q UNWRITABLE',
         narrowed("symdir"), "f", "q/t/")
+
+
+# -------------------------------------------- an XNU race, not a rename rule
+
+def unstable_trailing_symlink():
+    """`rename("l/", "g")` where `l` is a symlink to a regular file is
+    **nondeterministic on macOS**, and this samples it rather than asserting it.
+
+    Measured 2026-08-23 on macOS 26.6/APFS: with an *absolute* target the call
+    is usually ENOTDIR but sometimes succeeds -- and a success **moves the
+    link's target**, leaving `l` dangling. The rate scales with how many
+    components the absolute target has to traverse: ~1% under /private/tmp,
+    ~10% under a /private/var/folders temp directory. With a *relative* target
+    it is ENOTDIR every time, 600/600 across both locations.
+
+    So the rule really is "a trailing separator over a symlink to a
+    non-directory is ENOTDIR", and the absolute-target case is a race in the
+    walk -- consistent with the trailing-slash demand being lost when an
+    absolute symlink target restarts namei from the root.
+
+    PawPrint must answer deterministically, so it answers ENOTDIR: the stable
+    result, the overwhelming majority of the unstable one, and the only one of
+    the two that destroys nothing. That is a *choice*, recorded here so nobody
+    later reads a single ENOTDIR sample as proof there was nothing to choose.
+
+    This row must never go in the host-equality tier: it would flake.
+    """
+    trials = 200
+    for style in ("relative", "absolute"):
+        outcomes = {}
+        for _ in range(trials):
+            root = os.path.realpath(tempfile.mkdtemp(prefix="rn-"))
+            try:
+                target = os.path.join(root, "t")
+                open(target, "w").close()
+                link = os.path.join(root, "l")
+                os.symlink(target if style == "absolute" else "t", link)
+                try:
+                    os.rename(link + "/", os.path.join(root, "g"))
+                    key = "ok (moved the target)" if not os.path.lexists(target) else "ok (moved nothing)"
+                except OSError as e:
+                    key = errname(e.errno)
+                outcomes[key] = outcomes.get(key, 0) + 1
+            finally:
+                shutil.rmtree(root, ignore_errors=True)
+        summary = ", ".join("%s x%d" % (k, v) for k, v in sorted(outcomes.items(), key=lambda kv: -kv[1]))
+        ROWS.append(("unstable", 'rename("l/", "g"), %s target, %d trials' % (style, trials), summary))
 
 
 # ---------------------------------------------- a destination parent with no name
@@ -723,7 +796,10 @@ def mount_root():
     src_file = os.path.join(base, tag + "-file")
     src_dir = os.path.join(base, tag + "-dir")
     moved = os.path.join(base, tag + "-moved")
-    mine = [src_file, src_dir, moved]
+    # A second directory, so the destination-side ".." row can descend through a
+    # child that is not also its source.
+    src_file_dir = os.path.join(base, tag + "-dir2")
+    mine = [src_file, src_dir, moved, src_file_dir]
 
     taken = [p for p in mine if os.path.lexists(p)]
     if taken:
@@ -732,15 +808,37 @@ def mount_root():
                      "skipped"))
         return
 
-    def remove(path):
-        """Remove one of *our* names, whatever kind of thing is there now."""
+    # (device, inode) of everything this run creates, so cleanup can check that
+    # the object at a name is still the one we made. A preflight `lexists` scan
+    # is not ownership: two runs sharing a fixed RENAME_PROBE_TAG, or any other
+    # process creating one of these names afterwards, would otherwise have its
+    # object deleted by pathname.
+    created = {}
+
+    def remember(path):
         try:
-            if os.path.isdir(path) and not os.path.islink(path):
+            st = os.lstat(path)
+            created[path] = (st.st_dev, st.st_ino)
+        except OSError:
+            created.pop(path, None)
+
+    def remove(path):
+        """Remove the object at `path`, but only if it is still one of ours."""
+        try:
+            st = os.lstat(path)
+        except OSError:
+            return
+        if created.get(path) != (st.st_dev, st.st_ino):
+            # Somebody else's, or something a rename moved here. Leave it.
+            return
+        try:
+            if stat.S_ISDIR(st.st_mode):
                 shutil.rmtree(path, ignore_errors=True)
-            elif os.path.lexists(path):
+            else:
                 os.unlink(path)
         except OSError:
             pass
+        created.pop(path, None)
 
     def setup():
         # Only ever our own names: the collision check above establishes that
@@ -750,6 +848,9 @@ def mount_root():
             remove(path)
         open(src_file, "w").close()
         os.mkdir(src_dir)
+        os.mkdir(src_file_dir)
+        for path in (src_file, src_dir, src_file_dir):
+            remember(path)
 
     def absolute_row(label, src, dst):
         try:
@@ -765,7 +866,16 @@ def mount_root():
 
     try:
         absolute_row('mount root as source via "."', os.path.join(base, "."), moved)
-        absolute_row('mount root as source via ".."', os.path.join(base, ".."), moved)
+        # `base/..` is the directory *containing* the mount, on the filesystem
+        # the mount is attached to -- a different inode entirely. The mount root
+        # reached by a final ".." is `base/<child>/..`, which is why this row
+        # needs a child to descend into first.
+        absolute_row('mount root as source via ".." (through a child)',
+                     os.path.join(src_dir, ".."), moved)
+        absolute_row('the mount\'s PARENT via base/.. (control: a different inode)',
+                     os.path.join(base, ".."), moved)
+        absolute_row('directory -> mount root via ".." (through a child)',
+                     src_dir, os.path.join(src_file_dir, ".."))
         absolute_row("mount root named directly as source", base, moved)
         absolute_row('file -> mount root via "."', src_file, os.path.join(base, "."))
         absolute_row('directory -> mount root via "."', src_dir, os.path.join(base, "."))
@@ -785,6 +895,7 @@ def main():
     ordering()
     displaced_directory()
     trailing()
+    unstable_trailing_symlink()
     orphaned_destination_parent()
     walk_order()
     mount_root()

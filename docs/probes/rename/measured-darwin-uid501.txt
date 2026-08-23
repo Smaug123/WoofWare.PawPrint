@@ -195,6 +195,10 @@ rename(d, "q/t/") where q/t is a regular file, q UNWRITABLE                     
 rename(d, "q/t/") where q/t is an empty dir, q UNWRITABLE (control)                      ok
 rename(f, "q/t/") where q/t is a symlink to a dir, q UNWRITABLE                          EISDIR
 
+## unstable
+rename("l/", "g"), relative target, 200 trials                                           ENOTDIR x200
+rename("l/", "g"), absolute target, 200 trials                                           ENOTDIR x158, ok (moved the target) x42
+
 ## orphan
 ordinary file source (control)                                                           ENOENT
 AND source absent                                                                        ENOENT

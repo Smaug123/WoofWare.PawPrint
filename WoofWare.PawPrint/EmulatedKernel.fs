@@ -2104,9 +2104,15 @@ module RenameRules =
     ///    source's navigation refusal: from inside an `rmdir`'d current
     ///    directory, `rename("d/.", "x")` is ENOENT where it is EINVAL from
     ///    anywhere else.
-    ///  * A **source** that consumed no final name: "/" is EISDIR, and any other
-    ///    directory reached by "." or ".." is EINVAL. Where Linux spends EBUSY on
-    ///    all of them.
+    ///  * A **source** that consumed no final name: "/" is EISDIR, and a
+    ///    directory reached by "." or ".." is EINVAL -- including the *root*
+    ///    reached by "..", measured on an APFS disk image where both operands
+    ///    share a device. Where Linux spends EBUSY on all of them.
+    ///
+    ///    The root reached by a final "." is the one row with no answer: for
+    ///    such a path the source's parent is the mount's parent, on the
+    ///    containing filesystem, so EXDEV pre-empts the rule on every approach.
+    ///    It crashes rather than guessing; see the arm.
     ///  * A free source name is ENOENT, and beats the destination's navigation
     ///    arm below: `rename("nope", "d/.")` is ENOENT here and EBUSY on Linux.
     ///  * A **destination** that consumed no final name: "." and ".." are EINVAL
@@ -2177,8 +2183,8 @@ module RenameRules =
         | ResolvedTarget.Directory (inode, reachedBy) ->
             match reachedBy with
             | FinalNavigation.Root -> RenameVerdict.Refuse UnixError.EISDIR
-            | FinalNavigation.Current
-            | FinalNavigation.Parent ->
+            | FinalNavigation.Parent -> RenameVerdict.Refuse UnixError.EINVAL
+            | FinalNavigation.Current ->
                 if inode = VirtualFileSystem.root vfs then
                     // Unmeasurable on a real Mac, and deliberately not guessed.
                     // A mount root's parent directory is on another filesystem
@@ -2193,7 +2199,7 @@ module RenameRules =
                     // both give Darwin's root its own EBUSY arm where an
                     // ordinary directory gets EPERM or EINVAL.
                     failwith
-                        "RenameRules.darwinVerdict: a rename whose source is the filesystem root reached by \".\" or \"..\" has no measured answer on Darwin. On a real macOS the row cannot be taken -- a mount root's parent is always on another device, so EXDEV pre-empts whatever rename(2) would otherwise say -- and PawPrint models one filesystem, so it can never answer EXDEV itself. Reachable only from a hand-rolled P/Invoke: CoreLib normalises \"/.\" to \"/\" in Path.GetFullPath before it calls SystemNative_Rename, and rename(\"/\", x) is measured EISDIR."
+                        "RenameRules.darwinVerdict: a rename whose source is the filesystem root reached by a final \".\" has no measured answer on Darwin. Measured on an APFS disk image, where both operands share a device: the root reached by \"kid/..\" answers EINVAL and is modelled, but every way of reaching it by a final \".\" -- \"base/.\", \"base/./.\", \"base/kid/../.\" -- answers EXDEV, because for a path ending in \".\" the source's parent directory is the mount's parent, which is on the containing filesystem. PawPrint models one filesystem and can never answer EXDEV itself. Reachable only from a hand-rolled P/Invoke: CoreLib normalises \"/.\" to \"/\" in Path.GetFullPath before it calls SystemNative_Rename, and rename(\"/\", x) is measured EISDIR."
                 else
                     RenameVerdict.Refuse UnixError.EINVAL
         | ResolvedTarget.Entry (sourceDirectory, sourceName, sourceExisting) ->

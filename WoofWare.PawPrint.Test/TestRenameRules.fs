@@ -355,9 +355,11 @@ module TestRenameRules =
     let ``a path that consumed no final name is EBUSY on Linux and typed on Darwin`` () : unit =
         refuses linux UnixError.EBUSY [ "/", "f2" ; "d/.", "x" ; "d/..", "x" ; "a/b/.", "x" ; "a/b/..", "x" ]
         refuses darwin UnixError.EISDIR [ "/", "f2" ]
-        // Not "d/..": `d` sits at the root, so that path reaches the root by a
-        // navigation, which is the one row Darwin has no measured answer for.
-        refuses darwin UnixError.EINVAL [ "d/.", "x" ; "a/b/.", "x" ; "a/b/..", "x" ]
+        // "d/.." and "/.." reach the *root* by a final "..", and that is
+        // measured -- on an APFS disk image, where both operands share a device,
+        // it is EINVAL like any other directory. Only a final "." at the root is
+        // unmeasurable; see the refusal test below.
+        refuses darwin UnixError.EINVAL [ "d/.", "x" ; "a/b/.", "x" ; "a/b/..", "x" ; "d/..", "x" ; "/..", "x" ]
 
     [<Test>]
     let ``a destination that consumed no final name is EBUSY on Linux and EINVAL on Darwin`` () : unit =
@@ -373,25 +375,34 @@ module TestRenameRules =
         refuses darwin UnixError.ENOENT [ "nx", "d/." ]
 
     [<Test>]
-    let ``the root reached by a navigation has no measured answer on Darwin`` () : unit =
-        // Deliberately a crash rather than a column. A mount root's parent is
-        // always on another filesystem, so `rename("/.", x)` reports EXDEV on
-        // every macOS and every disk image before any rename rule speaks; and
-        // PawPrint models one filesystem, so it can never answer EXDEV itself.
+    let ``the root reached by a final "." has no measured answer on Darwin`` () : unit =
+        // Deliberately a crash rather than a column, and scoped to exactly the
+        // row with no evidence. Measured on an APFS disk image where both
+        // operands share a device: the root reached by "kid/.." answers EINVAL
+        // and is modelled above, while every way of reaching it by a final "." —
+        // "base/.", "base/./.", "base/kid/../." — answers EXDEV, because for
+        // such a path the source's parent is the mount's parent, on the
+        // containing filesystem. PawPrint models one filesystem and can never
+        // answer EXDEV itself.
+        //
         // The same navigation as a *destination* is measurable and is EINVAL,
-        // which is why only this direction refuses.
+        // which is why only the source direction refuses.
         refuses linux UnixError.EBUSY [ "/.", "x" ; "/..", "x" ; "lroot/.", "x" ]
 
-        // "d/.." is in the list because `d` sits at the root: the refusal is
-        // about the *inode* the navigation reached, not about the path spelling
-        // it, exactly as Darwin's `unlink` and `rmdir` root arms are.
-        for source in [ "/." ; "/.." ; "lroot/." ; "d/.." ] do
+        // The refusal is about the *inode* the navigation reached, not the path
+        // spelling it: "lroot/." reaches the root through a symlink.
+        for source in [ "/." ; "lroot/." ] do
             let thrown =
                 Assert.Throws<System.Exception> (fun () ->
                     verdict darwin CallerPrivilege.Unprivileged source "x" |> ignore<RenameVerdict>
                 )
 
             thrown.Message |> shouldContainText "no measured answer on Darwin"
+
+        // And the neighbouring navigation is *not* refused, which is what keeps
+        // the crash scoped to the row that earns it.
+        verdict darwin CallerPrivilege.Unprivileged "d/.." "x"
+        |> shouldEqual (RenameVerdict.Refuse UnixError.EINVAL)
 
     [<Test>]
     let ``the permission checks beat the type rule only on Linux`` () : unit =

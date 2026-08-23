@@ -45,14 +45,20 @@ Linux column.
 
 ## Two rows that are unmeasurable, not merely unmeasured
 
-**A rename whose *source* is a mount root reached by `.` or `..`, on Darwin.**
-Measured EXDEV at uid 0 as well, so privilege is no way round it either.
-A mount root's parent directory lives on the filesystem *containing* the mount,
-so EXDEV pre-empts whatever `rename(2)` would otherwise answer. That is not an
-artefact of `/` on a modern macOS being its own volume: it was confirmed on a
-freshly created APFS disk image, where every source-side row is EXDEV while the
-same navigation as a *destination* answers EINVAL and so is measured. Pass a
-mount point as `argv[1]` to run that section and see it.
+**A rename whose *source* is the filesystem root reached by a final `.`, on
+Darwin — and only that.** An earlier version of this note said "`.` or `..`",
+and it was wrong for a measurable reason: it had been probing `base/..`, which
+resolves to the directory *containing* the mount, on the other filesystem. The
+root reached by a final `..` is `base/<child>/..`, and on a fresh APFS image
+where both operands share a device it answers **EINVAL**, like any other
+directory. So `..` needs no special case at all.
+
+A final `.` really is out of reach. For such a path the source's parent
+directory is the mount's parent, on the containing filesystem, so EXDEV
+pre-empts the rule — measured on `base/.`, `base/./.` and `base/kid/../.`
+alike, and at uid 0 as well, so privilege is no way round it. The same
+navigation as a *destination* is fine (EINVAL), because only the source side
+crosses. Pass a mount point as `argv[1]` to run that section.
 
 The mount-root section is the one part of this probe that writes outside a
 private temp directory, because those rows have to name the mount root itself
@@ -67,11 +73,35 @@ evidence, since Darwin's `unlink` and `rmdir` both give the root its own EBUSY
 arm where an ordinary directory gets EPERM or EINVAL. `RenameRules.darwinVerdict`
 crashes there, naming the condition.
 
-**Anything naming `/` while running as root.** Those rows are refusals on both
-kernels and create nothing, but a probe run under `sudo` must not be the thing
-that discovers otherwise on somebody's real root filesystem, so the probe skips
+**Anything resolving to `/` while running as root.** Those rows are refusals on
+both kernels and create nothing, but a probe run under `sudo` must not be the
+thing that discovers otherwise on somebody's real root filesystem, so it skips
 them and says so. The unprivileged runs pin them, and privilege does not
 participate in either kernel's structural checks.
+
+The guard resolves each operand rather than string-matching `/`: `.`, `..` and a
+symlink whose target is `/` all reach it, and an earlier version caught only the
+literal spelling — so eleven rows, including three through a `lroot -> "/"`
+symlink, really did name the root under `sudo`.
+
+## One row is nondeterministic on macOS
+
+`rename("l/", "g")` where `l` is a symlink to a **regular file** with an
+**absolute** target is a race on macOS 26.6/APFS: usually ENOTDIR, but roughly
+1–20% of the time it succeeds and **moves the link's target**, leaving `l`
+dangling. The rate scales with how many components the absolute target has to
+traverse — ~1% under `/private/tmp`, ~10–20% under a `/private/var/folders`
+temp directory. With a **relative** target it is ENOTDIR every time, 600/600
+across both locations, and on Linux it is stable either way.
+
+The `unstable` section samples it 200 times per style on every run, so the fact
+stays measured rather than decaying into a comment. The corpus rows use relative
+targets deliberately, which is what makes the `trail` section reproducible.
+
+PawPrint answers ENOTDIR: the stable result, the overwhelming majority of the
+unstable one, and the only one of the two that destroys nothing. **That is a
+choice**, recorded so nobody later reads a single ENOTDIR sample as evidence
+there was nothing to choose. This row must never enter the host-equality tier.
 
 ## What each section is for
 
@@ -85,6 +115,7 @@ participate in either kernel's structural checks.
 | `displaced` | the strangest fact here: a directory replacing a directory consults the **displaced directory's** own write bit on Darwin and its **holder's** on Linux |
 | `trail` | the trailing-separator walk, which is where the two kernels destroy different objects |
 | `orphan` | a destination whose parent has lost its last name, reachable only as an `rmdir`'d current directory |
+| `unstable` | the one row macOS does not answer the same way twice; see above |
 | `walk` | which of the two paths is resolved first, and how far. Not yet implemented — this is `RenameRules.WalkOrder`'s slice |
 
 `walk`'s Linux answers are only consistent with four phases — resolve the
