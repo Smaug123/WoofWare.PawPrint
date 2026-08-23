@@ -27,8 +27,10 @@ public class BitOperationsPopCountTests
         return state;
     }
 
-    // Failure codes are globally unique and all below 256, because a guest's exit code is
-    // only eight bits wide: an offset scheme that wrapped past 255 could report 0.
+    // Every section's failure codes occupy a disjoint range, and all of them are below 256,
+    // because a guest's exit code is only eight bits wide: an offset scheme that wrapped past
+    // 255 could report a failure as 0. Within the two single-bit loops the pair of checks for a
+    // given bit deliberately share that bit's code, since they say the same thing about it.
     public static int TestUInt32Constants()
     {
         if (BitOperations.PopCount(0u) != 0) return 1;
@@ -154,8 +156,6 @@ public class BitOperationsPopCountTests
         // and a type-level marker routes every member -- so this needs its own allowlist entry.
         // Its body is ulong.PopCount(_lower) + ulong.PopCount(_upper).
         //
-        // There is deliberately no Int128 counterpart: a guest cannot construct an Int128 at all
-        // (Int128.op_Implicit is itself unimplemented), so nothing here could reach it.
         // Conversions are spelled from `ulong` so they bind to the widening op_Implicit that
         // PR #1132 allowlisted; `(UInt128)0` would instead emit op_Explicit(Int32), which is
         // not part of that cluster. Comparisons are spelled `!(a == b)` for the same reason:
@@ -184,14 +184,14 @@ public class BitOperationsPopCountTests
         // neither a ctor nor an operator -- so it needs its own allowlist entry despite the
         // method carrying no [Intrinsic] of its own; the type-level one on Int128 routes it.
         // Its body is ulong.PopCount(_lower) + ulong.PopCount(_upper), widened back to Int128.
-        if (!(Int128.PopCount(default(Int128)) == (Int128)0ul)) return 170;
-        if (!(Int128.PopCount((Int128)1ul) == (Int128)1ul)) return 171;
-        if (!(Int128.PopCount((Int128)ulong.MaxValue) == (Int128)64ul)) return 172;
+        if (!(Int128.PopCount(default(Int128)) == (Int128)0ul)) return 180;
+        if (!(Int128.PopCount((Int128)1ul) == (Int128)1ul)) return 181;
+        if (!(Int128.PopCount((Int128)ulong.MaxValue) == (Int128)64ul)) return 182;
 
         // Bits in both halves, and in the upper half alone: a body that read only `_lower`
         // would answer 8 and 0 respectively.
-        if (!(Int128.PopCount(new Int128(0xFFul, 0xFFul)) == (Int128)16ul)) return 173;
-        if (!(Int128.PopCount(new Int128(0xFFul, 0ul)) == (Int128)8ul)) return 174;
+        if (!(Int128.PopCount(new Int128(0xFFul, 0xFFul)) == (Int128)16ul)) return 183;
+        if (!(Int128.PopCount(new Int128(0xFFul, 0ul)) == (Int128)8ul)) return 184;
 
         return 0;
     }

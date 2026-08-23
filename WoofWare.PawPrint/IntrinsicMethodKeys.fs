@@ -1234,13 +1234,12 @@ module IntrinsicMethodKeys =
             // bodies are `ulong.PopCount(value._lower) + ulong.PopCount(value._upper)`, which
             // bottoms out in the UInt64 wrapper allowlisted above.
             //
-            // Only the UInt128 one is listed. `UInt128` already has the cluster PR #1132 added
-            // (.ctor, get_MinValue/get_MaxValue, op_Equality and the widening op_Implicit
-            // overloads), so a guest can build a value, call this, and compare the result --
-            // measured working. `Int128` has no such cluster: a guest cannot get past
-            // `Int128.op_Implicit(System.Int64)` to reach any member at all, so an `Int128.PopCount`
-            // entry would be unreachable and untestable. It belongs with the rest of that cluster,
-            // not here.
+            // `UInt128` needs only the PopCount entry, because PR #1132 already added the rest of
+            // the cluster a guest needs around it (.ctor, get_MinValue/get_MaxValue, op_Equality
+            // and the widening op_Implicit overloads). `Int128` has no such cluster, so its
+            // PopCount entry is followed below by the three members required to reach and inspect
+            // it. Note that no conversion is needed to reach either method in the first place:
+            // `default(Int128)` is a legal argument that constructs nothing.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/UInt128.cs#L800-L802
             pattern
                 "System.Private.CoreLib"
