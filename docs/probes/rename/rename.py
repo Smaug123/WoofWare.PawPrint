@@ -698,24 +698,58 @@ def walk_order():
 
 def mount_root():
     """The Darwin row that cannot be taken. Pass a mount point as argv[1] and
-    every one of these still answers EXDEV, because a mount root's parent
+    every source-side row still answers EXDEV, because a mount root's parent
     directory is on the filesystem *containing* the mount. The destination-side
-    rows do answer, and they are what pins that half."""
+    rows do answer, and they are what pins that half.
+
+    This is the one section that writes outside a private temp directory -- the
+    rows have to name the mount root itself, which cannot be relocated. So it
+    creates only uniquely-named entries, **refuses to run** if any of them
+    already exists rather than clearing the way, and removes only what it made.
+    """
     if BASE is None:
         ROWS.append(("mountroot", "(pass a mount point as argv[1] to run this section)", "skipped"))
         return
 
     base = os.path.realpath(BASE)
+    # Unique per run, so a name this probe invents cannot collide with a name
+    # somebody's data already uses. Every row's *other* operand is one of these;
+    # only the mount root itself is named as it is.
+    # Overridable only so the refusal below can be exercised: with a fixed tag a
+    # caller can create a colliding name first and check that this section
+    # declines rather than clearing it away. An untestable safety branch is what
+    # this whole rewrite is about.
+    tag = os.environ.get("RENAME_PROBE_TAG") or "renameprobe-%d" % os.getpid()
+    src_file = os.path.join(base, tag + "-file")
+    src_dir = os.path.join(base, tag + "-dir")
+    moved = os.path.join(base, tag + "-moved")
+    mine = [src_file, src_dir, moved]
+
+    taken = [p for p in mine if os.path.lexists(p)]
+    if taken:
+        ROWS.append(("mountroot",
+                     "REFUSING: %s already exists under the mount" % ", ".join(os.path.basename(p) for p in taken),
+                     "skipped"))
+        return
+
+    def remove(path):
+        """Remove one of *our* names, whatever kind of thing is there now."""
+        try:
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path, ignore_errors=True)
+            elif os.path.lexists(path):
+                os.unlink(path)
+        except OSError:
+            pass
 
     def setup():
-        for name in ("mrfile", "mrdir", "moved"):
-            p = os.path.join(base, name)
-            if os.path.isdir(p) and not os.path.islink(p):
-                shutil.rmtree(p, ignore_errors=True)
-            elif os.path.lexists(p):
-                os.unlink(p)
-        open(os.path.join(base, "mrfile"), "w").close()
-        os.mkdir(os.path.join(base, "mrdir"))
+        # Only ever our own names: the collision check above establishes that
+        # nothing here belonged to anybody else when this run started, so
+        # anything at one of them now was put there by an earlier row.
+        for path in mine:
+            remove(path)
+        open(src_file, "w").close()
+        os.mkdir(src_dir)
 
     def absolute_row(label, src, dst):
         try:
@@ -729,20 +763,17 @@ def mount_root():
             result = "setup failed: %s" % e
         ROWS.append(("mountroot", label, result))
 
-    absolute_row('mount root as source via "."', os.path.join(base, "."), os.path.join(base, "moved"))
-    absolute_row('mount root as source via ".."', os.path.join(base, ".."), os.path.join(base, "moved"))
-    absolute_row("mount root named directly as source", base, os.path.join(base, "moved"))
-    absolute_row('file -> mount root via "."', os.path.join(base, "mrfile"), os.path.join(base, "."))
-    absolute_row('directory -> mount root via "."', os.path.join(base, "mrdir"), os.path.join(base, "."))
-    absolute_row("file -> mount root named directly", os.path.join(base, "mrfile"), base)
-    absolute_row("directory -> mount root named directly", os.path.join(base, "mrdir"), base)
-
-    for name in ("mrfile", "mrdir", "moved"):
-        p = os.path.join(base, name)
-        if os.path.isdir(p) and not os.path.islink(p):
-            shutil.rmtree(p, ignore_errors=True)
-        elif os.path.lexists(p):
-            os.unlink(p)
+    try:
+        absolute_row('mount root as source via "."', os.path.join(base, "."), moved)
+        absolute_row('mount root as source via ".."', os.path.join(base, ".."), moved)
+        absolute_row("mount root named directly as source", base, moved)
+        absolute_row('file -> mount root via "."', src_file, os.path.join(base, "."))
+        absolute_row('directory -> mount root via "."', src_dir, os.path.join(base, "."))
+        absolute_row("file -> mount root named directly", src_file, base)
+        absolute_row("directory -> mount root named directly", src_dir, base)
+    finally:
+        for path in mine:
+            remove(path)
 
 
 def main():

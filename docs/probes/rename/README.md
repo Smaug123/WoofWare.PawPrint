@@ -54,6 +54,13 @@ freshly created APFS disk image, where every source-side row is EXDEV while the
 same navigation as a *destination* answers EINVAL and so is measured. Pass a
 mount point as `argv[1]` to run that section and see it.
 
+The mount-root section is the one part of this probe that writes outside a
+private temp directory, because those rows have to name the mount root itself
+and it cannot be relocated. It therefore creates only uniquely-named entries,
+**refuses to run** if any of them already exists rather than clearing the way,
+and removes only what it made. Set `RENAME_PROBE_TAG` to a fixed string to
+exercise that refusal.
+
 PawPrint models one filesystem and therefore never answers EXDEV, so nothing
 can stand in for the row — and guessing EINVAL would be a guess against
 evidence, since Darwin's `unlink` and `rmdir` both give the root its own EBUSY
