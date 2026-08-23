@@ -891,13 +891,36 @@ this stage:
    fields, the socket table;
 2. process: `Environment`, `CurrentDirectory`, `CurrentDirectoryInode`,
    `ProcessPath`, `Umask`, `UserId`, `GroupId`, `FileDescriptors`,
-   `DirectoryStreams` (rekeyed to `DirectoryStreamId`), `Signals`,
+   `DirectoryStreams` (**see below — do not rekey in this step**), `Signals`,
    `OutputLog`;
 3. tasks: `LastSystemError`, `ParkedSocketWaits`, and `Cpu`/`OsThreadId`
    pulled off `ThreadState`.
 
 `KernelConfig` splits along the same lines but keeps its current surface, so
 `HostConfig` and every test registration are untouched.
+
+**Open question, to settle before starting: `DirectoryStreams`' key.** This
+stage's whole safety property is "forwarding accessors, so no call site
+changes", and rekeying `Map<NativeMemoryBlockId, DirectoryStream>` to a minted
+`DirectoryStreamId` contradicts it — `Native/NativeSystemNative.fs` keys those
+by block id, so a forwarding accessor would have to maintain a block-id →
+stream-id mapping, which is design work smuggled into a mechanical stage.
+
+* **(i) Move the field as-is, rekey later.** The library ends up holding a
+  `NativeMemoryBlockId`-keyed map for a stage, which is a PawPrint identity
+  inside the library — ugly, and visible in the public surface.
+* **(ii) Rekey first, as its own step before the migration.** One focused
+  change to the `opendir`/`readdir`/`closedir` handlers, with the block-id →
+  stream-id mapping introduced deliberately and tested, then the field moves
+  mechanically like every other. Costs an extra step; keeps this stage's
+  safety property intact.
+* **(iii) Leave `DirectoryStreams` on `EmulatedKernel` entirely** and revisit
+  when stage 8 moves `opendir`. A directory stream *is* kernel state, so this
+  is a deferral rather than an answer, but it is the smallest step.
+
+Recommendation: **(ii)**. The mapping has to exist eventually, the handlers are
+few, and doing it separately keeps "no call site changes" true of the migration
+itself — which is the only reason a 40-field move is reviewable.
 
 **Correctness oracle**:
 * The full suite after each of the three sub-steps.
