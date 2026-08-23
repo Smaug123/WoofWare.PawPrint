@@ -1706,15 +1706,14 @@ module NullaryIlOp =
     /// `IntrinsicHelpers.byteCountOfStackValue` cannot serve here: it sign-extends, because it
     /// reads the `nuint` counts of the `SpanHelpers` primitives, and a size in [2^31, 2^32)
     /// would be reported as negative rather than as too large for the byte-offset model.
-    let private initblkSize (arg : EvalStackValue) : int =
+    ///
+    /// The result is deliberately not yet bounded to the interpreter's byte-offset model. A size
+    /// PawPrint could never fill still decides whether there is anything to fill at all, and a
+    /// null address faults on its first byte whatever the size beyond it says; `initblkWritable`
+    /// applies the bound at the point where the fill is actually about to happen.
+    let private initblkSize (arg : EvalStackValue) : int64 =
         match arg with
-        | EvalStackValue.Int32 (Int32Source.Verbatim size) ->
-            let size = int64 (uint32 size)
-
-            if size > int64 Int32.MaxValue then
-                failwith $"initblk: size %d{size} exceeds the interpreter Int32 byte-offset model"
-
-            int size
+        | EvalStackValue.Int32 (Int32Source.Verbatim size) -> int64 (uint32 size)
         | EvalStackValue.Int32 other ->
             failwith
                 $"initblk: size carries pointer provenance (%O{other}); refusing to interpret a pointer-shaped int32 as a byte count"
@@ -1733,6 +1732,13 @@ module NullaryIlOp =
             failwith
                 $"initblk: fill value carries pointer provenance (%O{other}); refusing to interpret a pointer-shaped int32 as a fill byte"
         | other -> failwith $"initblk: expected an unsigned int8 fill value, got %O{other}"
+
+    /// Narrow a size that is about to be filled through to the interpreter's byte-offset model.
+    let private initblkWritable (size : int64) : int =
+        if size > int64 Int32.MaxValue then
+            failwith $"initblk: size %d{size} exceeds the interpreter Int32 byte-offset model"
+
+        int size
 
     let internal execute
         (loggerFactory : ILoggerFactory)
@@ -3441,10 +3447,12 @@ module NullaryIlOp =
             let valueArg, state = IlMachineState.popEvalStack currentThread state
             let addrArg, state = IlMachineState.popEvalStack currentThread state
 
+            // `value` is decoded only where it is about to be written. A fill of nothing, and a
+            // fill through a null address, both complete on real .NET without ever reading it, so
+            // a fill byte PawPrint cannot render must not turn either of those into a host failure.
             let size = initblkSize sizeArg
-            let value = initblkValue valueArg
 
-            if size = 0 then
+            if size = 0L then
                 // A zero-length fill must not dereference `addr` at all: real .NET completes even
                 // for a null address, and a zero-length `Span<byte>` hands PawPrint a byref to
                 // where element 0 would have been.
@@ -3457,7 +3465,9 @@ module NullaryIlOp =
             match IntrinsicHelpers.managedPointerOfPointerArgument "initblk" addrArg with
             | ManagedPointerSource.Null ->
                 // Measured against real .NET: a null address with a nonzero size raises a
-                // NullReferenceException the guest can catch.
+                // NullReferenceException the guest can catch. The fault is on the first byte, so
+                // this is the answer for any nonzero size, including one past what the
+                // interpreter's byte-offset model could have filled.
                 IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     corelib
@@ -3466,7 +3476,7 @@ module NullaryIlOp =
                     state
                 |> ExecutionResult.stepped
             | dest ->
-                CellAwareMemOps.fill corelib "initblk" state dest value size
+                CellAwareMemOps.fill corelib "initblk" state dest (initblkValue valueArg) (initblkWritable size)
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
