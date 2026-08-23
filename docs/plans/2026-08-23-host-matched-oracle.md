@@ -90,9 +90,9 @@ real .NET in a Linux container. Nine survived:
 | `SocketAddressLinuxBytes` / `SocketAddressDarwinBytes` | the shim's own sockaddr layout |
 | `SocketPollLinux` | poll's `triggered` counts, not descriptor numbers |
 | `SocketEventDeliveryLinux` | registered user data, not descriptor numbers |
-| `SocketEventWaitSurvivesCloseLinux` | |
 
-Eleven did not, and each exclusion is a measurement rather than a guess:
+Twelve did not, and each exclusion is a measurement or a stated hazard rather than a
+guess:
 
 - **Descriptor numbers.** `SocketCreate*`, `SocketEventPort*` and `SocketEventsWait*`
   assert that the first socket is fd 3. The emulated fd table starts at 3 with nothing
@@ -105,6 +105,16 @@ Eleven did not, and each exclusion is a measurement rather than a guess:
   at which a request stops being representable, which the file's header already records
   as unreachable for any real libc, because a real 64-bit `malloc` succeeds at both
   counts by overcommit. Measured on macOS: 4.
+- **A sleep that has to win a scheduling race.**
+  `SocketEventWaitSurvivesCloseLinux` starts a waiter thread which sets a flag and
+  *then* enters `epoll_wait`; the main thread sleeps 100ms and closes the descriptor the
+  waiter was handed. A waiter descheduled across that gap enters the wait after the
+  close, by which point Linux has handed the freed descriptor to the next socket, and
+  the guest exits 13. Under PawPrint the sleep yields to the waiter deterministically,
+  so the divergence would be a scheduling accident wearing an interpreter bug's clothes.
+  This is not the same as the sleeps in `SocketConnect*`, which wait for a loopback
+  handshake or RST the kernel settles in softirq context: there a late wake only makes
+  the state more settled.
 - **What fd 0 is.** `SocketEventRegistrationLinux` registers stdin with the port and
   expects success, which holds because PawPrint models the standard streams as pipes; a
   real process's stdin is whatever its parent handed it, and `epoll_ctl` refuses a
@@ -115,6 +125,19 @@ One measurement is worth keeping for its own sake. `epoll_ctl(EPOLL_CTL_ADD)` on
 virtiofs bind mount, whose files carry a `->poll`. The first run of this probe put its
 scratch file in the container's bind-mounted host directory and so measured the one
 filesystem that disagrees, which read as a PawPrint divergence and was not one.
+
+## The host's shape, not just its flavour
+
+`SimulatedUnixPlatform` carries a flavour and a kernel release, and no architecture; the
+two presets are *named* `linuxX64` and `macOsArm64` but only their flavour is ever read.
+Matching flavours is therefore not enough on its own: the compared guests read
+native-width layouts back as bytes -- a `sockaddr_in`'s fields, the 16-byte
+`SocketEvent` -- so a 32-bit or big-endian Linux would disagree with PawPrint for a
+reason that is not PawPrint's, and the failure would read as an interpreter bug.
+
+`OraclePolicy.comparesHere` therefore treats a host whose shape the presets do not
+describe as no host at all. `Always` is deliberately left alone by this:
+`sourcesPure`'s rule that its claims hold on every host is not this policy's to narrow.
 
 ## Not attempted here
 

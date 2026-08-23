@@ -100,13 +100,32 @@ module OraclePolicy =
             | None -> false
             | Some host -> host = impersonated
 
+    /// Whether a host of this width and byte order can stand in for a kernel PawPrint
+    /// impersonates at all.
+    ///
+    /// Both presets describe a 64-bit little-endian kernel, and `SimulatedUnixPlatform`
+    /// carries no architecture to check against the host's. The guests that opt into a
+    /// comparison read native-width layouts back as bytes -- a `sockaddr_in`'s fields,
+    /// the 16-byte `SocketEvent` -- so on a 32-bit or big-endian Linux the two runtimes
+    /// would disagree for a reason that is not PawPrint's, and the failure would read
+    /// as an interpreter bug. Declining to compare there costs only the oracle.
+    let hostShapeCanCompare (isLittleEndian : bool) (pointerSizeBytes : int) : bool =
+        isLittleEndian && pointerSizeBytes = 8
+
     /// `comparesOnHost` asked of the host this test process is running on, for the
     /// kernel the case impersonates.
+    ///
+    /// A host whose shape the presets do not describe counts as no host at all, which
+    /// leaves `Always` alone -- `sourcesPure`'s rule that its claims hold everywhere is
+    /// not this policy's to narrow.
     let comparesHere (case : EndToEndTestCase) : bool =
-        comparesOnHost
-            (HostPlatform.flavour ())
-            (SimulatedUnixPlatform.flavour case.KernelConfig.UnixPlatform)
-            case.Oracle
+        let host =
+            if hostShapeCanCompare System.BitConverter.IsLittleEndian System.IntPtr.Size then
+                HostPlatform.flavour ()
+            else
+                None
+
+        comparesOnHost host (SimulatedUnixPlatform.flavour case.KernelConfig.UnixPlatform) case.Oracle
 
 /// `Program.run`, bounded so a guest that never terminates fails its test instead of wedging
 /// the whole suite.

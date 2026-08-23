@@ -58,6 +58,28 @@ module TestOraclePolicy =
                 failwith
                     $"comparesOnHost (host %O{host}) (impersonating %O{impersonated}) %O{policy} answered %b{actual}, but the table says %b{expected}."
 
+    /// Host width and byte order, and whether a host of that shape can be an oracle
+    /// for either preset. Both presets describe a 64-bit little-endian kernel.
+    let private shapeTable : (bool * int * bool) list =
+        [ true, 8, true ; true, 4, false ; false, 8, false ; false, 4, false ]
+
+    [<Test>]
+    let ``only a 64-bit little-endian host can stand in for a preset`` () : unit =
+        for isLittleEndian, pointerSize, expected in shapeTable do
+            let actual = OraclePolicy.hostShapeCanCompare isLittleEndian pointerSize
+
+            if actual <> expected then
+                failwith
+                    $"hostShapeCanCompare (littleEndian %b{isLittleEndian}) (pointer %d{pointerSize} bytes) answered %b{actual}, but the table says %b{expected}."
+
+    [<Test>]
+    let ``this host's shape is described by the presets`` () : unit =
+        // Not a tautology restating the function: it says that the machine running the
+        // suite is one the compared cases are actually compared on, so a green run here
+        // is evidence about the oracle rather than about a silent fallback.
+        OraclePolicy.hostShapeCanCompare System.BitConverter.IsLittleEndian System.IntPtr.Size
+        |> shouldEqual true
+
     [<Test>]
     let ``the table covers every combination`` () : unit =
         // Both axes are closed, so the table can be complete rather than merely

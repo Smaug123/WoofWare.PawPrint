@@ -1211,8 +1211,19 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
-                // Compared.
-                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                // Not compared, though it agrees on real Linux when it is run: the
+                // waiter sets `AboutToWait` *before* it enters the wait, and the main
+                // thread only sleeps 100ms before closing the alias. On a real kernel
+                // a waiter descheduled across that gap enters the wait after the close,
+                // by which time the fd it was handed has been reused by the next
+                // socket -- Linux allocates the lowest free descriptor -- so the wait
+                // fails and the guest exits 13. Under PawPrint the sleep yields to the
+                // waiter deterministically, which is exactly why this reads as a
+                // divergence rather than as the scheduling accident it is. The other
+                // compared guests' sleeps wait for a loopback handshake or RST the
+                // kernel settles in softirq context, where a late wake only makes the
+                // state more settled.
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
