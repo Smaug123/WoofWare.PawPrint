@@ -546,9 +546,12 @@ module TestRenameRules =
     [<Test>]
     let ``privilege stops the permission arms firing and reorders nothing`` () : unit =
         // Measured at uid 0 on both: every EACCES row falls through to whatever
-        // check was below it, and no other row moves. The consequence worth
-        // stating is the last assertion — at uid 0 the two flavours agree on
-        // every row that diverges at uid 1000.
+        // check was below it, and no other row moves.
+        //
+        // The second assertion is deliberately scoped to the rows that diverge
+        // *because of a permission check*. The flavours do not agree on every
+        // row at uid 0 — the navigation arms diverge there exactly as they do
+        // at uid 1000, since privilege never touches a structural check.
         for platform in [ linux ; darwin ] do
             for source, destination in [ "p/pf", "w/x" ; "f", "q/x" ; "mv", "w/x" ; "d", "w/wzero" ] do
                 match

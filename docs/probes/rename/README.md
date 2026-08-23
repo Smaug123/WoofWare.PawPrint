@@ -20,6 +20,7 @@ The captured columns beside it are:
 | `measured-darwin-uid501.txt` | macOS 26.6 / APFS, uid 501 |
 | `measured-linux-uid1000.txt` | Linux 6.18 arm64 / ext4, uid 1000 |
 | `measured-linux-uid0.txt` | the same kernel at uid 0 |
+| `measured-darwin-uid0.txt` | macOS 26.6 / APFS at uid 0 |
 
 Fifty-four of the 212 rows diverge between the two flavours, which is why
 `rename` has two whole verdict functions rather than a record of flags.
@@ -28,9 +29,14 @@ Fifty-four of the 212 rows diverge between the two flavours, which is why
 
 Run both privileged and unprivileged. Privilege does exactly one thing — it
 stops the permission arms firing — and nothing reorders, so neither column is
-derivable from the other; the consequence worth knowing is that **at uid 0 the
-two flavours agree on every measured row**, so a privileged guest cannot tell
-them apart.
+derivable from the other.
+
+Be careful how far that is taken. At uid 0 the two flavours agree on every row
+that diverges *because of a permission check* — but they still disagree on every
+structural one, which privilege never touches: `rename("d/.", x)` is EINVAL on
+Darwin and EBUSY on Linux at uid 0 exactly as at uid 1000. An earlier note in
+this workstream claimed the flavours agree on *every* row at uid 0; the
+`measured-darwin-uid0.txt` column falsifies it.
 
 Build the trees on a real filesystem. Inside a container, `/tmp` on the
 container's own block device is ext4, while a bind-mounted host directory is
@@ -40,6 +46,7 @@ Linux column.
 ## Two rows that are unmeasurable, not merely unmeasured
 
 **A rename whose *source* is a mount root reached by `.` or `..`, on Darwin.**
+Measured EXDEV at uid 0 as well, so privilege is no way round it either.
 A mount root's parent directory lives on the filesystem *containing* the mount,
 so EXDEV pre-empts whatever `rename(2)` would otherwise answer. That is not an
 artefact of `/` on a modern macOS being its own volume: it was confirmed on a
