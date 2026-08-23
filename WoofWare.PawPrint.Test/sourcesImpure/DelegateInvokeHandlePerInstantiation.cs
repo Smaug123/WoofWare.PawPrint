@@ -4,9 +4,10 @@ using System.Reflection;
 // PawPrint's side of a recorded divergence: the handle `Delegate::GetInvokeMethod` answers is
 // per-*instantiation*, where CoreCLR's is per-canonical-form. `COMDelegate::GetInvokeMethod`
 // (comdelegate.cpp:2156) reads a field of the `DelegateEEClass`, and an `EEClass` is shared by
-// every instantiation whose arguments are all reference types, so real .NET hands one
-// `MethodDesc*` to `Func<string, int>` and `Func<object, int>` alike. PawPrint mints a registry
-// id per exact instantiation and so hands out two.
+// instantiations that canonicalise alike -- each reference-type argument replaced by `__Canon`,
+// each value-type argument kept exact -- so real .NET hands one `MethodDesc*` to
+// `Func<string, int>` and `Func<object, int>` alike, while `Func<string, string>` gets its own.
+// PawPrint mints a registry id per exact instantiation and so hands out two for the first pair.
 //
 // Impure because that is exactly what the differential oracle would disagree about: measured on
 // .NET 10, check 3 below returns 3 there. See docs/divergences.md, "A generic delegate type's

@@ -230,17 +230,18 @@ public class DelegateDynamicInvoke
         // instantiation would pass every check above that happens to coerce its arguments
         // successfully.
         //
-        // Do not generalise this to two *reference-type* instantiations: CoreCLR shares one
-        // `DelegateEEClass`, and so one `Invoke` MethodDesc, across all of them, so real .NET
-        // answers `Func<string, int>` and `Func<object, int>` alike where PawPrint answers two
-        // registry ids. That pair is a recorded divergence, not an assertion this file can make --
-        // see docs/divergences.md, "A generic delegate type's `Invoke` handle is
-        // per-instantiation". The pair below spans the value/reference boundary, where CoreCLR
-        // shares nothing and the two runtimes agree.
+        // Do not generalise this to a pair differing only in *reference-type* positions: CoreCLR
+        // shares one `DelegateEEClass`, and so one `Invoke` MethodDesc, between instantiations
+        // that canonicalise alike, so real .NET answers `Func<string, int>` and
+        // `Func<object, int>` alike where PawPrint answers two registry ids. That pair is a
+        // recorded divergence, not an assertion this file can make -- see docs/divergences.md,
+        // "A generic delegate type's `Invoke` handle is per-instantiation", and its PawPrint-side
+        // counterpart `sourcesImpure/DelegateInvokeHandlePerInstantiation.cs`. The pair below
+        // differs in a *value* position, which canonicalisation keeps, so the two runtimes agree.
         if (h1.Equals (getInvokeMethod.Invoke (len, null))) return 105;
 
         // As do two unrelated delegate types. Neither shares a generic definition with `f`, so
-        // neither is at risk of the canonical sharing above.
+        // neither can canonicalise to what `f` does.
         if (h1.Equals (getInvokeMethod.Invoke (act, null))) return 106;
         if (h1.Equals (getInvokeMethod.Invoke (id, null))) return 107;
 

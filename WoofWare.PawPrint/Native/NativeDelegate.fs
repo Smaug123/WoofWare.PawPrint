@@ -612,15 +612,17 @@ module NativeDelegate =
             //
             // The id names the `Invoke` of the *exact* instantiation, which is deliberately not
             // what CoreCLR answers: `GetInvokeMethod()` is a field of the `DelegateEEClass`, and
-            // an `EEClass` is shared across every instantiation whose arguments are all reference
-            // types, so `Func<string, int>` and `Func<object, int>` get one `MethodDesc*` there
-            // and two registry ids here (docs/divergences.md, "A generic delegate type's `Invoke`
-            // handle is per-instantiation"). Exact is nonetheless the right answer for the
-            // consumer: `RuntimeType.GetMethodBase` is handed the delegate's exact `RuntimeType`
-            // alongside the handle and remaps a shared one onto it before producing the
-            // `MethodInfo` (RuntimeType.CoreCLR.cs:1871-1899), which PawPrint has no shared form
-            // to need; and the signature the reflective invoke coerces arguments against has to
-            // be the instantiated one.
+            // an `EEClass` is shared by instantiations that canonicalise alike -- each
+            // reference-type argument replaced by `__Canon`, each value-type argument kept -- so
+            // `Func<string, int>` and `Func<object, int>` get one `MethodDesc*` there and two
+            // registry ids here (docs/divergences.md, "A generic delegate type's `Invoke` handle
+            // is per-instantiation", which carries the measured table). Exact is nonetheless the
+            // right answer for the consumer: `RuntimeType.GetMethodBase` is handed the delegate's
+            // exact `RuntimeType` alongside the handle and rebinds a shared one onto it via
+            // `GetMethodFromCanonical` before producing the `MethodInfo`
+            // (RuntimeType.CoreCLR.cs:1871-1911), which PawPrint has no shared form to need; and
+            // the signature the reflective invoke coerces arguments against has to be the
+            // instantiated one.
             let operation = "Delegate.GetInvokeMethod"
 
             let state = IlMachineState.loadArgument ctx.Thread 0 state
