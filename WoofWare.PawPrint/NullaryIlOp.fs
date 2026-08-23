@@ -1701,45 +1701,6 @@ module NullaryIlOp =
 
         ExecutionResult.stepped (state, WhatWeDid.Executed)
 
-    /// `initblk`'s `size` operand (ECMA-335 III.3.36) is an *unsigned* int32, so the int32
-    /// evaluation-stack slot is reinterpreted rather than sign-extended.
-    /// `IntrinsicHelpers.byteCountOfStackValue` cannot serve here: it sign-extends, because it
-    /// reads the `nuint` counts of the `SpanHelpers` primitives, and a size in [2^31, 2^32)
-    /// would be reported as negative rather than as too large for the byte-offset model.
-    ///
-    /// The result is deliberately not yet bounded to the interpreter's byte-offset model. A size
-    /// PawPrint could never fill still decides whether there is anything to fill at all, and a
-    /// null address faults on its first byte whatever the size beyond it says; `initblkWritable`
-    /// applies the bound at the point where the fill is actually about to happen.
-    let private initblkSize (arg : EvalStackValue) : int64 =
-        match arg with
-        | EvalStackValue.Int32 (Int32Source.Verbatim size) -> int64 (uint32 size)
-        | EvalStackValue.Int32 other ->
-            failwith
-                $"initblk: size carries pointer provenance (%O{other}); refusing to interpret a pointer-shaped int32 as a byte count"
-        | other -> failwith $"initblk: expected an unsigned int32 size, got %O{other}"
-
-    /// `initblk`'s `value` operand is an unsigned int8 widened to int32 on the evaluation stack;
-    /// only its low eight bits are written. Measured against real .NET: a value of `0x1FF` fills
-    /// with `0xFF`, as does `-1`.
-    let private initblkValue (arg : EvalStackValue) : byte =
-        match arg with
-        // The mask is written out rather than left to `byte`, whose truncation is a property of
-        // the build's arithmetic mode: under `--checked+` the conversion operator would raise
-        // OverflowException on `0x1FF` instead of narrowing it.
-        | EvalStackValue.Int32 (Int32Source.Verbatim value) -> byte (value &&& 0xFF)
-        | EvalStackValue.Int32 other ->
-            failwith
-                $"initblk: fill value carries pointer provenance (%O{other}); refusing to interpret a pointer-shaped int32 as a fill byte"
-        | other -> failwith $"initblk: expected an unsigned int8 fill value, got %O{other}"
-
-    /// Narrow a size that is about to be filled through to the interpreter's byte-offset model.
-    let private initblkWritable (size : int64) : int =
-        if size > int64 Int32.MaxValue then
-            failwith $"initblk: size %d{size} exceeds the interpreter Int32 byte-offset model"
-
-        int size
-
     let internal execute
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
@@ -3442,43 +3403,20 @@ module NullaryIlOp =
             stElem loggerFactory corelib value index arr currentThread state
         | Cpblk -> failwith "TODO: Cpblk unimplemented"
         | Initblk ->
-            // ECMA-335 III.3.36. Stack order is `addr`, `value`, `size`, so `size` comes off first.
-            let sizeArg, state = IlMachineState.popEvalStack currentThread state
-            let valueArg, state = IlMachineState.popEvalStack currentThread state
-            let addrArg, state = IlMachineState.popEvalStack currentThread state
-
-            // `value` is decoded only where it is about to be written. A fill of nothing, and a
-            // fill through a null address, both complete on real .NET without ever reading it, so
-            // a fill byte PawPrint cannot render must not turn either of those into a host failure.
-            let size = initblkSize sizeArg
-
-            if size = 0L then
-                // A zero-length fill must not dereference `addr` at all: real .NET completes even
-                // for a null address, and a zero-length `Span<byte>` hands PawPrint a byref to
-                // where element 0 would have been.
+            // ECMA-335 III.3.36, shared with the `Unsafe.InitBlock` intrinsics that lower to it.
+            match IntrinsicHelpers.executeInitBlock corelib currentThread "initblk" state with
+            | InitBlockOutcome.Filled state ->
                 state
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
-            else
-
-            match IntrinsicHelpers.managedPointerOfPointerArgument "initblk" addrArg with
-            | ManagedPointerSource.Null ->
-                // Measured against real .NET: a null address with a nonzero size raises a
-                // NullReferenceException the guest can catch. The fault is on the first byte, so
-                // this is the answer for any nonzero size, including one past what the
-                // interpreter's byte-offset model could have filled.
+            | InitBlockOutcome.NullDestination state ->
                 IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     corelib
                     corelib.NullReferenceException
                     currentThread
                     state
-                |> ExecutionResult.stepped
-            | dest ->
-                CellAwareMemOps.fill corelib "initblk" state dest (initblkValue valueArg) (initblkWritable size)
-                |> IlMachineState.advanceProgramCounter currentThread
-                |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
         | Conv_ovf_u1 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
