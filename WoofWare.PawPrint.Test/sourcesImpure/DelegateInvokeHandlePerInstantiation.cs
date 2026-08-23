@@ -10,9 +10,13 @@ using System.Reflection;
 // PawPrint mints a registry id per exact instantiation and so hands out two for the first pair.
 //
 // Impure because that is exactly what the differential oracle would disagree about: measured on
-// .NET 10, check 3 below returns 3 there. See docs/divergences.md, "A generic delegate type's
-// `Invoke` handle is per-instantiation, not per-canonical-form", and the value/reference pair in
+// .NET 10, check 3 below returns 3 there. See docs/divergences.md, "A method handle is
+// per-instantiation, where CoreCLR shares one per canonical form", and the value/reference pair in
 // `sourcesPure/DelegateDynamicInvoke.cs` that both runtimes do agree on.
+//
+// The divergence is neither new nor delegate-specific -- `MethodInfo.MethodHandle` on any generic
+// type shows it, and did before `GetInvokeMethod` was implemented. This guest reaches it through a
+// delegate because that is the path the handler under test takes.
 //
 // Returns 0 on success, or the number of the first check that failed.
 

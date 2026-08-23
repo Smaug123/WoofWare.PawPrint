@@ -615,8 +615,10 @@ module NativeDelegate =
             // an `EEClass` is shared by instantiations that canonicalise alike -- each
             // reference-type argument replaced by `__Canon`, each value-type argument kept -- so
             // `Func<string, int>` and `Func<object, int>` get one `MethodDesc*` there and two
-            // registry ids here (docs/divergences.md, "A generic delegate type's `Invoke` handle
-            // is per-instantiation", which carries the measured table). Exact is nonetheless the
+            // registry ids here. That is not this handler's choice but
+            // `MethodHandleRegistry`'s, which keys on a closed declaring type throughout, and it
+            // predates this arm -- see docs/divergences.md, "A method handle is
+            // per-instantiation", which carries the measured table. Exact is nonetheless the
             // right answer for the consumer: `RuntimeType.GetMethodBase` is handed the delegate's
             // exact `RuntimeType` alongside the handle and rebinds a shared one onto it via
             // `GetMethodFromCanonical` before producing the `MethodInfo`

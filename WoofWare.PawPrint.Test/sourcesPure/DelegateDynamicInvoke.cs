@@ -235,7 +235,7 @@ public class DelegateDynamicInvoke
         // that canonicalise alike, so real .NET answers `Func<string, int>` and
         // `Func<object, int>` alike where PawPrint answers two registry ids. That pair is a
         // recorded divergence, not an assertion this file can make -- see docs/divergences.md,
-        // "A generic delegate type's `Invoke` handle is per-instantiation", and its PawPrint-side
+        // "A method handle is per-instantiation", and its PawPrint-side
         // counterpart `sourcesImpure/DelegateInvokeHandlePerInstantiation.cs`. One of the pair
         // below holds a value type where the other holds a reference type: canonicalisation keeps the
         // `int` and replaces the `string`, so the forms differ and the two runtimes agree.
