@@ -13,9 +13,10 @@ using System.Reflection;
 // (MethodInvokerCommon.cs:114-121, :168-181) deliberately take the interpreted
 // `RuntimeMethodHandle.InvokeMethod` path only on a given MethodBase's *first* invocation, and
 // build a Reflection.Emit delegate for every invocation after that (whenever
-// `RuntimeFeature.IsDynamicCodeSupported`, which is true by default and which PawPrint does not
-// seed otherwise). A second `Invoke` of the same method would therefore stop exercising this QCall
-// at all and start exercising Reflection.Emit. `MethodInfo`s are cached per-method on the
+// `RuntimeFeature.IsDynamicCodeSupported`, which is true by default; PawPrint seeds it false, but
+// the differential oracle runs this program on a stock host, where it is true). A second `Invoke`
+// of the same method would therefore stop exercising this QCall at all on the oracle side, and
+// start exercising Reflection.Emit. `MethodInfo`s are cached per-method on the
 // `RuntimeType`, including `MakeGenericMethod` instantiations, so re-fetching one does not reset it.
 public class Program
 {
