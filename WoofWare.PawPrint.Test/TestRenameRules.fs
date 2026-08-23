@@ -583,7 +583,17 @@ module TestRenameRules =
         // row at uid 0 — the navigation arms diverge there exactly as they do
         // at uid 1000, since privilege never touches a structural check.
         for platform in [ linux ; darwin ] do
-            for source, destination in [ "p/pf", "w/x" ; "f", "q/x" ; "mv", "w/x" ; "d", "w/wzero" ] do
+            for source, destination in
+                [
+                    "p/pf", "w/x"
+                    "f", "q/x"
+                    "mv", "w/x"
+                    "d", "w/wzero"
+                    // Darwin's second moved-directory occasion: EACCES at uid
+                    // 501, and measured `ok` at uid 0, so privilege disables
+                    // this arm exactly as it disables the others.
+                    "mv", "mvdest"
+                ] do
                 match
                     verdictIn tree (VirtualFileSystem.root tree) platform CallerPrivilege.Privileged source destination
                 with
@@ -600,6 +610,10 @@ module TestRenameRules =
                 "d", "q/qd"
                 "w/wzero", "w/wzero"
                 "d", "w/wzerofull"
+                // At uid 501 this is EACCES on Darwin and ENOTEMPTY on Linux;
+                // measured at uid 0, both answer ENOTEMPTY -- the moved-directory
+                // arm stops firing and the emptiness check below it speaks.
+                "mv", "mvfull"
             ] do
             let onLinux =
                 verdictIn tree (VirtualFileSystem.root tree) linux CallerPrivilege.Privileged source destination
