@@ -504,6 +504,7 @@ both were real gaps rather than unjustified lines:
 | refuse *every* nonzero timeout (i.e. D3(a)) | killed | pure check 11 and impure checks 24-27 |
 | ready predicate ignores `ERR`/`HUP`/`NVAL` | killed | impure: positive-timeout rows |
 | `NVAL` never reported | killed | impure: never-opened fd |
+| entry buffer resolved eagerly at `eventCount = 0` | killed | impure: `Poll((PollEvent*)1, 0, 0, …)` |
 
 The two survivors are worth recording, because each says something the plan
 had wrong:
@@ -514,6 +515,15 @@ implementation that leaked an unrequested `IN` bit is *invisible* through the
 managed surface. The plan had assumed a managed row could pin the mask; it
 cannot. Only a guest reading `TriggeredEvents` directly can, which is why that
 row lives in the impure guest even though the underlying fact is portable.
+
+**A zero-entry poll must not resolve the entry buffer at all** (found by
+Codex). `Common_Poll`'s copy-in loop is the only thing that dereferences
+`pollEvents`, and it does not run at `eventCount = 0`, so a non-null pointer
+naming nothing is legal: the call succeeds and stores zero. Resolving the
+buffer unconditionally aborted that. `SocketPal.Select` reaches exactly this
+shape when every list it was given is empty. Verified against the real kernel
+before fixing — `Poll((PollEvent*)1, 0, 0, &triggered)` really does return
+SUCCESS on Linux.
 
 **Nothing else in the suite produces a socket whose level carries `ERR`.**
 `RefusedPendingDelivery` is the only phase that sets it, so pinning "ERR is
