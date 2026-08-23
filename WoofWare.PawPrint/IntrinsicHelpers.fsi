@@ -114,16 +114,23 @@ module internal IntrinsicHelpers =
         state : IlMachineState ->
             InitBlockOutcome
 
-    /// Execute the `Unsafe.CopyBlock` / `Unsafe.CopyBlockUnaligned` JIT intrinsics. Drives the
-    /// shared cell-aware copy primitive forwards (cpblk has undefined behaviour on overlap per
-    /// ECMA-335 III.3.30, so no overlap detection is performed); the cell-aware path preserves
-    /// non-byte-addressable cell shapes and non-`Verbatim` numeric provenance through the copy.
-    val executeUnsafeCopyBlock :
+    /// Pop `destaddr`, `srcaddr` and `size` from the evaluation stack and copy the block they
+    /// describe, serving both the `cpblk` opcode and the `Unsafe.CopyBlock` /
+    /// `Unsafe.CopyBlockUnaligned` JIT intrinsics the real JIT replaces with it. `operation` names
+    /// the caller in the diagnostics raised for operands PawPrint cannot interpret as a copy.
+    ///
+    /// The copy runs forwards, since `cpblk` has undefined behaviour on overlap (ECMA-335
+    /// III.3.30) and needs no overlap detection; the cell-aware path preserves non-byte-addressable
+    /// cell shapes and non-`Verbatim` numeric provenance through the copy.
+    ///
+    /// The program counter is left where it was, so a caller can raise `NullEndpoint` at the
+    /// faulting instruction; a caller must advance it itself on `Copied`.
+    val executeCopyBlock :
         baseClassTypes : BaseClassTypes<DumpedAssembly> ->
         currentThread : ThreadId ->
         operation : string ->
         state : IlMachineState ->
-            IlMachineState
+            CopyBlockOutcome
 
     /// Execute the `SpanHelpers.Memmove(ref byte, ref byte, nuint)` JIT intrinsic. Routes through
     /// the shared cell-aware copy primitive with `Memmove` direction policy so cell-aligned

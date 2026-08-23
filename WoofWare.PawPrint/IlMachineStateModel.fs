@@ -475,6 +475,19 @@ type InitBlockOutcome =
     /// The destination was null and the size nonzero, so the fill faults on its first byte.
     | NullDestination of IlMachineState
 
+/// Outcome of a `cpblk`-shaped copy (`IntrinsicHelpers.executeCopyBlock`), which serves both the
+/// opcode and the `Unsafe.CopyBlock` / `Unsafe.CopyBlockUnaligned` intrinsics the JIT replaces
+/// with it. As for `InitBlockOutcome`, neither case has advanced the program counter: a caller
+/// turning `NullEndpoint` into a guest exception needs the faulting instruction's offset.
+type CopyBlockOutcome =
+    /// The copy completed. A zero count reaches this case too, having moved nothing and without
+    /// dereferencing either endpoint.
+    | Copied of IlMachineState
+    /// Source or destination was null and the count nonzero, so the copy faults on its first byte.
+    /// Which endpoint it was does not reach the guest: both raise NullReferenceException, and the
+    /// CLI does not say which end is examined first.
+    | NullEndpoint of IlMachineState
+
 /// Outcome of invoking a native handler (QCall, P/Invoke shim, or other host-provided
 /// primitive registered under `WoofWare.PawPrint.Native`). Each variant names a single
 /// dispatcher decision, so the dispatcher's pattern match is total.

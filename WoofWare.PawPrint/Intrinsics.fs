@@ -1838,7 +1838,8 @@ module Intrinsics =
         | CorelibAssembly, "Unsafe", ("CopyBlock" | "CopyBlockUnaligned") ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L313
             // The CoreLib bodies throw PlatformNotSupportedException; the real JIT replaces
-            // these with `cpblk` (optionally prefixed by `unaligned.`). Both overloads accept
+            // these with `cpblk` (optionally prefixed by `unaligned.`), so the opcode's own
+            // implementation is what runs here rather than any body. Both overloads accept
             // the byref and pointer forms uniformly via managedPointerOfPointerArgument.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
@@ -1848,8 +1849,13 @@ module Intrinsics =
             | [ ConcretePointer _ ; ConcretePointer _ ; ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Void ->
                 let operation = $"Unsafe.%s{methodToCall.Name}"
 
-                executeUnsafeCopyBlock baseClassTypes currentThread operation state
-                |> IntrinsicResult.Completed
+                match IntrinsicHelpers.executeCopyBlock baseClassTypes currentThread operation state with
+                | CopyBlockOutcome.Copied state ->
+                    state
+                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> IntrinsicResult.Completed
+                | CopyBlockOutcome.NullEndpoint state ->
+                    IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
             | _ -> IntrinsicResult.Unrecognised
         | CorelibAssembly, "SpanHelpers", "Memmove" ->
             // `[Intrinsic] internal static void Memmove(ref byte dest, ref byte src, nuint len)`

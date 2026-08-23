@@ -1186,17 +1186,17 @@ module internal IntrinsicHelpers =
         |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
         |> IlMachineState.advanceProgramCounter currentThread
 
-    /// `initblk`'s `size` operand (ECMA-335 III.3.36) is an *unsigned* int32, so the int32
-    /// evaluation-stack slot is reinterpreted rather than sign-extended. `byteCountOfStackValue`
-    /// cannot serve here: it sign-extends, because it reads the `nuint` counts of the
-    /// `SpanHelpers` primitives, and a size in [2^31, 2^32) would be reported as negative rather
-    /// than as too large for the byte-offset model.
+    /// The size operand of `initblk` (ECMA-335 III.3.36) and of `cpblk` (III.3.30) is an
+    /// *unsigned* int32, so the int32 evaluation-stack slot is reinterpreted rather than
+    /// sign-extended. `byteCountOfStackValue` cannot serve here: it sign-extends, because it
+    /// reads the `nuint` counts of the `SpanHelpers` primitives, and a size in [2^31, 2^32) would
+    /// be reported as negative rather than as too large for the byte-offset model.
     ///
     /// The result is deliberately not yet bounded to the interpreter's byte-offset model. A size
-    /// PawPrint could never fill still decides whether there is anything to fill at all, and a
-    /// null address faults on its first byte whatever the size beyond it says; `initBlockWritable`
-    /// applies the bound at the point where the fill is actually about to happen.
-    let private initBlockSize (operation : string) (arg : EvalStackValue) : int64 =
+    /// PawPrint could never move still decides whether there is anything to move at all, and a
+    /// null endpoint faults on its first byte whatever the size beyond it says; `writableBlockSize`
+    /// applies the bound at the point where the write is actually about to happen.
+    let private blockSizeOperand (operation : string) (arg : EvalStackValue) : int64 =
         match arg with
         | EvalStackValue.Int32 (Int32Source.Verbatim size) -> int64 (uint32 size)
         | EvalStackValue.Int32 other ->
@@ -1218,8 +1218,8 @@ module internal IntrinsicHelpers =
                 $"%s{operation}: fill value carries pointer provenance (%O{other}); refusing to interpret a pointer-shaped int32 as a fill byte"
         | other -> failwith $"%s{operation}: expected an unsigned int8 fill value, got %O{other}"
 
-    /// Narrow a size that is about to be filled through to the interpreter's byte-offset model.
-    let private initBlockWritable (operation : string) (size : int64) : int =
+    /// Narrow a size that is about to be written through to the interpreter's byte-offset model.
+    let private writableBlockSize (operation : string) (size : int64) : int =
         if size > int64 Int32.MaxValue then
             failwith $"%s{operation}: size %d{size} exceeds the interpreter Int32 byte-offset model"
 
@@ -1243,7 +1243,7 @@ module internal IntrinsicHelpers =
         // `value` is decoded only where it is about to be written. A fill of nothing, and a fill
         // through a null address, both complete on real .NET without ever reading it, so a fill
         // byte PawPrint cannot render must not turn either of those into a host failure.
-        let size = initBlockSize operation sizeArg
+        let size = blockSizeOperand operation sizeArg
 
         if size = 0L then
             // A zero-length fill must not dereference `addr` at all: real .NET completes even for
@@ -1266,53 +1266,59 @@ module internal IntrinsicHelpers =
                 state
                 dest
                 (initBlockValue operation valueArg)
-                (initBlockWritable operation size)
+                (writableBlockSize operation size)
             |> InitBlockOutcome.Filled
 
-    let executeUnsafeCopyBlock
-        (baseClassTypes : BaseClassTypes<_>)
+    let executeCopyBlock
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (currentThread : ThreadId)
         (operation : string)
         (state : IlMachineState)
-        : IlMachineState
+        : CopyBlockOutcome
         =
-        // Stack order: destination (arg0) pushed first, source (arg1), byteCount (arg2) on top.
-        let byteCountArg, state = IlMachineState.popEvalStack currentThread state
+        // Stack order is `destaddr`, `srcaddr`, `size` (ECMA-335 III.3.30), so `size` comes off
+        // first. The `Unsafe.CopyBlock` overloads take their three arguments in that same order,
+        // which is not a coincidence: each is `[Intrinsic]`, and the IL the JIT substitutes is
+        // `ldarg.0; ldarg.1; ldarg.2; cpblk; ret`.
+        let sizeArg, state = IlMachineState.popEvalStack currentThread state
         let sourceArg, state = IlMachineState.popEvalStack currentThread state
         let destArg, state = IlMachineState.popEvalStack currentThread state
 
-        let byteCount = byteCountOfStackValue operation byteCountArg
+        let size = blockSizeOperand operation sizeArg
 
-        let state =
-            if byteCount = 0 then
-                state
-            else
-                let sourcePtr = managedPointerOfPointerArgument operation sourceArg
-                let destPtr = managedPointerOfPointerArgument operation destArg
+        if size = 0L then
+            // A zero-length copy must not dereference either endpoint: real .NET completes even
+            // when both are null, and a zero-length `Span<byte>` hands PawPrint a byref to where
+            // element 0 would have been.
+            CopyBlockOutcome.Copied state
+        else
 
-                match sourcePtr, destPtr with
-                | ManagedPointerSource.Null, _ -> failwith $"%s{operation}: refusing nonzero byte copy from null source"
-                | _, ManagedPointerSource.Null ->
-                    failwith $"%s{operation}: refusing nonzero byte copy to null destination"
-                | _ ->
+        let sourcePtr = managedPointerOfPointerArgument operation sourceArg
+        let destPtr = managedPointerOfPointerArgument operation destArg
 
-                // cpblk is undefined for overlapping ranges (ECMA-335 III.3.30),
-                // so a forward walk is per-spec correct; we don't need the
-                // Memmove-style overlap handling. The shared cell-aware primitive
-                // preserves non-byte-addressable cell shapes (object references,
-                // runtime pointers, value-types containing those) and
-                // non-`Verbatim` numeric provenance (e.g. `TypeHandlePtr`-tagged
-                // `IntPtr`s) that the byte-walk fallback cannot serialise.
-                CellAwareMemOps.copy
-                    baseClassTypes
-                    operation
-                    CellAwareCopyPolicy.CpblkForward
-                    state
-                    destPtr
-                    sourcePtr
-                    byteCount
+        match sourcePtr, destPtr with
+        // Measured against real .NET: a null endpoint with a nonzero count raises a
+        // NullReferenceException the guest can catch, on whichever side the null is. The fault is
+        // on the first byte, so this is the answer for any nonzero count, including one past what
+        // the interpreter's byte-offset model could have copied.
+        | ManagedPointerSource.Null, _
+        | _, ManagedPointerSource.Null -> CopyBlockOutcome.NullEndpoint state
+        | _ ->
 
-        state |> IlMachineState.advanceProgramCounter currentThread
+        // cpblk is undefined for overlapping ranges (ECMA-335 III.3.30), so a forward walk is
+        // per-spec correct; the Memmove-style overlap handling is not needed. The shared
+        // cell-aware primitive preserves non-byte-addressable cell shapes (object references,
+        // runtime pointers, value-types containing those) and non-`Verbatim` numeric provenance
+        // (e.g. `TypeHandlePtr`-tagged `IntPtr`s) that the byte-walk fallback cannot serialise.
+        CellAwareMemOps.copy
+            baseClassTypes
+            operation
+            CellAwareCopyPolicy.CpblkForward
+            state
+            destPtr
+            sourcePtr
+            (writableBlockSize operation size)
+        |> CopyBlockOutcome.Copied
 
     let executeSpanHelpersMemmove
         (baseClassTypes : BaseClassTypes<_>)
