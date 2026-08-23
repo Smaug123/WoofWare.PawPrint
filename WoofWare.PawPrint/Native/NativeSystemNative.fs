@@ -6646,7 +6646,7 @@ module NativeSystemNative =
             // pal_networking.c), so `SA_CLOSE` is never delivered under this
             // flavour.
             let deliver
-                (delivered : (uint64 * EpollReadiness) list)
+                (delivered : (uint64 * ReadinessLevel) list)
                 (kernel : EmulatedKernel)
                 : NativeHandlerResult option
                 =

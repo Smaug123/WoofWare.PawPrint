@@ -293,13 +293,24 @@ exactly as strict as they are.
 
 ### D5. The `SocketKind` dimension, which epoll's registration hid
 
-Poll removes a chokepoint. `epollReadiness`'s `Raw`/`SeqPacket` arm currently
-`failwith`s, and its stated justification is that no registration can name such
-a socket. That justification **dies with this slice**: a guest polls a
-descriptor directly, with no registration step, and on the Linux flavour
-`SimulatedUnixPlatform.socketCreation` really does admit `AF_UNIX` +
-`SOCK_RAW` / `SOCK_SEQPACKET` (`EmulatedKernel.fs:2891-2895`). So the arm
-becomes guest-reachable.
+Poll widens a door. `socketReadinessLevel`'s `Raw`/`SeqPacket` arm currently
+`failwith`s, and **an earlier draft of this section said poll makes it
+reachable for the first time. That was wrong.** The registration path screens
+only `OpenFileTarget.File` as not-pollable (`FileDescriptorRegistry.fs:1450`);
+a socket of *any* kind is admitted, and `changeSocketEventRegistration` then
+computes `readyNow` through `epollReadinessOfDescription`
+(`EmulatedKernel.fs:5260`). So an epoll ADD of an `AF_UNIX` raw socket reaches
+that arm today, before this slice — and `SimulatedUnixPlatform.socketCreation`
+really does admit `AF_UNIX` + `SOCK_RAW` / `SOCK_SEQPACKET` on the Linux
+flavour (`EmulatedKernel.fs:2891-2895`), so such a socket can exist. Poll adds
+a second, wider door; it does not open the first.
+
+What the slice *does* change is the arm's stated contract. The message does not
+claim unreachability — it claims the readiness is **unmeasured**, and asks for
+a measurement "before registering it delivers". After this slice that claim is
+half-false, and the halves are asymmetric: poll's level is measured below,
+epoll's is still only *inferred* from the two waiters sharing one `->poll`
+handler.
 
 Measured (`pollgaps.c`, Linux; Darwin refuses to create either, `EPROTONOSUPPORT`):
 
@@ -320,22 +331,31 @@ now a measurement.
 
 **(2) `Raw`/`SeqPacket` still refuse in this slice, and the refusal message
 must be rewritten.** Wiring the two measured rows in is four lines, but the
-function is shared (D1), so it would silently change *epoll delivery* too — a
-second waiter's behaviour, with no test in this PR covering it. That is a
-follow-up, and cheap now the rows exist. Meanwhile the message must name the
-condition that actually triggers it (a poll of an `AF_UNIX` raw or seqpacket
-socket, reachable with no registration), because as written it tells a future
-reader something false.
+function is shared (D1), so epoll delivery would start answering on *poll-side
+measurement plus inference* — and these would be the only two rows in the
+shared function resting on inference alone, where every other row is measured
+through both waiters. No current oracle could check them either: the fuzzer's
+vocabulary has no raw/seqpacket ops. D1's sharing was ratified on measured
+agreement across every row, so it must not be the thing that carries an
+unmeasured row into a second waiter.
 
-`SocketPhase.Dead`'s arm needs the same treatment for the same reason: it stays
-unreachable — D2(a) refuses the Darwin flavour before any level is computed —
-but its message argues from "readiness is only ever computed for registrations",
-and after this slice there are two doors. Both messages must name both.
+The cheap unlock for the follow-up is an `et.c`-style *epoll* probe on
+`AF_UNIX` raw and seqpacket sockets; after that, the four lines plus an impure
+epoll guest are honest. Meanwhile the message must name both doors and state
+the asymmetry, rather than — as an earlier draft of it did — claiming poll is
+the only way in.
+
+`SocketPhase.Dead`'s arm is the one that genuinely *does* argue from
+reachability — "readiness is only ever computed for registrations" — and it
+stays unreachable, because D2(a) refuses the Darwin flavour before any level is
+computed. But after this slice two doors refuse it rather than one, so its
+message must name both.
 
 This is the failure mode the repo already knows as *newly-reachable inputs
-falsify error messages*; the difference here is that the falsification is the
-direct consequence of the feature being added, so it is in scope rather than
-incidental.
+falsify error messages* — and the drafting history above is a live instance of
+it in the other direction: reasoning about which door reaches an arm, without
+reading the screen that guards it, produced a confident and wrong claim in both
+this plan and the message it prescribed.
 
 ## Scope
 
@@ -369,7 +389,9 @@ Out, each behind a named refusal:
    whatever the host is, and a macOS dev box runs the oracle on Darwin).
    **Verified rather than derived:** the candidate guest exits 42 on real .NET
    on macOS *and* on real .NET on Linux
-   (`container run mcr.microsoft.com/dotnet/runtime:10.0`). Rows: listener with
+   (`container run mcr.microsoft.com/dotnet/runtime:10.0`). That verification
+   must be re-run against the guest as actually committed, since it is a
+   property of the exact rows rather than of the design. Rows: listener with
    an empty queue / with a pending connection / drained again (`SelectRead`),
    both ends of an established pair `SelectWrite` true and `SelectRead` false,
    idle UDP `SelectWrite`, and three `Socket.Select` calls to exercise the
@@ -399,8 +421,25 @@ Out, each behind a named refusal:
    rows: idle TCP `OUT|HUP`; `events = 0` still reporting `HUP`; a never-opened
    fd `NVAL`; `fd = -1` ignored and *not counted*; `SystemNative_Poll(NULL, 0,
    …)` → `EFAULT` (the row where the PAL and libc disagree); `milliseconds =
-   -2` → `EINVAL`; and `*triggered` equal to the number of nonzero-`revents`
-   entries over a mixed array.
+   -2` → `EINVAL`; request bits outside the six PAL bits ignored rather than
+   rejected (`Common_ConvertPollEventsPalToPlatform` has exactly six rows, so
+   they never reach the kernel); and `*triggered` equal to the number of
+   nonzero-`revents` entries over a mixed array.
+
+   **Two of these rows must run at a *positive* timeout, not 0**, and that is
+   the point of them rather than a detail. They are the only tests that pin
+   the *ready predicate* rather than the revents computation:
+
+   - idle TCP, `events` not including `OUT` (or `0`), timeout 5000 →
+     immediate `rv = 1`, `revents = HUP`.
+   - never-opened fd, timeout 5000 → immediate `rv = 1`, `revents = NVAL`.
+
+   Both are measured, not inferred (`pollimmediate.c`): on Linux each returns
+   in 0.0ms at timeout 5000 *and* at timeout −1. Without them, a mutant that
+   computes the ready predicate as `level ∩ requested` — while still writing
+   `ERR`/`HUP` into `revents` correctly — passes every other test here, because
+   every other ready row either runs at timeout 0 (where the predicate is not
+   consulted) or is ready via a *requested* bit.
 
 4. **Socket fuzzer op.** `SocketFuzz.fs` / `socketFuzz/harness.c` gain
    `Poll of slot : int * events : int`. This is the strongest available oracle
@@ -420,6 +459,14 @@ Out, each behind a named refusal:
      design can be subtly wrong — goes untested by the strongest oracle. This
      is the "generator alphabet can hide divergence" trap.
 
+   The op's transcript line records the full `revents` mask, not just the
+   inputs, since that mask is the thing being compared.
+
+   Sequences whose transcripts agree are written to `socketFuzzCorpus/` as
+   embedded resources, so the deterministic replay test exercises them in CI
+   with no container — the same arrangement the existing ops use, and without
+   it this oracle runs only on a machine that has `container`.
+
    What this oracle does *not* own, stated so no one assumes otherwise: the
    single-slot op cannot exercise the multi-entry loop or `*triggered` (test 3
    owns those), and the fuzzer vocabulary has no raw/seqpacket or send/recv
@@ -435,8 +482,11 @@ Out, each behind a named refusal:
    cheap complement. Also mutate: `RdHup` retained instead of dropped;
    `ERR`/`HUP` masked instead of unconditional; `TriggeredEvents` left
    unwritten for a not-ready entry (assert it is overwritten to 0 from a
-   garbage-preloaded value); and `*triggered` written on the screen paths
-   (`Common_Poll` returns before touching it).
+   garbage-preloaded value); `*triggered` written on the screen paths
+   (`Common_Poll` returns before touching it); and — the two D3-specific
+   ones — the ready predicate computed as `level ∩ requested`, and `NVAL`
+   omitted from it. The last two are killed only by the positive-timeout rows
+   in test 3.
 
 ## What the frontier becomes
 

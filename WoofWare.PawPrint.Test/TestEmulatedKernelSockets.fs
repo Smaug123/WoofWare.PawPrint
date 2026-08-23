@@ -523,7 +523,7 @@ module TestEmulatedKernelSockets =
         // keeps its ancestors alive` and `the cascade stops at the root`.
         observedHeldOrphanDirectories |> shouldBeGreaterThan 50
 
-    // --- epollReadiness ---
+    // --- socketReadinessLevel ---
 
     /// A listening stream socket presents nothing while its queue is empty
     /// and `EPOLLIN` once something is queued (measured, `masks.c` rows 3-5).
@@ -545,8 +545,8 @@ module TestEmulatedKernelSockets =
                 ]
                 1L
 
-        EmulatedKernel.epollReadiness (SocketId 0L) (listening [])
-        |> shouldEqual EpollReadiness.none
+        EmulatedKernel.socketReadinessLevel (SocketId 0L) (listening [])
+        |> shouldEqual ReadinessLevel.none
 
         let queued =
             let kernel = listening [ ConnectionId 0L ]
@@ -564,9 +564,9 @@ module TestEmulatedKernelSockets =
                 NextConnectionId = ConnectionId 1L
             }
 
-        EmulatedKernel.epollReadiness (SocketId 0L) queued
+        EmulatedKernel.socketReadinessLevel (SocketId 0L) queued
         |> shouldEqual
-            { EpollReadiness.none with
+            { ReadinessLevel.none with
                 In = true
             }
 
@@ -577,9 +577,9 @@ module TestEmulatedKernelSockets =
         let kernel =
             forge [ 3, OpenFileDescriptionId 10L, OpenFileTarget.Socket (SocketId 0L) ] [ 0L, someSocket ] 1L
 
-        EmulatedKernel.epollReadiness (SocketId 0L) kernel
+        EmulatedKernel.socketReadinessLevel (SocketId 0L) kernel
         |> shouldEqual
-            { EpollReadiness.none with
+            { ReadinessLevel.none with
                 Out = true
                 Hup = true
             }
@@ -600,9 +600,9 @@ module TestEmulatedKernelSockets =
                 ]
                 1L
 
-        EmulatedKernel.epollReadiness (SocketId 0L) kernel
+        EmulatedKernel.socketReadinessLevel (SocketId 0L) kernel
         |> shouldEqual
-            { EpollReadiness.none with
+            { ReadinessLevel.none with
                 Out = true
             }
 
@@ -622,7 +622,7 @@ module TestEmulatedKernelSockets =
                 ]
                 1L
 
-        let level = EmulatedKernel.epollReadiness (SocketId 0L) kernel
+        let level = EmulatedKernel.socketReadinessLevel (SocketId 0L) kernel
 
         level
         |> shouldEqual
@@ -635,17 +635,17 @@ module TestEmulatedKernelSockets =
             }
 
         level
-        |> EpollReadiness.reportedUnder (SocketEventInterest.ofBits "test" 0)
+        |> ReadinessLevel.reportedUnder (SocketEventInterest.ofBits "test" 0)
         |> shouldEqual
-            { EpollReadiness.none with
+            { ReadinessLevel.none with
                 Hup = true
                 Err = true
             }
 
         level
-        |> EpollReadiness.reportedUnder (SocketEventInterest.ofBits "test" 0x01)
+        |> ReadinessLevel.reportedUnder (SocketEventInterest.ofBits "test" 0x01)
         |> shouldEqual
-            { EpollReadiness.none with
+            { ReadinessLevel.none with
                 In = true
                 Hup = true
                 Err = true
@@ -659,14 +659,14 @@ module TestEmulatedKernelSockets =
     let ``the standard streams present their pipe-end levels`` () : unit =
         EmulatedKernel.epollReadinessOfDescription (OpenFileDescriptionId 0L) EmulatedKernel.initial
         |> shouldEqual
-            { EpollReadiness.none with
+            { ReadinessLevel.none with
                 Hup = true
             }
 
         for id in 1L .. 2L do
             EmulatedKernel.epollReadinessOfDescription (OpenFileDescriptionId id) EmulatedKernel.initial
             |> shouldEqual
-                { EpollReadiness.none with
+                { ReadinessLevel.none with
                     Out = true
                 }
 
@@ -1000,7 +1000,7 @@ module TestEmulatedKernelSockets =
         |> shouldEqual
             [
                 0xBEEFUL,
-                { EpollReadiness.none with
+                { ReadinessLevel.none with
                     In = true
                 }
             ]

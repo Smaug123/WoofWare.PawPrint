@@ -102,7 +102,7 @@ module TestSocketEventDelivery =
 
     /// The delivered rows' `Data` fields, so a test can assert order without
     /// restating every mask.
-    let private dataOf (rows : (uint64 * EpollReadiness) list) : uint64 list = rows |> List.map fst
+    let private dataOf (rows : (uint64 * ReadinessLevel) list) : uint64 list = rows |> List.map fst
 
     let private readyOf
         (portId : OpenFileDescriptionId)
@@ -159,7 +159,7 @@ module TestSocketEventDelivery =
         |> shouldEqual
             [
                 7UL,
-                { EpollReadiness.none with
+                { ReadinessLevel.none with
                     In = true
                 }
             ]
@@ -426,7 +426,7 @@ module TestSocketEventDelivery =
         |> shouldEqual
             [
                 5UL,
-                { EpollReadiness.none with
+                { ReadinessLevel.none with
                     Out = true
                     Hup = true
                 }
@@ -468,7 +468,7 @@ module TestSocketEventDelivery =
         |> shouldEqual
             [
                 5UL,
-                { EpollReadiness.none with
+                { ReadinessLevel.none with
                     Out = true
                     Hup = true
                 }
@@ -577,7 +577,7 @@ module TestSocketEventDelivery =
         |> shouldEqual
             [
                 5UL,
-                { EpollReadiness.none with
+                { ReadinessLevel.none with
                     Out = true
                 }
             ]
@@ -593,7 +593,7 @@ module TestSocketEventDelivery =
         |> shouldEqual
             [
                 5UL,
-                { EpollReadiness.none with
+                { ReadinessLevel.none with
                     In = true
                     Out = true
                     RdHup = true
@@ -686,7 +686,7 @@ module TestSocketEventDelivery =
         |> shouldEqual
             [
                 5UL,
-                { EpollReadiness.none with
+                { ReadinessLevel.none with
                     In = true
                     Out = true
                     RdHup = true
@@ -755,7 +755,7 @@ module TestSocketEventDelivery =
         |> shouldEqual
             [
                 6UL,
-                { EpollReadiness.none with
+                { ReadinessLevel.none with
                     Out = true
                 }
             ]
@@ -784,7 +784,7 @@ module TestSocketEventDelivery =
         |> shouldEqual
             [
                 6UL,
-                { EpollReadiness.none with
+                { ReadinessLevel.none with
                     Out = true
                     Hup = true
                 }

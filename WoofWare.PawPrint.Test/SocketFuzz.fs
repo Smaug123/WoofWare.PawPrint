@@ -88,7 +88,7 @@ module SocketFuzz =
 
     /// Canonical mask rendering, shared with the harness: bits in
     /// IN,OUT,RDHUP,HUP,ERR order joined by '+'.
-    let private maskString (r : EpollReadiness) : string =
+    let private maskString (r : ReadinessLevel) : string =
         [
             if r.In then
                 "IN"
