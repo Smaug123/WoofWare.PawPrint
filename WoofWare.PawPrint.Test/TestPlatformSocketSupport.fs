@@ -41,27 +41,6 @@ module TestPlatformSocketSupport =
     [<DllImport("libSystem.Native", EntryPoint = "SystemNative_PlatformSupportsDualModeIPv4PacketInfo")>]
     extern int private hostPlatformSupportsDualModeIPv4PacketInfo()
 
-    /// Whether this host is one whose flavour the model describes at all.
-    let private hostFlavour () : SimulatedUnixFlavour option =
-        if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
-            Some SimulatedUnixFlavour.Darwin
-        elif RuntimeInformation.IsOSPlatform OSPlatform.Linux then
-            Some SimulatedUnixFlavour.Linux
-        else
-            None
-
-    /// The preset for a flavour. Only the flavour is consumed from it, so the
-    /// architecture each preset is named for need not match this host.
-    let private platformOf (flavour : SimulatedUnixFlavour) : SimulatedUnixPlatform =
-        match flavour with
-        | SimulatedUnixFlavour.Darwin -> SimulatedUnixPlatform.macOsArm64
-        | SimulatedUnixFlavour.Linux -> SimulatedUnixPlatform.linuxX64
-
-    let private onUnixHost (action : SimulatedUnixFlavour -> unit) : unit =
-        match hostFlavour () with
-        | None -> Assert.Ignore $"no Unix shim to measure (%s{RuntimeInformation.OSDescription})"
-        | Some flavour -> action flavour
-
     /// A raw `[DllImport]` stub rather than a route through the BCL. The only
     /// managed caller is `System.Net.Sockets.SocketPal`'s class initialiser, and
     /// `SocketPal` is internal to that assembly, so no guest can name it: the
@@ -156,7 +135,7 @@ class Program
     /// prohibition on reading the host applies to the product.
     [<Test>]
     let ``the model agrees with this host's own shim`` () : unit =
-        onUnixHost (fun flavour ->
+        HostPlatform.onUnixHost (fun flavour ->
             let measured = hostPlatformSupportsDualModeIPv4PacketInfo ()
 
             // The upstream body returns a literal 1 or 0, so anything else means
@@ -167,5 +146,5 @@ class Program
                     $"SystemNative_PlatformSupportsDualModeIPv4PacketInfo returned %d{measured} on this host, but upstream (pal_networking.c) can only return 0 or 1."
 
             (measured = 1)
-            |> shouldEqual (SimulatedUnixPlatform.supportsDualModeIPv4PacketInfo (platformOf flavour))
+            |> shouldEqual (SimulatedUnixPlatform.supportsDualModeIPv4PacketInfo (HostPlatform.platformOf flavour))
         )
