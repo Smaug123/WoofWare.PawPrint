@@ -112,7 +112,10 @@ module AppContextProperties =
     ///
     /// There is exactly one, and it is
     /// `System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported=false`.
-    /// PawPrint has no JIT and no `System.Reflection.Emit`, and that switch is precisely
+    /// PawPrint has no JIT, and its `System.Reflection.Emit` support is partial: enough to
+    /// mint and run a `DynamicMethod` a guest builds itself, not enough for the stubs the BCL
+    /// emits on its own behalf, which name reflected members in their bodies, and not at all
+    /// for `AssemblyBuilder`/`TypeBuilder`. That switch is precisely
     /// what the BCL consults before reaching for either: with it off, `Expression.Compile`
     /// takes its interpreter, `MethodInvokerCommon` keeps using the interpreted
     /// `RuntimeMethodHandle.InvokeMethod` path instead of building an invoke stub, and every
@@ -143,7 +146,8 @@ module AppContextProperties =
     /// one if PawPrint overwrote a value the guest's own configuration contains. Forcing the
     /// value would not even buy immutability — `AppContext.SetSwitch` remains available to
     /// the guest at any moment — while it would remove the only way to ask PawPrint to
-    /// exercise a dynamic-code path once one exists.
+    /// exercise the dynamic-code paths it does implement, which is how the `DynamicMethod`
+    /// cases in `sourcesImpure` are registered.
     let withRuntimeBaseline (hostProperties : AppContextProperties) : AppContextProperties =
         overlay runtimeBaseline hostProperties
 
