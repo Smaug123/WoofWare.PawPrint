@@ -2,6 +2,7 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 open Microsoft.Extensions.Logging
+open WoofWare.PosixKernel
 
 [<RequireQualifiedAccess>]
 module IlMachineThreadState =

@@ -6,6 +6,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `EmulatedKernel.cpuForRotation` is the placement policy behind
 /// `SystemNative_SchedGetCpu`: it decides which simulated logical processor the

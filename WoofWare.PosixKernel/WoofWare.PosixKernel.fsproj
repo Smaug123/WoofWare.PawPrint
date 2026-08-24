@@ -24,6 +24,7 @@
         <Compile Include="FileSystemSeed.fs" />
         <Compile Include="InternetEndpoint.fs" />
         <Compile Include="FileDescriptorRegistry.fs" />
+        <Compile Include="UnixTask.fs" />
         <Compile Include="Signal.fs" />
         <Compile Include="SignalState.fs" />
         <Compile Include="SimulatedUnixPlatform.fs" />
