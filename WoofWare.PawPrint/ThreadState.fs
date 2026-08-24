@@ -354,45 +354,6 @@ type ThreadState =
         /// to guests because they read `_name`, not this field. `None` means
         /// the guest has either never set the name or has cleared it.
         Name : string option
-        /// The simulated logical processor this thread is pinned to: what
-        /// `sched_getcpu(3)` (`SystemNative_SchedGetCpu`, and hence
-        /// `Thread.GetCurrentProcessorId()`) reports while this thread runs.
-        ///
-        /// Assigned once, at thread creation, by
-        /// `EmulatedKernel.cpuForRotation`. PawPrint's scheduler runs one
-        /// thread at a time and never migrates a thread between cores, so
-        /// "pinned to" and "currently executing on" coincide and one field
-        /// answers both questions `sched_getcpu` could be asked. This is the
-        /// seat a future core-aware scheduler would rewrite to model migration.
-        ///
-        /// A total field rather than a `Map<ThreadId, CpuId>` in
-        /// `EmulatedKernel` (where the per-thread sigprocmask lives) because
-        /// there is no truthful default for an absent key: "no signals blocked"
-        /// is the state of a fresh thread, whereas no processor index is. As a
-        /// field, the compiler asks each future thread-creation site which core
-        /// it wants.
-        Cpu : CpuId
-        /// The OS thread identifier this thread reports to the guest through
-        /// `SystemNative_TryGetUInt32OSThreadId` (Linux CoreLib) and
-        /// `SystemNative_GetUInt64OSThreadId` (macOS CoreLib) — the value
-        /// `System.Threading.Lock` then uses as its owner identity.
-        ///
-        /// Assigned once, at thread creation, and never reused: real kernels do
-        /// recycle thread ids after a thread exits, but PawPrint never removes
-        /// a thread from `IlMachineState.ThreadState`, and a recycled id would
-        /// let a stale `Lock._owningThreadId` be mistaken for a live owner.
-        ///
-        /// Stored rather than recomputed at each read: `EmulatedKernel.osThreadId`
-        /// currently derives it from the thread's `ThreadId`, but the field lets
-        /// test stubs state an id without reproducing the formula, and a future
-        /// scheme that stopped being a function of `ThreadId` (modelled tid
-        /// recycling, an id a guest can influence) would need no change here.
-        ///
-        /// A total field rather than a `Map<ThreadId, OsThreadId>` on
-        /// `EmulatedKernel`, as with `Cpu`: there is no truthful default for an
-        /// absent key, and an arbitrary one would be an aliased id — the failure
-        /// this type exists to prevent.
-        OsThreadId : OsThreadId
         /// Threads this one must see run — or see leave the Runnable set — before the
         /// scheduler will choose it again. Empty for every thread that has not just yielded,
         /// and empty means eligible; `Scheduler.candidates` filters out any Runnable thread
@@ -516,15 +477,12 @@ type ThreadState =
 
     member this.LiveFrameCount : int = this.MethodStates.Count
 
-    /// `cpu` and `osThreadId` are the simulated logical processor to pin the
-    /// new thread to, and the OS thread id it will report. They are parameters
-    /// rather than defaults so that callers must consult the kernel's policies
-    /// (`EmulatedKernel.cpuForRotation` and `EmulatedKernel.osThreadId`), which
-    /// `ThreadState` cannot reach itself — `EmulatedKernel` is compiled after
-    /// this file. For `osThreadId` there is the additional reason that a
-    /// default would be a *shared* id, and aliasing thread ids silently breaks
-    /// `System.Threading.Lock`.
-    static member New (cpu : CpuId) (osThreadId : OsThreadId) (methodState : MethodState) =
+    /// The caller must also register the thread's task with
+    /// `EmulatedKernel.registerTask`, which is where its processor and OS thread
+    /// id now live. `ThreadState` cannot do that itself — `EmulatedKernel` is
+    /// compiled after this file — and a thread without a task is refused by
+    /// `IlMachineState.checkInvariants`.
+    static member New (methodState : MethodState) =
         {
             ActiveMethodState = FrameId 0
             MethodStates = Map.empty |> Map.add (FrameId 0) methodState
@@ -532,8 +490,6 @@ type ThreadState =
             Status = ThreadStatus.Runnable
             IsBackground = false
             Name = None
-            Cpu = cpu
-            OsThreadId = osThreadId
             YieldDebt = Set.empty
             IsRaisingForeignException = false
         }

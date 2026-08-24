@@ -946,17 +946,15 @@ module TestSocketEventDelivery =
                 | Error error -> failwith $"dup failed: %O{error}"
 
             let kernel =
-                { kernel with
-                    ParkedSocketWaits =
-                        Map.ofList
-                            [
-                                ThreadId 1,
-                                {
-                                    Port = portId
-                                    MaxEvents = 8
-                                }
-                            ]
-                }
+                kernel
+                |> EmulatedKernel.registerTask (ThreadId 1) (CpuId 0) (EmulatedKernel.osThreadId (ThreadId 1))
+                |> EmulatedKernel.withParkedSocketWait
+                    (ThreadId 1)
+                    (Some
+                        {
+                            ParkedSocketWait.Port = portId
+                            MaxEvents = 8
+                        })
 
             portFd, dupFd, kernel
 

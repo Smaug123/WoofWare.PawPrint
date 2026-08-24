@@ -126,9 +126,7 @@ module TestMethodHandleRegistry =
 
         let state =
             { state with
-                ThreadState =
-                    Map.empty
-                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
 
         state, thread
@@ -308,9 +306,7 @@ public static class HasMethod
 
         let state =
             { state with
-                ThreadState =
-                    Map.empty
-                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
 
         let token =
@@ -663,9 +659,7 @@ public static class GenericMethodHolder
 
         let state =
             { state with
-                ThreadState =
-                    Map.empty
-                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
 
         let ctx : NativeCallContext =
