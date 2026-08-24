@@ -23,7 +23,7 @@ type AbsoluteUnixPathError =
     /// both unrooted <i>and</i> otherwise malformed, you get "not rooted".
     /// </remarks>
     | NotRooted
-    /// <summary> The candidate contained a NUL byte at this UTF-16 index.</summary>
+    /// <summary> The candidate contained a NUL byte at this UTF-16 character index.</summary>
     /// <remarks>
     /// NUL terminates a C string and cannot be part of a path.
     /// </remarks>

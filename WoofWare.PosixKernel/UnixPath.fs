@@ -270,6 +270,7 @@ module PathCursor =
 
     /// <summary>The next component, and the cursor positioned after it.</summary>
     /// <returns><c>None</c> when the path is exhausted; otherwise, the component that was at the cursor, and a new cursor which is advanced once.</returns>
+    /// <remarks>Throws if the input cursor is into the null string.</remarks>
     let next (cursor : PathCursor) : (PathComponent * PathCursor) option =
         let buffer = bufferOf cursor
         let start = afterSeparators cursor
@@ -432,7 +433,11 @@ module UnixPath =
         }
 
     /// <summary>True exactly when the input is the empty string.</summary>
-    /// <remarks>This exists because POSIX generally requires APIs to return <c>ENOENT</c> for the empty path.</remarks>
+    /// <remarks>
+    /// Throws if the underlying string is null.
+    ///
+    /// This exists because POSIX generally requires APIs to return <c>ENOENT</c> for the empty path.
+    /// </remarks>
     let isEmpty (path : UnixPath) : bool = path.Raw.Length = 0
 
     /// The root, "/".
@@ -446,7 +451,6 @@ module UnixPath =
     /// <remarks>
     /// Stores the candidate verbatim.
     /// (Even the simplest normalisation, collapsing consecutive separator characters, is observable on Darwin.)
-    /// Use <c>UnixPath.components</c> to normalise.
     ///
     /// POSIX leaves a path beginning with exactly two separators
     /// implementation-defined (it may denote a distinct namespace).

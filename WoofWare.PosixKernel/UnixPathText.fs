@@ -18,8 +18,8 @@ type UnixPathTextDefect =
     /// A NUL at this UTF-16 index.
     | ContainsNul of index : int
     /// An unpaired UTF-16 surrogate at this index.
-    /// This *is* a valid Unix path (since Unix paths are arbitrary non-NUL byte strings),
-    /// but it is not a well-formed .NET string.
+    /// This is a representable .NET string, but since it has no UTF-8 encoding, we do not attempt to
+    /// convert it to a Unix path.
     | UnpairedSurrogate of index : int
 
 [<RequireQualifiedAccess>]
@@ -34,7 +34,10 @@ module UnixPathText =
     ///
     /// <returns><c>None</c> if the string is legal.</returns>
     ///
-    /// <remarks>Scans left-to-right. Treats the null string as being legal, for no particular reason.</remarks>
+    /// <remarks>
+    /// Scans left-to-right.
+    /// Treats the null string as being legal, because within-library callers already validate against null.
+    /// </remarks>
     let firstDefect (candidate : string) : UnixPathTextDefect option =
         // Note: this function cannot be expressed as a per-character predicate, because
         // well-formed surrogate *pairs* are legal even thought their halves are not legal alone.
