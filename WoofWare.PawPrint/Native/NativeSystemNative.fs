@@ -2747,10 +2747,13 @@ module NativeSystemNative =
 
                 state.MapKernel (fun kernel ->
                     { kernel with
-                        FileDescriptors = registry
                         Machine =
                             { kernel.Machine with
                                 FileSystem = filesystem
+                            }
+                        Process =
+                            { kernel.Process with
+                                FileDescriptors = registry
                             }
                     }
                 )
@@ -2878,7 +2881,10 @@ module NativeSystemNative =
 
             state.MapKernel (fun kernel ->
                 { kernel with
-                    FileDescriptors = registry
+                    Process =
+                        { kernel.Process with
+                            FileDescriptors = registry
+                        }
                 }
             )
             |> IlMachineState.pushToEvalStack'
@@ -3234,7 +3240,10 @@ module NativeSystemNative =
 
             state.MapKernel (fun kernel ->
                 { kernel with
-                    FileDescriptors = registry
+                    Process =
+                        { kernel.Process with
+                            FileDescriptors = registry
+                        }
                 }
                 |> EmulatedKernel.withNewDirectoryStream
                     block
@@ -3760,7 +3769,10 @@ module NativeSystemNative =
             let state' =
                 state.MapKernel (fun kernel ->
                     { kernel with
-                        FileDescriptors = registry
+                        Process =
+                            { kernel.Process with
+                                FileDescriptors = registry
+                            }
                     }
                 )
 
@@ -4397,8 +4409,14 @@ module NativeSystemNative =
                 |> fun state ->
                     state.MapKernel (fun kernel ->
                         { kernel with
-                            FileDescriptors =
-                                FileDescriptorRegistry.setOffset fd (offset + int64 transfer) kernel.FileDescriptors
+                            Process =
+                                { kernel.Process with
+                                    FileDescriptors =
+                                        FileDescriptorRegistry.setOffset
+                                            fd
+                                            (offset + int64 transfer)
+                                            kernel.FileDescriptors
+                                }
                         }
                     )
 
@@ -4651,7 +4669,10 @@ module NativeSystemNative =
 
             state.MapKernel (fun kernel ->
                 { kernel with
-                    FileDescriptors = FileDescriptorRegistry.setOffset fd position kernel.FileDescriptors
+                    Process =
+                        { kernel.Process with
+                            FileDescriptors = FileDescriptorRegistry.setOffset fd position kernel.FileDescriptors
+                        }
                 }
             )
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 (Int64Source.Verbatim position)) ctx.Thread
@@ -4910,7 +4931,10 @@ module NativeSystemNative =
                     int64 newFd,
                     state.MapKernel (fun kernel ->
                         { kernel with
-                            FileDescriptors = registry
+                            Process =
+                                { kernel.Process with
+                                    FileDescriptors = registry
+                                }
                         }
                     )
                 | Error FileDescriptorDupError.BadFd ->
@@ -5008,8 +5032,11 @@ module NativeSystemNative =
                 let state =
                     state.MapKernel (fun kernel ->
                         { kernel with
-                            FileDescriptors =
-                                FileDescriptorRegistry.setNonBlocking fd isNonBlocking kernel.FileDescriptors
+                            Process =
+                                { kernel.Process with
+                                    FileDescriptors =
+                                        FileDescriptorRegistry.setNonBlocking fd isNonBlocking kernel.FileDescriptors
+                                }
                         }
                     )
 
@@ -5023,7 +5050,11 @@ module NativeSystemNative =
             | Some (OpenFileTarget.Socket _) ->
                 state.MapKernel (fun kernel ->
                     { kernel with
-                        FileDescriptors = FileDescriptorRegistry.setNonBlocking fd isNonBlocking kernel.FileDescriptors
+                        Process =
+                            { kernel.Process with
+                                FileDescriptors =
+                                    FileDescriptorRegistry.setNonBlocking fd isNonBlocking kernel.FileDescriptors
+                            }
                     }
                 )
                 |> complete 0
@@ -6163,7 +6194,10 @@ module NativeSystemNative =
             let state =
                 state.MapKernel (fun kernel ->
                     { kernel with
-                        FileDescriptors = registry
+                        Process =
+                            { kernel.Process with
+                                FileDescriptors = registry
+                            }
                     }
                 )
 
@@ -7285,11 +7319,14 @@ module NativeSystemNative =
                                 let state =
                                     state.MapKernel (fun kernel ->
                                         { kernel with
-                                            FileDescriptors =
-                                                FileDescriptorRegistry.setOffset
-                                                    fd
-                                                    (offset + int64 bytes.Length)
-                                                    kernel.FileDescriptors
+                                            Process =
+                                                { kernel.Process with
+                                                    FileDescriptors =
+                                                        FileDescriptorRegistry.setOffset
+                                                            fd
+                                                            (offset + int64 bytes.Length)
+                                                            kernel.FileDescriptors
+                                                }
                                         }
                                     )
 
@@ -7344,7 +7381,10 @@ module NativeSystemNative =
                                     let state =
                                         state.MapKernel (fun kernel ->
                                             { kernel with
-                                                OutputLog = kernel.OutputLog.Add logEntry
+                                                Process =
+                                                    { kernel.Process with
+                                                        OutputLog = kernel.OutputLog.Add logEntry
+                                                    }
                                             }
                                         )
 
@@ -7452,7 +7492,10 @@ module NativeSystemNative =
 
                     state.MapKernel (fun kernel ->
                         { kernel with
-                            Signals = SignalState.markInitialized dispatcher kernel.Signals
+                            Process =
+                                { kernel.Process with
+                                    Signals = SignalState.markInitialized dispatcher kernel.Signals
+                                }
                         }
                     )
 
@@ -7525,7 +7568,10 @@ module NativeSystemNative =
             | ValueSome signal ->
                 state.MapKernel (fun kernel ->
                     { kernel with
-                        Signals = SignalState.enable signal kernel.Signals
+                        Process =
+                            { kernel.Process with
+                                Signals = SignalState.enable signal kernel.Signals
+                            }
                     }
                 )
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
@@ -7558,7 +7604,10 @@ module NativeSystemNative =
 
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals = SignalState.setHandler (SignalHandler.ofMethodInfo mi) kernel.Signals
+                    Process =
+                        { kernel.Process with
+                            Signals = SignalState.setHandler (SignalHandler.ofMethodInfo mi) kernel.Signals
+                        }
                 }
             )
             |> NativeHandlerResult.completed
@@ -7644,7 +7693,10 @@ module NativeSystemNative =
             | ValueSome signal ->
                 state.MapKernel (fun kernel ->
                     { kernel with
-                        Signals = SignalState.disable signal kernel.Signals
+                        Process =
+                            { kernel.Process with
+                                Signals = SignalState.disable signal kernel.Signals
+                            }
                     }
                 )
                 |> NativeHandlerResult.completed

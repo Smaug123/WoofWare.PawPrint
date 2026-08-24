@@ -59,11 +59,14 @@ module TestEmulatedKernelSockets =
                 (OpenFileDescriptionId (int64 descriptions.Length + 100L))
 
         { EmulatedKernel.initial with
-            FileDescriptors = registry
             Machine =
                 { EmulatedKernel.initial.Machine with
                     Sockets = sockets |> List.map (fun (id, socket) -> SocketId id, socket) |> Map.ofList
                     NextSocketId = SocketId nextSocketId
+                }
+            Process =
+                { EmulatedKernel.initial.Process with
+                    FileDescriptors = registry
                 }
         }
 
@@ -164,7 +167,10 @@ module TestEmulatedKernelSockets =
             | Ok (duped, registry) ->
                 duped,
                 { kernel with
-                    FileDescriptors = registry
+                    Process =
+                        { kernel.Process with
+                            FileDescriptors = registry
+                        }
                 }
             | Error e -> failwith $"expected dup to succeed, got %O{e}"
 
@@ -200,7 +206,10 @@ module TestEmulatedKernelSockets =
 
         let kernel =
             { kernel with
-                FileDescriptors = registry
+                Process =
+                    { kernel.Process with
+                        FileDescriptors = registry
+                    }
             }
 
         match EmulatedKernel.closeFd port kernel with
@@ -353,7 +362,10 @@ module TestEmulatedKernelSockets =
                     | Ok (_, registry) ->
                         kernel <-
                             { kernel with
-                                FileDescriptors = registry
+                                Process =
+                                    { kernel.Process with
+                                        FileDescriptors = registry
+                                    }
                             }
 
                         observedDups <- observedDups + 1
@@ -379,7 +391,10 @@ module TestEmulatedKernelSockets =
 
                         kernel <-
                             { kernel with
-                                FileDescriptors = registry
+                                Process =
+                                    { kernel.Process with
+                                        FileDescriptors = registry
+                                    }
                             }
                 | 7 ->
                     // Remove a name at random, from *any* directory the graph
@@ -464,7 +479,10 @@ module TestEmulatedKernelSockets =
 
                     kernel <-
                         { kernel with
-                            FileDescriptors = registry
+                            Process =
+                                { kernel.Process with
+                                    FileDescriptors = registry
+                                }
                         }
                 | _ ->
                     // A different triple each time, so that a `createSocket`

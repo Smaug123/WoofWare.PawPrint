@@ -110,7 +110,10 @@ module TestEmulatedKernelCurrentDirectory =
         let kernel = seededAt "/outer/inner"
 
         { kernel with
-            CurrentDirectory = absolute "/outer"
+            Process =
+                { kernel.Process with
+                    CurrentDirectory = absolute "/outer"
+                }
         }
         |> EmulatedKernel.checkInvariants
         |> shouldEqual
@@ -222,7 +225,10 @@ module TestEmulatedKernelCurrentDirectory =
         let file = inodeOf kernel "/outer/file"
 
         { kernel with
-            CurrentDirectoryInode = file
+            Process =
+                { kernel.Process with
+                    CurrentDirectoryInode = file
+                }
         }
         |> EmulatedKernel.checkInvariants
         |> shouldEqual [ EmulatedKernelDefect.CurrentDirectoryIsNotADirectory file ]
@@ -233,7 +239,10 @@ module TestEmulatedKernelCurrentDirectory =
         let absent = VirtualFileSystem.nextInode kernel.FileSystem
 
         { kernel with
-            CurrentDirectoryInode = absent
+            Process =
+                { kernel.Process with
+                    CurrentDirectoryInode = absent
+                }
         }
         |> EmulatedKernel.checkInvariants
         |> shouldEqual [ EmulatedKernelDefect.CurrentDirectoryIsNotADirectory absent ]
@@ -244,9 +253,9 @@ module TestEmulatedKernelCurrentDirectory =
     let ``KernelConfig applies the current directory whatever else it sets`` () : unit =
         let config =
             { KernelConfig.Default with
-                CurrentDirectory = absolute "/outer/inner"
                 FileSystem = seed
                 UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                CurrentDirectory = absolute "/outer/inner"
             }
 
         let kernel = KernelConfig.applyTo config EmulatedKernel.initial

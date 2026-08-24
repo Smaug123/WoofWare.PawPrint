@@ -90,7 +90,10 @@ module TestEmulatedKernelInodeLifetime =
 
         fd,
         { kernel with
-            FileDescriptors = registry
+            Process =
+                { kernel.Process with
+                    FileDescriptors = registry
+                }
         }
 
     /// Remove `name` from the directory `path` names, answering the inode that
@@ -298,7 +301,10 @@ module TestEmulatedKernelInodeLifetime =
             | Ok (duplicate, registry) ->
                 duplicate,
                 { held with
-                    FileDescriptors = registry
+                    Process =
+                        { held.Process with
+                            FileDescriptors = registry
+                        }
                 }
             | Error error -> failwith $"could not dup fd %d{fd}: %O{error}"
 

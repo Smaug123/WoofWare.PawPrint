@@ -336,7 +336,10 @@ module SocketFuzz =
                     { state with
                         Kernel =
                             { state.Kernel with
-                                FileDescriptors = registry
+                                Process =
+                                    { state.Kernel.Process with
+                                        FileDescriptors = registry
+                                    }
                             }
                     }
             | Error FileDescriptorDupError.BadFd -> "EBADF", state
@@ -351,7 +354,10 @@ module SocketFuzz =
                 { state with
                     Kernel =
                         { state.Kernel with
-                            FileDescriptors = registry
+                            Process =
+                                { state.Kernel.Process with
+                                    FileDescriptors = registry
+                                }
                         }
                 }
         | FuzzOp.Add (port, target, mask) ->

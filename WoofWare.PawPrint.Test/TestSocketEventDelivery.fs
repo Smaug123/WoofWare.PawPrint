@@ -36,7 +36,10 @@ module TestSocketEventDelivery =
         fd,
         portId,
         { kernel with
-            FileDescriptors = registry
+            Process =
+                { kernel.Process with
+                    FileDescriptors = registry
+                }
         }
 
     let private addStream (kernel : EmulatedKernel) : int * SocketId * EmulatedKernel =
@@ -337,7 +340,10 @@ module TestSocketEventDelivery =
                 | Ok (fd, registry) ->
                     fd,
                     { kernel with
-                        FileDescriptors = registry
+                        Process =
+                            { kernel.Process with
+                                FileDescriptors = registry
+                            }
                     }
                 | Error error -> failwith $"dup failed: %O{error}"
 
@@ -888,7 +894,10 @@ module TestSocketEventDelivery =
             | Ok (fd, registry) ->
                 fd,
                 { kernel with
-                    FileDescriptors = registry
+                    Process =
+                        { kernel.Process with
+                            FileDescriptors = registry
+                        }
                 }
             | Error error -> failwith $"dup failed: %O{error}"
 
@@ -929,7 +938,10 @@ module TestSocketEventDelivery =
                 | Ok (fd, registry) ->
                     fd,
                     { kernel with
-                        FileDescriptors = registry
+                        Process =
+                            { kernel.Process with
+                                FileDescriptors = registry
+                            }
                     }
                 | Error error -> failwith $"dup failed: %O{error}"
 
@@ -1014,22 +1026,25 @@ module TestSocketEventDelivery =
                 |> Map.ofList
 
             { kernel with
-                FileDescriptors =
-                    FileDescriptorRegistry.Unchecked.mapDescription
-                        portId
-                        (fun description ->
-                            { description with
-                                Target =
-                                    OpenFileTarget.SocketEventPort
-                                        { portState with
-                                            Registrations = rewritten
-                                        }
-                            }
-                        )
-                        kernel.FileDescriptors
                 Machine =
                     { kernel.Machine with
                         NextSocketEventRegistrationOrdinal = counter
+                    }
+                Process =
+                    { kernel.Process with
+                        FileDescriptors =
+                            FileDescriptorRegistry.Unchecked.mapDescription
+                                portId
+                                (fun description ->
+                                    { description with
+                                        Target =
+                                            OpenFileTarget.SocketEventPort
+                                                { portState with
+                                                    Registrations = rewritten
+                                                }
+                                    }
+                                )
+                                kernel.FileDescriptors
                     }
             }
 

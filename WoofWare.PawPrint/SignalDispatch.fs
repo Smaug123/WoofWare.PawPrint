@@ -240,7 +240,10 @@ module SignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals = signalsAfter
+                    Process =
+                        { kernel.Process with
+                            Signals = signalsAfter
+                        }
                 }
             )
 
