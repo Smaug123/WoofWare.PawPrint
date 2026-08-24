@@ -47,11 +47,6 @@ module TestLowLevelMonitor =
             IsBackground = false
             IsRaisingForeignException = false
             Name = None
-            Cpu = CpuId 0
-            // Inert here: a frameless stub cannot execute the `SystemNative_*OSThreadId`
-            // P/Invoke that reads it. Do not reuse this literal for a stub standing in
-            // for more than one thread -- guest OS thread ids must be distinct.
-            OsThreadId = OsThreadId 1u
         }
 
     let private withThreads (threads : ThreadId list) (state : IlMachineState) : IlMachineState =
@@ -165,7 +160,7 @@ module TestLowLevelMonitor =
                     // threads, and no two threads may share an id.
                     let osThreadId = EmulatedKernel.osThreadId tid
 
-                    state, acc |> Map.add tid (ThreadState.New (CpuId 0) osThreadId methodState)
+                    state, acc |> Map.add tid (ThreadState.New methodState)
                 )
                 (state, Map.empty)
 

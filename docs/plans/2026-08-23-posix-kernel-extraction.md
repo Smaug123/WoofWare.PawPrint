@@ -919,8 +919,44 @@ The groups:
    `ProcessPath`, `Umask`, `UserId`, `GroupId`, `FileDescriptors`,
    `DirectoryStreams` (**rekeyed already; move it as-is**), `Signals`,
    `OutputLog`;
-3. tasks: `LastSystemError`, `ParkedSocketWaits`, and `Cpu`/`OsThreadId`
-   pulled off `ThreadState`.
+3. tasks: `ParkedSocketWaits`, and `Cpu`/`OsThreadId` pulled off `ThreadState`.
+
+**Corrected while doing sub-step 3: `LastSystemError` is not kernel state.** On a
+real Unix errno lives in libc, not the kernel — the kernel returns an error code
+and the syscall wrapper stores it — so a POSIX simulator should return errors,
+not hold them. PawPrint's map is that wrapper's slot, and CoreCLR reuses it for
+Windows last-error too: `NativeWaitHandle` really does write Win32 numbers
+(`ERROR_TOO_MANY_POSTS` 298, `ERROR_INVALID_PARAMETER` 87) into it. It stays on
+`EmulatedKernel` beside `LastPInvokeError`, and the `Errno : int` in the target
+shape above is wrong.
+
+That correction is what makes the rest of the sub-step sound. The `Cpu` and
+`OsThreadId` docstrings argued they were *fields* rather than map entries
+because "there is no truthful default for an absent key", and errno — whose
+absence truthfully means 0 — was the one field that would have forced the task
+record to be partial. Without it every field is total, so a missing key is a bug
+rather than a default, and `checkTaskInvariants` says so.
+
+**The oracle the plan named cannot be written.** It asked for "the task set is
+exactly the live threads — created on thread creation and removed on thread
+exit", mutation-tested by deleting the removal. Nothing removes a thread from
+`IlMachineState.ThreadState`; there is no removal site in the repository, and
+`OsThreadId`'s non-reuse argument depends on that. So the honest assertion is
+that the task set equals the thread set, both monotonic: it catches a thread
+created without `registerTask` and a task minted for a thread that never
+existed, and it is not a leak check because nothing can leak yet.
+
+**Two of the seven mutants survived the first battery, and both were fixture
+defects rather than code defects.** Placing every task on core 0 instead of its
+rotation slot survived because `addThread` has one production caller — the entry
+thread, always at rotation 0, where `cpuForRotation 0` and `CpuId 0` agree — so
+the mutant is equivalent under every call the program makes; the new row calls
+`addThread` twice on a four-core machine to pin the contract anyway, so a second
+caller cannot silently land on core 0. Clobbering the core while parking survived
+because the park row used a one-processor machine whose only thread was already
+on core 0; it now parks the *second* thread of a four-core machine. Both are the
+same lesson: a fixture whose inputs are all zero cannot tell "left alone" from
+"set to zero".
 
 Sub-step 2 took `NextDirectoryStreamId` across with `DirectoryStreams`: it is the
 counter that mints stream ids, so it is the same kernel state, and only

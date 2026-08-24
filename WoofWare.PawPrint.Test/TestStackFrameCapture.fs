@@ -106,7 +106,7 @@ module TestStackFrameCapture =
             }
             |> MethodState.setProgramCounter outermostPc
 
-        let thread = ThreadState.New (CpuId 0) (OsThreadId 1u) outermost
+        let thread = ThreadState.New outermost
 
         // Walk outermost-to-innermost, pushing each frame as the callee of the one before it and
         // recording on the callee the call site its caller is parked on.

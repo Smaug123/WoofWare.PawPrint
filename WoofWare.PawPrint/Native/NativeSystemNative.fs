@@ -106,12 +106,8 @@ module NativeSystemNative =
         | _ -> None
 
     /// The OS thread id of the thread currently executing the native call.
-    let private osThreadIdOf (operation : string) (ctx : NativeCallContext) : OsThreadId =
-        match Map.tryFind ctx.Thread ctx.State.ThreadState with
-        | Some threadState -> threadState.OsThreadId
-        | None ->
-            failwith
-                $"%s{operation}: thread %O{ctx.Thread} is executing but has no ThreadState (every running thread is created through IlMachineState, which assigns an OsThreadId)"
+    let private osThreadIdOf (_operation : string) (ctx : NativeCallContext) : OsThreadId =
+        EmulatedKernel.osThreadIdOf ctx.Thread ctx.State.Kernel
 
     let private pushInt32 (value : int) (ctx : NativeCallContext) : NativeHandlerResult =
         ctx.State
@@ -2148,12 +2144,7 @@ module NativeSystemNative =
             // kernel's env table live, so if environment mutation is ever
             // added, a re-derivation could silently turn a guest's shard index
             // into an out-of-range one.
-            let cpu =
-                match Map.tryFind ctx.Thread state.ThreadState with
-                | Some threadState -> threadState.Cpu
-                | None ->
-                    failwith
-                        $"SystemNative_SchedGetCpu: thread %O{ctx.Thread} is executing but has no ThreadState (every running thread is created through IlMachineState, which assigns a CpuId)"
+            let cpu = EmulatedKernel.cpuOf ctx.Thread state.Kernel
 
             let (CpuId.CpuId cpu) = cpu
 
@@ -6686,17 +6677,14 @@ module NativeSystemNative =
                 // The capture that survives the park: what the syscall was
                 // entered with, consulted by the re-entry in place of the
                 // arguments the guest may have scribbled on since.
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        ParkedSocketWaits =
-                            Map.add
-                                ctx.Thread
-                                {
-                                    Port = port
-                                    MaxEvents = requestedCount
-                                }
-                                kernel.ParkedSocketWaits
-                    }
+                state.MapKernel (
+                    EmulatedKernel.withParkedSocketWait
+                        ctx.Thread
+                        (Some
+                            {
+                                ParkedSocketWait.Port = port
+                                MaxEvents = requestedCount
+                            })
                 )
                 |> Scheduler.blockOnSocketEvents ctx.Thread port
                 |> NativeHandlerResult.blockedRetainingFrame
@@ -6758,11 +6746,7 @@ module NativeSystemNative =
                 // A successful wait leaves errno alone. The wait is over, so
                 // the captured in-flight state (if this was a re-entry) goes
                 // with it.
-                state.MapKernel (fun _ ->
-                    { kernel with
-                        ParkedSocketWaits = Map.remove ctx.Thread kernel.ParkedSocketWaits
-                    }
-                )
+                state.MapKernel (fun _ -> EmulatedKernel.withParkedSocketWait ctx.Thread None kernel)
                 |> writeBytesThrough ctx operation bufferPointer (ImmutableArray.CreateRange bytes)
                 |> writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange countBytes)
                 |> IlMachineState.pushToEvalStack'
@@ -6792,7 +6776,7 @@ module NativeSystemNative =
             // last descriptor from destroying it). So a re-entry consults no
             // screen and no descriptor table: it delivers from the captured
             // description, or parks again.
-            match Map.tryFind ctx.Thread state.Kernel.ParkedSocketWaits with
+            match EmulatedKernel.parkedSocketWaitFor ctx.Thread state.Kernel with
             | Some inFlight -> deliverOrPark inFlight.Port inFlight.MaxEvents
             | None ->
 

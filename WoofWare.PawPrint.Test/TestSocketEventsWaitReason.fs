@@ -47,8 +47,6 @@ module TestSocketEventsWaitReason =
             IsBackground = false
             IsRaisingForeignException = false
             Name = None
-            Cpu = CpuId 0
-            OsThreadId = OsThreadId osThreadId
         }
 
     let private withThreads (threads : (ThreadId * ThreadStatus) list) (state : IlMachineState) : IlMachineState =

@@ -581,6 +581,48 @@ type ParkedSocketWait =
         MaxEvents : int
     }
 
+/// What the emulated kernel knows about one task — one scheduling entity, what
+/// `gettid(2)` names.
+///
+/// Every live thread has exactly one of these, minted at thread creation;
+/// `IlMachineState.checkInvariants` refuses a state where the two sets differ.
+/// That is what makes the record total: `Cpu` and `OsThreadId` were fields on
+/// `ThreadState` precisely because a `Map` has no truthful default for an absent
+/// key, and the answer is that there is never an absent key rather than that a
+/// default exists.
+///
+/// The per-thread errno is *not* here. On a real Unix errno lives in libc, not
+/// in the kernel: the kernel returns an error code and the syscall wrapper
+/// stores it. PawPrint's `LastSystemError` is that wrapper's slot — CoreCLR
+/// reuses it for Windows last-error too, and `NativeWaitHandle` really does put
+/// Win32 numbers in it — so it stays on `EmulatedKernel` with
+/// `LastPInvokeError`.
+type UnixTaskState =
+    {
+        /// The simulated logical processor this task is pinned to: what
+        /// `sched_getcpu(3)` reports while it runs.
+        ///
+        /// Assigned once, at thread creation, by `cpuForRotation`. PawPrint's
+        /// scheduler runs one task at a time and never migrates one between
+        /// cores, so "pinned to" and "currently executing on" coincide. This is
+        /// the seat a future core-aware scheduler would rewrite.
+        Cpu : CpuId
+        /// The OS thread identifier this task reports to the guest, and which
+        /// `System.Threading.Lock` uses as its owner identity.
+        ///
+        /// Assigned once, at thread creation, and never reused: real kernels
+        /// recycle thread ids, but a recycled one here would let a stale
+        /// `Lock._owningThreadId` be mistaken for a live owner.
+        OsThreadId : OsThreadId
+        /// The socket wait this task is blocked in, if it is blocked in one.
+        ///
+        /// A real kernel holds a blocked task's in-flight syscall arguments on
+        /// its stack; this is that, for the one syscall PawPrint parks in. The
+        /// re-entry consults it rather than the guest's argument cells, which
+        /// the guest may have written since.
+        ParkedSocketWait : ParkedSocketWait option
+    }
+
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
 /// syscall-emulation state: the per-thread last-error registers, the native
 /// heap pool backing `Marshal.AllocHGlobal`, the Unix file-descriptor table,
@@ -1102,7 +1144,13 @@ type EmulatedKernel =
         /// superset of the window `BlockedOnSocketEvents` covers: the
         /// close-time retention check reads this, not the thread status,
         /// so the woken-but-not-yet-run window is protected too.
-        ParkedSocketWaits : Map<ThreadId, ParkedSocketWait>
+        /// Every task the kernel knows about, by the thread that is it.
+        ///
+        /// Exactly the live threads: `IlMachineState.checkInvariants` refuses a
+        /// state where a thread has no task or a task no thread. An absent key is
+        /// therefore a bug rather than a default, which is what lets
+        /// `UnixTaskState` be total.
+        Tasks : Map<ThreadId, UnixTaskState>
         /// Registry of `System.Threading.LowLevelMonitor` instances minted by
         /// `SystemNative_LowLevelMonitor_Create`. The handle held by the
         /// guest (as an `IntPtr` in `LowLevelMonitor._nativeMonitor`) is the
@@ -1326,6 +1374,12 @@ type EmulatedKernelDefect =
     /// A guest-held `DIR*` names a stream the stream table does not hold, so the
     /// next `readdir` through it would crash rather than enumerate.
     | DirectoryStreamBlockDangling of block : NativeMemoryBlockId * stream : DirectoryStreamId
+    /// A thread exists with no task, so anything asking the kernel which
+    /// processor it runs on or what OS thread id it reports would crash.
+    | ThreadWithoutTask of thread : ThreadId
+    /// A task exists for a thread that does not, so its processor placement and
+    /// OS thread id are held for a thread that can never read them.
+    | TaskWithoutThread of thread : ThreadId
     /// The stream table holds a stream no `DIR*` names, so nothing can ever
     /// read or close it and the directory it pins is held for the run.
     | UnreachableDirectoryStream of stream : DirectoryStreamId
@@ -1639,7 +1693,7 @@ module EmulatedKernel =
             LastSystemError = Map.empty
             NativeMemoryPool = NativeMemoryPool.empty
             DirectoryStreamBlocks = Map.empty
-            ParkedSocketWaits = Map.empty
+            Tasks = Map.empty
             LowLevelMonitors = Map.empty
             NextLowLevelMonitorId = 1
             WaitHandles = Map.empty
@@ -2362,6 +2416,75 @@ module EmulatedKernel =
     /// (`IlMachineState.NextCpuRotation`) that only guest-visible thread
     /// creation advances. (`osThreadId`, below, makes the opposite choice for
     /// the opposite reason; see there.)
+    /// The task `thread` is.
+    ///
+    /// Total, and loudly partial rather than an option: every live thread has a
+    /// task, minted when the thread was created, and a `ThreadId` naming none is
+    /// an interpreter bug rather than anything a guest did.
+    let task (thread : ThreadId) (kernel : EmulatedKernel) : UnixTaskState =
+        match Map.tryFind thread kernel.Tasks with
+        | Some task -> task
+        | None ->
+            failwith
+                $"EmulatedKernel.task: %O{thread} names no task. Every thread is registered with `registerTask` when it is created, so this thread was built without one (this is an interpreter bug)."
+
+    /// Mint the task for a newly-created thread.
+    ///
+    /// The one route by which a task enters the table, so that "exactly the live
+    /// threads" is maintained at the single place a thread comes into being.
+    let registerTask
+        (thread : ThreadId)
+        (cpu : CpuId)
+        (osThreadId : OsThreadId)
+        (kernel : EmulatedKernel)
+        : EmulatedKernel
+        =
+        if Map.containsKey thread kernel.Tasks then
+            failwith
+                $"EmulatedKernel.registerTask: %O{thread} already names a task. A thread is created once, and re-registering would silently discard whatever the first registration recorded (this is an interpreter bug)."
+
+        { kernel with
+            Tasks =
+                Map.add
+                    thread
+                    {
+                        Cpu = cpu
+                        OsThreadId = osThreadId
+                        ParkedSocketWait = None
+                    }
+                    kernel.Tasks
+        }
+
+    /// The logical processor `thread` runs on, as `sched_getcpu` reports it.
+    let cpuOf (thread : ThreadId) (kernel : EmulatedKernel) : CpuId = (task thread kernel).Cpu
+
+    /// The OS thread id `thread` reports to the guest.
+    let osThreadIdOf (thread : ThreadId) (kernel : EmulatedKernel) : OsThreadId = (task thread kernel).OsThreadId
+
+    /// The socket wait `thread` is blocked in, if any.
+    let parkedSocketWaitFor (thread : ThreadId) (kernel : EmulatedKernel) : ParkedSocketWait option =
+        (task thread kernel).ParkedSocketWait
+
+    /// Record that `thread` has parked in a socket wait, or (with `None`) that
+    /// it is no longer in one.
+    let withParkedSocketWait
+        (thread : ThreadId)
+        (wait : ParkedSocketWait option)
+        (kernel : EmulatedKernel)
+        : EmulatedKernel
+        =
+        let existing = task thread kernel
+
+        { kernel with
+            Tasks =
+                Map.add
+                    thread
+                    { existing with
+                        ParkedSocketWait = wait
+                    }
+                    kernel.Tasks
+        }
+
     /// The system error (errno on Unix, `GetLastError` on Windows) `thread` would read.
     /// 0 for a thread that has had none reported to it, which is what a fresh thread sees.
     let lastSystemErrorFor (thread : ThreadId) (kernel : EmulatedKernel) : int =
@@ -3355,8 +3478,13 @@ module EmulatedKernel =
                  (match description.Target with
                   | OpenFileTarget.SocketEventPort _ ->
                       let waiter =
-                          kernel.ParkedSocketWaits
-                          |> Map.tryPick (fun thread wait -> if wait.Port = closingId then Some thread else None)
+                          kernel.Tasks
+                          |> Map.tryPick (fun thread task ->
+                              match task.ParkedSocketWait with
+                              | Some wait when wait.Port = closingId -> Some thread
+                              | Some _
+                              | None -> None
+                          )
 
                       match waiter with
                       | None -> ()
@@ -4470,6 +4598,33 @@ module EmulatedKernel =
     /// repeats neither. The latter takes a `pinned` argument that only this
     /// layer can supply, so a caller wanting the whole picture pairs this with
     /// `VirtualFileSystem.checkInvariants (EmulatedKernel.pinnedInodes kernel)`.
+    /// Check that the kernel knows exactly the tasks that `liveThreads` are.
+    ///
+    /// Separate from `checkInvariants`, and taking the thread set as an argument,
+    /// because `EmulatedKernel` compiles before `IlMachineState` and so cannot
+    /// reach `ThreadState` to ask. Callers that have both should call both.
+    ///
+    /// This is what makes `UnixTaskState` total: `Cpu` and `OsThreadId` were
+    /// fields on `ThreadState` because a `Map` has no truthful default for an
+    /// absent key, and the replacement for that guarantee is that a key is never
+    /// absent. Nothing removes a thread today, so this is not a leak check —
+    /// it catches a thread created without `registerTask`, and a task minted for
+    /// a thread that was never created.
+    let checkTaskInvariants (liveThreads : Set<ThreadId>) (kernel : EmulatedKernel) : EmulatedKernelDefect list =
+        let tasks = kernel.Tasks |> Map.toList |> List.map fst |> Set.ofList
+
+        let missing =
+            Set.difference liveThreads tasks
+            |> Set.toList
+            |> List.map EmulatedKernelDefect.ThreadWithoutTask
+
+        let extra =
+            Set.difference tasks liveThreads
+            |> Set.toList
+            |> List.map EmulatedKernelDefect.TaskWithoutThread
+
+        missing @ extra
+
     let checkInvariants (kernel : EmulatedKernel) : EmulatedKernelDefect list =
         let named =
             FileDescriptorRegistry.descriptions kernel.FileDescriptors
