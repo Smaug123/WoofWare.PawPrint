@@ -3,43 +3,41 @@ namespace WoofWare.PosixKernel
 open System
 open System.Text
 
-/// A defect that makes a candidate string unusable as *any* Unix path,
-/// absolute or relative, whole path or single component. These are the two
-/// rules that come from the boundary rather than from path syntax: they hold
-/// wherever a `string` has to survive the trip through the `char*`-shaped
-/// `SystemNative_*` interface.
+/// <summary>
+/// A defect that makes a candidate .NET string unusable as <i>any</i> Unix path,
+/// absolute or relative, whole path or single component.
+/// </summary>
 ///
-/// Path *syntax* rules — rootedness, empty segments, unresolved "." and ".."
-/// segments — are not here, because they differ between the shapes PawPrint
-/// models: `AbsoluteUnixPath` rejects all of them, while a guest-supplied
-/// `UnixPath` accepts all of them.
+/// <remarks>
+/// This doesn't cover path <i>syntax</i> rules such as rootedness, empty segments,
+/// or unresolved "." and ".." segments.
+/// It's only about whether the string itself is well-formed.
+/// </remarks>
 [<RequireQualifiedAccess>]
 type UnixPathTextDefect =
-    /// A NUL at this UTF-16 index. NUL terminates a C string, so a path
-    /// containing one could not survive the boundary intact: the kernel would
-    /// see a shorter path than the guest named.
+    /// A NUL at this UTF-16 index.
     | ContainsNul of index : int
-    /// An unpaired UTF-16 surrogate at this index, so the string has no UTF-8
-    /// encoding at all. Real Unix paths are arbitrary non-NUL byte strings;
-    /// PawPrint models the UTF-8-encodable subset, which is precisely the set
-    /// CoreLib can round-trip back to a `string` through
-    /// `Marshal.PtrToStringUTF8`.
+    /// An unpaired UTF-16 surrogate at this index.
+    /// This *is* a valid Unix path (since Unix paths are arbitrary non-NUL byte strings),
+    /// but it is not a well-formed .NET string.
     | UnpairedSurrogate of index : int
 
 [<RequireQualifiedAccess>]
 module UnixPathText =
-    /// The Unix directory separator. There is only one — unlike Windows, Unix
-    /// has no alternate separator to normalise away.
+    /// The Unix directory separator. (Unlike Windows, Unix has no alternate separator to normalise away.)
     [<Literal>]
     let separator : char = '/'
 
-    /// First defect in `candidate`, scanning left to right, or `None` if there
-    /// is none. Total: never throws, and treats `null` as defect-free (it has
-    /// no characters to object to; callers reject it on their own grounds).
+    /// <summary>
+    /// Locate the first defect in <c>candidate</c> preventing the string from being a valid Unix path.
+    /// </summary>
     ///
-    /// Cannot be expressed as a per-character predicate, because well-formed
-    /// surrogate *pairs* are legal and their halves are not legal alone.
+    /// <returns><c>None</c> if the string is legal.</returns>
+    ///
+    /// <remarks>Scans left-to-right. Treats the null string as being legal, for no particular reason.</remarks>
     let firstDefect (candidate : string) : UnixPathTextDefect option =
+        // Note: this function cannot be expressed as a per-character predicate, because
+        // well-formed surrogate *pairs* are legal even thought their halves are not legal alone.
         if isNull candidate then
             None
         else
@@ -68,8 +66,7 @@ module UnixPathText =
 
         result
 
-    /// Human-readable rendering of a defect, for the diagnostics of whichever
-    /// path type did the parsing.
+    /// Human-readable rendering of a defect.
     let describe (defect : UnixPathTextDefect) : string =
         match defect with
         | UnixPathTextDefect.ContainsNul index ->
@@ -77,9 +74,12 @@ module UnixPathText =
         | UnixPathTextDefect.UnpairedSurrogate index ->
             $"contains an unpaired UTF-16 surrogate at index %d{index}, so it has no UTF-8 encoding"
 
-    /// Strict UTF-8 encoder. `firstDefect` has already rejected the only inputs
-    /// that could trigger a fallback (unpaired surrogates), so the throwing
-    /// configuration is an assertion that the caller's invariant holds rather
-    /// than a reachable error path — a silent U+FFFD substitution here would
-    /// hand the guest bytes that do not decode back to the path it named.
+    /// <summary>
+    /// Strict UTF-8 encoder which throws on invalid bytes.
+    /// </summary>
+    ///
+    /// <remarks>
+    /// Intended to be used after validation with <c>firstDefect</c>, which already rejects the only inputs that
+    /// could cause the encoder to throw.
+    /// </remarks>
     let utf8 : UTF8Encoding = UTF8Encoding (false, true)
