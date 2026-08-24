@@ -819,7 +819,41 @@ and stages 4–9 need re-costing before anyone starts them.
 result can be judged against where it was heading; re-read and re-cost them
 before starting any of them.*
 
-### Stage 4: `SignalState` genericised
+### Stage 4: `SignalState` genericised — **done; two decisions taken in absentia**
+
+The plan as written missed that `SignalState` uses `ThreadId` in four places,
+one of which destructures its representation
+(`List.sortBy (fun (ThreadId.ThreadId tid) -> tid)`). Two questions followed,
+both answered the reversible way:
+
+* **Task identity: a second type parameter, not a library `TaskId`.**
+  `SignalState<'Task, 'Handler>` with `'Task : comparison`. The alternative —
+  introducing the library's own `TaskId` now — is where stage 5 is heading
+  anyway, but it needs a `ThreadId`↔`TaskId` mapping established at thread
+  creation, which is stage 5's work. A type parameter is purely additive and
+  collapses to `TaskId` later for free. The destructuring sort becomes
+  `List.sort`, which is identical for a single-field DU over `int`.
+* **The dispatcher payload stays on `Initialized`, rather than moving out.**
+  The plan proposed reducing `SignalInitState` to a payload-free bit with
+  PawPrint holding the dispatcher alongside. That is conceptually cleaner — no
+  real kernel has a managed-handler dispatch thread — but it splits an
+  invariant the original DU shape exists to make unrepresentable-to-violate
+  ("the dispatcher exists iff signal handling is initialised"). Keeping it as
+  `Initialized of dispatcher : 'Task` preserves the machine-checked invariant
+  and is honest at the library's altitude: the type records *which* task
+  dispatches without claiming to know what a task is.
+
+`SignalHandler` (which wraps a CLR `MethodInfo`) split out into its own PawPrint
+file and stayed. `TestSignalState.fs` moved and instantiates both parameters
+with nominal stand-in types of its own rather than `int` — an `int` could
+satisfy the signature through a numeric path without the parameter being
+genuinely opaque.
+
+The existing tests never exercised the handler slot at all, so two were added
+for it, and both are mutation-tested: making `setHandler` discard the rest of
+the state, and making it first-writer-wins, each kill exactly one.
+
+### Stage 4 (as originally specified): `SignalState` genericised
 
 **Dependencies**: stage 2.
 
@@ -857,13 +891,36 @@ this stage:
    fields, the socket table;
 2. process: `Environment`, `CurrentDirectory`, `CurrentDirectoryInode`,
    `ProcessPath`, `Umask`, `UserId`, `GroupId`, `FileDescriptors`,
-   `DirectoryStreams` (rekeyed to `DirectoryStreamId`), `Signals`,
+   `DirectoryStreams` (**see below — do not rekey in this step**), `Signals`,
    `OutputLog`;
 3. tasks: `LastSystemError`, `ParkedSocketWaits`, and `Cpu`/`OsThreadId`
    pulled off `ThreadState`.
 
 `KernelConfig` splits along the same lines but keeps its current surface, so
 `HostConfig` and every test registration are untouched.
+
+**Open question, to settle before starting: `DirectoryStreams`' key.** This
+stage's whole safety property is "forwarding accessors, so no call site
+changes", and rekeying `Map<NativeMemoryBlockId, DirectoryStream>` to a minted
+`DirectoryStreamId` contradicts it — `Native/NativeSystemNative.fs` keys those
+by block id, so a forwarding accessor would have to maintain a block-id →
+stream-id mapping, which is design work smuggled into a mechanical stage.
+
+* **(i) Move the field as-is, rekey later.** The library ends up holding a
+  `NativeMemoryBlockId`-keyed map for a stage, which is a PawPrint identity
+  inside the library — ugly, and visible in the public surface.
+* **(ii) Rekey first, as its own step before the migration.** One focused
+  change to the `opendir`/`readdir`/`closedir` handlers, with the block-id →
+  stream-id mapping introduced deliberately and tested, then the field moves
+  mechanically like every other. Costs an extra step; keeps this stage's
+  safety property intact.
+* **(iii) Leave `DirectoryStreams` on `EmulatedKernel` entirely** and revisit
+  when stage 8 moves `opendir`. A directory stream *is* kernel state, so this
+  is a deferral rather than an answer, but it is the smallest step.
+
+Recommendation: **(ii)**. The mapping has to exist eventually, the handlers are
+few, and doing it separately keeps "no call site changes" true of the migration
+itself — which is the only reason a 40-field move is reviewable.
 
 **Correctness oracle**:
 * The full suite after each of the three sub-steps.

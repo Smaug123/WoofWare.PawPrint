@@ -181,7 +181,6 @@
     <Compile Include="TestThreadStatics.fs" />
     <Compile Include="TestLowLevelMonitor.fs" />
     <Compile Include="TestLastError.fs" />
-    <Compile Include="TestSignalState.fs" />
     <Compile Include="TestSignalHandler.fs" />
     <Compile Include="TestSignalDispatcherThread.fs" />
     <Compile Include="TestSignalDispatch.fs" />

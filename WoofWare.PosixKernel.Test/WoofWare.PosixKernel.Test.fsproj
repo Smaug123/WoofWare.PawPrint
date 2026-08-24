@@ -14,6 +14,7 @@
     <Compile Include="TestUnixPath.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />
     <Compile Include="TestSignal.fs" />
+    <Compile Include="TestSignalState.fs" />
     <Compile Include="TestDirectoryEnumeration.fs" />
     <Compile Include="TestPathCursor.fs" />
     <Compile Include="TestVirtualFileSystem.fs" />

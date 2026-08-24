@@ -5,6 +5,7 @@ open System.Collections.Immutable
 open System.IO
 open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
+open WoofWare.PosixKernel
 
 [<RequireQualifiedAccess>]
 module Program =
