@@ -29,7 +29,7 @@ I expect it may be of independent interest, so it is now extracted as a standalo
 ## Status
 
 A handful of leaf functions still convert to and from the encodings designed for WoofWare.PawPrint's CoreCLR platform abstraction.
-(For example, errno, signals, address families, poll masks.)
+(For example, errno, signals, address families, socket-event masks.)
 They are on the way out.
 
 The simulation is incomplete and expected to change wildly during development.
