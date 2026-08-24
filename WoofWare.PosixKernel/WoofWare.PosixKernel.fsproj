@@ -43,25 +43,50 @@
         package page as literal tags. Pack a copy with that element removed; on nuget.org the logo
         is carried by PackageIcon instead.
     -->
+    <UsingTask TaskName="WriteReadmeWithoutLogo"
+               TaskFactory="RoslynCodeTaskFactory"
+               AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+        <ParameterGroup>
+            <Source ParameterType="System.String" Required="true" />
+            <Destination ParameterType="System.String" Required="true" />
+        </ParameterGroup>
+        <Task>
+            <Using Namespace="System.Text.RegularExpressions" />
+            <Code Type="Fragment" Language="cs"><![CDATA[
+string readme = File.ReadAllText(Source);
+string stripped = Regex.Replace(readme, "<picture>[\\s\\S]*?</picture>\\s*", "");
+
+// Any other raw HTML would reach nuget.org as escaped tags, so refuse to pack it. The pattern is
+// CommonMark's own HTML-block condition (a tag at the start of a line, indented at most three
+// spaces), applied after fenced code blocks are removed so that markup shown as an example does
+// not trip it.
+string prose = Regex.Replace(stripped, "(?ms)^```.*?^```", "");
+if (Regex.IsMatch(prose, "(?m)^ {0,3}<[A-Za-z/]"))
+{
+    Log.LogError(
+        "{0} contains raw HTML other than the <picture> logo element. nuget.org escapes raw HTML "
+        + "rather than rendering it, so that markup would appear on the package page as literal "
+        + "tags: express it in CommonMark instead, or teach this task to strip it too.",
+        Source);
+}
+else
+{
+    Directory.CreateDirectory(Path.GetDirectoryName(Destination));
+    if (!File.Exists(Destination) || File.ReadAllText(Destination) != stripped)
+    {
+        File.WriteAllText(Destination, stripped);
+    }
+}
+]]></Code>
+        </Task>
+    </UsingTask>
     <Target Name="PackReadmeWithoutLogo" BeforeTargets="_GetPackageFiles">
         <PropertyGroup>
-            <_NuGetReadmeDir>$(MSBuildProjectDirectory)/$(IntermediateOutputPath)nuget-readme</_NuGetReadmeDir>
+            <_NuGetReadme>$(MSBuildProjectDirectory)/$(IntermediateOutputPath)nuget-readme/README.md</_NuGetReadme>
         </PropertyGroup>
-        <MakeDir Directories="$(_NuGetReadmeDir)" />
-        <WriteLinesToFile File="$(_NuGetReadmeDir)/README.md"
-                          Lines="$([MSBuild]::Escape($([System.Text.RegularExpressions.Regex]::Replace($([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)/README.md')), '&lt;picture&gt;[\s\S]*?&lt;/picture&gt;\s*', ''))))"
-                          Overwrite="true"
-                          WriteOnlyWhenDifferent="true" />
-        <!--
-            Any other raw HTML would reach nuget.org as escaped tags, so refuse to pack it. The pattern is
-            CommonMark's own HTML-block condition (a tag at the start of a line, indented at most three
-            spaces), applied after fenced code blocks are removed, so that markup shown as an example
-            does not trip it.
-        -->
-        <Error Condition="$([System.Text.RegularExpressions.Regex]::IsMatch($([System.Text.RegularExpressions.Regex]::Replace($([System.IO.File]::ReadAllText('$(_NuGetReadmeDir)/README.md')), '(?ms)^```.*?^```', '')), '(?m)^ ? ? ?&lt;[A-Za-z/]'))"
-               Text="README.md contains raw HTML other than the &lt;picture&gt; logo element. nuget.org escapes raw HTML rather than rendering it, so that markup would appear on the package page as literal tags: express it in CommonMark instead, or teach the PackReadmeWithoutLogo target to strip it too." />
+        <WriteReadmeWithoutLogo Source="$(MSBuildProjectDirectory)/README.md" Destination="$(_NuGetReadme)" />
         <ItemGroup>
-            <None Include="$(_NuGetReadmeDir)/README.md" Pack="true" PackagePath="\" />
+            <None Include="$(_NuGetReadme)" Pack="true" PackagePath="\" />
         </ItemGroup>
     </Target>
 
