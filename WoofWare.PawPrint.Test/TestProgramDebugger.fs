@@ -9,6 +9,7 @@ open Microsoft.Extensions.Logging
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]

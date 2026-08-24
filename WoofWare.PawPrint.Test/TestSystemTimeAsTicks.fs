@@ -6,6 +6,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `EmulatedKernel.systemTimeAsTicks` is the value
 /// `SystemNative_GetSystemTimeAsTicks` returns: 100ns ticks since the Unix

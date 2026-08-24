@@ -7,6 +7,7 @@ open System.Runtime.InteropServices
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `SimulatedUnixPlatform.socketCreation` is a transcription of two things at
 /// once: the native shim's three argument screens, which are C we can read, and

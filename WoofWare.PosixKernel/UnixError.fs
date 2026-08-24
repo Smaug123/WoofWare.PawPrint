@@ -1,4 +1,4 @@
-namespace WoofWare.PawPrint
+namespace WoofWare.PosixKernel
 
 /// Whose `<errno.h>` numbering a run reports, for the errors where the Unixes
 /// PawPrint models disagree.

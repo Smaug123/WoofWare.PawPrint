@@ -1,4 +1,4 @@
-namespace WoofWare.PawPrint
+namespace WoofWare.PosixKernel
 
 /// Which of the simulated process's inherited standard streams an open file
 /// description refers to. Also the routing key for `EmulatedKernel.OutputLog`

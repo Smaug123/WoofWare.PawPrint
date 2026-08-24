@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
+open WoofWare.PosixKernel
 
 /// A signal sitting in the simulator's pending queue, waiting to be
 /// dispatched. `Target = ValueNone` is the POSIX "kill the process" case

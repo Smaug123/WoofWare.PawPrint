@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// The socket readiness delivery, row by measured row: every claim here is a
 /// row of `docs/plans/2026-08-21-socket-readiness-wake.md`'s tables (probes

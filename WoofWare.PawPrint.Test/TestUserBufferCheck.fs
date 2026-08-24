@@ -6,6 +6,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// The rule by which a kernel accepts or refuses a user buffer before it
 /// performs a read or write, and the two platforms' answers to it.

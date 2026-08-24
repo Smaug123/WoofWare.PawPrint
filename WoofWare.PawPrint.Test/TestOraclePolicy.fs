@@ -4,6 +4,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PawPrint.Test
+open WoofWare.PosixKernel
 
 /// `OraclePolicy` decides which end-to-end cases are compared against the real
 /// runtime on the host at hand. Two things are worth pinning: the decision itself,

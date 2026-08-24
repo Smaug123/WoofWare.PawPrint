@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System.Reflection
+open WoofWare.PosixKernel
 
 /// Scheduling status of a thread. The scheduler only picks Runnable threads; a thread in any
 /// other state is paused until something external (another thread terminating, for instance)

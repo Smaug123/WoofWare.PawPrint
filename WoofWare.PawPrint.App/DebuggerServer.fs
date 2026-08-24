@@ -19,6 +19,7 @@ open Microsoft.Extensions.Hosting
 open Microsoft.Extensions.Logging
 open Microsoft.Extensions.Primitives
 open Microsoft.Net.Http.Headers
+open WoofWare.PosixKernel
 
 [<RequireQualifiedAccess>]
 module DebuggerServer =

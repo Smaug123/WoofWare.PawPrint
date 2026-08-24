@@ -1,4 +1,4 @@
-namespace WoofWare.PawPrint
+namespace WoofWare.PosixKernel
 
 open System
 open System.Text

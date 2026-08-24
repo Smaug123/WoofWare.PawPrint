@@ -39,14 +39,6 @@
     <Compile Include="CliType.fs" />
     <Compile Include="FieldIdentity.fs" />
     <Compile Include="GcHandleRegistry.fs" />
-    <Compile Include="UnixError.fs" />
-    <Compile Include="UnixPathText.fs" />
-    <Compile Include="AbsoluteUnixPath.fs" />
-    <Compile Include="UnixPath.fs" />
-    <Compile Include="VirtualFileSystem.fs" />
-    <Compile Include="FileSystemSeed.fs" />
-    <Compile Include="InternetEndpoint.fs" />
-    <Compile Include="FileDescriptorRegistry.fs" />
     <Compile Include="TypeHandleRegistry.fs" />
     <Compile Include="FieldHandleRegistry.fs" />
     <Compile Include="MethodHandleRegistry.fs" />
@@ -70,7 +62,6 @@
     <Compile Include="TypeResolution.fs" />
     <Compile Include="HardwareIntrinsicsProfile.fs" />
     <Compile Include="DebuggerState.fs" />
-    <Compile Include="Signal.fs" />
     <Compile Include="SignalState.fs" />
     <Compile Include="EmulatedKernel.fs" />
     <Compile Include="RuntimeConfig.fs" />
@@ -200,6 +191,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\WoofWare.PawPrint.Domain\WoofWare.PawPrint.Domain.fsproj" />
+    <ProjectReference Include="..\WoofWare.PosixKernel\WoofWare.PosixKernel.fsproj" />
   </ItemGroup>
 
   <ItemGroup>

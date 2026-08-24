@@ -6,6 +6,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// Where each read/write entry point screens its buffer against the address
 /// space, which is the one part of their contract the two simulated platforms

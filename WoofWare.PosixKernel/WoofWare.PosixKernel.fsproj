@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net8.0</TargetFramework>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <IsPackable>true</IsPackable>
+        <PackageId>WoofWare.PosixKernel</PackageId>
+        <Authors>Patrick Stevens</Authors>
+        <Copyright>Copyright (c) Patrick Stevens 2026</Copyright>
+        <Description>A deterministic, purely functional simulation of a POSIX process: filesystem, file descriptors, sockets, signals, and the Unix platform profile. No I/O and no host reads, so a replay never depends on the machine that produced it.</Description>
+        <RepositoryType>git</RepositoryType>
+        <RepositoryUrl>https://github.com/Smaug123/WoofWare.PawPrint</RepositoryUrl>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <PackageTags>posix;unix;simulation;deterministic;filesystem;sockets;fsharp;woofware</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="UnixError.fs" />
+        <Compile Include="UnixPathText.fs" />
+        <Compile Include="AbsoluteUnixPath.fs" />
+        <Compile Include="UnixPath.fs" />
+        <Compile Include="VirtualFileSystem.fs" />
+        <Compile Include="FileSystemSeed.fs" />
+        <Compile Include="InternetEndpoint.fs" />
+        <Compile Include="FileDescriptorRegistry.fs" />
+        <Compile Include="Signal.fs" />
+        <Compile Include="SimulatedUnixPlatform.fs" />
+        <EmbeddedResource Include="version.json" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="README.md" Pack="true" PackagePath="\" />
+    </ItemGroup>
+
+</Project>

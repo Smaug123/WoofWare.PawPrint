@@ -6,6 +6,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `SystemNative_PRead` refuses a negative `bufferSize` rather than answering, because what a real
 /// kernel does with one is not a fact PawPrint can state: the C shim casts it to an unsigned ~4 GB

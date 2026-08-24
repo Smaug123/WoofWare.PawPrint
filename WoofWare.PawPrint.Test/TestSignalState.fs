@@ -6,6 +6,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// Property-based and unit tests for the deterministic `SignalState` data
 /// model, exercised in isolation from the dispatcher.
