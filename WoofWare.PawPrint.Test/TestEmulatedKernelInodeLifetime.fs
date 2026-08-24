@@ -109,7 +109,10 @@ module TestEmulatedKernelInodeLifetime =
         | Ok (inode, filesystem) ->
             inode,
             { kernel with
-                FileSystem = filesystem
+                Machine =
+                    { kernel.Machine with
+                        FileSystem = filesystem
+                    }
             }
 
     let private closed (fd : int) (kernel : EmulatedKernel) : EmulatedKernel =
@@ -531,7 +534,10 @@ module TestEmulatedKernelInodeLifetime =
         // inode; only the kernel can see that something holds it.
         let broken =
             { held with
-                FileSystem = VirtualFileSystem.forget a held.FileSystem
+                Machine =
+                    { held.Machine with
+                        FileSystem = VirtualFileSystem.forget a held.FileSystem
+                    }
             }
 
         let description =

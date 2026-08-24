@@ -630,44 +630,18 @@ type DirectoryStream =
         Cursor : DirectoryCursor
     }
 
-type EmulatedKernel =
+/// The kernel-image facts a POSIX simulator owns: the platform it is
+/// impersonating, its filesystem, its clock and entropy, its network
+/// configuration and socket table, and the two numbers a process reads back
+/// about the machine it is running on.
+///
+/// Everything here is state a second client of a POSIX simulator would also
+/// have; nothing in it is a CLR concept. Held flat for now — the target shape
+/// groups the clock, entropy, network and socket fields into records of their
+/// own, which is a change internal to this type once `EmulatedKernel`'s
+/// forwarding members exist.
+type UnixMachineState =
     {
-        /// Per-thread value CoreCLR keeps in its `t_lastPInvokeError` thread-local and
-        /// `Marshal.GetLastPInvokeError` (equivalently `GetLastWin32Error`) reads. A
-        /// `SetLastError = true` P/Invoke's stub copies the system error here once the
-        /// call returns.
-        ///
-        /// A `Map` rather than a `ThreadState` field, unlike `Cpu` and `OsThreadId`,
-        /// because an absent key *does* have a truthful reading: 0, the value a thread
-        /// that has had no error reported to it sees. `withLastPInvokeError` drops an
-        /// entry it would set to 0, so "absent" and "zero" stay structurally equal —
-        /// the same canonicalisation `SignalState.Blocked` performs for empty masks,
-        /// and for the same reason: two states that differ only that way must compare
-        /// equal.
-        LastPInvokeError : Map<ThreadId, int>
-        /// Per-thread system error: errno on Unix, `GetLastError` on Windows. CoreCLR's
-        /// PAL stores its last-error *in* errno ("Reuse errno to store last error",
-        /// pal/src/include/pal/thread.hpp), and `Marshal.Get/SetLastSystemError` read and
-        /// write it directly.
-        ///
-        /// Tracked separately from `LastPInvokeError` because CoreLib's generated
-        /// `LibraryImport` stubs read this and then write that. Same `Map` reasoning and
-        /// same zero-drops-the-entry canonicalisation as `LastPInvokeError` above.
-        LastSystemError : Map<ThreadId, int>
-        /// Globally-scoped pool of native-heap blocks allocated by
-        /// `Marshal.AllocHGlobal` / `NativeMemory.Alloc`. Freeing a block
-        /// deletes it from this pool, so any retained byref into the block
-        /// becomes a dangling reference that the simulator catches loudly at
-        /// the use site. Unlike `StackMemoryPool` (which lives on each method
-        /// frame and is reclaimed at frame exit), native-heap blocks outlive
-        /// the frames that allocate them.
-        NativeMemoryPool : NativeMemoryPool
-        /// In-memory model of the simulated process's Unix file descriptor
-        /// table. Pre-seeded at startup with stdin (0), stdout (1), stderr
-        /// (2), matching the kernel's behaviour of populating these slots
-        /// at `exec` time. SystemNative_Dup / Close / Read / Write etc.
-        /// route through this table; the host's real fds are never used.
-        FileDescriptors : FileDescriptorRegistry
         /// Every socket the simulated process owns, by identity.
         ///
         /// Separate from `FileDescriptors` because a socket's lifetime is not
@@ -692,16 +666,6 @@ type EmulatedKernel =
         /// commits, so a failed `epoll_ctl` leaves the kernel exactly as it
         /// found it.
         NextSocketEventRegistrationOrdinal : int64
-        /// Each thread's in-flight `SystemNative_WaitForSocketEvents`
-        /// call, stored at park and removed at delivery — so an absent key
-        /// means a first entry into the wait, and a present one means the
-        /// handler is being re-entered and must use the captured state
-        /// instead of re-decoding its arguments. Present from the park
-        /// through the wake to the delivering re-entry, which is a strict
-        /// superset of the window `BlockedOnSocketEvents` covers: the
-        /// close-time retention check reads this, not the thread status,
-        /// so the woken-but-not-yet-run window is protected too.
-        ParkedSocketWaits : Map<ThreadId, ParkedSocketWait>
         /// The port a `bind(2)` of port 0 will try first.
         ///
         /// A counter rather than a draw from the seeded PRNG. Which port an
@@ -735,64 +699,6 @@ type EmulatedKernel =
         /// distinct sockets indistinguishable in it. `NextLowLevelMonitorId`
         /// is stored beside its table for the same reason.
         NextSocketId : SocketId
-        /// Registry of `System.Threading.LowLevelMonitor` instances minted by
-        /// `SystemNative_LowLevelMonitor_Create`. The handle held by the
-        /// guest (as an `IntPtr` in `LowLevelMonitor._nativeMonitor`) is the
-        /// `LowLevelMonitorId` key; the value is the deterministic
-        /// owner / queue state. `Destroy` removes the entry so any retained
-        /// handle fails loudly at the next use rather than silently
-        /// referencing a recycled monitor.
-        LowLevelMonitors : Map<LowLevelMonitorId, LowLevelMonitorState>
-        /// Monotonic ID source for `LowLevelMonitorPtr`. Starts at 1 so the
-        /// guest's "create failed" check (`if _nativeMonitor == IntPtr.Zero`)
-        /// is never triggered for a successfully-minted monitor. IDs are
-        /// never reused; freeing a monitor leaves a gap.
-        NextLowLevelMonitorId : int
-        /// Registry of Win32-shaped wait-handle kernel objects (Semaphore /
-        /// Event / Mutex), minted by `CreateSemaphoreExW` and its peers. The
-        /// handle held by the guest (as an `IntPtr` produced by the QCall) is
-        /// the `WaitHandleId` key; the value is the deterministic kind-tagged
-        /// state. `CloseHandle` removes the entry so any retained handle
-        /// fails loudly at the next use rather than silently referencing a
-        /// recycled object.
-        WaitHandles : Map<WaitHandleId, WaitHandleState>
-        /// Monotonic ID source for `WaitHandlePtr`. Starts at 1 so the BCL's
-        /// "create failed" check (`if (handle == IntPtr.Zero) throw new ...`)
-        /// is never triggered for a successfully-minted handle. IDs are never
-        /// reused; closing a handle leaves a gap.
-        NextWaitHandleId : int
-        /// Monotonic ID source for opaque EventPipe provider/event handles
-        /// minted by the `EventPipeInternal_*` QCalls. PawPrint never opens a
-        /// tracing session, so the IDs are not stored in any registry; they
-        /// only need to be unique and non-zero (the BCL treats handle 0 as
-        /// "create failed" and throws OOM).
-        NextEventPipeId : int64
-        /// Deterministic strategy governing spurious wakeups out of
-        /// `LowLevelMonitor.Wait`. Defaults to `Disabled` so existing runs
-        /// are bit-for-bit unchanged. Set this at construction time (or
-        /// via record-copy in tests) to inject wakeups for fuzz /
-        /// correctness testing of guest condition-variable code.
-        SpuriousWakeup : SpuriousWakeupStrategy
-        /// Deterministic strategy governing spurious wakeups out of the
-        /// managed `Monitor.Wait` (SyncBlock-backed condition variable).
-        /// Parallel-but-independent of `SpuriousWakeup` so a guest can fuzz
-        /// the two condvar primitives separately. Defaults to `Disabled` so
-        /// existing runs are bit-for-bit unchanged.
-        SyncBlockSpuriousWakeup : SyncBlockSpuriousWakeupStrategy
-        /// Deterministic strategy governing whether the driver jumps the virtual
-        /// clock onto an outstanding deadline as part of a tick. Defaults to
-        /// `Disabled` so existing runs are bit-for-bit unchanged. See
-        /// `ClockJitterStrategy` for what it buys and `ClockJitter.chooseJump`
-        /// for how it is interpreted.
-        ClockJitter : ClockJitterStrategy
-        /// Monotonically-advancing scheduler tick consumed by
-        /// `SpuriousWakeupStrategy`. The driver loop applies the strategy
-        /// against the current value and then increments by 1 before
-        /// calling `Scheduler.chooseNext`. Threading the tick through state
-        /// (rather than as a side argument to the scheduler) keeps the
-        /// pure model self-contained and means tests can drive the strategy
-        /// without spinning up a real driver.
-        StepCounter : int64
         /// Deterministic virtual clock the simulated process observes, in
         /// monotonic milliseconds-since-boot. Read by
         /// `SystemNative_GetLowResolutionTimestamp` (the PAL backing
@@ -893,6 +799,183 @@ type EmulatedKernel =
         /// `NonCryptoRandom.initialState` so the two streams do not emit
         /// identical byte sequences.
         CryptoRandomState : uint64
+        /// Number of logical processors the simulated process observes, as
+        /// reported by `Environment.ProcessorCount`. Deliberately a value in
+        /// kernel state rather than a host read: real CoreCLR answers this
+        /// from `GetSystemInfo` / `sched_getaffinity`, which would make a
+        /// replay depend on the machine that produced it. Guests size thread
+        /// pools, partition `Parallel.For` ranges, and stripe arrays off this
+        /// number, so letting the host leak in here would change guest
+        /// *control flow* between runs — the single worst kind of
+        /// nondeterminism for a runtime whose purpose is bit-for-bit replay.
+        ///
+        /// Defaults to 1 (see `EmulatedKernel.initial`); hosts choose a
+        /// different value via `KernelConfig.ProcessorCount`, which
+        /// `Program.prepare` applies before the entry type's `.cctor` is
+        /// pumped — CoreLib latches `Environment.ProcessorCount` into a static
+        /// on first read, so a later change would not be observed.
+        ///
+        /// Must be >= 1: the real property is documented as always positive
+        /// and BCL callers divide by it, so `NativeEnvironment` asserts the
+        /// invariant at the point of use rather than trusting construction.
+        ProcessorCount : int
+        /// Greatest value `address + length` may take for a user buffer the
+        /// kernel will accept — the machine's `TASK_SIZE_MAX`. Consulted only
+        /// where `SimulatedUnixPlatform.screensUserBufferUpFront` says the
+        /// kernel screens before performing the operation, but a real fact
+        /// about every machine regardless.
+        ///
+        /// Configuration rather than a constant derived from the platform
+        /// because it varies by *machine*: 2^47 less a page with four-level
+        /// paging on x86-64, 2^56 less a page with five-level, 2^48 on a
+        /// 48-bit-VA arm64. Two GitHub runners of the same image were measured
+        /// disagreeing, so no value derived from the flavour or the kernel
+        /// release could be right everywhere. See `ObservedUserAddressLimit`
+        /// for the values real machines have been seen to have.
+        UserAddressLimit : uint64
+        /// Unix-shaped platform identity the simulated process reports, as
+        /// observed through `SystemNative_GetUnixRelease` (and hence
+        /// `Environment.OSVersion` on a Unix CoreLib).
+        ///
+        /// Unlike `ProcessorCount`, CoreLib does *not* latch this during
+        /// static initialisation — `Environment.OSVersion` is a lazily
+        /// populated static that is only computed on first read — but hosts
+        /// should still set it via `KernelConfig` rather than by record-copy
+        /// after startup, so that the value is fixed for the whole run and a
+        /// guest cannot observe it changing under it.
+        UnixPlatform : SimulatedUnixPlatform
+        /// The simulated process's filesystem: every inode a guest can reach
+        /// through the `SystemNative_*` path calls.
+        ///
+        /// Seeded from `KernelConfig.FileSystem`, and mutated in place by the
+        /// natives that write, create or truncate. It is emulated kernel state
+        /// rather than anything the interpreter reads from the host, for the
+        /// usual reason:
+        /// a filesystem read from the host would make a replay depend on the
+        /// machine that produced it, and guests branch on what they find.
+        FileSystem : VirtualFileSystem
+        /// The filesystem `FileSystem` claims to be, which is the whole of what
+        /// `SystemNative_GetFileSystemType` reports for a file on it.
+        ///
+        /// Seeded from `KernelConfig.FileSystemType` and fixed for the run: no
+        /// syscall in CoreLib's interop surface can mount anything, so nothing
+        /// a guest does can change it. Set only by
+        /// `withUnixPlatformAndFileSystemType`, which writes it and
+        /// `UnixPlatform` together so that the two cannot disagree.
+        FileSystemType : EmulatedFileSystemType
+    }
+
+type EmulatedKernel =
+    {
+        /// The POSIX machine this process is running on: see `UnixMachineState`.
+        ///
+        /// Read through the forwarding members below rather than directly, so that
+        /// moving a field in or out of here costs no call site.
+        Machine : UnixMachineState
+        /// Per-thread value CoreCLR keeps in its `t_lastPInvokeError` thread-local and
+        /// `Marshal.GetLastPInvokeError` (equivalently `GetLastWin32Error`) reads. A
+        /// `SetLastError = true` P/Invoke's stub copies the system error here once the
+        /// call returns.
+        ///
+        /// A `Map` rather than a `ThreadState` field, unlike `Cpu` and `OsThreadId`,
+        /// because an absent key *does* have a truthful reading: 0, the value a thread
+        /// that has had no error reported to it sees. `withLastPInvokeError` drops an
+        /// entry it would set to 0, so "absent" and "zero" stay structurally equal —
+        /// the same canonicalisation `SignalState.Blocked` performs for empty masks,
+        /// and for the same reason: two states that differ only that way must compare
+        /// equal.
+        LastPInvokeError : Map<ThreadId, int>
+        /// Per-thread system error: errno on Unix, `GetLastError` on Windows. CoreCLR's
+        /// PAL stores its last-error *in* errno ("Reuse errno to store last error",
+        /// pal/src/include/pal/thread.hpp), and `Marshal.Get/SetLastSystemError` read and
+        /// write it directly.
+        ///
+        /// Tracked separately from `LastPInvokeError` because CoreLib's generated
+        /// `LibraryImport` stubs read this and then write that. Same `Map` reasoning and
+        /// same zero-drops-the-entry canonicalisation as `LastPInvokeError` above.
+        LastSystemError : Map<ThreadId, int>
+        /// Globally-scoped pool of native-heap blocks allocated by
+        /// `Marshal.AllocHGlobal` / `NativeMemory.Alloc`. Freeing a block
+        /// deletes it from this pool, so any retained byref into the block
+        /// becomes a dangling reference that the simulator catches loudly at
+        /// the use site. Unlike `StackMemoryPool` (which lives on each method
+        /// frame and is reclaimed at frame exit), native-heap blocks outlive
+        /// the frames that allocate them.
+        NativeMemoryPool : NativeMemoryPool
+        /// In-memory model of the simulated process's Unix file descriptor
+        /// table. Pre-seeded at startup with stdin (0), stdout (1), stderr
+        /// (2), matching the kernel's behaviour of populating these slots
+        /// at `exec` time. SystemNative_Dup / Close / Read / Write etc.
+        /// route through this table; the host's real fds are never used.
+        FileDescriptors : FileDescriptorRegistry
+        /// Each thread's in-flight `SystemNative_WaitForSocketEvents`
+        /// call, stored at park and removed at delivery — so an absent key
+        /// means a first entry into the wait, and a present one means the
+        /// handler is being re-entered and must use the captured state
+        /// instead of re-decoding its arguments. Present from the park
+        /// through the wake to the delivering re-entry, which is a strict
+        /// superset of the window `BlockedOnSocketEvents` covers: the
+        /// close-time retention check reads this, not the thread status,
+        /// so the woken-but-not-yet-run window is protected too.
+        ParkedSocketWaits : Map<ThreadId, ParkedSocketWait>
+        /// Registry of `System.Threading.LowLevelMonitor` instances minted by
+        /// `SystemNative_LowLevelMonitor_Create`. The handle held by the
+        /// guest (as an `IntPtr` in `LowLevelMonitor._nativeMonitor`) is the
+        /// `LowLevelMonitorId` key; the value is the deterministic
+        /// owner / queue state. `Destroy` removes the entry so any retained
+        /// handle fails loudly at the next use rather than silently
+        /// referencing a recycled monitor.
+        LowLevelMonitors : Map<LowLevelMonitorId, LowLevelMonitorState>
+        /// Monotonic ID source for `LowLevelMonitorPtr`. Starts at 1 so the
+        /// guest's "create failed" check (`if _nativeMonitor == IntPtr.Zero`)
+        /// is never triggered for a successfully-minted monitor. IDs are
+        /// never reused; freeing a monitor leaves a gap.
+        NextLowLevelMonitorId : int
+        /// Registry of Win32-shaped wait-handle kernel objects (Semaphore /
+        /// Event / Mutex), minted by `CreateSemaphoreExW` and its peers. The
+        /// handle held by the guest (as an `IntPtr` produced by the QCall) is
+        /// the `WaitHandleId` key; the value is the deterministic kind-tagged
+        /// state. `CloseHandle` removes the entry so any retained handle
+        /// fails loudly at the next use rather than silently referencing a
+        /// recycled object.
+        WaitHandles : Map<WaitHandleId, WaitHandleState>
+        /// Monotonic ID source for `WaitHandlePtr`. Starts at 1 so the BCL's
+        /// "create failed" check (`if (handle == IntPtr.Zero) throw new ...`)
+        /// is never triggered for a successfully-minted handle. IDs are never
+        /// reused; closing a handle leaves a gap.
+        NextWaitHandleId : int
+        /// Monotonic ID source for opaque EventPipe provider/event handles
+        /// minted by the `EventPipeInternal_*` QCalls. PawPrint never opens a
+        /// tracing session, so the IDs are not stored in any registry; they
+        /// only need to be unique and non-zero (the BCL treats handle 0 as
+        /// "create failed" and throws OOM).
+        NextEventPipeId : int64
+        /// Deterministic strategy governing spurious wakeups out of
+        /// `LowLevelMonitor.Wait`. Defaults to `Disabled` so existing runs
+        /// are bit-for-bit unchanged. Set this at construction time (or
+        /// via record-copy in tests) to inject wakeups for fuzz /
+        /// correctness testing of guest condition-variable code.
+        SpuriousWakeup : SpuriousWakeupStrategy
+        /// Deterministic strategy governing spurious wakeups out of the
+        /// managed `Monitor.Wait` (SyncBlock-backed condition variable).
+        /// Parallel-but-independent of `SpuriousWakeup` so a guest can fuzz
+        /// the two condvar primitives separately. Defaults to `Disabled` so
+        /// existing runs are bit-for-bit unchanged.
+        SyncBlockSpuriousWakeup : SyncBlockSpuriousWakeupStrategy
+        /// Deterministic strategy governing whether the driver jumps the virtual
+        /// clock onto an outstanding deadline as part of a tick. Defaults to
+        /// `Disabled` so existing runs are bit-for-bit unchanged. See
+        /// `ClockJitterStrategy` for what it buys and `ClockJitter.chooseJump`
+        /// for how it is interpreted.
+        ClockJitter : ClockJitterStrategy
+        /// Monotonically-advancing scheduler tick consumed by
+        /// `SpuriousWakeupStrategy`. The driver loop applies the strategy
+        /// against the current value and then increments by 1 before
+        /// calling `Scheduler.chooseNext`. Threading the tick through state
+        /// (rather than as a side argument to the scheduler) keeps the
+        /// pure model self-contained and means tests can drive the strategy
+        /// without spinning up a real driver.
+        StepCounter : int64
         /// Ordered, append-only log of every write the guest has performed
         /// against a writable standard stream via `SystemNative_Write`.
         /// Each entry carries the destination `Role` and the exact byte
@@ -943,40 +1026,6 @@ type EmulatedKernel =
         /// reports `ERROR_ENVVAR_NOT_FOUND`, which is exactly what the PAL
         /// returns on that path.
         Environment : Map<string, string>
-        /// Number of logical processors the simulated process observes, as
-        /// reported by `Environment.ProcessorCount`. Deliberately a value in
-        /// kernel state rather than a host read: real CoreCLR answers this
-        /// from `GetSystemInfo` / `sched_getaffinity`, which would make a
-        /// replay depend on the machine that produced it. Guests size thread
-        /// pools, partition `Parallel.For` ranges, and stripe arrays off this
-        /// number, so letting the host leak in here would change guest
-        /// *control flow* between runs — the single worst kind of
-        /// nondeterminism for a runtime whose purpose is bit-for-bit replay.
-        ///
-        /// Defaults to 1 (see `EmulatedKernel.initial`); hosts choose a
-        /// different value via `KernelConfig.ProcessorCount`, which
-        /// `Program.prepare` applies before the entry type's `.cctor` is
-        /// pumped — CoreLib latches `Environment.ProcessorCount` into a static
-        /// on first read, so a later change would not be observed.
-        ///
-        /// Must be >= 1: the real property is documented as always positive
-        /// and BCL callers divide by it, so `NativeEnvironment` asserts the
-        /// invariant at the point of use rather than trusting construction.
-        ProcessorCount : int
-        /// Greatest value `address + length` may take for a user buffer the
-        /// kernel will accept — the machine's `TASK_SIZE_MAX`. Consulted only
-        /// where `SimulatedUnixPlatform.screensUserBufferUpFront` says the
-        /// kernel screens before performing the operation, but a real fact
-        /// about every machine regardless.
-        ///
-        /// Configuration rather than a constant derived from the platform
-        /// because it varies by *machine*: 2^47 less a page with four-level
-        /// paging on x86-64, 2^56 less a page with five-level, 2^48 on a
-        /// 48-bit-VA arm64. Two GitHub runners of the same image were measured
-        /// disagreeing, so no value derived from the flavour or the kernel
-        /// release could be right everywhere. See `ObservedUserAddressLimit`
-        /// for the values real machines have been seen to have.
-        UserAddressLimit : uint64
         /// Virtual time charged for one retired IL instruction, in 100 ns ticks — how fast the
         /// simulated machine is. Must be >= 1; a cost of zero would freeze the clock and make
         /// every guest polling loop diverge.
@@ -1018,17 +1067,6 @@ type EmulatedKernel =
         /// the same "fixed for the whole recorded run" reason as the other
         /// kernel knobs).
         OptimalMaxSpinWaitsPerSpinIteration : int
-        /// Unix-shaped platform identity the simulated process reports, as
-        /// observed through `SystemNative_GetUnixRelease` (and hence
-        /// `Environment.OSVersion` on a Unix CoreLib).
-        ///
-        /// Unlike `ProcessorCount`, CoreLib does *not* latch this during
-        /// static initialisation — `Environment.OSVersion` is a lazily
-        /// populated static that is only computed on first read — but hosts
-        /// should still set it via `KernelConfig` rather than by record-copy
-        /// after startup, so that the value is fixed for the whole run and a
-        /// guest cannot observe it changing under it.
-        UnixPlatform : SimulatedUnixPlatform
         /// The simulated process's current working directory, as observed
         /// through `SystemNative_GetCwd` — and hence through
         /// `Environment.CurrentDirectory` and every relative
@@ -1091,16 +1129,6 @@ type EmulatedKernel =
         /// under an `Interlocked.CompareExchange` — so hosts must set it via
         /// `KernelConfig` rather than by record-copy after startup.
         ProcessPath : AbsoluteUnixPath option
-        /// The simulated process's filesystem: every inode a guest can reach
-        /// through the `SystemNative_*` path calls.
-        ///
-        /// Seeded from `KernelConfig.FileSystem`, and mutated in place by the
-        /// natives that write, create or truncate. It is emulated kernel state
-        /// rather than anything the interpreter reads from the host, for the
-        /// usual reason:
-        /// a filesystem read from the host would make a replay depend on the
-        /// machine that produced it, and guests branch on what they find.
-        FileSystem : VirtualFileSystem
         /// Every directory stream `SystemNative_OpenDir` has handed out and
         /// `SystemNative_CloseDir` has not yet reclaimed, under the id minted for
         /// it. `DirectoryStreamBlocks` is what turns a guest's `DIR*` into one of
@@ -1141,15 +1169,6 @@ type EmulatedKernel =
         DirectoryStreamBlocks : Map<NativeMemoryBlockId, DirectoryStreamId>
         /// The id `withNewDirectoryStream` will hand out next.
         NextDirectoryStreamId : DirectoryStreamId
-        /// The filesystem `FileSystem` claims to be, which is the whole of what
-        /// `SystemNative_GetFileSystemType` reports for a file on it.
-        ///
-        /// Seeded from `KernelConfig.FileSystemType` and fixed for the run: no
-        /// syscall in CoreLib's interop surface can mount anything, so nothing
-        /// a guest does can change it. Set only by
-        /// `withUnixPlatformAndFileSystemType`, which writes it and
-        /// `UnixPlatform` together so that the two cannot disagree.
-        FileSystemType : EmulatedFileSystemType
         /// The effective user ID the simulated process runs as, reported by
         /// `stat` as every inode's `st_uid` and by `SystemNative_GetEUid`.
         ///
@@ -1185,6 +1204,32 @@ type EmulatedKernel =
         /// inside `SignalState.Blocked`.
         Signals : SignalState<ThreadId, SignalHandler>
     }
+
+    // Forwarding members for everything `Machine` now holds, so that this split
+    // costs no read site. They go when stage 6 moves `UnixMachineState` to the
+    // library and call sites learn to say `kernel.Machine.X`.
+    member this.Sockets : Map<SocketId, SocketDescription> = this.Machine.Sockets
+    member this.Connections : Map<ConnectionId, TcpConnection> = this.Machine.Connections
+    member this.NextConnectionId : ConnectionId = this.Machine.NextConnectionId
+
+    member this.NextSocketEventRegistrationOrdinal : int64 =
+        this.Machine.NextSocketEventRegistrationOrdinal
+
+    member this.NextEphemeralPort : uint16 = this.Machine.NextEphemeralPort
+    member this.EphemeralPortRange : uint16 * uint16 = this.Machine.EphemeralPortRange
+    member this.SoMaxConn : int = this.Machine.SoMaxConn
+    member this.LocalAddresses : uint32 list = this.Machine.LocalAddresses
+    member this.LocalRoutes : Ipv4Prefix list = this.Machine.LocalRoutes
+    member this.NextSocketId : SocketId = this.Machine.NextSocketId
+    member this.VirtualClockTicks : int64 = this.Machine.VirtualClockTicks
+    member this.WallClockEpochMs : int64 = this.Machine.WallClockEpochMs
+    member this.NonCryptoRandomState : uint64 = this.Machine.NonCryptoRandomState
+    member this.CryptoRandomState : uint64 = this.Machine.CryptoRandomState
+    member this.ProcessorCount : int = this.Machine.ProcessorCount
+    member this.UserAddressLimit : uint64 = this.Machine.UserAddressLimit
+    member this.UnixPlatform : SimulatedUnixPlatform = this.Machine.UnixPlatform
+    member this.FileSystem : VirtualFileSystem = this.Machine.FileSystem
+    member this.FileSystemType : EmulatedFileSystemType = this.Machine.FileSystemType
 
 /// A way the emulated kernel's socket table and its descriptor table could
 /// disagree — a state no kernel could be in, and which `EmulatedKernel` exists
@@ -1559,19 +1604,7 @@ module EmulatedKernel =
             DirectoryStreams = Map.empty
             DirectoryStreamBlocks = Map.empty
             NextDirectoryStreamId = DirectoryStreamId 0L
-            Sockets = Map.empty
-            Connections = Map.empty
-            NextConnectionId = ConnectionId 0L
-            NextSocketEventRegistrationOrdinal = 0L
             ParkedSocketWaits = Map.empty
-            NextSocketId = SocketId 0L
-            NextEphemeralPort = fst defaultEphemeralPortRange
-            EphemeralPortRange = defaultEphemeralPortRange
-            // The Linux default, matching `defaultUnixPlatform`;
-            // `KernelConfig.applyTo` re-resolves it beside the platform.
-            SoMaxConn = defaultSoMaxConn SimulatedUnixFlavour.Linux
-            LocalAddresses = defaultLocalAddresses
-            LocalRoutes = defaultLocalRoutes
             LowLevelMonitors = Map.empty
             NextLowLevelMonitorId = 1
             WaitHandles = Map.empty
@@ -1581,28 +1614,44 @@ module EmulatedKernel =
             SyncBlockSpuriousWakeup = SyncBlockSpuriousWakeupStrategy.Disabled
             ClockJitter = ClockJitterStrategy.Disabled
             StepCounter = 0L
-            VirtualClockTicks = 0L
-            WallClockEpochMs = 0L
-            NonCryptoRandomState = NonCryptoRandom.initialState
-            CryptoRandomState = cryptoRandomInitialState
             OutputLog = ImmutableArray<OutputLogEntry>.Empty
             Environment = defaultEnvironment
-            ProcessorCount = defaultProcessorCount
-            UserAddressLimit = defaultUserAddressLimit
             OptimalMaxSpinWaitsPerSpinIteration = defaultOptimalMaxSpinWaitsPerSpinIteration
-            UnixPlatform = defaultUnixPlatform
             CurrentDirectory = defaultCurrentDirectory
             // The default current directory is the root, which every filesystem
             // has and no operation can remove, so the pair starts consistent
             // whatever else a host goes on to set.
             CurrentDirectoryInode = VirtualFileSystem.root filesystem
             ProcessPath = defaultProcessPath
-            FileSystem = filesystem
-            FileSystemType = EmulatedFileSystemType.defaultFor (SimulatedUnixPlatform.flavour defaultUnixPlatform)
             UserId = defaultUserId
             GroupId = defaultGroupId
             Umask = defaultUmask
             Signals = SignalState.empty
+            Machine =
+                {
+                    Sockets = Map.empty
+                    Connections = Map.empty
+                    NextConnectionId = ConnectionId 0L
+                    NextSocketEventRegistrationOrdinal = 0L
+                    NextSocketId = SocketId 0L
+                    NextEphemeralPort = fst defaultEphemeralPortRange
+                    EphemeralPortRange = defaultEphemeralPortRange
+                    // The Linux default, matching `defaultUnixPlatform`;
+                    // `KernelConfig.applyTo` re-resolves it beside the platform.
+                    SoMaxConn = defaultSoMaxConn SimulatedUnixFlavour.Linux
+                    LocalAddresses = defaultLocalAddresses
+                    LocalRoutes = defaultLocalRoutes
+                    VirtualClockTicks = 0L
+                    WallClockEpochMs = 0L
+                    NonCryptoRandomState = NonCryptoRandom.initialState
+                    CryptoRandomState = cryptoRandomInitialState
+                    ProcessorCount = defaultProcessorCount
+                    UserAddressLimit = defaultUserAddressLimit
+                    UnixPlatform = defaultUnixPlatform
+                    FileSystem = filesystem
+                    FileSystemType =
+                        EmulatedFileSystemType.defaultFor (SimulatedUnixPlatform.flavour defaultUnixPlatform)
+                }
         }
 
     /// The directory `directory` names in this kernel's filesystem, as the
@@ -1707,8 +1756,11 @@ module EmulatedKernel =
                 requested
 
         { kernel with
-            UnixPlatform = platform
-            FileSystemType = resolved
+            Machine =
+                { kernel.Machine with
+                    UnixPlatform = platform
+                    FileSystemType = resolved
+                }
         }
 
     /// Set the path to the executable that started the simulated process, or
@@ -1759,9 +1811,12 @@ module EmulatedKernel =
         let inode, physical = currentDirectoryOf directory platform filesystem
 
         { kernel with
-            FileSystem = filesystem
             CurrentDirectory = physical
             CurrentDirectoryInode = inode
+            Machine =
+                { kernel.Machine with
+                    FileSystem = filesystem
+                }
         }
 
     /// Set the effective user and group IDs the simulated process runs as.
@@ -1811,7 +1866,10 @@ module EmulatedKernel =
             failwith "UserAddressLimit must be positive; got 0, which is a machine with no user address space"
 
         { kernel with
-            UserAddressLimit = limit
+            Machine =
+                { kernel.Machine with
+                    UserAddressLimit = limit
+                }
         }
 
     /// Whether, and where, this machine's kernel screens a read or write buffer
@@ -1828,7 +1886,10 @@ module EmulatedKernel =
             failwith $"ProcessorCount must be at least 1; got %d{count}"
 
         { kernel with
-            ProcessorCount = count
+            Machine =
+                { kernel.Machine with
+                    ProcessorCount = count
+                }
         }
 
     /// Set the value the simulated process reports from
@@ -1862,7 +1923,10 @@ module EmulatedKernel =
                 $"WallClockEpochMs must be at most %d{maxWallClockEpochMs} (9999-12-31T23:59:59.999Z, the last instant System.DateTime can represent); got %d{epochMs}"
 
         { kernel with
-            WallClockEpochMs = epochMs
+            Machine =
+                { kernel.Machine with
+                    WallClockEpochMs = epochMs
+                }
         }
 
     /// Wall-clock time the simulated process currently observes, in 100ns ticks
@@ -2025,7 +2089,10 @@ module EmulatedKernel =
         validateVirtualClockTicks ticks kernel
 
         { kernel with
-            VirtualClockTicks = ticks
+            Machine =
+                { kernel.Machine with
+                    VirtualClockTicks = ticks
+                }
         }
 
     /// Retire one interpreted instruction: bump `StepCounter` by one and charge
@@ -2049,7 +2116,10 @@ module EmulatedKernel =
 
         { kernel with
             StepCounter = kernel.StepCounter + 1L
-            VirtualClockTicks = ticks
+            Machine =
+                { kernel.Machine with
+                    VirtualClockTicks = ticks
+                }
         }
 
     /// Monotonic time since the simulated process booted, in nanoseconds:
@@ -2438,7 +2508,10 @@ module EmulatedKernel =
                 value
 
         { kernel with
-            SoMaxConn = resolved
+            Machine =
+                { kernel.Machine with
+                    SoMaxConn = resolved
+                }
         }
 
     /// Sets the ephemeral range, and rewinds the cursor into it: a cursor left
@@ -2454,8 +2527,11 @@ module EmulatedKernel =
                 $"EmulatedKernel.EphemeralPortRange: the range %d{low}-%d{high} is empty, so no bind of port 0 could ever be answered."
 
         { kernel with
-            EphemeralPortRange = low, high
-            NextEphemeralPort = low
+            Machine =
+                { kernel.Machine with
+                    EphemeralPortRange = low, high
+                    NextEphemeralPort = low
+                }
         }
 
     let withLocalAddresses
@@ -2474,8 +2550,11 @@ module EmulatedKernel =
         // on which only the wildcard binds. That is a strange machine but a
         // representable one, and refusing it here would be inventing a rule.
         { kernel with
-            LocalAddresses = addresses
-            LocalRoutes = routes
+            Machine =
+                { kernel.Machine with
+                    LocalAddresses = addresses
+                    LocalRoutes = routes
+                }
         }
 
     /// Hands out the lowest free port at or after the cursor, sweeping the range
@@ -2506,7 +2585,10 @@ module EmulatedKernel =
                 Some (
                     candidate,
                     { kernel with
-                        NextEphemeralPort = next
+                        Machine =
+                            { kernel.Machine with
+                                NextEphemeralPort = next
+                            }
                     }
                 )
             else
@@ -2918,11 +3000,14 @@ module EmulatedKernel =
         let kernel =
             { kernel with
                 FileDescriptors = registry
-                NextSocketEventRegistrationOrdinal =
-                    match change with
-                    | SocketEventRegistrationChange.Add _ -> ordinal + 1L
-                    | SocketEventRegistrationChange.Modify _
-                    | SocketEventRegistrationChange.Remove -> ordinal
+                Machine =
+                    { kernel.Machine with
+                        NextSocketEventRegistrationOrdinal =
+                            match change with
+                            | SocketEventRegistrationChange.Add _ -> ordinal + 1L
+                            | SocketEventRegistrationChange.Modify _
+                            | SocketEventRegistrationChange.Remove -> ordinal
+                    }
             }
 
         match change with
@@ -2999,20 +3084,23 @@ module EmulatedKernel =
         fd,
         { kernel with
             FileDescriptors = registry
-            Sockets =
-                Map.add
-                    socketId
-                    {
-                        Domain = domain
-                        Kind = kind
-                        Protocol = protocol
-                        // `socket(2)` binds nothing and connects nothing.
-                        Binding = None
-                        Phase = SocketPhase.Idle
-                        ReuseAddress = false
-                    }
-                    kernel.Sockets
-            NextSocketId = SocketId (raw + 1L)
+            Machine =
+                { kernel.Machine with
+                    Sockets =
+                        Map.add
+                            socketId
+                            {
+                                Domain = domain
+                                Kind = kind
+                                Protocol = protocol
+                                // `socket(2)` binds nothing and connects nothing.
+                                Binding = None
+                                Phase = SocketPhase.Idle
+                                ReuseAddress = false
+                            }
+                            kernel.Sockets
+                    NextSocketId = SocketId (raw + 1L)
+                }
         }
 
     /// Every inode this kernel holds a reference to *directly*, independently of
@@ -3136,7 +3224,10 @@ module EmulatedKernel =
 
         let freed =
             { kernel with
-                FileSystem = VirtualFileSystem.forget inode kernel.FileSystem
+                Machine =
+                    { kernel.Machine with
+                        FileSystem = VirtualFileSystem.forget inode kernel.FileSystem
+                    }
             }
 
         // A directory freed here was the last thing holding its parent's ".."
@@ -3325,8 +3416,11 @@ module EmulatedKernel =
             let closed =
                 { kernel with
                     FileDescriptors = registry
-                    Sockets = sockets
-                    Connections = connections
+                    Machine =
+                        { kernel.Machine with
+                            Sockets = sockets
+                            Connections = connections
+                        }
                 }
 
             // The FIN's edge, raised now that the survivor's level is the
@@ -3496,13 +3590,16 @@ module EmulatedKernel =
 
         let withPhase (phase : SocketPhase) (kernel : EmulatedKernel) : EmulatedKernel =
             { kernel with
-                Sockets =
-                    Map.add
-                        socketId
-                        { sock with
-                            Phase = phase
-                        }
-                        kernel.Sockets
+                Machine =
+                    { kernel.Machine with
+                        Sockets =
+                            Map.add
+                                socketId
+                                { sock with
+                                    Phase = phase
+                                }
+                                kernel.Sockets
+                    }
             }
 
         let destinationIsLocal (address : uint32) : bool =
@@ -3759,27 +3856,30 @@ module EmulatedKernel =
 
                 let kernel =
                     { kernel with
-                        Sockets =
-                            kernel.Sockets
-                            |> Map.add
-                                socketId
-                                { sock with
-                                    Binding = Some clientBinding
-                                    Phase = clientPhase
-                                }
-                            |> Map.add
-                                listenerId
-                                { listenerSocket with
-                                    Phase =
-                                        SocketPhase.Listening
-                                            { listenState with
-                                                // Oldest first: accept(2)
-                                                // dequeues the head.
-                                                Queue = listenState.Queue @ [ connectionId ]
-                                            }
-                                }
-                        Connections = Map.add connectionId tcpConnection kernel.Connections
-                        NextConnectionId = ConnectionId (rawConnectionId + 1L)
+                        Machine =
+                            { kernel.Machine with
+                                Sockets =
+                                    kernel.Sockets
+                                    |> Map.add
+                                        socketId
+                                        { sock with
+                                            Binding = Some clientBinding
+                                            Phase = clientPhase
+                                        }
+                                    |> Map.add
+                                        listenerId
+                                        { listenerSocket with
+                                            Phase =
+                                                SocketPhase.Listening
+                                                    { listenState with
+                                                        // Oldest first: accept(2)
+                                                        // dequeues the head.
+                                                        Queue = listenState.Queue @ [ connectionId ]
+                                                    }
+                                        }
+                                Connections = Map.add connectionId tcpConnection kernel.Connections
+                                NextConnectionId = ConnectionId (rawConnectionId + 1L)
+                            }
                     }
 
                 // The two edges this call raises, in the measured order
@@ -3859,14 +3959,17 @@ module EmulatedKernel =
 
                     let kernel =
                         { kernel with
-                            Sockets =
-                                Map.add
-                                    socketId
-                                    { sock with
-                                        Binding = Some (bindingAfterRefusalDelivery flavour binding)
-                                        Phase = phase
-                                    }
-                                    kernel.Sockets
+                            Machine =
+                                { kernel.Machine with
+                                    Sockets =
+                                        Map.add
+                                            socketId
+                                            { sock with
+                                                Binding = Some (bindingAfterRefusalDelivery flavour binding)
+                                                Phase = phase
+                                            }
+                                            kernel.Sockets
+                                }
                         }
 
                     // The error's arrival and its reset both signal
@@ -3884,14 +3987,17 @@ module EmulatedKernel =
                     // modelled yet, so only this path is reachable.
                     let kernel =
                         { kernel with
-                            Sockets =
-                                Map.add
-                                    socketId
-                                    { sock with
-                                        Binding = Some binding
-                                        Phase = SocketPhase.RefusedPendingDelivery
-                                    }
-                                    kernel.Sockets
+                            Machine =
+                                { kernel.Machine with
+                                    Sockets =
+                                        Map.add
+                                            socketId
+                                            { sock with
+                                                Binding = Some binding
+                                                Phase = SocketPhase.RefusedPendingDelivery
+                                            }
+                                            kernel.Sockets
+                                }
                         }
 
                     // The error's arrival signals the client (measured,
@@ -3951,16 +4057,21 @@ module EmulatedKernel =
                     // locked (both measured).
                     let kernel =
                         { kernel with
-                            Sockets =
-                                Map.add
-                                    socketId
-                                    { sock with
-                                        Binding =
-                                            sock.Binding
-                                            |> Option.map (bindingAfterRefusalDelivery SimulatedUnixFlavour.Linux)
-                                        Phase = SocketPhase.Idle
-                                    }
-                                    kernel.Sockets
+                            Machine =
+                                { kernel.Machine with
+                                    Sockets =
+                                        Map.add
+                                            socketId
+                                            { sock with
+                                                Binding =
+                                                    sock.Binding
+                                                    |> Option.map (
+                                                        bindingAfterRefusalDelivery SimulatedUnixFlavour.Linux
+                                                    )
+                                                Phase = SocketPhase.Idle
+                                            }
+                                            kernel.Sockets
+                                }
                         }
 
                     // The reset signals: a registered client whose error edge
@@ -4106,14 +4217,17 @@ module EmulatedKernel =
 
                         ConnectOutcome.Completed,
                         { kernel with
-                            Sockets =
-                                Map.add
-                                    socketId
-                                    { sock with
-                                        Binding = binding
-                                        Phase = SocketPhase.Idle
-                                    }
-                                    kernel.Sockets
+                            Machine =
+                                { kernel.Machine with
+                                    Sockets =
+                                        Map.add
+                                            socketId
+                                            { sock with
+                                                Binding = binding
+                                                Phase = SocketPhase.Idle
+                                            }
+                                            kernel.Sockets
+                                }
                         }
                     | _ ->
 
@@ -4165,14 +4279,17 @@ module EmulatedKernel =
 
             let kernel =
                 { kernel with
-                    Sockets =
-                        Map.add
-                            socketId
-                            { sock with
-                                Binding = Some binding
-                                Phase = SocketPhase.DatagramPeer dest
-                            }
-                            kernel.Sockets
+                    Machine =
+                        { kernel.Machine with
+                            Sockets =
+                                Map.add
+                                    socketId
+                                    { sock with
+                                        Binding = Some binding
+                                        Phase = SocketPhase.DatagramPeer dest
+                                    }
+                                    kernel.Sockets
+                        }
                 }
 
             ConnectOutcome.Completed, kernel
@@ -4226,19 +4343,22 @@ module EmulatedKernel =
             let kernel =
                 { kernel with
                     FileDescriptors = registry
-                    Sockets =
-                        kernel.Sockets
-                        |> Map.add acceptedId accepted
-                        |> Map.add
-                            socketId
-                            { listener with
-                                Phase =
-                                    SocketPhase.Listening
-                                        { listenState with
-                                            Queue = rest
-                                        }
-                            }
-                    NextSocketId = SocketId (rawAcceptedId + 1L)
+                    Machine =
+                        { kernel.Machine with
+                            Sockets =
+                                kernel.Sockets
+                                |> Map.add acceptedId accepted
+                                |> Map.add
+                                    socketId
+                                    { listener with
+                                        Phase =
+                                            SocketPhase.Listening
+                                                { listenState with
+                                                    Queue = rest
+                                                }
+                                    }
+                            NextSocketId = SocketId (rawAcceptedId + 1L)
+                        }
                 }
 
             fd, tcpConnection, kernel

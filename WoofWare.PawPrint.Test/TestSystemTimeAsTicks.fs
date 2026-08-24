@@ -40,7 +40,10 @@ module TestSystemTimeAsTicks =
         // The clock is set by record-copy because the driver loop is its only
         // production writer.
         { kernel with
-            VirtualClockTicks = clockTicks
+            Machine =
+                { kernel.Machine with
+                    VirtualClockTicks = clockTicks
+                }
         }
 
     /// The guest-visible instant, computed exactly as CoreLib does but through
@@ -254,8 +257,11 @@ module TestSystemTimeAsTicks =
 
             let kernel =
                 { EmulatedKernel.initial with
-                    WallClockEpochMs = epochMs
-                    VirtualClockTicks = clockTicks
+                    Machine =
+                        { EmulatedKernel.initial.Machine with
+                            WallClockEpochMs = epochMs
+                            VirtualClockTicks = clockTicks
+                        }
                 }
 
             not (succeeds (fun () -> EmulatedKernel.systemTimeAsTicks kernel))
