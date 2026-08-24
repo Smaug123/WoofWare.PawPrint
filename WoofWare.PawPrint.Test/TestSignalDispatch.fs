@@ -109,7 +109,10 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals = kernel.Signals |> SignalState.markInitialized dispatcher
+                    Process =
+                        { kernel.Process with
+                            Signals = kernel.Signals |> SignalState.markInitialized dispatcher
+                        }
                 }
             )
 
@@ -118,7 +121,10 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals = kernel.Signals |> SignalState.setHandler handler
+                    Process =
+                        { kernel.Process with
+                            Signals = kernel.Signals |> SignalState.setHandler handler
+                        }
                 }
             )
 
@@ -169,15 +175,18 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals =
-                        kernel.Signals
-                        |> SignalState.markInitialized dispatcher
-                        |> SignalState.enable Signal.SIGINT
-                        |> SignalState.enqueue
-                            {
-                                Signal = Signal.SIGINT
-                                Target = ValueNone
-                            }
+                    Process =
+                        { kernel.Process with
+                            Signals =
+                                kernel.Signals
+                                |> SignalState.markInitialized dispatcher
+                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.enqueue
+                                    {
+                                        Signal = Signal.SIGINT
+                                        Target = ValueNone
+                                    }
+                        }
                 }
             )
 
@@ -205,7 +214,10 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals = kernel.Signals |> SignalState.enable Signal.SIGINT
+                    Process =
+                        { kernel.Process with
+                            Signals = kernel.Signals |> SignalState.enable Signal.SIGINT
+                        }
                 }
             )
 
@@ -225,13 +237,16 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals =
-                        kernel.Signals
-                        |> SignalState.enqueue
-                            {
-                                Signal = Signal.SIGINT
-                                Target = ValueNone
-                            }
+                    Process =
+                        { kernel.Process with
+                            Signals =
+                                kernel.Signals
+                                |> SignalState.enqueue
+                                    {
+                                        Signal = Signal.SIGINT
+                                        Target = ValueNone
+                                    }
+                        }
                 }
             )
 
@@ -277,14 +292,17 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals =
-                        kernel.Signals
-                        |> SignalState.enable Signal.SIGINT
-                        |> SignalState.enqueue
-                            {
-                                Signal = Signal.SIGINT
-                                Target = ValueNone
-                            }
+                    Process =
+                        { kernel.Process with
+                            Signals =
+                                kernel.Signals
+                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.enqueue
+                                    {
+                                        Signal = Signal.SIGINT
+                                        Target = ValueNone
+                                    }
+                        }
                 }
             )
 
@@ -324,14 +342,17 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals =
-                        kernel.Signals
-                        |> SignalState.enable Signal.SIGINT
-                        |> SignalState.enqueue
-                            {
-                                Signal = Signal.SIGINT
-                                Target = ValueNone
-                            }
+                    Process =
+                        { kernel.Process with
+                            Signals =
+                                kernel.Signals
+                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.enqueue
+                                    {
+                                        Signal = Signal.SIGINT
+                                        Target = ValueNone
+                                    }
+                        }
                 }
             )
 
@@ -364,14 +385,17 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals =
-                        kernel.Signals
-                        |> SignalState.enable Signal.SIGINT
-                        |> SignalState.enqueue
-                            {
-                                Signal = Signal.SIGINT
-                                Target = ValueNone
-                            }
+                    Process =
+                        { kernel.Process with
+                            Signals =
+                                kernel.Signals
+                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.enqueue
+                                    {
+                                        Signal = Signal.SIGINT
+                                        Target = ValueNone
+                                    }
+                        }
                 }
             )
 
@@ -400,14 +424,17 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals =
-                        kernel.Signals
-                        |> SignalState.enable Signal.SIGINT
-                        |> SignalState.enqueue
-                            {
-                                Signal = Signal.SIGINT
-                                Target = ValueNone
-                            }
+                    Process =
+                        { kernel.Process with
+                            Signals =
+                                kernel.Signals
+                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.enqueue
+                                    {
+                                        Signal = Signal.SIGINT
+                                        Target = ValueNone
+                                    }
+                        }
                 }
             )
 
@@ -439,7 +466,10 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals = kernel.Signals |> SignalState.markInitialized dispatcher
+                    Process =
+                        { kernel.Process with
+                            Signals = kernel.Signals |> SignalState.markInitialized dispatcher
+                        }
                 }
             )
 
@@ -459,15 +489,18 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals =
-                        kernel.Signals
-                        |> SignalState.setHandler handler
-                        |> SignalState.enable Signal.SIGINT
-                        |> SignalState.enqueue
-                            {
-                                Signal = Signal.SIGINT
-                                Target = ValueNone
-                            }
+                    Process =
+                        { kernel.Process with
+                            Signals =
+                                kernel.Signals
+                                |> SignalState.setHandler handler
+                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.enqueue
+                                    {
+                                        Signal = Signal.SIGINT
+                                        Target = ValueNone
+                                    }
+                        }
                 }
             )
 
@@ -492,14 +525,17 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals =
-                        kernel.Signals
-                        |> SignalState.enable Signal.SIGINT
-                        |> SignalState.enqueue
-                            {
-                                Signal = Signal.SIGINT
-                                Target = ValueNone
-                            }
+                    Process =
+                        { kernel.Process with
+                            Signals =
+                                kernel.Signals
+                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.enqueue
+                                    {
+                                        Signal = Signal.SIGINT
+                                        Target = ValueNone
+                                    }
+                        }
                 }
             )
 
@@ -534,14 +570,17 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals =
-                        kernel.Signals
-                        |> SignalState.enable Signal.SIGABRT
-                        |> SignalState.enqueue
-                            {
-                                Signal = Signal.SIGABRT
-                                Target = ValueNone
-                            }
+                    Process =
+                        { kernel.Process with
+                            Signals =
+                                kernel.Signals
+                                |> SignalState.enable Signal.SIGABRT
+                                |> SignalState.enqueue
+                                    {
+                                        Signal = Signal.SIGABRT
+                                        Target = ValueNone
+                                    }
+                        }
                 }
             )
 
@@ -580,14 +619,17 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals =
-                        kernel.Signals
-                        |> SignalState.enable Signal.SIGINT
-                        |> SignalState.enqueue
-                            {
-                                Signal = Signal.SIGINT
-                                Target = ValueNone
-                            }
+                    Process =
+                        { kernel.Process with
+                            Signals =
+                                kernel.Signals
+                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.enqueue
+                                    {
+                                        Signal = Signal.SIGINT
+                                        Target = ValueNone
+                                    }
+                        }
                 }
             )
 
@@ -630,14 +672,17 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals =
-                        kernel.Signals
-                        |> SignalState.enable Signal.SIGINT
-                        |> SignalState.enqueue
-                            {
-                                Signal = Signal.SIGINT
-                                Target = ValueNone
-                            }
+                    Process =
+                        { kernel.Process with
+                            Signals =
+                                kernel.Signals
+                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.enqueue
+                                    {
+                                        Signal = Signal.SIGINT
+                                        Target = ValueNone
+                                    }
+                        }
                 }
             )
 

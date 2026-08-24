@@ -922,6 +922,14 @@ The groups:
 3. tasks: `LastSystemError`, `ParkedSocketWaits`, and `Cpu`/`OsThreadId`
    pulled off `ThreadState`.
 
+Sub-step 2 took `NextDirectoryStreamId` across with `DirectoryStreams`: it is the
+counter that mints stream ids, so it is the same kernel state, and only
+`DirectoryStreamBlocks` — PawPrint's representation of a `DIR*` — stays behind.
+`UnixProcessState` also holds `Signals` concretely as
+`SignalState<ThreadId, SignalHandler>` rather than generically: the type
+parameters stage 4 added exist so the *library* need not know PawPrint's
+`ThreadId`, and nothing needs that until stage 6 moves the record across.
+
 `KernelConfig` splits along the same lines but keeps its current surface, so
 `HostConfig` and every test registration are untouched.
 

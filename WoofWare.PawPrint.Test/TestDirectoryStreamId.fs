@@ -60,8 +60,11 @@ module TestDirectoryStreamId =
 
         block,
         { kernel with
-            FileDescriptors = registry
             NativeMemoryPool = pool
+            Process =
+                { kernel.Process with
+                    FileDescriptors = registry
+                }
         }
         |> EmulatedKernel.withNewDirectoryStream
             block
@@ -191,7 +194,10 @@ module TestDirectoryStreamId =
 
         let kernel =
             { kernel with
-                NextDirectoryStreamId = DirectoryStreamId 0L
+                Process =
+                    { kernel.Process with
+                        NextDirectoryStreamId = DirectoryStreamId 0L
+                    }
             }
 
         EmulatedKernel.checkInvariants kernel
@@ -209,7 +215,10 @@ module TestDirectoryStreamId =
         // that dropped one map and not the other would leave.
         let kernel =
             { kernel with
-                DirectoryStreams = Map.remove id kernel.DirectoryStreams
+                Process =
+                    { kernel.Process with
+                        DirectoryStreams = Map.remove id kernel.DirectoryStreams
+                    }
             }
 
         EmulatedKernel.checkInvariants kernel

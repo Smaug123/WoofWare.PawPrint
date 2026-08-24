@@ -865,117 +865,22 @@ type UnixMachineState =
         FileSystemType : EmulatedFileSystemType
     }
 
-type EmulatedKernel =
+/// The state one POSIX process owns: what it inherited at exec, where it is, who
+/// it is running as, and every kernel object its descriptors and streams name.
+///
+/// Distinct from `UnixMachineState`, which is true of the machine whatever process
+/// is running: a second process on the same simulated kernel would have its own
+/// copy of this and share that. PawPrint models one process, so there is one of
+/// these, but the split is what makes `fork(2)` expressible later rather than a
+/// rewrite.
+type UnixProcessState =
     {
-        /// The POSIX machine this process is running on: see `UnixMachineState`.
-        ///
-        /// Read through the forwarding members below rather than directly, so that
-        /// moving a field in or out of here costs no call site.
-        Machine : UnixMachineState
-        /// Per-thread value CoreCLR keeps in its `t_lastPInvokeError` thread-local and
-        /// `Marshal.GetLastPInvokeError` (equivalently `GetLastWin32Error`) reads. A
-        /// `SetLastError = true` P/Invoke's stub copies the system error here once the
-        /// call returns.
-        ///
-        /// A `Map` rather than a `ThreadState` field, unlike `Cpu` and `OsThreadId`,
-        /// because an absent key *does* have a truthful reading: 0, the value a thread
-        /// that has had no error reported to it sees. `withLastPInvokeError` drops an
-        /// entry it would set to 0, so "absent" and "zero" stay structurally equal —
-        /// the same canonicalisation `SignalState.Blocked` performs for empty masks,
-        /// and for the same reason: two states that differ only that way must compare
-        /// equal.
-        LastPInvokeError : Map<ThreadId, int>
-        /// Per-thread system error: errno on Unix, `GetLastError` on Windows. CoreCLR's
-        /// PAL stores its last-error *in* errno ("Reuse errno to store last error",
-        /// pal/src/include/pal/thread.hpp), and `Marshal.Get/SetLastSystemError` read and
-        /// write it directly.
-        ///
-        /// Tracked separately from `LastPInvokeError` because CoreLib's generated
-        /// `LibraryImport` stubs read this and then write that. Same `Map` reasoning and
-        /// same zero-drops-the-entry canonicalisation as `LastPInvokeError` above.
-        LastSystemError : Map<ThreadId, int>
-        /// Globally-scoped pool of native-heap blocks allocated by
-        /// `Marshal.AllocHGlobal` / `NativeMemory.Alloc`. Freeing a block
-        /// deletes it from this pool, so any retained byref into the block
-        /// becomes a dangling reference that the simulator catches loudly at
-        /// the use site. Unlike `StackMemoryPool` (which lives on each method
-        /// frame and is reclaimed at frame exit), native-heap blocks outlive
-        /// the frames that allocate them.
-        NativeMemoryPool : NativeMemoryPool
         /// In-memory model of the simulated process's Unix file descriptor
         /// table. Pre-seeded at startup with stdin (0), stdout (1), stderr
         /// (2), matching the kernel's behaviour of populating these slots
         /// at `exec` time. SystemNative_Dup / Close / Read / Write etc.
         /// route through this table; the host's real fds are never used.
         FileDescriptors : FileDescriptorRegistry
-        /// Each thread's in-flight `SystemNative_WaitForSocketEvents`
-        /// call, stored at park and removed at delivery — so an absent key
-        /// means a first entry into the wait, and a present one means the
-        /// handler is being re-entered and must use the captured state
-        /// instead of re-decoding its arguments. Present from the park
-        /// through the wake to the delivering re-entry, which is a strict
-        /// superset of the window `BlockedOnSocketEvents` covers: the
-        /// close-time retention check reads this, not the thread status,
-        /// so the woken-but-not-yet-run window is protected too.
-        ParkedSocketWaits : Map<ThreadId, ParkedSocketWait>
-        /// Registry of `System.Threading.LowLevelMonitor` instances minted by
-        /// `SystemNative_LowLevelMonitor_Create`. The handle held by the
-        /// guest (as an `IntPtr` in `LowLevelMonitor._nativeMonitor`) is the
-        /// `LowLevelMonitorId` key; the value is the deterministic
-        /// owner / queue state. `Destroy` removes the entry so any retained
-        /// handle fails loudly at the next use rather than silently
-        /// referencing a recycled monitor.
-        LowLevelMonitors : Map<LowLevelMonitorId, LowLevelMonitorState>
-        /// Monotonic ID source for `LowLevelMonitorPtr`. Starts at 1 so the
-        /// guest's "create failed" check (`if _nativeMonitor == IntPtr.Zero`)
-        /// is never triggered for a successfully-minted monitor. IDs are
-        /// never reused; freeing a monitor leaves a gap.
-        NextLowLevelMonitorId : int
-        /// Registry of Win32-shaped wait-handle kernel objects (Semaphore /
-        /// Event / Mutex), minted by `CreateSemaphoreExW` and its peers. The
-        /// handle held by the guest (as an `IntPtr` produced by the QCall) is
-        /// the `WaitHandleId` key; the value is the deterministic kind-tagged
-        /// state. `CloseHandle` removes the entry so any retained handle
-        /// fails loudly at the next use rather than silently referencing a
-        /// recycled object.
-        WaitHandles : Map<WaitHandleId, WaitHandleState>
-        /// Monotonic ID source for `WaitHandlePtr`. Starts at 1 so the BCL's
-        /// "create failed" check (`if (handle == IntPtr.Zero) throw new ...`)
-        /// is never triggered for a successfully-minted handle. IDs are never
-        /// reused; closing a handle leaves a gap.
-        NextWaitHandleId : int
-        /// Monotonic ID source for opaque EventPipe provider/event handles
-        /// minted by the `EventPipeInternal_*` QCalls. PawPrint never opens a
-        /// tracing session, so the IDs are not stored in any registry; they
-        /// only need to be unique and non-zero (the BCL treats handle 0 as
-        /// "create failed" and throws OOM).
-        NextEventPipeId : int64
-        /// Deterministic strategy governing spurious wakeups out of
-        /// `LowLevelMonitor.Wait`. Defaults to `Disabled` so existing runs
-        /// are bit-for-bit unchanged. Set this at construction time (or
-        /// via record-copy in tests) to inject wakeups for fuzz /
-        /// correctness testing of guest condition-variable code.
-        SpuriousWakeup : SpuriousWakeupStrategy
-        /// Deterministic strategy governing spurious wakeups out of the
-        /// managed `Monitor.Wait` (SyncBlock-backed condition variable).
-        /// Parallel-but-independent of `SpuriousWakeup` so a guest can fuzz
-        /// the two condvar primitives separately. Defaults to `Disabled` so
-        /// existing runs are bit-for-bit unchanged.
-        SyncBlockSpuriousWakeup : SyncBlockSpuriousWakeupStrategy
-        /// Deterministic strategy governing whether the driver jumps the virtual
-        /// clock onto an outstanding deadline as part of a tick. Defaults to
-        /// `Disabled` so existing runs are bit-for-bit unchanged. See
-        /// `ClockJitterStrategy` for what it buys and `ClockJitter.chooseJump`
-        /// for how it is interpreted.
-        ClockJitter : ClockJitterStrategy
-        /// Monotonically-advancing scheduler tick consumed by
-        /// `SpuriousWakeupStrategy`. The driver loop applies the strategy
-        /// against the current value and then increments by 1 before
-        /// calling `Scheduler.chooseNext`. Threading the tick through state
-        /// (rather than as a side argument to the scheduler) keeps the
-        /// pure model self-contained and means tests can drive the strategy
-        /// without spinning up a real driver.
-        StepCounter : int64
         /// Ordered, append-only log of every write the guest has performed
         /// against a writable standard stream via `SystemNative_Write`.
         /// Each entry carries the destination `Role` and the exact byte
@@ -1026,47 +931,6 @@ type EmulatedKernel =
         /// reports `ERROR_ENVVAR_NOT_FOUND`, which is exactly what the PAL
         /// returns on that path.
         Environment : Map<string, string>
-        /// Virtual time charged for one retired IL instruction, in 100 ns ticks — how fast the
-        /// simulated machine is. Must be >= 1; a cost of zero would freeze the clock and make
-        /// every guest polling loop diverge.
-        ///
-        /// Kernel state rather than a constant because it is guest-observable: a guest can
-        /// measure it by counting work against `Environment.TickCount64`, and it decides which
-        /// BCL paths run — at a coarse enough rate `SpinWait` exhausts its spin budget in a
-        /// couple of iterations and drops to the blocking path. So it belongs to the replay
-        /// contract, alongside `WallClockEpochMs` and `ProcessorCount`, both of which are here
-        /// for the same reason. See `EmulatedKernel.defaultInstructionCostTicks`.
-        InstructionCostTicks : int64
-        /// Number reported by `Thread.OptimalMaxSpinWaitsPerSpinIteration` (an
-        /// `internal` property, reached only via `SpinWait.SpinOnce()` /
-        /// `LowLevelSpinWaiter` in ordinary guest code). Deliberately a value
-        /// in kernel state rather than a host read, for the same reason as
-        /// `ProcessorCount`: real CoreCLR computes it in
-        /// `YieldProcessorNormalization::PerformMeasurement`
-        /// (`yieldprocessornormalizedshared.cpp`) by literally timing how long
-        /// a `YieldProcessor()`/PAUSE instruction takes on the *host* CPU,
-        /// dividing elapsed hi-res ticks by the yield count. The initial pass
-        /// runs on a background finalizer-thread callback and takes
-        /// `NsPerYieldMeasurementCount` = 8 samples of `DetermineMeasureDurationUs()`
-        /// = 1 or 4 microseconds each, so 8–32 us of actual spinning; thereafter
-        /// `MeasurementPeriodMs` = 4000 is a floor on how often it may
-        /// re-measure (one sample per refresh), not time spent spinning. That
-        /// measurement is about as host-dependent as a number gets, so it must
-        /// be mocked.
-        ///
-        /// See `EmulatedKernel.defaultOptimalMaxSpinWaitsPerSpinIteration` for
-        /// the default and how it was chosen, and
-        /// `EmulatedKernel.maxOptimalMaxSpinWaitsPerSpinIteration` for the
-        /// ceiling this field is validated against.
-        ///
-        /// Unlike `ProcessorCount`, nothing in CoreLib latches this into a
-        /// cctor-time static: `SpinWait.SpinOnce`/`LowLevelSpinWaiter` re-read
-        /// `Thread.OptimalMaxSpinWaitsPerSpinIteration` on every call, so a
-        /// host may freely change it via record-copy mid-run if it ever needs
-        /// to (though `KernelConfig` remains the normal way to set it, for
-        /// the same "fixed for the whole recorded run" reason as the other
-        /// kernel knobs).
-        OptimalMaxSpinWaitsPerSpinIteration : int
         /// The simulated process's current working directory, as observed
         /// through `SystemNative_GetCwd` — and hence through
         /// `Environment.CurrentDirectory` and every relative
@@ -1149,24 +1013,6 @@ type EmulatedKernel =
         /// `directoryStream` says so loudly rather than inventing an errno, the
         /// way `EmulatedKernel.connection` does for a `ConnectionId`.
         DirectoryStreams : Map<DirectoryStreamId, DirectoryStream>
-        /// Which stream each guest-held `DIR*` names.
-        ///
-        /// An absent key is not a default and must never be read as one: it means
-        /// the guest passed a `DIR*` this kernel never issued, or one it has
-        /// already closed. Both are undefined behaviour on a real libc rather
-        /// than errors it reports, so `directoryStreamId` refuses loudly.
-        ///
-        /// This is PawPrint's choice of how to represent a stream to its guest —
-        /// the address of a native block, whose bytes are also the `d_name`
-        /// buffer each `readdir` refills — so it is separate from
-        /// `DirectoryStreams`, which is kernel state a POSIX simulator owns
-        /// whatever its client hands out. A second client could key its own
-        /// streams on anything at all.
-        ///
-        /// The two are maintained together by `withNewDirectoryStream` and
-        /// `withoutDirectoryStream`, and `checkInvariants` refuses a state in
-        /// which they disagree in either direction.
-        DirectoryStreamBlocks : Map<NativeMemoryBlockId, DirectoryStreamId>
         /// The id `withNewDirectoryStream` will hand out next.
         NextDirectoryStreamId : DirectoryStreamId
         /// The effective user ID the simulated process runs as, reported by
@@ -1204,6 +1050,198 @@ type EmulatedKernel =
         /// inside `SignalState.Blocked`.
         Signals : SignalState<ThreadId, SignalHandler>
     }
+
+type EmulatedKernel =
+    {
+        /// See `UnixProcessState`.
+        ///
+        /// Read through the forwarding members below rather than directly, so that
+        /// moving a field in or out of here costs no call site.
+        Process : UnixProcessState
+        /// The POSIX machine this process is running on: see `UnixMachineState`.
+        ///
+        /// Read through the forwarding members below rather than directly, so that
+        /// moving a field in or out of here costs no call site.
+        Machine : UnixMachineState
+        /// Per-thread value CoreCLR keeps in its `t_lastPInvokeError` thread-local and
+        /// `Marshal.GetLastPInvokeError` (equivalently `GetLastWin32Error`) reads. A
+        /// `SetLastError = true` P/Invoke's stub copies the system error here once the
+        /// call returns.
+        ///
+        /// A `Map` rather than a `ThreadState` field, unlike `Cpu` and `OsThreadId`,
+        /// because an absent key *does* have a truthful reading: 0, the value a thread
+        /// that has had no error reported to it sees. `withLastPInvokeError` drops an
+        /// entry it would set to 0, so "absent" and "zero" stay structurally equal —
+        /// the same canonicalisation `SignalState.Blocked` performs for empty masks,
+        /// and for the same reason: two states that differ only that way must compare
+        /// equal.
+        LastPInvokeError : Map<ThreadId, int>
+        /// Per-thread system error: errno on Unix, `GetLastError` on Windows. CoreCLR's
+        /// PAL stores its last-error *in* errno ("Reuse errno to store last error",
+        /// pal/src/include/pal/thread.hpp), and `Marshal.Get/SetLastSystemError` read and
+        /// write it directly.
+        ///
+        /// Tracked separately from `LastPInvokeError` because CoreLib's generated
+        /// `LibraryImport` stubs read this and then write that. Same `Map` reasoning and
+        /// same zero-drops-the-entry canonicalisation as `LastPInvokeError` above.
+        LastSystemError : Map<ThreadId, int>
+        /// Globally-scoped pool of native-heap blocks allocated by
+        /// `Marshal.AllocHGlobal` / `NativeMemory.Alloc`. Freeing a block
+        /// deletes it from this pool, so any retained byref into the block
+        /// becomes a dangling reference that the simulator catches loudly at
+        /// the use site. Unlike `StackMemoryPool` (which lives on each method
+        /// frame and is reclaimed at frame exit), native-heap blocks outlive
+        /// the frames that allocate them.
+        NativeMemoryPool : NativeMemoryPool
+        /// Each thread's in-flight `SystemNative_WaitForSocketEvents`
+        /// call, stored at park and removed at delivery — so an absent key
+        /// means a first entry into the wait, and a present one means the
+        /// handler is being re-entered and must use the captured state
+        /// instead of re-decoding its arguments. Present from the park
+        /// through the wake to the delivering re-entry, which is a strict
+        /// superset of the window `BlockedOnSocketEvents` covers: the
+        /// close-time retention check reads this, not the thread status,
+        /// so the woken-but-not-yet-run window is protected too.
+        ParkedSocketWaits : Map<ThreadId, ParkedSocketWait>
+        /// Registry of `System.Threading.LowLevelMonitor` instances minted by
+        /// `SystemNative_LowLevelMonitor_Create`. The handle held by the
+        /// guest (as an `IntPtr` in `LowLevelMonitor._nativeMonitor`) is the
+        /// `LowLevelMonitorId` key; the value is the deterministic
+        /// owner / queue state. `Destroy` removes the entry so any retained
+        /// handle fails loudly at the next use rather than silently
+        /// referencing a recycled monitor.
+        LowLevelMonitors : Map<LowLevelMonitorId, LowLevelMonitorState>
+        /// Monotonic ID source for `LowLevelMonitorPtr`. Starts at 1 so the
+        /// guest's "create failed" check (`if _nativeMonitor == IntPtr.Zero`)
+        /// is never triggered for a successfully-minted monitor. IDs are
+        /// never reused; freeing a monitor leaves a gap.
+        NextLowLevelMonitorId : int
+        /// Registry of Win32-shaped wait-handle kernel objects (Semaphore /
+        /// Event / Mutex), minted by `CreateSemaphoreExW` and its peers. The
+        /// handle held by the guest (as an `IntPtr` produced by the QCall) is
+        /// the `WaitHandleId` key; the value is the deterministic kind-tagged
+        /// state. `CloseHandle` removes the entry so any retained handle
+        /// fails loudly at the next use rather than silently referencing a
+        /// recycled object.
+        WaitHandles : Map<WaitHandleId, WaitHandleState>
+        /// Monotonic ID source for `WaitHandlePtr`. Starts at 1 so the BCL's
+        /// "create failed" check (`if (handle == IntPtr.Zero) throw new ...`)
+        /// is never triggered for a successfully-minted handle. IDs are never
+        /// reused; closing a handle leaves a gap.
+        NextWaitHandleId : int
+        /// Monotonic ID source for opaque EventPipe provider/event handles
+        /// minted by the `EventPipeInternal_*` QCalls. PawPrint never opens a
+        /// tracing session, so the IDs are not stored in any registry; they
+        /// only need to be unique and non-zero (the BCL treats handle 0 as
+        /// "create failed" and throws OOM).
+        NextEventPipeId : int64
+        /// Deterministic strategy governing spurious wakeups out of
+        /// `LowLevelMonitor.Wait`. Defaults to `Disabled` so existing runs
+        /// are bit-for-bit unchanged. Set this at construction time (or
+        /// via record-copy in tests) to inject wakeups for fuzz /
+        /// correctness testing of guest condition-variable code.
+        SpuriousWakeup : SpuriousWakeupStrategy
+        /// Deterministic strategy governing spurious wakeups out of the
+        /// managed `Monitor.Wait` (SyncBlock-backed condition variable).
+        /// Parallel-but-independent of `SpuriousWakeup` so a guest can fuzz
+        /// the two condvar primitives separately. Defaults to `Disabled` so
+        /// existing runs are bit-for-bit unchanged.
+        SyncBlockSpuriousWakeup : SyncBlockSpuriousWakeupStrategy
+        /// Deterministic strategy governing whether the driver jumps the virtual
+        /// clock onto an outstanding deadline as part of a tick. Defaults to
+        /// `Disabled` so existing runs are bit-for-bit unchanged. See
+        /// `ClockJitterStrategy` for what it buys and `ClockJitter.chooseJump`
+        /// for how it is interpreted.
+        ClockJitter : ClockJitterStrategy
+        /// Monotonically-advancing scheduler tick consumed by
+        /// `SpuriousWakeupStrategy`. The driver loop applies the strategy
+        /// against the current value and then increments by 1 before
+        /// calling `Scheduler.chooseNext`. Threading the tick through state
+        /// (rather than as a side argument to the scheduler) keeps the
+        /// pure model self-contained and means tests can drive the strategy
+        /// without spinning up a real driver.
+        StepCounter : int64
+        /// Virtual time charged for one retired IL instruction, in 100 ns ticks — how fast the
+        /// simulated machine is. Must be >= 1; a cost of zero would freeze the clock and make
+        /// every guest polling loop diverge.
+        ///
+        /// Kernel state rather than a constant because it is guest-observable: a guest can
+        /// measure it by counting work against `Environment.TickCount64`, and it decides which
+        /// BCL paths run — at a coarse enough rate `SpinWait` exhausts its spin budget in a
+        /// couple of iterations and drops to the blocking path. So it belongs to the replay
+        /// contract, alongside `WallClockEpochMs` and `ProcessorCount`, both of which are here
+        /// for the same reason. See `EmulatedKernel.defaultInstructionCostTicks`.
+        InstructionCostTicks : int64
+        /// Number reported by `Thread.OptimalMaxSpinWaitsPerSpinIteration` (an
+        /// `internal` property, reached only via `SpinWait.SpinOnce()` /
+        /// `LowLevelSpinWaiter` in ordinary guest code). Deliberately a value
+        /// in kernel state rather than a host read, for the same reason as
+        /// `ProcessorCount`: real CoreCLR computes it in
+        /// `YieldProcessorNormalization::PerformMeasurement`
+        /// (`yieldprocessornormalizedshared.cpp`) by literally timing how long
+        /// a `YieldProcessor()`/PAUSE instruction takes on the *host* CPU,
+        /// dividing elapsed hi-res ticks by the yield count. The initial pass
+        /// runs on a background finalizer-thread callback and takes
+        /// `NsPerYieldMeasurementCount` = 8 samples of `DetermineMeasureDurationUs()`
+        /// = 1 or 4 microseconds each, so 8–32 us of actual spinning; thereafter
+        /// `MeasurementPeriodMs` = 4000 is a floor on how often it may
+        /// re-measure (one sample per refresh), not time spent spinning. That
+        /// measurement is about as host-dependent as a number gets, so it must
+        /// be mocked.
+        ///
+        /// See `EmulatedKernel.defaultOptimalMaxSpinWaitsPerSpinIteration` for
+        /// the default and how it was chosen, and
+        /// `EmulatedKernel.maxOptimalMaxSpinWaitsPerSpinIteration` for the
+        /// ceiling this field is validated against.
+        ///
+        /// Unlike `ProcessorCount`, nothing in CoreLib latches this into a
+        /// cctor-time static: `SpinWait.SpinOnce`/`LowLevelSpinWaiter` re-read
+        /// `Thread.OptimalMaxSpinWaitsPerSpinIteration` on every call, so a
+        /// host may freely change it via record-copy mid-run if it ever needs
+        /// to (though `KernelConfig` remains the normal way to set it, for
+        /// the same "fixed for the whole recorded run" reason as the other
+        /// kernel knobs).
+        OptimalMaxSpinWaitsPerSpinIteration : int
+        /// Which stream each guest-held `DIR*` names.
+        ///
+        /// An absent key is not a default and must never be read as one: it means
+        /// the guest passed a `DIR*` this kernel never issued, or one it has
+        /// already closed. Both are undefined behaviour on a real libc rather
+        /// than errors it reports, so `directoryStreamId` refuses loudly.
+        ///
+        /// This is PawPrint's choice of how to represent a stream to its guest —
+        /// the address of a native block, whose bytes are also the `d_name`
+        /// buffer each `readdir` refills — so it is separate from
+        /// `DirectoryStreams`, which is kernel state a POSIX simulator owns
+        /// whatever its client hands out. A second client could key its own
+        /// streams on anything at all.
+        ///
+        /// The two are maintained together by `withNewDirectoryStream` and
+        /// `withoutDirectoryStream`, and `checkInvariants` refuses a state in
+        /// which they disagree in either direction.
+        DirectoryStreamBlocks : Map<NativeMemoryBlockId, DirectoryStreamId>
+    }
+
+    // Forwarding members for everything `Process` now holds, so that this split
+    // costs no read site. They go when stage 6 moves the state to the library and
+    // call sites learn to say `kernel.Process.X`.
+    member this.FileDescriptors : FileDescriptorRegistry = this.Process.FileDescriptors
+    member this.OutputLog : ImmutableArray<OutputLogEntry> = this.Process.OutputLog
+    member this.Environment : Map<string, string> = this.Process.Environment
+    member this.CurrentDirectory : AbsoluteUnixPath = this.Process.CurrentDirectory
+    member this.CurrentDirectoryInode : InodeNumber = this.Process.CurrentDirectoryInode
+    member this.ProcessPath : AbsoluteUnixPath option = this.Process.ProcessPath
+
+    member this.DirectoryStreams : Map<DirectoryStreamId, DirectoryStream> =
+        this.Process.DirectoryStreams
+
+    member this.NextDirectoryStreamId : DirectoryStreamId =
+        this.Process.NextDirectoryStreamId
+
+    member this.UserId : uint32 = this.Process.UserId
+    member this.GroupId : uint32 = this.Process.GroupId
+    member this.Umask : PermissionBits = this.Process.Umask
+    member this.Signals : SignalState<ThreadId, SignalHandler> = this.Process.Signals
 
     // Forwarding members for everything `Machine` now holds, so that this split
     // costs no read site. They go when stage 6 moves `UnixMachineState` to the
@@ -1600,10 +1638,7 @@ module EmulatedKernel =
             LastPInvokeError = Map.empty
             LastSystemError = Map.empty
             NativeMemoryPool = NativeMemoryPool.empty
-            FileDescriptors = FileDescriptorRegistry.initial
-            DirectoryStreams = Map.empty
             DirectoryStreamBlocks = Map.empty
-            NextDirectoryStreamId = DirectoryStreamId 0L
             ParkedSocketWaits = Map.empty
             LowLevelMonitors = Map.empty
             NextLowLevelMonitorId = 1
@@ -1614,19 +1649,7 @@ module EmulatedKernel =
             SyncBlockSpuriousWakeup = SyncBlockSpuriousWakeupStrategy.Disabled
             ClockJitter = ClockJitterStrategy.Disabled
             StepCounter = 0L
-            OutputLog = ImmutableArray<OutputLogEntry>.Empty
-            Environment = defaultEnvironment
             OptimalMaxSpinWaitsPerSpinIteration = defaultOptimalMaxSpinWaitsPerSpinIteration
-            CurrentDirectory = defaultCurrentDirectory
-            // The default current directory is the root, which every filesystem
-            // has and no operation can remove, so the pair starts consistent
-            // whatever else a host goes on to set.
-            CurrentDirectoryInode = VirtualFileSystem.root filesystem
-            ProcessPath = defaultProcessPath
-            UserId = defaultUserId
-            GroupId = defaultGroupId
-            Umask = defaultUmask
-            Signals = SignalState.empty
             Machine =
                 {
                     Sockets = Map.empty
@@ -1651,6 +1674,24 @@ module EmulatedKernel =
                     FileSystem = filesystem
                     FileSystemType =
                         EmulatedFileSystemType.defaultFor (SimulatedUnixPlatform.flavour defaultUnixPlatform)
+                }
+            Process =
+                {
+                    FileDescriptors = FileDescriptorRegistry.initial
+                    DirectoryStreams = Map.empty
+                    NextDirectoryStreamId = DirectoryStreamId 0L
+                    OutputLog = ImmutableArray<OutputLogEntry>.Empty
+                    Environment = defaultEnvironment
+                    CurrentDirectory = defaultCurrentDirectory
+                    // The default current directory is the root, which every filesystem
+                    // has and no operation can remove, so the pair starts consistent
+                    // whatever else a host goes on to set.
+                    CurrentDirectoryInode = VirtualFileSystem.root filesystem
+                    ProcessPath = defaultProcessPath
+                    UserId = defaultUserId
+                    GroupId = defaultGroupId
+                    Umask = defaultUmask
+                    Signals = SignalState.empty
                 }
         }
 
@@ -1768,7 +1809,10 @@ module EmulatedKernel =
     /// defaulted; see `EmulatedKernel.ProcessPath`.
     let withProcessPath (path : AbsoluteUnixPath option) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
-            ProcessPath = path |> Option.map (AbsoluteUnixPath.assertValid "EmulatedKernel.ProcessPath")
+            Process =
+                { kernel.Process with
+                    ProcessPath = path |> Option.map (AbsoluteUnixPath.assertValid "EmulatedKernel.ProcessPath")
+                }
         }
 
     /// Set the filesystem the guest sees, and the directory the simulated
@@ -1811,24 +1855,33 @@ module EmulatedKernel =
         let inode, physical = currentDirectoryOf directory platform filesystem
 
         { kernel with
-            CurrentDirectory = physical
-            CurrentDirectoryInode = inode
             Machine =
                 { kernel.Machine with
                     FileSystem = filesystem
+                }
+            Process =
+                { kernel.Process with
+                    CurrentDirectory = physical
+                    CurrentDirectoryInode = inode
                 }
         }
 
     /// Set the effective user and group IDs the simulated process runs as.
     let withUmask (umask : PermissionBits) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
-            Umask = PermissionBits.assertValid "EmulatedKernel.Umask" umask
+            Process =
+                { kernel.Process with
+                    Umask = PermissionBits.assertValid "EmulatedKernel.Umask" umask
+                }
         }
 
     let withUserAndGroupId (userId : uint32) (groupId : uint32) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
-            UserId = userId
-            GroupId = groupId
+            Process =
+                { kernel.Process with
+                    UserId = userId
+                    GroupId = groupId
+                }
         }
 
     /// Set the virtual time charged per retired instruction. See
@@ -2617,7 +2670,10 @@ module EmulatedKernel =
             ||> Map.fold (fun acc key value -> Map.add key value acc)
 
         { kernel with
-            Environment = merged
+            Process =
+                { kernel.Process with
+                    Environment = merged
+                }
         }
 
     /// The socket `socketId` names.
@@ -2849,11 +2905,14 @@ module EmulatedKernel =
     /// (`order3.c` rows N, O, P).
     let signalSocketDataReady (socketId : SocketId) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
-            FileDescriptors =
-                FileDescriptorRegistry.signalSocketEventPorts
-                    (descriptionsNamingSocket socketId kernel)
-                    (Some (lazy (socketReadinessLevel socketId kernel)))
-                    kernel.FileDescriptors
+            Process =
+                { kernel.Process with
+                    FileDescriptors =
+                        FileDescriptorRegistry.signalSocketEventPorts
+                            (descriptionsNamingSocket socketId kernel)
+                            (Some (lazy (socketReadinessLevel socketId kernel)))
+                            kernel.FileDescriptors
+                }
         }
 
     /// A *state-change* wake on `socketId` — a connect resolving (completion
@@ -2864,11 +2923,14 @@ module EmulatedKernel =
     /// the filtering.
     let signalSocketStateChange (socketId : SocketId) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
-            FileDescriptors =
-                FileDescriptorRegistry.signalSocketEventPorts
-                    (descriptionsNamingSocket socketId kernel)
-                    None
-                    kernel.FileDescriptors
+            Process =
+                { kernel.Process with
+                    FileDescriptors =
+                        FileDescriptorRegistry.signalSocketEventPorts
+                            (descriptionsNamingSocket socketId kernel)
+                            None
+                            kernel.FileDescriptors
+                }
         }
 
     /// Each pending entry of the port, in delivery order, with what it would
@@ -2973,7 +3035,10 @@ module EmulatedKernel =
 
         delivered,
         { kernel with
-            FileDescriptors = FileDescriptorRegistry.setSocketEventReady portId surviving kernel.FileDescriptors
+            Process =
+                { kernel.Process with
+                    FileDescriptors = FileDescriptorRegistry.setSocketEventReady portId surviving kernel.FileDescriptors
+                }
         }
 
     /// `SystemNative_TryChangeSocketEventRegistration` past the wrapper's
@@ -2999,7 +3064,6 @@ module EmulatedKernel =
 
         let kernel =
             { kernel with
-                FileDescriptors = registry
                 Machine =
                     { kernel.Machine with
                         NextSocketEventRegistrationOrdinal =
@@ -3007,6 +3071,10 @@ module EmulatedKernel =
                             | SocketEventRegistrationChange.Add _ -> ordinal + 1L
                             | SocketEventRegistrationChange.Modify _
                             | SocketEventRegistrationChange.Remove -> ordinal
+                    }
+                Process =
+                    { kernel.Process with
+                        FileDescriptors = registry
                     }
             }
 
@@ -3052,7 +3120,11 @@ module EmulatedKernel =
         if readyNow && not alreadyPending then
             Ok
                 { kernel with
-                    FileDescriptors = FileDescriptorRegistry.appendSocketEventReady portId key kernel.FileDescriptors
+                    Process =
+                        { kernel.Process with
+                            FileDescriptors =
+                                FileDescriptorRegistry.appendSocketEventReady portId key kernel.FileDescriptors
+                        }
                 }
         else
             Ok kernel
@@ -3083,7 +3155,6 @@ module EmulatedKernel =
 
         fd,
         { kernel with
-            FileDescriptors = registry
             Machine =
                 { kernel.Machine with
                     Sockets =
@@ -3100,6 +3171,10 @@ module EmulatedKernel =
                             }
                             kernel.Sockets
                     NextSocketId = SocketId (raw + 1L)
+                }
+            Process =
+                { kernel.Process with
+                    FileDescriptors = registry
                 }
         }
 
@@ -3415,11 +3490,14 @@ module EmulatedKernel =
 
             let closed =
                 { kernel with
-                    FileDescriptors = registry
                     Machine =
                         { kernel.Machine with
                             Sockets = sockets
                             Connections = connections
+                        }
+                    Process =
+                        { kernel.Process with
+                            FileDescriptors = registry
                         }
                 }
 
@@ -3490,9 +3568,12 @@ module EmulatedKernel =
         let (DirectoryStreamId raw) = id
 
         { kernel with
-            DirectoryStreams = Map.add id stream kernel.DirectoryStreams
             DirectoryStreamBlocks = Map.add block id kernel.DirectoryStreamBlocks
-            NextDirectoryStreamId = DirectoryStreamId (raw + 1L)
+            Process =
+                { kernel.Process with
+                    DirectoryStreams = Map.add id stream kernel.DirectoryStreams
+                    NextDirectoryStreamId = DirectoryStreamId (raw + 1L)
+                }
         }
 
     /// Move a stream's cursor on, leaving everything else about it alone.
@@ -3509,13 +3590,16 @@ module EmulatedKernel =
         let stream = directoryStream block kernel
 
         { kernel with
-            DirectoryStreams =
-                Map.add
-                    id
-                    { stream with
-                        Cursor = cursor
-                    }
-                    kernel.DirectoryStreams
+            Process =
+                { kernel.Process with
+                    DirectoryStreams =
+                        Map.add
+                            id
+                            { stream with
+                                Cursor = cursor
+                            }
+                            kernel.DirectoryStreams
+                }
         }
 
     /// Forget a stream, which `SystemNative_CloseDir` does before closing the
@@ -3526,8 +3610,11 @@ module EmulatedKernel =
         let id = directoryStreamId block kernel
 
         { kernel with
-            DirectoryStreams = Map.remove id kernel.DirectoryStreams
             DirectoryStreamBlocks = Map.remove block kernel.DirectoryStreamBlocks
+            Process =
+                { kernel.Process with
+                    DirectoryStreams = Map.remove id kernel.DirectoryStreams
+                }
         }
 
     /// The connection `connectionId` names.
@@ -4342,7 +4429,6 @@ module EmulatedKernel =
 
             let kernel =
                 { kernel with
-                    FileDescriptors = registry
                     Machine =
                         { kernel.Machine with
                             Sockets =
@@ -4358,6 +4444,10 @@ module EmulatedKernel =
                                                 }
                                     }
                             NextSocketId = SocketId (rawAcceptedId + 1L)
+                        }
+                    Process =
+                        { kernel.Process with
+                            FileDescriptors = registry
                         }
                 }
 
