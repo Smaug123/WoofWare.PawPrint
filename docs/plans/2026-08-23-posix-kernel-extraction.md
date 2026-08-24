@@ -520,6 +520,15 @@ established once, at thread creation.
 guest's `DIR*`. The library mints an opaque id; the client decides how to
 represent it to its guest.
 
+**`TaskId` turned out to be unnecessary, and stage 6c dropped it.** The sketch
+above has the library mint a `TaskId` with the client maintaining a
+`ThreadId -> TaskId` mapping. There is a cheaper answer that this codebase had
+already found: make the table generic in the task name, exactly as
+`SignalState<'Task, 'Handler>` is. `UnixTaskTable`'s operations take a
+`Map<'Task, UnixTaskState>` and never learn what names a task, so no second
+identity and no mapping to maintain. `EmulatedKernel` keys the table by its own
+`ThreadId` and nothing in the library knows.
+
 ### What stays in PawPrint, and why
 
 Each of these fails the test "would a POSIX kernel have this?":

@@ -9,6 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="TestUnixTaskTable.fs" />
     <Compile Include="TestNoPawPrintReference.fs" />
     <Compile Include="TestUnixError.fs" />
     <Compile Include="TestUnixPath.fs" />

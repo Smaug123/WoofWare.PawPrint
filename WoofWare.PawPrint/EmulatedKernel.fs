@@ -521,47 +521,6 @@ type WaitHandleState =
 
 
 
-/// What the emulated kernel knows about one task — one scheduling entity, what
-/// `gettid(2)` names.
-///
-/// Every live thread has exactly one of these, minted at thread creation;
-/// `IlMachineState.checkInvariants` refuses a state where the two sets differ.
-/// That is what makes the record total: `Cpu` and `OsThreadId` were fields on
-/// `ThreadState` precisely because a `Map` has no truthful default for an absent
-/// key, and the answer is that there is never an absent key rather than that a
-/// default exists.
-///
-/// The per-thread errno is *not* here. On a real Unix errno lives in libc, not
-/// in the kernel: the kernel returns an error code and the syscall wrapper
-/// stores it. PawPrint's `LastSystemError` is that wrapper's slot — CoreCLR
-/// reuses it for Windows last-error too, and `NativeWaitHandle` really does put
-/// Win32 numbers in it — so it stays on `EmulatedKernel` with
-/// `LastPInvokeError`.
-type UnixTaskState =
-    {
-        /// The simulated logical processor this task is pinned to: what
-        /// `sched_getcpu(3)` reports while it runs.
-        ///
-        /// Assigned once, at thread creation, by `cpuForRotation`. PawPrint's
-        /// scheduler runs one task at a time and never migrates one between
-        /// cores, so "pinned to" and "currently executing on" coincide. This is
-        /// the seat a future core-aware scheduler would rewrite.
-        Cpu : CpuId
-        /// The OS thread identifier this task reports to the guest, and which
-        /// `System.Threading.Lock` uses as its owner identity.
-        ///
-        /// Assigned once, at thread creation, and never reused: real kernels
-        /// recycle thread ids, but a recycled one here would let a stale
-        /// `Lock._owningThreadId` be mistaken for a live owner.
-        OsThreadId : OsThreadId
-        /// The socket wait this task is blocked in, if it is blocked in one.
-        ///
-        /// A real kernel holds a blocked task's in-flight syscall arguments on
-        /// its stack; this is that, for the one syscall PawPrint parks in. The
-        /// re-entry consults it rather than the guest's argument cells, which
-        /// the guest may have written since.
-        ParkedSocketWait : ParkedSocketWait option
-    }
 
 
 
@@ -1908,12 +1867,7 @@ module EmulatedKernel =
     /// Total, and loudly partial rather than an option: every live thread has a
     /// task, minted when the thread was created, and a `ThreadId` naming none is
     /// an interpreter bug rather than anything a guest did.
-    let task (thread : ThreadId) (kernel : EmulatedKernel) : UnixTaskState =
-        match Map.tryFind thread kernel.Tasks with
-        | Some task -> task
-        | None ->
-            failwith
-                $"EmulatedKernel.task: %O{thread} names no task. Every thread is registered with `registerTask` when it is created, so this thread was built without one (this is an interpreter bug)."
+    let task (thread : ThreadId) (kernel : EmulatedKernel) : UnixTaskState = UnixTaskTable.get thread kernel.Tasks
 
     /// Mint the task for a newly-created thread.
     ///
@@ -1926,31 +1880,19 @@ module EmulatedKernel =
         (kernel : EmulatedKernel)
         : EmulatedKernel
         =
-        if Map.containsKey thread kernel.Tasks then
-            failwith
-                $"EmulatedKernel.registerTask: %O{thread} already names a task. A thread is created once, and re-registering would silently discard whatever the first registration recorded (this is an interpreter bug)."
-
         { kernel with
-            Tasks =
-                Map.add
-                    thread
-                    {
-                        Cpu = cpu
-                        OsThreadId = osThreadId
-                        ParkedSocketWait = None
-                    }
-                    kernel.Tasks
+            Tasks = UnixTaskTable.register thread cpu osThreadId kernel.Tasks
         }
 
-    /// The logical processor `thread` runs on, as `sched_getcpu` reports it.
-    let cpuOf (thread : ThreadId) (kernel : EmulatedKernel) : CpuId = (task thread kernel).Cpu
+    let cpuOf (thread : ThreadId) (kernel : EmulatedKernel) : CpuId = UnixTaskTable.cpuOf thread kernel.Tasks
 
     /// The OS thread id `thread` reports to the guest.
-    let osThreadIdOf (thread : ThreadId) (kernel : EmulatedKernel) : OsThreadId = (task thread kernel).OsThreadId
+    let osThreadIdOf (thread : ThreadId) (kernel : EmulatedKernel) : OsThreadId =
+        UnixTaskTable.osThreadIdOf thread kernel.Tasks
 
     /// The socket wait `thread` is blocked in, if any.
     let parkedSocketWaitFor (thread : ThreadId) (kernel : EmulatedKernel) : ParkedSocketWait option =
-        (task thread kernel).ParkedSocketWait
+        UnixTaskTable.parkedSocketWaitFor thread kernel.Tasks
 
     /// Record that `thread` has parked in a socket wait, or (with `None`) that
     /// it is no longer in one.
@@ -1960,16 +1902,8 @@ module EmulatedKernel =
         (kernel : EmulatedKernel)
         : EmulatedKernel
         =
-        let existing = task thread kernel
-
         { kernel with
-            Tasks =
-                Map.add
-                    thread
-                    { existing with
-                        ParkedSocketWait = wait
-                    }
-                    kernel.Tasks
+            Tasks = UnixTaskTable.withParkedSocketWait thread wait kernel.Tasks
         }
 
     /// The system error (errno on Unix, `GetLastError` on Windows) `thread` would read.
@@ -3852,19 +3786,12 @@ module EmulatedKernel =
     /// it catches a thread created without `registerTask`, and a task minted for
     /// a thread that was never created.
     let checkTaskInvariants (liveThreads : Set<ThreadId>) (kernel : EmulatedKernel) : EmulatedKernelDefect list =
-        let tasks = kernel.Tasks |> Map.toList |> List.map fst |> Set.ofList
+        // The comparison is the library's; naming the two failures is this
+        // kernel's, because `EmulatedKernelDefect` is PawPrint's vocabulary.
+        let missing, extra = UnixTaskTable.reconcile liveThreads kernel.Tasks
 
-        let missing =
-            Set.difference liveThreads tasks
-            |> Set.toList
-            |> List.map EmulatedKernelDefect.ThreadWithoutTask
-
-        let extra =
-            Set.difference tasks liveThreads
-            |> Set.toList
-            |> List.map EmulatedKernelDefect.TaskWithoutThread
-
-        missing @ extra
+        (missing |> List.map EmulatedKernelDefect.ThreadWithoutTask)
+        @ (extra |> List.map EmulatedKernelDefect.TaskWithoutThread)
 
     let checkInvariants (kernel : EmulatedKernel) : EmulatedKernelDefect list =
         let named =
