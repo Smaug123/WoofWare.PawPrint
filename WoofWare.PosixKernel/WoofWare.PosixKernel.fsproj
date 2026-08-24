@@ -12,6 +12,7 @@
         <RepositoryUrl>https://github.com/Smaug123/WoofWare.PawPrint</RepositoryUrl>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageReadmeFile>README.md</PackageReadmeFile>
+        <PackageIcon>light.png</PackageIcon>
         <PackageTags>posix;unix;simulation;deterministic;filesystem;sockets;fsharp;woofware</PackageTags>
     </PropertyGroup>
 
@@ -33,6 +34,7 @@
 
     <ItemGroup>
         <None Include="README.md" Pack="true" PackagePath="\" />
+        <None Include="logos\light.png" Pack="true" PackagePath="\" />
     </ItemGroup>
 
 </Project>
