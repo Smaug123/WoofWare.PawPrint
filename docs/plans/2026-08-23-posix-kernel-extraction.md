@@ -54,17 +54,16 @@ Two findings worth carrying forward:
   touching this block should assume the same.
 
 **What the spike also found, which the plan did not anticipate.** The boundary
-is real for *state* but not yet for *vocabulary*. Eleven leaf functions in the
-library convert to and from CoreCLR's PAL encodings rather than POSIX ones:
-`UnixError.toPal` / `palOfRawErrno` / `palOfRawErrnoUnder`,
-`Signal.ofPosixSignalEnum` / `toPosixSignalEnum`, `SocketEventInterest.ofBits`,
-`PollEvents.ofBits` / `toBits`, and `SimulatedUnixPlatform`'s
-`addressFamilyPalToPlatform` / `addressFamilyPlatformToPal` / `socketCreation`.
+is real for *state* but not yet for *vocabulary*. Seventeen definitions in the
+library speak CoreCLR's PAL encodings rather than POSIX ones; the exact set is
+`scripts/pal-residue-allowlist.txt`, and the `pal-residue` flake check keeps it
+exact.
 
 They are genuinely misplaced — a second, non-.NET client would have to learn
-`Interop.Sys.AddressFamily` to call `socketCreation` — and they are all leaves,
-consumed almost entirely by `Native/NativeSystemNative.fs` (49 call sites for
-`toPal` alone, 1–3 for each of the others). Stage 3.5 below moves them.
+`Interop.Sys.AddressFamily` to call `socketCreation` — and they are nearly all
+leaves, consumed almost entirely by `Native/NativeSystemNative.fs` (49 call
+sites for `toPal` alone, 1–3 for each of the others). Stage 7 moves them; stage
+3.5 below contains them until then.
 
 They were *not* fixed inside stages 1–3, deliberately: doing so would have meant
 non-rename edits to five moved files and re-pointing sixty call sites, which
@@ -72,11 +71,11 @@ would have destroyed the rename-only oracle that is the only reason a
 9,650-line diff is reviewable at all. The claim in `AGENTS.md` and the package
 README was corrected to state the gap instead.
 
-### Stage 3.5: move the PAL adapters out of the library — **needs a decision**
+### Stage 3.5: contain the PAL residue — **decided: (b), done**
 
 **Dependencies**: stage 3.
 
-The eleven are not homogeneous, which is what makes this a choice rather than a
+The residue is not homogeneous, which is what made this a choice rather than a
 chore:
 
 | group | functions | content |
@@ -88,9 +87,9 @@ chore:
 | **mixed** | `socketCreation` | the shim's three screens **and** this kernel's own declared protocol table, in one function |
 
 `PollEvents.ofBits`/`toBits` were on an earlier draft of this list and should not
-be: `POLLIN`…`POLLNVAL` are numerically identical in the PAL, in Linux's
-`poll.h` and in Darwin's, so those are POSIX values with a PAL-flavoured
-docstring. Fix the docstring, not the code.
+be: `POLLIN`…`POLLNVAL` are 0x01…0x20 in .NET's `Interop.Poll.Structs.cs`, in
+Linux's `<poll.h>` (measured, arm64 container) and in Darwin's, so those are
+POSIX values with a PAL-flavoured docstring. Fixed the docstring, not the code.
 
 **(a) Split every table at the boundary, now.** The library keeps the POSIX
 values; PawPrint gains a mirror table for the PAL ones. Immediate, and
@@ -116,17 +115,80 @@ warns about specifically.
 PAL numbering as data. Rejected: the PAL is one client's encoding, not an axis
 the library varies along, and nothing else would use the generality.
 
-**Recommendation: (b), plus a containment measure borrowed from (a).** Land a
-CI assertion *now* that pins the residue at exactly these eleven named
-functions — an allowlist that must shrink and may never grow. The failure mode
-here is accretion rather than any single function, so the assertion is worth
-more than the move, and it costs nothing that stage 7 would redo. But this is
-Patrick's call: (a) buys a true boundary sooner at the price of designing
-`socketCreation`'s split twice.
+**Chosen: (b), plus the containment measure borrowed from (a).** The move waits
+for stage 7, where `Syscall`/`SyscallOutcome` give the adapter a real interface
+to be designed against. What landed now is the assertion: an allowlist that
+pins the residue exactly, may shrink, and may not grow. The failure mode here is
+accretion rather than any single function, so the assertion is worth more than
+the move, and it costs nothing that stage 7 would redo.
 
-**Correctness oracle** (whichever is chosen): the full suite including `Guest`,
-unchanged; plus the allowlisted assertion above, mutation-tested by adding a
-twelfth PAL-named function and watching it go red.
+**Where it lives.** `scripts/check-pal-residue.py` plus
+`scripts/pal-residue-allowlist.txt`, run as the `pal-residue` flake check, which
+CI's existing `flake-check` job already covers. The alternative was an NUnit
+test in `WoofWare.PosixKernel.Test`, which would reach every developer's
+`dotnet test` rather than only `nix flake check` — but no test in this repo
+reads the source tree, and one that did would have to find it from
+`bin/Release/net10.0/`. A flake check is the idiom the repo already has for
+asserting a fact about the sources (`runtime-version-pin`), so this follows it.
+
+**How a definition is detected.** By its name (`toPal`, `palOfRawErrno`,
+`ofPosixSignalEnum`) or by its body mentioning a PAL encoding (`Pal.`, `.Pal`,
+`SocketEvents`, `PosixSignal`), with comments excluded so that a docstring
+citing the PAL to explain a POSIX value's provenance is not a hit. That is a
+proxy and not a proof — a PAL-encoded `int` is indistinguishable from any other
+`int` — but the PAL constants live in one `module private Pal`, so an adapter
+essentially cannot be written without tripping it.
+
+**The detector corrected the census in both directions**, which is the argument
+for having written it rather than curating the list by hand. Off: `PollEvents`,
+as above. On: `SimulatedUnixPlatform.isTcpProtocolType` (its parameter is
+literally named `palProtocolType`), the `module private Pal` constant table,
+`UnixErrorNumbering.Pal` and its two private constructors, the
+`palSuccess`/`palNonStandard` sentinels, and — found by Codex's review of the
+detector rather than by the detector — `UnixError.numbering`, the 200-row
+`Interop.Error` table itself, whose rows are numeric literals and so tripped no
+token. Eleven was an undercount reached by reading; seventeen is what is there.
+
+**What the detector deliberately does not see**, all found by Codex across two
+review rounds: PAL vocabulary arriving as a union case (`| ToPal of int`), a
+`static member`, or an instance member (`member _.ToPal`, whose name the parser
+does not extract); and a definition that merely delegates to an allowlisted one
+(`let managedError e = UnixError.toPal e`), which would need a transitive
+closure over call sites. It also sees one entry for a weak reason:
+`SocketEventInterest.ofBits` is recognised only by the word `SocketEvents` in
+its failure message, its body being bare hex masks — so rewording that message
+reports the entry stale rather than retiring the conversion. Measured, not
+assumed.
+
+None of these is closed. The library is module-and-`let` throughout, and this
+work stream finishes before other development resumes, so accretion would have
+to arrive in a form nothing here uses. What the check must not do is *claim*
+more than it enforces, so the script's header states each gap, and the stale
+message tells the reader that a vanished entry may mean a blind detector rather
+than a retired conversion.
+
+**Correctness oracle**: the full suite including `Guest`, unchanged; plus the
+check itself, mutation-tested. Seven mutants, all killed:
+
+| mutant | caught by |
+| --- | --- |
+| `palOfSomethingNew` | name rule |
+| `let isUdpProtocolType (t : int) : bool = t = Pal.PtUdp` | body rule — the mutant that matters, since a name-only rule would miss `socketCreation` too |
+| `convertToPalValue` | name rule, camelCase boundary |
+| a second errno table, `portable 0x10042 1` rows, no PAL token | table-row rule |
+| the same, in a new `WoofWare.PosixKernel/Sub/` | recursive scan |
+| an allowlisted function that stops speaking PAL | stale detection, so the list cannot rot |
+| unmutated control | passes |
+
+The second was also run end-to-end through `nix flake check`, to confirm the
+derivation fails rather than passing quietly.
+
+The last two mutants were added after the first battery passed, and both found
+real defects: the scan was non-recursive, and the name rule required `pal` at a
+word boundary, so a camelCase `toPalSomething` slipped through. The first
+battery had used a leading-`pal` name and so could not see it. Twelve name
+probes now pin the boundary in both directions (`Palette`, `principal`,
+`palindrome` must not match).
 
 One thing outstanding before the spike is fully closed: the host-equality suite
 has been verified from the far side of the boundary **on macOS only**. It

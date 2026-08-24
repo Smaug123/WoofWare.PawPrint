@@ -382,14 +382,18 @@ module ReadinessLevel =
             Err = level.Err
         }
 
-/// The PAL's `PollEvents` bits (`Interop.Poll.Structs.cs`), which are what a
-/// `SystemNative_Poll` caller asks for in `PollEvent.Events` and reads back in
-/// `PollEvent.TriggeredEvents`.
+/// `poll(2)`'s event bits: what a caller asks for in `pollfd.events` and reads
+/// back in `pollfd.revents`.
+///
+/// These are POSIX values rather than any one client's encoding. `POLLIN` …
+/// `POLLNVAL` are 0x01 … 0x20 in Linux's `<poll.h>`, in Darwin's, and in .NET's
+/// transcription of them (`Interop.Poll.Structs.cs`), so nothing is converted
+/// on the way in or out.
 ///
 /// A distinct alphabet from `SocketEventInterest`, and deliberately not shared
-/// with it: that one is the PAL's `SocketEvents` (`SA_READ` 0x01 …), these are
-/// the PAL's poll bits (`POLLIN` 0x01 …), and the two number different
-/// conditions with the same small integers.
+/// with it: that one is .NET's `SocketEvents` (`SA_READ` 0x01 …), these are
+/// poll's bits (`POLLIN` 0x01 …), and the two number different conditions with
+/// the same small integers.
 type PollEvents =
     {
         /// `POLLIN`, 0x01.
