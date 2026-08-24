@@ -601,6 +601,21 @@ type ParkedSocketWait =
 /// of one directory advance independently, and a `dup` of the descriptor would
 /// not share the cursor. Unobservable: `dirfd` appears nowhere in CoreLib or
 /// the PAL, so no managed caller can reach the descriptor to `dup` it.
+/// Identity of one open directory stream. Never guest-visible: a guest holds a
+/// `DIR*`, and what that pointer is made of is the client's business, not this
+/// kernel's.
+///
+/// Minted monotonically and never reused, as `SocketId` and `InodeNumber` are;
+/// `EmulatedKernel.NextDirectoryStreamId` is the counter, and `checkInvariants`
+/// refuses a table holding an id at or above it.
+[<Struct>]
+type DirectoryStreamId =
+    | DirectoryStreamId of value : int64
+
+    override this.ToString () : string =
+        match this with
+        | DirectoryStreamId value -> string<int64> value
+
 type DirectoryStream =
     {
         /// The descriptor `opendir` opened, closed again by `closedir`.
@@ -1087,8 +1102,9 @@ type EmulatedKernel =
         /// machine that produced it, and guests branch on what they find.
         FileSystem : VirtualFileSystem
         /// Every directory stream `SystemNative_OpenDir` has handed out and
-        /// `SystemNative_CloseDir` has not yet reclaimed, keyed by the native
-        /// block whose address the guest holds as its `DIR*`.
+        /// `SystemNative_CloseDir` has not yet reclaimed, under the id minted for
+        /// it. `DirectoryStreamBlocks` is what turns a guest's `DIR*` into one of
+        /// these ids.
         ///
         /// A stream is *not* a descriptor kind. Measured on both kernels,
         /// `opendir` consumes a file descriptor — an `open` either side of one
@@ -1098,12 +1114,33 @@ type EmulatedKernel =
         /// directory behave. What cannot live there is the rest: the cursor and
         /// the name buffer have no home in `File (inode, offset)`.
         ///
-        /// An absent key is not a default and must never be read as one: it
-        /// means the guest passed a `DIR*` this kernel never issued, or one it
-        /// has already closed. `directoryStream` says so loudly rather than
-        /// inventing an errno, the way `EmulatedKernel.connection` does for a
-        /// `ConnectionId`.
-        DirectoryStreams : Map<NativeMemoryBlockId, DirectoryStream>
+        /// An absent key is not a default and must never be read as one. Every id
+        /// `DirectoryStreamBlocks` names is present here — `checkInvariants`
+        /// enforces that as `DirectoryStreamBlockDangling` — so an absent one is
+        /// an interpreter bug rather than anything a guest did, and
+        /// `directoryStream` says so loudly rather than inventing an errno, the
+        /// way `EmulatedKernel.connection` does for a `ConnectionId`.
+        DirectoryStreams : Map<DirectoryStreamId, DirectoryStream>
+        /// Which stream each guest-held `DIR*` names.
+        ///
+        /// An absent key is not a default and must never be read as one: it means
+        /// the guest passed a `DIR*` this kernel never issued, or one it has
+        /// already closed. Both are undefined behaviour on a real libc rather
+        /// than errors it reports, so `directoryStreamId` refuses loudly.
+        ///
+        /// This is PawPrint's choice of how to represent a stream to its guest —
+        /// the address of a native block, whose bytes are also the `d_name`
+        /// buffer each `readdir` refills — so it is separate from
+        /// `DirectoryStreams`, which is kernel state a POSIX simulator owns
+        /// whatever its client hands out. A second client could key its own
+        /// streams on anything at all.
+        ///
+        /// The two are maintained together by `withNewDirectoryStream` and
+        /// `withoutDirectoryStream`, and `checkInvariants` refuses a state in
+        /// which they disagree in either direction.
+        DirectoryStreamBlocks : Map<NativeMemoryBlockId, DirectoryStreamId>
+        /// The id `withNewDirectoryStream` will hand out next.
+        NextDirectoryStreamId : DirectoryStreamId
         /// The filesystem `FileSystem` claims to be, which is the whole of what
         /// `SystemNative_GetFileSystemType` reports for a file on it.
         ///
@@ -1197,9 +1234,22 @@ type EmulatedKernelDefect =
     /// a stream — which is exactly why a violation is an interpreter bug rather
     /// than something a guest did. The next `readdir` would crash the
     /// interpreter, and this names the cause instead.
-    | DanglingDirectoryStreamInode of block : NativeMemoryBlockId * inode : InodeNumber
+    | DanglingDirectoryStreamInode of stream : DirectoryStreamId * inode : InodeNumber
     /// An open directory stream names an inode that is not a directory.
-    | DirectoryStreamIsNotADirectory of block : NativeMemoryBlockId * inode : InodeNumber
+    | DirectoryStreamIsNotADirectory of stream : DirectoryStreamId * inode : InodeNumber
+    /// The stream table holds an id at or above `NextDirectoryStreamId`, so the
+    /// next `opendir` would hand out an id that is already in use.
+    | NextDirectoryStreamIdNotFresh of nextDirectoryStreamId : DirectoryStreamId * existing : DirectoryStreamId
+    /// A guest-held `DIR*` names a stream the stream table does not hold, so the
+    /// next `readdir` through it would crash rather than enumerate.
+    | DirectoryStreamBlockDangling of block : NativeMemoryBlockId * stream : DirectoryStreamId
+    /// The stream table holds a stream no `DIR*` names, so nothing can ever
+    /// read or close it and the directory it pins is held for the run.
+    | UnreachableDirectoryStream of stream : DirectoryStreamId
+    /// More than one `DIR*` names one stream, so closing either would take the
+    /// stream out from under the others. Two `opendir`s owe the guest
+    /// independent cursors, so this is never a state a stream table should hold.
+    | DirectoryStreamNamedTwice of stream : DirectoryStreamId * blocks : NativeMemoryBlockId list
     /// `CurrentDirectory` is not the path that reaches `CurrentDirectoryInode`,
     /// so `getcwd` would report a directory the process is not in.
     ///
@@ -1507,6 +1557,8 @@ module EmulatedKernel =
             NativeMemoryPool = NativeMemoryPool.empty
             FileDescriptors = FileDescriptorRegistry.initial
             DirectoryStreams = Map.empty
+            DirectoryStreamBlocks = Map.empty
+            NextDirectoryStreamId = DirectoryStreamId 0L
             Sockets = Map.empty
             Connections = Map.empty
             NextConnectionId = ConnectionId 0L
@@ -3303,55 +3355,85 @@ module EmulatedKernel =
 
             Ok reaped
 
-    /// The stream `block` names.
+    /// The stream the `DIR*` backed by `block` names.
     ///
     /// Total, and loudly partial rather than an option: every `DIR*` a guest can
     /// legally hold came out of `SystemNative_OpenDir` and has not been closed,
     /// and passing anything else to `readdir`/`closedir` is undefined behaviour
     /// on a real libc rather than an error it reports. Inventing EBADF here
     /// would answer a question no kernel answers.
-    let directoryStream (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : DirectoryStream =
-        match Map.tryFind block kernel.DirectoryStreams with
-        | Some stream -> stream
+    let directoryStreamId (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : DirectoryStreamId =
+        match Map.tryFind block kernel.DirectoryStreamBlocks with
+        | Some id -> id
         | None ->
             failwith
-                $"EmulatedKernel.directoryStream: %O{block} names no open directory stream. The guest passed a DIR* this kernel never handed out, or one it has already closed — both are undefined behaviour on a real libc, which is why there is no errno to report."
+                $"EmulatedKernel.directoryStreamId: %O{block} names no open directory stream. The guest passed a DIR* this kernel never handed out, or one it has already closed — both are undefined behaviour on a real libc, which is why there is no errno to report."
 
-    /// Record a newly-opened stream against the block whose address is its
-    /// `DIR*`.
-    let withDirectoryStream
+    /// The stream `block` names.
+    ///
+    /// Total, and loudly partial for the same reason as `directoryStreamId`.
+    let directoryStream (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : DirectoryStream =
+        let id = directoryStreamId block kernel
+
+        match Map.tryFind id kernel.DirectoryStreams with
+        | Some stream -> stream
+        | None ->
+            // Not the guest's doing: `DirectoryStreamBlocks` named this id, so
+            // the two maps have drifted apart. `checkInvariants` reports the
+            // same state as `DirectoryStreamBlockDangling`.
+            failwith
+                $"EmulatedKernel.directoryStream: %O{block} names directory stream %O{id}, which the stream table does not hold. This is an interpreter bug: the two maps are maintained together."
+
+    /// Record a newly-opened stream, minting its id and binding `block` — the
+    /// native block whose address the guest holds as its `DIR*` — to it.
+    let withNewDirectoryStream
         (block : NativeMemoryBlockId)
         (stream : DirectoryStream)
         (kernel : EmulatedKernel)
         : EmulatedKernel
         =
+        let id = kernel.NextDirectoryStreamId
+        let (DirectoryStreamId raw) = id
+
         { kernel with
-            DirectoryStreams = Map.add block stream kernel.DirectoryStreams
+            DirectoryStreams = Map.add id stream kernel.DirectoryStreams
+            DirectoryStreamBlocks = Map.add block id kernel.DirectoryStreamBlocks
+            NextDirectoryStreamId = DirectoryStreamId (raw + 1L)
         }
 
     /// Move a stream's cursor on, leaving everything else about it alone.
+    // Updates the stream in place under its existing id rather than going
+    // through `withNewDirectoryStream`: a `readdir` must not mint a second id
+    // for a stream that is already open.
     let withDirectoryCursor
         (block : NativeMemoryBlockId)
         (cursor : DirectoryCursor)
         (kernel : EmulatedKernel)
         : EmulatedKernel
         =
+        let id = directoryStreamId block kernel
         let stream = directoryStream block kernel
 
-        withDirectoryStream
-            block
-            { stream with
-                Cursor = cursor
-            }
-            kernel
+        { kernel with
+            DirectoryStreams =
+                Map.add
+                    id
+                    { stream with
+                        Cursor = cursor
+                    }
+                    kernel.DirectoryStreams
+        }
 
     /// Forget a stream, which `SystemNative_CloseDir` does before closing the
     /// descriptor under it — that order matters, because the close is what
     /// reaps an orphaned directory and this entry is one of the things holding
     /// it.
     let withoutDirectoryStream (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : EmulatedKernel =
+        let id = directoryStreamId block kernel
+
         { kernel with
-            DirectoryStreams = Map.remove block kernel.DirectoryStreams
+            DirectoryStreams = Map.remove id kernel.DirectoryStreams
+            DirectoryStreamBlocks = Map.remove block kernel.DirectoryStreamBlocks
         }
 
     /// The connection `connectionId` names.
@@ -4233,14 +4315,58 @@ module EmulatedKernel =
         let danglingStreams =
             kernel.DirectoryStreams
             |> Map.toList
-            |> List.choose (fun (block, stream) ->
+            |> List.choose (fun (id, stream) ->
                 match VirtualFileSystem.tryGetContent stream.Inode kernel.FileSystem with
                 | Some (InodeContent.Directory _) -> None
                 | Some (InodeContent.RegularFile _)
                 | Some (InodeContent.Symlink _) ->
-                    Some (EmulatedKernelDefect.DirectoryStreamIsNotADirectory (block, stream.Inode))
-                | None -> Some (EmulatedKernelDefect.DanglingDirectoryStreamInode (block, stream.Inode))
+                    Some (EmulatedKernelDefect.DirectoryStreamIsNotADirectory (id, stream.Inode))
+                | None -> Some (EmulatedKernelDefect.DanglingDirectoryStreamInode (id, stream.Inode))
             )
+
+        let directoryStreamFreshness =
+            kernel.DirectoryStreams
+            |> Map.toList
+            |> List.map fst
+            |> List.filter (fun id -> id >= kernel.NextDirectoryStreamId)
+            |> List.map (fun id ->
+                EmulatedKernelDefect.NextDirectoryStreamIdNotFresh (kernel.NextDirectoryStreamId, id)
+            )
+
+        // Both directions: a `DIR*` naming a stream that is gone would crash the
+        // next `readdir`, and a stream no `DIR*` names can never be closed, so it
+        // pins its directory through `heldInodes` for the rest of the run.
+        let directoryStreamBlocks =
+            let named = kernel.DirectoryStreamBlocks |> Map.toList |> List.map snd |> Set.ofList
+
+            let dangling =
+                kernel.DirectoryStreamBlocks
+                |> Map.toList
+                |> List.filter (fun (_, id) -> not (Map.containsKey id kernel.DirectoryStreams))
+                |> List.map EmulatedKernelDefect.DirectoryStreamBlockDangling
+
+            let unreachable =
+                kernel.DirectoryStreams
+                |> Map.toList
+                |> List.map fst
+                |> List.filter (fun id -> not (Set.contains id named))
+                |> List.map EmulatedKernelDefect.UnreachableDirectoryStream
+
+            // Injectivity, which neither check above can see: `named` is a set, so
+            // two blocks naming one stream collapse into one element and both
+            // directions come back clean. `withoutDirectoryStream` removes the
+            // stream by id and the block by name, so a second block naming that id
+            // would be left dangling by a close it had nothing to do with.
+            let namedTwice =
+                kernel.DirectoryStreamBlocks
+                |> Map.toList
+                |> List.groupBy snd
+                |> List.filter (fun (_, bindings) -> List.length bindings > 1)
+                |> List.map (fun (id, bindings) ->
+                    EmulatedKernelDefect.DirectoryStreamNamedTwice (id, bindings |> List.map fst |> List.sort)
+                )
+
+            dangling @ unreachable @ namedTwice
 
         let currentDirectory =
             match VirtualFileSystem.tryGetContent kernel.CurrentDirectoryInode kernel.FileSystem with
@@ -4375,6 +4501,8 @@ module EmulatedKernel =
         @ freshness
         @ danglingInodes
         @ danglingStreams
+        @ directoryStreamFreshness
+        @ directoryStreamBlocks
         @ currentDirectory
         @ danglingConnections
         @ orphanConnections

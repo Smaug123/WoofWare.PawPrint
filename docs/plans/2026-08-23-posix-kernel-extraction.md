@@ -891,7 +891,7 @@ this stage:
    fields, the socket table;
 2. process: `Environment`, `CurrentDirectory`, `CurrentDirectoryInode`,
    `ProcessPath`, `Umask`, `UserId`, `GroupId`, `FileDescriptors`,
-   `DirectoryStreams` (**see below — do not rekey in this step**), `Signals`,
+   `DirectoryStreams` (**rekeyed already; move it as-is**), `Signals`,
    `OutputLog`;
 3. tasks: `LastSystemError`, `ParkedSocketWaits`, and `Cpu`/`OsThreadId`
    pulled off `ThreadState`.
@@ -899,7 +899,46 @@ this stage:
 `KernelConfig` splits along the same lines but keeps its current surface, so
 `HostConfig` and every test registration are untouched.
 
-**Open question, to settle before starting: `DirectoryStreams`' key.** This
+**Settled, and done: `DirectoryStreams`' key** — option (ii), as its own step
+before the migration. `DirectoryStreamId` is minted from a
+`NextDirectoryStreamId` counter on `EmulatedKernel`, exactly as `SocketId` and
+`InodeNumber` are, and `DirectoryStreamBlocks : Map<NativeMemoryBlockId,
+DirectoryStreamId>` is the client's representation of a `DIR*`. That second map
+is a PawPrint field and stays behind when `DirectoryStreams` moves in stage 6,
+which is the whole point: the stream table is kernel state a POSIX simulator
+owns whatever its client hands out, and `NativeMemoryBlockId` never crosses.
+
+`DirectoryStreamId` is declared beside `DirectoryStream` in `EmulatedKernel.fs`
+rather than in the library today. The rule being enforced is "no PawPrint
+identity inside the library", which is already satisfied; publishing a type into
+the package before anything there uses it would be placement ahead of need, and
+the two move together in stage 6 like every other field.
+
+The general setter is gone. `withNewDirectoryStream` mints, and
+`withDirectoryCursor` updates under the existing id — so "a `readdir` mints a
+second id, leaving the old stream unreachable and its directory pinned for the
+run" is not a mistake the API can express. Four invariants are new:
+`NextDirectoryStreamIdNotFresh`; `DirectoryStreamBlockDangling` /
+`UnreachableDirectoryStream` for the two directions in which the maps can
+disagree; and `DirectoryStreamNamedTwice`, because `DirectoryStreamBlocks` must
+be *injective* and neither of the other two can see that — the unreachable check
+reduces the ids to a set, in which two blocks naming one stream collapse to one
+element and both directions come back clean. Codex found that; measured before
+fixing, `checkInvariants` accepted the state, and closing either block would then
+have taken the stream out from under the other.
+
+**Correctness oracle, met**: the full suite including `Guest`, plus a new
+`TestDirectoryStreamId` fixture — thirteen rows and a property that drives an
+arbitrary sequence of opens and closes and asserts the maps agree at the end.
+Mutation-tested, seven mutants, all killed: forgetting either map on close
+(two), a counter that does not advance, a cursor advance routed through the open
+path, and each of the three new invariant checks computed but never reported.
+Three of them were killed by exactly one row each, which is the row written for
+them.
+
+The original option set follows, for the record.
+
+**The question was: `DirectoryStreams`' key.** This
 stage's whole safety property is "forwarding accessors, so no call site
 changes", and rekeying `Map<NativeMemoryBlockId, DirectoryStream>` to a minted
 `DirectoryStreamId` contradicts it — `Native/NativeSystemNative.fs` keys those
@@ -918,9 +957,9 @@ stream-id mapping, which is design work smuggled into a mechanical stage.
   when stage 8 moves `opendir`. A directory stream *is* kernel state, so this
   is a deferral rather than an answer, but it is the smallest step.
 
-Recommendation: **(ii)**. The mapping has to exist eventually, the handlers are
-few, and doing it separately keeps "no call site changes" true of the migration
-itself — which is the only reason a 40-field move is reviewable.
+Chosen: **(ii)**. The mapping has to exist eventually, the handlers are few, and
+doing it separately keeps "no call site changes" true of the migration itself —
+which is the only reason a 40-field move is reviewable.
 
 **Correctness oracle**:
 * The full suite after each of the three sub-steps.

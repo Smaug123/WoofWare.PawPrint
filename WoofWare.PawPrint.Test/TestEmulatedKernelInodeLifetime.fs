@@ -445,7 +445,7 @@ module TestEmulatedKernelInodeLifetime =
         { kernel with
             NativeMemoryPool = pool
         }
-        |> EmulatedKernel.withDirectoryStream
+        |> EmulatedKernel.withNewDirectoryStream
             block
             {
                 Fd = fd
