@@ -221,24 +221,28 @@ module SocketFuzz =
 
             let kernel =
                 { state.Kernel with
-                    Sockets =
-                        Map.add
-                            socketId
-                            { sock with
-                                Binding =
-                                    Some
-                                        {
-                                            Endpoint = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
-                                            LockedAddress = None
-                                        }
-                                Phase =
-                                    SocketPhase.Listening
-                                        {
-                                            Backlog = 8
-                                            Queue = []
-                                        }
-                            }
-                            state.Kernel.Sockets
+                    Machine =
+                        { state.Kernel.Machine with
+                            Sockets =
+                                Map.add
+                                    socketId
+                                    { sock with
+                                        Binding =
+                                            Some
+                                                {
+                                                    Endpoint =
+                                                        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+                                                    LockedAddress = None
+                                                }
+                                        Phase =
+                                            SocketPhase.Listening
+                                                {
+                                                    Backlog = 8
+                                                    Queue = []
+                                                }
+                                    }
+                                    state.Kernel.Sockets
+                        }
                 }
 
             "ok",

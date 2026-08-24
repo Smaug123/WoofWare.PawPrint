@@ -39,7 +39,10 @@ module TestMonotonicTimestamp =
     /// only production writer.
     let private kernelWith (clockMs : int64) : EmulatedKernel =
         { EmulatedKernel.initial with
-            VirtualClockTicks = clockMs
+            Machine =
+                { EmulatedKernel.initial.Machine with
+                    VirtualClockTicks = clockMs
+                }
         }
 
     let private int64s = ArbMap.defaults |> ArbMap.arbitrary<int64>
@@ -145,8 +148,13 @@ module TestMonotonicTimestamp =
             let clockMs = intoRange maxClockTicks clockSeed
 
             let shifted =
-                { kernelWith clockMs with
-                    WallClockEpochMs = epochMs
+                let baseKernel = kernelWith clockMs
+
+                { baseKernel with
+                    Machine =
+                        { baseKernel.Machine with
+                            WallClockEpochMs = epochMs
+                        }
                 }
 
             EmulatedKernel.monotonicTimestampNanos shifted = EmulatedKernel.monotonicTimestampNanos (kernelWith clockMs)
@@ -254,7 +262,10 @@ module TestMonotonicTimestamp =
         // faults instead.
         let atHorizon =
             { EmulatedKernel.initial with
-                VirtualClockTicks = EmulatedKernel.maxMonotonicTimestampClockTicks
+                Machine =
+                    { EmulatedKernel.initial.Machine with
+                        VirtualClockTicks = EmulatedKernel.maxMonotonicTimestampClockTicks
+                    }
             }
 
         // The horizon itself is legal: a reading can still be derived from it.
@@ -273,7 +284,10 @@ module TestMonotonicTimestamp =
         // `max`, say). Cheap to assert at the writer.
         let kernel =
             { EmulatedKernel.initial with
-                VirtualClockTicks = 5_000L
+                Machine =
+                    { EmulatedKernel.initial.Machine with
+                        VirtualClockTicks = 5_000L
+                    }
             }
 
         EmulatedKernel.withVirtualClockTicks 5_000L kernel
@@ -293,7 +307,10 @@ module TestMonotonicTimestamp =
         // narrower range than its own doc comment claims.
         let negativeKernel =
             { EmulatedKernel.initial with
-                VirtualClockTicks = -20_000L
+                Machine =
+                    { EmulatedKernel.initial.Machine with
+                        VirtualClockTicks = -20_000L
+                    }
             }
 
         let forwardsButNegative () =

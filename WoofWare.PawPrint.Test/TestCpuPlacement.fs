@@ -154,7 +154,10 @@ module TestCpuPlacement =
 
             let kernel =
                 { EmulatedKernel.initial with
-                    ProcessorCount = count
+                    Machine =
+                        { EmulatedKernel.initial.Machine with
+                            ProcessorCount = count
+                        }
                 }
 
             not (succeeds (fun () -> EmulatedKernel.cpuForRotation (rotationFrom rotationSeed) kernel))
@@ -273,9 +276,12 @@ module TestCpuPlacement =
 
             let busy =
                 { plain with
-                    VirtualClockTicks = 1234L
                     StepCounter = 5678L
-                    NonCryptoRandomState = 0xDEADBEEFUL
+                    Machine =
+                        { plain.Machine with
+                            VirtualClockTicks = 1234L
+                            NonCryptoRandomState = 0xDEADBEEFUL
+                        }
                 }
 
             EmulatedKernel.cpuForRotation rotation plain = EmulatedKernel.cpuForRotation rotation busy

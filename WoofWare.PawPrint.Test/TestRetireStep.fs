@@ -42,9 +42,12 @@ module TestRetireStep =
 
     let private kernelWith (clock : int64) (cost : int64) (step : int64) : EmulatedKernel =
         { EmulatedKernel.initial with
-            VirtualClockTicks = clock
             InstructionCostTicks = cost
             StepCounter = step
+            Machine =
+                { EmulatedKernel.initial.Machine with
+                    VirtualClockTicks = clock
+                }
         }
 
     /// Clock and cost both in the ordinary range: `retireStep` must produce exactly the kernel the
@@ -111,7 +114,10 @@ module TestRetireStep =
         |> shouldEqual
             { kernel with
                 StepCounter = 12L
-                VirtualClockTicks = 507L
+                Machine =
+                    { kernel.Machine with
+                        VirtualClockTicks = 507L
+                    }
             }
 
     /// A cost of zero freezes the clock and a negative one rewinds it. A record-copy can write

@@ -739,7 +739,10 @@ module NativeSystemNative =
         | Ok filesystem ->
             state.MapKernel (fun kernel ->
                 { kernel with
-                    FileSystem = filesystem
+                    Machine =
+                        { kernel.Machine with
+                            FileSystem = filesystem
+                        }
                 }
             )
         | Error (FileWriteRefusal.WouldExceedMaxLength (offset, count)) ->
@@ -772,7 +775,10 @@ module NativeSystemNative =
         | Ok filesystem ->
             state.MapKernel (fun kernel ->
                 { kernel with
-                    FileSystem = filesystem
+                    Machine =
+                        { kernel.Machine with
+                            FileSystem = filesystem
+                        }
                 }
             )
         | Error (FileTruncationRefusal.WouldExceedMaxLength length) ->
@@ -2741,8 +2747,11 @@ module NativeSystemNative =
 
                 state.MapKernel (fun kernel ->
                     { kernel with
-                        FileSystem = filesystem
                         FileDescriptors = registry
+                        Machine =
+                            { kernel.Machine with
+                                FileSystem = filesystem
+                            }
                     }
                 )
                 |> IlMachineState.pushToEvalStack'
@@ -2956,7 +2965,10 @@ module NativeSystemNative =
 
             state.MapKernel (fun kernel ->
                 { kernel with
-                    FileSystem = filesystem
+                    Machine =
+                        { kernel.Machine with
+                            FileSystem = filesystem
+                        }
                 }
             )
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
@@ -3037,7 +3049,10 @@ module NativeSystemNative =
 
             state.MapKernel (fun kernel ->
                 { kernel with
-                    FileSystem = filesystem
+                    Machine =
+                        { kernel.Machine with
+                            FileSystem = filesystem
+                        }
                 }
                 // The name is gone; whether the *inode* is depends on whether
                 // any other name or any open descriptor still holds it. A real
@@ -3121,7 +3136,10 @@ module NativeSystemNative =
 
             state.MapKernel (fun kernel ->
                 { kernel with
-                    FileSystem = filesystem
+                    Machine =
+                        { kernel.Machine with
+                            FileSystem = filesystem
+                        }
                 }
                 // A directory has only ever had the one name, so this was the
                 // last -- but a descriptor or the current directory may still
@@ -5217,7 +5235,10 @@ module NativeSystemNative =
             let state =
                 state.MapKernel (fun kernel ->
                     { kernel with
-                        Sockets = Map.add socketId socket kernel.Sockets
+                        Machine =
+                            { kernel.Machine with
+                                Sockets = Map.add socketId socket kernel.Sockets
+                            }
                     }
                 )
 
@@ -5519,13 +5540,16 @@ module NativeSystemNative =
             // advanced the cursor, and that advance is part of this bind.
             state.MapKernel (fun _ ->
                 { kernel with
-                    Sockets =
-                        Map.add
-                            socketId
-                            { socket with
-                                Binding = Some bound
-                            }
-                            kernel.Sockets
+                    Machine =
+                        { kernel.Machine with
+                            Sockets =
+                                Map.add
+                                    socketId
+                                    { socket with
+                                        Binding = Some bound
+                                    }
+                                    kernel.Sockets
+                        }
                 }
             )
             |> complete UnixError.palSuccess
@@ -5662,14 +5686,17 @@ module NativeSystemNative =
 
             state.MapKernel (fun _ ->
                 { kernel with
-                    Sockets =
-                        Map.add
-                            socketId
-                            { socket with
-                                Binding = Some bound
-                                Phase = listenPhase
-                            }
-                            kernel.Sockets
+                    Machine =
+                        { kernel.Machine with
+                            Sockets =
+                                Map.add
+                                    socketId
+                                    { socket with
+                                        Binding = Some bound
+                                        Phase = listenPhase
+                                    }
+                                    kernel.Sockets
+                        }
                 }
             )
             |> complete UnixError.palSuccess
@@ -7339,7 +7366,10 @@ module NativeSystemNative =
 
             state.MapKernel (fun kernel ->
                 { kernel with
-                    NonCryptoRandomState = newPrngState
+                    Machine =
+                        { kernel.Machine with
+                            NonCryptoRandomState = newPrngState
+                        }
                 }
             )
             |> NativeHandlerResult.completed
@@ -7372,7 +7402,10 @@ module NativeSystemNative =
             let state =
                 state.MapKernel (fun kernel ->
                     { kernel with
-                        CryptoRandomState = newPrngState
+                        Machine =
+                            { kernel.Machine with
+                                CryptoRandomState = newPrngState
+                            }
                     }
                 )
 

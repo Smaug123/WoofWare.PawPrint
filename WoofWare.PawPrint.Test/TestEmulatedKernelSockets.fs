@@ -60,8 +60,11 @@ module TestEmulatedKernelSockets =
 
         { EmulatedKernel.initial with
             FileDescriptors = registry
-            Sockets = sockets |> List.map (fun (id, socket) -> SocketId id, socket) |> Map.ofList
-            NextSocketId = SocketId nextSocketId
+            Machine =
+                { EmulatedKernel.initial.Machine with
+                    Sockets = sockets |> List.map (fun (id, socket) -> SocketId id, socket) |> Map.ofList
+                    NextSocketId = SocketId nextSocketId
+                }
         }
 
     let private someSocket : SocketDescription =
@@ -434,7 +437,10 @@ module TestEmulatedKernelSockets =
 
                             kernel <-
                                 { kernel with
-                                    FileSystem = filesystem
+                                    Machine =
+                                        { kernel.Machine with
+                                            FileSystem = filesystem
+                                        }
                                 }
                                 |> EmulatedKernel.forgetIfUnheld inode
 
@@ -553,16 +559,19 @@ module TestEmulatedKernelSockets =
             let kernel = listening [ ConnectionId 0L ]
 
             { kernel with
-                Connections =
-                    Map.ofList
-                        [
-                            ConnectionId 0L,
-                            {
-                                ClientAddress = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 5000us
-                                ServerAddress = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 6000us
-                            }
-                        ]
-                NextConnectionId = ConnectionId 1L
+                Machine =
+                    { kernel.Machine with
+                        Connections =
+                            Map.ofList
+                                [
+                                    ConnectionId 0L,
+                                    {
+                                        ClientAddress = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 5000us
+                                        ServerAddress = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 6000us
+                                    }
+                                ]
+                        NextConnectionId = ConnectionId 1L
+                    }
             }
 
         EmulatedKernel.socketReadinessLevel (SocketId 0L) queued
@@ -813,8 +822,13 @@ module TestEmulatedKernelSockets =
     [<Test>]
     let ``a non-blocking Darwin establishment is Established at once`` () : unit =
         let kernel =
-            { listenerAndClients 8 5000us 1 with
-                UnixPlatform = SimulatedUnixPlatform.macOsArm64
+            let baseKernel = listenerAndClients 8 5000us 1
+
+            { baseKernel with
+                Machine =
+                    { baseKernel.Machine with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
             }
 
         let outcome, kernel = connect (SocketId 1L) true (loopback 5000us) kernel
@@ -859,8 +873,13 @@ module TestEmulatedKernelSockets =
 
         // Darwin: the delivery latches the socket dead.
         let darwin =
-            { fresh () with
-                UnixPlatform = SimulatedUnixPlatform.macOsArm64
+            let baseKernel = fresh ()
+
+            { baseKernel with
+                Machine =
+                    { baseKernel.Machine with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
             }
 
         let _, kernel = connect (SocketId 0L) true (loopback 9999us) darwin
@@ -881,18 +900,21 @@ module TestEmulatedKernelSockets =
 
         let kernel =
             { kernel with
-                Sockets =
-                    Map.add
-                        (SocketId 1L)
-                        { someSocket with
-                            Binding =
-                                Some
-                                    {
-                                        Endpoint = loopback 4444us
-                                        LockedAddress = None
-                                    }
-                        }
-                        kernel.Sockets
+                Machine =
+                    { kernel.Machine with
+                        Sockets =
+                            Map.add
+                                (SocketId 1L)
+                                { someSocket with
+                                    Binding =
+                                        Some
+                                            {
+                                                Endpoint = loopback 4444us
+                                                LockedAddress = None
+                                            }
+                                }
+                                kernel.Sockets
+                    }
             }
 
         let _, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
@@ -923,8 +945,13 @@ module TestEmulatedKernelSockets =
     [<Test>]
     let ``the accept queue admits exactly backlog on Darwin`` () : unit =
         let kernel =
-            { listenerAndClients 1 5000us 2 with
-                UnixPlatform = SimulatedUnixPlatform.macOsArm64
+            let baseKernel = listenerAndClients 1 5000us 2
+
+            { baseKernel with
+                Machine =
+                    { baseKernel.Machine with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
             }
 
         let _, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
@@ -981,7 +1008,10 @@ module TestEmulatedKernelSockets =
 
         let kernel =
             { kernel with
-                NextSocketEventRegistrationOrdinal = 1L
+                Machine =
+                    { kernel.Machine with
+                        NextSocketEventRegistrationOrdinal = 1L
+                    }
             }
 
         EmulatedKernel.hasDeliverableSocketEvents (OpenFileDescriptionId 50L) kernel
@@ -1016,13 +1046,16 @@ module TestEmulatedKernelSockets =
 
         let kernel =
             { kernel with
-                Sockets =
-                    kernel.Sockets
-                    |> Map.add
-                        (SocketId 0L)
-                        { EmulatedKernel.socket (SocketId 0L) kernel with
-                            ReuseAddress = true
-                        }
+                Machine =
+                    { kernel.Machine with
+                        Sockets =
+                            kernel.Sockets
+                            |> Map.add
+                                (SocketId 0L)
+                                { EmulatedKernel.socket (SocketId 0L) kernel with
+                                    ReuseAddress = true
+                                }
+                    }
             }
 
         let _, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
@@ -1184,7 +1217,10 @@ module TestEmulatedKernelSockets =
         // Darwin refuses the dissolve instead.
         let darwin =
             { kernel with
-                UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                Machine =
+                    { kernel.Machine with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
             }
 
         let outcome, _ =
@@ -1239,16 +1275,19 @@ module TestEmulatedKernelSockets =
 
         let kernel =
             { kernel with
-                Connections =
-                    Map.ofList
-                        [
-                            ConnectionId 2L,
-                            {
-                                ClientAddress = loopback 1us
-                                ServerAddress = loopback 2us
-                            }
-                        ]
-                NextConnectionId = ConnectionId 1L
+                Machine =
+                    { kernel.Machine with
+                        Connections =
+                            Map.ofList
+                                [
+                                    ConnectionId 2L,
+                                    {
+                                        ClientAddress = loopback 1us
+                                        ServerAddress = loopback 2us
+                                    }
+                                ]
+                        NextConnectionId = ConnectionId 1L
+                    }
             }
 
         EmulatedKernel.checkInvariants kernel
@@ -1302,16 +1341,19 @@ module TestEmulatedKernelSockets =
 
         let kernel =
             { kernel with
-                Connections =
-                    Map.ofList
-                        [
-                            ConnectionId 0L,
-                            {
-                                ClientAddress = loopback 1us
-                                ServerAddress = loopback 2us
-                            }
-                        ]
-                NextConnectionId = ConnectionId 1L
+                Machine =
+                    { kernel.Machine with
+                        Connections =
+                            Map.ofList
+                                [
+                                    ConnectionId 0L,
+                                    {
+                                        ClientAddress = loopback 1us
+                                        ServerAddress = loopback 2us
+                                    }
+                                ]
+                        NextConnectionId = ConnectionId 1L
+                    }
             }
 
         EmulatedKernel.checkInvariants kernel
@@ -1326,18 +1368,22 @@ module TestEmulatedKernelSockets =
 
         let kernel =
             { kernel with
-                Sockets =
-                    Map.add
-                        (SocketId 0L)
-                        { EmulatedKernel.socket (SocketId 0L) kernel with
-                            Binding =
-                                Some
-                                    {
-                                        Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us
-                                        LockedAddress = None
-                                    }
-                        }
-                        kernel.Sockets
+                Machine =
+                    { kernel.Machine with
+                        Sockets =
+                            Map.add
+                                (SocketId 0L)
+                                { EmulatedKernel.socket (SocketId 0L) kernel with
+                                    Binding =
+                                        Some
+                                            {
+                                                Endpoint =
+                                                    InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us
+                                                LockedAddress = None
+                                            }
+                                }
+                                kernel.Sockets
+                    }
             }
 
         let outcome, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
@@ -1362,8 +1408,13 @@ module TestEmulatedKernelSockets =
     let ``a Linux backlog clamps to somaxconn before the plus-one`` () : unit =
         for backlog in [ System.Int32.MaxValue ; -1 ] do
             let kernel =
-                { listenerAndClients backlog 5000us 5 with
-                    SoMaxConn = 3
+                let baseKernel = listenerAndClients backlog 5000us 5
+
+                { baseKernel with
+                    Machine =
+                        { baseKernel.Machine with
+                            SoMaxConn = 3
+                        }
                 }
 
             // Capacity is somaxconn + 1 = 4: four connects land, the fifth
@@ -1387,9 +1438,14 @@ module TestEmulatedKernelSockets =
     let ``a Darwin backlog clamps to somaxconn with no plus-one`` () : unit =
         for backlog in [ System.Int32.MaxValue ; 0 ; -1 ] do
             let kernel =
-                { listenerAndClients backlog 5000us 4 with
-                    UnixPlatform = SimulatedUnixPlatform.macOsArm64
-                    SoMaxConn = 3
+                let baseKernel = listenerAndClients backlog 5000us 4
+
+                { baseKernel with
+                    Machine =
+                        { baseKernel.Machine with
+                            UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                            SoMaxConn = 3
+                        }
                 }
 
             // Capacity is exactly somaxconn = 3.
@@ -1417,18 +1473,22 @@ module TestEmulatedKernelSockets =
 
         let kernel =
             { kernel with
-                Sockets =
-                    Map.add
-                        (SocketId 1L)
-                        { someSocket with
-                            Binding =
-                                Some
-                                    {
-                                        Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 4444us
-                                        LockedAddress = None
-                                    }
-                        }
-                        kernel.Sockets
+                Machine =
+                    { kernel.Machine with
+                        Sockets =
+                            Map.add
+                                (SocketId 1L)
+                                { someSocket with
+                                    Binding =
+                                        Some
+                                            {
+                                                Endpoint =
+                                                    InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 4444us
+                                                LockedAddress = None
+                                            }
+                                }
+                                kernel.Sockets
+                    }
             }
 
         let outcome, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
@@ -1458,8 +1518,13 @@ module TestEmulatedKernelSockets =
     [<Test>]
     let ``a maximal somaxconn does not overflow the Linux capacity`` () : unit =
         let kernel =
-            { listenerAndClients System.Int32.MaxValue 5000us 1 with
-                SoMaxConn = System.Int32.MaxValue
+            let baseKernel = listenerAndClients System.Int32.MaxValue 5000us 1
+
+            { baseKernel with
+                Machine =
+                    { baseKernel.Machine with
+                        SoMaxConn = System.Int32.MaxValue
+                    }
             }
 
         let outcome, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
@@ -1498,18 +1563,21 @@ module TestEmulatedKernelSockets =
 
                 let kernel =
                     { kernel with
-                        UnixPlatform =
-                            if darwin then
-                                SimulatedUnixPlatform.macOsArm64
-                            else
-                                kernel.UnixPlatform
-                        Sockets =
-                            Map.add
-                                (SocketId 0L)
-                                { someSocket with
-                                    Binding = preBinding
-                                }
-                                kernel.Sockets
+                        Machine =
+                            { kernel.Machine with
+                                UnixPlatform =
+                                    if darwin then
+                                        SimulatedUnixPlatform.macOsArm64
+                                    else
+                                        kernel.UnixPlatform
+                                Sockets =
+                                    Map.add
+                                        (SocketId 0L)
+                                        { someSocket with
+                                            Binding = preBinding
+                                        }
+                                        kernel.Sockets
+                            }
                     }
 
                 let outcome, kernel = connect (SocketId 0L) true (loopback 9999us) kernel
@@ -1576,9 +1644,12 @@ module TestEmulatedKernelSockets =
                     2L
 
             { kernel with
-                UnixPlatform = SimulatedUnixPlatform.macOsArm64
-                Connections = connections
-                NextConnectionId = ConnectionId 1L
+                Machine =
+                    { kernel.Machine with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        Connections = connections
+                        NextConnectionId = ConnectionId 1L
+                    }
             }
 
         // Bound and idle: the measured dropped-SYN refusal.
@@ -1633,28 +1704,32 @@ module TestEmulatedKernelSockets =
 
         let kernel =
             { kernel with
-                Sockets =
-                    kernel.Sockets
-                    |> Map.add
-                        (SocketId 0L)
-                        { EmulatedKernel.socket (SocketId 0L) kernel with
-                            Binding =
-                                Some
-                                    {
-                                        Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us
-                                        LockedAddress = Some InternetEndpoint.WildcardAddress
-                                    }
-                        }
-                    |> Map.add
-                        (SocketId 1L)
-                        { someSocket with
-                            Binding =
-                                Some
-                                    {
-                                        Endpoint = loopback 5000us
-                                        LockedAddress = Some InternetEndpoint.LoopbackAddress
-                                    }
-                        }
+                Machine =
+                    { kernel.Machine with
+                        Sockets =
+                            kernel.Sockets
+                            |> Map.add
+                                (SocketId 0L)
+                                { EmulatedKernel.socket (SocketId 0L) kernel with
+                                    Binding =
+                                        Some
+                                            {
+                                                Endpoint =
+                                                    InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us
+                                                LockedAddress = Some InternetEndpoint.WildcardAddress
+                                            }
+                                }
+                            |> Map.add
+                                (SocketId 1L)
+                                { someSocket with
+                                    Binding =
+                                        Some
+                                            {
+                                                Endpoint = loopback 5000us
+                                                LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                            }
+                                }
+                    }
             }
 
         let e =
@@ -1668,18 +1743,21 @@ module TestEmulatedKernelSockets =
 
         let boundAt (socketId : int64) (kernel : EmulatedKernel) =
             { kernel with
-                Sockets =
-                    Map.add
-                        (SocketId socketId)
-                        { someSocket with
-                            Binding =
-                                Some
-                                    {
-                                        Endpoint = loopback 4444us
-                                        LockedAddress = Some InternetEndpoint.LoopbackAddress
-                                    }
-                        }
-                        kernel.Sockets
+                Machine =
+                    { kernel.Machine with
+                        Sockets =
+                            Map.add
+                                (SocketId socketId)
+                                { someSocket with
+                                    Binding =
+                                        Some
+                                            {
+                                                Endpoint = loopback 4444us
+                                                LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                            }
+                                }
+                                kernel.Sockets
+                    }
             }
 
         let kernel = kernel |> boundAt 1L |> boundAt 2L
@@ -1698,9 +1776,14 @@ module TestEmulatedKernelSockets =
     [<Test>]
     let ``the implicit bind skips a port whose tuple a live connection occupies`` () : unit =
         let kernel =
-            { listenerAndClients 8 5000us 2 with
-                EphemeralPortRange = 40000us, 40001us
-                NextEphemeralPort = 40000us
+            let baseKernel = listenerAndClients 8 5000us 2
+
+            { baseKernel with
+                Machine =
+                    { baseKernel.Machine with
+                        EphemeralPortRange = 40000us, 40001us
+                        NextEphemeralPort = 40000us
+                    }
             }
 
         let _, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
@@ -1722,7 +1805,10 @@ module TestEmulatedKernelSockets =
         // land: the hazard is precisely the allocator re-offering it.
         let kernel =
             { kernel with
-                NextEphemeralPort = 40000us
+                Machine =
+                    { kernel.Machine with
+                        NextEphemeralPort = 40000us
+                    }
             }
 
         // The next client must take the other port rather than colliding.
@@ -1741,31 +1827,34 @@ module TestEmulatedKernelSockets =
 
         let kernel =
             { kernel with
-                Sockets =
-                    Map.add
-                        (SocketId 1L)
-                        { someSocket with
-                            Binding =
-                                Some
+                Machine =
+                    { kernel.Machine with
+                        Sockets =
+                            Map.add
+                                (SocketId 1L)
+                                { someSocket with
+                                    Binding =
+                                        Some
+                                            {
+                                                Endpoint = loopback 4444us
+                                                LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                            }
+                                }
+                                kernel.Sockets
+                        Connections =
+                            Map.ofList
+                                [
+                                    ConnectionId 0L,
                                     {
-                                        Endpoint = loopback 4444us
-                                        LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                        // The existing connection ran the other way:
+                                        // from the listener's endpoint to the
+                                        // client's.
+                                        ClientAddress = loopback 5000us
+                                        ServerAddress = loopback 4444us
                                     }
-                        }
-                        kernel.Sockets
-                Connections =
-                    Map.ofList
-                        [
-                            ConnectionId 0L,
-                            {
-                                // The existing connection ran the other way:
-                                // from the listener's endpoint to the
-                                // client's.
-                                ClientAddress = loopback 5000us
-                                ServerAddress = loopback 4444us
-                            }
-                        ]
-                NextConnectionId = ConnectionId 1L
+                                ]
+                        NextConnectionId = ConnectionId 1L
+                    }
             }
 
         let e =

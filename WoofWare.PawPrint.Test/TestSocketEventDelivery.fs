@@ -59,24 +59,27 @@ module TestSocketEventDelivery =
 
         let kernel =
             { kernel with
-                Sockets =
-                    kernel.Sockets
-                    |> Map.add
-                        socketId
-                        { EmulatedKernel.socket socketId kernel with
-                            Binding =
-                                Some
-                                    {
-                                        Endpoint = loopback port
-                                        LockedAddress = None
-                                    }
-                            Phase =
-                                SocketPhase.Listening
-                                    {
-                                        Backlog = 8
-                                        Queue = []
-                                    }
-                        }
+                Machine =
+                    { kernel.Machine with
+                        Sockets =
+                            kernel.Sockets
+                            |> Map.add
+                                socketId
+                                { EmulatedKernel.socket socketId kernel with
+                                    Binding =
+                                        Some
+                                            {
+                                                Endpoint = loopback port
+                                                LockedAddress = None
+                                            }
+                                    Phase =
+                                        SocketPhase.Listening
+                                            {
+                                                Backlog = 8
+                                                Queue = []
+                                            }
+                                }
+                    }
             }
 
         fd, socketId, kernel
@@ -964,7 +967,10 @@ module TestSocketEventDelivery =
 
         let kernel =
             { kernel with
-                UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                Machine =
+                    { kernel.Machine with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
             }
 
         let exc =
@@ -1021,7 +1027,10 @@ module TestSocketEventDelivery =
                             }
                         )
                         kernel.FileDescriptors
-                NextSocketEventRegistrationOrdinal = counter
+                Machine =
+                    { kernel.Machine with
+                        NextSocketEventRegistrationOrdinal = counter
+                    }
             }
 
         EmulatedKernel.checkInvariants (withOrdinals 0L 5L 2L)

@@ -880,10 +880,36 @@ they are about the dispatcher thread, which is PawPrint's.
 **Implements**: decision 4.
 
 Do the state split *before* moving it, so that every step is compiler-checked
-against the existing 4,450-test suite. Add `Unix : UnixSystem` to
-`EmulatedKernel` and migrate the fields one group at a time, keeping the old
-`EmulatedKernel` accessors as forwarding members so no call site changes in
-this stage:
+against the existing 4,450-test suite. Add a nested record to `EmulatedKernel`
+and migrate the fields one group at a time, keeping the old accessors as
+forwarding members:
+
+**Corrected while doing sub-step 1: "no call site changes" is true of reads
+only.** Nineteen forwarding members left every read site untouched, exactly as
+planned — but F# cannot forward a record *update*, so `{ kernel with
+FileSystem = fs }` has to become `{ kernel with Machine = { kernel.Machine with
+FileSystem = fs } }`. The compiler named 124 such sites; they collapse to 76
+update expressions.
+
+Converting every write to a per-field setter first, as a separate prior step —
+the shape the `DirectoryStreams` re-key used — would have preserved the property
+literally. Measured, and rejected: **35 of the 72** kernel-update expressions set
+fields from more than one group at once, so per-field setters would fragment one
+record copy into a pipeline, and the later sub-steps would fragment it again.
+Nesting inline keeps each expression to one outer copy and one inner copy.
+
+Two smaller deviations, both to keep the diff mechanical:
+
+* The field is `Machine : UnixMachineState` directly on `EmulatedKernel`, not
+  `Unix : UnixSystem`. A `UnixSystem` wrapper holding one field would make every
+  write three levels deep for no gain; it can be introduced once all three parts
+  exist, as a change internal to this file.
+* `UnixMachineState` holds all nineteen fields flat. The target shape's
+  `UnixClock` / `UnixEntropy` / `UnixNetworkConfiguration` / `SocketTable`
+  grouping is a separate concern from relocation, and once the forwarding members
+  exist it costs no call site to introduce.
+
+The groups:
 
 1. machine: `FileSystem`, `FileSystemType`, `UnixPlatform`,
    `VirtualClockTicks`, `WallClockEpochMs`, `NonCryptoRandomState`,
