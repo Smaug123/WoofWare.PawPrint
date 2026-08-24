@@ -623,26 +623,6 @@ type UnixTaskState =
         ParkedSocketWait : ParkedSocketWait option
     }
 
-/// Aggregates the slice of `IlMachineState` that models host-kernel /
-/// syscall-emulation state: the per-thread last-error registers, the native
-/// heap pool backing `Marshal.AllocHGlobal`, the Unix file-descriptor table,
-/// the `LowLevelMonitor` registry, and monotonic ID counters for opaque
-/// kernel handles. These are the pieces of interpreter state that exist
-/// because PawPrint refuses to use the host kernel; they don't belong in the
-/// CIL execution model proper.
-///
-/// Pulling them into a sub-record keeps `IlMachineState` from sprawling and
-/// makes it possible to swap the kernel implementation (e.g. for a Windows-
-/// shaped emulation) without disturbing the rest of the state model.
-/// One open directory stream: what `opendir(3)` returns and `readdir`/`closedir`
-/// consume.
-///
-/// Held in `EmulatedKernel.DirectoryStreams` rather than on the descriptor,
-/// because libc keeps a `DIR`'s buffer and position in userspace and the
-/// descriptor carries only the kernel's. The consequence is that two `opendir`s
-/// of one directory advance independently, and a `dup` of the descriptor would
-/// not share the cursor. Unobservable: `dirfd` appears nowhere in CoreLib or
-/// the PAL, so no managed caller can reach the descriptor to `dup` it.
 /// Identity of one open directory stream. Never guest-visible: a guest holds a
 /// `DIR*`, and what that pointer is made of is the client's business, not this
 /// kernel's.
@@ -658,6 +638,15 @@ type DirectoryStreamId =
         match this with
         | DirectoryStreamId value -> string<int64> value
 
+/// One open directory stream: what `opendir(3)` returns and `readdir`/`closedir`
+/// consume.
+///
+/// Held in `EmulatedKernel.DirectoryStreams` rather than on the descriptor,
+/// because libc keeps a `DIR`'s buffer and position in userspace and the
+/// descriptor carries only the kernel's. The consequence is that two `opendir`s
+/// of one directory advance independently, and a `dup` of the descriptor would
+/// not share the cursor. Unobservable: `dirfd` appears nowhere in CoreLib or
+/// the PAL, so no managed caller can reach the descriptor to `dup` it.
 type DirectoryStream =
     {
         /// The descriptor `opendir` opened, closed again by `closedir`.
@@ -1093,6 +1082,17 @@ type UnixProcessState =
         Signals : SignalState<ThreadId, SignalHandler>
     }
 
+/// Aggregates the slice of `IlMachineState` that models host-kernel /
+/// syscall-emulation state: the per-thread last-error registers, the native
+/// heap pool backing `Marshal.AllocHGlobal`, the CoreCLR PAL's synchronisation
+/// objects, and the three records holding what a POSIX kernel owns — `Machine`,
+/// `Process` and `Tasks`. These are the pieces of interpreter state that exist
+/// because PawPrint refuses to use the host kernel; they don't belong in the
+/// CIL execution model proper.
+///
+/// Pulling them into a sub-record keeps `IlMachineState` from sprawling and
+/// makes it possible to swap the kernel implementation (e.g. for a Windows-
+/// shaped emulation) without disturbing the rest of the state model.
 type EmulatedKernel =
     {
         /// See `UnixProcessState`.
