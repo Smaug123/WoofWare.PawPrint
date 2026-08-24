@@ -1621,9 +1621,7 @@ module VirtualFileSystem =
         | Some (InodeContent.RegularFile _)
         | Some (InodeContent.Symlink _) -> Error UnixError.ENOTDIR
         | Some (InodeContent.Directory content) ->
-            if
-                Map.containsKey (FileName.assertValid "VirtualFileSystem: directory entry name" name) content.Entries
-            then
+            if Map.containsKey name content.Entries then
                 Error UnixError.EEXIST
             else
                 Ok ()
@@ -1638,11 +1636,6 @@ module VirtualFileSystem =
         (vfs : VirtualFileSystem)
         : Result<VirtualFileSystem, UnixError>
         =
-        // Every builder binds through here, so this is the one place a name
-        // enters the graph — and the one place a forged `default(FileName)` can
-        // be stopped before it becomes an entry no path could ever name.
-        let name = FileName.assertValid "VirtualFileSystem: directory entry name" name
-
         match Map.tryFind directory vfs.Inodes with
         | None -> Error UnixError.ENOENT
         | Some ({
@@ -1830,11 +1823,6 @@ module VirtualFileSystem =
         (vfs : VirtualFileSystem)
         : Result<InodeNumber * VirtualFileSystem, UnixError>
         =
-        // As in `bind`, so that a forged `default(FileName)` is stopped at the
-        // one chokepoint through which a directory ever loses an entry rather
-        // than silently matching nothing.
-        let name = FileName.assertValid "VirtualFileSystem: directory entry name" name
-
         match Map.tryFind directory vfs.Inodes with
         | None -> Error UnixError.ENOENT
         | Some {
@@ -2040,14 +2028,6 @@ module VirtualFileSystem =
         (vfs : VirtualFileSystem)
         : Result<RenameOutcome * VirtualFileSystem, UnixError>
         =
-        // As in `bind` and `unbind`, so that a forged `default(FileName)` is
-        // stopped before it becomes an entry no path could name.
-        let sourceName =
-            FileName.assertValid "VirtualFileSystem: directory entry name" sourceName
-
-        let destinationName =
-            FileName.assertValid "VirtualFileSystem: directory entry name" destinationName
-
         match tryGetDirectory sourceDirectory vfs, tryGet sourceDirectory vfs with
         | None, Some _ -> Error UnixError.ENOTDIR
         | None, None -> Error UnixError.ENOENT
