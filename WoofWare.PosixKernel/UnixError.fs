@@ -1,44 +1,42 @@
 namespace WoofWare.PosixKernel
 
-/// Whose `<errno.h>` numbering a run reports, for the errors where the Unixes
-/// PawPrint models disagree.
+/// <summary>
+/// Describes which platform's errno convention the kernel is using.
+/// </summary>
 ///
-/// Not `SimulatedUnixPlatform` itself: that lives in `EmulatedKernel`, which
-/// compiles later. `SimulatedUnixPlatform.rawErrnoNumbering` maps platform to
-/// numbering, and is total: every simulated platform states which Unix it is.
+/// <remarks>
+/// This exists because <c>&lt;errno.h&gt;</c> can be different on different platforms.
+/// </remarks>
+/// <remarks>
+/// Interpreted by <c>SimulatedUnixPlatform.rawErrnoNumbering</c>.
+/// </remarks>
 [<RequireQualifiedAccess>]
 type RawErrnoNumbering =
     | Linux
     | Darwin
 
-/// How portable a raw `<errno.h>` number is across the Unixes PawPrint models.
+/// <summary>
+/// How portable a given raw <c>&lt;errno.h&gt;</c> number is, across the modelled Unixes.
+/// </summary>
 ///
-/// Raw errno *numbers* are assigned per-platform, and Linux and Darwin agree
-/// only on the range they both inherited from V7 Unix: values 1-34 name the
-/// same error on both, with exactly one exception, 11, where the two are
-/// transposed (`EAGAIN` is 11 on Linux and 35 on Darwin; `EDEADLK` is 35 on
-/// Linux and 11 on Darwin). Everything from 35 up was numbered independently,
-/// so e.g. 39 is `ENOTEMPTY` on Linux and `EDESTADDRREQ` on Darwin.
-///
-/// A caller that knows which numbering its kernel reports gets an answer for
-/// both classes (`toRawErrnoUnder`); one that does not is answered only for the
-/// portable class, and told so loudly for the rest.
+/// <remarks>
+/// Raw errno numbers are assigned per-platform, and Linux and Darwin agree
+/// only on the range they both inherited from V7 Unix.
+/// For example, the values 1-34 name the same error on both (except 11, which is <c>EAGAIN</c> on Linux and <c>EDEADLK</c> on Darwin),
+/// but everything from 35 up was numbered independently (so e.g. 39 is <c>ENOTEMPTY</c> on Linux and <c>EDESTADDRREQ</c> on Darwin).
+/// </remarks>
 [<RequireQualifiedAccess>]
 type RawErrnoPortability =
     /// This error has the same raw number on every Unix PawPrint models, so the
     /// emulated kernel can report it without first deciding which platform it is
     /// impersonating.
     | Portable of value : int
-    /// This error's raw number differs between the Unixes PawPrint models, so
-    /// it can only be reported once something says which one is being
-    /// impersonated. Carries both candidates so the choice is a table lookup.
+    /// This error's raw number is not consistent among PawPrint's modelled Unixes,
+    /// so it can't be interpreted as an int without knowing what platform is being
+    /// simulated.
     ///
     /// E.g. `ELOOP`: raw 40 is `ELOOP` on Linux but `EMSGSIZE` on Darwin, and
-    /// raw 62 is `ELOOP` on Darwin but `ETIME` on Linux, so either choice would
-    /// silently rename a different error on the other platform. A case landing
-    /// here keeps its PAL value (platform-independent, and what CoreLib
-    /// actually switches on); its raw number is answerable only through
-    /// `toRawErrnoUnder`, and `toRawErrno` refuses.
+    /// raw 62 is `ELOOP` on Darwin but `ETIME` on Linux.
     | PlatformDependent of linux : int * darwin : int
 
 /// The errors PawPrint's emulated `SystemNative_*` shims can report, as a closed

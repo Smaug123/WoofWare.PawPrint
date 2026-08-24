@@ -1664,7 +1664,7 @@ module EmulatedKernel =
     /// defaulted; see `EmulatedKernel.ProcessPath`.
     let withProcessPath (path : AbsoluteUnixPath option) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
-            ProcessPath = path |> Option.map (AbsoluteUnixPath.assertValid "EmulatedKernel.ProcessPath")
+            ProcessPath = path
         }
 
     /// Set the filesystem the guest sees, and the directory the simulated
@@ -1699,9 +1699,6 @@ module EmulatedKernel =
         =
         let platform =
             SimulatedUnixPlatform.assertValid "EmulatedKernel.UnixPlatform" platform
-
-        let directory =
-            AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory" directory
 
         let filesystem = FileSystemSeed.toVirtualFileSystem createdAt seed
         let inode, physical = currentDirectoryOf directory platform filesystem

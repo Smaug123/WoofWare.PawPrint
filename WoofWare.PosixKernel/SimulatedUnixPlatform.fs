@@ -1,25 +1,19 @@
 namespace WoofWare.PosixKernel
 
-/// Which Unix a simulated platform *is*.
-///
-/// The axis along which the systems PawPrint models differ, and the
-/// only one: everything else it needs to know about a platform — the errno
-/// numbering, a symlink's permission bits, whether `stat` reports a creation
-/// time — is a consequence of this rather than an independent choice. Those
-/// are measured properties of real systems (the symlink mode was probed; the
-/// birth time is a `#if` in `pal_io.c`), so they are derived here from the
-/// flavour rather than supplied by a host, which could only invent them.
-///
-/// A third Unix therefore arrives as a case *here*, and every derivation below
-/// stops compiling until whoever adds it has looked each fact up. That is the
-/// same compile-time fork `RawErrnoPortability` makes, and for the same reason.
+/// <summary>
+/// Which Unix we are simulating.
+/// </summary>
+/// <remarks>
+/// This is essentially a bundling of the many different ways various Unix platforms can differ.
+/// (For example, it includes errno numbering, permission bit handling on symlinks, whether <c>stat</c>
+/// reports creation times, etc.)
+/// </remarks>
 [<RequireQualifiedAccess>]
 type SimulatedUnixFlavour =
-    /// Linux, whose `<errno.h>` numbering, always-0o777 symlink modes and
-    /// birth-time-less `stat` PawPrint follows.
+    /// <summary>Linux.</summary>
     | Linux
-    /// Darwin, i.e. macOS. `uname -r` reports the *Darwin* kernel
-    /// release rather than the macOS product version.
+    /// <summary>Darwin, i.e. macOS.</summary>
+    /// <remarks><c>uname -r</c> reports the Darwin kernel release rather than the macOS product version.</remarks>
     | Darwin
 
 /// The filesystem an emulated mount claims to be, as `fstatfs(2)` reports it.

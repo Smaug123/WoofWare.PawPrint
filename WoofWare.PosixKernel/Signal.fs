@@ -1,20 +1,15 @@
 namespace WoofWare.PosixKernel
 
-/// A POSIX signal recognised by the simulator. The named cases cover the
-/// signals the .NET BCL surfaces via the `PosixSignal` managed enum plus the
-/// common ones the runtime emits at process-startup (SIGPIPE, SIGABRT,
-/// SIGUSR1/2). Anything we don't have a case for is carried as `Other` along
-/// with the raw managed `PosixSignal` value so callers retain identity
-/// information across PawPrint even when we don't model the signal's
-/// semantics.
+/// <summary>
+/// A POSIX signal recognised by the simulator.
+/// </summary>
+/// <remarks>
+/// The named cases cover some specific signals we've had reason to handle explicitly.
+/// Use the <c>Other</c> case for anything we've missed.
 ///
-/// This type intentionally does NOT mention native (POSIX) signal
-/// numbers, which are platform-specific. The native↔domain mapping lives at
-/// the P/Invoke boundary and is platform-aware; the domain type is the
-/// platform-neutral identity that the rest of the simulator works with.
-/// PawPrint always uses the Linux signal-number table, regardless of host
-/// OS — see `Signal.toLinuxSigno`. This keeps the simulator deterministic
-/// across hosts.
+/// This type intentionally does not model an assignment of signals to numbers, which are platform-specific.
+/// Use <c>Signal.toLinuxSigno</c> to render a number for Linux; we haven't yet done this for Darwin.
+/// </remarks>
 type Signal =
     | SIGHUP
     | SIGINT
@@ -36,32 +31,22 @@ type Signal =
     /// directly). Two `Other` values are equal iff their raw values match.
     | Other of rawSignal : int
 
+/// <summary>
 /// The kernel-level default action for a POSIX signal when no managed
-/// handler claims it. PawPrint mirrors the POSIX 1003.1 categories rather
-/// than collapsing everything to "terminate vs. no-op", so callers that
-/// want to render the disposition (e.g. trace output) retain the source
-/// information. `SystemNative_HandleNonCanceledPosixSignal` treats
-/// `Ignore`, `Stop`, and `Continue` all as no-ops in the dispatcher path
-/// — the runtime cannot stop or continue itself, and Ignore is literally
-/// nothing to do — but the classification is preserved for consumers that
-/// render or assert the disposition.
+/// handler claims it.
+/// </summary>
+/// <remarks>
+/// Mirrors the POSIX 1003.1 categories.
+/// </remarks>
 [<RequireQualifiedAccess>]
 type DefaultDisposition =
-    /// Kernel default is to terminate the process. PawPrint does not yet
-    /// model signal-driven process termination; the dispatcher path that
-    /// reaches this disposition fails loudly until a follow-up slice
-    /// wires it through to a `RunOutcome`.
+    /// Specify that the kernel default is to terminate the process.
     | Terminate
-    /// Kernel default is to ignore the signal entirely. No state changes.
+    /// Specify that the kernel default is to ignore the signal entirely. No state changes.
     | Ignore
-    /// Kernel default is to suspend (stop) the process. PawPrint cannot
-    /// stop its own simulator threads from the inside, so this is a
-    /// no-op for `SystemNative_HandleNonCanceledPosixSignal` purposes —
-    /// the kernel-level distinction from `Ignore` is preserved so a
-    /// trace/UI consumer can still tell the two apart.
+    /// Specify that the kernel default is to suspend (stop) the process.
     | Stop
-    /// Kernel default is to resume a stopped process. No state changes;
-    /// PawPrint has nothing to resume.
+    /// Specify that the kernel default is to resume a stopped process.
     | Continue
 
 [<RequireQualifiedAccess>]
