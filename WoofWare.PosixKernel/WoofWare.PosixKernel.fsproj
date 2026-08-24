@@ -52,8 +52,13 @@
                           Lines="$([MSBuild]::Escape($([System.Text.RegularExpressions.Regex]::Replace($([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)/README.md')), '&lt;picture&gt;[\s\S]*?&lt;/picture&gt;\s*', ''))))"
                           Overwrite="true"
                           WriteOnlyWhenDifferent="true" />
-        <!-- Any other raw HTML would reach nuget.org as escaped tags, so refuse to pack it. -->
-        <Error Condition="$([System.Text.RegularExpressions.Regex]::IsMatch($([System.IO.File]::ReadAllText('$(_NuGetReadmeDir)/README.md')), '(?m)^\s*&lt;[A-Za-z/]'))"
+        <!--
+            Any other raw HTML would reach nuget.org as escaped tags, so refuse to pack it. The pattern is
+            CommonMark's own HTML-block condition (a tag at the start of a line, indented at most three
+            spaces), applied after fenced code blocks are removed, so that markup shown as an example
+            does not trip it.
+        -->
+        <Error Condition="$([System.Text.RegularExpressions.Regex]::IsMatch($([System.Text.RegularExpressions.Regex]::Replace($([System.IO.File]::ReadAllText('$(_NuGetReadmeDir)/README.md')), '(?ms)^```.*?^```', '')), '(?m)^ ? ? ?&lt;[A-Za-z/]'))"
                Text="README.md contains raw HTML other than the &lt;picture&gt; logo element. nuget.org escapes raw HTML rather than rendering it, so that markup would appear on the package page as literal tags: express it in CommonMark instead, or teach the PackReadmeWithoutLogo target to strip it too." />
         <ItemGroup>
             <None Include="$(_NuGetReadmeDir)/README.md" Pack="true" PackagePath="\" />
