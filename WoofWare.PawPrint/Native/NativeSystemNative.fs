@@ -3218,7 +3218,7 @@ module NativeSystemNative =
                 { kernel with
                     FileDescriptors = registry
                 }
-                |> EmulatedKernel.withDirectoryStream
+                |> EmulatedKernel.withNewDirectoryStream
                     block
                     {
                         Fd = fd
