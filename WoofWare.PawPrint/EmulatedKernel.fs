@@ -517,69 +517,9 @@ type WaitHandleState =
     | Mutex of MutexState
     | Event of EventState
 
-/// One entry in `EmulatedKernel.OutputLog`: the role the guest targeted (a
-/// writable standard stream — stdout or stderr) and the byte payload of
-/// that single `SystemNative_Write` call. Chunks are not coalesced across
-/// calls because guest write boundaries matter for diagnostics (line
-/// boundaries, prompt boundaries) and for matching real-CLR observability.
-type OutputLogEntry =
-    {
-        Role : FileDescriptorRole
-        Bytes : ImmutableArray<byte>
-    }
 
-[<RequireQualifiedAccess>]
-module OutputLogEntry =
-    /// Concatenate every entry in `log` whose `Role` matches `role`,
-    /// preserving the original write order. Used by tests that want to
-    /// assert on the cumulative bytes the guest sent to a specific
-    /// standard stream (the equivalent of capturing one of host
-    /// stdout/stderr in isolation).
-    let bytesFor (role : FileDescriptorRole) (log : ImmutableArray<OutputLogEntry>) : ImmutableArray<byte> =
-        let builder = ImmutableArray.CreateBuilder<byte> ()
 
-        for entry in log do
-            if entry.Role = role then
-                builder.AddRange (entry.Bytes : ImmutableArray<byte>)
 
-        builder.ToImmutable ()
-
-/// One TCP connection, as the emulated kernel's connection table holds it.
-///
-/// Keyed by `ConnectionId` and holding only the two endpoints' addresses.
-/// Deliberately no references back to the sockets on its ends: a connection
-/// outlives the client that opened it (measured: close the client while its
-/// connection sits in an accept queue, and `accept(2)` still returns it), and
-/// the server end has no socket at all until that accept, so an end-to-socket
-/// field would spend most of its life dangling or `None`. Cleanup instead
-/// scans the socket table for references, which `EmulatedKernel.closeFd`
-/// does.
-type TcpConnection =
-    {
-        /// The connecting side's address — what `accept(2)` reports as the
-        /// peer.
-        ClientAddress : InternetEndpoint
-        /// The accepted side's address: the destination the client connected
-        /// to, with a wildcard destination already rewritten to loopback. The
-        /// accepted socket's own `getsockname(2)` reports this.
-        ServerAddress : InternetEndpoint
-    }
-
-/// One thread's in-flight `SystemNative_WaitForSocketEvents` call: the state
-/// the syscall captured when it was entered, which outlives anything the
-/// guest does to its arguments afterwards. The port is held by *description
-/// identity*, exactly as the real syscall holds a file reference — closing
-/// the fd the wait was called through changes nothing, because the fd is
-/// never consulted again.
-type ParkedSocketWait =
-    {
-        /// The open file description of the port being waited on.
-        Port : OpenFileDescriptionId
-        /// The `*count` read at entry. A real `epoll_wait` keeps using the
-        /// maxevents it was passed even if the guest overwrites the cell
-        /// mid-wait.
-        MaxEvents : int
-    }
 
 /// What the emulated kernel knows about one task — one scheduling entity, what
 /// `gettid(2)` names.
@@ -623,43 +563,7 @@ type UnixTaskState =
         ParkedSocketWait : ParkedSocketWait option
     }
 
-/// Identity of one open directory stream. Never guest-visible: a guest holds a
-/// `DIR*`, and what that pointer is made of is the client's business, not this
-/// kernel's.
-///
-/// Minted monotonically and never reused, as `SocketId` and `InodeNumber` are;
-/// `EmulatedKernel.NextDirectoryStreamId` is the counter, and `checkInvariants`
-/// refuses a table holding an id at or above it.
-[<Struct>]
-type DirectoryStreamId =
-    | DirectoryStreamId of value : int64
 
-    override this.ToString () : string =
-        match this with
-        | DirectoryStreamId value -> string<int64> value
-
-/// One open directory stream: what `opendir(3)` returns and `readdir`/`closedir`
-/// consume.
-///
-/// Held in `EmulatedKernel.DirectoryStreams` rather than on the descriptor,
-/// because libc keeps a `DIR`'s buffer and position in userspace and the
-/// descriptor carries only the kernel's. The consequence is that two `opendir`s
-/// of one directory advance independently, and a `dup` of the descriptor would
-/// not share the cursor. Unobservable: `dirfd` appears nowhere in CoreLib or
-/// the PAL, so no managed caller can reach the descriptor to `dup` it.
-type DirectoryStream =
-    {
-        /// The descriptor `opendir` opened, closed again by `closedir`.
-        Fd : int
-        /// The directory being enumerated. Also reachable through `Fd`, but
-        /// held directly so that a guest which closed that descriptor behind the
-        /// stream's back — undefined behaviour on a real libc, and possible here
-        /// because fd numbers are guessable — does not turn into an interpreter
-        /// crash.
-        Inode : InodeNumber
-        /// How far through `Inode` this stream has read.
-        Cursor : DirectoryCursor
-    }
 
 /// The kernel-image facts a POSIX simulator owns: the platform it is
 /// impersonating, its filesystem, its clock and entropy, its network

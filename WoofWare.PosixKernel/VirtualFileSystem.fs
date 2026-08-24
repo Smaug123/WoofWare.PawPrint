@@ -3067,3 +3067,41 @@ module VirtualFileSystem =
                 Root = root
                 NextInode = nextInode
             }
+
+/// Identity of one open directory stream. Never guest-visible: a guest holds a
+/// `DIR*`, and what that pointer is made of is the client's business, not this
+/// kernel's.
+///
+/// Minted monotonically and never reused, as `SocketId` and `InodeNumber` are;
+/// `EmulatedKernel.NextDirectoryStreamId` is the counter, and `checkInvariants`
+/// refuses a table holding an id at or above it.
+[<Struct>]
+type DirectoryStreamId =
+    | DirectoryStreamId of value : int64
+
+    override this.ToString () : string =
+        match this with
+        | DirectoryStreamId value -> string<int64> value
+
+/// One open directory stream: what `opendir(3)` returns and `readdir`/`closedir`
+/// consume.
+///
+/// Held in `EmulatedKernel.DirectoryStreams` rather than on the descriptor,
+/// because libc keeps a `DIR`'s buffer and position in userspace and the
+/// descriptor carries only the kernel's. The consequence is that two `opendir`s
+/// of one directory advance independently, and a `dup` of the descriptor would
+/// not share the cursor. Unobservable: `dirfd` appears nowhere in CoreLib or
+/// the PAL, so no managed caller can reach the descriptor to `dup` it.
+type DirectoryStream =
+    {
+        /// The descriptor `opendir` opened, closed again by `closedir`.
+        Fd : int
+        /// The directory being enumerated. Also reachable through `Fd`, but
+        /// held directly so that a guest which closed that descriptor behind the
+        /// stream's back — undefined behaviour on a real libc, and possible here
+        /// because fd numbers are guessable — does not turn into an interpreter
+        /// crash.
+        Inode : InodeNumber
+        /// How far through `Inode` this stream has read.
+        Cursor : DirectoryCursor
+    }

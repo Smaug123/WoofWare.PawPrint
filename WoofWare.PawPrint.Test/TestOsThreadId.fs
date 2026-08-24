@@ -6,6 +6,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `EmulatedKernel.osThreadId` is the policy behind
 /// `SystemNative_TryGetUInt32OSThreadId` (Linux CoreLib) and

@@ -1,5 +1,7 @@
 namespace WoofWare.PosixKernel
 
+open System.Collections.Immutable
+
 /// Which of the simulated process's inherited standard streams an open file
 /// description refers to. Also the routing key for `EmulatedKernel.OutputLog`
 /// and `StepEffect.WroteToFd`, so it names a stream rather than a file: the
@@ -1906,3 +1908,30 @@ module FileDescriptorRegistry =
             { registry with
                 Descriptions = Map.add id (f (Map.find id registry.Descriptions)) registry.Descriptions
             }
+
+/// One entry in `EmulatedKernel.OutputLog`: the role the guest targeted (a
+/// writable standard stream — stdout or stderr) and the byte payload of
+/// that single `SystemNative_Write` call. Chunks are not coalesced across
+/// calls because guest write boundaries matter for diagnostics (line
+/// boundaries, prompt boundaries) and for matching real-CLR observability.
+type OutputLogEntry =
+    {
+        Role : FileDescriptorRole
+        Bytes : ImmutableArray<byte>
+    }
+
+[<RequireQualifiedAccess>]
+module OutputLogEntry =
+    /// Concatenate every entry in `log` whose `Role` matches `role`,
+    /// preserving the original write order. Used by tests that want to
+    /// assert on the cumulative bytes the guest sent to a specific
+    /// standard stream (the equivalent of capturing one of host
+    /// stdout/stderr in isolation).
+    let bytesFor (role : FileDescriptorRole) (log : ImmutableArray<OutputLogEntry>) : ImmutableArray<byte> =
+        let builder = ImmutableArray.CreateBuilder<byte> ()
+
+        for entry in log do
+            if entry.Role = role then
+                builder.AddRange (entry.Bytes : ImmutableArray<byte>)
+
+        builder.ToImmutable ()
