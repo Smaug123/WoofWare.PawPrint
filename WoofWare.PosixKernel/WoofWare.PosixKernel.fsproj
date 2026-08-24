@@ -55,19 +55,17 @@
             <Using Namespace="System.Text.RegularExpressions" />
             <Code Type="Fragment" Language="cs"><![CDATA[
 string readme = File.ReadAllText(Source);
-string stripped = Regex.Replace(readme, "<picture>[\\s\\S]*?</picture>\\s*", "");
+string stripped = Regex.Replace(readme, "<picture[^>]*>[\\s\\S]*?</picture>\\s*", "", RegexOptions.IgnoreCase);
 
-// Any other raw HTML would reach nuget.org as escaped tags, so refuse to pack it. The pattern is
-// CommonMark's own HTML-block condition (a tag at the start of a line, indented at most three
-// spaces), applied after fenced code blocks are removed so that markup shown as an example does
-// not trip it.
-string prose = Regex.Replace(stripped, "(?ms)^```.*?^```", "");
-if (Regex.IsMatch(prose, "(?m)^ {0,3}<[A-Za-z/]"))
+// A <picture> the pattern above failed to match would reach the package page as literal tags, so
+// check the strip did the job it claims to. Any other raw HTML in the readme leaks the same way,
+// but recognising it reliably would mean reimplementing CommonMark's block grammar here.
+if (Regex.IsMatch(stripped, "</?picture", RegexOptions.IgnoreCase))
 {
     Log.LogError(
-        "{0} contains raw HTML other than the <picture> logo element. nuget.org escapes raw HTML "
-        + "rather than rendering it, so that markup would appear on the package page as literal "
-        + "tags: express it in CommonMark instead, or teach this task to strip it too.",
+        "{0} still contains a <picture> element after the logo strip, so the packed readme would "
+        + "show it on nuget.org as literal tags. Write the logo as a plain <picture> ... "
+        + "</picture> block, or teach this task to match the form used.",
         Source);
 }
 else
