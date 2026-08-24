@@ -92,6 +92,29 @@ module FileName =
         | Ok name -> name
         | Error error -> failwith $"%s{context}: %s{describe error} (got %s{candidate})"
 
+    /// Re-check the invariant of a value that may not have come from `parse`,
+    /// failing loudly and naming `context` if it does not hold.
+    ///
+    /// Only for boundaries that accept a `FileName` from outside the library;
+    /// interior consumers must not call it, because re-validating a proof
+    /// everywhere is precisely what the type exists to avoid. Today's callers are
+    /// the chokepoints through which a name enters or leaves the inode graph, so
+    /// that a value which never went through `parse` is stopped before it becomes
+    /// an entry no path could ever name.
+    // The only value this can reject is `Unchecked.defaultof` / C# `default`,
+    // whose payload is null: `private` on the union case stops every other route.
+    // Without this, such a name reaches a directory's entry map and
+    // `checkInvariants` calls the resulting graph sound.
+    let assertValid (context : string) (name : FileName) : FileName =
+        match name with
+        | FileName raw ->
+
+        match parse raw with
+        | Ok _ -> name
+        | Error error ->
+            failwith
+                $"%s{context}: %s{describe error}. A FileName that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; construct one with FileName.parse instead."
+
     /// <summary>The name as the NUL-free byte string a Unix kernel would hand back from <c>readdir</c>.</summary>
     /// <remarks>Has no NUL terminator; callers that need a C string append the NUL themselves.</remarks>
     let toUtf8 (name : FileName) : ImmutableArray<byte> =

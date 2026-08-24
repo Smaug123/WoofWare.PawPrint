@@ -167,6 +167,26 @@ module AbsoluteUnixPath =
         | AbsoluteUnixPathError.UnresolvedSegment (segment, index) ->
             $"path contains an unresolved \"%s{segment}\" segment at index %d{index}; getcwd returns fully-resolved paths"
 
+    /// Re-check the invariant of a value that may not have come from `parse`,
+    /// failing loudly and naming `context` if it does not hold.
+    ///
+    /// Only for boundaries that accept an `AbsoluteUnixPath` from outside the
+    /// library; interior consumers must not call it, because re-validating a proof
+    /// everywhere is precisely what the type exists to avoid.
+    // The only value this can reject is `Unchecked.defaultof` / C# `default`,
+    // whose payload is null: `private` on the union case stops every other route.
+    // Catching it here turns a null-reference failure deep inside the first
+    // `SystemNative_GetCwd` into a configuration-time error naming the knob.
+    let assertValid (context : string) (path : AbsoluteUnixPath) : AbsoluteUnixPath =
+        match path with
+        | AbsoluteUnixPath raw ->
+
+        match parse raw with
+        | Ok _ -> path
+        | Error error ->
+            failwith
+                $"%s{context}: %s{describe error}. An AbsoluteUnixPath that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; construct one with AbsoluteUnixPath.parse instead."
+
     /// <summary>Parse a string as an absolute path, or throw if it's not valid.</summary>
     /// <remarks>This is <c>AbsoluteUnixPath.parse</c>, except it throws instead of returning an error description.</remarks>
     let parseOrFail (context : string) (candidate : string) : AbsoluteUnixPath =
