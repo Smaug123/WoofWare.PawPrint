@@ -764,15 +764,6 @@ type EmulatedKernel =
         /// frame and is reclaimed at frame exit), native-heap blocks outlive
         /// the frames that allocate them.
         NativeMemoryPool : NativeMemoryPool
-        /// Each thread's in-flight `SystemNative_WaitForSocketEvents`
-        /// call, stored at park and removed at delivery — so an absent key
-        /// means a first entry into the wait, and a present one means the
-        /// handler is being re-entered and must use the captured state
-        /// instead of re-decoding its arguments. Present from the park
-        /// through the wake to the delivering re-entry, which is a strict
-        /// superset of the window `BlockedOnSocketEvents` covers: the
-        /// close-time retention check reads this, not the thread status,
-        /// so the woken-but-not-yet-run window is protected too.
         /// Every task the kernel knows about, by the thread that is it.
         ///
         /// Exactly the live threads: `IlMachineState.checkInvariants` refuses a
@@ -1235,24 +1226,6 @@ module EmulatedKernel =
     [<Literal>]
     let defaultOptimalMaxSpinWaitsPerSpinIteration : int = 7
 
-    /// 100ns ticks per millisecond. The `SystemNative_GetSystemTime*` family
-    /// speaks in ticks while PawPrint's virtual clock speaks in milliseconds,
-    /// so every wall-clock derivation goes through this factor. A consequence
-    /// is the unit `VirtualClockTicks` itself is denominated in, so no scaling
-    /// is applied to the clock when deriving `DateTime.UtcNow`; the factor
-    /// converts the *epoch* offset, and converts guest millisecond timeouts
-    /// into deadlines.
-    /// Largest legal wall-clock reading, in 100 ns ticks since the Unix epoch:
-    /// `DateTime.MaxValue.Ticks - DateTime.UnixEpoch.Ticks`. `DateTime` cannot
-    /// name an instant beyond it.
-    ///
-    /// Deliberately *not* `maxWallClockEpochMs * ticksPerMillisecond`, which is
-    /// 9,999 ticks smaller. The two differ because they bound different things:
-    /// `maxWallClockEpochMs` is the last whole millisecond, which is the right
-    /// ceiling for `KernelConfig.WallClockEpochMs` because that knob is
-    /// denominated in milliseconds, while the clock resolves every 100 ns tick
-    /// up to the end of `DateTime`'s range. Deriving this one from the other
-    /// would reject the final sub-millisecond of representable time.
     /// Virtual time charged for one retired IL instruction, in 100 ns ticks.
     ///
     /// This is the *rate* half of the clock; `ticksPerMillisecond` is the unit half. Together
@@ -1287,13 +1260,6 @@ module EmulatedKernel =
     [<Literal>]
     let defaultInstructionCostTicks : int64 = 1L
 
-    /// Largest legal `EmulatedKernel.WallClockEpochMs`: 9999-12-31T23:59:59.999Z
-    /// as milliseconds since the Unix epoch, which is the last instant
-    /// `System.DateTime` can represent
-    /// (`(DateTime.MaxValue.Ticks - DateTime.UnixEpoch.Ticks) / ticksPerMillisecond`).
-    /// Beyond this the ticks CoreLib adds `UnixEpochTicks` to no longer name a
-    /// `DateTime`, and because `DateTime.UtcNow` uses the unvalidated private
-    /// ctor the guest would observe the corruption rather than an exception.
     /// Unix platform identity a freshly-minted simulated process reports.
     /// Linux/x64 because that is the platform whose CoreLib actually routes
     /// `Environment.OSVersion` through `SystemNative_GetUnixRelease` (the
@@ -1653,12 +1619,6 @@ module EmulatedKernel =
 
 
 
-    /// Nanoseconds per millisecond. `SystemNative_GetTimestamp` speaks in
-    /// nanoseconds while PawPrint's virtual clock speaks in 100 ns ticks, so
-    /// the high-resolution timestamp derivation goes through this factor. Every
-    /// timestamp the guest observes is therefore a multiple of 100 — `Stopwatch`
-    /// has 100 ns granularity here, matching `DateTime`'s quantum, where real
-    /// `clock_gettime(CLOCK_MONOTONIC)` is finer still.
     /// Whether the simulated process is exempt from the permission rules a kernel
     /// applies to everyone else: uid 0, and nothing else.
     ///
@@ -1680,29 +1640,6 @@ module EmulatedKernel =
             CallerPrivilege.Unprivileged
 
 
-    /// Largest `VirtualClockTicks` from which a nanosecond timestamp can be
-    /// derived without overflowing the `int64` the PAL entry point returns:
-    /// `Int64.MaxValue / nanosecondsPerTick`, i.e. about 29 years of simulated
-    /// uptime.
-    ///
-    /// The horizon is reachable by ordinary guest code, not merely in
-    /// principle. A sleep deadline is `VirtualClockTicks + timeout` with no cap,
-    /// and when no thread is Runnable the driver's deadline jump moves the
-    /// clock the whole way there, so each `Thread.Sleep(Int32.MaxValue)`
-    /// advances it by about 2.1e13 ticks, and roughly 4,300 cross this bound. So
-    /// `monotonicTimestampNanos` checks rather than assumes — silently wrapping
-    /// into a negative timestamp would hand the guest a monotonic clock that
-    /// had run backwards, which is the one guarantee the primitive exists to
-    /// provide.
-    ///
-    /// The bound is *tighter* than `maxWallClockTicks` by a factor of about
-    /// 27, so there is a band of clock readings from which `DateTime.UtcNow`
-    /// and `Environment.TickCount64` are derivable but `Stopwatch.GetTimestamp`
-    /// is not. `withVirtualClockTicks` bounds the field centrally at the
-    /// scheduler, its sole writer, using *this* ceiling because it is the
-    /// tightest; the per-reader guards remain because a kernel assembled by
-    /// record-copy can bypass the writer, and `systemTimeAsTicks` has the same
-    /// shape for the same reason.
     /// Retire one interpreted instruction: bump `StepCounter` by one and charge
     /// `InstructionCostTicks` of virtual time, subject to exactly the checks `withVirtualClockTicks`
     /// applies.
@@ -1891,6 +1828,11 @@ module EmulatedKernel =
         UnixTaskTable.osThreadIdOf thread kernel.Tasks
 
     /// The socket wait `thread` is blocked in, if any.
+    ///
+    /// Present from the park through the wake to the delivering re-entry, which
+    /// is a strict superset of the window `BlockedOnSocketEvents` covers: the
+    /// close-time retention check reads this, not the thread status, so the
+    /// woken-but-not-yet-run window is protected too.
     let parkedSocketWaitFor (thread : ThreadId) (kernel : EmulatedKernel) : ParkedSocketWait option =
         UnixTaskTable.parkedSocketWaitFor thread kernel.Tasks
 
@@ -3764,15 +3706,6 @@ module EmulatedKernel =
             failwith
                 $"EmulatedKernel.acceptConnection: socket %O{socketId} is in %A{phase}, not listening; the caller screens this. This is an interpreter bug."
 
-    /// Every way this kernel's tables disagree with each other: the socket
-    /// table against the descriptor table, the descriptor table against the
-    /// filesystem, and the current directory against both.
-    ///
-    /// The descriptor table's own rules are `FileDescriptorRegistry.checkInvariants`,
-    /// and the filesystem's are `VirtualFileSystem.checkInvariants`; this
-    /// repeats neither. The latter takes a `pinned` argument that only this
-    /// layer can supply, so a caller wanting the whole picture pairs this with
-    /// `VirtualFileSystem.checkInvariants (EmulatedKernel.pinnedInodes kernel)`.
     /// Check that the kernel knows exactly the tasks that `liveThreads` are.
     ///
     /// Separate from `checkInvariants`, and taking the thread set as an argument,
@@ -3793,6 +3726,15 @@ module EmulatedKernel =
         (missing |> List.map EmulatedKernelDefect.ThreadWithoutTask)
         @ (extra |> List.map EmulatedKernelDefect.TaskWithoutThread)
 
+    /// Every way this kernel's tables disagree with each other: the socket
+    /// table against the descriptor table, the descriptor table against the
+    /// filesystem, and the current directory against both.
+    ///
+    /// The descriptor table's own rules are `FileDescriptorRegistry.checkInvariants`,
+    /// and the filesystem's are `VirtualFileSystem.checkInvariants`; this
+    /// repeats neither. The latter takes a `pinned` argument that only this
+    /// layer can supply, so a caller wanting the whole picture pairs this with
+    /// `VirtualFileSystem.checkInvariants (EmulatedKernel.pinnedInodes kernel)`.
     let checkInvariants (kernel : EmulatedKernel) : EmulatedKernelDefect list =
         let named =
             FileDescriptorRegistry.descriptions kernel.FileDescriptors
