@@ -9,7 +9,9 @@
 # The exit status is asserted too, since that is what callers branch on.
 set -euo pipefail
 
-checker="$(cd "$(dirname "$0")" && pwd)/check-docstring-attachment.py"
+# The checker is normally its sibling; the flake check passes each in from the
+# store, where they have no directory in common.
+checker="${1:-$(cd "$(dirname "$0")" && pwd)/check-docstring-attachment.py}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 cd "$tmp"
@@ -165,6 +167,9 @@ EOF
 # The exit status is what callers branch on, so it is part of the contract: a
 # regression that still prints the findings but stops reporting failure would
 # pass every grep below.
+# One record per detachment listed below, and no more.
+expected=7
+
 set +e
 report="$(python3 "$checker" HEAD A.fs 2>&1)"
 status=$?
@@ -175,6 +180,21 @@ if [ "$status" -ne 1 ]; then
   echo "STATUS   checker exited $status, expected 1 (findings present)"; fail=1
 else
   echo "ok       checker exited 1, as a run with findings must"
+fi
+
+# A crash after the findings are printed also exits 1, and extra findings for
+# declarations nobody listed below would go unread, so pin the summary line the
+# checker prints last and the number of records it counted.
+found="$(grep -cE '^(MOVED|MERGED)' <<<"$report" || true)"
+if grep -qx "docstring-attachment: $expected block(s) changed subject" <<<"$report"; then
+  echo "ok       checker ran to completion and counted $expected findings"
+else
+  echo "SUMMARY  no 'docstring-attachment: $expected block(s) changed subject' line; it crashed, or found a different number"; fail=1
+fi
+if [ "$found" -eq "$expected" ]; then
+  echo "ok       exactly $expected findings printed, so none is unaccounted for"
+else
+  echo "COUNT    $found MOVED/MERGED records printed, expected $expected"; fail=1
 fi
 
 expect_reported () { # <subject the block now wrongly documents> <why this shape matters>
@@ -213,4 +233,4 @@ if [ "$fail" -ne 0 ]; then
   echo "report was:"; echo "$report"
   exit 1
 fi
-echo "check-docstring-attachment: all fifteen shapes behave, and the exit status with them"
+echo "check-docstring-attachment: all fifteen shapes behave, and the exit status and finding count with them"

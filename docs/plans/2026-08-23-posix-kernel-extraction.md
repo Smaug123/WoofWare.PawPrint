@@ -1105,7 +1105,9 @@ None of the shapes occurs in this repository's history: the whole-repository
 sweep reports the same thirty-five fusions throughout. Their oracle is
 `scripts/test-docstring-attachment.sh`, which puts all fifteen shapes in one
 throwaway repository — seven that must report, eight that must stay silent, plus
-the exit status — and is itself mutation-tested: eight mutants of the guard, each
+the exit status and the exact number of findings — and runs as the
+`docstring-attachment` flake check, so a change to the checker cannot quietly
+retire it. It is itself mutation-tested: eight mutants of the guard, each
 killed by exactly the rows written for it. Two of those rows exist only because a
 mutant survived the first battery, which is the usual reason to keep a fixture
 honest: with two *distinct* subjects `kept < count` and `kept < 1` agree, and

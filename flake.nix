@@ -180,6 +180,20 @@
               ${./scripts/pal-residue-allowlist.txt}
             touch $out
           '';
+        # The docstring-attachment check is the oracle a definition-moving commit is held
+        # to, and it is only as good as its own contract: fifteen shapes in a throwaway
+        # repository, seven of which must be reported and eight of which must not. Runs
+        # here so that a change to the checker cannot quietly retire it.
+        docstring-attachment =
+          pkgs.runCommand "docstring-attachment" {
+            buildInputs = [pkgs.python3 pkgs.git pkgs.bash];
+          }
+          ''
+            export HOME=$TMPDIR
+            ${pkgs.bash}/bin/bash ${./scripts/test-docstring-attachment.sh} \
+              ${./scripts/check-docstring-attachment.py}
+            touch $out
+          '';
         # Fails the build (and so `nix flake check` in CI) when nixpkgs's runtime version drifts
         # away from the version we pin. Forces a deliberate bump of dotnet-runtime-src, of
         # expectedRuntimeVersion, and of WoofWare.PawPrint/EmulatedRuntime.fs in lockstep.
