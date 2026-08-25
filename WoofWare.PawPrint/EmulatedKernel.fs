@@ -1110,15 +1110,6 @@ module EmulatedKernel =
     /// particular executable set `KernelConfig.ProcessPath`.
     let defaultProcessPath : AbsoluteUnixPath option = None
 
-    /// Effective user ID a freshly-minted simulated process runs as.
-    ///
-    /// 1000 rather than 0: `Environment.IsPrivilegedProcess` is literally
-    /// `GetEUid() == 0`, so a guest that defaulted to root would silently take
-    /// the privileged branch of every check it makes about itself — the
-    /// uninteresting one, and not the one most programs are written for. 1000
-    /// is also the first interactive user on the Ubuntu-shaped platform
-    /// `defaultUnixPlatform` already claims to be. A host that wants root says
-    /// so in `KernelConfig.UserId`.
     /// The range `bind(2)` draws from when asked for port 0.
     ///
     /// A sysctl on both platforms rather than a property of the kernel image —
@@ -1152,6 +1143,15 @@ module EmulatedKernel =
     /// and is why `127.9.9.9` binds there and not on Darwin.
     let defaultLocalRoutes : Ipv4Prefix list = [ Ipv4Prefix.create 0x7F000000u 8 ]
 
+    /// Effective user ID a freshly-minted simulated process runs as.
+    ///
+    /// 1000 rather than 0: `Environment.IsPrivilegedProcess` is literally
+    /// `GetEUid() == 0`, so a guest that defaulted to root would silently take
+    /// the privileged branch of every check it makes about itself — the
+    /// uninteresting one, and not the one most programs are written for. 1000
+    /// is also the first interactive user on the Ubuntu-shaped platform
+    /// `defaultUnixPlatform` already claims to be. A host that wants root says
+    /// so in `KernelConfig.UserId`.
     let defaultUserId : uint32 = 1000u
 
     /// Effective group ID a freshly-minted simulated process runs as. Matches
@@ -1558,39 +1558,6 @@ module EmulatedKernel =
         | Some count when count > 0 && count <= maxConfiguredProcessorCount -> count
         | _ -> kernel.ProcessorCount
 
-    /// Placement policy: which simulated logical processor the `rotation`-th
-    /// guest-visible thread is pinned to. The only producer of `CpuId` for
-    /// threads a guest can observe, so "every `CpuId` a guest can read names a
-    /// processor it also counts" is established here once rather than
-    /// re-checked at every read. (`IlMachineState.allocateParkedThread` also
-    /// mints a `CpuId`, but a fixed core 0 for PawPrint-internal threads no
-    /// guest can name; see there.)
-    ///
-    /// Round-robin over `effectiveProcessorCount`. That is a *placement*
-    /// decision, not a measurement: PawPrint's scheduler runs one thread at a
-    /// time and never migrates a thread between cores, so the core a thread is
-    /// pinned to is also the core it is running on whenever it is running, and
-    /// one value answers both questions `sched_getcpu` could be asked.
-    ///
-    /// Spreading threads over the available cores (rather than reporting a
-    /// constant 0) is what makes a host-configured `ProcessorCount` mean
-    /// something to the guest: CoreLib shards `ArrayPool<T>.Shared` partitions,
-    /// `TimerQueue.Instances`, and `PoolingAsyncValueTaskMethodBuilder`'s cache
-    /// by this value, so a constant would leave every one of those multi-shard
-    /// paths permanently unexercised. With the default `ProcessorCount` of 1 it
-    /// collapses to a constant 0 anyway, so existing runs are bit-for-bit
-    /// unchanged.
-    ///
-    /// `rotation` deliberately is *not* the thread's `ThreadId`. `ThreadId`s
-    /// are also consumed by PawPrint-internal auxiliary threads that never run
-    /// guest IL (`IlMachineState.allocateParkedThread`, currently the signal
-    /// dispatcher), so keying off them would let an interpreter-internal
-    /// allocation shift which core every subsequently created *guest* thread
-    /// lands on — an interpreter detail leaking into guest-observable state.
-    /// The caller therefore threads a separate cursor
-    /// (`IlMachineState.NextCpuRotation`) that only guest-visible thread
-    /// creation advances. (`osThreadId`, below, makes the opposite choice for
-    /// the opposite reason; see there.)
     /// The task `thread` is.
     ///
     /// Total, and loudly partial rather than an option: every live thread has a
@@ -1678,6 +1645,39 @@ module EmulatedKernel =
                     Map.add thread value kernel.LastPInvokeError
         }
 
+    /// Placement policy: which simulated logical processor the `rotation`-th
+    /// guest-visible thread is pinned to. The only producer of `CpuId` for
+    /// threads a guest can observe, so "every `CpuId` a guest can read names a
+    /// processor it also counts" is established here once rather than
+    /// re-checked at every read. (`IlMachineState.allocateParkedThread` also
+    /// mints a `CpuId`, but a fixed core 0 for PawPrint-internal threads no
+    /// guest can name; see there.)
+    ///
+    /// Round-robin over `effectiveProcessorCount`. That is a *placement*
+    /// decision, not a measurement: PawPrint's scheduler runs one thread at a
+    /// time and never migrates a thread between cores, so the core a thread is
+    /// pinned to is also the core it is running on whenever it is running, and
+    /// one value answers both questions `sched_getcpu` could be asked.
+    ///
+    /// Spreading threads over the available cores (rather than reporting a
+    /// constant 0) is what makes a host-configured `ProcessorCount` mean
+    /// something to the guest: CoreLib shards `ArrayPool<T>.Shared` partitions,
+    /// `TimerQueue.Instances`, and `PoolingAsyncValueTaskMethodBuilder`'s cache
+    /// by this value, so a constant would leave every one of those multi-shard
+    /// paths permanently unexercised. With the default `ProcessorCount` of 1 it
+    /// collapses to a constant 0 anyway, so existing runs are bit-for-bit
+    /// unchanged.
+    ///
+    /// `rotation` deliberately is *not* the thread's `ThreadId`. `ThreadId`s
+    /// are also consumed by PawPrint-internal auxiliary threads that never run
+    /// guest IL (`IlMachineState.allocateParkedThread`, currently the signal
+    /// dispatcher), so keying off them would let an interpreter-internal
+    /// allocation shift which core every subsequently created *guest* thread
+    /// lands on — an interpreter detail leaking into guest-observable state.
+    /// The caller therefore threads a separate cursor
+    /// (`IlMachineState.NextCpuRotation`) that only guest-visible thread
+    /// creation advances. (`osThreadId`, below, makes the opposite choice for
+    /// the opposite reason; see there.)
     let cpuForRotation (rotation : int) (kernel : EmulatedKernel) : CpuId =
         if rotation < 0 then
             failwith

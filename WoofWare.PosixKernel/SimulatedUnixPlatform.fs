@@ -1020,15 +1020,6 @@ module UnlinkRules =
         | SimulatedUnixFlavour.Linux -> linuxVerdict privilege resolution vfs
         | SimulatedUnixFlavour.Darwin -> darwinVerdict privilege resolution vfs
 
-/// What `getcwd(3)` answers when the current directory has been *removed* — so
-/// there is no path to report — and how small a buffer can still change that
-/// answer.
-///
-/// Only reachable since `rmdir` could orphan a current directory. Measured on
-/// both with the cwd removed out from under the process, sweeping the size from
-/// 1 past the length of the path that used to be there: a zero-length buffer is
-/// EINVAL everywhere (the shim's own guard, before `getcwd` is called at all),
-/// and everything else splits on the *first byte* only.
 /// What the PAL puts in `DirectoryEntry.NameLength`, which is a fact about the
 /// libc it was compiled against rather than about any directory.
 ///
@@ -1048,6 +1039,15 @@ type DirectoryEntryNameLength =
     /// `-1`, as every libc without `d_namlen` gets.
     | WalkToTerminator
 
+/// What `getcwd(3)` answers when the current directory has been *removed* — so
+/// there is no path to report — and how small a buffer can still change that
+/// answer.
+///
+/// Only reachable since `rmdir` could orphan a current directory. Measured on
+/// both with the cwd removed out from under the process, sweeping the size from
+/// 1 past the length of the path that used to be there: a zero-length buffer is
+/// EINVAL everywhere (the shim's own guard, before `getcwd` is called at all),
+/// and everything else splits on the *first byte* only.
 [<RequireQualifiedAccess>]
 type GetCwdOrphanAnswer =
     /// ENOENT whatever the size. Linux's `sys_getcwd` builds the path, fails
@@ -2180,9 +2180,6 @@ module SimulatedUnixPlatform =
             Storage = maximumSocketAddressSize
         }
 
-    /// Where this platform keeps a socket address's family, and how wide it is.
-    /// See `SockaddrFamilyField`, which is also where the reason every other
-    /// field's offset is flavour-free is written down.
     /// The order `bind(2)` reports its faults in, which is **not** the same on
     /// the two flavours.
     ///
@@ -2423,6 +2420,9 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> true
         | SimulatedUnixFlavour.Darwin -> false
 
+    /// Where this platform keeps a socket address's family, and how wide it is.
+    /// See `SockaddrFamilyField`, which is also where the reason every other
+    /// field's offset is flavour-free is written down.
     let sockaddrFamilyField (platform : SimulatedUnixPlatform) : SockaddrFamilyField =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> SockaddrFamilyField.TwoBytesAtOffsetZero
@@ -2649,6 +2649,12 @@ module SimulatedUnixPlatform =
         | 29 -> if isLinux then Some Pal.AfCan else None
         | _ -> None
 
+    /// Is this the PAL protocol type `SystemNative_Bind` sets `SO_REUSEADDR`
+    /// for? The C keys on its own `protocolType` *argument* being `PT_TCP`
+    /// (`pal_networking.c:1770`), not on the socket's protocol, so this asks
+    /// about the argument.
+    let isTcpProtocolType (palProtocolType : int) : bool = palProtocolType = Pal.PtTcp
+
     /// What `SystemNative_Socket` does with a domain, type and protocol, all in
     /// the PAL numbering its caller supplies them in.
     ///
@@ -2671,12 +2677,6 @@ module SimulatedUnixPlatform =
     /// this emulated kernel's declared protocol table; a row outside it is a
     /// socket PawPrint has not decided how to be, and a refusal leaves that
     /// decision open where a guessed errno would not.
-    /// Is this the PAL protocol type `SystemNative_Bind` sets `SO_REUSEADDR`
-    /// for? The C keys on its own `protocolType` *argument* being `PT_TCP`
-    /// (`pal_networking.c:1770`), not on the socket's protocol, so this asks
-    /// about the argument.
-    let isTcpProtocolType (palProtocolType : int) : bool = palProtocolType = Pal.PtTcp
-
     let socketCreation
         (platform : SimulatedUnixPlatform)
         (palAddressFamily : int)
