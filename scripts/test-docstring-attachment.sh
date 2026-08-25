@@ -41,6 +41,20 @@ let beta (x : int) : int = x
 
 /// Shared trunk.
 let trunkOwner (x : int) : int = x
+
+/// Twin sentence.
+let twinOne (x : int) : int = x
+
+/// Twin sentence.
+let twinTwo (x : int) : int = x
+
+module Twins1 =
+    /// Duplicated across modules.
+    let sameName (x : int) : int = x
+
+module Twins2 =
+    /// Duplicated across modules.
+    let sameName (x : int) : int = x
 EOF
 git add -A
 git commit -qm base
@@ -86,11 +100,45 @@ let trunkOwner (x : int) : int = x
 /// Shared trunk.
 /// Detail for a different API.
 let trunkQuoter (x : int) : int = x
+
+/// Twin sentence.
+/// Intruder detail.
+let twinIntruder (x : int) : int = x
+
+let twinOne (x : int) : int = x
+
+/// Twin sentence.
+/// Paragraph added.
+let twinTwo (x : int) : int = x
+
+module Twins1 =
+    /// Duplicated across modules.
+    /// Intruder in the first module.
+    let dupIntruder (x : int) : int = x
+
+    let sameName (x : int) : int = x
+
+module Twins2 =
+    /// Duplicated across modules.
+    /// A paragraph only the second module wanted.
+    let sameName (x : int) : int = x
 EOF
 
-report="$(python3 "$checker" HEAD A.fs 2>&1 || true)"
+# The exit status is what callers branch on, so it is part of the contract: a
+# regression that still prints the findings but stops reporting failure would
+# pass every grep below.
+set +e
+report="$(python3 "$checker" HEAD A.fs 2>&1)"
+status=$?
+set -e
 
 fail=0
+if [ "$status" -ne 1 ]; then
+  echo "STATUS   checker exited $status, expected 1 (findings present)"; fail=1
+else
+  echo "ok       checker exited 1, as a run with findings must"
+fi
+
 expect_reported () { # <subject the block now wrongly documents> <why this shape matters>
   if grep -q "documents \['let $1'\]\|-> \['let $1'\]" <<<"$report"; then
     echo "ok       detachment onto $1 reported ($2)"
@@ -114,10 +162,13 @@ expect_silent   quotesIt       "a new docstring quoting one that is still in pla
 expect_silent   keepsItsDocstring "the quoted block itself never moved"
 expect_silent   trunkQuoter    "the opening it quotes is still on its own subject, inside that subject's expanded block"
 expect_silent   trunkOwner     "expanding a docstring in place is not a detachment"
+expect_reported twinIntruder   "one of the two declarations a shared block documented has lost it"
+expect_silent   twinTwo        "the other one kept it, inside a block it merely expanded"
+expect_reported dupIntruder    "a block borne by two same-named declarations is kept by only one of them"
 
 echo
 if [ "$fail" -ne 0 ]; then
   echo "report was:"; echo "$report"
   exit 1
 fi
-echo "check-docstring-attachment: all eight shapes behave"
+echo "check-docstring-attachment: all eleven shapes behave, and the exit status with them"

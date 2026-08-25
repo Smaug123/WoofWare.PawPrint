@@ -61,6 +61,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 # Accessibility and binding modifiers must be consumed rather than captured:
@@ -293,6 +294,7 @@ def names(subs: list[str | None]) -> list[str]:
 
 def stranded_prefix(
     text: str,
+    subjects: list[str | None],
     old: dict[str, list[str | None]],
     new_by_subject: dict[str, list[str]],
 ) -> list[str] | None:
@@ -306,30 +308,45 @@ def stranded_prefix(
     against.
 
     What survives is that the fused text opens with the stranded block verbatim.
-    That alone is not evidence, though: a docstring that merely gains a paragraph
-    opens with its old self too, and so does an unrelated one that happens to
-    quote it. What separates a fusion from both is asked of the *subject* rather
-    than of the text — is this opening still the opening of its own subject's
-    docstring? If it is, the subject kept its prose and nothing was detached,
-    whether or not that prose has since grown.
+    That alone is not evidence — a docstring that gains a paragraph opens with its
+    old self too, and so does an unrelated one that quotes it — so the two things
+    that make it one are asked of the *declarations* rather than of the text.
+    `text` must document nothing the opening already documented, since a
+    declaration that had this prose and still has it has been left alone; and some
+    declaration that did have it must no longer open its docstring with it, since
+    that is what having been detached from it means.
 
     Openings are tried longest first, that being the most specific account of
-    where the new text starts, and one that is still its subject's does not end
-    the search: two old blocks can be nested prefixes of each other, and then the
+    where the new text starts, and one that fails either test does not end the
+    search: two old blocks can be nested prefixes of each other, and then the
     shorter is stranded while the longer stays where it was.
     """
 
-    def kept(head: str) -> bool:
-        return any(
-            any(t == head or t.startswith(head + " ") for t in new_by_subject.get(s, ()))
-            for s in old[head]
-            if s is not None
-        )
+    def detached(head: str) -> bool:
+        # Per subject and with multiplicity, because a subject is a kind and a
+        # name: one block documenting two same-named declarations must be found
+        # opening two docstrings still, or one of the two has lost it.
+        for subject, count in Counter(old[head]).items():
+            if subject is None:
+                return True
+            kept = sum(
+                1
+                for t in new_by_subject.get(subject, ())
+                if t == head or t.startswith(head + " ")
+            )
+            if kept < count:
+                return True
+        return False
 
     for i in range(len(text) - 1, 0, -1):
-        if text[i] != " " or text[:i] not in old or kept(text[:i]):
+        head = text[:i]
+        if text[i] != " " or head not in old:
             continue
-        return [text[:i], text[i + 1 :]]
+        if any(s is not None and s in old[head] for s in subjects):
+            continue
+        if not detached(head):
+            continue
+        return [head, text[i + 1 :]]
     return None
 
 
@@ -390,9 +407,9 @@ def main() -> int:
     # text, which catches a fusion between two declarations of the *same* name —
     # F# overloads, of which this repository has several — and reports each fused
     # block once rather than once per half. Where it is not, `stranded_prefix`
-    # takes the opening alone and asks its old subject whether it still has it,
-    # which is what tells a fusion from a docstring that merely grew and from an
-    # unrelated one that merely quotes it.
+    # takes the opening alone and asks the declarations rather than the text:
+    # whether this block documents any of the ones that opening already did, and
+    # whether any of those has stopped opening its docstring with it.
     memo: dict[str, list[str] | None] = {}
     new_by_subject: dict[str, list[str]] = {}
     for key, subs in new.items():
@@ -403,7 +420,9 @@ def main() -> int:
     for key in new:
         if key in old:
             continue
-        parts = split_into(key, old, memo) or stranded_prefix(key, old, new_by_subject)
+        parts = split_into(key, old, memo) or stranded_prefix(
+            key, new[key], old, new_by_subject
+        )
         if parts and len(parts) > 1:
             bad += 1
             was = [names(old[k])[0] if k in old else "<written here>" for k in parts]
