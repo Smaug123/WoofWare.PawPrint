@@ -78,3 +78,136 @@ type ParkedSocketWait =
         /// mid-wait.
         MaxEvents : int
     }
+
+/// What the emulated kernel knows about one task — one scheduling entity, what
+/// `gettid(2)` names.
+///
+/// Every live thread has exactly one of these, minted at thread creation;
+/// `IlMachineState.checkInvariants` refuses a state where the two sets differ.
+/// That is what makes the record total: `Cpu` and `OsThreadId` were fields on
+/// `ThreadState` precisely because a `Map` has no truthful default for an absent
+/// key, and the answer is that there is never an absent key rather than that a
+/// default exists.
+///
+/// The per-thread errno is *not* here. On a real Unix errno lives in libc, not
+/// in the kernel: the kernel returns an error code and the syscall wrapper
+/// stores it. PawPrint's `LastSystemError` is that wrapper's slot — CoreCLR
+/// reuses it for Windows last-error too, and `NativeWaitHandle` really does put
+/// Win32 numbers in it — so it stays on `EmulatedKernel` with
+/// `LastPInvokeError`.
+type UnixTaskState =
+    {
+        /// The simulated logical processor this task is pinned to: what
+        /// `sched_getcpu(3)` reports while it runs.
+        ///
+        /// Assigned once, at thread creation, by `cpuForRotation`. PawPrint's
+        /// scheduler runs one task at a time and never migrates one between
+        /// cores, so "pinned to" and "currently executing on" coincide. This is
+        /// the seat a future core-aware scheduler would rewrite.
+        Cpu : CpuId
+        /// The OS thread identifier this task reports to the guest, and which
+        /// `System.Threading.Lock` uses as its owner identity.
+        ///
+        /// Assigned once, at thread creation, and never reused: real kernels
+        /// recycle thread ids, but a recycled one here would let a stale
+        /// `Lock._owningThreadId` be mistaken for a live owner.
+        OsThreadId : OsThreadId
+        /// The socket wait this task is blocked in, if it is blocked in one.
+        ///
+        /// A real kernel holds a blocked task's in-flight syscall arguments on
+        /// its stack; this is that, for the one syscall PawPrint parks in. The
+        /// re-entry consults it rather than the guest's argument cells, which
+        /// the guest may have written since.
+        ParkedSocketWait : ParkedSocketWait option
+    }
+
+/// The tasks a simulated process owns, by whatever a client uses to name one.
+///
+/// Generic in the task name for the same reason `SignalState` is: the identity
+/// of a scheduling entity is the client's, not this library's. WoofWare.PawPrint
+/// names them by its interpreter-private `ThreadId`; anything else would do.
+[<RequireQualifiedAccess>]
+module UnixTaskTable =
+
+    /// The task `name` is.
+    ///
+    /// Total, and loudly partial rather than an option: every live task is
+    /// registered when it is created, so a name that resolves to nothing is a
+    /// client bug rather than anything a guest did.
+    let get<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : UnixTaskState =
+        match Map.tryFind name tasks with
+        | Some task -> task
+        | None ->
+            failwith
+                $"UnixTaskTable.get: %O{name} names no task. Every task is registered with `UnixTaskTable.register` when it is created, so this one was built without that (this is a bug in the client)."
+
+    /// Mint the task for a newly-created scheduling entity.
+    ///
+    /// The one route by which a task enters the table, so that "exactly the live
+    /// tasks" is maintained at the single place a task comes into being.
+    let register<'Task when 'Task : comparison>
+        (name : 'Task)
+        (cpu : CpuId)
+        (osThreadId : OsThreadId)
+        (tasks : Map<'Task, UnixTaskState>)
+        : Map<'Task, UnixTaskState>
+        =
+        if Map.containsKey name tasks then
+            failwith
+                $"UnixTaskTable.register: %O{name} already names a task. A task is created once, and re-registering would silently discard whatever the first registration recorded (this is a bug in the client)."
+
+        Map.add
+            name
+            {
+                Cpu = cpu
+                OsThreadId = osThreadId
+                ParkedSocketWait = None
+            }
+            tasks
+
+    /// The logical processor `name` runs on, as `sched_getcpu` reports it.
+    let cpuOf<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : CpuId =
+        (get name tasks).Cpu
+
+    /// The OS thread id `name` reports to the guest.
+    let osThreadIdOf<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : OsThreadId =
+        (get name tasks).OsThreadId
+
+    /// The socket wait `name` is blocked in, if any.
+    let parkedSocketWaitFor<'Task when 'Task : comparison>
+        (name : 'Task)
+        (tasks : Map<'Task, UnixTaskState>)
+        : ParkedSocketWait option
+        =
+        (get name tasks).ParkedSocketWait
+
+    /// Record that `name` has parked in a socket wait, or (with `None`) that it
+    /// is no longer in one.
+    let withParkedSocketWait<'Task when 'Task : comparison>
+        (name : 'Task)
+        (wait : ParkedSocketWait option)
+        (tasks : Map<'Task, UnixTaskState>)
+        : Map<'Task, UnixTaskState>
+        =
+        let existing = get name tasks
+
+        Map.add
+            name
+            { existing with
+                ParkedSocketWait = wait
+            }
+            tasks
+
+    /// Compare the table against the tasks a client believes are live,
+    /// answering those it has no entry for and those it has an entry for but
+    /// the client does not.
+    ///
+    /// Answers both sets rather than raising, so the client reports them in its
+    /// own vocabulary: this library has no opinion on what a defect is called.
+    let reconcile<'Task when 'Task : comparison>
+        (live : Set<'Task>)
+        (tasks : Map<'Task, UnixTaskState>)
+        : 'Task list * 'Task list
+        =
+        let named = tasks |> Map.toList |> List.map fst |> Set.ofList
+        Set.difference live named |> Set.toList, Set.difference named live |> Set.toList
