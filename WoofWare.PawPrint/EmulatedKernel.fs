@@ -1554,7 +1554,9 @@ module EmulatedKernel =
                 }
         }
 
-    /// Set the effective user and group IDs the simulated process runs as.
+    /// Set the file-mode creation mask `open(O_CREAT)` clears from the mode its
+    /// caller asked for. See `EmulatedKernel.Umask` for why this is the only way
+    /// to set it, and why a seed entry is not subject to it.
     let withUmask (umask : PermissionBits) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
             Process =
@@ -1563,6 +1565,7 @@ module EmulatedKernel =
                 }
         }
 
+    /// Set the effective user and group IDs the simulated process runs as.
     let withUserAndGroupId (userId : uint32) (groupId : uint32) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
             Process =
@@ -2006,6 +2009,16 @@ module EmulatedKernel =
 
 
 
+    /// Overlay `env` onto the environment the simulated process already holds:
+    /// a name in both takes its value from `env`, and one only the kernel holds
+    /// survives. An overlay rather than a replacement so that a host can set the
+    /// variables it cares about without having to restate
+    /// `defaultEnvironment`'s invariant-globalization seed.
+    ///
+    /// Refuses, loudly, an entry no real environment list could express — see
+    /// `environmentEntryProblem` for which those are. Rejecting rather than
+    /// dropping, because a variable that silently failed to arrive would show up
+    /// as the guest taking a different branch much later.
     let withEnvironment (env : Map<string, string>) (kernel : EmulatedKernel) : EmulatedKernel =
         for KeyValue (name, value) in env do
             match environmentEntryProblem name value with
