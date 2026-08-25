@@ -1193,6 +1193,55 @@ reports it. This is the tool's documented blind spot — a mistake already in th
 base is invisible to a check between two revisions — and the way out is to run
 it across the commit suspected of making it.
 
+#### Stage 6e: the task forwarders deleted — done
+
+The six wrappers over `UnixTaskTable` are gone and their thirty-three call sites
+name the library directly: `UnixTaskTable.cpuOf thread kernel.Tasks` and its
+peers for the reads, `EmulatedKernel.mapTasks (UnixTaskTable.register …)` for the
+writes. `EmulatedKernel.task` was not replaced by anything, having had no caller
+anywhere since it was written.
+
+**Decided while doing it: what a write call site says.** F# cannot forward a
+record update, so deleting a `with`-style forwarder leaves the call site to
+perform the update itself.
+
+* **(a) Write the record update inline** — `{ kernel with Tasks =
+  UnixTaskTable.register … kernel.Tasks }`. Nothing new to learn, and each site
+  says exactly what it does. But five of the eight write sites are in `|>` or
+  `MapKernel` position, where an expression is not enough and a
+  `(fun k -> { k with … })` has to be written out.
+* **(b) One combinator per record**, `mapTasks : (Map<ThreadId, UnixTaskState> ->
+  Map<ThreadId, UnixTaskState>) -> EmulatedKernel -> EmulatedKernel`. Three of
+  these replace fifty-four forwarders across the three records, pipelines
+  survive, and the operation the call site names is still the library's.
+* **(c) Keep the write forwarders and delete only the reads.** Smallest diff, and
+  wrong: the wrappers exist to be deleted, and half a deletion leaves both
+  spellings live.
+
+Chosen: **(b)**. It is not a forwarder by another name — it restates none of the
+library's API, it is a lens over `EmulatedKernel`'s own field, and it is what
+lets a call site keep saying *which part of the kernel* it touches. `MapKernel`
+on `IlMachineState` is the naming precedent.
+
+**Nothing was lost by deleting the prose.** Five of the six forwarders'
+docstrings say what the library's already say. The sixth, `parkedSocketWaitFor`,
+carried a paragraph the library's does not — that the value is present from the
+park through the wake to the delivering re-entry, so the close-time retention
+check covers the woken-but-not-yet-run window — and `closeFd` already states that
+where it relies on it ("Checked against the in-flight wait map rather than thread
+status"). `scripts/check-docstring-attachment.py` against the branch point
+confirms no block changed subject.
+
+**Correctness oracle**: the full suite including `Guest`, and the docstring
+check. There is no behaviour to test: every call site is the same computation
+spelled differently, and the compiler checks the spelling.
+
+The remaining two records follow the same shape — stage 6f for
+`UnixProcessState`'s nine wrappers and about thirty call sites, stage 6g for
+`UnixMachineState`'s twenty-four and about two hundred. Split by record because
+one diff of ~260 mechanical call sites is not reviewable, and the split is the
+same one 6a–6d used.
+
 ### Stage 7: the syscall request layer, on the pure syscalls first
 
 **Dependencies**: stage 6.

@@ -478,7 +478,7 @@ type ThreadState =
     member this.LiveFrameCount : int = this.MethodStates.Count
 
     /// The caller must also register the thread's task with
-    /// `EmulatedKernel.registerTask`, which is where its processor and OS thread
+    /// `UnixTaskTable.register`, which is where its processor and OS thread
     /// id now live. `ThreadState` cannot do that itself — `EmulatedKernel` is
     /// compiled after this file — and a thread without a task is refused by
     /// `IlMachineState.checkInvariants`.

@@ -366,7 +366,7 @@ module IlMachineThreadState =
                 NextThreadId = state.NextThreadId + 1
                 NextCpuRotation = state.NextCpuRotation + 1
                 ThreadState = state.ThreadState |> Map.add thread (ThreadState.New newThreadState)
-                Kernel = EmulatedKernel.registerTask thread cpu osThreadId state.Kernel
+                Kernel = EmulatedKernel.mapTasks (UnixTaskTable.register thread cpu osThreadId) state.Kernel
             }
 
         newState, thread
@@ -413,10 +413,11 @@ module IlMachineThreadState =
                 // constructor. A guest that constructs a thread and never starts
                 // it therefore still consumes a rotation slot.
                 Kernel =
-                    EmulatedKernel.registerTask
-                        thread
-                        (EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel)
-                        (EmulatedKernel.osThreadId thread)
+                    EmulatedKernel.mapTasks
+                        (UnixTaskTable.register
+                            thread
+                            (EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel)
+                            (EmulatedKernel.osThreadId thread))
                         state.Kernel
             }
 
@@ -476,7 +477,9 @@ module IlMachineThreadState =
                     // to stay distinct: `osThreadId` is a function of the
                     // `ThreadId` allocated just above, which is unique to this
                     // thread like any other's.
-                    EmulatedKernel.registerTask thread (CpuId 0) (EmulatedKernel.osThreadId thread) state.Kernel
+                    EmulatedKernel.mapTasks
+                        (UnixTaskTable.register thread (CpuId 0) (EmulatedKernel.osThreadId thread))
+                        state.Kernel
             }
 
         newState, thread

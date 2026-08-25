@@ -107,7 +107,7 @@ module NativeSystemNative =
 
     /// The OS thread id of the thread currently executing the native call.
     let private osThreadIdOf (_operation : string) (ctx : NativeCallContext) : OsThreadId =
-        EmulatedKernel.osThreadIdOf ctx.Thread ctx.State.Kernel
+        UnixTaskTable.osThreadIdOf ctx.Thread ctx.State.Kernel.Tasks
 
     let private pushInt32 (value : int) (ctx : NativeCallContext) : NativeHandlerResult =
         ctx.State
@@ -2144,7 +2144,7 @@ module NativeSystemNative =
             // kernel's env table live, so if environment mutation is ever
             // added, a re-derivation could silently turn a guest's shard index
             // into an out-of-range one.
-            let cpu = EmulatedKernel.cpuOf ctx.Thread state.Kernel
+            let cpu = UnixTaskTable.cpuOf ctx.Thread state.Kernel.Tasks
 
             let (CpuId.CpuId cpu) = cpu
 
@@ -6678,13 +6678,15 @@ module NativeSystemNative =
                 // entered with, consulted by the re-entry in place of the
                 // arguments the guest may have scribbled on since.
                 state.MapKernel (
-                    EmulatedKernel.withParkedSocketWait
-                        ctx.Thread
-                        (Some
-                            {
-                                ParkedSocketWait.Port = port
-                                MaxEvents = requestedCount
-                            })
+                    EmulatedKernel.mapTasks (
+                        UnixTaskTable.withParkedSocketWait
+                            ctx.Thread
+                            (Some
+                                {
+                                    ParkedSocketWait.Port = port
+                                    MaxEvents = requestedCount
+                                })
+                    )
                 )
                 |> Scheduler.blockOnSocketEvents ctx.Thread port
                 |> NativeHandlerResult.blockedRetainingFrame
@@ -6746,7 +6748,9 @@ module NativeSystemNative =
                 // A successful wait leaves errno alone. The wait is over, so
                 // the captured in-flight state (if this was a re-entry) goes
                 // with it.
-                state.MapKernel (fun _ -> EmulatedKernel.withParkedSocketWait ctx.Thread None kernel)
+                state.MapKernel (fun _ ->
+                    EmulatedKernel.mapTasks (UnixTaskTable.withParkedSocketWait ctx.Thread None) kernel
+                )
                 |> writeBytesThrough ctx operation bufferPointer (ImmutableArray.CreateRange bytes)
                 |> writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange countBytes)
                 |> IlMachineState.pushToEvalStack'
@@ -6776,7 +6780,7 @@ module NativeSystemNative =
             // last descriptor from destroying it). So a re-entry consults no
             // screen and no descriptor table: it delivers from the captured
             // description, or parks again.
-            match EmulatedKernel.parkedSocketWaitFor ctx.Thread state.Kernel with
+            match UnixTaskTable.parkedSocketWaitFor ctx.Thread state.Kernel.Tasks with
             | Some inFlight -> deliverOrPark inFlight.Port inFlight.MaxEvents
             | None ->
 
