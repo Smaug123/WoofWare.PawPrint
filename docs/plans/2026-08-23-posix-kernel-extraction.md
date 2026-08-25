@@ -1090,7 +1090,10 @@ transitions.
 
 The record and nine process-only operations moved, generic in both of
 `SignalState`'s parameters because it holds one:
-`UnixProcessState<'Task, 'Handler>`. `environmentEntryProblem` went with them,
+`UnixProcessState<'Task, 'Handler>`. The `UnixProcessState<'Handler>` in the
+target shape above is therefore wrong, in the same way that block's
+`UnixTaskState.Errno` is: it was written before stage 4 measured that a signal
+state has to be generic in what names a task as well as in what a handler is. `environmentEntryProblem` went with them,
 being the rule `withEnvironment` enforces and no use of a CLR concept.
 `descriptionsNamingSocket` was private and stops being so: two of its three
 callers moved, and the third — `signalSocketDataReady`, which is mixed and stays
