@@ -1051,6 +1051,27 @@ which is the only reason a 40-field move is reviewable.
   against real Linux epoll in a container, is the sharpest available check that
   the socket-table regrouping preserved behaviour. Run it.
 
+### Interlude: the docstrings the moves detached
+
+Stages 5 and 6 moved definitions between files with scripted `cut`s that took
+the definition and left the prose. An F# `///` block binds to the declaration
+that *follows* it, so a stranded block does not vanish — it silently starts
+documenting whatever comes next, and where it lands immediately above another
+docstring the two fuse into one. Nothing catches that: it is invisible to the
+compiler, to the tests, and to a diff that looks local and reasonable.
+
+Nine sites were wrong by the end of stage 6c, and repairing them by eye had
+already failed twice (PRs #1162 and #1166 each found some and missed others).
+`scripts/check-docstring-attachment.py` is the oracle that finds them all: it
+pairs every block with the declaration it precedes on both sides of a revision
+range and reports the pairs that moved. Two of the nine predate the extraction
+entirely, which is what a mechanical check buys over reading — one of those
+(`nanosecondsPerTick` still opening "Nanoseconds per millisecond") had been
+stale since #848 renamed the constant.
+
+Run it against the branch point for every remaining stage; the moves are not
+finished.
+
 ### Stage 6: move `UnixSystem` to the library
 
 **Dependencies**: stage 5.
