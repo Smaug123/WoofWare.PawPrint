@@ -1337,7 +1337,334 @@ introducing it now would be a rename with nothing to justify it.
 suite (`Guest` runs in CI), and the docstring check. No behaviour changes: every
 call site is the same computation spelled differently.
 
-### Stage 7: the syscall request layer, on the pure syscalls first
+### Stage 7 design (proposed)
+
+Stage 7's specification below was written before stage 6, and measuring against
+today's code moves several things. This proposal was reviewed by a second model,
+which found two blocking defects and five smaller ones; what follows is the
+revision, with the review's findings marked where they changed the design.
+
+#### What is actually there
+
+The stage names thirteen syscalls. Measured against
+`Native/NativeSystemNative.fs`:
+
+* three have **no handler at all** — `getuid`, `umask`, `chdir`. There is nothing
+  to hoist.
+* four **do touch guest memory**: `getcwd` writes a buffer; `unlink`, `rmdir` and
+  `mkdir` each read a NUL-terminated path. The stage says "carry no buffer",
+  which is true only of the output buffer.
+
+The buffer-free set that exists today is the remaining **six**: `GetEUid`, `Dup`,
+`Close`, `FLock`, `LSeek`, `FTruncate`. None reads or writes guest memory and
+none blocks — `FLock`'s blocking case is a refusal today rather than a park. So
+stage 7 is these six, and every path-carrying syscall moves to stage 8 where the
+buffer machinery belongs.
+
+#### Refusals are two different things, and only one of them is data
+
+The six carry eight `failwith`s between their match arms, and a mechanical
+conversion of all eight into a returned outcome would be a correctness bug.
+Reading them:
+
+| site | says | kind |
+| --- | --- | --- |
+| `NativeSystemNative.fs:4599` | SEEK_DATA/SEEK_HOLE: no notion of sparseness | measured, unmodelled |
+| `:4659` | directory SEEK_END: "no portable answer: measured, …" | measured, unmodelled |
+| `:3692`, `:3811` | Darwin `flock`; blocking `flock` | measured, unmodelled |
+| `:4611`, `:4618` | "(this is an interpreter bug)" | invariant |
+| `:4625` | "the open file description must keep it alive" | invariant |
+| `:4641` | "`open` resolves symlinks, so no descriptor should name one" | invariant |
+
+An invariant violation is a corrupted `UnixSystem`. Returning it as a lawful
+outcome hands a second client something it can catch and continue past, with the
+broken state alongside — which is exactly what "correctness over availability"
+forbids, and what the gospel's fail-fast assertions are for. **Only the measured
+refusals become data; the invariant arms stay `failwith` inside the library.**
+
+The census also stops too early. `Close` delegates to `EmulatedKernel.closeFd`,
+which carries refusals of both kinds — two measured close-under-waiter cases
+(`EmulatedKernel.fs:2107`, `:2110`), a measured listener-RST case (`:2207`), and
+an invariant (`:2126`, `DanglingSocket`). `step` exposes call trees, not match
+arms, so the classification is a job for every operation the six reach.
+
+#### A refusal must not hand back a state
+
+If `step` returned `SyscallOutcome * UnixSystem` with a refusal case, the refusal
+would arrive paired with *some* state, and nothing in the type says which.
+`closeFd` makes that concrete: `FileDescriptorRegistry.close` runs at
+`EmulatedKernel.fs:2064`, and the refusals fire after it, so the obvious
+conversion returns the advanced registry beside a refusal.
+
+So the refusal is the outer error, and carries no state:
+
+```fsharp
+val step :
+    Syscall -> UnixSystem<'Task, 'Handler> ->
+        Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, SyscallRefusal>
+```
+
+A refused call structurally cannot yield a continuable state: the client still
+holds the one it passed in. (The first draft had a three-case outcome, and its
+own worked example discarded the state on the refusal arm with a `_` — which was
+the tell.)
+
+#### The types
+
+```fsharp
+type UnixSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    {
+        Machine : UnixMachineState
+        Process : UnixProcessState<'Task, 'Handler>
+        Tasks : Map<'Task, UnixTaskState>
+    }
+
+type Syscall =
+    | GetEffectiveUserId
+    | Dup of fd : int
+    | Close of fd : int
+    | FLock of fd : int * operation : int
+    | LSeek of fd : int * offset : int64 * whence : int
+    | FTruncate of fd : int * length : int64
+
+/// What the entry point returns, for a request the library could answer.
+type SyscallAnswer =
+    /// The entry point returns this.
+    | Completed of answer : int64
+    /// The entry point returns its failure sentinel, and the client stores
+    /// `error` wherever its libc keeps errno. A failure still changes the
+    /// system: a failing `flock` advances the descriptor table, measured.
+    | Failed of error : UnixError
+```
+
+`SyscallRefusal` is a DU per refusing syscall (`LSeekRefusal.SeekDataHole`,
+`FLockRefusal.DarwinUnmodelled of divergence`, …) rather than a `string`. The
+precedent is in the library already: `SocketCreationRefusal.Unmodelled`
+(`SimulatedUnixPlatform.fs:416`) is payload-free, and `NativeSystemNative.fs:5188`
+composes the crash message from the raw PAL arguments the library never saw.
+Prose describing *what the client asked for* cannot be the library's, so the
+library names the case and the client writes the sentence.
+
+**The core is per-syscall functions; `step` is a total dispatcher over them.** A
+single `SyscallAnswer` for every syscall makes illegal outcomes representable:
+`geteuid(2)` cannot fail (`pal_uid.c` is `return geteuid();`), and `Dup`,
+`Close` and `FTruncate` have no refusal at all. Typed:
+
+```fsharp
+val effectiveUserId : UnixSystem<'T,'H> -> uint32                                    // total
+val dup : fd : int -> UnixSystem<'T,'H> -> SyscallAnswer * UnixSystem<'T,'H>          // fallible, unrefusable
+val lseek : fd : int -> offset : int64 -> whence : int -> UnixSystem<'T,'H>
+         -> Result<SyscallAnswer * UnixSystem<'T,'H>, LSeekRefusal>
+```
+
+`step` still earns its place — uniform syscall logging, replay, and `SocketFuzz`
+generation all want one surface — but as sugar over the primitives rather than as
+the primitive. Cost: two surfaces to keep aligned, mitigated by the dispatcher
+being one arm per case and trivially total.
+
+#### `SyscallEffect`: deferred implementation, but the target shape is committed now
+
+No syscall in stage 7 writes guest memory, so nothing in stage 7 can exercise an
+effect list, and a shape no test can observe is a shape chosen ahead of its
+evidence. Stage 7 builds none.
+
+But the *evidence* for the eventual shape is already in this document, so
+deferring the decision as well would be a false economy. Decision 1 records that
+a failed `epoll_wait` writes 0 through `*count` on Linux and -1 on Darwin — so
+**`Failed` carries writes too**, and `SyscallAnswer` gains a `writes` component
+on both arms when the first buffer-carrying syscall lands. Committing to that
+here is the same argument the task parameter gets below, applied consistently.
+
+What stage 8 must still *measure* is whether `writes` is an ordered list. The
+claim to test is that it need not be: a syscall is atomic with respect to
+PawPrint's scheduler, and errno is per-calling-thread
+(`LastSystemError : Map<ThreadId, int>`), so no other guest thread can observe an
+interleaving and the caller sees every write only after return. If that holds, a
+set or a record is the honest shape and decision 2(b)'s ordered list is
+over-specified. **Decision 2(b) must be amended in place when this lands**, not
+left contradicting stage 7 — two versions of the truth in one plan document is
+the state the plan's own migration section warns about.
+
+One honesty note for stage 8: `Completed of answer` is "what the entry point
+returns, when that is a value the library knows". `getcwd`'s success value is the
+caller's own buffer pointer, which the library never possesses; the client
+composes it.
+
+#### Raw versus parsed: the rule, restated
+
+The first draft said "a value crosses raw exactly when rejecting it is behaviour
+the library models". The biconditional is false, and settled material falsifies
+it: rejecting a null pointer with EFAULT *is* library behaviour, yet decision 2
+has the pointer cross **parsed**, as `UserBuffer`'s three-way classification,
+because only the client can tell whether an address names storage. The rule
+conflated two independent questions. Separated:
+
+* **Who can classify?** Whoever holds the knowledge. The client knows what an
+  address names; the library knows what a path resolves to.
+* **Who owns the consequence?** Whoever models the behaviour. EFAULT for `Null`
+  is the library's answer even though the client did the classifying.
+
+A value crosses raw when the library can classify it *and* owns the consequence.
+With one carve-out that stage 8 will need: **raw means raw kernel ABI, not PAL.**
+`open`'s flags are PAL values the C shim translates, and letting them cross would
+grow `scripts/pal-residue-allowlist.txt`, which may only shrink. Stage 7's two
+raw ints are safe because the handlers say so — `flock`'s operation bits are
+"*not* PAL values that the C translates" (`NativeSystemNative.fs:3652`) and
+`SeekWhence`'s numbering "is also POSIX's" (`:4437`).
+
+#### The PAL residue stage 3.5 assigned here
+
+`scripts/pal-residue-allowlist.txt` says in its header that "Stage 7 … retires
+what is left", and stage 3.5 chose containment on the strength of that promise.
+The re-scoped stage 7 touches none of the socket cluster, so it cannot keep the
+whole promise — but it can keep part, and must say so rather than silently drop
+it. Stage 7 retires the `UnixError` PAL cluster (`toPal`, `palOfRawErrno`,
+`palOfRawErrnoUnder`), which belongs beside the errno-encoding helper stage 7
+builds anyway; the socket cluster moves to stages 8 and 9 with the syscalls that
+use it; the allowlist header is updated to say so.
+
+#### Two questions the review changed my mind on
+
+**(1) Does `step` take the calling task?** I leaned yes. The review's argument
+against is stronger, and it is a mutation-testing argument: **no stage-7 or
+stage-8 syscall's answer depends on the caller**, so no test and no mutant can
+distinguish a correct caller argument from a wrong one. Every call site written
+in stages 7–8 would pass an unaudited value, and when stage 9 makes it
+load-bearing nothing — not the compiler, not a review — revisits them. That is
+`fixture-default-can-hide-the-mutant` at the scale of a whole API.
+
+Chosen instead, a third option neither draft listed: **carry the caller in the
+payload of the syscalls that depend on it**, which from stage 9 means
+`WaitForSocketEvents of caller : 'Task * …`. "This syscall's answer cannot depend
+on who asks" then becomes structural for every other case rather than a
+convention. Cost: `Syscall` becomes generic in `'Task` at stage 9. Note this
+supersedes decision 1(b)'s sketched
+`step : UnixSystem -> TaskId -> Syscall -> …`, which predates the census.
+
+**(2) When does `UnixSystem` appear?** Unchanged: its own commit, first. It is a
+mechanical rename measured at **320 sites** (195 `.Machine`, 98 `.Process`, 27
+`.Tasks`), auditable by the token-multiset check stage 6g used, and burying that
+under the design work is what makes a diff unreadable.
+
+#### What a handler becomes, and what it does not
+
+```fsharp
+| Some "SystemNative_FLock", [ ConcreteIntPtr _ ; _ ], MethodReturnType.Returns (... Int32) ->
+    let fd = fdArgument operation instruction.Arguments.[0]
+    let request = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+    match UnixSystem.step (Syscall.FLock (fd, request)) state.Kernel.Unix with
+    | Error refusal -> failwith (FLockRefusal.describe operation fd request refusal)
+    | Ok (SyscallAnswer.Failed error, unix) -> failingWith operation error unix ctx state
+    | Ok (SyscallAnswer.Completed answer, unix) -> answeringInt32 (int32 answer) unix ctx state
+```
+
+`failingWith` is shared: it converts `UnixError` to the raw errno under this
+kernel's numbering, stores it in `LastSystemError` for the calling thread, and
+pushes the sentinel. There is **not** a single `answeringWith`, because the six
+push four different eval-stack shapes — `UInt32` for GetEUid
+(`NativeSystemNative.fs:2540`), `NativeInt` for Dup (`:4954`), `Int64` for LSeek
+(`:4685`), `Int32` for the rest — so the encode half is a small per-width family.
+
+Nor does "the handlers shrink to decode, `step`, encode" hold of the *library*
+side. `EmulatedKernel.closeFd` has three callers (`:3407` CloseDir, `:4970`
+Close, `:6254` a socket path) and `commitTruncation` two (`:2875` Open's
+`O_TRUNC`, `:3551` FTruncate), and in both cases only one caller hoists in stage
+7. Those operations move into the library as directly-callable functions that
+`step` delegates to, and the stage-7 move budget for `Close` is `closeFd`'s
+socket-teardown logic rather than a match arm.
+
+#### Two things implementing it changed
+
+**`UnixSystem` is projected, not stored — so it lands with `step` after all.**
+The design had `EmulatedKernel` hold `Unix : UnixSystem` in its own prior commit,
+a rename measured at 320 sites. Implementing showed a third option neither draft
+considered:
+
+* **(a) Storage.** `EmulatedKernel` holds one field; 302 reads and 144
+  field-assignments change. Faithful to the target shape.
+* **(b) Projection.** `EmulatedKernel` keeps the three fields flat, and a lens
+  pair — `unix : EmulatedKernel -> UnixSystem<…>` and `withUnix` — assembles and
+  disassembles at the boundary. About thirty lines; **no call site changes at
+  all**. Costs one three-field allocation per syscall, which is nothing against
+  an interpreter that allocates per IL instruction, and it is a *function*
+  rather than a property so the cost reads at the call site.
+* **(c) Storage, but later.** Defers the choice without deciding it.
+
+Chosen **(b)**, on blast radius and reversibility: 446 mechanical sites for a
+shape exactly one boundary needs is not a trade this stage has to make, and if
+the aggregate ever earns storage the rename is still there and no harder. It
+also dissolves the sequencing question — with no rename to separate,
+`UnixSystem` arrives with the consumer that justifies it, which is what stage 6g
+argued for.
+
+The two directions must be total inverses, so `TestUnixSystemProjection` asserts
+the round trip both ways: an answer is lost if a caller forgets `withUnix`, and
+a state is resurrected if a caller writes back a system it did not step.
+
+**The library cannot construct one of itself.** `TestUnixSystemStep` has to
+spell out all nineteen fields of `UnixMachineState` and all twelve of
+`UnixProcessState`, because the library exposes no constructor for either —
+`EmulatedKernel.initial` is PawPrint's, and the defaults it uses
+(`defaultUnixPlatform`, `defaultEphemeralPortRange`, `defaultUserId`, …) live in
+`EmulatedKernel.fs`. A second client cannot make a `UnixSystem` at all without
+transcribing those. That is a real gap in the stated goal, found by being the
+second client for the first time, and it is deliberately *not* fixed here:
+choosing what an `initial` takes as arguments is API design, and folding it into
+a stage about the syscall surface would decide it by accident. It gets its own
+stage.
+
+#### What landed first
+
+`GetEffectiveUserId`, `Dup` and `LSeek` — chosen so that the first increment
+exercises every part of the shape rather than the easy part. `GetEffectiveUserId`
+is the syscall whose *type* says it cannot fail; `Dup` is a plain
+`Completed`/`Failed` pair; and `LSeek` is the one that refuses, so the
+refusal-versus-invariant split and the stateless `Error` are both under test from
+the start. `NativeSystemNative`'s `LSeek` arm goes from 246 lines to 33.
+
+The split that design predicted holds in the messages: the library says why no
+answer exists ("the two platforms transpose the numbers"), and PawPrint says
+which managed caller could have asked ("CoreLib never sends these —
+`Interop.Sys.SeekWhence` is 0, 1, 2"). Neither half can write the other's.
+
+`FLock`, `FTruncate` and `Close` follow. `Close` is last because it drags
+`closeFd`, which is 217 lines with refusals of both kinds and two callers besides
+`Close` itself.
+
+#### Correctness oracle
+
+* **A new `TestUnixSystemStep.fs` in `WoofWare.PosixKernel.Test`** driving the
+  primitives and `step`: the first test that uses the library the way a second
+  client would. One row per errno arm of the six, since the sad paths are the
+  shape's real exercise.
+* **One row per distinct refusal reason** — of which there are more than the
+  eight `failwith`s suggest, since `refuseDarwin` is one `failwith` behind five
+  call sites. This tier is the only place they are all reachable: CI's guests run
+  the Linux flavour, and a test here can construct a Darwin `UnixSystem`
+  directly. That reachability is the whole point of the new altitude.
+* **A row for `Failed` changing the system**: assert the descriptor table
+  advanced after a failing `flock`. It is the design's most distinctive claim and
+  the first draft's oracle did not test it.
+* **A host-differential row for each of the six**, in the manner of
+  `TestVirtualFileSystemAgainstHost`, so the new altitude keeps the oracle it had.
+* **An equivalence assertion for errno numbering**: `Dup` and `Close` use
+  portable `UnixError.toRawErrno` today (`:4950`, `:4975`) while `LSeek` and
+  `FLock` use `toRawErrnoUnder`. A shared `failingWith` changes the first two to
+  the numbered form. Identical for EBADF, but assert it rather than assume it.
+* **The existing guest fixtures, unchanged.** The whole claim is that no guest
+  can tell.
+* **Mutation**, per the skill: break one errno arm of each of the six and confirm
+  a row dies.
+
+#### What this stage deliberately does not do
+
+No `UserBuffer`, no writes component, no `WouldBlock`. Each waits for the stage
+that has a syscall needing it, so that its shape is chosen against evidence
+rather than against a sketch — with the one exception recorded above, where the
+evidence for the target shape already exists and is written down now.
+
+### Stage 7: the syscall request layer, on the pure syscalls first (as originally specified)
 
 **Dependencies**: stage 6.
 

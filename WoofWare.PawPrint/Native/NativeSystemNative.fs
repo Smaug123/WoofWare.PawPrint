@@ -5,22 +5,6 @@ open System.Buffers.Binary
 open System.Collections.Immutable
 open WoofWare.PosixKernel
 
-/// Why a file descriptor cannot be seeked, as a *fault* rather than as the errno
-/// it becomes.
-///
-/// Not a `UnixError`, because `SystemNative_LSeek` orders the two faults
-/// differently per platform: measured, Linux validates `whence` between them
-/// while Darwin does not, so an ordering written over errnos would let a future
-/// third fault inherit whichever position its errno's arm happened to occupy.
-[<RequireQualifiedAccess>]
-type internal DescriptorFault =
-    /// No such descriptor in the process's table; `EBADF`. Precedes everything
-    /// else on both platforms.
-    | NotOpen
-    /// The descriptor names something with no file offset — a pipe, which is
-    /// what PawPrint models the standard streams as; `ESPIPE`.
-    | NotSeekable
-
 /// A buffer-pointer argument to a `SystemNative_*` entry point, classified as
 /// far as a kernel's own address check can see it.
 ///
@@ -151,6 +135,33 @@ module NativeSystemNative =
         | ConcretePrimitive concreteTypes PrimitiveType.Int32 -> Some ()
         | NamedType concreteTypes ("", "Error", generics) when generics.IsEmpty -> Some ()
         | _ -> None
+
+    /// Store the errno a refused-or-failed syscall earned, in the raw numbering
+    /// this kernel's flavour uses, and hand back the state to push a sentinel
+    /// from.
+    ///
+    /// The library speaks `UnixError`; which integer that is on this platform is
+    /// a fact `SimulatedUnixPlatform` owns, and applying it is the last thing
+    /// PawPrint does before the guest sees a number.
+    let private withErrno
+        (ctx : NativeCallContext)
+        (error : UnixError)
+        (system : UnixSystem<ThreadId, SignalHandler>)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let numbering = SimulatedUnixPlatform.rawErrnoNumbering system.Machine.UnixPlatform
+
+        state.MapKernel (fun kernel ->
+            kernel
+            |> EmulatedKernel.withUnix system
+            |> EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
+        )
+
+    /// Write back the system a syscall answered from, having neither failed nor
+    /// been refused. Errno is left alone, as a successful syscall leaves it.
+    let private withAnswered (system : UnixSystem<ThreadId, SignalHandler>) (state : IlMachineState) : IlMachineState =
+        state.MapKernel (EmulatedKernel.withUnix system)
 
     /// Decode an `nint`-shaped Unix file-descriptor argument. CoreLib passes
     /// fds across the SystemNative boundary as plain `IntPtr` values (the low
@@ -2536,8 +2547,10 @@ module NativeSystemNative =
             // reachable. Leaving them unimplemented means a guest that gets
             // there stops loudly instead, naming the entry point.
             // `sourcesImpure/EffectiveUserIdConfigured.cs` pins the premise.
+            let uid = UnixSystem.effectiveUserId (EmulatedKernel.unix state.Kernel)
+
             state
-            |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 state.Kernel.UserId) ctx.Thread
+            |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 uid) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         // `int32_t SystemNative_Stat(const char* path, FileStatus* output)` and
@@ -4447,244 +4460,31 @@ module NativeSystemNative =
             let offset = NativeCall.int64Argument operation instruction.Arguments.[1]
             let whence = NativeCall.int32Argument operation instruction.Arguments.[2]
 
-            let fail (error : UnixError) : NativeHandlerResult option =
-                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+            match UnixSystem.lseek fd offset whence (EmulatedKernel.unix state.Kernel) with
+            | Error refusal ->
+                // The kernel's half of the message is the library's, because it
+                // is what that library measured; which managed caller could have
+                // sent this is PawPrint's, because CoreLib is a fact about the
+                // client rather than about any kernel.
+                let reachability =
+                    match refusal with
+                    | LSeekRefusal.Sparseness _ ->
+                        "CoreLib never sends these -- Interop.Sys.SeekWhence is 0, 1, 2 -- so this is a hand-rolled P/Invoke."
+                    | LSeekRefusal.DirectoryEnd _ ->
+                        "No BCL caller reaches it: SafeFileHandle.Init raises UnauthorizedAccessException on opening a directory for reading (SafeFileHandle.Unix.cs:320-327), and directory enumeration goes through opendir/readdir."
 
-                state.MapKernel (
-                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
-                )
+                failwith $"%s{operation}: fd %d{fd}: %s{LSeekRefusal.describe refusal} %s{reachability}"
+            | Ok (SyscallAnswer.Failed error, system) ->
+                withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 (Int64Source.Verbatim -1L)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-
-            let flavour = SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform
-
-            // `Interop.Sys.SeekWhence` (Interop.LSeek.cs), which is also POSIX's
-            // numbering and both platforms' `<unistd.h>` — for these three. It
-            // stops here; 3 and 4 are handled below and are *not* portable.
-            let seekSet = 0
-            let seekCur = 1
-            let seekEnd = 2
-            let seekMax = 4
-
-            // The two orderings below are measured, and this is the syscall
-            // where they differ most. On a single-fault input the platforms
-            // agree on every row; they part company on two:
-            //
-            //   input                       Linux    Darwin
-            //   pipe + whence 99            EINVAL   ESPIPE
-            //   pipe + whence 99 + overflow EINVAL   ESPIPE
-            //
-            // So Linux validates `whence` before it asks whether the object is
-            // seekable, and Darwin the other way round. The descriptor itself
-            // precedes both on either platform — `lseek(badfd, ..)` is EBADF for
-            // every whence and offset measured, including 99, 3, 4 and
-            // INT64_MAX — and the offset arithmetic follows both, pinned by
-            // `lseek(pipe, -1, SEEK_SET)` = ESPIPE on both (seekability first)
-            // and `lseek(f, 1, 99)` from INT64_MAX = EINVAL on both (whence
-            // first).
-            let whenceValid = whence >= seekSet && whence <= seekMax
-
-            let target = FileDescriptorRegistry.tryFindTarget fd state.Kernel.FileDescriptors
-
-            let descriptorFault : DescriptorFault option =
-                match target with
-                | None -> Some DescriptorFault.NotOpen
-                | Some (OpenFileTarget.StandardStream _) ->
-                    // Not seekable: PawPrint models the standard streams as
-                    // pipes, and `lseek` on a pipe is ESPIPE on both platforms
-                    // whichever end it is. This is the answer `SafeFileHandle`
-                    // reads back to decide `CanSeek`, so it is on the BCL's own
-                    // path rather than a corner.
-                    Some DescriptorFault.NotSeekable
-                | Some (OpenFileTarget.SocketEventPort _) ->
-                    // The one target whose *seekability* depends on the
-                    // platform, rather than merely the errno or the ordering.
-                    // Measured: Darwin refuses `lseek` on a kqueue with ESPIPE,
-                    // while Linux gives an epoll descriptor `noop_llseek`, which
-                    // succeeds and reports 0 without consulting the offset or
-                    // moving anything. So Darwin has a descriptor fault here and
-                    // Linux has none; the Linux success is served below, after
-                    // the whence check the syscall still applies.
-                    match flavour with
-                    | SimulatedUnixFlavour.Darwin -> Some DescriptorFault.NotSeekable
-                    | SimulatedUnixFlavour.Linux -> None
-                | Some (OpenFileTarget.Socket _) ->
-                    // Unseekable on both, unlike the port above: measured, both
-                    // platforms answer ESPIPE for every whence in 0..4 and every
-                    // offset, `-1` and `INT64_MAX` alike. The whence-ordering
-                    // divergence still shows through this, and is exactly what
-                    // the ladder below reproduces — measured,
-                    // `lseek(sock, 0, 9)` is EINVAL on Linux (whence checked
-                    // first) and ESPIPE on Darwin (seekability checked first).
-                    Some DescriptorFault.NotSeekable
-                | Some (OpenFileTarget.File _) -> None
-
-            // The two descriptor faults are ordered *differently* against the
-            // whence check, so they are kept apart as faults rather than as
-            // errnos: a future third fault must then decide where it sits
-            // instead of silently inheriting whichever position its errno's
-            // arm happened to occupy.
-            let ordered : UnixError option =
-                match descriptorFault with
-                | Some DescriptorFault.NotOpen ->
-                    // Ahead of everything on both platforms.
-                    Some UnixError.EBADF
-                | notOpenRejected ->
-
-                let unseekable =
-                    match notOpenRejected with
-                    | Some DescriptorFault.NotSeekable -> true
-                    | Some DescriptorFault.NotOpen
-                    | None -> false
-
-                match flavour with
-                | SimulatedUnixFlavour.Linux ->
-                    if not whenceValid then Some UnixError.EINVAL
-                    elif unseekable then Some UnixError.ESPIPE
-                    else None
-                | SimulatedUnixFlavour.Darwin ->
-                    if unseekable then Some UnixError.ESPIPE
-                    elif not whenceValid then Some UnixError.EINVAL
-                    else None
-
-            match ordered with
-            | Some error -> fail error
-            | None ->
-
-            // Linux's `noop_llseek`, reached only under the Linux flavour (Darwin
-            // answered ESPIPE above). It returns the file position unchanged, and
-            // an epoll descriptor's is always 0, so the answer is 0 for every
-            // input that gets here — measured for `SEEK_SET` with offset -1 and
-            // with INT64_MAX alike, and for whence 3 and 4.
-            //
-            // Ahead of the SEEK_DATA/SEEK_HOLE refusal below, which is why that
-            // refusal is not simply hoisted to the whence check: it is a
-            // statement about a *file's* sparseness, and a port has none. The
-            // syscall's own `whence <= SEEK_MAX` guard still applies and has
-            // already run, so whence 5 and above were rejected as EINVAL.
-            match target with
-            | Some (OpenFileTarget.SocketEventPort _) ->
-                state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 (Int64Source.Verbatim 0L)) ctx.Thread
+            | Ok (SyscallAnswer.Completed position, system) ->
+                withAnswered system state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 (Int64Source.Verbatim position)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | _ ->
 
-            // Whence *validity* is settled; whence *semantics* is not, and the
-            // two sit at different points in Linux's order — which is why
-            // refusing 3 and 4 up front would be wrong. Measured,
-            // `lseek(badfd, 0, 3)` is EBADF and `lseek(pipe, 0, 3)` is ESPIPE on
-            // both platforms, so a guest reaching here with whence 3 or 4 really
-            // is asking about a seekable file's sparseness.
-            //
-            // Which PawPrint refuses to answer. `SEEK_DATA` and `SEEK_HOLE` are
-            // numbered 3 and 4 on Linux and 4 and 3 on Darwin, so the raw value
-            // does not even name the same operation on the two kernels; and they
-            // ask about holes, which the emulated filesystem does not represent
-            // — every file is a byte array, so a hole-free answer would be a
-            // claim about the *filesystem* rather than about the kernel.
-            // Measured, real filesystems do not agree on it either: on a 5-byte
-            // file `lseek(f, 0, 3)` is 0 on Linux/ext4, 5 on macOS, and on a
-            // directory it is 0 on ext4, EINVAL on tmpfs and ENXIO on macOS.
-            //
-            // CoreLib cannot reach this: `Interop.Sys.SeekWhence` declares only
-            // 0, 1 and 2.
-            if whence > seekEnd then
-                let named =
-                    match flavour with
-                    | SimulatedUnixFlavour.Linux -> if whence = 3 then "SEEK_DATA" else "SEEK_HOLE"
-                    | SimulatedUnixFlavour.Darwin -> if whence = 3 then "SEEK_HOLE" else "SEEK_DATA"
-
-                failwith
-                    $"%s{operation}: fd %d{fd} asked for whence %d{whence}, which is %s{named} on the simulated platform. PawPrint models file contents as a byte array with no notion of sparseness, so it cannot say where the data and holes are; and the two platforms transpose the numbers (3 is SEEK_DATA on Linux and SEEK_HOLE on Darwin), so the raw value does not name one operation. CoreLib never sends these — Interop.Sys.SeekWhence is 0, 1, 2 — so this is a hand-rolled P/Invoke."
-            else
-
-            let whence =
-                if whence = seekSet then
-                    SeekWhence.Set
-                elif whence = seekCur then
-                    SeekWhence.Current
-                elif whence = seekEnd then
-                    SeekWhence.End
-                else
-                    failwith
-                        $"%s{operation}: whence %d{whence} passed the validity and semantics checks but is not one of SEEK_SET, SEEK_CUR or SEEK_END (this is an interpreter bug)"
-
-            let inode, current =
-                match target with
-                | Some (OpenFileTarget.File (inode, current)) -> inode, current
-                | _ ->
-                    failwith
-                        $"%s{operation}: fd %d{fd} is not a seekable file, but the descriptor checks above did not reject it (this is an interpreter bug)"
-
-            let entry =
-                match VirtualFileSystem.tryGet inode state.Kernel.FileSystem with
-                | Some entry -> entry
-                | None ->
-                    failwith
-                        $"%s{operation}: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive."
-
-            // Deferred, because only `SEEK_END` consults it and a directory has
-            // no size PawPrint will state. `seekTarget` forces this exactly on
-            // the `End` path, so `SEEK_SET` and `SEEK_CUR` on a directory — both
-            // portable — keep working rather than tripping over a size they
-            // never read.
-            let size =
-                lazy
-                    match entry.Content with
-                    | InodeContent.RegularFile (contents, _) -> int64 contents.Length
-                    | InodeContent.Symlink _ ->
-                        // Not reachable: `open` resolves symlinks, so no descriptor
-                        // names one. Stated rather than folded in so that an
-                        // `O_PATH`-style descriptor finds a decision here.
-                        failwith
-                            $"%s{operation}: fd %d{fd} names inode %O{inode}, which is a symbolic link. `open` resolves symlinks, so no descriptor should name one; if this is reachable, decide what seeking a link through a descriptor means (issue #956)."
-                    | InodeContent.Directory _ ->
-                        // There is no portable answer. Measured, `lseek(dir, 0,
-                        // SEEK_END)` is EINVAL on Linux/tmpfs, 4096 on Linux/ext4
-                        // and 64 on macOS/APFS: a directory's "size" is a property
-                        // of how the filesystem stores its entries, and PawPrint
-                        // stores them as a map. `FStat` reports 4096 for a directory,
-                        // but that number is *forced* — `stat` must fill the field in
-                        // — whereas nothing forces this one, and inventing a second
-                        // number from the same non-fact would make a guest's
-                        // `SEEK_END` agree with `FStat` by coincidence rather than by
-                        // construction.
-                        //
-                        // No BCL caller reaches it: `SafeFileHandle.Init` raises
-                        // `UnauthorizedAccessException` on opening a directory for
-                        // reading (SafeFileHandle.Unix.cs:320-327), and directory
-                        // enumeration goes through `opendir`/`readdir`.
-                        failwith
-                            $"%s{operation}: fd %d{fd} names inode %O{inode}, a directory, and was asked to seek relative to its end. A directory's size is a filesystem artefact rather than a fact about its contents, and there is no portable answer: measured, lseek(dir, 0, SEEK_END) is EINVAL on Linux/tmpfs, 4096 on Linux/ext4 and 64 on macOS/APFS. SEEK_SET and SEEK_CUR on a directory are portable and are supported."
-
-            match VirtualFileSystem.seekTarget whence current size offset with
-            | Error SeekFault.Negative ->
-                // EINVAL on both, and the offset is left where it was —
-                // measured, a failed `lseek` does not move the description.
-                fail UnixError.EINVAL
-            | Error SeekFault.Overflow ->
-                // The one place the *errno* differs rather than the ordering.
-                // Measured on a tmpfs-backed file, so that the filesystem is
-                // held constant: `lseek(f, INT64_MAX-4, SEEK_END)` on a 5-byte
-                // file is EINVAL on Linux and EOVERFLOW on Darwin.
-                match flavour with
-                | SimulatedUnixFlavour.Linux -> fail UnixError.EINVAL
-                | SimulatedUnixFlavour.Darwin -> fail UnixError.EOVERFLOW
-            | Ok position ->
-
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    Process =
-                        { kernel.Process with
-                            FileDescriptors = FileDescriptorRegistry.setOffset fd position kernel.FileDescriptors
-                        }
-                }
-            )
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 (Int64Source.Verbatim position)) ctx.Thread
-            |> NativeHandlerResult.completed
-            |> Some
         | Some "SystemNative_ReadLink",
           [ ConcretePointer _ ; ConcretePointer _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
@@ -4933,22 +4733,9 @@ module NativeSystemNative =
             let oldFd = fdArgument "SystemNative_Dup" instruction.Arguments.[0]
 
             let resultFd, state =
-                match FileDescriptorRegistry.dup oldFd state.Kernel.FileDescriptors with
-                | Ok (newFd, registry) ->
-                    int64 newFd,
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            Process =
-                                { kernel.Process with
-                                    FileDescriptors = registry
-                                }
-                        }
-                    )
-                | Error FileDescriptorDupError.BadFd ->
-                    -1L,
-                    state.MapKernel (
-                        EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EBADF)
-                    )
+                match UnixSystem.dup oldFd (EmulatedKernel.unix state.Kernel) with
+                | SyscallAnswer.Completed newFd, system -> newFd, withAnswered system state
+                | SyscallAnswer.Failed error, system -> -1L, withErrno ctx error system state
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim resultFd)) ctx.Thread

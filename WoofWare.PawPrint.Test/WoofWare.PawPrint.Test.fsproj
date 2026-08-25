@@ -148,6 +148,7 @@
     <Compile Include="TestEmulatedKernelCurrentDirectory.fs" />
     <Compile Include="TestDirectoryStreamId.fs" />
     <Compile Include="TestTaskState.fs" />
+        <Compile Include="TestUnixSystemProjection.fs" />
     <Compile Include="TestEmulatedKernelInodeLifetime.fs" />
     <Compile Include="TestEmulatedKernelSockets.fs" />
     <Compile Include="TestSocketEventDelivery.fs" />
