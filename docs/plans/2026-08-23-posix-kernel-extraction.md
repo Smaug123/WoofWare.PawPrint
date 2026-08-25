@@ -1574,6 +1574,64 @@ Close, `:6254` a socket path) and `commitTruncation` two (`:2875` Open's
 `step` delegates to, and the stage-7 move budget for `Close` is `closeFd`'s
 socket-teardown logic rather than a match arm.
 
+#### Two things implementing it changed
+
+**`UnixSystem` is projected, not stored — so it lands with `step` after all.**
+The design had `EmulatedKernel` hold `Unix : UnixSystem` in its own prior commit,
+a rename measured at 320 sites. Implementing showed a third option neither draft
+considered:
+
+* **(a) Storage.** `EmulatedKernel` holds one field; 302 reads and 144
+  field-assignments change. Faithful to the target shape.
+* **(b) Projection.** `EmulatedKernel` keeps the three fields flat, and a lens
+  pair — `unix : EmulatedKernel -> UnixSystem<…>` and `withUnix` — assembles and
+  disassembles at the boundary. About thirty lines; **no call site changes at
+  all**. Costs one three-field allocation per syscall, which is nothing against
+  an interpreter that allocates per IL instruction, and it is a *function*
+  rather than a property so the cost reads at the call site.
+* **(c) Storage, but later.** Defers the choice without deciding it.
+
+Chosen **(b)**, on blast radius and reversibility: 446 mechanical sites for a
+shape exactly one boundary needs is not a trade this stage has to make, and if
+the aggregate ever earns storage the rename is still there and no harder. It
+also dissolves the sequencing question — with no rename to separate,
+`UnixSystem` arrives with the consumer that justifies it, which is what stage 6g
+argued for.
+
+The two directions must be total inverses, so `TestUnixSystemProjection` asserts
+the round trip both ways: an answer is lost if a caller forgets `withUnix`, and
+a state is resurrected if a caller writes back a system it did not step.
+
+**The library cannot construct one of itself.** `TestUnixSystemStep` has to
+spell out all nineteen fields of `UnixMachineState` and all twelve of
+`UnixProcessState`, because the library exposes no constructor for either —
+`EmulatedKernel.initial` is PawPrint's, and the defaults it uses
+(`defaultUnixPlatform`, `defaultEphemeralPortRange`, `defaultUserId`, …) live in
+`EmulatedKernel.fs`. A second client cannot make a `UnixSystem` at all without
+transcribing those. That is a real gap in the stated goal, found by being the
+second client for the first time, and it is deliberately *not* fixed here:
+choosing what an `initial` takes as arguments is API design, and folding it into
+a stage about the syscall surface would decide it by accident. It gets its own
+stage.
+
+#### What landed first
+
+`GetEffectiveUserId`, `Dup` and `LSeek` — chosen so that the first increment
+exercises every part of the shape rather than the easy part. `GetEffectiveUserId`
+is the syscall whose *type* says it cannot fail; `Dup` is a plain
+`Completed`/`Failed` pair; and `LSeek` is the one that refuses, so the
+refusal-versus-invariant split and the stateless `Error` are both under test from
+the start. `NativeSystemNative`'s `LSeek` arm goes from 246 lines to 33.
+
+The split that design predicted holds in the messages: the library says why no
+answer exists ("the two platforms transpose the numbers"), and PawPrint says
+which managed caller could have asked ("CoreLib never sends these —
+`Interop.Sys.SeekWhence` is 0, 1, 2"). Neither half can write the other's.
+
+`FLock`, `FTruncate` and `Close` follow. `Close` is last because it drags
+`closeFd`, which is 217 lines with refusals of both kinds and two callers besides
+`Close` itself.
+
 #### Correctness oracle
 
 * **A new `TestUnixSystemStep.fs` in `WoofWare.PosixKernel.Test`** driving the

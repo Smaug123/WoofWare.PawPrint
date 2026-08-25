@@ -870,6 +870,27 @@ module EmulatedKernel =
             Machine = f kernel.Machine
         }
 
+    /// This kernel's POSIX half, as `UnixSystem.step` and its per-syscall
+    /// siblings want it. Allocates: `EmulatedKernel` stores the three parts
+    /// flat, and this assembles a view of them.
+    let unix (kernel : EmulatedKernel) : UnixSystem<ThreadId, SignalHandler> =
+        {
+            Machine = kernel.Machine
+            Process = kernel.Process
+            Tasks = kernel.Tasks
+        }
+
+    /// Put back a POSIX half a syscall answered from. Total in both directions
+    /// with `unix`, which `TestUnixSystemProjection` asserts: a syscall's answer
+    /// is lost if a caller forgets this, and gained twice if a caller writes
+    /// back a system it did not step.
+    let withUnix (system : UnixSystem<ThreadId, SignalHandler>) (kernel : EmulatedKernel) : EmulatedKernel =
+        { kernel with
+            Machine = system.Machine
+            Process = system.Process
+            Tasks = system.Tasks
+        }
+
     /// Default environment variables for a freshly-minted simulated process.
     /// PawPrint only implements invariant-globalization today, so this seed
     /// must always be applied: callers that supply a custom environment

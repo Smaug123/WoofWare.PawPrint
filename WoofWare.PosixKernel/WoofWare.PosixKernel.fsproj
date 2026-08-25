@@ -31,6 +31,7 @@
         <Compile Include="SimulatedUnixPlatform.fs" />
         <Compile Include="UnixProcess.fs" />
         <Compile Include="UnixMachine.fs" />
+        <Compile Include="UnixSystem.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
 
