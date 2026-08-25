@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open WoofWare.PawPrint.ExternImplementations
+open WoofWare.PosixKernel
 
 [<RequireQualifiedAccess>]
 module NativeMonitor =
@@ -154,7 +155,7 @@ module NativeMonitor =
                     // timeouts against a long-running clock.
                     Some (
                         state.Kernel.VirtualClockTicks
-                        + int64 timeout * EmulatedKernel.ticksPerMillisecond
+                        + int64 timeout * UnixMachineState.ticksPerMillisecond
                     )
 
             // The optimistic `Int32 1` (signalled), pushed before parking; see the contract

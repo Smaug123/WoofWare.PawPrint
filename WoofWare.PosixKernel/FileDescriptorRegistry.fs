@@ -575,7 +575,7 @@ type OpenFileTarget =
     /// `SystemNative_Accept` produces those.
     ///
     /// So the description names a socket rather than containing one, and the
-    /// kernel is where a socket's lifetime is decided. `EmulatedKernel.socket`
+    /// kernel is where a socket's lifetime is decided. `UnixMachineState.socket`
     /// resolves the name.
     | Socket of socket : SocketId
 

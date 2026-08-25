@@ -49,7 +49,7 @@ module NativeEnvironment =
                 // `Environment.ProcessorCount` is documented as always
                 // positive, and CoreLib callers (ThreadPool sizing,
                 // `Parallel` partitioning) divide by it. A kernel built by
-                // record-copy can bypass `EmulatedKernel.withProcessorCount`,
+                // record-copy can bypass `UnixMachineState.withProcessorCount`,
                 // so re-assert here: the guest must never observe a value
                 // that the real property could not produce.
                 failwith

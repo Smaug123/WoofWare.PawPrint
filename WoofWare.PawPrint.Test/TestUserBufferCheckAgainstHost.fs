@@ -158,9 +158,11 @@ module TestUserBufferCheckAgainstHost =
                     | None -> UserBufferCheck.AtCopyTime
                     | Some limit ->
                         EmulatedKernel.initial
-                        |> EmulatedKernel.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) None
-                        |> EmulatedKernel.withUserAddressLimit limit
-                        |> EmulatedKernel.userBufferCheck
+                        |> EmulatedKernel.mapMachine (
+                            UnixMachineState.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) None
+                        )
+                        |> EmulatedKernel.mapMachine (UnixMachineState.withUserAddressLimit limit)
+                        |> fun kernel -> UnixMachineState.userBufferCheck kernel.Machine
 
                 let describe (refuses : bool) : string =
                     if refuses then "refuses" else "accepts"

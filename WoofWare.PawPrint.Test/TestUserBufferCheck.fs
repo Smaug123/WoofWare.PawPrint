@@ -143,8 +143,8 @@ module TestUserBufferCheck =
 
     let private kernelOn (platform : SimulatedUnixPlatform) (limit : uint64) : EmulatedKernel =
         EmulatedKernel.initial
-        |> EmulatedKernel.withUnixPlatformAndFileSystemType platform None
-        |> EmulatedKernel.withUserAddressLimit limit
+        |> EmulatedKernel.mapMachine (UnixMachineState.withUnixPlatformAndFileSystemType platform None)
+        |> EmulatedKernel.mapMachine (UnixMachineState.withUserAddressLimit limit)
 
     /// macOS performs no up-front check at all: measured, every address at
     /// every size reads 0 from a descriptor with nothing to transfer. The
@@ -153,7 +153,7 @@ module TestUserBufferCheck =
     [<Test>]
     let ``Darwin checks at copy time`` () : unit =
         for limit in [ 1UL ; ObservedUserAddressLimit.X64FourLevelPaging ; UInt64.MaxValue ] do
-            EmulatedKernel.userBufferCheck (kernelOn SimulatedUnixPlatform.macOsArm64 limit)
+            UnixMachineState.userBufferCheck (kernelOn SimulatedUnixPlatform.macOsArm64 limit).Machine
             |> shouldEqual UserBufferCheck.AtCopyTime
 
     /// The limit is the *machine's*, not the flavour's: the same Linux platform
@@ -170,7 +170,7 @@ module TestUserBufferCheck =
             ]
 
         for limit in observed do
-            EmulatedKernel.userBufferCheck (kernelOn SimulatedUnixPlatform.linuxX64 limit)
+            UnixMachineState.userBufferCheck (kernelOn SimulatedUnixPlatform.linuxX64 limit).Machine
             |> shouldEqual (UserBufferCheck.BeforeOperation limit)
 
         // Every observed value is a real `TASK_SIZE_MAX`, so each is either a
@@ -183,7 +183,7 @@ module TestUserBufferCheck =
 
         // A machine with no user address space is not a machine.
         Assert.Throws<exn> (fun () ->
-            EmulatedKernel.withUserAddressLimit 0UL EmulatedKernel.initial
+            EmulatedKernel.mapMachine (UnixMachineState.withUserAddressLimit 0UL) EmulatedKernel.initial
             |> ignore<EmulatedKernel>
         )
         |> ignore<exn>
@@ -194,9 +194,8 @@ module TestUserBufferCheck =
     [<Test>]
     let ``Linux refuses a range that leaves the user address space`` () : unit =
         let check =
-            EmulatedKernel.userBufferCheck (
-                kernelOn SimulatedUnixPlatform.linuxX64 ObservedUserAddressLimit.X64FourLevelPaging
-            )
+            UnixMachineState.userBufferCheck
+                (kernelOn SimulatedUnixPlatform.linuxX64 ObservedUserAddressLimit.X64FourLevelPaging).Machine
 
         let faults (address : uint64) (length : uint64) : bool =
             UserBufferCheck.faultsBeforeOperation check address length

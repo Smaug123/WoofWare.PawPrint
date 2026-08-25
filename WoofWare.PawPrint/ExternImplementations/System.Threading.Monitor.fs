@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint.ExternImplementations
 
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 [<RequireQualifiedAccess>]
 module System_Threading_Monitor =
@@ -287,7 +288,7 @@ module System_Threading_Monitor =
                     // to `Int32 0`).
                     let deadlineTicks =
                         state.Kernel.VirtualClockTicks
-                        + int64 timeout * EmulatedKernel.ticksPerMillisecond
+                        + int64 timeout * UnixMachineState.ticksPerMillisecond
 
                     state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) currentThread

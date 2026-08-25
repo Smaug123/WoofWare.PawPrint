@@ -68,7 +68,7 @@ module TestSocketEventDelivery =
                             kernel.Sockets
                             |> Map.add
                                 socketId
-                                { EmulatedKernel.socket socketId kernel with
+                                { UnixMachineState.socket socketId kernel.Machine with
                                     Binding =
                                         Some
                                             {

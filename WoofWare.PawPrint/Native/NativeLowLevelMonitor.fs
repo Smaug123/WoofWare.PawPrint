@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+open WoofWare.PosixKernel
+
 /// Native handler for the seven `SystemNative_LowLevelMonitor_*` entry points
 /// exposed by `libSystem.Native`. The managed counterparts live in
 /// `System.Threading.LowLevelMonitor.Unix` and back `LowLevelLock`,
@@ -141,7 +143,7 @@ module NativeLowLevelMonitor =
                     // timeouts against a long-running clock.
                     Some (
                         state.Kernel.VirtualClockTicks
-                        + int64 timeout * EmulatedKernel.ticksPerMillisecond
+                        + int64 timeout * UnixMachineState.ticksPerMillisecond
                     )
 
             // Push the optimistic `Int32 1` (signalled) onto the calling

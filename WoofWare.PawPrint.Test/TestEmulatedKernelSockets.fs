@@ -98,7 +98,7 @@ module TestEmulatedKernelSockets =
 
         match description.Target with
         | OpenFileTarget.Socket socketId ->
-            let socket = EmulatedKernel.socket socketId kernel
+            let socket = UnixMachineState.socket socketId kernel.Machine
             socket.Domain |> shouldEqual SocketDomain.InterNetworkV6
             socket.Kind |> shouldEqual SocketKind.Datagram
             socket.Protocol |> shouldEqual SocketProtocol.Udp
@@ -185,7 +185,8 @@ module TestEmulatedKernelSockets =
         match FileDescriptorRegistry.tryFind fd kernel.FileDescriptors with
         | Some description ->
             match description.Target with
-            | OpenFileTarget.Socket socketId -> EmulatedKernel.socket socketId kernel |> shouldEqual someSocket
+            | OpenFileTarget.Socket socketId ->
+                UnixMachineState.socket socketId kernel.Machine |> shouldEqual someSocket
             | other -> failwith $"expected a socket target, got %O{other}"
         | None -> failwith "the original descriptor should still be live"
 
@@ -219,7 +220,7 @@ module TestEmulatedKernelSockets =
         kernel.Sockets |> Map.count |> shouldEqual 1
         EmulatedKernel.checkInvariants kernel |> shouldEqual []
 
-    /// A description naming a socket the table does not hold. `EmulatedKernel.socket`
+    /// A description naming a socket the table does not hold. `UnixMachineState.socket`
     /// is total against this, so without the check it would surface as an
     /// interpreter crash at some unrelated call site instead.
     [<Test>]
@@ -252,13 +253,13 @@ module TestEmulatedKernelSockets =
         |> EmulatedKernel.checkInvariants
         |> shouldEqual []
 
-    /// `EmulatedKernel.socket` is total against the invariant rather than
+    /// `UnixMachineState.socket` is total against the invariant rather than
     /// optional, so the one state that could defeat it must fail loudly.
     [<Test>]
     let ``resolving an unknown socket identity fails loudly`` () : unit =
         let e =
             Assert.Throws<System.Exception> (fun () ->
-                EmulatedKernel.socket (SocketId 99L) EmulatedKernel.initial |> ignore
+                UnixMachineState.socket (SocketId 99L) EmulatedKernel.initial.Machine |> ignore
             )
 
         e.Message |> shouldContainText "names no socket in this kernel's socket table"
@@ -443,7 +444,7 @@ module TestEmulatedKernelSockets =
                                 UnbindTargetEffect.LostALink
                                 holder
                                 chosen
-                                (EmulatedKernel.fileTimestamp kernel)
+                                (UnixMachineState.fileTimestamp kernel.Machine)
                                 kernel.FileSystem
                         with
                         | Error e -> failwith $"unexpected unbind error: %O{e}"
@@ -570,7 +571,7 @@ module TestEmulatedKernelSockets =
                 ]
                 1L
 
-        EmulatedKernel.socketReadinessLevel (SocketId 0L) (listening [])
+        UnixMachineState.socketReadinessLevel (SocketId 0L) (listening []).Machine
         |> shouldEqual ReadinessLevel.none
 
         let queued =
@@ -592,7 +593,7 @@ module TestEmulatedKernelSockets =
                     }
             }
 
-        EmulatedKernel.socketReadinessLevel (SocketId 0L) queued
+        UnixMachineState.socketReadinessLevel (SocketId 0L) queued.Machine
         |> shouldEqual
             { ReadinessLevel.none with
                 In = true
@@ -605,7 +606,7 @@ module TestEmulatedKernelSockets =
         let kernel =
             forge [ 3, OpenFileDescriptionId 10L, OpenFileTarget.Socket (SocketId 0L) ] [ 0L, someSocket ] 1L
 
-        EmulatedKernel.socketReadinessLevel (SocketId 0L) kernel
+        UnixMachineState.socketReadinessLevel (SocketId 0L) kernel.Machine
         |> shouldEqual
             { ReadinessLevel.none with
                 Out = true
@@ -628,7 +629,7 @@ module TestEmulatedKernelSockets =
                 ]
                 1L
 
-        EmulatedKernel.socketReadinessLevel (SocketId 0L) kernel
+        UnixMachineState.socketReadinessLevel (SocketId 0L) kernel.Machine
         |> shouldEqual
             { ReadinessLevel.none with
                 Out = true
@@ -650,7 +651,7 @@ module TestEmulatedKernelSockets =
                 ]
                 1L
 
-        let level = EmulatedKernel.socketReadinessLevel (SocketId 0L) kernel
+        let level = UnixMachineState.socketReadinessLevel (SocketId 0L) kernel.Machine
 
         level
         |> shouldEqual
@@ -767,18 +768,18 @@ module TestEmulatedKernelSockets =
         let outcome, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
         outcome |> shouldEqual EmulatedKernel.ConnectOutcome.Completed
 
-        let client = EmulatedKernel.socket (SocketId 1L) kernel
+        let client = UnixMachineState.socket (SocketId 1L) kernel.Machine
 
         let connectionId =
             match client.Phase with
             | SocketPhase.Established connectionId -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
-        match (EmulatedKernel.socket (SocketId 0L) kernel).Phase with
+        match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase with
         | SocketPhase.Listening listenState -> listenState.Queue |> shouldEqual [ connectionId ]
         | other -> failwith $"expected Listening, got %A{other}"
 
-        let tcpConnection = EmulatedKernel.connection connectionId kernel
+        let tcpConnection = UnixMachineState.connection connectionId kernel.Machine
         tcpConnection.ServerAddress |> shouldEqual (loopback 5000us)
 
         // The implicit bind: loopback, a nonzero port from the ephemeral
@@ -803,11 +804,11 @@ module TestEmulatedKernelSockets =
         let _, kernel = connect (SocketId 2L) false (loopback 5000us) kernel
 
         let connectionOf (client : int64) =
-            match (EmulatedKernel.socket (SocketId client) kernel).Phase with
+            match (UnixMachineState.socket (SocketId client) kernel.Machine).Phase with
             | SocketPhase.Established connectionId -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
-        match (EmulatedKernel.socket (SocketId 0L) kernel).Phase with
+        match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase with
         | SocketPhase.Listening listenState -> listenState.Queue |> shouldEqual [ connectionOf 1L ; connectionOf 2L ]
         | other -> failwith $"expected Listening, got %A{other}"
 
@@ -823,14 +824,14 @@ module TestEmulatedKernelSockets =
         |> shouldEqual (EmulatedKernel.ConnectOutcome.Failed UnixError.EINPROGRESS)
 
         let connectionId =
-            match (EmulatedKernel.socket (SocketId 1L) kernel).Phase with
+            match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
             | SocketPhase.EstablishedPendingReport connectionId -> connectionId
             | other -> failwith $"expected EstablishedPendingReport, got %A{other}"
 
         let outcome, kernel = connect (SocketId 1L) true (loopback 5000us) kernel
         outcome |> shouldEqual EmulatedKernel.ConnectOutcome.Completed
 
-        match (EmulatedKernel.socket (SocketId 1L) kernel).Phase with
+        match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
         | SocketPhase.Established reported -> reported |> shouldEqual connectionId
         | other -> failwith $"expected Established, got %A{other}"
 
@@ -854,7 +855,7 @@ module TestEmulatedKernelSockets =
         outcome
         |> shouldEqual (EmulatedKernel.ConnectOutcome.Failed UnixError.EINPROGRESS)
 
-        match (EmulatedKernel.socket (SocketId 1L) kernel).Phase with
+        match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
         | SocketPhase.Established _ -> ()
         | other -> failwith $"expected Established, got %A{other}"
 
@@ -873,7 +874,7 @@ module TestEmulatedKernelSockets =
         outcome
         |> shouldEqual (EmulatedKernel.ConnectOutcome.Failed UnixError.EINPROGRESS)
 
-        (EmulatedKernel.socket (SocketId 0L) kernel).Phase
+        (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase
         |> shouldEqual SocketPhase.RefusedPendingDelivery
 
         let outcome, kernel = connect (SocketId 0L) true (loopback 9999us) kernel
@@ -881,7 +882,7 @@ module TestEmulatedKernelSockets =
         outcome
         |> shouldEqual (EmulatedKernel.ConnectOutcome.Failed UnixError.ECONNREFUSED)
 
-        (EmulatedKernel.socket (SocketId 0L) kernel).Phase
+        (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase
         |> shouldEqual SocketPhase.Idle
 
         let outcome, _ = connect (SocketId 0L) true (loopback 9999us) kernel
@@ -906,7 +907,7 @@ module TestEmulatedKernelSockets =
         outcome
         |> shouldEqual (EmulatedKernel.ConnectOutcome.Failed UnixError.ECONNREFUSED)
 
-        (EmulatedKernel.socket (SocketId 0L) kernel).Phase
+        (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase
         |> shouldEqual SocketPhase.Dead
 
         let outcome, _ = connect (SocketId 0L) true (loopback 9999us) kernel
@@ -938,11 +939,11 @@ module TestEmulatedKernelSockets =
         let _, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
 
         let connectionId =
-            match (EmulatedKernel.socket (SocketId 1L) kernel).Phase with
+            match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
             | SocketPhase.Established connectionId -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
-        (EmulatedKernel.connection connectionId kernel).ClientAddress
+        (UnixMachineState.connection connectionId kernel.Machine).ClientAddress
         |> shouldEqual (loopback 4444us)
 
     /// Both error directions of the capacity boundary matter: recording where
@@ -1070,7 +1071,7 @@ module TestEmulatedKernelSockets =
                             kernel.Sockets
                             |> Map.add
                                 (SocketId 0L)
-                                { EmulatedKernel.socket (SocketId 0L) kernel with
+                                { UnixMachineState.socket (SocketId 0L) kernel.Machine with
                                     ReuseAddress = true
                                 }
                     }
@@ -1080,12 +1081,12 @@ module TestEmulatedKernelSockets =
         let _, kernel = connect (SocketId 2L) false (loopback 5000us) kernel
 
         let connectionOf (client : int64) =
-            match (EmulatedKernel.socket (SocketId client) kernel).Phase with
+            match (UnixMachineState.socket (SocketId client) kernel.Machine).Phase with
             | SocketPhase.Established connectionId -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
         let fd, tcpConnection, kernel = EmulatedKernel.acceptConnection (SocketId 0L) kernel
-        let firstClient = EmulatedKernel.connection (connectionOf 1L) kernel
+        let firstClient = UnixMachineState.connection (connectionOf 1L) kernel.Machine
         tcpConnection |> shouldEqual firstClient
 
         let acceptedId =
@@ -1096,7 +1097,7 @@ module TestEmulatedKernelSockets =
                 | other -> failwith $"expected a socket target, got %O{other}"
             | None -> failwith "the accepted descriptor is not live"
 
-        let accepted = EmulatedKernel.socket acceptedId kernel
+        let accepted = UnixMachineState.socket acceptedId kernel.Machine
         accepted.Phase |> shouldEqual (SocketPhase.Established (connectionOf 1L))
 
         accepted.Binding
@@ -1110,7 +1111,7 @@ module TestEmulatedKernelSockets =
 
         accepted.ReuseAddress |> shouldEqual true
 
-        match (EmulatedKernel.socket (SocketId 0L) kernel).Phase with
+        match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase with
         | SocketPhase.Listening listenState -> listenState.Queue |> shouldEqual [ connectionOf 2L ]
         | other -> failwith $"expected Listening, got %A{other}"
 
@@ -1132,7 +1133,7 @@ module TestEmulatedKernelSockets =
         let acceptedFd, _, kernel = EmulatedKernel.acceptConnection (SocketId 0L) kernel
 
         let connectionId =
-            match (EmulatedKernel.socket (SocketId 1L) kernel).Phase with
+            match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
             | SocketPhase.Established connectionId -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
@@ -1163,7 +1164,7 @@ module TestEmulatedKernelSockets =
         let _, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
 
         let connectionId =
-            match (EmulatedKernel.socket (SocketId 1L) kernel).Phase with
+            match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
             | SocketPhase.Established connectionId -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
@@ -1205,13 +1206,13 @@ module TestEmulatedKernelSockets =
         let outcome, kernel = connect (SocketId 0L) false (loopback 9999us) kernel
         outcome |> shouldEqual EmulatedKernel.ConnectOutcome.Completed
 
-        (EmulatedKernel.socket (SocketId 0L) kernel).Phase
+        (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase
         |> shouldEqual (SocketPhase.DatagramPeer (loopback 9999us))
 
         // Re-connect re-targets.
         let _, kernel = connect (SocketId 0L) false (loopback 1234us) kernel
 
-        (EmulatedKernel.socket (SocketId 0L) kernel).Phase
+        (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase
         |> shouldEqual (SocketPhase.DatagramPeer (loopback 1234us))
 
         // AF_UNSPEC dissolves on Linux, and — measured, unlike TCP's reset —
@@ -1220,7 +1221,7 @@ module TestEmulatedKernelSockets =
             EmulatedKernel.connectSocket (SocketId 0L) false 16 (Some 0) None kernel
 
         outcome |> shouldEqual EmulatedKernel.ConnectOutcome.Completed
-        let socket = EmulatedKernel.socket (SocketId 0L) kernel
+        let socket = UnixMachineState.socket (SocketId 0L) kernel.Machine
         socket.Phase |> shouldEqual SocketPhase.Idle
         socket.Binding |> shouldEqual None
 
@@ -1228,7 +1229,7 @@ module TestEmulatedKernelSockets =
         let outcome, kernel = connect (SocketId 0L) false (loopback 1234us) kernel
         outcome |> shouldEqual EmulatedKernel.ConnectOutcome.Completed
 
-        match (EmulatedKernel.socket (SocketId 0L) kernel).Binding with
+        match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Binding with
         | Some binding -> (binding.Endpoint.Port > 0us) |> shouldEqual true
         | None -> failwith "expected the re-connect to bind the socket"
 
@@ -1391,7 +1392,7 @@ module TestEmulatedKernelSockets =
                         Sockets =
                             Map.add
                                 (SocketId 0L)
-                                { EmulatedKernel.socket (SocketId 0L) kernel with
+                                { UnixMachineState.socket (SocketId 0L) kernel.Machine with
                                     Binding =
                                         Some
                                             {
@@ -1408,14 +1409,14 @@ module TestEmulatedKernelSockets =
         outcome |> shouldEqual EmulatedKernel.ConnectOutcome.Completed
 
         let connectionId =
-            match (EmulatedKernel.socket (SocketId 1L) kernel).Phase with
+            match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
             | SocketPhase.Established connectionId -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
         // The connection's server address is the *destination*, not the
         // wildcard the listener bound: the accepted socket's getsockname
         // reports loopback.
-        (EmulatedKernel.connection connectionId kernel).ServerAddress
+        (UnixMachineState.connection connectionId kernel.Machine).ServerAddress
         |> shouldEqual (loopback 5000us)
 
     /// The somaxconn clamp, at a forged sysctl of 3 so the boundary is in
@@ -1512,7 +1513,7 @@ module TestEmulatedKernelSockets =
         let outcome, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
         outcome |> shouldEqual EmulatedKernel.ConnectOutcome.Completed
 
-        let client = EmulatedKernel.socket (SocketId 1L) kernel
+        let client = UnixMachineState.socket (SocketId 1L) kernel.Machine
 
         client.Binding
         |> shouldEqual (
@@ -1528,7 +1529,7 @@ module TestEmulatedKernelSockets =
             | SocketPhase.Established connectionId -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
-        (EmulatedKernel.connection connectionId kernel).ClientAddress
+        (UnixMachineState.connection connectionId kernel.Machine).ClientAddress
         |> shouldEqual (loopback 4444us)
 
     /// The largest configurable sysctl must not wrap the Linux `+ 1`: a
@@ -1606,7 +1607,7 @@ module TestEmulatedKernelSockets =
                 // While the refusal pends, the source reads as resolved
                 // loopback with a nonzero port on both flavours.
                 let pending =
-                    match (EmulatedKernel.socket (SocketId 0L) kernel).Binding with
+                    match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Binding with
                     | Some binding -> binding
                     | None -> failwith "expected the pending attempt to have bound the socket"
 
@@ -1619,7 +1620,7 @@ module TestEmulatedKernelSockets =
                 |> shouldEqual (EmulatedKernel.ConnectOutcome.Failed UnixError.ECONNREFUSED)
 
                 let delivered =
-                    match (EmulatedKernel.socket (SocketId 0L) kernel).Binding with
+                    match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Binding with
                     | Some binding -> binding
                     | None -> failwith "expected the delivery to keep the socket bound"
 
@@ -1699,7 +1700,7 @@ module TestEmulatedKernelSockets =
         outcome
         |> shouldEqual (EmulatedKernel.ConnectOutcome.Failed UnixError.ECONNREFUSED)
 
-        (EmulatedKernel.socket (SocketId 1L) kernel).Phase
+        (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase
         |> shouldEqual SocketPhase.Dead
 
         // A refused socket's port likewise answers RST.
@@ -1728,7 +1729,7 @@ module TestEmulatedKernelSockets =
                             kernel.Sockets
                             |> Map.add
                                 (SocketId 0L)
-                                { EmulatedKernel.socket (SocketId 0L) kernel with
+                                { UnixMachineState.socket (SocketId 0L) kernel.Machine with
                                     Binding =
                                         Some
                                             {
@@ -1807,7 +1808,7 @@ module TestEmulatedKernelSockets =
         let _, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
 
         let firstPort =
-            match (EmulatedKernel.socket (SocketId 1L) kernel).Binding with
+            match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Binding with
             | Some binding -> binding.Endpoint.Port
             | None -> failwith "expected the connect to bind the client"
 
@@ -1833,7 +1834,7 @@ module TestEmulatedKernelSockets =
         let outcome, kernel = connect (SocketId 2L) false (loopback 5000us) kernel
         outcome |> shouldEqual EmulatedKernel.ConnectOutcome.Completed
 
-        match (EmulatedKernel.socket (SocketId 2L) kernel).Binding with
+        match (UnixMachineState.socket (SocketId 2L) kernel.Machine).Binding with
         | Some binding -> binding.Endpoint.Port |> shouldEqual 40001us
         | None -> failwith "expected the connect to bind the client"
 

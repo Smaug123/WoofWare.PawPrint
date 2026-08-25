@@ -323,7 +323,10 @@ module NativeSystemNative =
             else
                 false
         | BufferPointer.RawAddress address ->
-            UserBufferCheck.faultsBeforeOperation (EmulatedKernel.userBufferCheck kernel) address (uint64 bufferSize)
+            UserBufferCheck.faultsBeforeOperation
+                (UnixMachineState.userBufferCheck kernel.Machine)
+                address
+                (uint64 bufferSize)
 
     /// Which way bytes move through a caller-supplied buffer.
     [<RequireQualifiedAccess>]
@@ -609,7 +612,7 @@ module NativeSystemNative =
 
         match description.Target with
         | OpenFileTarget.Socket socketId ->
-            let socket = EmulatedKernel.socket socketId state.Kernel
+            let socket = UnixMachineState.socket socketId state.Kernel.Machine
 
             match socket.Domain with
             | SocketDomain.InterNetwork -> Ok (socketId, socket)
@@ -722,7 +725,7 @@ module NativeSystemNative =
         (state : IlMachineState)
         : IlMachineState
         =
-        let now = EmulatedKernel.fileTimestamp state.Kernel
+        let now = UnixMachineState.fileTimestamp state.Kernel.Machine
 
         // A content-changing write strips a file's set-user-ID and set-group-ID
         // bits unless the writer is root; measured on both platforms, which
@@ -762,7 +765,7 @@ module NativeSystemNative =
         (state : IlMachineState)
         : IlMachineState
         =
-        let now = EmulatedKernel.fileTimestamp state.Kernel
+        let now = UnixMachineState.fileTimestamp state.Kernel.Machine
         let rule = SimulatedUnixPlatform.setIdBitsOnTruncation state.Kernel.UnixPlatform
 
         let privilege = UnixProcessState.callerPrivilege state.Kernel.Process
@@ -2103,7 +2106,9 @@ module NativeSystemNative =
             // scheduler is the sole writer of `VirtualClockTicks`.
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int64 (Int64Source.Verbatim (EmulatedKernel.lowResolutionTimestampMs state.Kernel)))
+                (EvalStackValue.Int64 (
+                    Int64Source.Verbatim (UnixMachineState.lowResolutionTimestampMs state.Kernel.Machine)
+                ))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -2240,13 +2245,15 @@ module NativeSystemNative =
             // reproduces a relationship the guest can observe:
             // `Environment.TickCount64` and `Stopwatch` cannot disagree about
             // elapsed time. The scaling and its overflow guard live in
-            // `EmulatedKernel.monotonicTimestampNanos`.
+            // `UnixMachineState.monotonicTimestampNanos`.
             //
             // Read-only, like every other clock observer: the scheduler is the
             // sole writer of `VirtualClockTicks`.
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int64 (Int64Source.Verbatim (EmulatedKernel.monotonicTimestampNanos state.Kernel)))
+                (EvalStackValue.Int64 (
+                    Int64Source.Verbatim (UnixMachineState.monotonicTimestampNanos state.Kernel.Machine)
+                ))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -2264,7 +2271,7 @@ module NativeSystemNative =
             // `WallClockEpochMs` never changes after configuration.
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int64 (Int64Source.Verbatim (EmulatedKernel.systemTimeAsTicks state.Kernel)))
+                (EvalStackValue.Int64 (Int64Source.Verbatim (UnixMachineState.systemTimeAsTicks state.Kernel.Machine)))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -2713,7 +2720,7 @@ module NativeSystemNative =
             | CreatingOpenVerdict.Create (directory, name) ->
                 let mode = NativeCall.int32Argument operation instruction.Arguments.[2]
                 let permissions = CreatingOpenRules.createdPermissions rules state.Kernel.Umask mode
-                let now = EmulatedKernel.fileTimestamp state.Kernel
+                let now = UnixMachineState.fileTimestamp state.Kernel.Machine
 
                 match
                     VirtualFileSystem.createFile
@@ -2954,7 +2961,7 @@ module NativeSystemNative =
             let permissions =
                 MkDirRules.createdPermissions rules parentPermissions state.Kernel.Umask mode
 
-            let now = EmulatedKernel.fileTimestamp state.Kernel
+            let now = UnixMachineState.fileTimestamp state.Kernel.Machine
 
             match VirtualFileSystem.createDirectory directory name permissions now state.Kernel.FileSystem with
             | Error error ->
@@ -3038,7 +3045,7 @@ module NativeSystemNative =
             | UnlinkVerdict.Refuse error -> fail error
             | UnlinkVerdict.Remove (directory, name) ->
 
-            let now = EmulatedKernel.fileTimestamp state.Kernel
+            let now = UnixMachineState.fileTimestamp state.Kernel.Machine
 
             match VirtualFileSystem.unbind UnbindTargetEffect.LostALink directory name now state.Kernel.FileSystem with
             | Error error ->
@@ -3125,7 +3132,7 @@ module NativeSystemNative =
             | RmDirVerdict.Refuse error -> fail error
             | RmDirVerdict.Remove (directory, name) ->
 
-            let now = EmulatedKernel.fileTimestamp state.Kernel
+            let now = UnixMachineState.fileTimestamp state.Kernel.Machine
 
             match VirtualFileSystem.unbind rules.RemovedDirectoryEffect directory name now state.Kernel.FileSystem with
             | Error error ->
@@ -4296,7 +4303,7 @@ module NativeSystemNative =
                     | SimulatedUnixFlavour.Linux -> Error UnixError.EINVAL
                     | SimulatedUnixFlavour.Darwin -> Error UnixError.ENXIO
                 | OpenFileTarget.Socket socketId ->
-                    let socket = EmulatedKernel.socket socketId state.Kernel
+                    let socket = UnixMachineState.socket socketId state.Kernel.Machine
                     // Refused rather than answered, and the reason is that there
                     // is no single answer to give. Measured on a fresh,
                     // unbound, unconnected socket, `read` is ENOTCONN for a
@@ -5552,15 +5559,17 @@ module NativeSystemNative =
                                 }
                         )
 
-                    match EmulatedKernel.allocateEphemeralPort acceptable state.Kernel with
-                    | Some (port, kernel) ->
+                    match UnixMachineState.allocateEphemeralPort acceptable state.Kernel.Machine with
+                    | Some (port, machine) ->
                         { binding with
                             Endpoint =
                                 { binding.Endpoint with
                                     Port = port
                                 }
                         },
-                        kernel
+                        { state.Kernel with
+                            Machine = machine
+                        }
                     | None ->
                         let low, high = state.Kernel.EphemeralPortRange
 
@@ -5690,8 +5699,12 @@ module NativeSystemNative =
 
                     let acceptable (port : uint16) : bool = not (conflictsWith (candidate port))
 
-                    match EmulatedKernel.allocateEphemeralPort acceptable state.Kernel with
-                    | Some (port, kernel) -> candidate port, kernel
+                    match UnixMachineState.allocateEphemeralPort acceptable state.Kernel.Machine with
+                    | Some (port, machine) ->
+                        candidate port,
+                        { state.Kernel with
+                            Machine = machine
+                        }
                     | None ->
                         let low, high = state.Kernel.EphemeralPortRange
 
@@ -7259,7 +7272,7 @@ module NativeSystemNative =
 
                             -1, StepEffect.NoEffect, setErrno state error
                         | OpenFileTarget.Socket socketId ->
-                            let socket = EmulatedKernel.socket socketId state.Kernel
+                            let socket = UnixMachineState.socket socketId state.Kernel.Machine
                             // Refused for the same reason `SystemNative_Read`
                             // refuses a socket: measured on a fresh, unbound,
                             // unconnected socket, `write` is EPIPE on Linux but
