@@ -41,6 +41,11 @@ WHAT THIS CANNOT SEE, and so must be checked by hand:
     by text, so the subjects are compared as a multiset and adding a *new*
     declaration that reuses an existing one-liner is reported as MOVED. Read the
     report: if every old name is still there, nothing was detached.
+  * A same-named pair that is not adjacent. Overloads carry their signature in
+    the subject only when two successive declarations share a name and kind,
+    because qualifying every repeated name buries a move audit in subjects that
+    differ solely in whether they were qualified. Two overloads with an
+    unrelated declaration between them can therefore still swap prose unseen.
   * A fusion in which one half was also reworded. Fusion is recognised by the
     fused text being exactly the two originals joined, so an edit to either half
     hides it; the block then reads as deleted-and-added like any other rewording.
@@ -72,7 +77,50 @@ DECL = re.compile(
 )
 
 
-def pairs(text: str) -> dict[str, list[str | None]]:
+def subjects(text: str) -> list[tuple[str, str, str]]:
+    """(kind, declaration name, normalised declaration line) for each declaration."""
+    out = []
+    for line in text.split("\n"):
+        m = DECL.match(line)
+        if m:
+            kind, name = next(kv for kv in m.groupdict().items() if kv[1])
+            out.append((kind, name, " ".join(line.split())))
+    return out
+
+
+def ambiguous_names(*texts: str) -> set[str]:
+    """Names borne by two *successive* declarations in any of these texts.
+
+    An overload set is the one place a name is not identity, so it is the one
+    place the subject has to carry the signature too. But qualifying every
+    repeated name is worse than useless here: a name repeats across a file all
+    the time (a field in two records, a DU case in two unions), a definition
+    that moves between files has different neighbours on each side, and the
+    audit of a move — the thing this exists for — then fills with subjects that
+    differ only in whether they were qualified.
+
+    Adjacency is the whole of the risk. A stranded docstring binds to the
+    declaration that follows it, so a name can absorb another's prose only when
+    a declaration of that name is the next one along. Restricting to that is
+    exact for the failure and silent everywhere else.
+    """
+    repeated: set[str] = set()
+    for text in texts:
+        # Only the kinds that can *be* an overload set. A record cannot repeat a
+        # field name nor a union a case name, and `case` in particular also
+        # matches `match`-expression arms, whose repeated heads are not
+        # declarations at all — feeding those in qualified whole types by
+        # accident.
+        seen = [
+            (kind, name)
+            for kind, name, _ in subjects(text)
+            if kind in ("let", "member", "quoted", "active")
+        ]
+        repeated.update(a[1] for a, b in zip(seen, seen[1:]) if a == b)
+    return repeated
+
+
+def pairs(text: str, ambiguous: set[str] = frozenset()) -> dict[str, list[str | None]]:
     """(normalised docstring text -> names of the declarations it precedes).
 
     A block whose subject cannot be identified maps to None, which is itself
@@ -104,6 +152,8 @@ def pairs(text: str) -> dict[str, list[str | None]]:
             m = DECL.match(lines[k])
             if m:
                 subject = next(v for v in m.groupdict().values() if v)
+                if subject in ambiguous:
+                    subject = " ".join(lines[k].split())
             elif lines[k].strip():
                 # A form the regex does not know is still a distinguishable
                 # subject: use the declaration line itself. Letting every
@@ -141,25 +191,31 @@ def exists_exactly(f: str) -> bool:
     return True
 
 
-def side(files: list[str], ref: str | None = None) -> dict[str, list[str | None]]:
-    acc: dict[str, list[str | None]] = {}
+def read(f: str, ref: str | None) -> str | None:
+    if ref is not None:
+        r = subprocess.run(["git", "show", f"{ref}:{f}"], capture_output=True, text=True)
+        return None if r.returncode else r.stdout
+    # Exact spelling here too: on a case-insensitive filesystem the two halves
+    # of a case-only rename both open the destination, so the current side
+    # would read one file twice and report the phantom duplicate.
+    return Path(f).read_text() if exists_exactly(f) else None
+
+
+def sides(
+    files: list[str], ref: str
+) -> tuple[dict[str, list[str | None]], dict[str, list[str | None]]]:
+    """The old and new (docstring -> subjects) maps, built together."""
+    old: dict[str, list[str | None]] = {}
+    new: dict[str, list[str | None]] = {}
     for f in files:
-        if ref is not None:
-            r = subprocess.run(["git", "show", f"{ref}:{f}"], capture_output=True, text=True)
-            if r.returncode:
+        was, now = read(f, ref), read(f, None)
+        ambiguous = ambiguous_names(*(t for t in (was, now) if t is not None))
+        for text, acc in ((was, old), (now, new)):
+            if text is None:
                 continue
-            text = r.stdout
-        else:
-            # Exact spelling here too: on a case-insensitive filesystem the two
-            # halves of a case-only rename both open the destination, so the
-            # current side would read one file twice and report the phantom
-            # duplicate as a changed subject.
-            if not exists_exactly(f):
-                continue
-            text = Path(f).read_text()
-        for k, v in pairs(text).items():
-            acc.setdefault(k, []).extend(v)
-    return acc
+            for k, v in pairs(text, ambiguous).items():
+                acc.setdefault(k, []).extend(v)
+    return old, new
 
 
 def split_into(text: str, old: dict[str, list[str | None]], memo) -> list[str] | None:
@@ -214,7 +270,7 @@ def main() -> int:
         )
         return 2
 
-    old, new = side(files, ref), side(files)
+    old, new = sides(files, ref)
     if not old:
         print(
             f"none of the {len(files)} file(s) given exist at {ref}, so there is "
