@@ -451,7 +451,6 @@ module NativeRuntimeMethodHandle =
             failwith $"%s{operation}: registry id %d{methodHandleId} did not resolve to a known MethodHandle"
         )
 
-    /// The metadata `MethodInfo` the given identity's MethodDef token names.
     /// The declaring type of a metadata method handle, narrowed to a closed instantiation.
     ///
     /// For consumers that can only work under a concrete instantiation. An open generic type
@@ -473,6 +472,7 @@ module NativeRuntimeMethodHandle =
             failwith
                 $"%s{operation}: declaring type %O{other} cannot declare a metadata-backed method; MethodHandleRegistry refuses to mint such a handle, so this identity did not come from it"
 
+    /// The metadata `MethodInfo` the given identity's MethodDef token names.
     let methodInfoOfMetadataIdentity
         (operation : string)
         (state : IlMachineState)

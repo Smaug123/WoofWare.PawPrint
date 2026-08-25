@@ -10,10 +10,6 @@ open System.Text
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
-/// How a program terminated when run on the real .NET runtime.
-///
-/// These cases mirror the terminal `WoofWare.PawPrint.RunOutcome` cases that a real process can
-/// actually reach, so that the oracle is comparable against PawPrint.
 /// What the real runtime's stderr reveals about *which* fatal error killed the guest.
 ///
 /// Strictly less than PawPrint's own <c>FatalErrorCode</c>, and deliberately a different type so
@@ -34,6 +30,10 @@ type ObservedFatalError =
     /// does identify the situation even though it does not identify the code.
     | Other
 
+/// How a program terminated when run on the real .NET runtime.
+///
+/// These cases mirror the terminal `WoofWare.PawPrint.RunOutcome` cases that a real process can
+/// actually reach, so that the oracle is comparable against PawPrint.
 type RealRuntimeResult =
     /// The program terminated with this exit code: by returning from `Main`, by falling off the end
     /// of a `void` entry point, or by calling `Environment.Exit`.

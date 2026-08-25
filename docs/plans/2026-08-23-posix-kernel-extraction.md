@@ -1072,6 +1072,36 @@ stale since #848 renamed the constant.
 Run it against the branch point for every remaining stage; the moves are not
 finished.
 
+**The check had a blind spot, and it was the shape that caused both of the
+strandings found by eye.** `MERGED` recognised a fusion by splitting the fused
+text into blocks that had *each* stood on their own at the base revision, so it
+saw two existing docstrings pushed together but not the far commoner case: a
+declaration inserted between a block and its subject, carrying a docstring
+written on the spot. The second half never existed at the base, so there was
+nothing to split against and the check stayed silent — which is how #1080 could
+take `withUmask`'s prose and #1089 `cpuForRotation`'s with the tool in the
+repository. It now takes the longest opening that stood on its own before and
+asks whether the subject changed, since prose merely appended to a docstring
+opens with its old self too but keeps its subject.
+
+Measured by running the check across every commit in the repository against its
+own parent, over the F# files that commit touched. Thirty-seven fusions of the
+new shape, of which nine are strandings still in the tree: five in files this
+extraction has been moving (`cpuForRotation`, `defaultUserId`,
+`sockaddrFamilyField`, `socketCreation`, `GetCwdOrphanAnswer`) and four not.
+Eight are repaired as pure relocations. The ninth,
+`MemoryBlock.readNamedBytes`, needs writing rather than relocating: the stranded
+half says the function refuses a cell whose typed view is not byte-addressable,
+which is exactly the cell it *names* instead.
+
+Three more reports are not defects, and the line separating them is worth
+holding. Where the inserted declaration is a *generalisation* that legitimately
+inherited the prose — `tryNameCellWith`, `allocateZeroedAs`, `invokeStringQCall`
+— the block still describes what it now precedes; only the specialisation is
+left undocumented, and giving it words is writing rather than reattaching. The
+rest of the thirty-seven are renames that carried their prose along, or
+strandings #1166 and #1171 had already repaired.
+
 ### Stage 6: move `UnixSystem` to the library
 
 **Dependencies**: stage 5.
