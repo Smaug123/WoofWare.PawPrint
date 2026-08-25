@@ -292,7 +292,10 @@ def names(subs: list[str | None]) -> list[str]:
 
 
 def stranded_prefix(
-    text: str, old: dict[str, list[str | None]], subject: list[str]
+    text: str,
+    old: dict[str, list[str | None]],
+    new: dict[str, list[str | None]],
+    subject: list[str],
 ) -> list[str] | None:
     """`text` as a block that stood on its own before, plus prose that is new.
 
@@ -304,15 +307,22 @@ def stranded_prefix(
     against.
 
     What survives is that the fused text opens with the stranded block verbatim.
-    Prose merely appended to a docstring opens with its old self too, so the
-    subject has to have changed as well — that is what separates the two, and it
-    is exactly the question being asked. The longest such opening wins, being the
-    most specific account of where the new text starts.
+    The longest such opening wins, being the most specific account of where the
+    new text starts, and two further things have to hold before that opening is a
+    fusion rather than a coincidence. It must no longer stand on its own
+    anywhere, since a block that is still a block was not absorbed into anything:
+    an unrelated declaration whose new docstring merely opens with an existing
+    one's text has detached nothing. And its subject must have changed, since
+    prose appended to a docstring opens with its old self too and stays where it
+    was.
     """
     for i in range(len(text) - 1, 0, -1):
         if text[i] != " " or text[:i] not in old:
             continue
-        return [text[:i], text[i + 1 :]] if names(old[text[:i]]) != subject else None
+        head = text[:i]
+        if head in new or names(old[head]) == subject:
+            return None
+        return [head, text[i + 1 :]]
     return None
 
 
@@ -373,13 +383,14 @@ def main() -> int:
     # text, which catches a fusion between two declarations of the *same* name —
     # F# overloads, of which this repository has several — and reports each fused
     # block once rather than once per half. Where it is not, `stranded_prefix`
-    # takes the opening alone and leans on the changed subject to tell a fusion
-    # from an expansion.
+    # takes the opening alone, and leans on that opening having stopped being a
+    # block of its own to tell a fusion from a quotation, and on the changed
+    # subject to tell it from an expansion.
     memo: dict[str, list[str] | None] = {}
     for key in new:
         if key in old:
             continue
-        parts = split_into(key, old, memo) or stranded_prefix(key, old, names(new[key]))
+        parts = split_into(key, old, memo) or stranded_prefix(key, old, new, names(new[key]))
         if parts and len(parts) > 1:
             bad += 1
             was = [names(old[k])[0] if k in old else "<written here>" for k in parts]
