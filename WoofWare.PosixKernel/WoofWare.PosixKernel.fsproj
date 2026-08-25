@@ -29,6 +29,7 @@
         <Compile Include="Signal.fs" />
         <Compile Include="SignalState.fs" />
         <Compile Include="SimulatedUnixPlatform.fs" />
+        <Compile Include="UnixProcess.fs" />
         <Compile Include="UnixMachine.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
