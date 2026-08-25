@@ -56,7 +56,8 @@ MODS = r"(?:private\s+|internal\s+|public\s+|rec\s+|inline\s+|mutable\s+|static\
 
 DECL = re.compile(
     r"^\s*(?:\[<[^\]]*>\]\s*)?"
-    r"(?:let\s+" + MODS + r"(?P<let>[a-zA-Z_][A-Za-z0-9_']*)"
+    r"(?:let\s+" + MODS + r"\((?P<active>\|[^)]*\|)\)"
+    r"|let\s+" + MODS + r"(?P<let>[a-zA-Z_][A-Za-z0-9_']*)"
     r"|type\s+" + MODS + r"(?P<type>[A-Za-z_][A-Za-z0-9_']*)"
     r"|module\s+" + MODS + r"(?P<module>[A-Za-z_][A-Za-z0-9_']*)"
     r"|(?:static\s+|abstract\s+|default\s+)*(?:member|override)\s+"
@@ -138,6 +139,24 @@ def main() -> int:
         capture_output=True,
     ).returncode:
         print(f"{ref} does not name a commit", file=sys.stderr)
+        return 2
+
+    unknown = [
+        f
+        for f in files
+        if not Path(f).exists()
+        and subprocess.run(
+            ["git", "cat-file", "-e", f"{ref}:{f}"], capture_output=True
+        ).returncode
+    ]
+    if unknown:
+        # Skipping a path silently is how a move goes unchecked: the file that
+        # received the definition is exactly the one a typo omits.
+        print(
+            f"these path(s) exist neither at {ref} nor in the working tree: "
+            + ", ".join(unknown),
+            file=sys.stderr,
+        )
         return 2
 
     old, new = side(files, ref), side(files)

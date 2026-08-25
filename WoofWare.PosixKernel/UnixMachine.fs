@@ -305,7 +305,7 @@ module UnixMachineState =
 
     /// Largest `VirtualClockTicks` from which a nanosecond timestamp can be
     /// derived without overflowing the `int64` the PAL entry point returns:
-    /// `Int64.MaxValue / nanosecondsPerTick`, i.e. about 29 years of simulated
+    /// `Int64.MaxValue / nanosecondsPerTick`, i.e. about 292 years of simulated
     /// uptime.
     ///
     /// The horizon is reachable by ordinary guest code, not merely in
@@ -632,13 +632,12 @@ module UnixMachineState =
     [<Literal>]
     let nanosecondsPerTick : int64 = 100L
 
-    /// 100ns ticks per millisecond. The `SystemNative_GetSystemTime*` family
-    /// speaks in ticks while PawPrint's virtual clock speaks in milliseconds,
-    /// so every wall-clock derivation goes through this factor. A consequence
-    /// is the unit `VirtualClockTicks` itself is denominated in, so no scaling
-    /// is applied to the clock when deriving `DateTime.UtcNow`; the factor
-    /// converts the *epoch* offset, and converts guest millisecond timeouts
-    /// into deadlines.
+    /// 100 ns ticks per millisecond. `VirtualClockTicks` is already denominated
+    /// in the same 100 ns unit `System.DateTime` uses, so deriving
+    /// `DateTime.UtcNow` scales no part of the clock itself. This factor
+    /// converts the quantities that arrive in milliseconds and meet it:
+    /// `WallClockEpochMs` into the epoch offset the clock is added to, and a
+    /// guest's millisecond timeout into a deadline.
     [<Literal>]
     let ticksPerMillisecond : int64 = 10_000L
 
