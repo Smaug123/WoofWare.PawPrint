@@ -47,10 +47,10 @@ module TestTaskState =
 
         agrees state
 
-        EmulatedKernel.osThreadIdOf thread state.Kernel
+        UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
         |> shouldEqual (EmulatedKernel.osThreadId thread)
 
-        EmulatedKernel.parkedSocketWaitFor thread state.Kernel |> shouldEqual None
+        UnixTaskTable.parkedSocketWaitFor thread state.Kernel.Tasks |> shouldEqual None
 
     [<Test>]
     let ``a parked interpreter thread gets a task too`` () : unit =
@@ -59,9 +59,9 @@ module TestTaskState =
         let state, thread = machine () |> IlMachineState.allocateParkedThread
 
         agrees state
-        EmulatedKernel.cpuOf thread state.Kernel |> shouldEqual (CpuId 0)
+        UnixTaskTable.cpuOf thread state.Kernel.Tasks |> shouldEqual (CpuId 0)
 
-        EmulatedKernel.osThreadIdOf thread state.Kernel
+        UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
         |> shouldEqual (EmulatedKernel.osThreadId thread)
 
     [<Test>]
@@ -79,7 +79,7 @@ module TestTaskState =
         let ids =
             threads state
             |> Set.toList
-            |> List.map (fun t -> EmulatedKernel.osThreadIdOf t state.Kernel)
+            |> List.map (fun t -> UnixTaskTable.osThreadIdOf t state.Kernel.Tasks)
 
         ids |> List.distinct |> List.length |> shouldEqual ids.Length
         ids |> List.contains (EmulatedKernel.osThreadId parked) |> shouldEqual true
@@ -94,8 +94,8 @@ module TestTaskState =
         let state, second =
             IlMachineState.allocateUnstartedThread (ManagedHeapAddress 2) state
 
-        EmulatedKernel.cpuOf first state.Kernel |> shouldEqual (CpuId 0)
-        EmulatedKernel.cpuOf second state.Kernel |> shouldEqual (CpuId 1)
+        UnixTaskTable.cpuOf first state.Kernel.Tasks |> shouldEqual (CpuId 0)
+        UnixTaskTable.cpuOf second state.Kernel.Tasks |> shouldEqual (CpuId 1)
 
     let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
         Corelib.getBaseTypes corelib
@@ -151,8 +151,8 @@ module TestTaskState =
         let state, first = IlMachineState.addThread frame state
         let state, second = IlMachineState.addThread frame state
 
-        EmulatedKernel.cpuOf first state.Kernel |> shouldEqual (CpuId 0)
-        EmulatedKernel.cpuOf second state.Kernel |> shouldEqual (CpuId 1)
+        UnixTaskTable.cpuOf first state.Kernel.Tasks |> shouldEqual (CpuId 0)
+        UnixTaskTable.cpuOf second state.Kernel.Tasks |> shouldEqual (CpuId 1)
         agrees state
 
     [<Test>]
@@ -171,7 +171,7 @@ module TestTaskState =
         |> shouldEqual [ EmulatedKernelDefect.ThreadWithoutTask thread ]
 
         let exn =
-            Assert.Throws<exn> (fun () -> EmulatedKernel.cpuOf thread stripped.Kernel |> ignore<CpuId>)
+            Assert.Throws<exn> (fun () -> UnixTaskTable.cpuOf thread stripped.Kernel.Tasks |> ignore<CpuId>)
 
         exn.Message |> shouldContainText "names no task"
 
@@ -181,7 +181,9 @@ module TestTaskState =
         let ghost = ThreadId 99
 
         let haunted =
-            state.MapKernel (EmulatedKernel.registerTask ghost (CpuId 0) (EmulatedKernel.osThreadId ghost))
+            state.MapKernel (
+                EmulatedKernel.mapTasks (UnixTaskTable.register ghost (CpuId 0) (EmulatedKernel.osThreadId ghost))
+            )
 
         EmulatedKernel.checkTaskInvariants (threads haunted) haunted.Kernel
         |> shouldEqual [ EmulatedKernelDefect.TaskWithoutThread ghost ]
@@ -195,7 +197,7 @@ module TestTaskState =
 
         let exn =
             Assert.Throws<exn> (fun () ->
-                EmulatedKernel.registerTask thread (CpuId 3) (OsThreadId 7u) state.Kernel
+                EmulatedKernel.mapTasks (UnixTaskTable.register thread (CpuId 3) (OsThreadId 7u)) state.Kernel
                 |> ignore<EmulatedKernel>
             )
 
@@ -213,7 +215,7 @@ module TestTaskState =
         let state, thread =
             IlMachineState.allocateUnstartedThread (ManagedHeapAddress 2) state
 
-        EmulatedKernel.cpuOf thread state.Kernel |> shouldEqual (CpuId 1)
+        UnixTaskTable.cpuOf thread state.Kernel.Tasks |> shouldEqual (CpuId 1)
 
         let wait : ParkedSocketWait =
             {
@@ -222,19 +224,22 @@ module TestTaskState =
             }
 
         let parked =
-            state.MapKernel (EmulatedKernel.withParkedSocketWait thread (Some wait))
+            state.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParkedSocketWait thread (Some wait)))
 
-        EmulatedKernel.parkedSocketWaitFor thread parked.Kernel
+        UnixTaskTable.parkedSocketWaitFor thread parked.Kernel.Tasks
         |> shouldEqual (Some wait)
 
         agrees parked
 
-        let released = parked.MapKernel (EmulatedKernel.withParkedSocketWait thread None)
-        EmulatedKernel.parkedSocketWaitFor thread released.Kernel |> shouldEqual None
+        let released =
+            parked.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParkedSocketWait thread None))
+
+        UnixTaskTable.parkedSocketWaitFor thread released.Kernel.Tasks
+        |> shouldEqual None
 
         // Parking must not disturb the rest of the task.
-        EmulatedKernel.cpuOf thread released.Kernel
-        |> shouldEqual (EmulatedKernel.cpuOf thread state.Kernel)
+        UnixTaskTable.cpuOf thread released.Kernel.Tasks
+        |> shouldEqual (UnixTaskTable.cpuOf thread state.Kernel.Tasks)
 
-        EmulatedKernel.osThreadIdOf thread released.Kernel
-        |> shouldEqual (EmulatedKernel.osThreadIdOf thread state.Kernel)
+        UnixTaskTable.osThreadIdOf thread released.Kernel.Tasks
+        |> shouldEqual (UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks)

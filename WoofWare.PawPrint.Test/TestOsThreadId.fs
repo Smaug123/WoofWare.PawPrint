@@ -127,7 +127,7 @@ module TestOsThreadId =
         IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
 
     let private osThreadIdOf (thread : ThreadId) (state : IlMachineState) : OsThreadId =
-        EmulatedKernel.osThreadIdOf thread state.Kernel
+        UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
 
     [<Test>]
     let ``guest threads are numbered from their thread id`` () =

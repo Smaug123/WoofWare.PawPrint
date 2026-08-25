@@ -187,7 +187,7 @@ module TestCpuPlacement =
         |> fun state -> state.MapKernel (EmulatedKernel.withProcessorCount count)
 
     let private cpuOf (thread : ThreadId) (state : IlMachineState) : CpuId =
-        EmulatedKernel.cpuOf thread state.Kernel
+        UnixTaskTable.cpuOf thread state.Kernel.Tasks
 
     [<Test>]
     let ``a fresh machine starts its rotation at zero`` () =

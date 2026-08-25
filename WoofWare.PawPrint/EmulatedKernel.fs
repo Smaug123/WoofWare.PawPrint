@@ -1558,53 +1558,15 @@ module EmulatedKernel =
         | Some count when count > 0 && count <= maxConfiguredProcessorCount -> count
         | _ -> kernel.ProcessorCount
 
-    /// The task `thread` is.
-    ///
-    /// Total, and loudly partial rather than an option: every live thread has a
-    /// task, minted when the thread was created, and a `ThreadId` naming none is
-    /// an interpreter bug rather than anything a guest did.
-    let task (thread : ThreadId) (kernel : EmulatedKernel) : UnixTaskState = UnixTaskTable.get thread kernel.Tasks
-
-    /// Mint the task for a newly-created thread.
-    ///
-    /// The one route by which a task enters the table, so that "exactly the live
-    /// threads" is maintained at the single place a thread comes into being.
-    let registerTask
-        (thread : ThreadId)
-        (cpu : CpuId)
-        (osThreadId : OsThreadId)
+    /// Apply an operation to the tasks this kernel knows about. Those operations
+    /// live in `UnixTaskTable`, which takes the table rather than the kernel.
+    let mapTasks
+        (f : Map<ThreadId, UnixTaskState> -> Map<ThreadId, UnixTaskState>)
         (kernel : EmulatedKernel)
         : EmulatedKernel
         =
         { kernel with
-            Tasks = UnixTaskTable.register thread cpu osThreadId kernel.Tasks
-        }
-
-    let cpuOf (thread : ThreadId) (kernel : EmulatedKernel) : CpuId = UnixTaskTable.cpuOf thread kernel.Tasks
-
-    /// The OS thread id `thread` reports to the guest.
-    let osThreadIdOf (thread : ThreadId) (kernel : EmulatedKernel) : OsThreadId =
-        UnixTaskTable.osThreadIdOf thread kernel.Tasks
-
-    /// The socket wait `thread` is blocked in, if any.
-    ///
-    /// Present from the park through the wake to the delivering re-entry, which
-    /// is a strict superset of the window `BlockedOnSocketEvents` covers: the
-    /// close-time retention check reads this, not the thread status, so the
-    /// woken-but-not-yet-run window is protected too.
-    let parkedSocketWaitFor (thread : ThreadId) (kernel : EmulatedKernel) : ParkedSocketWait option =
-        UnixTaskTable.parkedSocketWaitFor thread kernel.Tasks
-
-    /// Record that `thread` has parked in a socket wait, or (with `None`) that
-    /// it is no longer in one.
-    let withParkedSocketWait
-        (thread : ThreadId)
-        (wait : ParkedSocketWait option)
-        (kernel : EmulatedKernel)
-        : EmulatedKernel
-        =
-        { kernel with
-            Tasks = UnixTaskTable.withParkedSocketWait thread wait kernel.Tasks
+            Tasks = f kernel.Tasks
         }
 
     /// The system error (errno on Unix, `GetLastError` on Windows) `thread` would read.
