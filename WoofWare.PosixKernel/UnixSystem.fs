@@ -56,8 +56,16 @@ type FLockRefusal =
     | DarwinConversion
     /// A blocking acquisition against a conflicting holder. Waiting is a
     /// scheduler feature rather than a filesystem one, and this library has no
-    /// scheduler: the client must park the caller and re-ask when the holder
-    /// releases.
+    /// scheduler.
+    ///
+    /// Unlike every other case here, this one is not a gap in what has been
+    /// *measured*: a real kernel parks the caller, and it does so having already
+    /// dropped the caller's old lock, because `flock` removes before it
+    /// establishes. That advance is discarded with the refusal — a refused call
+    /// hands back no system at all, which is what stops a client continuing from
+    /// a half-step — so a client that could park must not treat this as a park.
+    /// When blocking gets an outcome of its own rather than a refusal, this case
+    /// moves there and carries the advance with it.
     | WouldBlockIndefinitely of mode : FlockMode
 
 /// Why this kernel will not commit a truncation.
@@ -595,6 +603,11 @@ module UnixSystem =
                 // so only genuine contention reaches here. Refusing must never
                 // convert the request into a non-blocking one, which would hand
                 // the caller an EWOULDBLOCK no kernel would have produced.
+                //
+                // `advanced` is deliberately dropped: see the case's own note.
+                // The registry has already removed the caller's old lock, which
+                // is what a real kernel does before it sleeps — but a refusal
+                // carries no system, so a client cannot mistake this for a park.
                 let requested =
                     if mode = lockShared then
                         FlockMode.Shared

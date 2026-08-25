@@ -373,6 +373,17 @@ module TestUnixSystemStep =
         UnixSystem.flock second 2 held
         |> shouldEqual (Error (FLockRefusal.WouldBlockIndefinitely FlockMode.Exclusive))
 
+        // And the refusal carries no system, so the caller still holds the one it
+        // passed in. That is deliberate and it costs something real: a kernel
+        // that could park would have dropped the caller's old lock before
+        // sleeping, and this discards that. The alternative — a refusal that
+        // carries a state — reintroduces exactly the "which state is this?"
+        // ambiguity refusals exist to remove. When blocking gets an outcome of
+        // its own, this row is what will have to change on purpose.
+        match UnixSystem.flock second 2 held with
+        | Error _ -> ()
+        | Ok (answer, _) -> failwith $"expected a refusal carrying no system, got %O{answer}"
+
     [<Test>]
     let ``a failing flock still advances the descriptor table`` () : unit =
         // The design's most distinctive claim, and the reason state rides

@@ -1657,6 +1657,20 @@ refusals-validations` names, in a new place: *widening* a definition's audience
 inherits every rule its old audience happened to satisfy, and a `Debug.Assert` is
 not a rule, it is a hope.
 
+**A refusal that is really stage 9's outcome, and what it costs.** Review
+pointed out that `FLockRefusal.WouldBlockIndefinitely` discards a state change a
+real kernel makes: `flock` removes the caller's old lock before it sleeps, so
+the registry has already advanced by the time the contention is discovered, and
+a refusal hands back no system. That is correct as far as this stage goes —
+PawPrint crashes, and a refusal must not look continuable — but it is a real
+loss for a client that *could* park, and it is the tell that this case is not a
+refusal at all. Decision 3 already says blocking becomes
+`WouldBlock of WakeCondition`, an *outcome*; when stage 9 builds that, this case
+moves there and carries the advance. Making it carry a state now would undo the
+property that a refusal cannot hand back a half-step, which is the more valuable
+of the two. The contract is pinned by a row, so stage 9 has to change it
+deliberately rather than discover it.
+
 `Close` is last, because it drags `closeFd` — 217 lines, refusals of both kinds,
 and two callers besides `Close` itself.
 
@@ -1740,7 +1754,10 @@ three cases needs a row that only it can satisfy.
 **Implements**: decision 3.
 
 `WaitForSocketEvents`, `poll`, `accept`, `connect`: `WouldBlock of
-WakeCondition` plus `WakeCondition.isSatisfied`. PawPrint's `Program` readiness
+WakeCondition` plus `WakeCondition.isSatisfied`. **And `flock`**, whose blocking
+case stage 7 had to spell as a refusal: moving it here is what lets it carry the
+descriptor-table advance a real kernel makes before it sleeps, which a refusal
+cannot. PawPrint's `Program` readiness
 sweep becomes a poll of that predicate. Then: `README`, the
 `emulated-posix-kernel` skill's paths, `docs/divergences.md`, and the
 packaging decision from the open questions.
