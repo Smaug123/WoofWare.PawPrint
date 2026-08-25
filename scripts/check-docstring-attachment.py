@@ -78,14 +78,35 @@ DECL = re.compile(
 )
 
 
-def subjects(text: str) -> list[tuple[str, str, str]]:
-    """(kind, declaration name, normalised declaration line) for each declaration."""
+def signature(lines: list[str], k: int) -> str:
+    """The declaration at line `k`, to the end of its signature.
+
+    F# puts a long parameter list on its own lines, so two overloads can share
+    a first line of just `member _.Foo` and differ only below it. Taking one
+    line would make them the same subject, which is the thing the signature is
+    there to prevent. The signature ends at the `=` that starts the body; an
+    `abstract` member has none, so a blank line or the next docstring stops it
+    too.
+    """
     out = []
-    for line in text.split("\n"):
+    for line in lines[k : k + 24]:
+        if out and (not line.strip() or line.strip().startswith("///")):
+            break
+        out.append(line)
+        if "=" in line:
+            break
+    return " ".join(" ".join(out).split())
+
+
+def subjects(text: str) -> list[tuple[str, str, str, int]]:
+    """(kind, name, signature, indent) for each declaration."""
+    lines = text.split("\n")
+    out = []
+    for k, line in enumerate(lines):
         m = DECL.match(line)
         if m:
             kind, name = next(kv for kv in m.groupdict().items() if kv[1])
-            out.append((kind, name, " ".join(line.split())))
+            out.append((kind, name, signature(lines, k), len(line) - len(line.lstrip())))
     return out
 
 
@@ -102,8 +123,9 @@ def ambiguous_names(*texts: str) -> set[str]:
 
     Adjacency is the whole of the risk. A stranded docstring binds to the
     declaration that follows it, so a name can absorb another's prose only when
-    a declaration of that name is the next one along. Restricting to that is
-    exact for the failure and silent everywhere else.
+    a declaration of that name is the next one along. Restricting to that, and
+    to the one declaration form F# lets you overload, is exact for the failure
+    and silent everywhere else.
     """
     repeated: set[str] = set()
     for text in texts:
@@ -112,12 +134,23 @@ def ambiguous_names(*texts: str) -> set[str]:
         # matches `match`-expression arms, whose repeated heads are not
         # declarations at all — feeding those in qualified whole types by
         # accident.
+        # Only `member`. F# has no overloading anywhere else: two module-level
+        # `let`s of one name are a duplicate-definition error, so a repeated
+        # `let` is always shadowing inside a body — and those are common enough
+        # (`let block = ...` twice in a test) that admitting them qualified
+        # unrelated definitions in other files and reported their signature
+        # changes.
         seen = [
-            (kind, name)
-            for kind, name, _ in subjects(text)
-            if kind in ("let", "member", "quoted", "active")
+            (kind, name, indent)
+            for kind, name, _, indent in subjects(text)
+            if kind == "member"
         ]
-        repeated.update(a[1] for a, b in zip(seen, seen[1:]) if a == b)
+        # Per indentation level, so a `let` inside an overload's body does not
+        # come between the two members and hide the overload set. Two members of
+        # one type sit at one indent; their locals sit deeper.
+        for indent in {i for _, _, i in seen}:
+            at = [(kind, name) for kind, name, i in seen if i == indent]
+            repeated.update(a[1] for a, b in zip(at, at[1:]) if a == b)
     return repeated
 
 
@@ -159,7 +192,7 @@ def pairs(text: str, ambiguous: set[str] = frozenset()) -> dict[str, list[str | 
                 # is everywhere in this repository.
                 subject = f"{kind} {name}"
                 if name in ambiguous:
-                    subject = " ".join(lines[k].split())
+                    subject = signature(lines, k)
             elif lines[k].strip():
                 # A form the regex does not know is still a distinguishable
                 # subject: use the declaration line itself. Letting every
